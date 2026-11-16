@@ -80,7 +80,10 @@
 (*                        only, so a restart loses it.                     *)
 (*   ReformReads          -- what a re-form reads of a copy: "full" is its *)
 (*                        last entry, purged id and floor; "purged"        *)
-(*                        leaves the floor out; "entries" reads the last   *)
+(*                        leaves the floor out; "logged" reads a floor     *)
+(*                        only from a copy that installed or whose log     *)
+(*                        reaches it, not one a re-form carried in;        *)
+(*                        "entries" reads the last                         *)
 (*                        entry only, so an empty log reads as nothing.    *)
 (*                                                                         *)
 (* Abstracted: terms and uncommitted divergence (FelixRaft.tla has them;   *)
@@ -123,7 +126,7 @@ ASSUME
     /\ TablesAtApplied \in BOOLEAN /\ SnapFloorAtP \in BOOLEAN
     /\ SnapCarriesHeaders \in BOOLEAN /\ DropFirst \in BOOLEAN
     /\ ReformCarriesFloor \in BOOLEAN /\ ReformStoresFloor \in BOOLEAN
-    /\ ReformReads \in {"full", "purged", "entries"}
+    /\ ReformReads \in {"full", "purged", "logged", "entries"}
 
 VARIABLES
     log,      \* every entry of the current epoch's history, in order
@@ -397,6 +400,10 @@ ReadLast(m) ==
            Max({len[m], purged[m], IF floor[m] > 1 THEN floor[m] ELSE 0})
       [] ReformReads = "purged" ->
            Max({len[m], purged[m]})
+      [] ReformReads = "logged" ->
+           Max({len[m], purged[m],
+                IF floor[m] > 1 /\ (m \in installed \/ len[m] >= floor[m])
+                THEN floor[m] ELSE 0})
       [] ReformReads = "entries" ->
            IF len[m] > purged[m] THEN len[m] ELSE 0
 
