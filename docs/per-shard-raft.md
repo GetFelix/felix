@@ -2212,8 +2212,8 @@ added to it: both only make a message or a timeout later, and the lease is
 counted from the hand-off of the message, on a clock read by the check
 itself.
 
-If the check fails, the write waits on `await_commit` like a `Quorum`
-write. Its commit renews the lease, and later writes are local again. The
+If the check fails, the write is answered as a `Quorum` write is: once a
+majority has written it under `periodic`, at its commit under `on_commit`. Its commit renews the lease, and later writes are local again. The
 shard stays open. The lease rests on openraft's `last_quorum_acked` and on
 nothing else: store liveness is not part of it.
 
