@@ -65,6 +65,9 @@ pub struct ShardFence {
     /// [`Self::take_deposals`].
     deposals: parking_lot::Mutex<Vec<(ShardKey, u64)>>,
     deposal: Notify,
+    /// Woken on every new routing view and every recorded open error, for
+    /// writes held while their shard moves or opens.
+    changed: Notify,
     /// Set on a start after a crash that may have lost acknowledged records:
     /// a shard this broker is routed as leading is withheld from replication
     /// until its open has decided this process leads it there.
@@ -184,7 +187,13 @@ impl ShardFence {
     pub(crate) fn record_open_error(&self, key: &ShardKey, error: String) {
         if let Some(record) = self.phases.write().get_mut(key) {
             record.error = Some(error);
+            self.changed.notify_waiters();
         }
+    }
+
+    /// See the `changed` field.
+    pub(crate) fn changed(&self) -> &Notify {
+        &self.changed
     }
 
     /// The phase the lifecycle last set for `key`, if it has held it.
@@ -581,7 +590,8 @@ impl std::error::Error for Fenced {}
 pub(crate) struct PhaseRecord {
     pub(crate) phase: Phase,
     pub(crate) generation: u64,
-    /// Why the log could not be opened, while the phase is `Failed`.
+    /// Why the log could not be opened: while the phase is `Failed`, or while
+    /// it stays `Opening` to retry after running out of file descriptors.
     pub(crate) error: Option<String>,
 }
 

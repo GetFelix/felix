@@ -83,3 +83,8 @@ pub mod rotate_storage;
 // HTTP helpers shared by the unit tests of several modules.
 #[cfg(test)]
 mod test_support;
+
+// Tests here open many logs at once; they get the open-file limit a broker
+// runs with instead of the shell's.
+#[cfg(test)]
+felix_storage::raise_soft_limit_at_start!();

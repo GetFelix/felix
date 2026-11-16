@@ -145,10 +145,7 @@ pub(crate) async fn registered(
 /// many brokers in one process at once, together past a soft limit of 1,024
 /// (256 on macOS), and a member that cannot open a file never serves.
 fn raise_open_file_limit() {
-    static RAISED: std::sync::Once = std::sync::Once::new();
-    RAISED.call_once(|| {
-        let _ = crate::node::open_files::raise();
-    });
+    felix_storage::open_files::raise_soft_limit_once();
 }
 
 /// **The brokers these tests start run at the hard open-file limit**, as a
@@ -157,7 +154,7 @@ fn raise_open_file_limit() {
 async fn test_brokers_run_at_the_hard_open_file_limit() {
     let root = tempfile::tempdir().expect("tempdir");
     let _broker = broker(root.path()).await;
-    let (before, after) = crate::node::open_files::raise().expect("the limit");
+    let (before, after) = felix_storage::open_files::raise_soft_limit().expect("the limit");
     assert_eq!(before, after, "a broker was started below the hard limit");
 }
 

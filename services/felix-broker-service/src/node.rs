@@ -27,7 +27,7 @@ mod handoff;
 mod identity;
 mod listeners;
 mod membership;
-pub(crate) mod open_files;
+mod open_files;
 pub(crate) mod peer_dispatch;
 mod shutdown;
 #[cfg(feature = "sim")]

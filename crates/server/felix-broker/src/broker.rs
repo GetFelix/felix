@@ -616,7 +616,8 @@ impl Broker {
         felix_common::blocking::spawn(move || felix_storage::run_state::record_head_trimmed(&root))
             .await
             .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?
-            .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?;
+            // Typed, so running out of descriptors answers as retryable.
+            .map_err(BrokerError::from)?;
         self.head_trim_marked.store(true, Ordering::Release);
         Ok(())
     }
@@ -668,7 +669,7 @@ impl Broker {
         })
         .await
         .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?
-        .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?;
+        .map_err(BrokerError::from)?;
         self.headers_marked.store(true, Ordering::Release);
         Ok(())
     }

@@ -887,17 +887,19 @@ impl DiskLog {
         let segments = self.inner.segments.read();
         segments.check_open()?;
         let mut epochs = self.inner.epochs.lock();
-        let before = epochs.entries().to_vec();
-        epochs.truncate_from(from);
+        // As in `record_generation`: memory follows the file, not the reverse.
+        let mut next = epochs.clone();
+        next.truncate_from(from);
         for epoch in generations {
-            epochs.record(epoch.generation, epoch.start_offset.max(from));
+            next.record(epoch.generation, epoch.start_offset.max(from));
         }
-        if epochs.entries() != before.as_slice() {
+        if next != *epochs {
             self.inner.check_not_poisoned()?;
             self.inner.poison_on_sync_failure(
                 "the generation history",
-                epochs::store(&self.inner.dir, &epochs),
+                epochs::store(&self.inner.dir, &next),
             )?;
+            *epochs = next;
         }
         Ok(())
     }
@@ -1974,13 +1976,18 @@ impl AppendOnlyLog for DiskLog {
         segments.check_open()?;
         let mut epochs = self.inner.epochs.lock();
         self.inner.check_not_poisoned()?;
-        if !epochs.record(generation, start_offset) {
+        // Changed in memory only once the file holds it: a write that fails
+        // (out of descriptors, say) must leave the history a retry sees as
+        // it was, or the retry finds the generation recorded and skips it.
+        let mut next = epochs.clone();
+        if !next.record(generation, start_offset) {
             return Ok(false);
         }
         self.inner.poison_on_sync_failure(
             "the generation history",
-            epochs::store(&self.inner.dir, &epochs),
+            epochs::store(&self.inner.dir, &next),
         )?;
+        *epochs = next;
         Ok(true)
     }
 
