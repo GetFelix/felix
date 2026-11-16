@@ -752,7 +752,28 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
         rest.iter().all(|record| record.offset != first[0].offset),
         "an acknowledged record was handed out again: {rest:?}"
     );
-    assert_eq!(rest.len(), 2, "the other two records: {rest:?}");
+    // The stream may hold records written while the cluster started, so check
+    // that ours each came out once rather than counting the whole stream.
+    let mut payloads: Vec<&[u8]> = first
+        .iter()
+        .chain(rest.iter())
+        .map(|record| record.payload.as_ref())
+        .collect();
+    let handed_out = payloads.len();
+    payloads.sort_unstable();
+    payloads.dedup();
+    assert_eq!(
+        payloads.len(),
+        handed_out,
+        "a record came out twice: {first:?} {rest:?}"
+    );
+    for payload in [b"one".as_slice(), b"two", b"three"] {
+        assert!(
+            payloads.contains(&payload),
+            "{} was not handed out: {first:?} {rest:?}",
+            String::from_utf8_lossy(payload)
+        );
+    }
     for record in &rest {
         cluster
             .group_ack_via(&leader, STREAM, 0, "workers", record.offset)
