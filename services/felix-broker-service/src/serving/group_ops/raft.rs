@@ -295,7 +295,11 @@ impl OnRaft {
             .describe(&self.key, self.deadline())
             .await
             .map_err(broker)?;
-        Ok((snapshot, self.read_end(publish_ctx).await?))
+        // Group writes are entries of the shard's log but hold no record, so
+        // the tail stops before the trailing ones: a group that has settled
+        // everything shows no lag, as on the hybrid.
+        let end = self.read_end(publish_ctx).await?;
+        Ok((snapshot, publish_ctx.engine.records_end(&self.shard, end)))
     }
 
     pub(super) async fn delete(&self) -> Result<bool, ClientError> {

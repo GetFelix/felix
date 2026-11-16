@@ -181,9 +181,8 @@ async fn group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid() -> Res
             dead_letters, tail, ..
         } => {
             assert_eq!(dead_letters, 0);
-            // Group writes are entries of the shard's log, so they take
-            // offsets past the records.
-            assert!(tail > r2, "tail {tail}");
+            // The group entries after r2 hold no record, so not counted.
+            assert_eq!(tail, r2 + 1);
         }
         other => panic!("not described: {other:?}"),
     }
