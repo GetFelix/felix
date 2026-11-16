@@ -10,7 +10,9 @@
 //! arrive meanwhile queue, and when the batch returns the leading run of
 //! them for one shard goes out as the next one: group commit with no timer.
 //! One batch at a time also keeps the producer's sequences in order without
-//! any coordination.
+//! any coordination. A broker that numbers each record
+//! ([`Writes::sequence_per_record`]) is handed the same batches and pipelines
+//! their records itself.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -30,7 +32,7 @@ use crate::auth::Credential;
 use crate::metrics;
 use crate::mount::MountedTopic;
 use crate::topic::check_topic_name;
-use crate::write::{Record, Refusal, WriteBatch, WriteError, Writes};
+use crate::write::{Record, Refusal, Unwritten, WriteBatch, WriteError, Writes};
 
 /// Longest the connection stops reading to keep a tenant within its publish
 /// quota.
@@ -45,8 +47,8 @@ pub(super) struct Publishing<'a> {
     producer_id: u64,
     max_inflight: usize,
     reason_strings: bool,
-    /// Batches written so far to each shard, which is the next batch's
-    /// sequence.
+    /// Each shard's next sequence: batches written so far, or records when
+    /// the broker numbers each one.
     sequences: HashMap<ShardKey, u64>,
     /// `PUBACK`s owed, in arrival order.
     owed: VecDeque<Owed>,
@@ -78,6 +80,8 @@ struct InFlight<'a> {
     key: ShardKey,
     /// The owed position of each record, `None` for QoS 0.
     owed: Vec<Option<u64>>,
+    /// The sequences the batch takes once written.
+    sequences: u64,
 }
 
 impl<'a> Publishing<'a> {
@@ -127,19 +131,18 @@ impl<'a> Publishing<'a> {
         let mut records = Vec::new();
         let mut owed = Vec::new();
         let mut bytes = 0u64;
-        let most = writes.max_batch_records().max(1);
-        while records.len() < most
-            && self
-                .queue
-                .front()
-                .is_some_and(|next| shard_key(&next.target) == key)
+        while self
+            .queue
+            .front()
+            .is_some_and(|next| shard_key(&next.target) == key)
         {
             let next = self.queue.pop_front().expect("front was just seen");
             bytes += next.record.payload.len() as u64;
             records.push(next.record);
             owed.push(next.owed);
         }
-        let hold = writes.admit_produce(&self.tenant, records.len() as u64, bytes);
+        let records_len = records.len() as u64;
+        let hold = writes.admit_produce(&self.tenant, records_len, bytes);
         let batch = WriteBatch {
             tenant_id: Arc::clone(&self.tenant),
             credential: self.credential.clone(),
@@ -149,10 +152,16 @@ impl<'a> Publishing<'a> {
             acknowledged: owed.iter().any(Option::is_some),
             records,
         };
+        let sequences = if writes.sequence_per_record() {
+            records_len
+        } else {
+            1
+        };
         self.in_flight = Some(InFlight {
             future: writes.write(batch),
             key,
             owed,
+            sequences,
         });
         Some(hold)
     }
@@ -316,28 +325,51 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             .in_flight
             .take()
             .expect("a result comes from a batch in flight");
-        match result {
-            Ok(()) => {
-                *publishing.sequences.entry(batch.key).or_insert(0) += 1;
-                let acknowledged = batch.owed.iter().flatten().count();
-                metrics::published("1", acknowledged as u64);
-                metrics::published("0", (batch.owed.len() - acknowledged) as u64);
-                for position in batch.owed.into_iter().flatten() {
-                    publishing.answer(position, ReasonCode::Success, None);
-                }
+        let (written, rest) = match result {
+            Ok(()) => (batch.owed.len(), None),
+            Err(WriteError::Partly { written, rest }) => {
+                (written.min(batch.owed.len()), Some(rest))
             }
+            Err(WriteError::Refused(refusal)) => (0, Some(Unwritten::Refused(refusal))),
+            Err(WriteError::OutcomeUnknown(reason)) => (0, Some(Unwritten::OutcomeUnknown(reason))),
+        };
+        if written > 0 {
+            // A batch is written whole or, when the broker numbers each
+            // record, record by record.
+            let sequences = if rest.is_none() {
+                batch.sequences
+            } else {
+                written as u64
+            };
+            *publishing.sequences.entry(batch.key).or_insert(0) += sequences;
+            let done = &batch.owed[..written];
+            let acknowledged = done.iter().flatten().count();
+            metrics::published("1", acknowledged as u64);
+            metrics::published("0", (done.len() - acknowledged) as u64);
+            for position in done.iter().flatten() {
+                publishing.answer(*position, ReasonCode::Success, None);
+            }
+        }
+        match rest {
+            None => {}
             // Not told either way: an error reason would say "not delivered",
             // which may be false. Closing leaves the resend to the client.
-            Err(WriteError::OutcomeUnknown(reason)) => return Err(End::Close(reason)),
-            Err(WriteError::Refused(refusal)) => {
+            Some(Unwritten::OutcomeUnknown(reason)) => {
+                self.release(publishing)?;
+                return Err(End::Close(reason));
+            }
+            Some(Unwritten::Refused(refusal)) => {
                 let (reason, label) = describe(refusal);
-                for position in batch.owed {
+                for position in &batch.owed[written..] {
                     match (version, position) {
                         (Version::V5, Some(position)) => {
                             metrics::refused(label);
-                            publishing.answer(position, reason, Some(label));
+                            publishing.answer(*position, reason, Some(label));
                         }
-                        (_, Some(_)) => return Err(End::Close(label)),
+                        (_, Some(_)) => {
+                            self.release(publishing)?;
+                            return Err(End::Close(label));
+                        }
                         // Nobody is owed anything; the message is dropped.
                         (_, None) => metrics::refused(label),
                     }
