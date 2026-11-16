@@ -471,6 +471,8 @@ struct Inner {
     mark_roots: parking_lot::Mutex<Vec<MarkLog>>,
     placement: Placement,
     placed_budget: Arc<placed::Budget>,
+    /// See [`GroupRuntime::ack_incarnation`].
+    acked: Arc<AtomicU64>,
 }
 
 impl GroupRuntime {
@@ -525,6 +527,7 @@ impl GroupRuntime {
                 ticker: parking_lot::Mutex::new(None),
                 mark_roots: parking_lot::Mutex::default(),
                 placed_budget: Arc::new(placed::Budget::new(&config.placement)),
+                acked: Arc::default(),
                 placement: config.placement,
             }),
         })
@@ -781,6 +784,7 @@ impl GroupRuntime {
             clock: Arc::clone(&inner.clock.read()),
             placement: inner.placement.clone(),
             placed_budget: Arc::clone(&inner.placed_budget),
+            acked: Arc::clone(&inner.acked),
         };
         let raft = match group.shard.kind {
             ShardKind::Stream => &inner.raft,
@@ -890,8 +894,7 @@ impl GroupRuntime {
     /// group asks for each: a question to a copy id the broker does not
     /// hold is refused with the one it does, and is asked again of that
     /// one. If a copy rotates after it answered, the set names its old id:
-    /// the new copy joins only when a target names it
-    /// ([`Self::target_members`]).
+    /// the new copy joins only when a target names it.
     pub async fn first_members(
         &self,
         shard: &ShardKey,
@@ -937,7 +940,11 @@ impl GroupRuntime {
 
     /// The members a target on `brokers` names: this broker's member, and
     /// for every other broker the copy it holds now, asked as
-    /// [`Self::first_members`] asks. Pass the result to [`Self::retarget`].
+    /// [`Self::first_members`] asks. For tests that stand in for the control
+    /// plane only: [`Self::retarget`] must be passed exactly the members the
+    /// control plane stored, and this can name a set it never ordered, which
+    /// no re-form would know of (`docs/per-shard-raft.md`, "Where a target
+    /// comes from").
     ///
     /// A broker joins a group as a learner only through the copy its
     /// directory holds, opened with [`Self::open_copy`], so its id is asked
@@ -947,6 +954,7 @@ impl GroupRuntime {
     /// the membership does not name stops the call. This broker's own member
     /// is in the result only when `brokers` names this broker, so a target can
     /// drain the leader's broker.
+    #[cfg(any(test, feature = "testing"))]
     pub async fn target_members(
         &self,
         shard: &ShardKey,
@@ -1105,6 +1113,21 @@ impl GroupRuntime {
     pub fn retarget(&self, shard: &ShardKey, target: Target, term: u64) -> bool {
         self.group(shard)
             .is_some_and(|group| group.retarget(target, term))
+    }
+
+    /// No target is held for `shard` as of a view fresh enough for `term`,
+    /// so its leader in `term` may move by placement. False if a target or
+    /// "no target" for `term` or later is already held, or the shard has no
+    /// group here.
+    pub fn untarget(&self, shard: &ShardKey, term: u64) -> bool {
+        self.group(shard).is_some_and(|group| group.untarget(term))
+    }
+
+    /// The control plane's placement incarnation has reached `incarnation`.
+    /// No leader here acts on a target from a lower one: it was ordered
+    /// before a restore that the control plane no longer holds.
+    pub fn ack_incarnation(&self, incarnation: u64) {
+        self.inner.acked.fetch_max(incarnation, Ordering::AcqRel);
     }
 
     /// Placement names `broker` as the leader of `shard`. The member that

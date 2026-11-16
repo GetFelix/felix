@@ -13,14 +13,22 @@ fn version(counter: u64) -> TargetVersion {
 
 /// `assignment` carrying a target of `voters` at `version(counter)`.
 fn with_target(
-    mut assignment: ShardAssignment,
+    assignment: ShardAssignment,
     voters: &BTreeSet<MemberId>,
     counter: u64,
 ) -> ShardAssignment {
+    with_target_at(assignment, voters, version(counter))
+}
+
+fn with_target_at(
+    mut assignment: ShardAssignment,
+    voters: &BTreeSet<MemberId>,
+    version: TargetVersion,
+) -> ShardAssignment {
     assignment.target = Some(RaftTarget {
         version: RaftTargetVersion {
-            incarnation: 1,
-            counter,
+            incarnation: version.incarnation,
+            counter: version.counter,
         },
         members: voters
             .iter()
@@ -36,12 +44,23 @@ fn lease_of(shards: &RaftShards) -> Arc<LeaseState> {
     lease
 }
 
+/// The versions of the targets a member kept, with their terms.
 fn told(shards: &RaftShards) -> Vec<(TargetVersion, u64)> {
     shards
         .told
         .lock()
         .iter()
-        .map(|(_, version, term)| (*version, *term))
+        .filter_map(|(_, target, term)| Some((target.as_ref()?.version, *term)))
+        .collect()
+}
+
+/// Everything a member kept, "no target" included.
+fn told_all(shards: &RaftShards) -> Vec<(Option<Target>, u64)> {
+    shards
+        .told
+        .lock()
+        .iter()
+        .map(|(_, target, term)| (target.clone(), *term))
         .collect()
 }
 
@@ -131,12 +150,12 @@ async fn a_newer_target_is_told_in_the_same_term() {
     shards.runtime.shutdown().await;
 }
 
-/// **A new leader tells the same version again for its own term, once its
-/// feed has caught up.** The member that led before was told it for its
-/// term only. Until the new leader's view reaches its bar it tells nothing,
-/// and its group takes no step.
+/// **A new leader tells the target its predecessor was told only once its
+/// own feed view reaches its bar.** The member that led before was told it
+/// for its term only. Until the new leader's view reaches its bar it tells
+/// nothing, and its group takes no step.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_new_leader_tells_its_target_again_once_its_feed_catches_up() {
+async fn a_new_leader_tells_its_predecessors_target_once_its_feed_catches_up() {
     let (net, members, first) = trio().await;
     let orders = key("orders", 0);
     let leases: Vec<Arc<LeaseState>> = members
@@ -316,4 +335,207 @@ async fn a_successor_does_not_act_on_a_target_told_in_an_earlier_term() {
     .await;
     stop(&members).await;
     EngineShards::shutdown(&*d.shards).await;
+}
+
+fn at(incarnation: u64, counter: u64) -> TargetVersion {
+    TargetVersion {
+        incarnation,
+        counter,
+    }
+}
+
+/// **A target from before a restore is never told.** The group holds
+/// (0, 5). A restore resets the feed: the control plane's leader reports
+/// placement incarnation 1 and head 12, below the bar of 40, so the bar
+/// drops to 12. A control-plane member that has not applied the restore
+/// still answers with checkpoint 41 and the (0, 9) it ordered before:
+/// the view meets the bar, but its target is from an incarnation the
+/// control plane no longer holds.
+#[tokio::test]
+async fn a_target_from_before_a_restore_is_not_told() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let lease = lease_of(&shards);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the member to lead", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("led");
+    let voters = shards.runtime.voters(&orders).expect("voters");
+    let fed = |version| with_target_at(assigned(orders.clone(), INCARNATION), &voters, version);
+
+    lease.record_head(tokio::time::Instant::now(), 40);
+    shards.take(&mut assignments([fed(at(0, 5))])).await;
+    shards.answered(now(), Some(40));
+    assert_eq!(told(&shards), [(at(0, 5), term)]);
+
+    lease.record_placement(1);
+    lease.record_head(tokio::time::Instant::now(), 12);
+    shards.take(&mut assignments([fed(at(0, 9))])).await;
+    shards.answered(now(), Some(41));
+    assert_eq!(
+        told(&shards),
+        [(at(0, 5), term)],
+        "a target from before the restore was told"
+    );
+
+    shards.take(&mut assignments([fed(at(1, 0))])).await;
+    shards.answered(now(), Some(41));
+    assert_eq!(told(&shards), [(at(0, 5), term), (at(1, 0), term)]);
+    shards.runtime.shutdown().await;
+}
+
+/// **A leader does not act on a target from before a restore it already
+/// holds.** The broker hands every leader the placement incarnation its
+/// heartbeat reported, so a held (0, 9) waits once the control plane is at
+/// incarnation 1, and a target of incarnation 1 goes through.
+#[tokio::test]
+async fn a_leader_does_not_act_on_a_held_target_from_before_a_restore() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let lease = lease_of(&shards);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the member to lead", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("led");
+    let voters = shards.runtime.voters(&orders).expect("voters");
+    lease.record_placement(1);
+    lease.record_head(tokio::time::Instant::now(), 1);
+    shards.answered(now(), Some(1));
+
+    let target = |version| Target {
+        voters: voters.clone(),
+        version,
+    };
+    assert!(shards.runtime.retarget(&orders, target(at(0, 9)), term));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let progress = shards.runtime.status(&orders).expect("status").membership;
+    assert_eq!(
+        progress,
+        MembershipProgress::Idle,
+        "the leader acted on a target from before the restore"
+    );
+
+    assert!(shards.runtime.retarget(&orders, target(at(1, 0)), term));
+    until(
+        "the group to settle on the new incarnation's target",
+        || {
+            shards
+                .runtime
+                .status(&orders)
+                .is_some_and(|status| status.membership == MembershipProgress::Settled)
+        },
+    )
+    .await;
+    shards.runtime.shutdown().await;
+}
+
+/// **The target told is the control plane's record, copy ids included.**
+/// A set the broker derived itself, say from the copies it sees now, could
+/// name members the control plane never ordered, which no re-form knows of.
+#[tokio::test]
+async fn the_target_told_is_the_control_planes_record() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let lease = lease_of(&shards);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the member to lead", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("led");
+    let mut voters = shards.runtime.voters(&orders).expect("voters");
+    voters.insert(MemberId::new("broker-z", 42));
+    lease.record_head(tokio::time::Instant::now(), 1);
+    shards
+        .take(&mut assignments([with_target(
+            assigned(orders.clone(), INCARNATION),
+            &voters,
+            1,
+        )]))
+        .await;
+    shards.answered(now(), Some(1));
+    let expected = Target {
+        voters,
+        version: version(1),
+    };
+    assert_eq!(told_all(&shards), [(Some(expected), term)]);
+    shards.runtime.shutdown().await;
+}
+
+/// **A leader told a target in an earlier term still moves by placement
+/// once a fresh view shows no target.** `broker-a` is told v1 in its first
+/// term, hands over to `broker-b` by placement, and leads again in a later
+/// term still holding v1. The feed has no target any more. Placement
+/// moves only once the target is told for the term, so the broker tells
+/// "no target" for it, and `broker-a` hands over to `broker-b` again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_view_with_no_target_lets_a_later_term_move_by_placement() {
+    let (_net, members, first) = trio().await;
+    let orders = key("orders", 0);
+    assert_eq!(members[first].name, "broker-a");
+    let leases: Vec<Arc<LeaseState>> = members
+        .iter()
+        .map(|member| lease_of(&member.shards))
+        .collect();
+    let (a, b) = (&members[0], &members[1]);
+    let place = |leader: &'static str, target: Option<&BTreeSet<MemberId>>| {
+        let assignment = led_by(leader);
+        match target {
+            Some(voters) => with_target(assignment, voters, 1),
+            None => assignment,
+        }
+    };
+    let three = a.shards.runtime.voters(&orders).expect("voters");
+    a.shards
+        .take(&mut assignments([place("broker-a", Some(&three))]))
+        .await;
+    leases[0].record_head(tokio::time::Instant::now(), 10);
+    a.shards.answered(now(), Some(10));
+    let first_term = a.shards.leading(&orders).expect("led");
+    assert_eq!(told(&a.shards), [(version(1), first_term)]);
+    until("broker-a to stamp v1", || {
+        a.shards
+            .runtime
+            .status(&orders)
+            .is_some_and(|status| status.membership == MembershipProgress::Settled)
+    })
+    .await;
+
+    for (leader, holder) in [("broker-b", b), ("broker-a", a)] {
+        for member in &members {
+            member
+                .shards
+                .take(&mut assignments([place(leader, None)]))
+                .await;
+        }
+        until(&format!("{leader} to lead"), || {
+            holder
+                .shards
+                .leading(&orders)
+                .is_some_and(|term| term > first_term)
+        })
+        .await;
+    }
+    let a_term = a.shards.leading(&orders).expect("led");
+    for member in &members {
+        member
+            .shards
+            .take(&mut assignments([place("broker-b", None)]))
+            .await;
+    }
+    leases[0].record_head(tokio::time::Instant::now(), 20);
+    a.shards.answered(now(), Some(20));
+    assert_eq!(told_all(&a.shards).last(), Some(&(None, a_term)));
+    until("broker-b to lead again", || {
+        b.shards.leading(&orders).is_some_and(|term| term > a_term)
+    })
+    .await;
+    stop(&members).await;
 }

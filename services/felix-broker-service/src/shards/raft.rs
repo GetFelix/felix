@@ -102,12 +102,13 @@ pub(crate) struct RaftShards {
     /// The data root, once the restore gate has passed it. No member opens
     /// before.
     root: std::sync::OnceLock<Arc<CopyRoot>>,
-    /// The targets the last pass's feed view carried, for the members open
-    /// at that view's stream incarnation.
-    targets: parking_lot::Mutex<HashMap<ShardKey, Target>>,
-    /// Every target a member kept, with the term it was told for.
+    /// What the last pass's feed view carried for each member open at that
+    /// view's stream incarnation: its target, or `None` for no target.
+    targets: parking_lot::Mutex<HashMap<ShardKey, Option<Target>>>,
+    /// Every target a member kept, with the term it was told for. `None`
+    /// is a kept "no target".
     #[cfg(test)]
-    told: parking_lot::Mutex<Vec<(ShardKey, TargetVersion, u64)>>,
+    told: parking_lot::Mutex<Vec<(ShardKey, Option<Target>, u64)>>,
     /// While true, a marker read does not return.
     #[cfg(test)]
     stall_reads: tokio::sync::watch::Sender<bool>,
@@ -868,18 +869,21 @@ impl EngineShards for RaftShards {
                     open.get(*key)
                         .is_some_and(|member| member.incarnation == assignment.incarnation)
                 })
-                .filter_map(|(key, (assignment, _))| {
-                    let target = assignment.target.as_ref()?;
-                    let voters = target
-                        .members
-                        .iter()
-                        .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
-                        .collect();
-                    let version = TargetVersion {
-                        incarnation: target.version.incarnation,
-                        counter: target.version.counter,
-                    };
-                    Some((key.clone(), Target { voters, version }))
+                .map(|(key, (assignment, _))| {
+                    // The control plane's members verbatim, copy ids too: a
+                    // set it never stored is in no re-form source.
+                    let target = assignment.target.as_ref().map(|target| Target {
+                        voters: target
+                            .members
+                            .iter()
+                            .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
+                            .collect(),
+                        version: TargetVersion {
+                            incarnation: target.version.incarnation,
+                            counter: target.version.counter,
+                        },
+                    });
+                    (key.clone(), target)
                 })
                 .collect();
             *self.targets.lock() = targets;
@@ -961,25 +965,34 @@ impl EngineShards for RaftShards {
         let _ = self.leading.lease.set(lease);
     }
 
-    /// Tells each member that leads the target the view carries, once the
-    /// view is fresh enough for its term (see [`Lead::met_by`]). Told on
-    /// every pass: the member keeps only a newer version, or the same one
-    /// for a newer term.
+    /// Tells each member that leads the target the view carries, or that it
+    /// carries none, once the view is fresh enough for its term (see
+    /// [`Lead::met_by`]). Told on every pass: the member keeps only a newer
+    /// version, or the same one for a newer term.
     fn answered(&self, as_of: Option<tokio::time::Instant>, checkpoint: Option<u64>) {
         let Some(lease) = self.leading.lease.get() else {
             return;
         };
         let head = lease.head();
+        // Read after the head: the heartbeat records it first, so a bar
+        // from a restored control plane comes with its incarnation.
+        let placement = lease.placement();
+        self.runtime.ack_incarnation(placement);
         let mut tell = Vec::new();
         {
             let targets = self.targets.lock();
             let mut terms = self.leading.terms.lock();
             for (key, lead) in terms.iter_mut() {
                 lead.take_bar(head);
-                if lead.met_by(as_of, checkpoint)
-                    && let Some(target) = targets.get(key)
-                {
-                    tell.push((key.clone(), target.clone(), lead.term));
+                if !lead.met_by(as_of, checkpoint) {
+                    continue;
+                }
+                match targets.get(key) {
+                    // From a control-plane member that has not applied the
+                    // restore its leader reported: not a fresh view at all.
+                    Some(Some(target)) if target.version.incarnation < placement => {}
+                    Some(target) => tell.push((key.clone(), target.clone(), lead.term)),
+                    None => {}
                 }
             }
             // Under the lock `opened` sets it under, so a new term's want
@@ -987,11 +1000,15 @@ impl EngineShards for RaftShards {
             lease.want_head(terms.values().any(|lead| lead.bar.is_none()));
         }
         for (key, target, term) in tell {
-            let version = target.version;
-            if self.runtime.retarget(&key, target, term) {
-                tracing::debug!(shard = ?key, %version, term, "told the shard's Raft leader its target");
+            let kept = match &target {
+                Some(target) => self.runtime.retarget(&key, target.clone(), term),
+                None => self.runtime.untarget(&key, term),
+            };
+            if kept {
+                let version = target.as_ref().map(|target| target.version);
+                tracing::debug!(shard = ?key, ?version, term, "told the shard's Raft leader its target");
                 #[cfg(test)]
-                self.told.lock().push((key, version, term));
+                self.told.lock().push((key, target, term));
             }
         }
     }

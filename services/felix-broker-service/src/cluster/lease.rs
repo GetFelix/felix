@@ -100,6 +100,8 @@ pub struct LeaseState {
     head: parking_lot::Mutex<Option<Head>>,
     /// Woken when a head arrives while one is wanted.
     head_wake: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+    /// The highest placement incarnation an accepted heartbeat reported.
+    placement: AtomicU64,
 }
 
 /// The assignment feed's head as the control plane accepted a heartbeat.
@@ -178,6 +180,7 @@ impl LeaseState {
             head_wanted: AtomicBool::new(false),
             head: parking_lot::Mutex::new(None),
             head_wake: std::sync::OnceLock::new(),
+            placement: AtomicU64::new(0),
         }
     }
 
@@ -195,6 +198,18 @@ impl LeaseState {
     /// call counts.
     pub(crate) fn wake_on_head(&self, wake: Arc<tokio::sync::Notify>) {
         let _ = self.head_wake.set(wake);
+    }
+
+    /// The highest placement incarnation a heartbeat reported. A target
+    /// from a lower one was ordered before a restore.
+    pub(crate) fn placement(&self) -> u64 {
+        self.placement.load(Ordering::Acquire)
+    }
+
+    /// Record the placement incarnation a heartbeat reported. Before its
+    /// head is recorded, so whoever reads that head reads this too.
+    pub(crate) fn record_placement(&self, incarnation: u64) {
+        self.placement.fetch_max(incarnation, Ordering::AcqRel);
     }
 
     /// The newest head a heartbeat brought.

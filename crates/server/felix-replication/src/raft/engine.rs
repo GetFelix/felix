@@ -225,8 +225,19 @@ impl RaftEngine {
         self.runtime.retarget(shard, target, term)
     }
 
+    /// See [`GroupRuntime::untarget`].
+    pub fn untarget(&self, shard: &ShardKey, term: u64) -> bool {
+        self.runtime.untarget(shard, term)
+    }
+
+    /// See [`GroupRuntime::ack_incarnation`].
+    pub fn ack_incarnation(&self, incarnation: u64) {
+        self.runtime.ack_incarnation(incarnation);
+    }
+
     /// The members a target on `brokers` names, by the copy each broker
-    /// holds. See [`GroupRuntime::target_members`].
+    /// holds. Tests only; see [`GroupRuntime::target_members`].
+    #[cfg(any(test, feature = "testing"))]
     pub async fn target_members(
         &self,
         shard: &ShardKey,

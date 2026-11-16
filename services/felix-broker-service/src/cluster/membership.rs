@@ -721,6 +721,7 @@ async fn run_heartbeat_checked(
                         lease.adopt(Duration::from_millis(expiry.max(1)));
                     }
                     lease.renew_at(sent, response.assignment_seq);
+                    lease.record_placement(response.placement_incarnation.unwrap_or(0));
                     if let Some(seq) = response.assignment_seq {
                         lease.record_head(sent_at, seq);
                     }
