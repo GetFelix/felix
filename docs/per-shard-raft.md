@@ -4141,12 +4141,25 @@ that started leading at time `since`:
 2. **A view that reaches it.** A feed answer whose request started after
    `since` and whose checkpoint is at or past that head.
 
+On the broker, `LeaseState::record_head` keeps the newest head a heartbeat
+brought with the time that heartbeat was sent, the heartbeat asks for one
+while a led shard has no bar (`LeaseState::wants_head`), and
+`Lead::met_by` in `shards/raft.rs` is the check above. The broker tells
+each leading member its target on every feed pass that meets it; the
+member keeps only a newer version, or the same one for a newer term.
+
+A new leader waits for a feed request that started after its term began.
+A long poll already in flight does not count, so with nothing changing on
+the feed the wait can be a whole long poll, about 20 s (#2679).
+
 A target write is a shard-record change, so it is on the assignment feed
 with its own sequence. A restore brings the feed's sequence back with the
 backup, so a head taken before it can sit above every sequence the new
-feed reaches. When the broker acknowledges a new incarnation it drops
-every bar and moves each `since` to that moment, so it takes a new head
-and a view of the restored feed.
+feed reaches. When the broker acknowledges a new incarnation it should
+drop every bar and move each `since` to that moment, so it takes a new
+head and a view of the restored feed. That is not built yet: today a head
+lower than a shard's bar replaces the bar and moves its `since`, which
+reaches the same state once a heartbeat brings the restored feed's head.
 
 Moving `since` does not let an old target through. A control-plane
 follower that has not applied the restore can still answer with
@@ -4208,10 +4221,11 @@ the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
-- **Brokers do not report copy ids or read targets yet.** The control
-  plane keeps the records and the route (`raft_copy_ids`, `raft_target`,
-  `POST /v1/nodes/{node_id}/raft-copy-id`) and the feed carries the target
-  as `target`, but no broker sends an id or hands a target to its leader.
+- **Brokers do not report copy ids yet.** The control plane keeps the
+  records and the route (`raft_copy_ids`, `raft_target`,
+  `POST /v1/nodes/{node_id}/raft-copy-id`), but no broker sends an id. A
+  broker does read the feed's `target` and tells it to the member it leads
+  ("A target lasts one term").
 - **A dropped copy keeps its directory.** Deleting it needs the control
   plane's doomed set and the leaders' membership reports ("Membership"
   above, `DoomGuard` in the model), which are new metadata.

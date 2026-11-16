@@ -157,6 +157,10 @@ async fn a_new_leader_tells_its_target_again_once_its_feed_catches_up() {
     members[first].shards.answered(now(), Some(10));
     assert_eq!(told(&members[first].shards), [(version(1), first_term)]);
 
+    // A cut only stops what reaches a broker, so a leader still heard
+    // would keep its term: stop it instead.
+    EngineShards::shutdown(&*members[first].shards).await;
+    net.forget(members[first].name);
     net.cut.lock().insert(members[first].name.to_string());
     let mut next = None;
     until("another member to serve a term", || {
@@ -194,6 +198,122 @@ async fn a_new_leader_tells_its_target_again_once_its_feed_catches_up() {
             .is_some_and(|status| status.membership == MembershipProgress::Settled)
     })
     .await;
-    net.cut.lock().clear();
+    for (at, member) in members.iter().enumerate() {
+        if at != first {
+            EngineShards::shutdown(&*member.shards).await;
+        }
+    }
+}
+
+/// `replicated()` with `leader` as placement's leader.
+fn led_by(leader: &str) -> ShardAssignment {
+    let mut assignment = replicated();
+    assignment.leader = leader.to_string();
+    assignment
+}
+
+/// **A successor does not act on a target it was told in an earlier term
+/// (#2591).** `broker-a` leads first and is told v1, the three it formed
+/// with. `broker-c` then leads and is told v2, which drops `broker-c` and
+/// adds `broker-d`: it grows the group to all four at v1's version and hands
+/// over to `broker-a`. `broker-a` still holds v1, whose version equals the
+/// grown membership's, so acting on it would shrink the group back and drop
+/// `broker-d`. Until a view fresh enough for its new term tells it v2, it
+/// takes no step; then the move finishes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_successor_does_not_act_on_a_target_told_in_an_earlier_term() {
+    let (net, members, first) = trio().await;
+    let orders = key("orders", 0);
+    assert_eq!(members[first].name, "broker-a");
+    let leases: Vec<Arc<LeaseState>> = members
+        .iter()
+        .map(|member| lease_of(&member.shards))
+        .collect();
+    let (a, c) = (&members[0], &members[2]);
+    let three = a.shards.runtime.voters(&orders).expect("voters");
+    let v1 = with_target(led_by("broker-a"), &three, 1);
+    a.shards.take(&mut assignments([v1.clone()])).await;
+    leases[0].record_head(tokio::time::Instant::now(), 10);
+    a.shards.answered(now(), Some(10));
+    let first_term = a.shards.leading(&orders).expect("led");
+    assert_eq!(told(&a.shards), [(version(1), first_term)]);
+    until("broker-a to stamp v1", || {
+        a.shards
+            .runtime
+            .status(&orders)
+            .is_some_and(|status| status.membership == MembershipProgress::Settled)
+    })
+    .await;
+
+    // broker-d holds an empty member of the shard.
+    let d = Member::start(&net, "broker-d").await;
+    let mut four = replicated();
+    four.replicas.push("broker-d".to_string());
+    d.shards.take(&mut assignments([four])).await;
+
+    for member in &members {
+        member
+            .shards
+            .take(&mut assignments([led_by("broker-c")]))
+            .await;
+    }
+    until("broker-c to lead", || c.shards.leading(&orders).is_some()).await;
+    let c_term = c.shards.leading(&orders).expect("led");
+    // Placement goes back to broker-a, so its next term is not handed on.
+    for member in &members[..2] {
+        member
+            .shards
+            .take(&mut assignments([led_by("broker-a")]))
+            .await;
+    }
+
+    let v2_voters = c
+        .shards
+        .runtime
+        .target_members(
+            &orders,
+            ["broker-a", "broker-b", "broker-d"],
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("v2's members");
+    let v2 = with_target(led_by("broker-c"), &v2_voters, 2);
+    c.shards.take(&mut assignments([v2.clone()])).await;
+    leases[2].record_head(tokio::time::Instant::now(), 20);
+    c.shards.answered(now(), Some(20));
+    assert_eq!(told(&c.shards), [(version(2), c_term)]);
+
+    until("broker-c to hand over to broker-a", || {
+        a.shards.leading(&orders).is_some_and(|term| term > c_term)
+    })
+    .await;
+    let a_term = a.shards.leading(&orders).expect("led");
+    let grown = a.shards.runtime.voters(&orders).expect("voters");
+    assert!(
+        grown.iter().any(|voter| *voter.broker == *"broker-d"),
+        "broker-c handed over before growing: {grown:?}"
+    );
+    for _ in 0..50 {
+        let voters = a.shards.runtime.voters(&orders).expect("voters");
+        assert_eq!(voters, grown, "broker-a acted on v1 in a later term");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    a.shards.take(&mut assignments([v2.clone()])).await;
+    leases[0].record_head(tokio::time::Instant::now(), 30);
+    a.shards.answered(now(), Some(30));
+    assert_eq!(
+        told(&a.shards),
+        [(version(1), first_term), (version(2), a_term)]
+    );
+    until("the group to settle on v2", || {
+        a.shards.runtime.voters(&orders).as_ref() == Some(&v2_voters)
+            && a.shards
+                .runtime
+                .status(&orders)
+                .is_some_and(|status| status.membership == MembershipProgress::Settled)
+    })
+    .await;
     stop(&members).await;
+    EngineShards::shutdown(&*d.shards).await;
 }
