@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794855001874,
+  "lastUpdate": 1794855333002,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60632,6 +60632,58 @@ window.BENCHMARK_DATA = {
             "range": "5391.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816168.31\nmean: 814664.34\nstdev: 5391.50\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0212cd2f506227a83a9dc393c3d1f4acdd5188de",
+          "message": "feat(raft): purge a Raft stream shard below its head trim (#2602) (#2698)\n\n* feat(raft): keep the higher floor on a stream snapshot install (#2602)\n\nWIP toward purging a Raft stream shard below its head trim. Rule A from\nthe purge model (#2656): a raise-only, fsynced raft-floor file holds a\nfloor whose trim record the log no longer has; an install carries the\nmember's own floor and the snapshot's into it before the snapshot is\nstored. Purge snapshot layout (FLSP) with the tables' floor and the\ncarried floor. Install acceptance, purge driver, gate and re-form floor\nnot yet built.\n\n* feat(raft): install a purge snapshot below its own floor (#2602)\n\nA stream member takes a peer's snapshot only when every entry it skips is\nbelow the floor that snapshot carries; any other stream snapshot is still\nrefused with NoSnapshots. Adds the raft_stream_purge fleet feature (not\nreported yet), a machine-level test that an older floor never lowers an\ninstalled one across a restart, and the raft-floor / FLSP layouts in\ndocs/storage-format.md.\n\n* feat(raft): a re-form starts past every copy's carried floor (#2602)\n\n* feat(raft): purge driver writes a snapshot at the purge point, then drops the log (#2602)\n\nNot yet tested end to end; raft_stream_purge stays out of IMPLEMENTED.\n\n* feat(raft): a re-form keeps the highest floor any copy read holds (#2602)\n\nThe plan carries the highest floor across the copies it reads, from\nraft-floor or a committed trim record, and every started copy raises it\ninto its raft-floor, so the new epoch refuses reads below it (the model's\nReformKeepsOwnFloor).\n\n* test(raft): purge driver: install catch-up, reads below the floor, leader cap, restart (#2602)\n\n* wip: purge tests, raft_stream_purge fleet feature\n\n* feat(raft): report raft_stream_purge; restart and group-table tests for purge (#2602)\n\n* fix(raft): finish interrupted purges, survive a racing install, send the kept floor (#2602)\n\n- A purge pass whose snapshot already covers the point but whose log was\n  not purged (timeout, failed purge, restart) now purges on the next pass.\n- A purge build that loses its entries to a concurrent install starts over\n  from the installed snapshot instead of failing the member.\n- An installed purge snapshot is stored with the floor the member now\n  serves, so the snapshot it sends as leader never lowers a floor.\n- Start::of builds a re-form start from the plan, carrying its floor.\n- Drop the unread tables floor from FLSP; serialize raft-floor raises.\n\n* chore: spec pairing for the Raft stream purge (#2602)\n\nSpec-Unaffected: no model change in this PR. The purge rules it implements (install keeps the higher floor, re-form starts past every carried floor) are modelled in #2656, which lands separately.",
+          "timestamp": "2026-11-16T10:40:13-08:00",
+          "tree_id": "db316f7be1eb5d0c91d0a71a5606da0794ec4773",
+          "url": "https://github.com/GetFelix/felix/commit/0212cd2f506227a83a9dc393c3d1f4acdd5188de"
+        },
+        "date": 1794855332179,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 524610.42,
+            "range": "14331.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524610.42\nmean: 520344.60\nstdev: 14331.06\ncv: 2.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 524610.42,
+            "range": "14331.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524610.42\nmean: 520344.60\nstdev: 14331.06\ncv: 2.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124425.03,
+            "range": "8273.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124425.03\nmean: 120645.93\nstdev: 8273.68\ncv: 6.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1244250.33,
+            "range": "82736.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1244250.33\nmean: 1206459.30\nstdev: 82736.80\ncv: 6.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
