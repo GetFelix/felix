@@ -48,9 +48,12 @@ pub trait GroupConsensus: Send + Sync {
     ) -> impl Future<Output = Result<FreshGroups>> + Send;
 
     /// Append `entry` to the shard's log without waiting for it to commit.
+    /// Refused, appending nothing, unless this member still leads the shard
+    /// in `term`: the entry was decided from state read in that term.
     fn propose(
         &self,
         key: &GroupKey,
+        term: u64,
         entry: &GroupEntry,
     ) -> impl Future<Output = Result<Proposed>> + Send;
 
@@ -76,7 +79,9 @@ pub struct FreshGroups {
 /// A proposed group entry's Raft log id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Proposed {
+    /// The term the entry was appended in.
     pub term: u64,
+    /// The entry's index in the shard's log.
     pub index: u64,
 }
 
@@ -86,12 +91,25 @@ pub struct RaftGroups<C> {
     visibility: Duration,
     max_attempts: u32,
     max_in_flight: usize,
-    slots: parking_lot::Mutex<HashMap<GroupKey, Arc<Mutex<Option<Tracked>>>>>,
+    slots: parking_lot::Mutex<Slots>,
     /// Per shard, the last group entry proposed from here.
     last_proposed: parking_lot::Mutex<HashMap<ShardId, Proposed>>,
 }
 
 type ShardId = (String, String, String, u32);
+
+/// Every group's slot, and per shard the newest term an operation saw.
+#[derive(Default)]
+struct Slots {
+    slots: HashMap<GroupKey, Slot>,
+    terms: HashMap<ShardId, u64>,
+    last_sweep: Option<Instant>,
+}
+
+struct Slot {
+    cell: Arc<Mutex<Option<Tracked>>>,
+    last_used: Instant,
+}
 
 /// A group's tracker and the incarnation it serves.
 #[derive(Debug)]
@@ -108,8 +126,12 @@ struct Tracked {
 /// settled a page at a time rather than one read per offset.
 const PAGE_BYTES: usize = 64 * 1024;
 
-/// See `reader::MAX_POLL_BYTES`.
-const MAX_POLL_BYTES: usize = 4 * 1024 * 1024;
+/// How long a group goes untouched before its tracker may be dropped, as
+/// on the hybrid reader.
+const TRACKER_IDLE: Duration = Duration::from_secs(10 * 60);
+
+/// How often an operation also sweeps for idle trackers.
+const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
 impl<C: GroupConsensus> RaftGroups<C> {
     pub fn new(consensus: C, visibility: Duration, max_attempts: u32) -> Self {
@@ -123,7 +145,8 @@ impl<C: GroupConsensus> RaftGroups<C> {
         }
     }
 
-    pub fn consensus(&self) -> &C {
+    #[cfg(test)]
+    pub(crate) fn consensus(&self) -> &C {
         &self.consensus
     }
 
@@ -131,6 +154,32 @@ impl<C: GroupConsensus> RaftGroups<C> {
     /// shard. Gives up waiting for the shard at `deadline`.
     #[allow(clippy::too_many_arguments)]
     pub async fn poll_below(
+        &self,
+        key: &GroupKey,
+        log: &crate::durable::StreamLog,
+        committed: u64,
+        max: usize,
+        now: Instant,
+        consumer: Option<&GroupConsumer>,
+        visibility: Option<Duration>,
+        deadline: Instant,
+    ) -> Result<Vec<Claimed>> {
+        let poll = || {
+            self.poll_once(
+                key, log, committed, max, now, consumer, visibility, deadline,
+            )
+        };
+        match poll().await {
+            // A delete of another group voided this one's hydrate before its
+            // creation committed. Nothing went out; a fresh hydrate is after
+            // that delete.
+            Err(BrokerError::GroupClaimLapsed { .. }) => poll().await,
+            polled => polled,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn poll_once(
         &self,
         key: &GroupKey,
         log: &crate::durable::StreamLog,
@@ -150,6 +199,8 @@ impl<C: GroupConsensus> RaftGroups<C> {
         let max_in_flight = self.max_in_flight;
         let held = guard.as_mut().expect("current hydrates");
         held.tracker.skip_below(log.readable_base());
+        // A tracker hydrated for a group the table holds takes over its
+        // predecessor's claims. One for an absent group already inherits none.
         held.tracker.inherit_below(log_tail);
         held.tracker.set_max_in_flight(max_in_flight);
 
@@ -184,7 +235,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
                 .expect("a dead letter that applied keeps the tracker");
             let mut skipped_any = false;
             for (i, &offset) in claim.offsets.iter().enumerate() {
-                if bytes >= MAX_POLL_BYTES {
+                if bytes >= super::reader::MAX_POLL_BYTES {
                     for &offset in &claim.offsets[i..] {
                         held.tracker.unclaim(offset);
                     }
@@ -253,7 +304,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
             }
             // A claim that was only skipped records claims again past them, so a
             // long run of group records costs one poll, not one per claim.
-            if !claimed.is_empty() || !skipped_any || bytes >= MAX_POLL_BYTES {
+            if !claimed.is_empty() || !skipped_any || bytes >= super::reader::MAX_POLL_BYTES {
                 break;
             }
         }
@@ -377,11 +428,13 @@ impl<C: GroupConsensus> RaftGroups<C> {
             cre: held.cre,
             offset,
         };
-        self.write_held(key, &mut guard, entry, offset, deadline)
-            .await?;
-        let held = guard.as_mut().expect("applied");
+        // Owed before the write: a tracker that outlives an unanswered wait
+        // serves only once the entry has applied (see `write_held`).
+        let held = guard.as_mut().expect("current hydrates");
         held.tracker.redrive(offset);
         held.tracker.mark_redriven(offset);
+        self.write_held(key, &mut guard, entry, offset, deadline)
+            .await?;
         Ok(true)
     }
 
@@ -402,7 +455,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
             group: key.group.clone(),
             op: GroupOp::Discard { cre, offset },
         };
-        if let Err(err) = self.write(key, &entry, deadline).await {
+        if let Err(err) = self.write(key, fresh.term, &entry, deadline).await {
             self.forget(key, &fresh, &mut guard);
             return Err(err);
         }
@@ -450,28 +503,31 @@ impl<C: GroupConsensus> RaftGroups<C> {
             group: key.group.clone(),
             op: GroupOp::Seek { to: offset, if_new },
         };
-        let proposed = match self.propose_and_wait(key, &entry, deadline).await {
-            Ok(proposed) => proposed,
-            Err(err) => {
-                self.forget(key, &fresh, &mut guard);
-                return Err(err);
-            }
-        };
-        let cre = CreationToken {
-            term: proposed.term,
-            index: proposed.index,
-            by: CreatedBy::Seek,
-        };
-        let mut tracker = GroupTracker::moved_to(offset, self.max_attempts);
-        {
+        if let Err(err) = self.write(key, fresh.term, &entry, deadline).await {
+            self.forget(key, &fresh, &mut guard);
+            return Err(err);
+        }
+        // The table's token, not one made from the proposal: the fold names
+        // the incarnation, and it is what later writes are checked against.
+        let (cre, tracker) = {
             let mut groups = fresh.groups.write();
-            if let Some(state) = groups.table().group(&key.group) {
-                for &offset in &state.redriven {
-                    tracker.restore_redrive(offset);
-                }
+            let Some(state) = groups.table().group(&key.group) else {
+                // A delete applied after the seek. The next operation hydrates.
+                drop(groups);
+                self.forget(key, &fresh, &mut guard);
+                return Ok(Seek {
+                    offset,
+                    moved: true,
+                });
+            };
+            let cre = state.cre;
+            let mut tracker = GroupTracker::moved_to(state.cursor, self.max_attempts);
+            for &offset in &state.redriven {
+                tracker.restore_redrive(offset);
             }
             groups.track(&key.group, cre);
-        }
+            (cre, tracker)
+        };
         *guard = Some(Tracked {
             tracker,
             cre,
@@ -497,8 +553,9 @@ impl<C: GroupConsensus> RaftGroups<C> {
             group: key.group.clone(),
             op: GroupOp::Delete,
         };
-        let written = self.write(key, &entry, deadline).await;
+        let written = self.write(key, fresh.term, &entry, deadline).await;
         self.forget(key, &fresh, &mut guard);
+        self.release(key, guard);
         written.map(|()| existed)
     }
 
@@ -572,8 +629,14 @@ impl<C: GroupConsensus> RaftGroups<C> {
     }
 
     /// Write a tracker-decided entry. The tracker is forgotten when the
-    /// outcome is unknown or the fold dropped it; the claim on `offset` is
+    /// proposal is refused or the fold dropped it; the claim on `offset` is
     /// then answered lapsed, and the next operation hydrates afresh.
+    ///
+    /// A wait that gives up keeps the tracker: the next operation's
+    /// [`Self::ready`] waits for this entry in the same term, and
+    /// [`Self::locked`] drops the tracker if the term ended or the fold
+    /// dropped the entry. Dropping it here would hand standing claims out
+    /// again and redeliver what it holds acked ahead of the cursor.
     async fn write_held(
         &self,
         key: &GroupKey,
@@ -587,11 +650,15 @@ impl<C: GroupConsensus> RaftGroups<C> {
             op,
         };
         let held = guard.as_ref().expect("hydrated");
-        let (cre, groups) = (held.cre, Arc::clone(&held.groups));
-        if let Err(err) = self.write(key, &entry, deadline).await {
-            guard.take();
-            return Err(err);
-        }
+        let (cre, term, groups) = (held.cre, held.term, Arc::clone(&held.groups));
+        let proposed = match self.propose(key, term, &entry).await {
+            Ok(proposed) => proposed,
+            Err(err) => {
+                guard.take();
+                return Err(err);
+            }
+        };
+        self.consensus.applied(key, proposed, deadline).await?;
         if groups.read().tracker(&key.group) != Some(cre) {
             // The apply path forgot the tracker: the table will take none of
             // its writes, so none of its claims stands.
@@ -601,25 +668,22 @@ impl<C: GroupConsensus> RaftGroups<C> {
         Ok(())
     }
 
-    async fn write(&self, key: &GroupKey, entry: &GroupEntry, deadline: Instant) -> Result<()> {
-        self.propose_and_wait(key, entry, deadline)
-            .await
-            .map(|_| ())
-    }
-
-    async fn propose_and_wait(
+    async fn write(
         &self,
         key: &GroupKey,
+        term: u64,
         entry: &GroupEntry,
         deadline: Instant,
-    ) -> Result<Proposed> {
-        let proposed = self.consensus.propose(key, entry).await?;
-        {
-            let mut last = self.last_proposed.lock();
-            let slot = last.entry(shard_id(key)).or_insert(proposed);
-            *slot = (*slot).max(proposed);
-        }
-        self.consensus.applied(key, proposed, deadline).await?;
+    ) -> Result<()> {
+        let proposed = self.propose(key, term, entry).await?;
+        self.consensus.applied(key, proposed, deadline).await
+    }
+
+    async fn propose(&self, key: &GroupKey, term: u64, entry: &GroupEntry) -> Result<Proposed> {
+        let proposed = self.consensus.propose(key, term, entry).await?;
+        let mut last = self.last_proposed.lock();
+        let slot = last.entry(shard_id(key)).or_insert(proposed);
+        *slot = (*slot).max(proposed);
         Ok(proposed)
     }
 
@@ -644,9 +708,25 @@ impl<C: GroupConsensus> RaftGroups<C> {
         key: &GroupKey,
         deadline: Instant,
     ) -> Result<(FreshGroups, OwnedMutexGuard<Option<Tracked>>)> {
-        let slot = Arc::clone(self.slots.lock().entry(key.clone()).or_default());
+        let now = Instant::now();
+        let (slot, sweep) = {
+            let mut slots = self.slots.lock();
+            let sweep = slots
+                .last_sweep
+                .is_none_or(|last| now.saturating_duration_since(last) >= SWEEP_EVERY);
+            let slot = slots.slots.entry(key.clone()).or_insert_with(|| Slot {
+                cell: Arc::default(),
+                last_used: now,
+            });
+            slot.last_used = now;
+            (Arc::clone(&slot.cell), sweep)
+        };
+        if sweep {
+            self.evict_idle(now);
+        }
         let mut guard = slot.lock_owned().await;
         let fresh = self.ready(key, deadline).await?;
+        self.saw_term(key, fresh.term);
         let current = guard.as_ref().is_some_and(|held| {
             held.term == fresh.term && fresh.groups.read().tracker(&key.group) == Some(held.cre)
         });
@@ -670,6 +750,9 @@ impl<C: GroupConsensus> RaftGroups<C> {
                 Some(state) => (state.cursor, state.cre, true, state.redriven.clone()),
                 // A group that has never written starts at the beginning of
                 // what the log holds, under a token naming this hydrate.
+                // It inherits no claims: req (c) puts every group with live
+                // claims in the table, so an ack above 0 is from a deleted
+                // incarnation and must not count here.
                 None => (
                     0,
                     CreationToken {
@@ -681,7 +764,11 @@ impl<C: GroupConsensus> RaftGroups<C> {
                     Default::default(),
                 ),
             };
-            let mut tracker = GroupTracker::new(cursor, self.max_attempts);
+            let mut tracker = if created {
+                GroupTracker::new(cursor, self.max_attempts)
+            } else {
+                GroupTracker::moved_to(cursor, self.max_attempts)
+            };
             for offset in redriven {
                 tracker.restore_redrive(offset);
             }
@@ -696,6 +783,85 @@ impl<C: GroupConsensus> RaftGroups<C> {
             });
         }
         Ok((fresh, guard))
+    }
+
+    /// Drop the trackers of `shard`'s groups (its `group` is not read): this
+    /// member no longer leads it. A slot in use keeps its tracker until
+    /// [`Self::locked`] finds it stale.
+    pub fn step_down(&self, shard: &GroupKey) {
+        let shard = shard_id(shard);
+        self.evict(|key, _, _| shard_id(key) == shard);
+    }
+
+    /// Drop every tracker nobody is using that has been idle for
+    /// [`TRACKER_IDLE`] (at least twice the visibility timeout) and holds no
+    /// standing claim. Losing one costs what a leader change does. Returns
+    /// how many went.
+    pub(crate) fn evict_idle(&self, now: Instant) -> usize {
+        let idle_after = TRACKER_IDLE.max(self.visibility * 2);
+        let evicted = self.evict(|_, slot, held| {
+            now.saturating_duration_since(slot.last_used) >= idle_after
+                && held
+                    .is_none_or(|held| held.tracker.next_lapse().is_none_or(|lapse| lapse <= now))
+        });
+        self.slots.lock().last_sweep = Some(now);
+        evicted
+    }
+
+    /// How many groups hold a slot here.
+    #[cfg(test)]
+    pub(crate) fn tracked(&self) -> usize {
+        self.slots.lock().slots.len()
+    }
+
+    /// Note `term` for the shard. A newer one drops the trackers of every
+    /// older term there: a former leader's are of no use.
+    fn saw_term(&self, key: &GroupKey, term: u64) {
+        let shard = shard_id(key);
+        let newer = {
+            let mut slots = self.slots.lock();
+            let seen = slots.terms.entry(shard.clone()).or_insert(term);
+            let newer = term > *seen;
+            *seen = (*seen).max(term);
+            newer
+        };
+        if newer {
+            self.evict(|other, _, held| {
+                shard_id(other) == shard && held.is_some_and(|held| held.term < term)
+            });
+        }
+    }
+
+    /// Remove every slot nobody else holds for which `stale` says so.
+    fn evict(&self, stale: impl Fn(&GroupKey, &Slot, Option<&Tracked>) -> bool) -> usize {
+        let mut slots = self.slots.lock();
+        let before = slots.slots.len();
+        // Only the map's count: anyone else holding the slot is mid
+        // operation, and a new slot beside it would be a second tracker.
+        slots.slots.retain(|key, slot| {
+            Arc::strong_count(&slot.cell) > 1
+                || !slot
+                    .cell
+                    .try_lock()
+                    .is_ok_and(|held| stale(key, slot, held.as_ref()))
+        });
+        before - slots.slots.len()
+    }
+
+    /// Unlock the slot, and drop it if it holds no tracker and nobody else
+    /// holds it.
+    fn release(&self, key: &GroupKey, guard: OwnedMutexGuard<Option<Tracked>>) {
+        let empty = guard.is_none();
+        let mut slots = self.slots.lock();
+        drop(guard);
+        if empty
+            && slots
+                .slots
+                .get(key)
+                .is_some_and(|slot| Arc::strong_count(&slot.cell) == 1)
+        {
+            slots.slots.remove(key);
+        }
     }
 
     /// Drop the group's tracker here and in the table's registry.
