@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794825202945,
+  "lastUpdate": 1794828483489,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76098,6 +76098,72 @@ window.BENCHMARK_DATA = {
             "range": "713.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1384.00\nmean: 1207.00\nstdev: 713.31\ncv: 59.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b9ac20555fe3ae4e460bf22501e41f0391ea7146",
+          "message": "feat(mqtt): subscribe at QoS 0 and 1, clean sessions, one broker (#1692) (#2681)\n\n* feat(mqtt): subscribe at QoS 0 and 1 for clean sessions on one broker (#1692)\n\nSUBSCRIBE, UNSUBSCRIBE and delivery: a filter trie, a reader per session\nand shard that starts at the committed tail, per-session bounded queues\n(QoS 0 drops when full, QoS 1 waits in the log), Receive Maximum on\ndeliveries and PUBACK handling. Reads are bounded by the shard's read\nbound on both engines.\n\nSpec-Unaffected: no change to a TLA-modelled protocol step; the broker only reads committed records\n\n* fix(mqtt): serve subscriptions only from shards this broker serves (#1692)\n\nEvery MQTT tail and read passes the ingress router's serving check (the\nQUIC subscribe's redirect_for and stopped_serving). A SUBSCRIBE covering a\nshard this broker does not serve is refused whole (5.0 0x83, 3.1.1 0x80).\nA reader whose shard moves or stops being served ends the session with\nDISCONNECT 0x9C or 0x89; ending a shard's subscribers now also wakes\noffset readers waiting on its append notification. Each filter starts at\nthe shard tails taken for its SUBACK, so a shared reader that lags does\nnot deliver older records to a new filter, and a refused re-subscribe\nleaves the filter set unchanged.\n\n* feat(mqtt): honour client Maximum Packet Size, cap subscription readers, more read-bound tests (#1692)\n\n* test(mqtt): subscriber is not sent an uncommitted Quorum record; unheard leader pauses readers (#1692)\n\n* test(mqtt): publish the subscribe test's records through MQTT; sort FELIX_MQTT_MAX_READERS",
+          "timestamp": "2026-11-16T11:23:06Z",
+          "tree_id": "9efb0df586a76dc41d6b7c272d1d57d5b483eb0b",
+          "url": "https://github.com/GetFelix/felix/commit/b9ac20555fe3ae4e460bf22501e41f0391ea7146"
+        },
+        "date": 1794828472979,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 99,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 99.00\nstdev: 0.71\ncv: 0.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 134,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.80\nstdev: 2.17\ncv: 1.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 185,
+            "range": "193.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 316.80\nstdev: 193.10\ncv: 60.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 135.40\nstdev: 0.55\ncv: 0.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "5.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 262.00\nstdev: 5.79\ncv: 2.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 391,
+            "range": "45.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 391.00\nmean: 398.20\nstdev: 45.32\ncv: 11.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
