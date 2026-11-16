@@ -17,6 +17,10 @@ use super::rotated_by::RotatedBy;
 /// earlier one.
 pub(crate) type Key = (u64, u64);
 
+/// A Raft voter: a broker under one copy id. A broker whose disk was
+/// replaced runs a new copy, which never stands for the old one's votes.
+pub(crate) type VoterId<B> = (B, u64);
+
 /// What the control plane holds for the group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GroupRecord<B> {
@@ -37,11 +41,11 @@ pub(crate) struct GroupRecord<B> {
     pub(crate) dead: BTreeSet<B>,
     /// The voters the epoch started with: the plan that formed it, or the
     /// group's first voters at epoch 0. `None` when not recorded.
-    pub(crate) seed: Option<BTreeSet<B>>,
+    pub(crate) seed: Option<BTreeSet<VoterId<B>>>,
     /// Every voter target the control plane ordered in the epoch, recorded
     /// before the leader was asked: the control plane's
     /// `ShardAssignment::ordered_voter_sets`. `None` when not recorded.
-    pub(crate) ordered: Option<Vec<BTreeSet<B>>>,
+    pub(crate) ordered: Option<Vec<BTreeSet<VoterId<B>>>>,
 }
 
 /// One broker's answer.
@@ -53,7 +57,7 @@ pub(crate) struct BrokerReport<B> {
     pub(crate) names: BTreeSet<B>,
     /// Both halves of every membership entry of the record's epoch in every
     /// copy read, uncommitted ones included. `None` when not read.
-    pub(crate) memberships: Option<Vec<BTreeSet<B>>>,
+    pub(crate) memberships: Option<Vec<BTreeSet<VoterId<B>>>>,
     pub(crate) copies: BrokerCopies,
 }
 
@@ -94,8 +98,8 @@ pub(crate) enum Marked<B> {
     /// set, so a term could have been elected without any vote read.
     Majority {
         from: VoterSource<B>,
-        set: BTreeSet<B>,
-        unknown: BTreeSet<B>,
+        set: BTreeSet<VoterId<B>>,
+        unknown: BTreeSet<VoterId<B>>,
     },
 }
 
@@ -114,9 +118,10 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) first_index: u64,
     /// The highest key of any vote or entry read, and of the floor.
     pub(crate) top: Key,
-    /// Set when the brokers whose votes are unknown (dead, no vote of the
-    /// epoch read, or a copy of the epoch a restore rotated) are a majority
-    /// of some voter set of the epoch, or a voter set is not known. No copy
+    /// Set when the voters whose votes are unknown (dead, no vote of the
+    /// epoch read, a copy of the epoch a restore rotated, or a copy id the
+    /// broker no longer runs and no power cut leads from) are a majority of
+    /// some voter set of the epoch, or a voter set is not known. No copy
     /// is then vouched for past its saved commit or the floor.
     pub(crate) marked: Option<Marked<B>>,
     /// Unmarked, a vote or the floor is above every entry read, and that
@@ -261,33 +266,55 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
     // power cut. So unless the unknown votes are a majority of one, the top
     // term's copy holds every committed entry. The placed set is never a
     // voter set: learners inflate it.
-    let unknown_vote = |broker: &B| {
+    let unknown_vote = |(broker, id): &VoterId<B>| {
         let Some(report) = live.get(broker) else {
             return true;
         };
         let current = &report.copies.current;
-        let of_epoch = |read: &&CopyRead| rule.copy_epoch(read) == Some(epoch);
-        let restored = report
+        let kept: Vec<&CopyRead> = report
             .copies
             .kept
             .iter()
-            .filter(of_epoch)
-            .any(|read| read.rotated_by == Some(RotatedBy::Restore));
+            .filter(|read| rule.copy_epoch(read) == Some(epoch))
+            .collect();
+        if kept
+            .iter()
+            .any(|read| read.rotated_by == Some(RotatedBy::Restore))
+        {
+            return true;
+        }
+        let Some(now) = current.copy else {
+            return true;
+        };
+        // An older id speaks only through power cuts, each kept with its
+        // newest vote, that lead to the copy now running. A replaced disk
+        // keeps no such chain, so its old id stays unknown even after the
+        // new copy votes.
+        let mut at = *id;
+        for _ in 0..=kept.len() {
+            if at == now {
+                break;
+            }
+            let Some(to) = kept.iter().find_map(|read| match read.rotated_by {
+                Some(RotatedBy::PowerCut { to }) if read.copy == Some(at) => Some(to),
+                _ => None,
+            }) else {
+                return true;
+            };
+            at = to;
+        }
+        if at != now {
+            return true;
+        }
         // A power cut speaks for the copy it rotated into and no later one:
         // a wiped directory or an empty rotation leaves no kept copy, so
         // an older power cut would otherwise vouch for the copy after it.
-        let cut_into_current = current.copy.is_some_and(|copy| {
-            report
-                .copies
-                .kept
-                .iter()
-                .filter(of_epoch)
-                .any(|read| read.rotated_by == Some(RotatedBy::PowerCut { to: copy }))
-        });
-        // A copy that never voted, or one without a copy file, could be one
-        // that lost its votes.
-        let lost_votes = current.vote.is_none() || current.copy.is_none();
-        ((rule.copy_epoch(current) != Some(epoch) || lost_votes) && !cut_into_current) || restored
+        let cut_into_current = kept
+            .iter()
+            .any(|read| read.rotated_by == Some(RotatedBy::PowerCut { to: now }));
+        // A copy that never voted could be one that lost its votes.
+        let lost_votes = current.vote.is_none();
+        (rule.copy_epoch(current) != Some(epoch) || lost_votes) && !cut_into_current
     };
     let marked = marked_by(record, &live, unknown_vote);
 
@@ -427,9 +454,9 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
 fn marked_by<B: Ord + Clone>(
     record: &GroupRecord<B>,
     live: &BTreeMap<&B, &BrokerReport<B>>,
-    unknown_vote: impl Fn(&B) -> bool,
+    unknown_vote: impl Fn(&VoterId<B>) -> bool,
 ) -> Option<Marked<B>> {
-    let mut sets: Vec<(VoterSource<B>, &BTreeSet<B>)> = Vec::new();
+    let mut sets: Vec<(VoterSource<B>, &BTreeSet<VoterId<B>>)> = Vec::new();
     match &record.seed {
         Some(seed) if !seed.is_empty() => sets.push((VoterSource::Seed, seed)),
         _ => return Some(Marked::Unknown(VoterSource::Seed)),
@@ -449,7 +476,8 @@ fn marked_by<B: Ord + Clone>(
         );
     }
     sets.into_iter().find_map(|(from, set)| {
-        let unknown: BTreeSet<B> = set.iter().filter(|b| unknown_vote(b)).cloned().collect();
+        let unknown: BTreeSet<VoterId<B>> =
+            set.iter().filter(|b| unknown_vote(b)).cloned().collect();
         (unknown.len() * 2 > set.len()).then(|| Marked::Majority {
             from,
             set: set.clone(),

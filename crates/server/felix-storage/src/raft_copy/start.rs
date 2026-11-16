@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use bytes::Bytes;
 
 use super::epoch_file::{self, EpochFile};
+use super::vouch::ReformPlan;
 use crate::disk_log::{crash_point, durable_mark};
 use crate::log::{AppendOnlyLog, LogConfig};
 use crate::raft_log::snapshot::{SnapshotId, StoredSnapshot};
@@ -54,13 +55,33 @@ pub(crate) struct Start {
     pub(crate) base_terms: Vec<(u64, u64)>,
     /// The re-form accepts losing committed entries past the base, so a
     /// voter's saved commit above the first index may be lowered to it.
-    pub(crate) accept_loss: bool,
+    pub(crate) accept_loss: AcceptLoss,
     /// A kept directory holding the base, which a voter's log is rebuilt
     /// from in place of its own. It is only read.
     pub(crate) kept: Option<PathBuf>,
     /// The meta and data of a voter's snapshot at the end of the gap.
     pub(crate) meta: Bytes,
     pub(crate) data: Bytes,
+}
+
+/// Whether a start may lower a saved commit. Only made from the plan, so a
+/// plan that needs the operator to accept a loss never starts without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AcceptLoss(bool);
+
+impl AcceptLoss {
+    pub(crate) fn of<B>(plan: &ReformPlan<B>) -> Self {
+        Self(plan.needs_accept_loss())
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn assumed(accepts: bool) -> Self {
+        Self(accepts)
+    }
+
+    fn accepts(self) -> bool {
+        self.0
+    }
 }
 
 /// Whether a start is under way in `dir`.
@@ -139,7 +160,7 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
                         .0,
                 );
             }
-            if commit > base.first_index && !start.accept_loss {
+            if commit > base.first_index && !start.accept_loss.accepts() {
                 return Err(invalid(format!(
                     "{label}: its saved commit {commit} is past the first index {}; only a \
                      re-form that accepts the loss may lower it",
@@ -156,14 +177,14 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
                 let kept_commit = crate::disk_log::saved_commit(kept)
                     .map_err(io::Error::other)?
                     .0;
-                if own.max(kept_commit) > base.base_end() && !start.accept_loss {
+                commit = own.max(kept_commit);
+                if commit > base.base_end() && !start.accept_loss.accepts() {
                     return Err(invalid(format!(
                         "{label}: records committed through {} are past the base's end {}",
                         commit - 1,
                         base.base_end()
                     )));
                 }
-                commit = own.max(kept_commit);
                 copy_kept(kept, dir, &step)?;
                 record_last = held::read(dir, &label, index_spacing_bytes)?
                     .last_record
@@ -172,7 +193,7 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
             if record_last > base_last {
                 // A committed record past the base is acknowledged; cutting
                 // it is the loss only an accepting re-form may take.
-                if commit > base.base_end() && !start.accept_loss {
+                if commit > base.base_end() && !start.accept_loss.accepts() {
                     return Err(invalid(format!(
                         "{label}: records committed through {} are past the base's end {}",
                         commit - 1,

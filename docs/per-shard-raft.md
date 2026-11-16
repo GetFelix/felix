@@ -880,7 +880,18 @@ then end at the base's last index in the base's term, or the start fails.
 
 A voter's saved commit is set to `first_index`. One saved above it claims
 entries past the base that the copy does not hold, so it is lowered only by
-a re-form that accepts the loss, and the start refuses otherwise.
+a re-form that accepts the loss, and the start refuses otherwise. Whether a
+start accepts the loss is taken from the plan (`AcceptLoss::of`), so a
+marked plan, or one a vote cut, cannot start without it.
+
+A saved commit in `(base_end, first_index]` on a voter holding no record past
+the base is overwritten with `first_index` without accepting a loss. On a
+relaxed broker the commit is saved behind openraft and can name entries the
+last sync never covered, so it is not evidence of a record this disk holds;
+the plan already read each copy's commit cut to what it holds. That saved
+commit can still be the only trace that an acknowledged entry existed. The
+start does not refuse here, because every relaxed power cut would then need
+an operator to accept a loss of records no reached disk holds.
 
 A learner keeps its log only when all of it is a prefix of the base: no
 record past the base's last index, no purged id, and every record in the
@@ -964,9 +975,23 @@ the highest term read vouches for everything it holds, unless the group is
 marked. Every elected term took votes from a majority of some voter set of
 the epoch, and a vote is fsynced before the reply and kept across a power
 cut, so while the unknown votes are a minority of every voter set, some
-vote read is at least as new as every elected term. The unknown votes are
-those of dead brokers, of brokers whose current copy is not of the epoch or
-lost its vote, and of brokers with a copy of the epoch a restore rotated.
+vote read is at least as new as every elected term.
+
+A voter is a copy, named by its broker and copy id, not a broker. A broker
+whose disk was replaced runs a new copy that never gave the old one's votes,
+even after it saves votes of its own as a learner. The unknown votes are
+those of:
+
+- voters on dead brokers;
+- voters on a broker with a copy of the epoch a restore rotated;
+- a voter whose copy id is not the broker's current copy and no chain of
+  power cuts leads from it to the current copy. The chain is read from the
+  kept copies of the epoch: each holds its own copy id and a `rotated-by`
+  of `power-cut <to>`, and a power cut keeps its copy's newest vote. A
+  replaced disk keeps nothing, and an empty rotation keeps no directory, so
+  their old ids have no chain and stay unknown;
+- the current copy when it is not of the epoch or never voted, unless a
+  power cut of the epoch rotated into it.
 
 The voter sets are the epoch's seed voters, both halves of every membership
 entry of the epoch in every copy read (uncommitted ones included), and every
@@ -4253,6 +4278,11 @@ plane keeps them all on the shard's record as `raft_ordered`: the stream
   `None`, and the re-form stays marked, when the list is from another epoch or
   incarnation, is `lost`, or was never started. A shard that switched before
   level 39 has no list for the rest of its epoch.
+
+A control-plane restore brings back each list as the backup had it, with the
+same incarnation and epoch, so a target ordered after the backup would be
+missing. From metadata level 40 an import marks every list `lost`
+(`ImportState::lose_ordered`), and the re-form stays marked for that epoch.
 
 The list is metadata level 39. Below it, `settle_for_level` leaves
 `keep_ordered` off `accept_seal_report` and `record_raft_copy_id`, so no member

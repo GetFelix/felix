@@ -91,8 +91,9 @@ fn record(
         offset_floor: None,
         placed: Some(placed.iter().copied().collect()),
         dead: dead.iter().copied().collect(),
-        // These traces seed every placed broker as a voter.
-        seed: Some(placed.iter().copied().collect()),
+        // These traces seed every placed broker as a voter, under the copy
+        // id [`copy`] gives.
+        seed: Some(set(placed)),
         ordered: Some(Vec::new()),
     }
 }
@@ -631,8 +632,61 @@ fn an_older_power_cut_never_vouches_for_a_later_copy() {
     }
 }
 
-fn set(brokers: &[&'static str]) -> BTreeSet<&'static str> {
-    brokers.iter().copied().collect()
+/// Voters under the copy id [`copy`] gives.
+fn set(brokers: &[&'static str]) -> BTreeSet<VoterId<&'static str>> {
+    brokers.iter().map(|broker| (*broker, 1)).collect()
+}
+
+/// #2671: voters {a1, b1, c1}. A leads term 5 with uncommitted x at index 2
+/// and is cut off; C wins term 6 on b1's vote and commits f at 2. B's disk
+/// is replaced by b2, which keeps nothing; C dies. A, still leading term 5,
+/// adds b2 as a learner, and b2 saves vote 5 and x. b2's vote is not b1's,
+/// so b1 and c1 are an unknown majority and A's x is not served whole.
+#[test]
+fn a_replaced_disks_new_copy_never_stands_for_the_old_voter() {
+    let rec = record(&["a", "b", "c"], &["c"], &[], None);
+    let a = copy("a", &[1, 1, 5], Some(1), Some(5));
+    let mut b2 = copy("b", &[1, 1, 5], Some(1), Some(5));
+    b2.copy = Some(2);
+    let plan = plan(
+        &rec,
+        vec![("a", report(a, vec![])), ("b", report(b2, vec![]))],
+    );
+    assert_eq!(
+        plan.marked,
+        Some(Marked::Majority {
+            from: VoterSource::Seed,
+            set: set(&["a", "b", "c"]),
+            unknown: BTreeSet::from([("b", 1), ("c", 1)]),
+        })
+    );
+    assert_eq!(plan.base_end(), 2, "x is not in the base");
+    assert!(plan.needs_accept_loss());
+}
+
+/// A chain of power cuts from b1 to the running copy keeps b1's vote known:
+/// each kept copy holds its newest vote.
+#[test]
+fn a_power_cut_chain_speaks_for_the_old_voter() {
+    let rec = record(&["a", "b", "c"], &["c"], &[], None);
+    let a = copy("a", &[1, 1, 5], Some(1), Some(5));
+    let b1 = kept(
+        copy("b1", &[1, 1], None, Some(5)),
+        RotatedBy::PowerCut { to: 2 },
+    );
+    let mut b2 = kept(
+        copy("b2", &[1, 1], None, Some(5)),
+        RotatedBy::PowerCut { to: 3 },
+    );
+    b2.copy = Some(2);
+    let mut b3 = copy("b", &[1, 1], None, None);
+    b3.copy = Some(3);
+    let plan = plan(
+        &rec,
+        vec![("a", report(a, vec![])), ("b", report(b3, vec![b1, b2]))],
+    );
+    assert_eq!(plan.marked, None);
+    assert_eq!(plan.base_end(), 3, "a vouches for its whole log");
 }
 
 /// #2661: `a` led t1 and committed index 0 on `b`'s write; `b` fsynced and

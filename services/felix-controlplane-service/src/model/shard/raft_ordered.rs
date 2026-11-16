@@ -87,11 +87,13 @@ impl ShardAssignment {
             .filter(|ordered| ordered.incarnation == self.incarnation);
     }
 
-    /// The voters of every target ordered in the group's current epoch, for
-    /// the re-form's `GroupRecord::ordered`. `None` unless the list was
+    /// The voters, as (node id, copy id), of every target ordered in the
+    /// group's current epoch, for the re-form's `GroupRecord::ordered`. A
+    /// voter is a copy, not a broker: a broker whose disk was replaced runs
+    /// a new copy that does not hold the old one's votes. `None` unless the list was
     /// started at this epoch's start and nothing of it was lost, so a shard
     /// that switched before the list's metadata level reads as unknown.
-    pub fn ordered_voter_sets(&self) -> Option<Vec<BTreeSet<String>>> {
+    pub fn ordered_voter_sets(&self) -> Option<Vec<BTreeSet<(String, u64)>>> {
         let ordered = self.raft_ordered.as_ref().filter(|ordered| {
             ordered.incarnation == self.incarnation
                 && ordered.epoch == self.group_epoch()
@@ -101,9 +103,24 @@ impl ShardAssignment {
             ordered
                 .targets
                 .iter()
-                .map(|target| target.members.keys().cloned().collect())
+                .map(|target| {
+                    target
+                        .members
+                        .iter()
+                        .map(|(node, copy)| (node.clone(), *copy))
+                        .collect()
+                })
                 .collect(),
         )
+    }
+
+    /// Mark the list lost. A control-plane restore brings back a list as old
+    /// as the backup, with the same incarnation and epoch, which targets
+    /// ordered since would be missing from.
+    pub(crate) fn lose_raft_ordered(&mut self) {
+        if let Some(ordered) = &mut self.raft_ordered {
+            ordered.lost = true;
+        }
     }
 
     fn group_epoch(&self) -> u64 {

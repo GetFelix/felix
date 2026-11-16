@@ -52,6 +52,20 @@ fn set(nodes: &[&str]) -> BTreeSet<String> {
 }
 
 /// A shard switched with the list started, and its first target written.
+fn voters(pairs: &[(&str, u64)]) -> BTreeSet<(String, u64)> {
+    pairs.iter().map(|(n, id)| (n.to_string(), *id)).collect()
+}
+
+/// A restore marks the list lost, so a list as old as the backup is never
+/// read as complete.
+#[test]
+fn a_lost_list_reads_as_unknown() {
+    let mut a = started();
+    assert!(a.ordered_voter_sets().is_some());
+    a.lose_raft_ordered();
+    assert_eq!(a.ordered_voter_sets(), None);
+}
+
 fn started() -> ShardAssignment {
     let mut a = assignment();
     a.start_raft_ordered();
@@ -79,7 +93,10 @@ fn a_new_copy_id_appends_and_the_first_target_stays() {
     );
     assert_eq!(
         a.ordered_voter_sets(),
-        Some(vec![set(&["broker-a", "broker-b", "broker-c"]); 2])
+        Some(vec![
+            voters(&[("broker-a", 1), ("broker-b", 2), ("broker-c", 3)]),
+            voters(&[("broker-a", 1), ("broker-b", 9), ("broker-c", 3)]),
+        ])
     );
 }
 
@@ -107,8 +124,8 @@ fn a_set_change_keeps_the_list() {
     assert_eq!(
         after.ordered_voter_sets(),
         Some(vec![
-            set(&["broker-a", "broker-b", "broker-c"]),
-            set(&["broker-a", "broker-b", "broker-d"]),
+            voters(&[("broker-a", 1), ("broker-b", 2), ("broker-c", 3)]),
+            voters(&[("broker-a", 1), ("broker-b", 2), ("broker-d", 4)]),
         ])
     );
 }

@@ -85,14 +85,14 @@ pub(crate) use rotated_by::RotatedBy;
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
-pub(crate) use start::{Role, Start, building, start_copy};
+pub(crate) use start::{AcceptLoss, Role, Start, building, start_copy};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use vouch::{
-    BrokerReport, GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource,
-    plan_reform, probes,
+    BrokerReport, GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterId,
+    VoterSource, plan_reform, probes,
 };
 
 use std::path::Path;

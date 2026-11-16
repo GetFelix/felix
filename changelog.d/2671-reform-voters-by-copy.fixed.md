@@ -1,0 +1,1 @@
+Re-form plans count Raft voters by copy id, so a replaced disk's new copy never stands for the old voter's votes; a control-plane restore marks each shard's list of ordered targets lost (metadata level 40); a start's accept-loss comes from the plan (#2671).

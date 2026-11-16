@@ -388,6 +388,10 @@ async fn an_import_raises_the_incarnation_from_level_35() {
     assert!(METADATA_VERSION >= level);
     assert!(settled(level - 1).get("raise_incarnation").is_none());
     assert_eq!(settled(level)["raise_incarnation"], true);
+    let restored = super::super::RESTORED_ORDERED_LEVEL;
+    assert!(METADATA_VERSION >= restored);
+    assert!(settled(restored - 1).get("lose_ordered").is_none());
+    assert_eq!(settled(restored)["lose_ordered"], true);
 
     let mut state = crate::store::memory::InMemoryStore::new(crate::store::StoreConfig {
         changes_limit: 100,
@@ -401,6 +405,7 @@ async fn an_import_raises_the_incarnation_from_level_35() {
         overwrite: true,
         mark_unplaced: false,
         raise_incarnation: false,
+        lose_ordered: false,
     });
     assert!(settle_for_level(&carrying, level - 1).is_err());
     assert!(settle_for_level(&carrying, level).is_ok());
