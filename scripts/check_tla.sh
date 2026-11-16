@@ -571,7 +571,15 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsFloorHolder violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
-  "FelixRaftWrittenReformVouchDead violates NeverLosesCommitted"
+  "FelixRaftWrittenReformVouchDead pass"
+  "FelixRaftWrittenReformVouchDeadFive pass"
+  "FelixRaftWrittenCommitsReformJointDead pass"
+  "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
+  "FelixRaftWrittenCommitsReformJointCutDead pass"
+  "FelixRaftWrittenReformGate pass"
+  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
+  "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
+  "FelixRaftWrittenReformReplacedHappens violates NoDeposedAppend"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"
@@ -767,6 +775,8 @@ expectations=(
   "FelixRaftReformKeptOldKept pass"
   "FelixRaftReformKeptOldKeptCap violates NeverCaps"
   "FelixRaftReformKeptTermsT violates NeverVouchesByT"
+  "FelixRaftReformReplacedDiskByBroker violates OffsetNeverReused"
+  "FelixRaftReformReplacedDiskLost violates OffsetNeverReused"
   "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
@@ -1102,6 +1112,10 @@ fi
 # 32-core machine and is not registered: a box run checks it.
 # FelixRaftWrittenCommitsFailoverPowerCut passes in 17 minutes with 30
 # workers on a 32-core machine and is not registered: a box run checks it.
+# FelixRaftWrittenReformReplaced (past 10M distinct states in 4 minutes
+# on a box, queue still growing), FelixRaftWrittenReformReplacedFull and
+# FelixRaftReformReplacedDisk are not registered: they run past a pull
+# request's time; run them as a TLA workflow dispatch.
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly

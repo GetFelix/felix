@@ -115,6 +115,8 @@
 (*                         plan, and does not read the copies again.       *)
 (*   RotatedNotWaited   -- a rotated copy is not read.                     *)
 (*   RetireNotDurable   -- a restart forgets the stop marker.              *)
+(*   VoteByBroker       -- a vote counts as read when any copy of its      *)
+(*                         broker was read, as if keyed by broker (#2671). *)
 (*   BaseNotHighest     -- the base is any copy's log.                     *)
 (*   NoCas              -- the command does not compare the epoch.         *)
 (*   SoloPlacedTwo      -- a restored copy starts by itself although a     *)
@@ -188,6 +190,7 @@ CONSTANTS
     PlanNotRechecked,
     RotatedNotWaited,
     RetireNotDurable,
+    VoteByBroker,
     BaseNotHighest,
     NoCas,
     SoloPlacedTwo,
@@ -213,6 +216,7 @@ VARIABLES
     msgs,       \* appends in flight
     cpEpoch,
     cpMem,      \* the control plane's own record of the membership
+    ordered,    \* targets the control plane ordered, by epoch, recorded before the leader is asked
     placed,     \* brokers the control plane has placed for the group
     everPlaced, \* brokers the control plane has placed in the epoch, removed ones too
     dead,       \* brokers declared dead
@@ -231,7 +235,7 @@ VARIABLES
 diskVars == <<keptLogs, synced, reserve, cuts, returns>>
 
 vars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs,
-          cpEpoch, cpMem, placed, everPlaced, dead, cpFloor, plans, forms, acked, lost,
+          cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, acked, lost,
           elected, writes, steps, places, rotations, rejoins, restarts, diskVars>>
 
 Mid(b) == <<b, cid[b]>>
@@ -330,6 +334,7 @@ Init ==
     /\ msgs = {}
     /\ cpEpoch = 0
     /\ cpMem = InitConfig
+    /\ ordered = {}
     /\ placed = InitBrokers
     /\ everPlaced = InitBrokers
     /\ dead = {}
@@ -346,7 +351,7 @@ Init ==
     /\ reserve = [b \in Brokers |-> 0]
     /\ cuts = 0 /\ returns = 0
 
-cpVars == <<cpEpoch, cpMem, placed, everPlaced, dead, cpFloor, plans, forms, lost>>
+cpVars == <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, lost>>
 counters == <<writes, steps, places, rotations, rejoins, restarts>>
 
 --------------------------------------------------------------------------------
@@ -406,11 +411,12 @@ ProposeChange(l) ==
        IN /\ l # out
           /\ c.o = c.n =>
                 (in \in placed /\ ep[in] = ep[l] /\ Mid(in) \notin c.o)
+          /\ ordered' = ordered \cup {[e |-> ep[l], v |-> next]}
           /\ log' = [log EXCEPT ![l] =
                         Append(@, [e |-> ep[l], t |-> term[l], k |-> "cfg", v |-> next])]
     /\ steps' = steps + 1
     /\ UNCHANGED <<ep, cid, term, role, commit, match, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, writes, places, rotations, rejoins, restarts>>
+    /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, cpFloor, plans, forms, lost, writes, places, rotations, rejoins, restarts>>
     /\ UNCHANGED diskVars
 
 \* A write to the current copy. Entries it replaces are off the disk too, and
@@ -495,7 +501,7 @@ Commit(l, i) ==
     /\ cpFloor' = IF Floor = "exact" /\ i > cpFloor.i THEN LogId(log[l], i) ELSE cpFloor
     /\ reserve' = IF Kept /\ Reserve # "none" THEN [reserve EXCEPT ![l] = Max(@, i)] ELSE reserve
     /\ UNCHANGED <<ep, cid, term, role, log, match, retired, boot, msgs, elected>>
-    /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, plans, forms, lost, counters>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, plans, forms, lost, counters>>
     /\ UNCHANGED <<keptLogs, synced, cuts, returns>>
 
 \* A leader that no longer hears a quorum steps down.
@@ -533,6 +539,13 @@ NewCopy(b, kept) ==
     /\ retired' = [retired EXCEPT ![b] = FALSE]
     /\ UNCHANGED <<ep, match, boot, msgs, acked, elected>>
 
+\* What a copy that replaced its disk reserves. The reservation is carried.
+\* A disk lost outright takes it along (LostReserve, by override in a cfg):
+\* then a broker declared dead and a lost disk can be every copy that
+\* counted a record, the documented residual of a trailing floor.
+ReplacedReserve(b) == reserve
+LostReserve(b) == [reserve EXCEPT ![b] = 0]
+
 \* With Kept a rotation renames the whole copy into a kept copy, with the
 \* vote it held, why it rotated and its reservation, and the broker starts
 \* an empty copy under a new id. A restore can bring back any prefix and an
@@ -547,6 +560,18 @@ KeepCopy(b, l, t, by) ==
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = [reserve EXCEPT ![b] = 0]
 
+\* A restore whose kept copy is later reclaimed: a new empty copy and no
+\* kept copy of the old id, so the old copy's vote is gone (#2671). The
+\* reservation is not: a rotation writes the highest kept reservation into
+\* the new copy before its copy file (raft_copy/judge.rs, rotate), and a
+\* kept copy whose reservation is above the current copy's is never
+\* reclaimed (raft_copy/reclaim.rs, reclaim_kept).
+ReplaceDisk(b) ==
+    /\ NewCopy(b, <<>>)
+    /\ synced' = [synced EXCEPT ![b] = 0]
+    /\ reserve' = ReplacedReserve(b)
+    /\ UNCHANGED keptLogs
+
 \* The shard directory is lost, or restored from an older copy: the copy id
 \* rotates and any prefix of the log is left. The stop marker goes with it.
 Rotate(b, n) ==
@@ -555,7 +580,8 @@ Rotate(b, n) ==
     /\ rotations' = rotations + 1
     /\ n \in 0..Len(log[b])
     /\ IF Kept
-       THEN \E t \in 0..term[b] : KeepCopy(b, SubSeq(log[b], 1, n), t, "restore")
+       THEN \/ \E t \in 0..term[b] : KeepCopy(b, SubSeq(log[b], 1, n), t, "restore")
+            \/ n = 0 /\ ReplaceDisk(b)
        ELSE NewCopy(b, SubSeq(log[b], 1, n)) /\ UNCHANGED <<keptLogs, synced, reserve>>
     /\ UNCHANGED <<cpVars, writes, steps, places, rejoins, restarts, cuts, returns>>
 
@@ -589,7 +615,7 @@ Return(b) ==
     /\ returns' = returns + 1
     /\ dead' = dead \ {b}
     /\ KeepCopy(b, log[b], term[b], "restore")
-    /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, cpFloor, plans, forms, lost>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, cpFloor, plans, forms, lost>>
     /\ UNCHANGED <<writes, steps, places, rotations, rejoins, restarts, cuts>>
 
 \* A copy stopped by an apply that did not finish, in a group that then
@@ -619,7 +645,7 @@ Place(b) ==
     /\ placed' = placed \cup {b}
     /\ everPlaced' = everPlaced \cup {b}
     /\ UNCHANGED brokerVars
-    /\ UNCHANGED <<cpEpoch, cpMem, dead, cpFloor, plans, forms, lost>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, dead, cpFloor, plans, forms, lost>>
     /\ UNCHANGED <<writes, steps, rotations, rejoins, restarts>>
     /\ UNCHANGED diskVars
 
@@ -635,7 +661,7 @@ Unplace(l) ==
        IN /\ gone # {}
           /\ placed' = placed \ gone
     /\ UNCHANGED brokerVars
-    /\ UNCHANGED <<cpEpoch, cpMem, everPlaced, dead, cpFloor, plans, forms, lost, counters>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, everPlaced, dead, cpFloor, plans, forms, lost, counters>>
     /\ UNCHANGED diskVars
 
 \* The control plane's own record of the voters follows broker reports and
@@ -657,7 +683,7 @@ ReportFloor(l) ==
     /\ commit[l] > cpFloor.i
     /\ cpFloor' = LogId(log[l], commit[l])
     /\ UNCHANGED brokerVars
-    /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, plans, forms, lost, counters>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, plans, forms, lost, counters>>
     /\ UNCHANGED diskVars
 
 \* An operator's separate, recorded act. It can be wrong.
@@ -667,7 +693,7 @@ DeclareDead(b) ==
     /\ dead' = dead \cup {b}
     /\ role' = [role EXCEPT ![b] = IF DeadRuns THEN @ ELSE "follower"]
     /\ UNCHANGED <<ep, cid, term, log, commit, match, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, cpFloor, plans, forms, lost, counters>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, cpFloor, plans, forms, lost, counters>>
     /\ UNCHANGED diskVars
 
 --------------------------------------------------------------------------------
@@ -722,7 +748,7 @@ Plan(e, S) ==
     /\ [e |-> e, facts |-> [b \in S |-> Fact(b)]] \notin plans
     /\ plans' = plans \cup {[e |-> e, facts |-> [b \in S |-> Fact(b)]]}
     /\ UNCHANGED brokerVars
-    /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, cpFloor, forms, lost, counters>>
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, forms, lost, counters>>
     /\ UNCHANGED diskVars
 
 \* The stop is durable before the copy is read again. Apply asks the listed
@@ -805,7 +831,7 @@ Reform(p, pick) ==
        /\ placed' = placed \cup S
        /\ everPlaced' = placed \cup S
        /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-       /\ UNCHANGED <<dead, cpFloor, plans, elected, counters>>
+       /\ UNCHANGED <<ordered, dead, cpFloor, plans, elected, counters>>
        /\ UNCHANGED diskVars
 
 \* The re-form with Kept: it reads every copy of every broker read, current
@@ -829,14 +855,29 @@ Cap(e, E) ==
     LET ends == {f.end : f \in {g \in forms : e < g.e /\ g.e <= E}}
     IN IF ends = {} THEN MaxWrites + MaxEpoch * 8 ELSE MinOf(ends)
 
-\* The epoch-E mark: a broker placed in E is dead, has no epoch-E vote read,
-\* or has a kept copy of E rotated by a restore, which can hold an older vote
-\* than one it gave. Copies of earlier epochs never mark.
-Marked(E) ==
-    \E b \in Placed :
-        \/ b \in dead
-        \/ ep[b] # E /\ ~\E k \in keptLogs[b] : k.e = E /\ k.by = "power-cut"
-        \/ \E k \in keptLogs[b] : k.e = E /\ k.by = "restore"
+\* The voter sets of epoch E a re-form can know: the seed voters the control
+\* plane recorded for E, each target it ordered in E, and both halves of
+\* every membership entry of E in a copy read, committed or not. Never the
+\* placed brokers: a placed broker need not be a voter.
+VoterSets(E, R) ==
+    (IF E = 0 THEN {InitConfig.o} ELSE {f.voters : f \in {g \in forms : g.e = E}})
+        \cup UNION {Sets(o.v) : o \in {x \in ordered : x.e = E}}
+        \cup UNION {UNION {Sets(c.log[j].v) : j \in CfgIdx(c.log, E)} : c \in R}
+
+\* A member's epoch-E vote is read when the re-form read the copy it gave it
+\* from, current or kept by a power cut, and its broker is not dead and has
+\* no kept copy of E rotated by a restore, which can hold an older vote than
+\* one it gave. Keyed by copy id (#2671): a later copy of the same broker
+\* says nothing of an earlier one's vote.
+VoteRead(m, E, R) ==
+    /\ m[1] \notin dead
+    /\ ~\E k \in keptLogs[m[1]] : k.e = E /\ k.by = "restore"
+    /\ \E c \in R \cap Copies(m[1]) : c.e = E /\ (VoteByBroker \/ c.cid = m[2]) /\ c.by \in {"current", "power-cut"}
+
+\* The epoch-E mark: the votes not read are a majority of some voter set of
+\* E, so an election of E may have taken none the re-form read.
+Marked(E, R) ==
+    \E V \in VoterSets(E, R) : 2 * Cardinality({m \in V : ~VoteRead(m, E, R)}) > Cardinality(V)
 
 \* A copy vouches for its saved commit, for the floor's index if it holds the
 \* floor's entry, and for its whole log if the group is unmarked and its last
@@ -860,7 +901,7 @@ ReformKept(p, src) ==
         S == DOMAIN p.facts
         R == UNION {Copies(b) : b \in S}
         T == Top(R)
-        mk == Marked(e)
+        mk == Marked(e, R)
         V(c) == VouchK(c, e, T, mk)
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
@@ -887,7 +928,7 @@ ReformKept(p, src) ==
        /\ placed' = (placed \ dead) \cup S
        /\ everPlaced' = (placed \ dead) \cup S
        /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-       /\ UNCHANGED <<dead, cpFloor, plans, elected, counters, diskVars>>
+       /\ UNCHANGED <<ordered, dead, cpFloor, plans, elected, counters, diskVars>>
 
 \* A shard with one replica whose copy rotated and kept records: it is a
 \* re-form of one, without the command. No other broker was placed in the
@@ -905,7 +946,7 @@ SelfStart(b) ==
     /\ WriteEpoch(cpEpoch, log[b], {Mid(b)}, FALSE)
     /\ everPlaced' = placed
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
+    /\ UNCHANGED <<placed, ordered, dead, cpFloor, plans, elected, counters>>
     /\ UNCHANGED diskVars
 
 \* A voter held the base, so its log is the base and the gap. Anyone else
