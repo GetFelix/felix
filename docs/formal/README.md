@@ -687,6 +687,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftStreamPurgeReachInstallThenReform.cfg` | witness at the bounds of `LearnerReformInstall.cfg`: a learner installs a snapshot, then the group re-forms | violate `NeverInstallsThenReforms` |
 | `FelixRaftStreamPurgeInstallLowersFloor.cfg` | `NoCap`'s bounds, the install storing the leader's snapshot as it is, steered by `FloorDropPath` to trims naming 3 then 4 | violate `OffsetNeverReused`: an install lowers a member's floor from 4 to 3, a restart keeps 3, and a re-form gives out offset 4 again (9,502,017 distinct states, 2.5 minutes with 4 workers) |
 | `FelixRaftStreamPurgeInstallKeepsFloor.cfg` | the same history, the install keeping the higher floor | pass every invariant (30,733,729 distinct states, 16 minutes with 4 workers on a shared box). Not registered, run by dispatch |
+| `FelixRaftStreamPurgeInstallKeepsFloorSmall.cfg` | `InstallKeepsFloor`'s bounds, steered by `LowerFloorPath`: two records, then trims naming 3 and 4 at offsets 3 and 4, and no restart or re-form before a lower-floor install | pass every invariant (112,075 distinct states, 1.75M generated, 42 seconds with 4 workers) |
+| `FelixRaftStreamPurgeReachLowerFloorInstall.cfg` | witness at the same bounds: a member installs a snapshot carrying a floor below its own | violate `NeverInstallsLowerFloor` (9 seconds with 4 workers) |
+| `FelixRaftStreamPurgeInstallLowersFloorSmall.cfg` | `InstallKeepsFloorSmall` with the install storing the leader's snapshot as it is | violate `OffsetNeverReused` (14 seconds with 4 workers) |
+| `FelixRaftStreamPurgeInstallKeepsFloorLong.cfg` | `InstallKeepsFloorSmall` with a learner, five entries and two changes of leader, steered by `LowerFloorPath` | pass every invariant. Not registered, run by dispatch |
+| `FelixRaftStreamPurgeReachRewrittenInstall.cfg` | witness at the same bounds: the installer leads and a member behind it installs the snapshot a lower-floor install rewrote | violate `NeverInstallsRewrittenSnap` (5 minutes with 8 workers, 1.29M distinct states) |
 | `FelixRaftStreamPurgeInstallRefusesLowerFloor.cfg` | the same history, the member refusing a snapshot carrying a lower floor | violate `CatchUpPossible`: the new leader's snapshot is refused, so the member is stuck (1.7 minutes with 4 workers) |
 | `FelixRaftStreamPurgeInstallRefusesLowerFloorSafe.cfg` | the same without `CatchUpPossible` | pass the safety invariants (30,733,729 distinct states, 18 minutes with 4 workers). Not registered, run by dispatch |
 | `FelixRaftStreamPurgeNoCapSmallRefuse.cfg` | `NoCapSmall` with the refusal, without `CatchUpPossible` | pass the safety invariants (16,369,637 distinct states, 81.9M generated, 6 minutes with 4 workers) |
@@ -4316,7 +4321,8 @@ What is checked:
 - `TablesAgree`: every member's tables equal the fold of the log up to its
   applied entry, across purges, installs and restarts.
 - `HeadersAgree`: a member with a floor answers reads below it with the
-  headers of a trim that named that floor.
+  headers of a trim that named that floor. Any trim naming it passes, and two
+  members' headers are not compared.
 - `OffsetNeverReused`: a re-form never gives out again a committed offset that
   a copy it read held, or installed a snapshot or a floor for. It is checked
   against a history variable, not against what the re-form reads. A re-form
@@ -4382,8 +4388,22 @@ The broken configurations, and what each shows:
   restart.
 
 Two rules close it. Storing the higher floor with its headers passes
-(`FelixRaftStreamPurgeInstallKeepsFloor.cfg` on the same steered history,
-and every pass configuration, which all use it). Refusing a snapshot that
+(`FelixRaftStreamPurgeInstallKeepsFloor.cfg` on the same steered history).
+Every pass configuration uses that rule, but the registered ones mostly
+cannot reach the install where it matters: a member whose floor is above the
+snapshot's carried floor, which is above the snapshot's index, which is above
+the member's log end. That needs at least four entries, two trims and a change
+of leader, and the registered `Small` bounds have three entries or no change
+of leader. The registered `FelixRaftStreamPurgeInstallKeepsFloorSmall.cfg`
+covers it: it is steered harder (`LowerFloorPath`: two records, then trims
+naming 3 and 4 at offsets 3 and 4, and no restart or re-form until a member
+has installed a snapshot carrying a floor below its own), its witness
+(`...ReachLowerFloorInstall.cfg`) reaches that install, and its "replace"
+twin (`...InstallLowersFloorSmall.cfg`) violates `OffsetNeverReused`, so CI
+tells the two rules apart. `...InstallKeepsFloorLong.cfg` (a learner, five
+entries, two changes of leader, dispatch only) goes past the install: the
+installer leads, takes writes, purges, and another member installs the
+snapshot the install rewrote (`...ReachRewrittenInstall.cfg`, registered). Refusing a snapshot that
 carries a lower floor is also safe
 (`FelixRaftStreamPurgeInstallRefusesLowerFloorSafe.cfg`,
 `...NoCapSmallRefuse.cfg`), but the member then cannot catch up: the next
@@ -4444,8 +4464,9 @@ What the code has to change, behind `raft_stream_purge`:
    member's current floor and the headers of the trim that set it, which
    reads below the floor return (felix-broker `durable.rs` `too_old`). Today it carries
    only the forgotten cut batches, at the applied entry.
-2. A member accepts a stream snapshot whose index is at most its carried floor
-   minus one, and refuses any other (felix-replication `raft/group.rs`, `Refused::NoSnapshots`
+2. A member accepts a stream snapshot whose index is at most the floor that
+   snapshot carries minus one (the snapshot's own floor, not the member's or
+   the max of the two), and refuses any other (felix-replication `raft/group.rs`, `Refused::NoSnapshots`
    refuses every one today). The model compares the index with the member's
    log end. With terms, the member compares it with its matching index and
    drops a divergent tail above it, as Raft does.
@@ -4467,6 +4488,20 @@ What the code has to change, behind `raft_stream_purge`:
    every copy it reads, and the new epoch starts at the highest floor read and
    its headers, written into each copy's base snapshot (`machine.rs`
    `base_snapshot`).
+7. An install never lowers a member's floor (`InstallFloor = "max"`):
+   - the serving floor in memory is the max of the member's and the
+     snapshot's carried floor, with that floor's headers, before the
+     installed state is swapped in;
+   - a durable floor record that only rises is written before or with the
+     swap, and a restart takes the max of it and the snapshot's floor;
+   - that max'd floor and its headers are what a restart loads, what a
+     re-form reads, and what this member sends when it later ships its own
+     snapshot;
+   - the max applies to the carried floor only; the tables, including their
+     floor as of the index, come from the snapshot unchanged;
+   - a trim at or below the serving floor neither lowers it nor swaps its
+     headers;
+   - the accept check in item 2 uses the snapshot's own floor.
 
 The group table travels in the snapshot only once Raft stream snapshots carry
 it (the consumer-group work, `FelixRaftGroups.tla`). Until then a member that

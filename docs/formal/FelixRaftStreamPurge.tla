@@ -163,7 +163,10 @@ VARIABLES
     post,     \* history: "write" and "purge" once one happened after a re-form;
               \* with two re-forms allowed, also "writeMid", "trimMid" and
               \* "raiseMid" for a write, a proposed trim and an applied floor
-              \* raise between the first re-form and the second
+              \* raise between the first re-form and the second; "lowInst"
+              \* once a member installed a snapshot carrying a floor below
+              \* its own, and "instMx" once a member installed a snapshot
+              \* that such an install rewrote
     trims, changes, restarts, reforms
 
 vars == <<log, commit, leader, live, len, purged, pend, applied, floor, hdr,
@@ -206,8 +209,9 @@ CommittedFloor == Max({FloorUpTo(commit)} \cup {hiFloor[m] : m \in live})
 RaiseHiFloor == hiFloor' = [k \in Members |-> Max({hiFloor[k], floor'[k]})]
 
 \* A snapshot: its index, the tables as of it, and the carried floor and
-\* headers, which are the member's at the purge.
-NoSnap == [idx |-> 0, tbl |-> Tbl0, floor |-> 1, hdr |-> 0]
+\* headers, which are the member's at the purge. mx marks a snapshot an
+\* install under "max" rewrote with the member's higher floor.
+NoSnap == [idx |-> 0, tbl |-> Tbl0, floor |-> 1, hdr |-> 0, mx |-> FALSE]
 
 ----------------------------------------------------------------------------
 
@@ -300,10 +304,14 @@ Install(n) ==
     /\ tbl' = [tbl EXCEPT ![n] = s.tbl]
     \* The floor the member vouched for must survive a restart.
     /\ snap' = [snap EXCEPT ![n] =
-          IF InstallFloor = "max" THEN [s EXCEPT !.floor = floor'[n], !.hdr = hdr'[n]]
+          IF InstallFloor = "max"
+          THEN [s EXCEPT !.floor = floor'[n], !.hdr = hdr'[n],
+                         !.mx = @ \/ s.floor < floor[n]]
           ELSE s]
     /\ installed' = installed \cup {n}
-    /\ UNCHANGED <<log, commit, leader, live, cpFloor, reused, trimF, post,
+    /\ post' = post \cup (IF s.floor < floor[n] THEN {"lowInst"} ELSE {})
+                    \cup (IF s.mx THEN {"instMx"} ELSE {})
+    /\ UNCHANGED <<log, commit, leader, live, cpFloor, reused, trimF,
                    trims, changes, restarts, reforms>>
 
 Quorum(i) ==
@@ -362,7 +370,8 @@ SnapAt(m, p) ==
      tbl |-> IF SnapAtApplied \/ TablesAtApplied THEN tbl[m]
              ELSE FoldFrom(snap[m].tbl, snap[m].idx + 1, p),
      floor |-> floor[m],
-     hdr |-> IF SnapCarriesHeaders THEN hdr[m] ELSE 0]
+     hdr |-> IF SnapCarriesHeaders THEN hdr[m] ELSE 0,
+     mx |-> FALSE]
 
 \* A purge, step one: write and fsync the snapshot. With DropFirst this is
 \* step two, after the log is gone.
@@ -533,6 +542,17 @@ OffsetNeverReused == ~reused
 \* naming 3 then 4, and no floor reported to the control plane.
 FloorDropPath == trimF \in {<<>>, <<3>>, <<3, 4>>} /\ cpFloor = 0
 
+\* Steers the InstallKeepsFloorSmall.cfg family harder, so a CI job finishes
+\* it: two records, then the trims at offsets 3 and 4 (a re-form may still pad
+\* the log with gaps), and no restart or re-form before a member installs a
+\* snapshot carrying a floor below its own.
+LowerFloorLog == <<Rec, Rec, Trim(3, 1), Trim(4, 2)>>
+LowerFloorPath ==
+    /\ FloorDropPath
+    /\ \A i \in 1..Len(log) :
+          i <= Len(LowerFloorLog) => log[i] \in {LowerFloorLog[i], Gap}
+    /\ restarts + reforms > 0 => "lowInst" \in post
+
 CatchUpPossible ==
     \A n \in live \ {leader} :
         len[n] + 1 <= purged[leader] => Installable(snap[leader], n)
@@ -565,5 +585,12 @@ NeverPurgesATrimAfterTwoReforms ==
 
 \* A learner installs a snapshot and a re-form follows.
 NeverInstallsThenReforms == ~(reforms = 1 /\ installed # {})
+
+\* A member installs a snapshot carrying a floor below its own, which is
+\* where "max" and "replace" differ.
+NeverInstallsLowerFloor == "lowInst" \notin post
+
+\* A member installs a snapshot that such an install rewrote under "max".
+NeverInstallsRewrittenSnap == "instMx" \notin post
 
 =============================================================================
