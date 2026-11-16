@@ -358,3 +358,44 @@ async fn a_reset_mid_claim_fans_out_the_batches_already_claimed() {
         .expect("the claimed batch is fanned out");
     assert_eq!(delivered.as_deref(), Some(&b"b"[..]));
 }
+
+/// **A reset while a newer epoch's batch waits to be written on a Raft
+/// shard keeps the producer's family turn until it is.** An older epoch's
+/// batch from another connection is not checked against the log, and so
+/// cannot be proposed, before that write.
+#[tokio::test]
+async fn a_reset_mid_claim_keeps_an_older_epoch_out_until_written() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.gate_writes();
+    // Smaller than one answer, so the writer blocks writing the first.
+    let mut newer = fixture.connect_buffered(16, Vec::new(), CancellationToken::new());
+    let mut older = fixture.connect();
+
+    // Another producer's batch, whose answer blocks the writer.
+    newer
+        .send(&request(1, 0, idempotent(PRODUCER + 1, 0, &["a"])), 9)
+        .await;
+    claimed(&fixture, 1).await;
+    fixture.cluster.release(0, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    newer
+        .send(&request(1, 0, at_epoch(PRODUCER, 1, 0, &["b"])), 9)
+        .await;
+    claimed(&fixture, 2).await;
+    drop(newer);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    older
+        .send(&request(1, 0, at_epoch(PRODUCER, 0, 0, &["c"])), 9)
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        fixture.cluster.claimed(),
+        2,
+        "the older epoch waits for the newer one's write"
+    );
+    // The fake cluster lets the turn go just before it writes, so what the
+    // older epoch is answered after this is not asserted here.
+    fixture.cluster.release(1, None);
+}

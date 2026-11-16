@@ -420,9 +420,16 @@ async fn publish(
         // A Raft group's log learns a record when it writes it, not when it
         // is handed over. The producer's turn comes round once the last one
         // is written here or given up, and only then may another epoch be
-        // checked against the log.
+        // checked against the log. The wait runs on its own task so a
+        // dropped claim still holds the family turn until then.
         if let Some((id, _)) = producer {
-            drop(shared.broker.producer_turn(handle, id).await);
+            let turn = shared.broker.producer_turn(handle, id);
+            let family = _family.take();
+            let _ = tokio::spawn(async move {
+                drop(turn.await);
+                drop(family);
+            })
+            .await;
         }
     } else if let Some((producer_id, sequence)) = producer {
         let claim = shared
