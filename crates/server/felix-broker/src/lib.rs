@@ -53,10 +53,11 @@ pub mod timings;
 
 pub use broker::{
     Appended, AppendedShards, Attribution, Broker, CacheMetadata, ClaimedPublish, CommittedOffsets,
-    ConsistencyLevel, EngineLogs, IdempotentClaim, IdempotentOutcome, IdempotentProposal,
-    LogDelivery, LogKind, MountedStream, OwedRecords, ProducerTurn, ProposalCommitted,
-    ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome, RECORD_SEQUENCE_WRAP,
-    SequenceReuse, StreamHandle, StreamMetadata, TrimFailed, TrimOutcome, TrimStep,
+    ConsistencyLevel, EngineLogs, FollowerReads, IdempotentClaim, IdempotentOutcome,
+    IdempotentProposal, LogDelivery, LogKind, MountedStream, OwedRecords, ProducerTurn,
+    ProposalCommitted, ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome,
+    RECORD_SEQUENCE_WRAP, SequenceReuse, StreamHandle, StreamMetadata, TrimFailed, TrimOutcome,
+    TrimStep,
 };
 pub use error::{BrokerError, NotReadable, Result};
 pub use handoff::{ShardHandoff, ShardMoved};

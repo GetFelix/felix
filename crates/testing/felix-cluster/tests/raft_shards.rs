@@ -106,6 +106,15 @@ async fn publish_acked(cluster: &Cluster, node: &str, payload: &[u8]) -> u64 {
     .unwrap_or_else(|err| panic!("publish through {node}: {err:#}"))
 }
 
+/// Finalizes `raft_follower_read`, without which a follower sends a read
+/// that could start below a trim floor to the leader.
+async fn allow_follower_reads(cluster: &Cluster) {
+    cluster
+        .finalize_fleet_features(&["raft_follower_read"], Duration::from_secs(30))
+        .await
+        .expect("finalize raft_follower_read");
+}
+
 /// Everything `node` replays from the start of the stream, read until every
 /// payload in `owed` has arrived.
 async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u8>> {
@@ -135,6 +144,7 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
         return;
     }
     let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    allow_follower_reads(&cluster).await;
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
     let follower = nodes
@@ -264,6 +274,7 @@ async fn record_headers_on_a_raft_shard_replay_from_every_member() {
                 "publisher_principal",
                 "record_headers",
                 "raft_record_headers",
+                "raft_follower_read",
             ],
             Duration::from_secs(30),
         )
@@ -344,6 +355,7 @@ async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_
         return;
     }
     let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    allow_follower_reads(&cluster).await;
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
     let follower = nodes
@@ -964,7 +976,7 @@ async fn an_atomic_commit_on_a_raft_shard_reaches_every_member() {
     let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
     cluster
         .finalize_fleet_features(
-            &["atomic_commit", "raft_atomic_commit"],
+            &["atomic_commit", "raft_atomic_commit", "raft_follower_read"],
             Duration::from_secs(30),
         )
         .await

@@ -1497,6 +1497,37 @@ pub(crate) struct Loopback {
     /// Brokers cut off right after the next append with entries reaches
     /// them, so they hold the entries but never hear them committed.
     cut_after_entries: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers sent no append that carries entries. Everything else reaches
+    /// them, and they reach everyone.
+    pub(crate) starved: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers whose answers to appends that carry entries are lost: they
+    /// write the entries, and the leader never counts them.
+    pub(crate) unheard: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// The fleet has not finalized `raft_follower_read`: followers leave
+    /// reads that could start below a floor to the leader.
+    pub(crate) follower_reads_off: std::sync::atomic::AtomicBool,
+    /// Brokers whose own requests reach nobody. With `cut` as well, a
+    /// leader in here is cut off without hearing that it was deposed.
+    pub(crate) muted: parking_lot::Mutex<std::collections::HashSet<String>>,
+}
+
+/// One broker's way onto a [`Loopback`], so the net knows who sent what.
+struct Sender {
+    from: String,
+    net: Arc<Loopback>,
+}
+
+#[async_trait::async_trait]
+impl RaftTransport for Sender {
+    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        if self.net.muted.lock().contains(&self.from) {
+            return Err(Refused::Unreachable(format!(
+                "broker {} is muted",
+                self.from
+            )));
+        }
+        self.net.send(request).await
+    }
 }
 
 impl Loopback {
@@ -1513,12 +1544,22 @@ impl RaftTransport for Loopback {
         if self.cut.lock().contains(&to) {
             return Err(Refused::Unreachable(format!("broker {to} is cut off")));
         }
+        if request.carries_entries() && self.starved.lock().contains(&to) {
+            return Err(Refused::Unreachable(format!("broker {to} gets no entries")));
+        }
         let cut_after = request.carries_entries() && self.cut_after_entries.lock().remove(&to);
         if cut_after {
             self.cut.lock().insert(to.clone());
         }
+        let unheard = request.carries_entries() && self.unheard.lock().contains(&to);
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {
+            Some(runtime) if unheard => {
+                let _ = runtime.handle(request).await;
+                Err(Refused::Unreachable(format!(
+                    "the answer from {to} was lost"
+                )))
+            }
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("broker {to} is down"))),
         }
@@ -1605,13 +1646,23 @@ impl Member {
         } else {
             no_fleet()
         };
+        let sender = Arc::new(Sender {
+            from: name.to_string(),
+            net: Arc::clone(net),
+        });
         let runtime =
-            GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
-                .expect("runtime");
+            GroupRuntime::start(name, timers(), sender as Arc<dyn RaftTransport>).expect("runtime");
         net.runtimes
             .lock()
             .insert(name.to_string(), runtime.clone());
         let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string(), fleet);
+        let reads = Arc::downgrade(net);
+        broker.allow_raft_follower_reads_when(move || {
+            reads.upgrade().is_some_and(|net| {
+                !net.follower_reads_off
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+        });
         open_root(&broker, &shards);
         let engine = Arc::new(engine(&shards));
         broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
@@ -2149,12 +2200,50 @@ async fn a_term_led_again_keeps_its_subscribers() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **A tail subscriber is kept only while its term is still in the terms
+/// the deposal clears.** The deposal removes the term, then ends its
+/// subscribers on a task. The member's lead watch can still show the term
+/// after that, so a check on it would keep a subscriber nothing ends.
+#[tokio::test]
+async fn a_tail_subscriber_after_the_deposal_cleared_its_term_is_dropped() {
+    use felix_broker::FollowerReads as _;
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let let_through = shards
+        .before_read("t1", "ns", "orders", 0, true)
+        .await
+        .expect("a leader's tail read");
+    assert_eq!(let_through, Some(term));
+
+    shards.stall_ends(true);
+    shards.leading.deposed(&orders, term);
+    assert_eq!(shards.runtime.led_term(&orders), Some(term));
+    let joined = shards.after_tail_join("t1", "ns", "orders", 0, term).await;
+    assert_eq!(joined, Err(felix_broker::NotReadable::Settling));
+    shards.stall_ends(false);
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// How long a publish that must wait for a commit nobody can give is
 /// watched before it counts as not answered.
 const UNANSWERED: Duration = Duration::from_millis(400);
 
 /// No member reaches another. A leader stays one, since it hears of no
 /// election, and the others can elect nobody.
+/// Cut `broker` off both ways. It hears nothing, so a leader keeps
+/// believing it leads.
+pub(crate) fn isolate(net: &Loopback, broker: &str) {
+    net.cut.lock().insert(broker.to_string());
+    net.muted.lock().insert(broker.to_string());
+}
+
 fn cut_all(net: &Loopback) {
     net.cut.lock().extend(BROKERS.map(String::from));
 }

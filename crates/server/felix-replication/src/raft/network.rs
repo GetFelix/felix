@@ -73,6 +73,9 @@ pub(crate) enum Request {
         from: MemberId,
         at: LogPoint,
     },
+    /// A follower asking its leader for a read index before it serves a
+    /// read that could start below a head trim's floor.
+    ReadIndex,
 }
 
 impl RaftRequest {
@@ -102,6 +105,7 @@ impl fmt::Debug for RaftRequest {
             Request::Snapshot { .. } => "snapshot",
             Request::TransferLeader(_) => "transfer-leader",
             Request::Written { .. } => "written",
+            Request::ReadIndex => "read-index",
         };
         write!(f, "{kind} for {} of {}", self.to, self.group)
     }
@@ -117,6 +121,12 @@ pub(crate) enum Reply {
     TransferLeader(TransferLeaderResponse<ShardTypes>),
     /// A written position was taken. It says nothing back.
     Written,
+    /// One past the index the asking follower must apply before it reads.
+    /// `None` when this member cannot give one: it does not lead, or a
+    /// majority did not confirm that it still does.
+    ReadIndex {
+        index: Option<u64>,
+    },
 }
 
 /// Why a message got no answer. Raft treats each the same way: the member
@@ -196,6 +206,9 @@ impl RaftTransport for AgreeingPeers {
                 return Err(Refused::Unreachable("no peer to lead".into()));
             }
             Request::Written { .. } => Reply::Written,
+            Request::ReadIndex => {
+                return Err(Refused::Unreachable("no peer leads".into()));
+            }
         }))
     }
 }
@@ -376,7 +389,11 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
         Reply::Append(Err(AppendError::HigherVote(vote))) => Some(term_of(vote)),
         Reply::Vote(response) if !pre_vote => Some(term_of(&response.vote)),
         Reply::Snapshot(response) => Some(term_of(&response.vote)),
-        Reply::Append(_) | Reply::Vote(_) | Reply::TransferLeader(_) | Reply::Written => None,
+        Reply::Append(_)
+        | Reply::Vote(_)
+        | Reply::TransferLeader(_)
+        | Reply::Written
+        | Reply::ReadIndex { .. } => None,
     }
 }
 

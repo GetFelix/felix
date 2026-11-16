@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use felix_broker::{StreamHandle, StreamLog};
+use felix_broker::{BrokerError, StreamHandle, StreamLog};
 use kafka_protocol::ResponseError;
 
 use crate::cluster::{Placement, Principal, ShardRef, Unreadable};
@@ -21,7 +21,12 @@ pub(super) struct Readable {
     pub(super) appended: Arc<tokio::sync::Notify>,
     /// Asked on every read, because the mark moves while a fetch waits.
     committed: Arc<dyn Fn() -> Result<Option<u64>, Unreadable> + Send + Sync>,
+    /// Asked before a fetch below the tail. See
+    /// [`felix_broker::Broker::before_history_read`].
+    confirm: Arc<dyn Fn(u64) -> BoxFuture<Result<(), BrokerError>> + Send + Sync>,
 }
+
+type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 impl Readable {
     /// Where readers stop: `tail`, or the shard's commit point if that is
@@ -43,6 +48,13 @@ impl Readable {
     /// offsets are.
     pub(super) fn floor(&self, tail: u64) -> u64 {
         self.log.readable_base().min(tail)
+    }
+
+    /// Before records from `from` are read. A leader cut off from a
+    /// successor that trimmed has not heard of the trim, so a fetch below
+    /// the tail waits for the engine's read-index round first.
+    pub(super) async fn confirm(&self, from: u64) -> Result<(), BrokerError> {
+        (self.confirm)(from).await
     }
 }
 
@@ -68,10 +80,29 @@ pub(super) async fn resolve(
         .ok_or(ResponseError::UnknownTopicOrPartition)?;
     let appended = handle.appended();
     let cluster = Arc::clone(&shared.cluster);
+    let broker = Arc::clone(&shared.broker);
+    let at = Arc::new((
+        located.tenant_id.clone(),
+        located.stream.namespace.clone(),
+        located.stream.stream.clone(),
+        located.shard,
+    ));
+    let confirmed = handle.clone();
     Ok(Readable {
         log,
         appended,
         committed: Arc::new(move || cluster.committed_until(&located.shard_ref(), &handle)),
+        confirm: Arc::new(move |from| {
+            let broker = Arc::clone(&broker);
+            let at = Arc::clone(&at);
+            let handle = confirmed.clone();
+            Box::pin(async move {
+                let (tenant_id, namespace, stream, shard) = &*at;
+                broker
+                    .before_handle_read(&handle, (tenant_id, namespace, stream, *shard), from)
+                    .await
+            })
+        }),
     })
 }
 

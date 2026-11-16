@@ -31,7 +31,8 @@ use super::lease::{Lease, View};
 use super::machine::{self, Cache, Groups, Machine, SnapshotData};
 use super::membership::{Target, Told};
 use super::network::{
-    Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
+    Addressee, Network, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request, Router,
+    term_of,
 };
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
@@ -109,6 +110,9 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
+    /// Reads below a floor this leader served on its lease, with no round.
+    #[cfg(test)]
+    pub(crate) lease_reads: AtomicU64,
     /// The newest target this member was told and the term it was told
     /// in, kept in memory only: after a restart nothing changes until the
     /// control plane speaks again.
@@ -724,6 +728,8 @@ impl Group {
             gate: Arc::default(),
             #[cfg(test)]
             apply_hold,
+            #[cfg(test)]
+            lease_reads: AtomicU64::new(0),
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
@@ -943,7 +949,7 @@ impl Group {
         VoteResponse::new(vote, last, false)
     }
 
-    fn leads(&self) -> bool {
+    pub(crate) fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
     }
@@ -1149,7 +1155,7 @@ impl Group {
                 self.pace.forget_leader();
                 false
             }
-            Request::Snapshot { .. } | Request::Written { .. } => false,
+            Request::Snapshot { .. } | Request::Written { .. } | Request::ReadIndex => false,
         };
         if held && asks {
             // Dropped, not refused: the candidate asks again at its next
@@ -1271,6 +1277,13 @@ impl Group {
             Request::Written { from, at } => {
                 self.reports.heard(from, at);
                 Ok(Reply::Written)
+            }
+            Request::ReadIndex => {
+                let index = match self.open_term() {
+                    Some(term) => self.confirmed_index(term).await.ok(),
+                    None => None,
+                };
+                Ok(Reply::ReadIndex { index })
             }
         }
     }
@@ -1454,19 +1467,12 @@ impl Group {
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
         let patience = Duration::from_millis(self.pace.timers.election_max);
         let deadline = tokio::time::Instant::now() + patience;
-        let bound = self.read_index(term).await?;
-        // The read index is the commit index, and a write answered once a
-        // majority had written it can be past it. It is of this term and
-        // on a majority, so it commits unless this member stops leading.
-        let answered = *self.answered.lock();
-        let answered = answered
-            .filter(|at| at.term == term)
-            .map_or(0, |at| at.index + 1);
+        let bound = self.confirmed_index(term).await?;
         let unanswered = CommitError::TimedOut {
             what: "read",
             timeout: patience,
         };
-        self.applied_through(bound.max(answered) - 1, deadline, unanswered)
+        self.applied_through(bound - 1, deadline, unanswered)
             .await?;
         // The wait can outlast the term: a member deposed during it still
         // applies the index as a follower.
@@ -1477,6 +1483,128 @@ impl Group {
             });
         }
         Ok(())
+    }
+
+    /// Before this member serves a read that could start below a head
+    /// trim's floor. A follower asks the leader for a read index and waits
+    /// until it has applied it, so a trim answered before the read began is
+    /// in its log and its floor applies (or is pending) here too. A leader
+    /// runs its own read-index round, [`Group::confirm_read`]: a leader cut
+    /// off from a successor that trimmed has not heard of the trim, and the
+    /// round is what tells it that it was deposed.
+    ///
+    /// Every error is retryable: no leader known, no answer in time, or
+    /// the index not applied within `election_max` of the start.
+    pub(crate) async fn read_barrier(&self) -> Result<(), &'static str> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let leader = {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            (metrics.state != ServerState::Leader).then(|| metrics.current_leader.clone())
+        };
+        let Some(leader) = leader else {
+            let Some(term) = self.open_term() else {
+                return Err("this member leads but has not opened its term");
+            };
+            if let Some(bound) = self.leased_index(term) {
+                return self.lease_read(term, bound).await;
+            }
+            return self
+                .confirm_read(term)
+                .await
+                .map_err(|_| "a majority did not confirm this member still leads");
+        };
+        let Some(leader) = leader.filter(|leader| *leader != self.member) else {
+            return Err("this member knows no leader");
+        };
+        let patience = Duration::from_millis(self.pace.timers.election_max);
+        let deadline = tokio::time::Instant::now() + patience;
+        let request = RaftRequest {
+            group: self.id.clone(),
+            to: leader,
+            beat: 0,
+            report: false,
+            deadline: patience,
+            body: Request::ReadIndex,
+        };
+        let asked = tokio::select! {
+            biased;
+            () = self.stop.cancelled() => return Err("the member stopped"),
+            asked = tokio::time::timeout_at(deadline, self.transport.send(request)) => asked,
+        };
+        let index = match asked {
+            Ok(Ok(RaftReply(Reply::ReadIndex { index: Some(index) }))) => index,
+            Ok(Ok(_)) => return Err("the leader gave no read index"),
+            Ok(Err(_)) | Err(_) => return Err("the leader did not answer in time"),
+        };
+        let Some(last) = index.checked_sub(1) else {
+            return Ok(());
+        };
+        let timed_out = CommitError::TimedOut {
+            what: "read",
+            timeout: patience,
+        };
+        self.applied_through(last, deadline, timed_out)
+            .await
+            .map_err(|_| "the read index was not applied in time")
+    }
+
+    /// The read index of `term` with no round, while this member holds its
+    /// leader lease for `term` ([`Group::admit_local_ack`]). The lease is
+    /// shorter than `election_max` by the clock drift bound, so no voter
+    /// that answered within it grants a successor a vote yet: no other
+    /// leader exists and every answered trim is in this log. That rests on
+    /// the clocks drifting no more than `clock_drift_ppm` (see
+    /// `docs/per-shard-raft.md`, "Head trims").
+    fn leased_index(&self, term: u64) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        self.admit_local_ack(term).ok()?;
+        // Read after the check: a commit index seen before it could be of
+        // a term already over.
+        let committed = {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            metrics.local_committed.map_or(0, |id| id.index + 1)
+        };
+        let answered = *self.answered.lock();
+        let answered = answered
+            .filter(|at| at.term == term)
+            .map_or(0, |at| at.index + 1);
+        #[cfg(test)]
+        self.lease_reads.fetch_add(1, Ordering::Relaxed);
+        Some(committed.max(answered))
+    }
+
+    /// Wait to apply `bound` from [`Group::leased_index`], then check the
+    /// term is still open, as [`Group::confirm_read`] does.
+    async fn lease_read(&self, term: u64, bound: u64) -> Result<(), &'static str> {
+        if let Some(last) = bound.checked_sub(1) {
+            let patience = Duration::from_millis(self.pace.timers.election_max);
+            let timed_out = CommitError::TimedOut {
+                what: "read",
+                timeout: patience,
+            };
+            self.applied_through(last, tokio::time::Instant::now() + patience, timed_out)
+                .await
+                .map_err(|_| "the read index was not applied in time")?;
+        }
+        if self.open_term() != Some(term) {
+            return Err("the shard closed while the read waited for its apply");
+        }
+        Ok(())
+    }
+
+    /// One past the index a reader of `term` must have applied: the read
+    /// index, or past it a write answered on a written majority. That write
+    /// is of this term and on a majority, so it commits unless this member
+    /// stops leading. Shared by this leader's reads and its followers'.
+    async fn confirmed_index(&self, term: u64) -> Result<u64, CommitError> {
+        let bound = self.read_index(term).await?;
+        let answered = *self.answered.lock();
+        let answered = answered
+            .filter(|at| at.term == term)
+            .map_or(0, |at| at.index + 1);
+        Ok(bound.max(answered))
     }
 
     /// One past the index a reader must have applied before it reads: the

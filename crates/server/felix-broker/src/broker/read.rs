@@ -55,6 +55,9 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&handle.state, at, false).await?;
+        super::subscribe::await_pending_trim(log, Some(from), stream, shard).await?;
         let oldest = log.readable_base();
         if from < oldest {
             return Err(log.too_old(oldest, from));

@@ -9,7 +9,7 @@ use super::keys::{StreamKeyRef, TopicKey, TopicKeyRef};
 use super::metadata::{ConsistencyLevel, StreamMetadata};
 use super::publish::LogDelivery;
 use crate::durable::StreamLog;
-use crate::error::{BrokerError, Result};
+use crate::error::{BrokerError, NotReadable, Result};
 use crate::stream::{ReadBound, StreamState};
 
 /// Byte ceiling on the replay ring refill at startup.
@@ -39,6 +39,44 @@ pub trait EngineLogs: Send + Sync + std::fmt::Debug {
         stream: &'a str,
         through: u64,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+/// Asked before a read of a stream on its engine's log. A follower's log
+/// may not hold a trim the leader has already answered, and a deposed
+/// leader that has not heard its successor may not either, so the engine
+/// first brings the member up to a read index the current leader gave, or
+/// refuses the read.
+pub trait FollowerReads: Send + Sync + std::fmt::Debug {
+    /// Ok when this broker may serve the read now. `tail` is a read that
+    /// starts at the committed tail, a `Latest` or plain subscribe: a
+    /// leader serves it at once and answers `Some` of the term it leads, a
+    /// follower still applies the read index, since its own tail can be
+    /// below a floor the leader answered. Live delivery is never asked.
+    #[allow(clippy::type_complexity)]
+    fn before_read<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        shard: u32,
+        tail: bool,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = std::result::Result<Option<u64>, NotReadable>> + Send + 'a>,
+    >;
+
+    /// After a tail subscriber that [`FollowerReads::before_read`] let
+    /// through on a leader's `term` is registered. Ok when the member still
+    /// leads `term`, so a later deposal ends the subscriber. Otherwise a
+    /// retryable refusal, and the caller drops the registration: a barrier
+    /// after registering cannot cover what was delivered before it.
+    fn after_tail_join<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        shard: u32,
+        term: u64,
+    ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<(), NotReadable>> + Send + 'a>>;
 }
 
 /// A record's payload and headers block, the bytes the replay ring holds for it.

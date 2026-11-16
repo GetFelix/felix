@@ -223,10 +223,13 @@ a writer fenced by a newer trim can tell who trimmed past it.
 
 Answered with `trim_ok` once the trim is committed (on a `Quorum` stream,
 once the committed mark passes it), after which no read is served below the
-floor (on a shard that runs on Raft, a member that holds the trim waits
-for its own commit to pass it before it answers a read; a follower that
-does not hold it yet can still serve below the floor until it arrives,
-[#2603](https://github.com/GetFelix/felix/issues/2603)). A trim with `before` at or below the current floor writes nothing and
+floor. On a shard that runs on Raft a follower first applies a read index
+asked of the leader, so it holds every answered trim, and refuses the read
+as retryable when it cannot; until the fleet finalizes `raft_follower_read`
+it redirects such a subscribe to the leader instead. A leader confirms by
+a read-index round that it still leads before any read but a tail
+subscribe, so a leader cut off from a successor that trimmed refuses the
+read as retryable. A trim with `before` at or below the current floor writes nothing and
 answers with the floor, but only when its tail matches: a stale no-op is
 refused like any other trim. Refusals:
 
