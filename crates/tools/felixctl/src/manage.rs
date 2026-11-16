@@ -460,6 +460,15 @@ fn print_created(out: &Output, what: &str, answer: Answer) -> anyhow::Result<()>
         format!("{what} already exists with these settings")
     };
     out.text(&verb)?;
+    for warning in body
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        eprintln!("warning: {warning}");
+    }
     print_one(out, &body)
 }
 

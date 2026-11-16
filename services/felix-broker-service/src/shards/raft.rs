@@ -50,6 +50,10 @@ const ASK_WITHIN: Duration = Duration::from_secs(5);
 /// How many engine markers a pass reads at once.
 const MARKER_READS: usize = 16;
 
+/// Shards no group forms for because placement names fewer brokers than the
+/// stream's replication factor.
+pub(crate) const SHORT_PLACEMENT: &str = "felix_broker_raft_shards_short_placement";
+
 /// Raft shards open here whose group's voters are not the brokers placement
 /// names for the shard.
 pub(crate) const OFF_PLACEMENT: &str = "felix_broker_raft_shards_off_placement";
@@ -95,6 +99,9 @@ pub(crate) struct RaftShards {
     /// Shards already reported as off their placement, so each is logged
     /// once per time it happens.
     off_placement: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// The placement generation each held-back short shard was last warned
+    /// for, so a placement version warns once.
+    short_warned: parking_lot::Mutex<HashMap<ShardKey, u64>>,
     /// Shards whose directory holds a log with no copy id, logged once.
     carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Limits the warning for a shard whose open waits on the open-file limit.
@@ -215,6 +222,7 @@ impl RaftShards {
             #[cfg(test)]
             retention_gate: retention::Gate::default(),
             carried_over: parking_lot::Mutex::default(),
+            short_warned: parking_lot::Mutex::default(),
             held_warn: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
@@ -676,6 +684,39 @@ impl Reads {
     }
 }
 
+/// A shard held back because placement names fewer brokers than its
+/// replication factor.
+struct ShortShard {
+    key: ShardKey,
+    generation: u64,
+    replication_factor: u32,
+    brokers: Vec<String>,
+}
+
+impl RaftShards {
+    /// Sets the held-back gauge and warns once per shard and placement
+    /// generation. The hold is deliberate, so without this it is silent.
+    /// Returns how many warnings it logged.
+    fn report_short(&self, short: &[ShortShard]) -> usize {
+        let mut logged = 0;
+        let mut warned = self.short_warned.lock();
+        warned.retain(|key, _| short.iter().any(|held| &held.key == key));
+        for held in short {
+            if warned.insert(held.key.clone(), held.generation) != Some(held.generation) {
+                tracing::warn!(
+                    shard = ?held.key,
+                    replication_factor = held.replication_factor,
+                    placed = ?held.brokers,
+                    "no Raft group forms: placement names fewer brokers than the stream's replication factor"
+                );
+                logged += 1;
+            }
+        }
+        metrics::gauge!(SHORT_PLACEMENT).set(short.len() as f64);
+        logged
+    }
+}
+
 /// The brokers placement names for a shard, lowest id first.
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
@@ -732,6 +773,7 @@ impl EngineShards for RaftShards {
             // Every Raft shard in the feed, and whether its placement names
             // as many brokers as the stream asks for.
             let mut fed: HashMap<ShardKey, (ShardAssignment, bool)> = HashMap::default();
+            let mut wanted_rf: HashMap<ShardKey, u32> = HashMap::default();
             let mut placed = HashMap::default();
             for key in streams {
                 let metadata = self
@@ -758,6 +800,9 @@ impl EngineShards for RaftShards {
                 placed.insert(key.clone(), assignment.leader.clone());
                 let full = wanted
                     .is_some_and(|wanted| brokers_of(&assignment).len() == wanted.max(1) as usize);
+                if let Some(wanted) = wanted {
+                    wanted_rf.insert(key.clone(), wanted);
+                }
                 fed.insert(key, (assignment, full));
             }
             *self.placed.lock() = placed;
@@ -800,17 +845,34 @@ impl EngineShards for RaftShards {
                 }
             }
             let mut off_placement = 0_u32;
+            let mut short: Vec<ShortShard> = Vec::new();
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
+                let held = || ShortShard {
+                    key: key.clone(),
+                    generation: assignment.generation,
+                    replication_factor: wanted_rf.get(key).copied().unwrap_or(1),
+                    brokers: brokers.iter().map(|broker| broker.to_string()).collect(),
+                };
                 if !open.contains_key(key) {
+                    // A shard already counted short stays counted while it
+                    // cannot be opened: a pass that could not look says
+                    // nothing new, and the gauge and warning must not flap.
+                    let keep = !*full && self.short_warned.lock().contains_key(key);
                     // Held by the restore gate: the pass after it opens
                     // the root opens the members.
                     let Some(root) = self.root.get() else {
+                        if keep {
+                            short.push(held());
+                        }
                         continue;
                     };
                     if !brokers.contains(self.local.as_str())
                         && !self.claimed(key, assignment.incarnation, &mut reads).await
                     {
+                        if keep {
+                            short.push(held());
+                        }
                         continue;
                     }
                     match self.open_member(key, assignment, root).await {
@@ -824,6 +886,9 @@ impl EngineShards for RaftShards {
                             if self.carried_over.lock().insert(key.clone()) {
                                 tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
                             }
+                            if keep {
+                                short.push(held());
+                            }
                             continue;
                         }
                         // Also tried again on the next pass; counted with
@@ -834,10 +899,16 @@ impl EngineShards for RaftShards {
                             if self.held_warn.lock().due(key) {
                                 tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard: the open-file limit is exhausted; opening on a later pass");
                             }
+                            if keep {
+                                short.push(held());
+                            }
                             continue;
                         }
                         Err(err) => {
                             tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard");
+                            if keep {
+                                short.push(held());
+                            }
                             continue;
                         }
                     }
@@ -855,12 +926,16 @@ impl EngineShards for RaftShards {
                     .runtime
                     .status(key)
                     .is_some_and(|status| status.term == 0 && status.last_index.is_none());
+                if !*full && blank {
+                    short.push(held());
+                }
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
                     self.form(key.clone(), brokers, assignment.incarnation);
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
+            self.report_short(&short);
             // Kept only for the incarnation the member runs: a version counts
             // within one stream incarnation.
             let targets = fed

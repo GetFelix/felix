@@ -3642,7 +3642,11 @@ Membership changes are not built yet
   answers "not ready". Placement fills a short set only after the shard's
   leader has reported to it, which a Raft shard does not do, so today a
   shard placed short stays short: create a stream once as many brokers as
-  its replication factor are registered.
+  its replication factor are registered. The hold is not silent: the broker
+  warns once per shard and placement generation, naming the shard, the
+  replication factor and the brokers placed, and counts held shards in
+  `felix_broker_raft_shards_short_placement`. The control plane's create
+  response warns when the replication factor exceeds the registered brokers.
 - One broker forms the group: the one with the lowest id in the set. It
   first asks every other broker which copy of the shard it holds and
   whether a group has reached that copy, with Raft pre-votes, which change
