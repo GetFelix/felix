@@ -54,6 +54,15 @@ pub struct ForwardPublish {
 pub struct ForwardProducer {
     pub producer_id: u64,
     pub sequence: u64,
+    /// Each record takes a sequence of its own, from `sequence` up, rather
+    /// than the batch taking one. `true` travels as
+    /// `RecordSequencedForwardPublish`, sent only to an owner that advertised
+    /// [`PeerCapabilities::RECORD_SEQUENCED_FORWARDS`]. `false` is the batch
+    /// as it always travelled, which is also how a re-send of a batch cut
+    /// partway must go, since it is finished as one batch.
+    ///
+    /// [`PeerCapabilities::RECORD_SEQUENCED_FORWARDS`]: super::PeerCapabilities::RECORD_SEQUENCED_FORWARDS
+    pub per_record: bool,
 }
 
 /// How the origin publisher asked for its write to be acknowledged.

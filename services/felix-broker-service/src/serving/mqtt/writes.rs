@@ -295,7 +295,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             .map(|r| Some(r.headers.clone()))
             .collect();
         Some(
-            self.forward(batch, &target, &payloads, &headers, deadline)
+            self.forward(batch, &target, &payloads, &headers, true, deadline)
                 .await,
         )
     }
@@ -404,7 +404,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                     incarnation,
                 };
                 return self
-                    .forward(batch, &target, payloads, headers, deadline)
+                    .forward(batch, &target, payloads, headers, false, deadline)
                     .await;
             }
             (Dispatch::Unavailable(_), _) if on_raft => return Sent::Leaderless,
@@ -540,6 +540,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         target: &ForwardTarget,
         payloads: &[Bytes],
         headers: &[Option<Bytes>],
+        per_record: bool,
         deadline: Option<Instant>,
     ) -> Sent {
         // The owner checks the client's own token again, so a connection
@@ -571,6 +572,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             Some(ForwardProducer {
                 producer_id: batch.producer_id,
                 sequence: batch.sequence,
+                per_record,
             }),
             deadline.saturating_duration_since(Instant::now()),
         )

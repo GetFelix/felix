@@ -99,6 +99,7 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (57, Kind::Raft),
         (58, Kind::RaftAnswer),
         (64, Kind::PlainSequencedForwardPublish),
+        (65, Kind::RecordSequencedForwardPublish),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);

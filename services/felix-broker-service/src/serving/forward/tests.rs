@@ -764,6 +764,7 @@ async fn a_sequenced_forward_without_headers_is_never_resent_on_the_legacy_kind(
         Some(felix_wire::internal::ForwardProducer {
             producer_id: 7,
             sequence: 0,
+            per_record: false,
         }),
         Duration::from_secs(30),
     )

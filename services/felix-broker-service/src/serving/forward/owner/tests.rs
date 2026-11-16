@@ -386,6 +386,7 @@ fn sequenced(payload: &'static [u8]) -> ForwardPublish {
         producer: Some(ForwardProducer {
             producer_id: 77,
             sequence: 0,
+            per_record: false,
         }),
         ..forwarded()
     }
@@ -470,6 +471,32 @@ async fn a_sequenced_forward_without_a_block_is_written_once() {
         next_offset(&broker).await,
         1,
         "the re-send was written again"
+    );
+}
+
+/// **A hybrid owner refuses records that each take a sequence**, before
+/// writing any, as a kind it does not take: it would hold them as one batch
+/// at the first sequence, and the requester sends them one by one instead.
+#[tokio::test]
+async fn a_hybrid_owner_refuses_records_that_each_take_a_sequence() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let mut publish = sequenced(b"one");
+    publish.payloads.push(Bytes::from_static(b"two"));
+    publish.headers = None;
+    if let Some(producer) = publish.producer.as_mut() {
+        producer.per_record = true;
+    }
+    match handler.apply(over_the_wire(publish)).await {
+        InternalMessage::ForwardPublishError(err) => {
+            assert_eq!(err.code, ErrorCode::UnsupportedKind, "{}", err.detail);
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(
+        next_offset(&broker).await,
+        0,
+        "a refused forward was written"
     );
 }
 
@@ -1684,17 +1711,31 @@ mod on_raft {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
-        // A sequenced batch of several records takes a sequence per record
-        // and lands in order; sent again, it is answered from the log.
+        // A new sequenced batch of several records is refused whole, with
+        // nothing written.
         let mut several = plain(b"several");
         several.payloads.push(Bytes::from_static(b"records"));
         several.headers = None;
         if let Some(producer) = several.producer.as_mut() {
             producer.sequence += 1;
         }
+        match handler.apply(several.clone()).await {
+            InternalMessage::ForwardPublishError(err) => {
+                // Not `UnsupportedKind`, which the requester answers by
+                // sending the batch again in the older form.
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("more than one"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // Marked as records that each take a sequence, they land in order;
+        // sent again, they are answered from the log.
+        if let Some(producer) = several.producer.as_mut() {
+            producer.per_record = true;
+        }
         let both = (third.0 + 2, third.0 + 3);
         for _ in 0..2 {
-            match handler.apply(several.clone()).await {
+            match handler.apply(over_the_wire(several.clone())).await {
                 InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(both)),
                 other => panic!("expected an acknowledgement, got {other:?}"),
             }
@@ -1724,6 +1765,37 @@ mod on_raft {
                 .map(Bytes::from_static)
                 .to_vec()
         );
+
+        // Cut partway: the first record is held, the second reuses a held
+        // sequence. Answered as a lost leadership, so the requester sends
+        // each again, and the third is not written past the refused one.
+        let mut cut = several.clone();
+        cut.payloads = ["several", "changed", "later"].map(Bytes::from).to_vec();
+        match handler.apply(cut).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::LeadershipLost, "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // Refused at its first record: nothing was written, so the refusal
+        // is passed on and not sent again.
+        let mut refused = several.clone();
+        if let Some(producer) = refused.producer.as_mut() {
+            producer.sequence += 1;
+        }
+        refused.payloads = vec![Bytes::from_static(b"changed")];
+        refused.payloads.push(Bytes::from_static(b"later"));
+        match handler.apply(refused).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::StorageFailed, "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        let stored = broker
+            .read_durable(TENANT, NAMESPACE, STREAM, 0, both.0, 1 << 20)
+            .await
+            .expect("read");
+        assert_eq!(stored.len(), 3, "a cut forward wrote past its refusal");
         EngineShards::shutdown(&*shards).await;
     }
 
@@ -1774,6 +1846,7 @@ mod on_raft {
                 producer: Some(ForwardProducer {
                     producer_id: 77,
                     sequence,
+                    per_record: false,
                 }),
                 ..forwarded()
             };
@@ -1872,6 +1945,19 @@ mod on_raft {
     struct Handlers {
         by_node: HashMap<String, ForwardingHandler>,
         asked: std::sync::Mutex<Vec<String>>,
+        kinds: std::sync::Mutex<Vec<felix_wire::internal::Kind>>,
+        offered: PeerCapabilities,
+    }
+
+    impl Handlers {
+        fn new(by_node: HashMap<String, ForwardingHandler>, offered: PeerCapabilities) -> Self {
+            Self {
+                by_node,
+                asked: std::sync::Mutex::default(),
+                kinds: std::sync::Mutex::default(),
+                offered,
+            }
+        }
     }
 
     impl PeerRequester for Handlers {
@@ -1882,11 +1968,12 @@ mod on_raft {
             message: InternalMessage,
         ) -> std::result::Result<InternalMessage, PeerError> {
             self.asked.lock().expect("lock").push(node_id.to_string());
+            self.kinds.lock().expect("lock").push(message.kind());
             Ok(self.by_node[node_id].handle(message).await)
         }
 
         fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
-            Some(PeerCapabilities::FORWARD_OFFSETS)
+            Some(self.offered)
         }
 
         async fn capabilities(
@@ -1924,10 +2011,7 @@ mod on_raft {
                 (member.name.to_string(), handler)
             })
             .collect();
-        let handlers = Handlers {
-            by_node,
-            asked: std::sync::Mutex::default(),
-        };
+        let handlers = Handlers::new(by_node, PeerCapabilities::FORWARD_OFFSETS);
         let follower = &members[(leader + 1) % members.len()];
         fixture::until("the follower knows who leads", || {
             matches!(
@@ -1975,6 +2059,125 @@ mod on_raft {
             .await
             .expect("read");
         assert_eq!(&read[0].payload[..], b"forwarded");
+        fixture::stop(&members).await;
+    }
+
+    /// **An MQTT batch written on a member that does not lead goes to the
+    /// leader in one forward when the leader takes records that each take a
+    /// sequence, and one forward per record when it does not.** Either way
+    /// the records land once, in order, each at its own sequence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_mqtt_batch_is_forwarded_whole_only_to_a_leader_that_takes_it() {
+        use crate::serving::mqtt::BrokerWrites;
+        use felix_mqtt::{MountedTopic, Record, WriteBatch, Writes};
+        use felix_wire::internal::Kind;
+
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key(STREAM, 0);
+        let credentials = Credentials::new();
+        for member in &members {
+            member.broker.record_headers_when(|| true);
+            member.broker.read_record_headers_when(|| true);
+            member.broker.allow_raft_record_headers_when(|| true);
+        }
+        let follower = &members[(leader + 1) % members.len()];
+        fixture::until("the follower knows who leads", || {
+            matches!(
+                EngineShards::dispatch(&*follower.shards, &orders, &fixture::addr_of),
+                Some(Dispatch::Forward { .. })
+            )
+        })
+        .await;
+        let handlers = |offered| {
+            let by_node = members
+                .iter()
+                .map(|member| {
+                    let (router, ingress) = fixture::routes(&member.shards);
+                    let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+                    engine.set_raft(Arc::clone(&member.shards));
+                    let handler = ForwardingHandler::new(
+                        Arc::clone(&member.broker),
+                        engine,
+                        router,
+                        fixture::addr_of(member.name).expect("addr").to_string(),
+                        Duration::from_secs(10),
+                        Arc::clone(&credentials.auth),
+                    );
+                    (member.name.to_string(), handler)
+                })
+                .collect();
+            Arc::new(Handlers::new(by_node, offered))
+        };
+        let token = credentials.publisher();
+        let batch = |sequence: u64, topics: &[&str]| WriteBatch {
+            tenant_id: TENANT.into(),
+            credential: Some(felix_mqtt::Credential::new(&token)),
+            target: MountedTopic {
+                namespace: NAMESPACE.into(),
+                stream: STREAM.into(),
+                shard: 0,
+            },
+            producer_id: 41,
+            sequence,
+            records: topics
+                .iter()
+                .map(|topic| Record {
+                    payload: Bytes::copy_from_slice(topic.as_bytes()),
+                    headers: Bytes::new(),
+                })
+                .collect(),
+            acknowledged: true,
+        };
+        let writes = |handlers: &Arc<Handlers>| {
+            let (_, ingress) = fixture::routes(&follower.shards);
+            let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+            engine.set_raft(Arc::clone(&follower.shards));
+            BrokerWrites::new(
+                Arc::clone(&follower.broker),
+                engine,
+                Duration::from_secs(10),
+            )
+            .with_forwarding(Arc::clone(handlers), Duration::from_secs(30))
+        };
+
+        let current = handlers(
+            PeerCapabilities::FORWARD_OFFSETS.union(PeerCapabilities::RECORD_SEQUENCED_FORWARDS),
+        );
+        writes(&current)
+            .write(batch(0, &["a", "b", "c"]))
+            .await
+            .expect("written");
+        assert_eq!(
+            *current.kinds.lock().expect("lock"),
+            [Kind::RecordSequencedForwardPublish]
+        );
+
+        let older = handlers(PeerCapabilities::FORWARD_OFFSETS);
+        writes(&older)
+            .write(batch(3, &["d", "e"]))
+            .await
+            .expect("written");
+        let kinds = older.kinds.lock().expect("lock").clone();
+        assert_eq!(kinds.len(), 2, "{kinds:?}");
+        assert!(
+            !kinds.contains(&Kind::RecordSequencedForwardPublish),
+            "{kinds:?}"
+        );
+
+        let read: Vec<_> = members[leader]
+            .broker
+            .read_durable(TENANT, NAMESPACE, STREAM, 0, 0, 1 << 20)
+            .await
+            .expect("read")
+            .into_iter()
+            .map(|record| record.payload)
+            .collect();
+        assert_eq!(
+            read,
+            ["a", "b", "c", "d", "e"]
+                .map(|payload: &'static str| Bytes::from_static(payload.as_bytes()))
+                .to_vec()
+        );
         fixture::stop(&members).await;
     }
 }

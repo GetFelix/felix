@@ -290,6 +290,14 @@ pub enum Kind {
     ///
     /// [`PeerCapabilities::PLAIN_SEQUENCED_FORWARDS`]: super::PeerCapabilities::PLAIN_SEQUENCED_FORWARDS
     PlainSequencedForwardPublish = 64,
+    /// `AuthorizedForwardPublish`, a byte saying whether each record's
+    /// key-and-headers block follows, the blocks if so, then the producer id
+    /// and the first record's sequence: each record is a batch of its own at
+    /// the next sequence. Sent only to a peer that offered
+    /// [`PeerCapabilities::RECORD_SEQUENCED_FORWARDS`].
+    ///
+    /// [`PeerCapabilities::RECORD_SEQUENCED_FORWARDS`]: super::PeerCapabilities::RECORD_SEQUENCED_FORWARDS
+    RecordSequencedForwardPublish = 65,
 }
 
 impl Kind {
@@ -361,6 +369,7 @@ impl Kind {
             62 => Ok(Kind::SealAckOk),
             63 => Ok(Kind::FromCopy),
             64 => Ok(Kind::PlainSequencedForwardPublish),
+            65 => Ok(Kind::RecordSequencedForwardPublish),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

@@ -173,6 +173,20 @@ impl ForwardingHandler {
         if on_raft {
             return self.apply_on_raft(&key, &handle, publish, publisher).await;
         }
+        // Off Raft a batch takes one sequence, so records that each take one
+        // are refused before anything is written, and the requester sends
+        // them one by one.
+        if publish.producer.is_some_and(|producer| producer.per_record)
+            && publish.payloads.len() > 1
+        {
+            metrics::record_served(metrics::OUTCOME_REFUSED);
+            let detail = "records that each take a sequence are taken only on Raft";
+            return error(
+                correlation_id,
+                ErrorCode::UnsupportedKind,
+                detail.to_string(),
+            );
+        }
         let fenced = match self.ingress.fence().admit(&key, publish.shard.generation) {
             Ok(fenced) => fenced,
             Err(refused) => {
@@ -291,103 +305,71 @@ impl ForwardingHandler {
             };
             error(correlation_id, code, refused.to_string())
         };
+        // A refused sequence is answered as the hybrid refuses it. So is a
+        // batch the engine does not take: answered `Unavailable` it would be
+        // sent again, and `UnsupportedKind` would be read as an owner too old
+        // for the request.
+        let refused = |refused: RaftRefusal| match refused {
+            RaftRefusal::Broker(
+                err @ (felix_broker::BrokerError::SequenceGap { .. }
+                | felix_broker::BrokerError::UnknownProducer { .. }
+                | felix_broker::BrokerError::SequenceExpired { .. }
+                | felix_broker::BrokerError::SequenceReused { .. }
+                | felix_broker::BrokerError::NotOnEngineStream { .. }),
+            ) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                error(correlation_id, ErrorCode::StorageFailed, err.to_string())
+            }
+            refused => not_taken(refused),
+        };
+        // As on the hybrid: a sequenced forward can be sent again to whoever
+        // leads now.
+        let resendable = |err: CommitError| {
+            let code = match err {
+                CommitError::LeadershipLost { .. } => ErrorCode::LeadershipLost,
+                _ => ErrorCode::StorageFailed,
+            };
+            (code, err.to_string())
+        };
         let committed = match publish.producer {
-            Some(producer) => {
-                // Several records take a sequence each, from the one named,
-                // and are proposed back to back: each once the one before it
-                // is on this log, not once it commits.
-                let headers = attribution.headers;
-                let mut proposed = Vec::with_capacity(publish.payloads.len());
-                let mut refused = None;
-                for (at, payload) in publish.payloads.into_iter().enumerate() {
-                    let turn = self
-                        .broker
-                        .producer_turn(handle, producer.producer_id)
-                        .await;
-                    let attribution = felix_broker::Attribution {
-                        publisher: attribution.publisher.clone(),
-                        headers: headers.as_ref().map(|headers| vec![headers[at].clone()]),
-                    };
-                    match self.engine.publish_idempotent_on_raft(
-                        &self.broker,
-                        handle,
-                        key,
-                        term,
-                        turn,
-                        producer.sequence + at as u64,
-                        SequenceReuse::Refuse,
-                        vec![payload],
-                        attribution,
-                        self.quorum_timeout,
-                    ) {
-                        Some(Ok(record)) => proposed.push(record),
-                        Some(Err(err)) => {
-                            refused = Some(Some(err));
-                            break;
-                        }
-                        None => {
-                            refused = Some(None);
-                            break;
-                        }
-                    }
-                }
-                let proposed_any = !proposed.is_empty();
-                let mut offsets: Option<(u64, u64)> = None;
-                let mut failed = None;
-                for record in proposed {
-                    match record.complete().await {
-                        Ok(placed) => {
-                            if let Some((first, last)) = placed {
-                                offsets = Some((offsets.map_or(first, |o| o.0), last));
-                            }
-                        }
-                        Err(err) => {
-                            failed = Some(err);
-                            break;
-                        }
-                    }
-                }
-                match (failed, refused) {
-                    (None, None) => Ok(offsets),
-                    // As on the hybrid: a sequenced forward can be sent
-                    // again to whoever leads now.
-                    (Some(err), _) => Err((
-                        match err {
-                            CommitError::LeadershipLost { .. } => ErrorCode::LeadershipLost,
-                            _ => ErrorCode::StorageFailed,
-                        },
-                        err.to_string(),
-                    )),
-                    // Some records are written and the rest are not. Told as
-                    // a lost leadership, the requester sends each again and
-                    // has it answered from the log.
-                    (None, Some(refused)) if proposed_any => Err((
+            Some(producer) if producer.per_record => {
+                match self
+                    .propose_records(key, handle, term, producer, publish.payloads, attribution)
+                    .await
+                {
+                    Records::Committed(Ok(offsets)) => Ok(offsets),
+                    Records::Committed(Err(err)) => Err(resendable(err)),
+                    // Some records are written and the rest are not. Told the
+                    // leadership was lost, the requester sends each again and
+                    // has the written ones answered from the log.
+                    Records::Cut(refusal) => Err((
                         ErrorCode::LeadershipLost,
-                        refused.map_or_else(
-                            || "stopped leading partway through the batch".to_string(),
-                            |err| format!("partway through the batch: {err}"),
-                        ),
+                        format!("partway through the records: {refusal}"),
                     )),
-                    // The sequence was refused, as the hybrid refuses it.
-                    // So is a batch the engine does not take: answered
-                    // `Unavailable` it would be sent again, and
-                    // `UnsupportedKind` would be read as an owner too old
-                    // for the request.
-                    (
-                        None,
-                        Some(Some(RaftRefusal::Broker(
-                            err @ (felix_broker::BrokerError::SequenceGap { .. }
-                            | felix_broker::BrokerError::UnknownProducer { .. }
-                            | felix_broker::BrokerError::SequenceExpired { .. }
-                            | felix_broker::BrokerError::SequenceReused { .. }
-                            | felix_broker::BrokerError::NotOnEngineStream { .. }),
-                        ))),
-                    ) => {
-                        metrics::record_served(metrics::OUTCOME_ERROR);
-                        return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
-                    }
-                    (None, Some(Some(refused))) => return not_taken(refused),
-                    (None, Some(None)) => return not_taken(RaftRefusal::NotLeading { term }),
+                    Records::NotTaken(refusal) => return refused(refusal),
+                }
+            }
+            Some(producer) => {
+                let turn = self
+                    .broker
+                    .producer_turn(handle, producer.producer_id)
+                    .await;
+                let proposed = self.engine.publish_idempotent_on_raft(
+                    &self.broker,
+                    handle,
+                    key,
+                    term,
+                    turn,
+                    producer.sequence,
+                    SequenceReuse::Refuse,
+                    publish.payloads,
+                    attribution,
+                    self.quorum_timeout,
+                );
+                match proposed {
+                    Some(Ok(proposed)) => proposed.complete().await.map_err(resendable),
+                    Some(Err(refusal)) => return refused(refusal),
+                    None => return not_taken(RaftRefusal::NotLeading { term }),
                 }
             }
             None => {
@@ -421,6 +403,76 @@ impl ForwardingHandler {
                 metrics::record_served(metrics::OUTCOME_ERROR);
                 error(correlation_id, code, detail)
             }
+        }
+    }
+
+    /// Propose each record of a forward as a batch of its own at the next
+    /// sequence, back to back: each once the one before it is on this log,
+    /// not once it commits. Answered once all commit, with the first's first
+    /// offset and the last's last.
+    async fn propose_records(
+        &self,
+        key: &ShardKey,
+        handle: &felix_broker::StreamHandle,
+        term: u64,
+        producer: ForwardProducer,
+        payloads: Vec<bytes::Bytes>,
+        attribution: felix_broker::Attribution,
+    ) -> Records {
+        let mut proposed = Vec::with_capacity(payloads.len());
+        let mut cut = None;
+        for (at, payload) in payloads.into_iter().enumerate() {
+            let turn = self
+                .broker
+                .producer_turn(handle, producer.producer_id)
+                .await;
+            let attribution = felix_broker::Attribution {
+                publisher: attribution.publisher.clone(),
+                headers: attribution
+                    .headers
+                    .as_ref()
+                    .map(|headers| vec![headers[at].clone()]),
+            };
+            let refusal = match self.engine.publish_idempotent_on_raft(
+                &self.broker,
+                handle,
+                key,
+                term,
+                turn,
+                producer.sequence + at as u64,
+                SequenceReuse::Refuse,
+                vec![payload],
+                attribution,
+                self.quorum_timeout,
+            ) {
+                Some(Ok(record)) => {
+                    proposed.push(record);
+                    continue;
+                }
+                Some(Err(refusal)) => refusal,
+                None => RaftRefusal::NotLeading { term },
+            };
+            // The records after a refused one are not proposed, so the log
+            // never holds a record of this forward past a gap.
+            if proposed.is_empty() {
+                return Records::NotTaken(refusal);
+            }
+            cut = Some(refusal);
+            break;
+        }
+        let mut offsets: Option<(u64, u64)> = None;
+        for record in proposed {
+            match record.complete().await {
+                Ok(Some((first, last))) => {
+                    offsets = Some((offsets.map_or(first, |(first, _)| first), last));
+                }
+                Ok(None) => {}
+                Err(err) => return Records::Committed(Err(err)),
+            }
+        }
+        match cut {
+            Some(refusal) => Records::Cut(refusal),
+            None => Records::Committed(Ok(offsets)),
         }
     }
 
@@ -1193,3 +1245,13 @@ fn outcome(written: felix_storage::ConditionalWrite) -> ForwardCacheOutcome {
 
 #[cfg(test)]
 mod tests;
+
+/// How the records of a forward that sequences each one ended.
+enum Records {
+    /// All were proposed, and this is how their commits ended.
+    Committed(Result<Option<(u64, u64)>, CommitError>),
+    /// None was proposed.
+    NotTaken(RaftRefusal),
+    /// The first records committed and the rest were not proposed.
+    Cut(RaftRefusal),
+}
