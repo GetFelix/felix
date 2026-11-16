@@ -179,3 +179,82 @@ async fn a_raft_shard_is_read_up_to_its_commit_index() {
     assert_eq!(block.key, Some(Bytes::from_static(b"plant/a")));
     EngineShards::shutdown(&*shards).await;
 }
+
+/// A read waiting on a shard returns as soon as the shard's readers are
+/// ended, and says why: moved away, or stopped with nobody named.
+#[tokio::test]
+async fn a_shard_that_stops_being_served_here_ends_its_reads() {
+    use crate::test_support::leader::{self, Leader};
+
+    let mut fixture = Leader::start().await;
+    let _lease = fixture.hold_lease();
+    let reads = Arc::new(BrokerReads::new(
+        Arc::clone(&fixture.broker),
+        Some(Arc::clone(&fixture.ingress)),
+    ));
+    let tail = reads
+        .tail(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0)
+        .await
+        .expect("served while the lease holds");
+    let waiting = |reads: Arc<BrokerReads>| {
+        tokio::spawn(async move {
+            reads
+                .read(
+                    leader::TENANT,
+                    leader::NAMESPACE,
+                    leader::DURABLE,
+                    0,
+                    tail,
+                    1 << 20,
+                    Duration::from_secs(3600),
+                )
+                .await
+        })
+    };
+    let end = |fixture: &Leader| {
+        let broker = Arc::clone(&fixture.broker);
+        async move {
+            broker
+                .end_subscriptions(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0, None)
+                .await
+        }
+    };
+
+    // A move: the shard is someone else's.
+    let read = waiting(Arc::clone(&reads));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    fixture.fence_move(&leader::stream_key(leader::DURABLE));
+    end(&fixture).await;
+    let answer = tokio::time::timeout(Duration::from_secs(5), read)
+        .await
+        .expect("the ending wakes the read")
+        .expect("join");
+    assert_eq!(answer, Err(ReadError::NotHere));
+
+    // Once routes name the new owner, a SUBSCRIBE finds it refused.
+    fixture.cut_over(&leader::stream_key(leader::DURABLE));
+    assert_eq!(
+        reads
+            .tail(leader::TENANT, leader::NAMESPACE, leader::DURABLE, 0)
+            .await,
+        Err(ReadError::NotHere)
+    );
+
+    let fixture = Leader::start().await;
+    let lease = fixture.hold_lease();
+    let reads = Arc::new(BrokerReads::new(
+        Arc::clone(&fixture.broker),
+        Some(Arc::clone(&fixture.ingress)),
+    ));
+    // A lapsed lease: nobody to name, so the reader is stopped. Last, as
+    // the fixture's lease is bound once.
+    let read = waiting(Arc::clone(&reads));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    lease.surrender();
+    end(&fixture).await;
+    let answer = tokio::time::timeout(Duration::from_secs(5), read)
+        .await
+        .expect("the ending wakes the read")
+        .expect("join");
+    assert_eq!(answer, Err(ReadError::Stopped));
+}

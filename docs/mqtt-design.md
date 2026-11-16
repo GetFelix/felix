@@ -8,8 +8,12 @@ headers and forwarding to the shard's owner, and MQTT over WebSockets (#1700).
 Subscribe works for clean sessions at QoS 0 and 1 on shards this broker holds
 (#1692); each session runs its own reader per shard and its own filter trie,
 where the design below shares one reader and one trie per broker, which is
-follow-up work. Retained messages, persistent sessions, QoS 2 and will messages
-are not built yet.
+follow-up work. Every tail and read passes the ingress router's serving check,
+the one a QUIC subscribe passes; a SUBSCRIBE covering a shard this broker does
+not serve is refused whole, and a reader whose shard moves or loses its leader
+ends the session, woken by the same ending that ends QUIC subscribers. Each
+filter starts at the shard tails taken for its SUBACK. Retained messages,
+persistent sessions, QoS 2 and will messages are not built yet.
 
 Devices speak MQTT. This page designs a native MQTT listener, built the way the Kafka listener is
 (`crates/server/felix-kafka`, `docs/kafka-compatibility.md`), under one hard

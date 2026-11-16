@@ -8,7 +8,14 @@
 //! only place a session can fall behind: a QoS 0 message that finds it full is
 //! dropped, and a QoS 1 message makes the reader wait, which leaves the rest
 //! of the backlog in the log. A slow device therefore stalls only its own
-//! readers. `docs/mqtt-design.md`, "Subscribing".
+//! readers.
+//!
+//! A filter starts at each shard's committed tail when it is accepted, and a
+//! reader that was already running for another filter, and is behind that
+//! tail, delivers nothing below it to the new filter. A shard this broker does
+//! not serve is never read: the SUBSCRIBE is refused, and a reader whose shard
+//! moves or loses its leader ends the connection. `docs/mqtt-design.md`,
+//! "Subscribing".
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -33,7 +40,9 @@ use crate::read::{ReadError, Reads};
 
 /// Bytes asked for in one read of a shard.
 const READ_BYTES: usize = 256 * 1024;
-/// How long a read waits for a record before the reader looks again.
+/// How long a read waits for a record before the reader looks again. An
+/// append or the shard's readers being ended wakes it sooner; a commit mark
+/// that moves does not, and is seen at the next look.
 const READ_WAIT: Duration = Duration::from_millis(500);
 /// Pause before reading again after the broker could not answer.
 const RETRY_PAUSE: Duration = Duration::from_millis(200);
@@ -51,6 +60,8 @@ pub(super) enum Fetched {
     Message(Box<Outgoing>),
     /// The stream is gone; the subscription cannot continue.
     Gone,
+    /// This broker stopped serving a shard the session reads.
+    Ended(ReadError),
 }
 
 /// A reader task, stopped when it is dropped.
@@ -62,8 +73,29 @@ impl Drop for Reader {
     }
 }
 
-/// What the readers share with the connection: its filters.
-type Filters = Arc<RwLock<FilterTrie>>;
+/// What the readers share with the connection: its filters, and where each
+/// filter starts on each shard.
+type Filters = Arc<RwLock<FilterSet>>;
+
+#[derive(Default)]
+struct FilterSet {
+    trie: FilterTrie,
+    /// By filter id: the first offset of each shard the filter is given.
+    starts: HashMap<u64, HashMap<StreamShard, u64>>,
+}
+
+impl FilterSet {
+    /// The QoS `topic` is delivered at from `key` at `offset`, if any filter
+    /// wants it there.
+    fn matches(&self, topic: &str, key: &StreamShard, offset: u64) -> Option<u8> {
+        self.trie.matches_where(topic, |id| {
+            self.starts
+                .get(&id)
+                .and_then(|starts| starts.get(key))
+                .is_some_and(|start| offset >= *start)
+        })
+    }
+}
 
 /// A connection's subscriptions and the deliveries in flight to its client.
 pub(super) struct Subscriptions {
@@ -140,6 +172,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         loop {
             match fetched {
                 Fetched::Gone => return Err(End::Close("subscribe_stream_gone")),
+                // A 3.1.1 client is only closed; it reconnects, and the
+                // SUBSCRIBE is refused until the shard is served here again.
+                Fetched::Ended(ReadError::NotHere) => {
+                    return Err(End::Disconnect(
+                        ReasonCode::UseAnotherServer,
+                        Some("subscribe_moved"),
+                    ));
+                }
+                Fetched::Ended(_) => {
+                    return Err(End::Disconnect(
+                        ReasonCode::ServerBusy,
+                        Some("subscribe_stopped"),
+                    ));
+                }
                 Fetched::Message(boxed) => {
                     let outgoing = *boxed;
                     if outgoing.publish.qos != QoS::AtMostOnce && subs.at_limit() {
@@ -253,7 +299,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ) -> Result<(), (&'static str, ReasonCode)> {
         let tenant = session.principal.tenant_id();
         let wildcard = literal_prefix(filter);
-        if !subs.filters.read().unwrap().contains(filter)
+        if !subs.filters.read().unwrap().trie.contains(filter)
             && subs.shards_of.len() >= shared.settings.max_subscriptions
         {
             return Err(("subscription_limit", ReasonCode::QuotaExceeded));
@@ -282,38 +328,34 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             .map(|&shard| (target.namespace.clone(), target.stream.clone(), shard))
             .collect();
 
-        // The filter is in place before any reader starts, so a record the
-        // reader sees after the tail is matched.
-        let replaced = {
-            let mut filters = subs.filters.write().unwrap();
-            let replaced = filters.contains(filter);
-            filters.insert(filter, granted);
-            replaced
-        };
+        // Every shard's tail is taken before the filter goes in, so a refused
+        // filter changes nothing, and one a broker serves only in part is
+        // refused whole. A record committed after the SUBACK is past these
+        // tails and is matched by whichever reader reads it.
+        let mut starts = HashMap::with_capacity(keys.len());
         for key in &keys {
-            if subs.readers.contains_key(key) {
-                continue;
-            }
             let tail = shared
                 .reads
                 .tail(tenant, &key.0, &key.1, key.2)
                 .await
-                .map_err(|err| ("subscribe_unavailable", read_failure(err)));
-            let tail = match tail {
-                Ok(tail) => tail,
-                Err(err) => {
-                    if !replaced {
-                        subs.filters.write().unwrap().remove(filter);
-                        subs.prune_readers();
-                    }
-                    return Err(err);
-                }
-            };
+                .map_err(|err| ("subscribe_unavailable", read_failure(err)))?;
+            starts.insert(key.clone(), tail);
+        }
+        {
+            let mut filters = subs.filters.write().unwrap();
+            let id = filters.trie.insert(filter, granted);
+            // A replaced filter keeps reading from where it was.
+            filters.starts.entry(id).or_insert_with(|| starts.clone());
+        }
+        for key in &keys {
+            if subs.readers.contains_key(key) {
+                continue;
+            }
             let reader = tokio::spawn(read_loop(
                 shared.reads.clone(),
                 tenant.into(),
                 key.clone(),
-                tail,
+                starts[key],
                 subs.filters.clone(),
                 subs.tx.clone(),
                 session.version,
@@ -333,7 +375,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
     ) -> Result<(), End> {
         let mut reasons = Vec::with_capacity(unsubscribe.filters.len());
         for filter in &unsubscribe.filters {
-            let removed = subs.filters.write().unwrap().remove(filter.as_str());
+            let removed = {
+                let mut filters = subs.filters.write().unwrap();
+                let id = filters.trie.id_of(filter.as_str());
+                let removed = filters.trie.remove(filter.as_str());
+                if let Some(id) = id {
+                    filters.starts.remove(&id);
+                }
+                removed
+            };
             subs.shards_of.remove(filter.as_str());
             reasons.push(if removed {
                 ReasonCode::Success
@@ -358,9 +408,15 @@ fn refuse(label: &'static str, reason: ReasonCode) -> ReasonCode {
     reason
 }
 
+/// A SUBACK failure code. Each is one a 5.0 SUBACK may carry; a 3.1.1
+/// client gets 0x80 for all of them.
 fn read_failure(err: ReadError) -> ReasonCode {
     match err {
-        ReadError::Unavailable => ReasonCode::ServerUnavailable,
+        // This broker does not hold a shard the filter covers. Not a fault
+        // of the filter, and not a quota: a broker-specific limit until
+        // cross-broker reads (#1693).
+        ReadError::NotHere => ReasonCode::ImplementationSpecificError,
+        ReadError::Unavailable | ReadError::Stopped => ReasonCode::UnspecifiedError,
         ReadError::TooOld { .. } | ReadError::Gone => ReasonCode::TopicFilterInvalid,
     }
 }
@@ -383,7 +439,7 @@ async fn read_loop(
             Ok(page) => {
                 from = page.next;
                 for message in page.messages {
-                    let Some(outgoing) = match_message(&filters, &message, version) else {
+                    let Some(outgoing) = match_message(&filters, &key, &message, version) else {
                         continue;
                     };
                     let qos0 = outgoing.publish.qos == QoS::AtMostOnce;
@@ -413,6 +469,10 @@ async fn read_loop(
                 let _ = tx.send(Fetched::Gone).await;
                 return;
             }
+            Err(err @ (ReadError::NotHere | ReadError::Stopped)) => {
+                let _ = tx.send(Fetched::Ended(err)).await;
+                return;
+            }
         }
     }
 }
@@ -421,12 +481,16 @@ async fn read_loop(
 /// it, it is not an MQTT message, or it has expired.
 fn match_message(
     filters: &Filters,
+    key: &StreamShard,
     message: &crate::read::StoredMessage,
     version: Version,
 ) -> Option<Outgoing> {
     let block = RecordHeaders::decode(message.headers.clone()?).ok()?;
     let topic = std::str::from_utf8(block.key.as_ref()?).ok()?;
-    let granted = filters.read().unwrap().matches(topic)?;
+    let granted = filters
+        .read()
+        .unwrap()
+        .matches(topic, key, message.offset)?;
 
     let mut properties = Properties::default();
     let mut published = QoS::AtMostOnce;

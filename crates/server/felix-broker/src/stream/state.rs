@@ -1026,6 +1026,9 @@ impl StreamState {
         }
         state.senders.clear();
         self.rebuild_subscriber_snapshot(&state);
+        // Offset readers registered on `appended` (an MQTT session's) look
+        // again now and find the shard no longer served here.
+        self.appended.notify_waiters();
         ended
     }
 

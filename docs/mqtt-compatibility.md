@@ -341,10 +341,14 @@ mounts (`#`, `+/temp`, or one shorter than its mount's prefix) is refused.
 | `$share/...` (5.0) | 0x9E. |
 | A subscription identifier (5.0) | 0xA1. |
 | `No Local` (5.0) | 0x83. |
+| The filter covers a shard this broker does not serve | 5.0: 0x83. 3.1.1: 0x80. The whole filter is refused, never served in part. |
+| This broker cannot say right now whether it serves the shard | 5.0: 0x80. 3.1.1: 0x80. |
 
-The session is clean, so it ends with the connection. It starts at what each
-shard has committed when the `SUBACK` is sent: a message published before that
-is not delivered, and one acknowledged after it is. A record that is not past
+The session is clean, so it ends with the connection. Each filter starts at
+what each shard has committed when its `SUBACK` is sent: a message published
+before that is not delivered to it, even when another filter of the session is
+still reading older records of the same shard, and one acknowledged after it
+is. A record that is not past
 the shard's committed mark is never read, so a failover cannot take back a
 message a device has been sent. On Raft shards the bound is the group's commit
 index.
@@ -370,7 +374,16 @@ a session's position it resumes at the oldest one kept
 (`reason="retention"`). Deliveries are counted in
 `felix_mqtt_delivered_total{qos}`.
 
-This broker reads only shards it holds. Reading shards another broker owns is
+Only records published over MQTT carry a topic, so a record published over
+QUIC or Kafka to a mounted stream is not delivered to MQTT subscribers.
+
+A broker serves a subscription only from shards it holds: the shards it leads,
+or on Raft a shard whose leader it knows. A `SUBSCRIBE` whose filter covers any
+other shard is refused (table above). When a shard a session reads moves away,
+or this broker stops serving it (a lapsed lease, a Raft member that has lost its
+leader), the session ends: a 5.0 client gets `DISCONNECT` 0x9C (Use another
+server) for a move and 0x89 (Server busy) otherwise, and a 3.1.1 client is
+closed. Reading shards another broker owns is
 [#1693](https://github.com/GetFelix/felix/issues/1693).
 
 ## Not built yet

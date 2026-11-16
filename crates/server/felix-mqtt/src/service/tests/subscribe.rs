@@ -1,5 +1,6 @@
 //! SUBSCRIBE, UNSUBSCRIBE and delivery at QoS 0 and 1.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use felix_mqtt_wire::{Ack, SubAck, UnsubAck};
@@ -15,6 +16,8 @@ const WAIT: Duration = Duration::from_secs(2);
 struct FakeReads {
     shards: Mutex<Vec<Vec<StoredMessage>>>,
     appended: Notify,
+    /// Shards this broker does not serve, and how each is refused.
+    refused: Mutex<HashMap<u32, ReadError>>,
 }
 
 impl FakeReads {
@@ -22,7 +25,23 @@ impl FakeReads {
         Arc::new(Self {
             shards: Mutex::new(vec![Vec::new(), Vec::new()]),
             appended: Notify::new(),
+            refused: Mutex::default(),
         })
+    }
+
+    /// Stop serving `shard`, as a move or a lost leader does, and wake the
+    /// readers as ending its subscribers does.
+    fn refuse(&self, shard: u32, err: ReadError) {
+        self.refused.lock().unwrap().insert(shard, err);
+        self.appended.notify_waiters();
+    }
+
+    fn served(&self, shard: u32) -> Result<(), ReadError> {
+        self.refused
+            .lock()
+            .unwrap()
+            .get(&shard)
+            .map_or(Ok(()), |err| Err(*err))
     }
 
     fn append(&self, shard: usize, topic: &str, qos: &str, payload: &'static [u8]) {
@@ -69,6 +88,7 @@ impl Reads for FakeReads {
     }
 
     async fn tail(&self, _: &str, _: &str, _: &str, shard: u32) -> Result<u64, ReadError> {
+        self.served(shard)?;
         Ok(self.shards.lock().unwrap()[shard as usize].len() as u64)
     }
 
@@ -86,6 +106,7 @@ impl Reads for FakeReads {
             let notified = self.appended.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
+            self.served(shard)?;
             let messages: Vec<StoredMessage> = self.shards.lock().unwrap()[shard as usize]
                 .iter()
                 .filter(|m| m.offset >= from)
@@ -510,4 +531,93 @@ async fn without_reads_subscribe_is_still_refused() {
         suback(h.client.recv().await).reasons,
         vec![ReasonCode::NotAuthorized]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_filter_over_a_shard_not_served_here_is_refused_whole() {
+    let reads = FakeReads::new();
+    reads.refuse(1, ReadError::NotHere);
+    let mut h = subscriber(Version::V5, "good", &reads, Settings::default(), None).await;
+    h.client
+        .send(
+            sub(
+                1,
+                &[("plant/#", QoS::AtLeastOnce), ("plant/a", QoS::AtLeastOnce)],
+            ),
+            Version::V5,
+        )
+        .await;
+    assert_eq!(
+        suback(h.client.recv().await).reasons,
+        vec![
+            ReasonCode::ImplementationSpecificError,
+            ReasonCode::GrantedQos1
+        ]
+    );
+    // The refused wildcard is not served from the shard that is held.
+    reads.append(0, "plant/b", "1", b"wildcard only");
+    nothing(&mut h).await;
+    reads.append(0, "plant/a", "1", b"exact");
+    assert_eq!(
+        next_publish(&mut h).await.payload,
+        Bytes::from_static(b"exact")
+    );
+
+    let mut old = subscriber(Version::V311, "good", &reads, Settings::default(), None).await;
+    old.client
+        .send(sub(1, &[("plant/#", QoS::AtMostOnce)]), Version::V311)
+        .await;
+    assert_eq!(
+        suback(old.client.recv().await).reasons,
+        vec![ReasonCode::UnspecifiedError]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reader_whose_shard_stops_being_served_ends_the_connection() {
+    for (err, reason) in [
+        (ReadError::NotHere, ReasonCode::UseAnotherServer),
+        (ReadError::Stopped, ReasonCode::ServerBusy),
+    ] {
+        let reads = FakeReads::new();
+        let mut h = subscriber(Version::V5, "good", &reads, Settings::default(), None).await;
+        subscribe_ok(&mut h, Version::V5, "plant/a", QoS::AtLeastOnce).await;
+        reads.refuse(0, err);
+        let packet = tokio::time::timeout(WAIT, h.client.recv()).await.unwrap();
+        let Some(Packet::Disconnect(disconnect)) = packet else {
+            panic!("expected a DISCONNECT, got {packet:?}");
+        };
+        assert_eq!(disconnect.reason, reason);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_new_filter_on_a_lagging_reader_starts_at_its_suback() {
+    let reads = FakeReads::new();
+    let settings = Settings {
+        session_queue_messages: 1,
+        ..Settings::default()
+    };
+    let mut h = subscriber(Version::V5, "good", &reads, settings, Some(1)).await;
+    subscribe_ok(&mut h, Version::V5, "plant/a", QoS::AtLeastOnce).await;
+    // The reader of shard 0 falls behind: one in flight, one queued, and the
+    // rest still in the log, with a `plant/b` record among them.
+    for _ in 0..4 {
+        reads.append(0, "plant/a", "1", b"a");
+    }
+    reads.append(0, "plant/b", "1", b"before");
+    let first = next_publish(&mut h).await;
+    subscribe_ok(&mut h, Version::V5, "plant/b", QoS::AtLeastOnce).await;
+    reads.append(0, "plant/b", "1", b"after");
+    ack(&mut h, Version::V5, first.packet_id.unwrap()).await;
+    let mut b = Vec::new();
+    for _ in 0..4 {
+        let publish = next_publish(&mut h).await;
+        if publish.topic.as_str() == "plant/b" {
+            b.push(publish.payload.clone());
+        }
+        ack(&mut h, Version::V5, publish.packet_id.unwrap()).await;
+    }
+    assert_eq!(b, vec![Bytes::from_static(b"after")]);
+    nothing(&mut h).await;
 }

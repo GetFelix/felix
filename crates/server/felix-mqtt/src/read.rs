@@ -37,6 +37,11 @@ pub enum ReadError {
     TooOld { oldest: u64 },
     /// The stream is gone, or not durable.
     Gone,
+    /// Another broker serves this shard. Reading it from here is #1693.
+    NotHere,
+    /// This broker stopped serving the shard and cannot say who does now: a
+    /// lapsed lease, or a Raft member that knows no leader.
+    Stopped,
 }
 
 /// The broker's side of a SUBSCRIBE.
@@ -52,6 +57,9 @@ pub trait Reads: Send + Sync {
     fn shard_count(&self, tenant_id: &str, namespace: &str, stream: &str) -> u32;
 
     /// The end of what `shard` has committed: where a clean session starts.
+    /// [`ReadError::NotHere`] or [`ReadError::Stopped`] when this broker does
+    /// not serve the shard; a SUBSCRIBE is never served from a shard this
+    /// broker does not hold.
     async fn tail(
         &self,
         tenant_id: &str,
@@ -62,6 +70,8 @@ pub trait Reads: Send + Sync {
 
     /// Committed records from `from`, about `max_bytes` of them. When none
     /// are ready it waits up to `wait` for one, then returns an empty page.
+    /// Every read checks that this broker still serves the shard, and the
+    /// wait ends early when the shard's subscribers are ended.
     #[allow(clippy::too_many_arguments)]
     async fn read(
         &self,
