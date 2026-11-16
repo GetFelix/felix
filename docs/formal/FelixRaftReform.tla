@@ -539,6 +539,13 @@ NewCopy(b, kept) ==
     /\ retired' = [retired EXCEPT ![b] = FALSE]
     /\ UNCHANGED <<ep, match, boot, msgs, acked, elected>>
 
+\* What a copy that replaced its disk reserves. The reservation is carried.
+\* A disk lost outright takes it along (LostReserve, by override in a cfg):
+\* then a broker declared dead and a lost disk can be every copy that
+\* counted a record, the documented residual of a trailing floor.
+ReplacedReserve(b) == reserve
+LostReserve(b) == [reserve EXCEPT ![b] = 0]
+
 \* With Kept a rotation renames the whole copy into a kept copy, with the
 \* vote it held, why it rotated and its reservation, and the broker starts
 \* an empty copy under a new id. A restore can bring back any prefix and an
@@ -553,13 +560,16 @@ KeepCopy(b, l, t, by) ==
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = [reserve EXCEPT ![b] = 0]
 
-\* A replaced disk keeps nothing, not even the old copy's vote (#2671). A
-\* restore whose kept copy is later reclaimed ends in the same state: a
-\* new empty copy and no kept copy of the old id.
+\* A restore whose kept copy is later reclaimed: a new empty copy and no
+\* kept copy of the old id, so the old copy's vote is gone (#2671). The
+\* reservation is not: a rotation writes the highest kept reservation into
+\* the new copy before its copy file (raft_copy/judge.rs, rotate), and a
+\* kept copy whose reservation is above the current copy's is never
+\* reclaimed (raft_copy/reclaim.rs, reclaim_kept).
 ReplaceDisk(b) ==
     /\ NewCopy(b, <<>>)
     /\ synced' = [synced EXCEPT ![b] = 0]
-    /\ reserve' = [reserve EXCEPT ![b] = 0]
+    /\ reserve' = ReplacedReserve(b)
     /\ UNCHANGED keptLogs
 
 \* The shard directory is lost, or restored from an older copy: the copy id

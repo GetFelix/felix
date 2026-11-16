@@ -5308,10 +5308,11 @@ reservation, after a power cut of two of three copies.
 What it costs: one synced write per shard per step, about one every half
 minute on a shard taking 30k records a second, and a gap of up to one step
 of offsets after a re-form. Offsets are 64 bits, so the gap is free. What
-it does not cover is the residual that exists today: if the brokers
-holding every copy that counted a record are declared dead, their
-reservations are not read either, and the trailing floor is all that is
-left (Questions, 13).
+it does not cover is the residual that exists today: if every copy that
+counted a record is on a broker declared dead or on a disk that was lost
+outright, no reservation that covers it is read, and the trailing floor
+is all that is left (Questions, 13;
+`FelixRaftReformReplacedDiskLost.cfg`).
 
 ### Cache shards
 
