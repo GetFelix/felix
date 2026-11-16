@@ -21,7 +21,8 @@ use crate::api::error::{
 };
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
-    StreamChangesResponse, StreamCreateRequest, StreamListResponse, StreamSnapshotResponse,
+    StreamChangesResponse, StreamCreateRequest, StreamCreateResponse, StreamListResponse,
+    StreamSnapshotResponse,
 };
 use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_scopes_for};
 use crate::auth::rbac::authorize::{
@@ -84,8 +85,8 @@ pub(crate) async fn list_streams(
     ),
     request_body = StreamCreateRequest,
     responses(
-        (status = 201, description = "Stream created", body = Stream),
-        (status = 200, description = "Stream already exists with this configuration; nothing changed", body = Stream),
+        (status = 201, description = "Stream created. `warnings` is present when `replication_factor` exceeds the registered brokers: the stream exists, but no Raft group forms until that many brokers are placed", body = StreamCreateResponse),
+        (status = 200, description = "Stream already exists with this configuration; nothing changed", body = StreamCreateResponse),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix or is set on a stream that is not durable", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Stream already exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, a stream of this name was deleted before the fleet finalized `stream_incarnations`, `mount` overlaps the mount of another stream of the tenant, or a mount needs a newer metadata level than the group has reached", body = crate::api::types::ErrorResponse),
@@ -104,7 +105,10 @@ pub(crate) async fn create_stream(
     let asked = body.routing;
     let stream = stream_to_create(&state, tenant_id, namespace, body).await?;
     match state.store.create_stream(stream.clone()).await {
-        Ok(created) => Ok((StatusCode::CREATED, Json(created))),
+        Ok(created) => {
+            let warnings = short_of_brokers(&state, &created).await;
+            Ok((StatusCode::CREATED, Json(response(created, warnings))))
+        }
         Err(ref err) if let Some(refusal) = crate::store::reused_name_refusal(err) => {
             Err(api_conflict("conflict", refusal))
         }
@@ -116,7 +120,8 @@ pub(crate) async fn create_stream(
         }
         Err(StoreError::Conflict(_)) => match state.store.get_stream(&stream_key(&stream)).await {
             Ok(existing) if same_stream(&existing, &stream, asked) => {
-                Ok((StatusCode::OK, Json(existing)))
+                let warnings = short_of_brokers(&state, &existing).await;
+                Ok((StatusCode::OK, Json(response(existing, warnings))))
             }
             Ok(_) | Err(StoreError::NotFound(_)) => Err(api_conflict(
                 "conflict",
@@ -127,6 +132,46 @@ pub(crate) async fn create_stream(
         Err(StoreError::NotFound(_)) => Err(api_not_found("namespace not found")),
         Err(err) => Err(api_internal("failed to create stream", &err)),
     }
+}
+
+fn response(stream: Stream, warnings: Vec<String>) -> StreamCreateResponse {
+    StreamCreateResponse { stream, warnings }
+}
+
+/// Warns when `stream` asks for more brokers a shard than are registered.
+/// Never a refusal: brokers register after streams are created when a
+/// cluster bootstraps. A node list that cannot be read warns of nothing.
+pub(crate) async fn short_of_brokers(state: &AppState, stream: &Stream) -> Vec<String> {
+    let Ok(nodes) = state.store.list_nodes().await else {
+        return Vec::new();
+    };
+    short_warning(stream, nodes.len()).into_iter().collect()
+}
+
+pub(crate) fn short_warning(stream: &Stream, registered: usize) -> Option<String> {
+    if stream.replication_factor as usize <= registered || !stream.durable {
+        return None;
+    }
+    let warning = format!(
+        "replication_factor is {} but {} {} registered: no Raft group forms for a shard until placement names {} brokers",
+        stream.replication_factor,
+        registered,
+        if registered == 1 {
+            "broker is"
+        } else {
+            "brokers are"
+        },
+        stream.replication_factor,
+    );
+    tracing::warn!(
+        tenant = %stream.tenant_id,
+        namespace = %stream.namespace,
+        stream = %stream.stream,
+        replication_factor = stream.replication_factor,
+        registered,
+        "{warning}"
+    );
+    Some(warning)
 }
 
 /// The checks a create request must pass before anything is read.

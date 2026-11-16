@@ -21,9 +21,9 @@ use crate::api::{
         ShardAssignmentChangesResponse, ShardAssignmentListResponse,
         ShardAssignmentSnapshotResponse, ShardMove, ShardMoveListResponse, ShardMoveRequest,
         ShardMoveResponse, ShardMoveStep, ShardReplication, ShardReplicationResponse,
-        SnapshotShardAssignment, StreamChangesResponse, StreamCreateRequest, StreamListResponse,
-        StreamSnapshotResponse, SystemInfo, TenantChangesResponse, TenantCreateRequest,
-        TenantListResponse, TenantSnapshotResponse,
+        SnapshotShardAssignment, StreamChangesResponse, StreamCreateRequest, StreamCreateResponse,
+        StreamListResponse, StreamSnapshotResponse, SystemInfo, TenantChangesResponse,
+        TenantCreateRequest, TenantListResponse, TenantSnapshotResponse,
     },
 };
 use crate::auth::admin;
@@ -170,6 +170,7 @@ use crate::model::{
         Stream,
         StreamKind,
         StreamCreateRequest,
+        StreamCreateResponse,
         StreamListResponse,
         StreamSnapshotResponse,
         StreamChange,

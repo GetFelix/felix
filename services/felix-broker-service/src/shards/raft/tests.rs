@@ -2466,4 +2466,5 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
 
 mod retarget;
 mod retention;
+mod short_placement;
 mod trim;
