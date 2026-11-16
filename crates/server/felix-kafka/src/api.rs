@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::{Buf, Bytes, BytesMut};
+use futures::future::BoxFuture;
 use kafka_protocol::messages::{
     ApiKey, FetchRequest, InitProducerIdRequest, ListOffsetsRequest, MetadataRequest,
     ProduceRequest, RequestHeader, SaslAuthenticateRequest, SaslHandshakeRequest,
@@ -137,16 +138,25 @@ impl Session {
     }
 }
 
-/// Answer one request frame.
-pub(crate) async fn handle(
-    shared: &Shared,
+/// What handling a request gives the connection.
+pub(crate) enum Handled<'a> {
+    /// The answer, to write once every earlier one is written.
+    Now(Answer),
+    /// A produce that holds its place in its partitions' order, resolving to
+    /// its answer once its records are committed.
+    Later(BoxFuture<'a, Result<Answer>>),
+}
+
+/// Answer one parsed request frame.
+pub(crate) async fn handle<'a>(
+    shared: &'a Shared,
     session: &mut Session,
-    frame: Bytes,
+    parsed: Parsed,
     shutdown: &CancellationToken,
-) -> Result<Answer> {
-    let request = match parse(frame)? {
+) -> Result<Handled<'a>> {
+    let request = match parsed {
         Parsed::Request(request) => request,
-        Parsed::Answer(answer) => return Ok(answer),
+        Parsed::Answer(answer) => return Ok(Handled::Now(answer)),
     };
     // A revoked credential ends the connection at its next request, as a
     // QUIC stream ends at its next frame.
@@ -156,7 +166,7 @@ pub(crate) async fn handle(
         .is_some_and(Principal::is_revoked)
     {
         tracing::info!("closing a kafka connection: its credential was revoked");
-        return Ok(Answer::Close("credential revoked"));
+        return Ok(Handled::Now(Answer::Close("credential revoked")));
     }
     let Request {
         api,
@@ -179,16 +189,21 @@ pub(crate) async fn handle(
             list_offsets::answer(shared, session.principal.as_ref(), request, version).await?
         }
         Body::Produce(request) => {
-            let (body, error, throttle) =
-                produce::answer(shared, session.principal.as_ref(), request, version).await?;
-            session.throttle = throttle;
-            match body {
-                Some(body) => (body, error),
-                None => {
-                    crate::metrics::request(api, error);
-                    return Ok(Answer::Silent);
-                }
-            }
+            let claimed =
+                produce::claim(shared, session.principal.as_ref(), request, version).await;
+            session.throttle = claimed.throttle;
+            return Ok(Handled::Later(Box::pin(async move {
+                let (body, error) = claimed.answer.await?;
+                crate::metrics::request(api, error);
+                Ok(match body {
+                    Some(body) => Answer::Respond {
+                        correlation_id,
+                        header_version,
+                        body,
+                    },
+                    None => Answer::Silent,
+                })
+            })));
         }
         Body::InitProducerId(request) => {
             producer_id::answer(shared, session.principal.as_ref(), request, version)?
@@ -213,11 +228,11 @@ pub(crate) async fn handle(
         client = header.client_id.as_deref().unwrap_or("-"),
         "kafka request",
     );
-    Ok(Answer::Respond {
+    Ok(Handled::Now(Answer::Respond {
         correlation_id,
         header_version,
         body,
-    })
+    }))
 }
 
 /// A request frame decoded, or the answer it gets without reaching the
@@ -225,6 +240,16 @@ pub(crate) async fn handle(
 pub(crate) enum Parsed {
     Request(Box<Request>),
     Answer(Answer),
+}
+
+impl Parsed {
+    /// Whether the request is a produce, whose commit wait the connection
+    /// overlaps with the requests after it. Anything else runs once every
+    /// earlier answer is written, as on a connection that answers one at a
+    /// time.
+    pub(crate) fn pipelines(&self) -> bool {
+        matches!(self, Self::Request(request) if matches!(request.body, Body::Produce(_)))
+    }
 }
 
 /// A request whose header and body decoded.

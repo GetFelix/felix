@@ -1,13 +1,17 @@
-//! The request loop: frames in, frames out, one at a time.
+//! The request loop: frames in, frames out, in order.
 
 use anyhow::{Context, Result, bail};
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::stream::FuturesOrdered;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::Shared;
-use crate::api::{self, Answer, Session};
+use crate::api::{self, Answer, Handled, Session};
 
 /// The largest request accepted. Well above what a producer sends by default
 /// (librdkafka caps a request at `message.max.bytes`, 1 MB); the cap is what
@@ -20,17 +24,63 @@ pub(crate) const MAX_UNAUTHENTICATED_REQUEST_BYTES: usize = 64 * 1024;
 /// so a length prefix alone never commits memory the peer has not sent.
 const INITIAL_BODY_CAPACITY: usize = 64 * 1024;
 
+/// The most answers a connection waits on at once. Past it the connection
+/// stops reading, so a client that never reads its answers holds a bounded
+/// amount of memory. Above the five requests an idempotent Kafka producer
+/// keeps in flight.
+pub(crate) const MAX_PIPELINED: usize = 8;
+
+/// What the reader hands the writer, in request order.
+type Queued<'a> = BoxFuture<'a, Result<Reply>>;
+
+enum Reply {
+    Answer(Answer),
+    /// Every answer queued before this one is written.
+    Drained(oneshot::Sender<()>),
+}
+
 pub(super) async fn serve<S>(
     shared: &Shared,
-    mut stream: S,
+    stream: S,
     peer_certs: Vec<Vec<u8>>,
     shutdown: &CancellationToken,
 ) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // A produce's claim is ordered, its commit wait is not: the reader claims
+    // each request's place and queues its answer, and the writer waits on the
+    // queued answers together and writes them in request order.
+    let (reader, writer) = tokio::io::split(stream);
+    let (queue, queued) = mpsc::channel(1);
+    let read = read_requests(shared, reader, peer_certs, shutdown, queue);
+    let write = write_answers(writer, queued);
+    tokio::pin!(read, write);
+    tokio::select! {
+        read = &mut read => {
+            // The answers already queued are still owed.
+            let written = write.await;
+            read.and(written)
+        }
+        // The writer only ends first when it fails.
+        written = &mut write => written,
+    }
+}
+
+async fn read_requests<'a, R>(
+    shared: &'a Shared,
+    mut stream: R,
+    peer_certs: Vec<Vec<u8>>,
+    shutdown: &CancellationToken,
+    queue: mpsc::Sender<Queued<'a>>,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send,
+{
     let mut session = Session::new(shared, peer_certs);
     let auth_deadline = Instant::now() + shared.settings.auth_timeout;
+    // Whether a produce was queued since the writer last drained.
+    let mut pipelined = false;
     loop {
         let authenticated = session.authenticated();
         let mut size = [0u8; 4];
@@ -80,25 +130,33 @@ where
             bail!("connection closed mid-request");
         }
 
-        match api::handle(shared, &mut session, Bytes::from(frame), shutdown).await? {
-            Answer::Respond {
-                correlation_id,
-                header_version,
-                body,
-            } => {
-                let mut out = BytesMut::with_capacity(body.len() + 9);
-                let header_len = if header_version >= 1 { 5 } else { 4 };
-                out.put_i32((header_len + body.len()) as i32);
-                out.put_i32(correlation_id);
-                if header_version >= 1 {
-                    // No tagged fields.
-                    out.put_u8(0);
-                }
-                out.put_slice(&body);
-                stream.write_all(&out).await.context("write response")?;
+        let parsed = api::parse(Bytes::from(frame))?;
+        // Anything but a produce sees every earlier produce answered first, as
+        // it would on a connection that answers one request at a time: a
+        // fetch reads what was produced before it.
+        if !parsed.pipelines() && std::mem::take(&mut pipelined) {
+            drain(&queue).await?;
+        }
+        match api::handle(shared, &mut session, parsed, shutdown).await? {
+            Handled::Later(answer) => {
+                pipelined = true;
+                send(
+                    &queue,
+                    Box::pin(async move { answer.await.map(Reply::Answer) }),
+                )
+                .await?;
             }
-            Answer::Silent => {}
-            Answer::Close(reason) => bail!("closing the connection: {reason}"),
+            Handled::Now(Answer::Close(reason)) => {
+                drain(&queue).await?;
+                bail!("closing the connection: {reason}");
+            }
+            Handled::Now(answer) => {
+                send(
+                    &queue,
+                    Box::pin(std::future::ready(Ok(Reply::Answer(answer)))),
+                )
+                .await?;
+            }
         }
         if session.closing() {
             return Ok(());
@@ -110,6 +168,71 @@ where
                 _ = shutdown.cancelled() => return Ok(()),
                 _ = tokio::time::sleep(throttle) => {}
             }
+        }
+    }
+}
+
+/// Queue an answer, waiting while the pipeline is full: the connection stops
+/// reading until an earlier answer is written.
+async fn send<'a>(queue: &mpsc::Sender<Queued<'a>>, answer: Queued<'a>) -> Result<()> {
+    queue
+        .send(answer)
+        .await
+        .map_err(|_| anyhow::anyhow!("the connection's writer stopped"))
+}
+
+/// Wait until every answer queued so far is written.
+async fn drain<'a>(queue: &mpsc::Sender<Queued<'a>>) -> Result<()> {
+    let (drained, written) = oneshot::channel();
+    send(
+        queue,
+        Box::pin(std::future::ready(Ok(Reply::Drained(drained)))),
+    )
+    .await?;
+    written
+        .await
+        .map_err(|_| anyhow::anyhow!("the connection's writer stopped"))
+}
+
+/// Write each queued answer in the order it was queued, waiting on up to
+/// [`MAX_PIPELINED`] of them at once, until the reader is done and every
+/// answer is written.
+async fn write_answers<'a, W>(mut stream: W, mut queued: mpsc::Receiver<Queued<'a>>) -> Result<()>
+where
+    W: AsyncWrite + Unpin + Send,
+{
+    let mut waiting = FuturesOrdered::new();
+    let mut reading = true;
+    loop {
+        tokio::select! {
+            biased;
+            Some(reply) = waiting.next(), if !waiting.is_empty() => match reply? {
+                Reply::Answer(Answer::Respond {
+                    correlation_id,
+                    header_version,
+                    body,
+                }) => {
+                    let mut out = BytesMut::with_capacity(body.len() + 9);
+                    let header_len = if header_version >= 1 { 5 } else { 4 };
+                    out.put_i32((header_len + body.len()) as i32);
+                    out.put_i32(correlation_id);
+                    if header_version >= 1 {
+                        // No tagged fields.
+                        out.put_u8(0);
+                    }
+                    out.put_slice(&body);
+                    stream.write_all(&out).await.context("write response")?;
+                }
+                Reply::Answer(Answer::Silent | Answer::Close(_)) => {}
+                Reply::Drained(drained) => {
+                    let _ = drained.send(());
+                }
+            },
+            next = queued.recv(), if reading && waiting.len() < MAX_PIPELINED => match next {
+                Some(answer) => waiting.push_back(answer),
+                None => reading = false,
+            },
+            else => return Ok(()),
         }
     }
 }

@@ -1,10 +1,12 @@
 //! Serving one Kafka client connection.
 //!
-//! Requests on a connection are answered one at a time and in order, as Kafka
-//! brokers do: a client may pipeline requests, but it matches responses to
-//! requests by order as much as by correlation id. A long-polling fetch
-//! therefore holds its connection, which is why a consumer keeps one
-//! connection per broker for fetching.
+//! Requests on a connection are answered in order, as Kafka brokers do: a
+//! client may pipeline requests, but it matches responses to requests by
+//! order as much as by correlation id. A produce claims its place when it is
+//! read and waits for its commit while later requests are read; anything else
+//! runs once every earlier answer is written. A long-polling fetch therefore
+//! holds its connection, which is why a consumer keeps one connection per
+//! broker for fetching.
 
 pub(crate) mod connection;
 

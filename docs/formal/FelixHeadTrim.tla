@@ -34,7 +34,9 @@
 (* and the client acting on it are separate steps.                         *)
 (*                                                                         *)
 (* NoReadBelowAckedTrim  -- the serving leader never serves a record below *)
-(*                          an acknowledged trim's floor.                  *)
+(*                          an acknowledged trim's floor, and no broker    *)
+(*                          serves a read that began after the trim was    *)
+(*                          acknowledged from below its floor.             *)
 (* NothingLostAboveFloor -- the serving leader holds every acknowledged    *)
 (*                          write at or above that floor.                  *)
 (* FloorRecordKept       -- the serving leader's floor is the one its trim *)
@@ -61,6 +63,14 @@
 (*                        checking it.                                     *)
 (*   Retention         -- retention deletes past the floor, up to the      *)
 (*                        commit offset.                                   *)
+(*   FollowerNoReadIndex -- a follower serves a read that could start      *)
+(*                        below a floor from its own state, without first  *)
+(*                        applying the leader's read index.                *)
+(*   LeaderNoReadIndex -- a leader serves such a read from its own state,  *)
+(*                        without a read-index round, even a deposed one   *)
+(*                        that has not heard its successor.                *)
+(*   TailNoReadIndex   -- a follower serves a tail read from its own       *)
+(*                        committed tail without the leader's read index.  *)
 (*                                                                         *)
 (* Leadership is Raft-shaped, as in FelixAtomicCommit.tla: a candidate at  *)
 (* least as up to date as a majority takes the next generation and writes  *)
@@ -68,6 +78,21 @@
 (* leader's own generation. A leader serves once its mark covers what it   *)
 (* inherited. FelixShard.tla models the lease, fence and promotion in      *)
 (* full; this model asks what a trim adds on top of them.                  *)
+(*                                                                         *)
+(* Any member may serve a read that could start below a floor: a resume    *)
+(* from an offset or the earliest record, or a history page. A follower    *)
+(* first asks the leader for a read index, which the leader answers only   *)
+(* after a majority confirms it still leads, and serves once its own       *)
+(* commit offset reaches that index. A leader runs that round itself       *)
+(* (issue 2603). A tail read on a follower starts at its committed tail,   *)
+(* which can be below a floor it has not received, so it applies the read  *)
+(* index too. A leader's tail read is not modelled: a deposed leader's     *)
+(* tail subscribers end with its term. That relies on the code checking,   *)
+(* once the subscriber is registered, that the member still leads the      *)
+(* same term, and dropping the subscriber if not. ConfirmedLeader also     *)
+(* stands for a leader that takes its read index on its lease, with no     *)
+(* round: FelixRaftLease.tla's LeaseNoNewerLeader shows no other broker    *)
+(* leads a later term while the lease holds. One read per behaviour.       *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -84,11 +109,16 @@ CONSTANTS
     Unconditional,
     Untagged,
     NoOpUnchecked,
-    Retention
+    Retention,
+    FollowerNoReadIndex,
+    LeaderNoReadIndex,
+    TailNoReadIndex
 
 ASSUME /\ Local \in BOOLEAN /\ FloorFromBase \in BOOLEAN /\ ApplyOnStore \in BOOLEAN
        /\ DeleteAboveCommit \in BOOLEAN /\ Unconditional \in BOOLEAN
        /\ Untagged \in BOOLEAN /\ NoOpUnchecked \in BOOLEAN /\ Retention \in BOOLEAN
+       /\ FollowerNoReadIndex \in BOOLEAN /\ LeaderNoReadIndex \in BOOLEAN
+       /\ TailNoReadIndex \in BOOLEAN
 
 VARIABLES
     log,        \* each broker's log; positions below `base` are deleted and kept only as history
@@ -105,10 +135,11 @@ VARIABLES
     ackedFloor, \* the largest floor any committed trim asked for
     writes,     \* writes appended so far
     trims,      \* trims taken so far, no-ops included
-    crashes     \* broker crashes so far
+    crashes,    \* broker crashes so far
+    fread       \* the read: idle, waiting on its read index, or served
 
 vars == << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
-           retired, acked, ackedFloor, writes, trims, crashes >>
+           retired, acked, ackedFloor, writes, trims, crashes, fread >>
 
 Holders == {1, 2}
 
@@ -164,12 +195,23 @@ DeleteBound(b) ==
         ELSE IF DeleteAboveCommit THEN FloorOf(HeadEntries(b))
         ELSE Min(Floor(b), commit[b] + 1))
 
-\* The newest leader serves reads once its mark covers every record it
-\* inherited, which its generation-start record committing does.
+\* A leader's mark covers every record it inherited, which its
+\* generation-start record committing does.
+Settled(b) == \A i \in 1..Len(log[b]) : log[b][i].g < gen[b] => i <= commit[b]
+
+\* The newest leader serves reads once it is settled.
 Serving(b) ==
     /\ leads[b]
     /\ gen[b] = TopGen
-    /\ \A i \in 1..Len(log[b]) : log[b][i].g < gen[b] => i <= commit[b]
+    /\ Settled(b)
+
+\* A leader that can answer a read index: settled, and a majority answers
+\* its round without having moved to a newer generation. A deposed leader
+\* cannot find one, since its successor's voters are a majority.
+ConfirmedLeader(l) ==
+    /\ leads[l]
+    /\ Settled(l)
+    /\ \E Q \in Majority : \A q \in Q : gen[q] <= gen[l]
 
 Init ==
     /\ log = [b \in Brokers |-> << >>]
@@ -187,6 +229,8 @@ Init ==
     /\ writes = 0
     /\ trims = 0
     /\ crashes = 0
+    /\ fread = [st |-> "idle", b |-> "none", ld |-> FALSE, tl |-> FALSE, idx |-> 0,
+                 need |-> 0, start |-> 0]
 
 Active(h) == h <= lease /\ ~retired[h]
 
@@ -194,7 +238,7 @@ Active(h) == h <= lease /\ ~retired[h]
 TakeOver ==
     /\ lease = 1
     /\ lease' = 2
-    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, expected, fenced,
+    /\ UNCHANGED << fread, log, gen, leads, commit, base, localFloor, expected, fenced,
                     retired, acked, ackedFloor, writes, trims, crashes >>
 
 \* A holder writes at the tail it expects, as publish_if does, on any broker
@@ -206,7 +250,7 @@ HolderWrite(h, b) ==
     /\ Len(log[b]) = expected[h]
     /\ log' = [log EXCEPT ![b] = Append(@, Write(gen[b], h))]
     /\ writes' = writes + 1
-    /\ UNCHANGED << gen, leads, commit, base, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << fread, gen, leads, commit, base, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, trims, crashes >>
 
 \* A holder trims before f, above the floor. The record lands at offset
@@ -228,7 +272,7 @@ Trim(h, b, f) ==
                /\ UNCHANGED log
           ELSE /\ log' = [log EXCEPT ![b] = Append(@, TrimRec(gen[b], h, f))]
                /\ UNCHANGED << localFloor, ackedFloor >>
-    /\ UNCHANGED << gen, leads, commit, base, lease, expected, fenced, retired,
+    /\ UNCHANGED << fread, gen, leads, commit, base, lease, expected, fenced, retired,
                     acked, writes, crashes >>
 
 \* A trim at or below the floor writes nothing. It checks the tail first,
@@ -241,7 +285,7 @@ NoOpTrim(h, b) ==
     /\ NoOpUnchecked \/ Len(log[b]) = expected[h]
     /\ expected' = [expected EXCEPT ![h] = Len(log[b])]
     /\ trims' = trims + 1
-    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, fenced,
+    /\ UNCHANGED << fread, log, gen, leads, commit, base, localFloor, lease, fenced,
                     retired, acked, ackedFloor, writes, crashes >>
 
 \* A broker that leads answers a holder's write or trim once its commit
@@ -254,7 +298,7 @@ Answer(h) ==
            /\ mine /= {}
            /\ expected' = [expected EXCEPT ![h] = MaxOf(mine)]
            /\ fenced' = [fenced EXCEPT ![h] = @ \/ \E i \in mine : log[b][i].k = "w"]
-           /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease,
+           /\ UNCHANGED << fread, log, gen, leads, commit, base, localFloor, lease,
                            retired, acked, ackedFloor, writes, trims, crashes >>
 
 \* A holder reads the serving leader's committed records from its own
@@ -277,7 +321,7 @@ Refresh(h) ==
                       /\ UNCHANGED expected
                  ELSE /\ expected' = [expected EXCEPT ![h] = commit[s]]
                       /\ UNCHANGED retired
-    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, fenced,
+    /\ UNCHANGED << fread, log, gen, leads, commit, base, localFloor, lease, fenced,
                     acked, ackedFloor, writes, trims, crashes >>
 
 \* A follower takes the next record it is missing from a broker that leads
@@ -305,7 +349,7 @@ Replicate(s, f) ==
                      /\ base' = [base EXCEPT ![f] = Min(@, k + 1)]
           /\ gen' = [gen EXCEPT ![f] = gen[s]]
           /\ leads' = [leads EXCEPT ![f] = FALSE]
-    /\ UNCHANGED << localFloor, lease, expected, fenced, retired, acked,
+    /\ UNCHANGED << fread, localFloor, lease, expected, fenced, retired, acked,
                     ackedFloor, writes, trims, crashes >>
 
 \* The mark moves to the longest prefix a majority holds, counting only up to
@@ -322,7 +366,7 @@ AdvanceMark(b) ==
            /\ commit' = [commit EXCEPT ![b] = n]
            /\ acked' = acked \cup { [i |-> i, r |-> l[i]] : i \in { j \in new : l[j].k = "w" } }
            /\ ackedFloor' = MaxOf({ackedFloor} \cup { l[i].f : i \in { j \in new : l[j].k = "t" } })
-    /\ UNCHANGED << log, gen, leads, base, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << fread, log, gen, leads, base, localFloor, lease, expected, fenced,
                     retired, writes, trims, crashes >>
 
 \* A broker deletes whole segments below its bound, as far as its segment
@@ -330,18 +374,23 @@ AdvanceMark(b) ==
 Delete(b) ==
     /\ \E p \in (base[b] + 1)..DeleteBound(b) :
         base' = [base EXCEPT ![b] = p]
-    /\ UNCHANGED << log, gen, leads, commit, localFloor, lease, expected, fenced,
+    /\ UNCHANGED << fread, log, gen, leads, commit, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, writes, trims, crashes >>
 
 \* A broker restarts. It no longer leads, and its commit offset reads back
 \* behind, never ahead and never below what it deleted. An unflushed suffix
 \* it loses was counted by no quorum, so losing it is the same as never
-\* having received it, which the model reaches without a crash.
+\* having received it, which the model reaches without a crash. A read
+\* waiting on b dies with the process.
 Crash(b) ==
     /\ crashes < MaxCrashes
     /\ \E c \in (base[b] - 1)..commit[b] : commit' = [commit EXCEPT ![b] = c]
     /\ leads' = [leads EXCEPT ![b] = FALSE]
     /\ crashes' = crashes + 1
+    /\ fread' = IF fread.st = "wait" /\ fread.b = b
+                  THEN [st |-> "idle", b |-> "none", ld |-> FALSE, tl |-> FALSE, idx |-> 0,
+                        need |-> 0, start |-> 0]
+                  ELSE fread
     /\ UNCHANGED << log, gen, base, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, writes, trims >>
 
@@ -358,8 +407,44 @@ Promote(b) ==
            /\ gen' = [q \in Brokers |-> IF q \in Q THEN g ELSE gen[q]]
            /\ leads' = [q \in Brokers |-> IF q = b THEN TRUE ELSE IF q \in Q THEN FALSE ELSE leads[q]]
        /\ log' = [log EXCEPT ![b] = Append(@, StartRec(g))]
-       /\ UNCHANGED << commit, base, localFloor, lease, expected, fenced, retired,
+       /\ UNCHANGED << fread, commit, base, localFloor, lease, expected, fenced, retired,
                        acked, ackedFloor, writes, trims, crashes >>
+
+\* A read begins on broker r after a trim was acknowledged, and remembers
+\* the floor it must not go below. A history read (a resume or a page) on
+\* a leader takes a read index by its own round; on a follower it asks the
+\* confirmed leader l, whose commit offset covers every answer it gave. A
+\* tail read (tl) is modelled on a follower only.
+BeginRead(r, l, tl) ==
+    /\ fread.st = "idle"
+    /\ ackedFloor > 1
+    /\ IF leads[r]
+          THEN /\ l = r
+               /\ ~tl
+               /\ Settled(r)
+               /\ LeaderNoReadIndex \/ ConfirmedLeader(r)
+          ELSE /\ l /= r
+               /\ ConfirmedLeader(l)
+    /\ fread' = [st |-> "wait", b |-> r, ld |-> leads[r], tl |-> tl, idx |-> commit[l],
+                 need |-> ackedFloor, start |-> 0]
+    /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
+                    retired, acked, ackedFloor, writes, trims, crashes >>
+
+\* The read is served once the broker's commit offset reaches the read
+\* index, by a broker still in the role it began in: a history read from
+\* its readable start, a tail read from its committed tail. A crash that
+\* reads its commit offset back behind keeps it waiting.
+ServeRead ==
+    LET r == fread.b
+        skip == IF fread.tl THEN TailNoReadIndex ELSE FollowerNoReadIndex
+    IN /\ fread.st = "wait"
+       /\ leads[r] = fread.ld
+       /\ fread.ld \/ skip \/ commit[r] >= fread.idx
+       /\ fread' = [st |-> "served", b |-> "none", ld |-> FALSE, tl |-> fread.tl, idx |-> 0,
+                    need |-> fread.need,
+                    start |-> IF fread.tl THEN commit[r] + 1 ELSE ReadableStart(r)]
+       /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
+                       retired, acked, ackedFloor, writes, trims, crashes >>
 
 Next ==
     \/ TakeOver
@@ -369,7 +454,8 @@ Next ==
           \/ NoOpTrim(h, b)
           \/ \E f \in 2..(MaxWrites + MaxTrims + MaxGen) : Trim(h, b, f)
     \/ \E b \in Brokers : AdvanceMark(b) \/ Delete(b) \/ Promote(b) \/ Crash(b)
-    \/ \E s, f \in Brokers : Replicate(s, f)
+    \/ \E s, f \in Brokers : Replicate(s, f) \/ \E tl \in BOOLEAN : BeginRead(f, s, tl)
+    \/ ServeRead
 
 Spec == Init /\ [][Next]_vars
 
@@ -383,7 +469,8 @@ TypeOK ==
     /\ ackedFloor \in Nat
 
 NoReadBelowAckedTrim ==
-    \A b \in Brokers : Serving(b) => ReadableStart(b) >= ackedFloor
+    /\ \A b \in Brokers : Serving(b) => ReadableStart(b) >= ackedFloor
+    /\ fread.st = "served" => fread.start >= fread.need
 
 NothingLostAboveFloor ==
     \A b \in Brokers : Serving(b) =>

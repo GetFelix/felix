@@ -515,6 +515,153 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
     led.cluster.stop().await;
 }
 
+/// **A batch of no records on a numbering producer is answered with no
+/// offsets, as the hybrid does, and proposes nothing.** Kafka admits one;
+/// refusing it would be a retriable storage error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_numbered_batch_is_answered_and_proposes_nothing() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let mut led = led().await;
+    let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    let before = group.proposed.load(Relaxed);
+    let turn = broker.producer_turn(&handle, PRODUCER).await;
+    let sent = led
+        .engine
+        .publish_records_idempotent(
+            &broker,
+            &handle,
+            &shard(0),
+            led.term,
+            turn,
+            0,
+            Vec::new(),
+            Default::default(),
+            PATIENCE,
+        )
+        .expect("an empty batch is not refused")
+        .complete()
+        .await
+        .expect("answered");
+    assert_eq!((sent.outcome.offsets, sent.duplicate), (None, false));
+    assert_eq!(group.proposed.load(Relaxed), before, "nothing proposed");
+    led.cluster.stop().await;
+}
+
+/// **A producer that numbers records hands a request's new records to the
+/// group as one proposal, and a leader change that cuts them leaves whole
+/// one-record batches.** The re-send is answered from the first held
+/// record's offset and writes only the records the log does not hold, again
+/// in one proposal; a second re-send writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn numbered_records_cut_by_a_leader_change_are_finished_by_the_resend() {
+    use crate::raft::types::ProducerMark;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    async fn send(
+        engine: &RaftEngine,
+        broker: &Broker,
+        handle: &StreamHandle,
+        term: u64,
+        sequence: u64,
+        payloads: &[&'static [u8]],
+    ) -> IdempotentOutcome {
+        let turn = broker.producer_turn(handle, PRODUCER).await;
+        let payloads = payloads.iter().map(|p| Bytes::from_static(p)).collect();
+        let proposed = engine.publish_records_idempotent(
+            broker,
+            handle,
+            &shard(0),
+            term,
+            turn,
+            sequence,
+            payloads,
+            Default::default(),
+            PATIENCE,
+        );
+        proposed
+            .expect("proposed")
+            .complete()
+            .await
+            .expect("answered")
+    }
+
+    let mut led = led().await;
+    let first = led.committed + 1;
+    {
+        let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+        let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+        let proposed = || group.as_ref().expect("group").proposed.load(Relaxed);
+        let before = proposed();
+        let sent = send(&led.engine, &broker, &handle, led.term, 0, &[b"a", b"z"]).await;
+        assert_eq!(
+            (offsets(&sent), sent.duplicate),
+            ((first, first + 1), false)
+        );
+        assert_eq!(proposed() - before, 1, "two records, one proposal");
+    }
+    // What a leader that stops partway through records 2..=5 leaves: the
+    // first two, each a whole one-record batch.
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    for (sequence, payload) in [(2, b"b"), (3, b"c")] {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+            producer: Some(ProducerMark {
+                producer_id: PRODUCER,
+                sequence,
+                position: 0,
+                len: 1,
+            }),
+            expected: None,
+            trim: None,
+            commit: false,
+            group: false,
+            publisher: None,
+            headers: None,
+            written: None,
+        };
+        group.raft().client_write(command).await.expect("written");
+    }
+
+    let old = led.leader.broker.to_string();
+    led.cluster.net.muted.lock().insert(old.clone());
+    *led.cluster.net.cut.lock() = HashSet::from([old]);
+    let theirs = led.cluster.write(0, b"theirs").await;
+    let leader = led.cluster.elected(0).await;
+    assert_ne!(leader, led.leader);
+    let runtime = led.cluster.runtime(&leader.broker);
+    let term = runtime.status(&shard(0)).expect("status").term;
+    let group = runtime.group(&shard(0)).expect("group");
+    let engine = RaftEngine::new(runtime);
+    eventually(|| (engine.read_bound(&shard(0)) == Ok(theirs + 1)).then_some(())).await;
+
+    let (broker, handle, _root) = broker_over(&led.cluster, &leader, &engine).await;
+    let records: [&'static [u8]; 4] = [b"b", b"c", b"d", b"e"];
+    let before = group.proposed.load(Relaxed);
+    let sent = send(&engine, &broker, &handle, term, 2, &records).await;
+    assert_eq!(
+        (offsets(&sent), sent.duplicate),
+        ((first + 2, theirs + 2), false)
+    );
+    assert_eq!(group.proposed.load(Relaxed) - before, 1);
+    let again = send(&engine, &broker, &handle, term, 2, &records).await;
+    assert_eq!(
+        (offsets(&again), again.duplicate),
+        ((first + 2, theirs + 2), true)
+    );
+    assert_eq!(group.proposed.load(Relaxed) - before, 1);
+    assert_eq!(
+        log_from(&broker, first).await,
+        ["a", "z", "b", "c", "theirs", "d", "e"]
+    );
+    led.heal();
+    led.cluster.stop().await;
+}
+
 /// **A re-send that finishes a cut batch stores each record's own headers.**
 /// The records the log holds are dropped from the re-send's headers along
 /// with their payloads; left in, `d` and `e` would be stored under `b`'s and
