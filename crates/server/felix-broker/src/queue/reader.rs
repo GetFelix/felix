@@ -933,7 +933,7 @@ impl GroupReader {
 /// Payload bytes after which a poll stops reading and gives the rest of its
 /// claim back. Well under the wire's frame limit; a single larger record is
 /// still delivered, alone.
-const MAX_POLL_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_POLL_BYTES: usize = 4 * 1024 * 1024;
 
 /// Records one group may have in flight unless configured otherwise. Ten
 /// times the most one poll takes, so a handful of consumers each holding a

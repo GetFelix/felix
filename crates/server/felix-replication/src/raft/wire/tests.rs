@@ -62,7 +62,7 @@ fn request(body: Request) -> RaftRequest {
         group: group(),
         to: member("b"),
         beat: 2_000,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: std::time::Duration::from_millis(200),
         body,
     }
@@ -200,7 +200,16 @@ fn every_request() -> Vec<RaftRequest> {
             at: LogPoint { term: 2, index: 7 },
         }),
         RaftRequest {
-            report: true,
+            report: crate::raft::network::Ask::Written,
+            ..request(Request::Append(AppendEntriesRequest {
+                vote: vote(2, true),
+                prev_log_id: Some(log_id(2, 7)),
+                entries: vec![EntryOf::<ShardTypes>::new_blank(log_id(2, 8))],
+                leader_commit: None,
+            }))
+        },
+        RaftRequest {
+            report: crate::raft::network::Ask::WrittenIfStrict,
             ..request(Request::Append(AppendEntriesRequest {
                 vote: vote(2, true),
                 prev_log_id: Some(log_id(2, 7)),
