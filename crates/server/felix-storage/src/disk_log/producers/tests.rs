@@ -860,6 +860,18 @@ fn the_known_id_index_matches_a_full_scan_after_any_operations() {
                 sequences[id as usize] += 1;
                 at += 1;
             }
+            // Only the first record of a two-record batch: the producer
+            // is known only until a purge, with no tombstone.
+            6 if next(2) == 0 => {
+                let id = next(64);
+                let mark = RecordMark::for_batch(id, sequences[id as usize], 2)
+                    .next()
+                    .expect("a mark");
+                let payload = payloads(id, sequences[id as usize], 2).remove(0);
+                state.observe(at, mark, marked_digest(mark, &payload));
+                sequences[id as usize] += 1;
+                at += 1;
+            }
             6 => state.prune(next(at + 1)),
             7 => state.forget_before(next(at + 1)),
             8 => {
@@ -888,4 +900,17 @@ fn the_known_id_index_follows_an_eviction() {
     assert_eq!(state.len(), MAX_PRODUCERS);
     assert_eq!(state.highest_known(0..=0), None);
     assert_index_matches(&state, 0);
+}
+
+/// A purge that removes a producer without a tombstone (its batch is cut
+/// instead) takes it out of the index too.
+#[test]
+fn the_known_id_index_follows_a_purge_that_leaves_no_tombstone() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 7, 0, 2, &[(0, 0), (1, 1)]);
+    assert_eq!(state.highest_known(0..=63), Some(7));
+    state.prune(1);
+    assert_index_matches(&state, 0);
+    assert_eq!(state.next_sequence(7), None);
+    assert_eq!(state.highest_known(0..=63), scanned(&state, 0..=63));
 }

@@ -437,7 +437,9 @@ that fit in 47 bits; a larger one is folded into them.
   later epoch of the same id (or a tombstone for one), a batch from an earlier
   epoch is `INVALID_PRODUCER_EPOCH`, at every `Produce` version, as a Kafka
   broker answers it. Nothing is written. `PRODUCER_FENCED` is for transactional
-  producers, which Felix refuses.
+  producers, which Felix refuses. The fence holds only while the log still
+  knows the later epoch: a producer evicted past the 4096-producer table
+  leaves no tombstone, so an earlier epoch's batches are no longer fenced.
 - **Same epoch, same rules.** Duplicates, gaps and expired re-sends are
   answered as above.
 
