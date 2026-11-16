@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794835775007,
+  "lastUpdate": 1794836738097,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60112,6 +60112,58 @@ window.BENCHMARK_DATA = {
             "range": "49707.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 804414.59\nmean: 786007.75\nstdev: 49707.14\ncv: 6.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8440cc96581a95219486e23912e93fc9475af73e",
+          "message": "fix(queue): a rebuilt group settles dead letters above its cursor (#2696)\n\n* fix(queue): a rebuilt group settles dead letters above its cursor (#2687)\n\n* fix(queue): a seek delivers the dead letters at or above it again (#2687)\n\nA seek back over a dead letter delivered it again only until the tracker\nwas rebuilt, which then settled it as a dead letter above the cursor. A\nseek now clears the dead letters at or above its target, on both readers.\n\nHybrid: the entries are deleted and the dead-letter log synced before the\ncursor moves, and the cursor records that log as its dependency, so a copy\nwithout the clears falls back to the pre-seek cursor. Raft: the Seek entry's\nfold clears them (spec Step updated), so every member agrees.\n\nAlso: an offset left in both layouts by a legacy redrive cut short is only\nredriven, and the two lists come from one scan.\n\n* fix(queue): a seek's dead-letter clear counts only once its cursor lands (#2687)\n\nThe clear is a marker written before the cursor and finished after it.\nBefore a shard is served a leftover marker is finished if the group's\ncursor needs the dead-letter log past it and voided otherwise, so a seek\nstopped part way clears nothing. A failed or cancelled seek retires the\ntracker. A retired tracker records no dead letter. A seek back keeps the\norigin at or below the cursor. The Raft model's rebuild settles dead\nletters at or above the cursor.\n\n* fix(queue): bind a seek's clear to its own cursor, gate it on cursor dependencies (#2687)\n\nA pending clear is finished only when the cursor in force is exactly the\nseek's: offset `from` and the mark of the log just past the marker. A\ncommit from a build that ignores the marker voids it instead of deleting\ndead letters below that cursor.\n\nThe clear and the rebuild's settling of dead letters above the cursor\napply only once the fleet has finalized group_cursor_dependencies; before\nthat a seek keeps dead letters, as earlier builds did.\n\nSpec-Unaffected: hybrid-only gating and marker binding; FelixRaftGroups models the Raft fold, which is unchanged.",
+          "timestamp": "2026-11-16T13:40:34Z",
+          "tree_id": "1eb86332c391208f51e5312b39990e7656108667",
+          "url": "https://github.com/GetFelix/felix/commit/8440cc96581a95219486e23912e93fc9475af73e"
+        },
+        "date": 1794836737616,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 492418.91,
+            "range": "19888.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492418.91\nmean: 496910.83\nstdev: 19888.92\ncv: 4.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 492418.91,
+            "range": "19888.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492418.91\nmean: 496910.83\nstdev: 19888.92\ncv: 4.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120579.45,
+            "range": "2020.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120579.45\nmean: 120020.53\nstdev: 2020.11\ncv: 1.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1205794.51,
+            "range": "20201.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1205794.51\nmean: 1200205.27\nstdev: 20201.12\ncv: 1.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
