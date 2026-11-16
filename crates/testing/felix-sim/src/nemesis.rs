@@ -654,7 +654,7 @@ impl Nemesis {
             Stop::Kill => self.cluster.kill(node).await,
             Stop::PowerLoss => {
                 let relaxed = self.cluster.config.fsync_mode != FsyncMode::OnCommit;
-                let cut = self.cluster.power_loss(node);
+                let cut = self.cluster.power_loss_read(node);
                 let mid_append = self
                     .disk_fault(format!("b{} loses power", node + 1), &[node], relaxed, cut)
                     .await;
