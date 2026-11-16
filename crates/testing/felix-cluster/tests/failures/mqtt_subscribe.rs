@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use rumqttc::v5::mqttbytes::QoS;
-use rumqttc::v5::mqttbytes::v5::Packet;
+use rumqttc::v5::mqttbytes::v5::{Packet, PubAckReason};
 use rumqttc::v5::{AsyncClient, Event, EventLoop, MqttOptions};
 use serial_test::serial;
 
@@ -63,8 +63,8 @@ async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
         .expect("subscribe");
     wait_for_suback(&mut events).await;
 
-    cluster
-        .publish_via(&leader, STREAM, b"committed".to_vec())
+    let (tenant, token) = (cluster.tenant_id.clone(), cluster.client_token());
+    publish_qos1(&tenant, &token, port, "plant/line/1", "committed")
         .await
         .expect("publish while whole");
     assert_eq!(
@@ -86,8 +86,7 @@ async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
         .inject(&refuse)
         .await
         .expect("cut the followers off");
-    cluster
-        .publish_via(&leader, STREAM, b"uncommitted".to_vec())
+    publish_qos1(&tenant, &token, port, "plant/line/2", "uncommitted")
         .await
         .expect_err("a write only the leader holds was acknowledged");
 
@@ -107,6 +106,42 @@ async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
     );
     let _ = client.disconnect().await;
     cluster.shutdown().await;
+}
+
+/// Publish one QoS 1 message on a fresh connection. `Err` when the broker
+/// refuses it or never answers.
+async fn publish_qos1(
+    tenant: &str,
+    token: &str,
+    port: u16,
+    topic: &str,
+    payload: &str,
+) -> Result<(), String> {
+    let mut options = MqttOptions::new(format!("publisher-{payload}"), "127.0.0.1", port);
+    options.set_credentials(tenant, token);
+    let (client, mut events) = AsyncClient::new(options, 10);
+    client
+        .publish(topic, QoS::AtLeastOnce, false, payload.to_string())
+        .await
+        .map_err(|err| err.to_string())?;
+    let answer = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match events.poll().await {
+                Ok(Event::Incoming(Packet::PubAck(ack))) => {
+                    return match ack.reason {
+                        PubAckReason::Success => Ok(()),
+                        other => Err(format!("{other:?}")),
+                    };
+                }
+                Ok(_) => {}
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("no answer".to_string()));
+    let _ = client.disconnect().await;
+    answer
 }
 
 async fn wait_for_suback(events: &mut EventLoop) {
