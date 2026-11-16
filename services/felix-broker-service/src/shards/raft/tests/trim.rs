@@ -759,49 +759,62 @@ async fn plain_subscribe_behind_a_trim(with_earlier: bool) {
         .await
         .expect("trimmed");
 
-    let early = lagger.broker.subscribe("t1", "ns", "orders", 0).await;
-    let mut subscription = match early {
-        Ok(subscription) => subscription,
-        Err(BrokerError::NotReadable {
-            reason: felix_broker::NotReadable::Settling,
-            ..
-        }) => {
-            net.starved.lock().clear();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-            loop {
-                match lagger.broker.subscribe("t1", "ns", "orders", 0).await {
-                    Ok(subscription) => break subscription,
-                    Err(BrokerError::NotReadable {
-                        reason: felix_broker::NotReadable::Settling,
-                        ..
-                    }) => {}
-                    Err(err) => panic!("a tail subscribe was refused: {err}"),
+    let mut subscription = subscribe_on_lagger(&net, lagger).await;
+    net.starved.lock().clear();
+    // The log pass that brings the lagger past its floor may run after the
+    // subscriber registers, and then ends it to resume where it stood,
+    // instead of delivering below the floor. Either way nothing below the
+    // floor arrives; an ended subscriber resubscribes and waits for a later
+    // record.
+    let mut seen = Vec::new();
+    let markers: [&'static [u8]; 3] = [b"r4", b"r5", b"r6"];
+    let mut marker = 0;
+    'publish: loop {
+        let expected = markers[marker];
+        lead.publish(term, expected).await;
+        loop {
+            let next = tokio::time::timeout(Duration::from_secs(10), subscription.recv()).await;
+            match next.expect("a record in time") {
+                Some(payload) if payload.as_ref() == expected => break 'publish,
+                Some(payload) => seen.push(payload),
+                None => {
+                    assert!(
+                        marker + 1 < markers.len(),
+                        "the subscriber kept being ended: {seen:?}"
+                    );
+                    subscription = subscribe_on_lagger(&net, lagger).await;
+                    marker += 1;
+                    continue 'publish;
                 }
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "the lagger never caught up"
-                );
-                tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
-        Err(err) => panic!("a tail subscribe was refused: {err}"),
-    };
-    net.starved.lock().clear();
-    lead.publish(term, b"r4").await;
-    let mut seen = Vec::new();
-    loop {
-        let next = tokio::time::timeout(Duration::from_secs(10), subscription.recv()).await;
-        let payload = next.expect("r4 in time").expect("open");
-        if payload.as_ref() == b"r4" {
-            break;
-        }
-        seen.push(payload);
     }
     assert!(
         !seen.iter().any(|payload| payload.as_ref() == b"r1"),
         "a record below the floor reached a plain subscriber: {seen:?}"
     );
     stop(&members).await;
+}
+
+/// A plain subscribe on `lagger`, retried while it is refused as settling.
+/// A first refusal releases the lagger, which can only catch up then.
+async fn subscribe_on_lagger(net: &super::Loopback, lagger: &Member) -> felix_broker::Subscription {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match lagger.broker.subscribe("t1", "ns", "orders", 0).await {
+            Ok(subscription) => return subscription,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            }) => net.starved.lock().clear(),
+            Err(err) => panic!("a tail subscribe was refused: {err}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the lagger never caught up"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// A leader cut off both ways while its successor trims below `floor`.

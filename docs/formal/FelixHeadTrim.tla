@@ -380,13 +380,18 @@ Delete(b) ==
 \* A broker restarts. It no longer leads, and its commit offset reads back
 \* behind, never ahead and never below what it deleted. An unflushed suffix
 \* it loses was counted by no quorum, so losing it is the same as never
-\* having received it, which the model reaches without a crash.
+\* having received it, which the model reaches without a crash. A read
+\* waiting on b dies with the process.
 Crash(b) ==
     /\ crashes < MaxCrashes
     /\ \E c \in (base[b] - 1)..commit[b] : commit' = [commit EXCEPT ![b] = c]
     /\ leads' = [leads EXCEPT ![b] = FALSE]
     /\ crashes' = crashes + 1
-    /\ UNCHANGED << fread, log, gen, base, localFloor, lease, expected, fenced,
+    /\ fread' = IF fread.st = "wait" /\ fread.b = b
+                  THEN [st |-> "idle", b |-> "none", ld |-> FALSE, tl |-> FALSE, idx |-> 0,
+                        need |-> 0, start |-> 0]
+                  ELSE fread
+    /\ UNCHANGED << log, gen, base, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, writes, trims >>
 
 \* A broker a majority votes for takes the next generation and writes its
