@@ -20,6 +20,7 @@ use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use super::machine::Machine;
+use super::network::Ask;
 use super::types::{MemberId, ShardTypes};
 
 /// Most members a leader keeps a report from: what one voter set may name
@@ -32,6 +33,8 @@ pub(crate) struct Reports {
     /// once a publisher has waited on one, so a shard whose writes never
     /// wait this way costs its followers no message.
     wanted: AtomicBool,
+    /// This member's log counts its written entries toward the commit.
+    written_commit: bool,
     heard: watch::Sender<Vec<(MemberId, LogPoint)>>,
     /// `ranks[n - 1]` wakes the waits that need `n` senders at or past
     /// their entry, keyed by the `n`th furthest position heard. A write
@@ -60,17 +63,24 @@ pub(crate) enum Look {
 }
 
 impl Reports {
-    pub(crate) fn new() -> Self {
+    /// `written_commit`: this member's log counts written entries toward
+    /// the commit ([`RaftLog::written_commit`](felix_storage::raft_log::RaftLog::written_commit)).
+    pub(crate) fn new(written_commit: bool) -> Self {
         Self {
             wanted: AtomicBool::new(false),
+            written_commit,
             heard: watch::Sender::default(),
             ranks: Mutex::new(Vec::new()),
         }
     }
 
-    /// Whether a leader's append should ask the follower for its report.
-    pub(crate) fn wanted(&self) -> bool {
-        self.wanted.load(Ordering::Relaxed)
+    /// What a leader's append that carries entries asks the follower for.
+    pub(crate) fn ask(&self) -> Ask {
+        match (self.wanted.load(Ordering::Relaxed), self.written_commit) {
+            (false, _) => Ask::Nothing,
+            (true, false) => Ask::Written,
+            (true, true) => Ask::WrittenIfStrict,
+        }
     }
 
     /// `from` says the last entry it has written is `at`. The furthest

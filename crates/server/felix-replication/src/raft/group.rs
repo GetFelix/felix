@@ -31,7 +31,7 @@ use super::lease::{Lease, View};
 use super::machine::{self, Cache, Groups, Machine, SnapshotData};
 use super::membership::{Target, Told};
 use super::network::{
-    Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
+    Addressee, Ask, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
@@ -649,7 +649,7 @@ impl Group {
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
-        let reports = Arc::new(Reports::new());
+        let reports = Arc::new(Reports::new(log.written_commit()));
         let refusals = Arc::new(Refusals::new(id.clone()));
         let network = Network {
             router: Router::new(
@@ -1026,7 +1026,7 @@ impl Group {
 
     /// `beat` is the gap a leader's append named. Taking the append or
     /// granting a vote restarts this member's election timer. `report` is
-    /// the leader asking to be told once the append's entries are written.
+    /// what the leader asks to be told once the append's entries are written.
     ///
     /// The timer restarts even if the caller stops waiting: openraft
     /// persists the append or vote either way, and a follower that keeps
@@ -1037,7 +1037,7 @@ impl Group {
         self: &Arc<Self>,
         body: Request,
         beat: u64,
-        report: bool,
+        report: Ask,
         deadline: Duration,
     ) -> Result<Reply, Refused> {
         let group = Arc::clone(self);
@@ -1069,10 +1069,16 @@ impl Group {
     /// Answer `body`. When it is an append whose leader asked for a report,
     /// the report goes out as soon as the entries are written, while
     /// openraft's answer waits for their fsync. An answer that is ready
-    /// first says more, and the report is dropped.
-    async fn answer(&self, body: Request, report: bool) -> Result<Reply, Refused> {
+    /// first says more, and the report is dropped. A written-commit log
+    /// answers at the write, so it skips a relaxed leader's ask ([`Ask`]).
+    async fn answer(&self, body: Request, report: Ask) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
+        let report = match report {
+            Ask::Nothing => false,
+            Ask::Written => true,
+            Ask::WrittenIfStrict => !self.log.written_commit(),
+        };
         let asked = match &body {
             Request::Append(rpc) if report => rpc.entries.last().map(|last| {
                 let last = last.log_id();
@@ -1127,7 +1133,7 @@ impl Group {
             group: self.id.clone(),
             to: leader,
             beat: 0,
-            report: false,
+            report: Ask::Nothing,
             deadline,
             body: Request::Written {
                 from: self.member.clone(),
