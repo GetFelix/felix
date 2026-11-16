@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794787735109,
+  "lastUpdate": 1794792298746,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75438,6 +75438,72 @@ window.BENCHMARK_DATA = {
             "range": "707.08",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1146.00\nmean: 1359.60\nstdev: 707.08\ncv: 52.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0128eb41288f95fdc4d69777435fd5432a90f6aa",
+          "message": "feat(raft): fold the group table on every member and carry it in the stream snapshot (#2446) (#2658)\n\n* feat(raft): group records and the Raft group entry (#2446)\n\nA consumer group's write on a Raft stream shard is a Raft entry of its own\nkind: entry tag 9, stored as a group record (kind bits 31, 30 and 29, v9\nonly, taken only by a Raft log). Its payload is a GroupEntry naming the\ngroup, the operation and, for tracker-decided writes, the group's creation\ntoken [term, index, seek|hydrate]. The fleet feature raft_consumer_groups is\ndefined but not reported; nothing writes either yet.\n\nSpec-Unaffected: format and codec only; the fold FelixRaftGroups.tla models is not built here.\n\n* fix(raft): review fixes for group records\n\nA group write with an expected offset is refused to encode, and a group\nrecord with a publisher or headers is refused when read back. Creation\ntokens have no ordering. Docs say a pre-group v9 build refuses the log and\nwhat the model leaves out.\n\nSpec-Unaffected: codec refusals and docs only.\n\n* feat(raft): the per-shard consumer-group table fold (#2446)\n\nGroupTable folds committed group entries in log order as FelixRaftGroups.tla's\nStep does: cursor max within a creation token, dead and redriven sets, finish\nredrive, a shard-wide delete watermark for absent names, stale writes dropped.\nShardGroups adds the leader's term-bound tracker tokens and forgets one when\nan entry carrying its token is dropped. Not wired into the Raft machine yet.\n\nSpec-Unaffected: implements FelixRaftGroups.tla's fold; no new rule.\n\n* fix(raft): refuse a group entry with an empty group name\n\n* feat(raft): fold the group table on every member and carry it in the stream snapshot (#2446)\n\nSpec-Unaffected: wires FelixRaftGroups.tla's fold into apply, restart and snapshot install; no new rule.\n\n* fix(raft): review fixes for the group table snapshot\n\nSpec-Unaffected: docs and a stricter snapshot decode only.",
+          "timestamp": "2026-11-16T01:18:21Z",
+          "tree_id": "d631dc6b13c3ddb1c25bb2f3acf4ade257d0dbbb",
+          "url": "https://github.com/GetFelix/felix/commit/0128eb41288f95fdc4d69777435fd5432a90f6aa"
+        },
+        "date": 1794792282625,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "2.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 86.20\nstdev: 2.05\ncv: 2.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "6.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 120.60\nstdev: 6.31\ncv: 5.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 152,
+            "range": "8.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 156.40\nstdev: 8.73\ncv: 5.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 103,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 103.00\nmean: 102.80\nstdev: 1.10\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "7.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 214.80\nstdev: 7.05\ncv: 3.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 344,
+            "range": "681.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 344.00\nmean: 667.80\nstdev: 681.80\ncv: 102.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
