@@ -126,6 +126,7 @@ never have dialled the one that shipped to it.
 | `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
 | `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
+| `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | takes a sequenced forward of several records for a shard on Raft as one-record batches at consecutive sequences from the one named, proposed back to back and answered once all commit (see "A forward that names its producer"). An MQTT listener on a member of the shard's group sends a batch whole only to a leader that offered it, and record by record otherwise |
 
 #### Storage identity
 

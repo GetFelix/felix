@@ -293,49 +293,101 @@ impl ForwardingHandler {
         };
         let committed = match publish.producer {
             Some(producer) => {
-                let turn = self
-                    .broker
-                    .producer_turn(handle, producer.producer_id)
-                    .await;
-                let proposed = self.engine.publish_idempotent_on_raft(
-                    &self.broker,
-                    handle,
-                    key,
-                    term,
-                    turn,
-                    producer.sequence,
-                    SequenceReuse::Refuse,
-                    publish.payloads,
-                    attribution,
-                    self.quorum_timeout,
-                );
-                match proposed {
-                    Some(Ok(proposed)) => proposed.complete().await.map_err(|err| {
-                        // As on the hybrid: a sequenced forward can be sent
-                        // again to whoever leads now.
-                        let code = match err {
+                // Several records take a sequence each, from the one named,
+                // and are proposed back to back: each once the one before it
+                // is on this log, not once it commits.
+                let headers = attribution.headers;
+                let mut proposed = Vec::with_capacity(publish.payloads.len());
+                let mut refused = None;
+                for (at, payload) in publish.payloads.into_iter().enumerate() {
+                    let turn = self
+                        .broker
+                        .producer_turn(handle, producer.producer_id)
+                        .await;
+                    let attribution = felix_broker::Attribution {
+                        publisher: attribution.publisher.clone(),
+                        headers: headers.as_ref().map(|headers| vec![headers[at].clone()]),
+                    };
+                    match self.engine.publish_idempotent_on_raft(
+                        &self.broker,
+                        handle,
+                        key,
+                        term,
+                        turn,
+                        producer.sequence + at as u64,
+                        SequenceReuse::Refuse,
+                        vec![payload],
+                        attribution,
+                        self.quorum_timeout,
+                    ) {
+                        Some(Ok(record)) => proposed.push(record),
+                        Some(Err(err)) => {
+                            refused = Some(Some(err));
+                            break;
+                        }
+                        None => {
+                            refused = Some(None);
+                            break;
+                        }
+                    }
+                }
+                let proposed_any = !proposed.is_empty();
+                let mut offsets: Option<(u64, u64)> = None;
+                let mut failed = None;
+                for record in proposed {
+                    match record.complete().await {
+                        Ok(placed) => {
+                            if let Some((first, last)) = placed {
+                                offsets = Some((offsets.map_or(first, |o| o.0), last));
+                            }
+                        }
+                        Err(err) => {
+                            failed = Some(err);
+                            break;
+                        }
+                    }
+                }
+                match (failed, refused) {
+                    (None, None) => Ok(offsets),
+                    // As on the hybrid: a sequenced forward can be sent
+                    // again to whoever leads now.
+                    (Some(err), _) => Err((
+                        match err {
                             CommitError::LeadershipLost { .. } => ErrorCode::LeadershipLost,
                             _ => ErrorCode::StorageFailed,
-                        };
-                        (code, err.to_string())
-                    }),
+                        },
+                        err.to_string(),
+                    )),
+                    // Some records are written and the rest are not. Told as
+                    // a lost leadership, the requester sends each again and
+                    // has it answered from the log.
+                    (None, Some(refused)) if proposed_any => Err((
+                        ErrorCode::LeadershipLost,
+                        refused.map_or_else(
+                            || "stopped leading partway through the batch".to_string(),
+                            |err| format!("partway through the batch: {err}"),
+                        ),
+                    )),
                     // The sequence was refused, as the hybrid refuses it.
                     // So is a batch the engine does not take: answered
                     // `Unavailable` it would be sent again, and
                     // `UnsupportedKind` would be read as an owner too old
                     // for the request.
-                    Some(Err(RaftRefusal::Broker(
-                        err @ (felix_broker::BrokerError::SequenceGap { .. }
-                        | felix_broker::BrokerError::UnknownProducer { .. }
-                        | felix_broker::BrokerError::SequenceExpired { .. }
-                        | felix_broker::BrokerError::SequenceReused { .. }
-                        | felix_broker::BrokerError::NotOnEngineStream { .. }),
-                    ))) => {
+                    (
+                        None,
+                        Some(Some(RaftRefusal::Broker(
+                            err @ (felix_broker::BrokerError::SequenceGap { .. }
+                            | felix_broker::BrokerError::UnknownProducer { .. }
+                            | felix_broker::BrokerError::SequenceExpired { .. }
+                            | felix_broker::BrokerError::SequenceReused { .. }
+                            | felix_broker::BrokerError::NotOnEngineStream { .. }),
+                        ))),
+                    ) => {
                         metrics::record_served(metrics::OUTCOME_ERROR);
                         return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
                     }
-                    Some(Err(refused)) => return not_taken(refused),
-                    None => return not_taken(RaftRefusal::NotLeading { term }),
+                    (None, Some(Some(refused))) => return not_taken(refused),
+                    (None, Some(None)) => return not_taken(RaftRefusal::NotLeading { term }),
                 }
             }
             None => {

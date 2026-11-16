@@ -16,7 +16,8 @@
 //! another broker owns may be on Raft too. So on a broker that runs Raft each
 //! record is a batch of its own at its own sequence, as a Kafka producer's
 //! are. On a Raft group led here they are proposed one after another without
-//! waiting for each commit, and answered once all are committed.
+//! waiting for each commit, and answered once all are committed. A group led
+//! elsewhere gets them in one forward, and its leader does the same.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,7 +29,7 @@ use felix_mqtt::{Refusal, Unwritten, WriteBatch, WriteError, Writes};
 use felix_replication::engine::{CommitError, Engine};
 use felix_replication::peer::{PeerPool, PeerRequester};
 use felix_replication::quorum::QuorumError;
-use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer};
+use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer, PeerCapabilities};
 
 use crate::observability::tenants;
 use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
@@ -210,6 +211,18 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 }
             }
         }
+        // Led elsewhere: the batch goes to the leader in one forward, which
+        // costs one forward and one commit, as on the hybrid. Anything but a
+        // known outcome settles record by record below.
+        let mut lost = None;
+        if proposed.is_empty() && batch.records.len() > 1 {
+            match self.forward_whole(batch, key, deadline).await {
+                Some(Sent::Written) => return Ok(()),
+                Some(Sent::Unknown(reason)) => return Err(WriteError::OutcomeUnknown(reason)),
+                Some(Sent::Unanswered(reason)) => lost = Some(reason),
+                Some(Sent::Refused(_) | Sent::Leaderless) | None => {}
+            }
+        }
         let mut proposed = proposed.into_iter();
         for at in 0..batch.records.len() {
             let unanswered = match proposed.next() {
@@ -223,7 +236,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                         unreachable!("a proposed record is written or unanswered")
                     }
                 },
-                None => None,
+                None => lost,
             };
             let record = record_batch(batch, at);
             if let Err(err) = self
@@ -234,6 +247,57 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             }
         }
         Ok(())
+    }
+
+    /// Forward `batch` whole to the leader of the shard's Raft group, when
+    /// this broker is a member that does not lead it and the leader takes a
+    /// record per sequence. `None` when nothing was sent.
+    async fn forward_whole(
+        &self,
+        batch: &WriteBatch,
+        key: &ShardKey,
+        deadline: Option<Instant>,
+    ) -> Option<Sent> {
+        let forwarding = self.forwarding.as_ref()?;
+        if !self.engine.on_raft(key) || self.engine.raft_term(key).is_some() {
+            return None;
+        }
+        let ingress = self.engine.serving().map(|ingress| &**ingress);
+        let (
+            Dispatch::Forward {
+                node_id,
+                advertise_addr,
+                generation,
+                incarnation,
+            },
+            _,
+        ) = dispatch_write(ingress, key).await
+        else {
+            return None;
+        };
+        let takes = forwarding
+            .peers
+            .recorded_capabilities(&node_id)
+            .is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_SEQUENCED_FORWARDS));
+        if !takes {
+            return None;
+        }
+        let target = ForwardTarget {
+            node_id,
+            advertise_addr,
+            generation,
+            incarnation,
+        };
+        let payloads: Vec<Bytes> = batch.records.iter().map(|r| r.payload.clone()).collect();
+        let headers: Vec<Option<Bytes>> = batch
+            .records
+            .iter()
+            .map(|r| Some(r.headers.clone()))
+            .collect();
+        Some(
+            self.forward(batch, &target, &payloads, &headers, deadline)
+                .await,
+        )
     }
 
     /// Write `batch` whole, sending it again until its outcome is known or
