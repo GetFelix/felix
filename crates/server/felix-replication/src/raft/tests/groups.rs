@@ -263,3 +263,36 @@ async fn a_group_entry_that_does_not_decode_stops_the_apply() {
     assert!(applied.is_err());
     assert_eq!(groups.read().table(), &GroupTable::default());
 }
+
+/// **A group write is refused unless this member leads the term it was
+/// decided in, and nothing is appended for it: the next write lands right
+/// after the last one, and the term stays open.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_write_outside_its_term_is_refused_and_appends_nothing() {
+    let led = led().await;
+    let write = entry("a", GroupOp::Advance { cre: CRE, to: 1 });
+    let propose = |term| {
+        led.engine
+            .propose_group(&shard(0), term, 1_700_000_000, &write)
+    };
+    let first = propose(led.term).await.expect("written");
+    for other in [led.term + 1, led.term - 1] {
+        let refused = propose(other).await;
+        assert!(
+            matches!(
+                refused,
+                Err(crate::engine::CommitError::LeadershipLost { .. })
+            ),
+            "term {other}: {refused:?}"
+        );
+    }
+    let next = propose(led.term).await.expect("the term is still open");
+    assert_eq!(next.generation, led.term);
+    assert_eq!(next.end, first.end + 1, "a refused write took an index");
+    led.engine
+        .await_commit(&shard(0), next, PATIENCE)
+        .await
+        .expect("committed");
+    let mut cluster = led.cluster;
+    cluster.stop().await;
+}

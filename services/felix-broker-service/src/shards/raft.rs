@@ -38,6 +38,8 @@ use super::{ShardKey, ShardKind};
 use crate::cluster::lease::{Head, LeaseState};
 
 pub(crate) mod floor;
+mod groups;
+pub(crate) use groups::Groups as RaftGroups;
 
 /// How long a leader that could not move its stream to the committed tail
 /// waits before it tries again.
@@ -178,9 +180,22 @@ impl RaftShards {
         local: String,
         fleet: Arc<FleetGate>,
     ) -> Arc<Self> {
+        let terms = Arc::default();
+        // A broker without a group reader serves no groups, so its values
+        // are never read.
+        let (visibility, max_attempts) = broker
+            .group_reader()
+            .map_or((Duration::from_secs(30), 1), |reader| {
+                (reader.visibility(), reader.max_attempts())
+            });
         let leading = Arc::new(Leading {
             broker: Arc::clone(&broker),
-            terms: Arc::default(),
+            groups: Arc::new(groups::Groups::new(
+                groups::OnRaft::new(RaftEngine::new(runtime.clone()), Arc::clone(&terms)),
+                visibility,
+                max_attempts,
+            )),
+            terms,
             ending: Arc::default(),
             wake: std::sync::OnceLock::new(),
             lease: std::sync::OnceLock::new(),
@@ -262,6 +277,11 @@ impl RaftShards {
                 })
             })
             .collect()
+    }
+
+    /// The consumer groups of this broker's Raft stream shards.
+    pub(crate) fn groups(&self) -> &Arc<groups::Groups> {
+        &self.leading.groups
     }
 
     /// The term this broker leads `shard` in with its stream brought up to
@@ -1062,6 +1082,8 @@ impl felix_broker::EngineLogs for RaftShards {
 /// The shards this broker leads, as its Raft members report them.
 struct Leading {
     broker: Arc<Broker>,
+    /// Consumer groups, whose trackers last only as long as the term.
+    groups: Arc<groups::Groups>,
     terms: Arc<parking_lot::Mutex<HashMap<ShardKey, Lead>>>,
     /// Deposed terms per shard whose subscribers are still to be ended. No
     /// later term is served while one is left: its subscribers would be
@@ -1236,6 +1258,9 @@ impl WriteFence for Leading {
             // waits for this one's subscribers to be ended.
             *self.ending.lock().entry(key.clone()).or_default() += 1;
         }
+        // Claims are this leader's memory. A successor starts without them
+        // and hands the records out again once they lapse.
+        self.groups.step_down(&groups::any_group_of(key));
         // The deposed term's subscribers are ended: a batch it was handed
         // may settle as a gap, which they would see as a drop. Ended after
         // the term is gone, on a task, so a reader that registers before

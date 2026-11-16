@@ -255,10 +255,14 @@ impl RaftEngine {
     }
 
     /// Write one consumer-group write of `shard` while this broker leads
-    /// `term`. Returns when it is on this leader's log; like a publish,
-    /// that is not committed, and an error does not mean it was not
-    /// written. Every member folds it into its group table once applied
+    /// `term`. Returns when it is on this leader's log, not committed.
+    /// Every member folds it into its group table once applied
     /// ([`Self::groups`]).
+    ///
+    /// Refused unless this member leads `term`. An error means nothing was
+    /// appended in `term`, or that this member has closed `term` for good:
+    /// where an append may have happened, the term is closed before the
+    /// error returns, so only a later term's read index can see the entry.
     pub fn propose_group(
         &self,
         shard: &ShardKey,
@@ -266,12 +270,24 @@ impl RaftEngine {
         timestamp_micros: u64,
         entry: &felix_broker::GroupEntry,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
-        let proposed = self
-            .runtime
-            .group(shard)
+        let group = self.runtime.group(shard);
+        let proposed = group
+            .as_ref()
             .map(|group| group.propose_group(entry.encode(), timestamp_micros, term))
             .ok_or_else(|| propose::lost(NO_GROUP));
-        async move { proposed?.await.map_err(|unacked| unacked.error) }
+        async move {
+            let unacked = match proposed?.await {
+                Ok(written) => return Ok(written),
+                Err(unacked) => unacked,
+            };
+            // A no-op unless this member still leads `term`.
+            if !unacked.refused_on_lease()
+                && let Some(group) = group
+            {
+                group.transfer_starting_in(Some(term)).await;
+            }
+            Err(unacked.error)
+        }
     }
 
     /// `shard`'s consumer groups as this broker's member has applied them.

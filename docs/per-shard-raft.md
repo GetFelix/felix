@@ -3495,9 +3495,20 @@ refused (`stream_has_commits`), as on the hybrid.
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
 
-**Consumer groups.** Not served on a Raft shard yet: a group operation on
-one is refused as `invalid_request`. What is built is the entry the groups
-will write and the table every member folds from those entries. A group's writes (a cursor advance, a dead letter, a redrive and
+**Consumer groups.** Served on a Raft shard once the cluster finalizes
+`raft_consumer_groups` (a new cluster starts with it); until then a group
+operation on one is refused as `invalid_request`, since an older member
+refuses the entry. Only the shard's leader serves its groups. Every
+operation, read or write, first confirms the leader's term by a read index
+and waits for this member to apply it, so it sees every group write
+committed before it. A write is proposed at that term, refused by openraft
+if the member no longer leads it, and answered only once applied. If the
+append's outcome is unknown, the leader closes the term before answering, so
+only a later term's read index can see the entry. Claims are the leader's
+memory: when it stops leading a shard it drops the shard's trackers, and the
+next leader hands out what was in flight again once the visibility lapses
+(at least once, as on the hybrid). Group writes are log entries, so they
+take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
 its finish, a discard, a seek, a delete) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
