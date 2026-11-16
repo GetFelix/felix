@@ -502,6 +502,13 @@ impl DiskLog {
         self.inner.producers.lock().next_sequence(producer_id)
     }
 
+    /// The 64-bit count a wrapping sequence from `producer_id` is lifted
+    /// toward: [`Self::producer_next_sequence`], or one past the producer's
+    /// tombstone when the log forgot it.
+    pub fn producer_lift_basis(&self, producer_id: u64) -> Option<u64> {
+        self.inner.producers.lock().lift_basis(producer_id)
+    }
+
     /// The highest producer id in `ids` this log holds batches from, or a
     /// tombstone for. Derived from the records like the rest of the producer
     /// state, so every copy of the log gives the same answer.

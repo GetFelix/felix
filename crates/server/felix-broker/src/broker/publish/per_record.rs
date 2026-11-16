@@ -85,7 +85,7 @@ impl Broker {
         let _turn = turn.lock().await;
 
         let owed = log.producer_next_sequence(producer_id);
-        let first = lift(first_sequence, owed);
+        let first = lift(first_sequence, log.producer_lift_basis(producer_id));
         let count = payloads.len() as u64;
         let last = first + count - 1;
         let written = match owed {
@@ -170,7 +170,7 @@ impl Broker {
             .state
             .durable
             .as_ref()
-            .and_then(|log| log.producer_next_sequence(producer_id));
+            .and_then(|log| log.producer_lift_basis(producer_id));
         lift(sequence, owed)
     }
 }
