@@ -1,0 +1,1 @@
+A 3.1.1 MQTT connection closed because a publish was refused now logs a warning with the reason and the stream and shard. The `mqtt-publish` load generator connects with the tenant and token instead of anonymously, so it can publish to shards another broker leads (#2708).

@@ -683,3 +683,69 @@ async fn a_batch_written_partway_acknowledges_what_was_written() {
     let sequences: Vec<_> = writes.batches().iter().map(|b| b.sequence).collect();
     assert_eq!(sequences, [0, 1, 3]);
 }
+
+/// Collects what a connection task logs on this thread.
+#[derive(Clone, Default)]
+struct LogSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
+    type Writer = LogSink;
+    fn make_writer(&'a self) -> LogSink {
+        self.clone()
+    }
+}
+
+#[test]
+fn a_refused_publish_that_closes_a_3_1_1_connection_is_logged() {
+    let sink = LogSink::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(sink.clone())
+        .with_ansi(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let writes = FakeWrites::new();
+        writes.fail_with(Err(WriteError::Refused(Refusal::NotOwner)));
+        let settings = Settings {
+            anonymous_tenant: Some("acme".into()),
+            ..Settings::default()
+        };
+        let mut h = start_with(settings, None, writes);
+        h.client.version = Some(Version::V311);
+        let mut c = connect(Version::V311);
+        c.username = None;
+        c.password = None;
+        h.client.send(Packet::Connect(c), Version::V311).await;
+        assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
+        h.client
+            .send(
+                Packet::Publish(publish(QoS::AtLeastOnce, Some(1))),
+                Version::V311,
+            )
+            .await;
+        assert!(h.client.closed().await);
+    });
+    let log = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(log.matches("WARN").count(), 1, "{log}");
+    assert!(log.contains("not_owner"), "{log}");
+    assert!(
+        log.contains("anonymous connection has no token to forward"),
+        "{log}"
+    );
+    assert!(log.contains("shard"), "{log}");
+}

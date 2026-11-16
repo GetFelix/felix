@@ -67,6 +67,12 @@ no credentials acts as that tenant and may publish to every stream mounted for
 it, and the broker logs a warning at startup. A connection that sends a wrong
 token is still refused.
 
+On a cluster an anonymous connection cannot be forwarded: it has no token to
+send the shard's owner, so a publish for a shard another broker leads is
+refused as `not_owner`. A 3.1.1 connection then closes, and the broker logs a
+warning naming the stream and shard. Use a tenant token for anything beyond a
+single-broker development setup.
+
 A connection ends when its token expires or is revoked. A 5.0 client is sent a
 `DISCONNECT` with reason 0x87 first. Re-authenticating with `AUTH` is not
 supported yet.

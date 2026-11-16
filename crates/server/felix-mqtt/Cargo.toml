@@ -29,6 +29,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "test-util"] }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true
