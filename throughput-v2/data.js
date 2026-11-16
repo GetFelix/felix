@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794820239826,
+  "lastUpdate": 1794821080822,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59748,6 +59748,58 @@ window.BENCHMARK_DATA = {
             "range": "4488.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820064.61\nmean: 821400.03\nstdev: 4488.49\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cfe079215021b600eceaedd1e10b3304fb9bac13",
+          "message": "feat(raft): consumer group reader for Raft stream shards (#2446, PR 4a) (#2678)\n\n* feat(raft): consumer group reader for Raft stream shards (#2446, PR 4a)\n\nRaftGroups serves a stream shard's consumer groups from the Raft group\ntable, behind a GroupConsensus trait the broker service implements in\nthe next change: a read-index wait, propose, and an apply wait.\n\nImplements the leader side of FelixRaftGroups.tla (HandOut, Ack,\nDeadLetter, Redrive, Seek, Propose) without changing the spec.\n\n* fix(raft): group reader review round (#2446, PR 4a)\n\n- Hydrate an absent group with moved_to(0): a late ack from a deleted\n  incarnation is refused instead of skipping the record.\n- GroupConsensus::propose takes the term the decision was read in and is\n  refused outside it.\n- Keep the tracker when an applied() wait gives up; a redrive marks the\n  record owed before its write so the kept tracker stays right.\n- Seek takes the creation token back from the table.\n- Evict slots on delete, on a newer term, on step_down, and when idle.\n- A poll whose creation lost to another group's delete hydrates once more.\n- Fake consensus: term changes, lagging read index, truncation, fold term.\n\n* fix(broker): keep a discard's tracker on a failed write, settle dead letters above the cursor on hydrate\n\nA discard decides nothing from the tracker, so a failed write no longer\nthrows it away. A hydrated tracker treats the table's dead letters above\nthe cursor as settled, so a leader change between a dead letter and the\nadvance over it does not deliver it again. The propose contract now says\nan error means nothing was appended in the term, or the member stopped\nleading it.",
+          "timestamp": "2026-11-16T01:17:10-08:00",
+          "tree_id": "487fda473fe00d48bdcb3afac08ee14285277c85",
+          "url": "https://github.com/GetFelix/felix/commit/cfe079215021b600eceaedd1e10b3304fb9bac13"
+        },
+        "date": 1794821079836,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356105.96,
+            "range": "12197.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356105.96\nmean: 353615.39\nstdev: 12197.34\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356105.96,
+            "range": "12197.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356105.96\nmean: 353615.39\nstdev: 12197.34\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78529.82,
+            "range": "1617.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78529.82\nmean: 78977.18\nstdev: 1617.81\ncv: 2.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 785298.17,
+            "range": "16178.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 785298.17\nmean: 789771.84\nstdev: 16178.12\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
