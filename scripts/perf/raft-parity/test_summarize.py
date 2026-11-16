@@ -98,6 +98,49 @@ class Run(unittest.TestCase):
         res = s.summarize(self.write(rows))
         self.assertEqual(res["verdict"], "FAIL")
 
+    def resume(self, p50, p99, msg_s=50000, errors=0):
+        return {"replayed_throughput_msg_s": msg_s, "errors": errors,
+                "resume_latency_us": {"p50": p50, "p99": p99, "p999": p99 * 2},
+                "replay_latency_us": {"p50": p50 * 2, "p99": p99 * 2}}
+
+    def tail(self, msg_s, p50, p99, gaps=0):
+        return {"delivered_throughput_msg_s": msg_s, "gaps": gaps,
+                "delivery_latency_us": {"p50": p50, "p99": p99}}
+
+    def test_slower_raft_resume_fails(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-resume", "hybrid", "ok", self.resume(300, 900)))
+            rows.append((rnd, "rf3-resume", "raft", "ok", self.resume(300, 1800)))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "FAIL")
+        failed = [m["id"] for m in res["cells"][0]["metrics"] if m["gates"] and m["verdict"] == "FAIL"]
+        self.assertEqual(failed, ["resume_p99"])
+
+    def test_matching_resume_and_follower_tail_pass(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            for side in ("hybrid", "raft"):
+                rows.append((rnd, "rf3-resume", side, "ok", self.resume(300, 900)))
+                rows.append((rnd, "rf3-follower-tail", side, "ok", self.tail(20000, 800, 2500)))
+        self.assertEqual(s.summarize(self.write(rows))["verdict"], "PASS")
+
+    def test_a_dropped_record_on_a_follower_tail_fails(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-follower-tail", "hybrid", "ok", self.tail(20000, 800, 2500)))
+            rows.append((rnd, "rf3-follower-tail", "raft", "ok", self.tail(20000, 800, 2500, gaps=4)))
+        self.assertEqual(s.summarize(self.write(rows))["verdict"], "FAIL")
+
+    def test_kafka_tail_gates_consumed_throughput(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-kafka-tail", "hybrid", "ok",
+                         {"consumed_throughput_msg_s": 40000, "throughput_msg_s": 40000}))
+            rows.append((rnd, "rf3-kafka-tail", "raft", "ok",
+                         {"consumed_throughput_msg_s": 20000, "throughput_msg_s": 40000}))
+        self.assertEqual(s.summarize(self.write(rows))["verdict"], "FAIL")
+
 
 if __name__ == "__main__":
     unittest.main()

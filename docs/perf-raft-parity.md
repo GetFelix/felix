@@ -47,6 +47,15 @@ and every setting.
 | `rf3-kafka` | Kafka's own `kafka-producer-perf-test`, `acks=all`, 64 KiB batches, same settings on both engines. |
 | `rf3-mqtt` | MQTT 3.1.1 QoS 1 publishes, a window of 64 per connection, to a stream mounted at `bench/`. |
 | `rf3-fanout` | One publisher, four subscribers. Gates delivered throughput and delivery p99. |
+| `rf3-kafka-tail` | Kafka's `kafka-consumer-perf-test` tails the topic while `kafka-producer-perf-test` publishes at a fixed rate (`KAFKA_TAIL_RATE`, 20000 records/s). Gates the consumer's fetch rate. The tool reports no latency percentiles, so there are none. |
+| `rf3-resume` | A resume loop on the shard's leader: each pass subscribes at a random offset below the tail, reads `RESUME_SPAN` records and drops the subscription, over `RESUME_WORKERS` loops. Gates replayed throughput and the p50 and p99 from the subscribe to the first record, which is where the leader's read check (a lease or a read index round on Raft) lands. A publisher runs beside it. |
+| `rf3-follower-tail` | `TAIL_SUBS` plain tail subscribers connect to a node that does not lead the shard, with a publisher beside them. Raft serves them from the follower's own log after the read index check, so this measures that read. An engine that does not serve followers answers `NotLeader` and the subscriber moves to the leader, so the cell compares what a client attached to a follower gets on each engine. The loadgen JSON says which happened (`served_directly`, `redirected`). Gates delivered throughput, delivery p50 and p99 and offset gaps. |
+
+The three read cells run on a single shard stream so an offset or a follower names one place.
+Their publisher is `ingest` with `TAIL_PUBLISHERS` acked publishers, one batch in flight each. It is
+closed loop and light on purpose, and its rate is recorded as information (`publish throughput`):
+the delivered and replayed rates are bounded by it, and the latencies are what separate the
+engines. `single-resume` runs the resume loop against one node, for checking the harness on one box.
 
 Batched cells measure a throughput profile. Their ack latency is per batch and says nothing
 about request latency; the `-lat` cells do. `throughput` counts what the publishers sent and

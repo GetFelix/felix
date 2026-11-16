@@ -6,7 +6,7 @@ publish acknowledgement and delivery latency, fanout, aggregate ingest, cache
 and counter round trips, cache watches, consumer groups and retained joins.
 
 Scenarios: `pubsub`, `cache`, `counter`, `watch`, `queue`, `retained`,
-`ingest`, `subscribe`, `failover` and `mqtt-publish`. `failover` times a leader kill the
+`ingest`, `subscribe`, `resume`, `failover` and `mqtt-publish`. `failover` times a leader kill the
 harness performs, and `mqtt-publish` drives QoS 1 publishes over plain TCP; both are used by
 the Raft parity matrix (`docs/perf-raft-parity.md`). `subscribe` only subscribes, so it pairs with
 `ingest` on another generator for read-heavy runs:
@@ -20,6 +20,18 @@ felix-loadgen ... --scenario subscribe --stream perf --fanout 200 \
 felix-loadgen ... --scenario ingest --stream perf --concurrency 4 \
     --duration-secs 60 --start-at 1760000000 --stamp-send-time
 ```
+
+`subscribe --direct` connects each subscriber to one of the `--brokers` itself (round robin) and reads
+shard 0 there, so pointing it at a node that does not lead the shard measures a follower read. A
+`NotLeader` answer is followed one hop to the leader and counted as `redirected` in the JSON
+(`served_directly` counts the rest). The stream must have one shard.
+
+`resume` is the offset-resume loop for durable streams: `--concurrency` loops each subscribe at a
+random offset below the tail (taken once the publisher has left `20 x --resume-span` records), read
+`--resume-span` records (default 100) and drop the subscription. The JSON has `resume_latency_us`
+(subscribe to first record), `replay_latency_us` (subscribe to the last record), `resumes_per_s`,
+`replayed_throughput_msg_s`, and `errors`, `short_reads` and `bad_first_offsets` counts that should be
+zero. Start `ingest` beside it with the same `--start-at`.
 
 A `subscribe` run reports what its subscribers were delivered
 (`delivered_throughput_msg_s`, `received`), offset gaps, which are records the

@@ -176,6 +176,14 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
       "$dir" "$limit" "$BIN/felix-loadgen" "$TENANT" "$@" 2>&1 | tee "$dir/loadgen.log"
     ;;
 
+  # loadgen-bg <dir> <name> <timeout-secs> <args...>: the same loadgen, detached, for
+  # a publisher that runs beside a measuring one. Output in <dir>/<name>.log.
+  loadgen-bg)
+    dir=$1 name=$2 limit=$3; shift 3; in_run "$dir"
+    start "$dir" "$name" timeout -k 10 "$limit" "$BIN/felix-loadgen" --tenant "$TENANT" \
+      --token-file "$dir/tokens/client.jwt" "$@"
+    ;;
+
   # stop <dir>: TERM then KILL the processes this script started under <dir>.
   stop)
     dir=$1; in_run "$dir"
@@ -245,6 +253,42 @@ print("LOADGEN_JSON " + json.dumps({"scenario": "kafka", "acked_records": int(n)
   "throughput_msg_s": float(rate), "throughput_mb_s": float(mb), "failed_sends": 0,
   "batch_ack_latency_us": {"p50": int(p50) * 1000, "p99": int(p99) * 1000,
                            "p999": int(p999) * 1000, "max": float(mx) * 1000}}))'
+    ;;
+
+  # kafka-tail <dir> <timeout> <bootstrap> <topic> <records> <bytes> <rate>: a consumer
+  # (kafka-consumer-perf-test) tails the topic while kafka-producer-perf-test publishes
+  # <rate> records/s into it. Same client settings on both engines. Prints one LOADGEN_JSON
+  # line with what the consumer fetched per second and what the producer achieved.
+  kafka-tail)
+    dir=$1 limit=$2 boot=$3 topic=$4 records=$5 bytes=$6 rate=$7; in_run "$dir"
+    start "$dir" kafka-tail-producer bash -c 'sleep 10; exec timeout -k 10 "$@"' _ "$limit" \
+      "$R/kafka/bin/kafka-producer-perf-test.sh" --topic "$topic" \
+      --num-records "$records" --record-size "$bytes" --throughput "$rate" --producer-props \
+      bootstrap.servers="$boot" acks=all batch.size=65536 linger.ms=5 compression.type=none \
+      max.in.flight.requests.per.connection=5
+    cons=$(timeout -k 10 "$limit" "$R/kafka/bin/kafka-consumer-perf-test.sh" \
+      --bootstrap-server "$boot" --topic "$topic" --messages "$records" --group "tail-$$" \
+      --hide-header --timeout 120000 2>&1 | tee "$dir/kafka-tail-consumer.log" | tail -1) || true
+    # The producer prints its summary last; give it a moment to finish after the consumer.
+    for _ in $(seq 1 60); do
+      grep -q 'records sent' "$dir/kafka-tail-producer.log" 2>/dev/null \
+        && grep 'records sent' "$dir/kafka-tail-producer.log" | tail -1 | grep -q 'ms 99.9th' && break
+      sleep 1
+    done
+    python3 -c '
+import json, re, sys
+cons, prod = sys.argv[1], open(sys.argv[2]).read()
+f = [x.strip() for x in cons.split(",")]
+if len(f) < 10:
+    sys.exit("could not parse consumer line: " + cons)
+m = re.findall(r"(\d+) records sent, ([\d.]+) records/sec", prod)
+if not m:
+    sys.exit("producer did not finish")
+sent, rate = m[-1]
+print("LOADGEN_JSON " + json.dumps({"scenario": "kafka-tail", "consumed_records": int(float(f[4])),
+  "consumed_throughput_msg_s": float(f[9]), "consumed_throughput_mb_s": float(f[8]),
+  "produced_records": int(sent), "throughput_msg_s": float(rate), "failed_sends": 0}))' \
+      "$cons" "$dir/kafka-tail-producer.log"
     ;;
 
   wipe) in_run "$1"; rm -rf "$1" ;;

@@ -47,3 +47,32 @@ fn a_reservoir_keeps_at_most_its_capacity() {
     let p50 = samples.percentiles().p50_us;
     assert!((2_000..8_000).contains(&p50), "p50 = {p50}");
 }
+
+#[test]
+fn direct_subscribers_spread_over_the_brokers() {
+    let brokers: Vec<std::net::SocketAddr> =
+        vec!["10.0.0.1:1".parse().unwrap(), "10.0.0.2:1".parse().unwrap()];
+    assert_eq!(super::direct_target(&brokers, 0), brokers[0]);
+    assert_eq!(super::direct_target(&brokers, 3), brokers[1]);
+}
+
+#[test]
+fn a_redirect_is_followed_only_when_it_names_an_address() {
+    use felix_client::NotLeaderError;
+    let named = anyhow::Error::new(NotLeaderError {
+        node_id: "broker-1".into(),
+        addr: Some("10.0.0.9:15000".into()),
+        generation: 1,
+    });
+    assert_eq!(
+        super::redirect_addr(&named),
+        Some("10.0.0.9:15000".parse().unwrap())
+    );
+    let nameless = anyhow::Error::new(NotLeaderError {
+        node_id: "broker-1".into(),
+        addr: None,
+        generation: 1,
+    });
+    assert_eq!(super::redirect_addr(&nameless), None);
+    assert_eq!(super::redirect_addr(&anyhow::anyhow!("boom")), None);
+}

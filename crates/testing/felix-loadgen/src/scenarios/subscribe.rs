@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use felix_client::{Client, ClusterSubscription, Event, ShardEvent, ShardedSubscription};
+use felix_client::{
+    Client, ClusterSubscription, Event, NotLeaderError, ShardEvent, ShardedSubscription,
+    Subscription,
+};
 use tokio::task::JoinSet;
 
 use super::connect::{client, cluster};
@@ -28,12 +31,20 @@ pub struct SubscribeOptions {
     /// Read the send time `ingest --stamp-send-time` put in each payload and
     /// report delivery latency against this machine's clock.
     pub stamp_send_time: bool,
+    /// Connect each subscriber straight to one of the `--brokers` instead of
+    /// following the shard to its leader, and read shard 0 there. Pointed at a
+    /// non-leader, an engine that serves a follower read answers from that
+    /// node's own log, and one that does not answers `NotLeader`, which is
+    /// followed one hop and counted as `redirected`.
+    pub direct: bool,
 }
 
 /// One subscription, over one shard or all of them.
 enum Feed {
     One(Box<ClusterSubscription>),
     All(ShardedSubscription),
+    /// Opened on a named broker; see [`SubscribeOptions::direct`].
+    Direct(Box<Subscription>),
 }
 
 /// What [`Feed::next`] produced.
@@ -49,6 +60,10 @@ impl Feed {
     async fn next(&mut self) -> Result<Item> {
         match self {
             Feed::One(sub) => Ok(match sub.next_event().await? {
+                Some(event) => Item::Record(0, event),
+                None => Item::Ended,
+            }),
+            Feed::Direct(sub) => Ok(match sub.next_event().await? {
                 Some(event) => Item::Record(0, event),
                 None => Item::Ended,
             }),
@@ -99,7 +114,10 @@ pub(crate) async fn subscribe(
     let subscribers = common.fanout.max(1);
     let clients = common.concurrency.clamp(1, subscribers);
 
-    let shards = {
+    let shards = if opts.direct {
+        // A named broker serves shard 0 only, so the stream must be one shard wide.
+        1
+    } else {
         let probe = client(common, common.brokers[0]).await?;
         if probe.supports_stream_shards() {
             probe
@@ -116,6 +134,8 @@ pub(crate) async fn subscribe(
     }
 
     let mut cluster_clients = Vec::with_capacity(clients);
+    let mut redirected = 0usize;
+    let mut direct_connections = Vec::new();
     for _ in 0..clients {
         cluster_clients.push(Arc::new(cluster(common).await?));
     }
@@ -124,7 +144,13 @@ pub(crate) async fn subscribe(
     let mut feeds = Vec::with_capacity(subscribers);
     for index in 0..subscribers {
         let cluster: &Arc<Client> = &cluster_clients[index % clients];
-        let feed = if shards > 1 {
+        let feed = if opts.direct {
+            let addr = direct_target(&common.brokers, index);
+            let (feed, hopped, keep) = open_direct(common, addr, stream).await?;
+            redirected += usize::from(hopped);
+            direct_connections.extend(keep);
+            Feed::Direct(Box::new(feed))
+        } else if shards > 1 {
             Feed::All(
                 cluster
                     .subscribe_sharded(&common.tenant, &common.namespace, stream, None)
@@ -151,6 +177,11 @@ pub(crate) async fn subscribe(
             .sum::<usize>();
     }
 
+    let served_directly = if opts.direct {
+        subscribers - redirected
+    } else {
+        0
+    };
     let started = start_instant(opts.start_at, "subscribe");
     let deadline = started + opts.duration;
     let per_sub_samples = (LATENCY_SAMPLES / subscribers).max(1_000);
@@ -193,6 +224,7 @@ pub(crate) async fn subscribe(
     }
     // Keep the connections up until every subscriber is done.
     drop(cluster_clients);
+    drop(direct_connections);
 
     let secs = opts.duration.as_secs_f64();
     let msg_s = delivered as f64 / secs;
@@ -263,6 +295,9 @@ pub(crate) async fn subscribe(
         "records_without_offset": unordered,
         "shard_losses": shard_losses,
         "ended_early": ended_early,
+        "direct": opts.direct,
+        "served_directly": served_directly,
+        "redirected": redirected,
         "stamp_send_time": opts.stamp_send_time,
         "latency_clock": opts.stamp_send_time.then_some("wall clocks of two machines; needs them in sync"),
         "stamped_records": stamped_records,
@@ -338,6 +373,49 @@ async fn watch_feed(
         }
     }
     Ok(tally)
+}
+
+/// The broker the `index`-th subscriber of a direct run connects to.
+fn direct_target(brokers: &[std::net::SocketAddr], index: usize) -> std::net::SocketAddr {
+    brokers[index % brokers.len()]
+}
+
+/// The address a `NotLeader` refusal names, when it names a usable one.
+fn redirect_addr(err: &anyhow::Error) -> Option<std::net::SocketAddr> {
+    err.downcast_ref::<NotLeaderError>()?
+        .addr
+        .as_deref()?
+        .parse()
+        .ok()
+}
+
+/// Subscribe to shard 0 on `addr` itself. A `NotLeader` answer is followed one
+/// hop, so an engine that does not serve followers still measures its reads
+/// (at the leader) instead of failing; the flag says that happened. The
+/// connections come back so the caller can keep them open.
+async fn open_direct(
+    common: &Common,
+    addr: std::net::SocketAddr,
+    stream: &str,
+) -> Result<(Subscription, bool, Vec<felix_client::Connection>)> {
+    let first = client(common, addr).await?;
+    match first
+        .subscribe(&common.tenant, &common.namespace, stream)
+        .await
+    {
+        Ok(sub) => Ok((sub, false, vec![first])),
+        Err(err) => {
+            let leader = redirect_addr(&err).with_context(|| {
+                format!("subscribe on {addr} failed without a redirect: {err:#}")
+            })?;
+            let second = client(common, leader).await?;
+            let sub = second
+                .subscribe(&common.tenant, &common.namespace, stream)
+                .await
+                .with_context(|| format!("subscribe on {leader}, redirected from {addr}"))?;
+            Ok((sub, true, vec![first, second]))
+        }
+    }
 }
 
 /// Records dropped between the `previous` offset delivered from a shard and

@@ -22,11 +22,16 @@
 #   ROUNDS=3 (6 balances order)
 #   CELLS="..."   cell ids, default all (see summarize.py); names are
 #                 <single|rf3>-<oncommit|quorum|leader>-<lat|tput>, rf3-failover,
-#                 rf3-kafka, rf3-mqtt, rf3-fanout
+#                 rf3-kafka, rf3-mqtt, rf3-fanout, and the read cells rf3-kafka-tail,
+#                 rf3-resume, rf3-follower-tail (single-resume is a one-node check of
+#                 the resume loop; it is not in the default list)
 #   BOXES="1 2 3" the first holds the control plane. A smoke run uses one.
 #   SECS=60 LAT_SECS=30 FAIL_SECS=40 PAYLOAD=1024 BATCH=16 PUBLISHERS=8 IN_FLIGHT=4
 #   LAT_PUBLISHERS=1 SHARDS=6 KEYS=$((SHARDS*8)) FANOUT=4 FANOUT_TOTAL=200000
 #   KAFKA_RECORDS=1000000 MQTT_CONNS=8 MQTT_WINDOW=64
+#   TAIL_SECS=30 TAIL_PUBLISHERS=2 KAFKA_TAIL_RATE=20000   read cells: window, the background
+#   publisher's connections (acked batches, one in flight), the Kafka producer's rate
+#   RESUME_SPAN=100 RESUME_WORKERS=4 TAIL_SUBS=4           records per resume, resume loops, follower subscribers
 #   ONLY_SIDE=hybrid|raft   one engine only (a harness check, not a comparison)
 #   SLOT_WAIT_SECS=3600 QUIET_WAIT_SECS=300
 set -euo pipefail
@@ -48,13 +53,14 @@ fi
 : "${PAYLOAD:=1024}" "${BATCH:=16}" "${PUBLISHERS:=8}" "${IN_FLIGHT:=4}" "${LAT_PUBLISHERS:=1}" "${SHARDS:=6}"
 : "${KEYS:=$((SHARDS * 8))}" "${FANOUT:=4}" "${FANOUT_TOTAL:=200000}"
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
+: "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=2}" "${KAFKA_TAIL_RATE:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
   for topo in single rf3; do for mode in oncommit quorum leader; do
     CELLS="$CELLS $topo-$mode-lat $topo-$mode-tput"
   done; done
-  CELLS="$CELLS rf3-failover rf3-kafka rf3-mqtt rf3-fanout"
+  CELLS="$CELLS rf3-failover rf3-kafka rf3-mqtt rf3-fanout rf3-kafka-tail rf3-resume rf3-follower-tail"
 fi
 MAX_HOLD_SECS=$(( 3600 + ROUNDS * 40 * 600 ))
 
@@ -103,7 +109,7 @@ case " $CELLS " in *-kafka*) for b in "${BOXES[@]}"; do on "$b" kafka-install; d
     echo "box$b ${IP[$b]} ${MT[$b]} $(on "$b" sysinfo)"
   done
   echo "control plane on felix-build-$CP_BOX"
-  echo "config ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW"
+  echo "config ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
 } | tee "$OUT/run.env"
 
 # --- reservation -----------------------------------------------------------------
@@ -166,6 +172,10 @@ echo "quiet_at_start $report" >> "$OUT/run.env"
 cell_shape() {
   MOUNT="" STREAM_NAME=bench NSHARDS=$SHARDS
   case "$1" in
+    # The read cells run on one shard so an offset or a follower means one thing.
+    single-resume|rf3-resume) TOPO=${1%%-*} CONS=Quorum FSYNC=on_commit KIND=resume NSHARDS=1 ;;
+    rf3-follower-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=follower-tail NSHARDS=1 ;;
+    rf3-kafka-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=kafka-tail STREAM_NAME=kbench ;;
     single-*|rf3-*-lat|rf3-*-tput) TOPO=${1%%-*}; local rest=${1#*-}; local mode=${rest%%-*} prof=${rest#*-}
       case "$mode" in
         oncommit) CONS=Quorum FSYNC=on_commit ;;
@@ -264,6 +274,25 @@ run_cell() {
       mqtt)
         args="--scenario mqtt-publish --payload-bytes $PAYLOAD --concurrency $MQTT_CONNS --in-flight $MQTT_WINDOW --duration-secs $SECS --mqtt-addrs $mqtt_addrs --mqtt-topic-prefix bench/"
         limit=$((SECS + 240)) ;;
+      resume|follower-tail)
+        # A publisher runs beside the measured reader, both from the same start. It is a
+        # closed loop and light, so the read cost is what differs between engines.
+        fb=$lgbrokers
+        if [ "$KIND" = follower-tail ]; then
+          lead=$(on "$CP_BOX" repl "$dir" | sed -n 's/.*leaders=broker-\([0-9]*\):.*/\1/p')
+          [ -n "$lead" ] || status=no-leader
+          for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && { fb="${IP[$b]}:15000"; break; }; done
+          args="--scenario subscribe --direct --fanout $TAIL_SUBS --concurrency $TAIL_SUBS --duration-secs $TAIL_SECS --stamp-send-time"
+          bg_secs=$((TAIL_SECS + 10)); stamp=--stamp-send-time
+        else
+          args="--scenario resume --concurrency $RESUME_WORKERS --resume-span $RESUME_SPAN --duration-secs $TAIL_SECS"
+          bg_secs=$((TAIL_SECS + 60)); stamp=""
+        fi
+        fg_common="--brokers $fb --environment gcp-build-$side --stream $STREAM_NAME"
+        bg_args="--scenario ingest --payload-bytes $PAYLOAD --batch $BATCH --concurrency $TAIL_PUBLISHERS --in-flight 1 --duration-secs $bg_secs --keys 8 --shards 1 --cluster $stamp"
+        limit=$((TAIL_SECS + 240)) ;;
+      kafka-tail)
+        limit=$((TAIL_SECS + 600)) ;;
       failover)
         # The leader's box is the one to kill; the generator runs on another so it survives.
         lead=$(on "$CP_BOX" repl "$dir" | sed -n 's/.*leaders=broker-\([0-9]*\):.*/\1/p')
@@ -279,6 +308,16 @@ run_cell() {
       on "$lg" kafka-install > "$loc/kafka-install.txt" 2>&1 || true
       on "$lg" kafka "$dir" 1800 "$kafka_boot" "default.$STREAM_NAME" "$KAFKA_RECORDS" "$PAYLOAD" > "$loc/loadgen.txt" 2>&1 \
         || status=loadgen-failed
+    elif [ "$KIND" = kafka-tail ]; then
+      on "$lg" kafka-install > "$loc/kafka-install.txt" 2>&1 || true
+      on "$lg" kafka-tail "$dir" "$limit" "$kafka_boot" "default.$STREAM_NAME" "$((KAFKA_TAIL_RATE * TAIL_SECS))" "$PAYLOAD" "$KAFKA_TAIL_RATE" > "$loc/loadgen.txt" 2>&1 \
+        || status=loadgen-failed
+    elif [ "$KIND" = resume ] || [ "$KIND" = follower-tail ]; then
+      start=$(raw "$lg" "date +%s.%N"); start=$(python3 -c "print(float('$start') + 15)")
+      on "$lg" loadgen-bg "$dir" ingest $((bg_secs + 240)) $common $bg_args --start-at "$start" > "$loc/ingest-start.txt" 2>&1 || status=loadgen-failed
+      on "$lg" loadgen "$dir" "$limit" $fg_common $args --start-at "$start" > "$loc/loadgen.txt" 2>&1 || status=loadgen-failed
+      sleep 8   # the publisher finishes a few seconds after the window
+      raw "$lg" "cat $dir/ingest.log" > "$loc/ingest.txt" 2>&1 || true
     elif [ "$KIND" = failover ]; then
       start=$(raw "$lg" "date +%s.%N"); start=$(python3 -c "print(float('$start') + 15)")
       on "$lg" loadgen "$dir" "$limit" $common $args --start-at "$start" --kill-file "$dir/kill.at" > "$loc/loadgen.txt" 2>&1 &
@@ -296,6 +335,15 @@ run_cell() {
     fi
     grep -m1 '^LOADGEN_JSON ' "$loc/loadgen.txt" | sed 's/^LOADGEN_JSON //' > "$loc/loadgen.json" || true
     [ -s "$loc/loadgen.json" ] || { [ "$status" != ok ] || status=loadgen-failed; }
+    # The background publisher's rate rides along as information.
+    if [ -s "$loc/loadgen.json" ] && grep -q '^LOADGEN_JSON ' "$loc/ingest.txt" 2>/dev/null; then
+      python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+line = [l for l in open(sys.argv[2]) if l.startswith("LOADGEN_JSON ")][0]
+d["publish_throughput_msg_s"] = json.loads(line.split(" ", 1)[1]).get("throughput_msg_s")
+json.dump(d, open(sys.argv[1], "w"))' "$loc/loadgen.json" "$loc/ingest.txt" || true
+    fi
     if [ "$KIND" = failover ] && [ -s "$loc/loadgen.json" ]; then
       python3 -c '
 import json, sys

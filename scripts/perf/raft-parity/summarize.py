@@ -36,6 +36,14 @@ METRICS = {
     "deliv_msg_s": ("delivered throughput (msg/s)", lambda d: d.get("delivered_throughput_msg_s"), True),
     "pubsub_ack_p99": ("ack p99 (us)", _lat("ack_latency_us", "p99"), False),
     "deliv_p99": ("delivery p99 (us)", _lat("delivery_latency_us", "p99"), False),
+    "deliv_p50": ("delivery p50 (us)", _lat("delivery_latency_us", "p50"), False),
+    "gaps": ("offset gaps (dropped records)", lambda d: d.get("gaps"), False),
+    "replay_msg_s": ("replayed throughput (msg/s)", lambda d: d.get("replayed_throughput_msg_s"), True),
+    "resume_p50": ("resume to first record p50 (us)", _lat("resume_latency_us", "p50"), False),
+    "resume_p99": ("resume to first record p99 (us)", _lat("resume_latency_us", "p99"), False),
+    "replay_p99": ("resume to last record p99 (us)", _lat("replay_latency_us", "p99"), False),
+    "resume_errors": ("failed resumes", lambda d: d.get("errors"), False),
+    "consume_msg_s": ("consumed throughput (msg/s)", lambda d: d.get("consumed_throughput_msg_s"), True),
     "first_commit": ("leader kill to first commit (ms)", lambda d: d.get("first_commit_ms"), False),
     "caught_up": ("leader kill to subscriber caught up (ms)", lambda d: d.get("caught_up_ms"), False),
 }
@@ -59,6 +67,14 @@ CELLS["rf3-mqtt"] = ("RF 3, Quorum on_commit, MQTT QoS 1 publish", TPUT_NOFAIL)
 CELLS["rf3-fanout"] = ("RF 3, Quorum on_commit, consumer fanout",
                        [("deliv_msg_s", True), ("pub_msg_s", False), ("pubsub_ack_p99", True),
                         ("deliv_p99", True)])
+CELLS["rf3-kafka-tail"] = ("RF 3, Quorum on_commit, Kafka consumer tailing a steady produce",
+                           [("consume_msg_s", True), ("pub_msg_s", False)])
+CELLS["rf3-resume"] = ("RF 3, Quorum on_commit, resume and replay on the leader under steady produce",
+                       [("replay_msg_s", True), ("resume_p50", True), ("resume_p99", True),
+                        ("replay_p99", False), ("resume_errors", True), ("pub_msg_s", False)])
+CELLS["rf3-follower-tail"] = ("RF 3, Quorum on_commit, tail subscribe on a follower under steady produce",
+                              [("deliv_msg_s", True), ("deliv_p50", True), ("deliv_p99", True),
+                               ("gaps", True), ("pub_msg_s", False)])
 
 
 def mean_sd(vals):

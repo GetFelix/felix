@@ -16,12 +16,14 @@ mod ingest;
 mod mqtt;
 mod pubsub;
 mod queue;
+mod resume;
 mod retained;
 mod round_trips;
 mod subscribe;
 mod watch;
 
 pub use ingest::IngestOptions;
+pub use resume::ResumeOptions;
 pub use subscribe::SubscribeOptions;
 
 use std::net::SocketAddr;
@@ -133,6 +135,12 @@ pub enum Scenario {
         stream: String,
         options: SubscribeOptions,
     },
+    /// Resume a durable stream at offsets below the tail, over and over, and
+    /// read a few records each time. Something else publishes.
+    Resume {
+        stream: String,
+        options: ResumeOptions,
+    },
 }
 
 /// Run one scenario and return its `LOADGEN_JSON` object. The prose lines are
@@ -166,6 +174,7 @@ pub async fn run(common: &Common, scenario: &Scenario) -> Result<serde_json::Val
         Scenario::Subscribe { stream, options } => {
             subscribe::subscribe(common, stream, options).await
         }
+        Scenario::Resume { stream, options } => resume::resume(common, stream, options).await,
     }
 }
 

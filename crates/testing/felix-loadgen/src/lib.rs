@@ -23,5 +23,5 @@ mod scenarios;
 mod stats;
 mod tls;
 
-pub use scenarios::{Common, IngestOptions, Scenario, SubscribeOptions, run};
+pub use scenarios::{Common, IngestOptions, ResumeOptions, Scenario, SubscribeOptions, run};
 pub use stats::emit_json;
