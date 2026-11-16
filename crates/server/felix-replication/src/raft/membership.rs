@@ -37,6 +37,14 @@ pub struct Target {
     pub version: TargetVersion,
 }
 
+/// A target and the term it was told in. A leader acts only on one told in
+/// the term it leads (`docs/per-shard-raft.md`, "A target lasts one term").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Told {
+    pub(crate) target: Target,
+    pub(crate) term: u64,
+}
+
 /// The latest membership in the leader's log, committed or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Config {

@@ -1292,6 +1292,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "crc32fast",
  "felix-broker",
  "felix-common",
  "felix-replication",

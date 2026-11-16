@@ -26,6 +26,7 @@ fn only_client_records_are_data() {
         RecordMark::Membership,
         RecordMark::CounterDelta,
         RecordMark::CounterCheckpoint,
+        RecordMark::Group,
     ] {
         assert!(!mark.is_data(), "{mark:?}");
         assert!(mark.needs_generation(), "{mark:?}");

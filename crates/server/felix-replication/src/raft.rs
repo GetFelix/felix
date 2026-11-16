@@ -43,6 +43,7 @@ mod reach;
 mod read_rounds;
 mod root;
 mod runtime;
+mod stream_snapshot;
 pub mod switch;
 #[cfg(any(test, feature = "testing"))]
 mod testing;
