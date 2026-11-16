@@ -29,7 +29,7 @@ use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Groups, Machine, SnapshotData};
-use super::membership::Target;
+use super::membership::{Target, Told};
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
@@ -107,9 +107,10 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
-    /// The newest target this member was told, kept in memory only: after
-    /// a restart nothing changes until the control plane speaks again.
-    target: tokio::sync::watch::Sender<Option<Target>>,
+    /// The newest target this member was told and the term it was told
+    /// in, kept in memory only: after a restart nothing changes until the
+    /// control plane speaks again.
+    target: tokio::sync::watch::Sender<Option<Told>>,
     /// Where the membership stands against the target, as the driver
     /// reports it.
     progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
@@ -730,15 +731,16 @@ impl Group {
         ));
     }
 
-    /// The control plane's target for this group. Only a target newer than
-    /// the one held replaces it. Returns whether it did.
-    pub(crate) fn retarget(&self, target: Target) -> bool {
+    /// The control plane's target for this group, told for `term`. A
+    /// newer target replaces the one held, and so does the same version
+    /// told in a newer term. Returns whether it did.
+    pub(crate) fn retarget(&self, target: Target, term: u64) -> bool {
         self.target.send_if_modified(|held| {
             let newer = held
                 .as_ref()
-                .is_none_or(|held| target.version > held.version);
+                .is_none_or(|held| (target.version, term) > (held.target.version, held.term));
             if newer {
-                *held = Some(target);
+                *held = Some(Told { target, term });
             }
             newer
         })

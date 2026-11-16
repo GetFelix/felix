@@ -3789,10 +3789,12 @@ as #2413 extends it) guard by guard.
 
 Each group has one task, the driver (`raft/group/driver.rs`), that makes
 the membership match the target. A broker is told a target with
-`GroupRuntime::retarget`: the voters the group should have, and the
-target's version. It keeps only the newest target it was told, in memory.
-Every member can be told. Only the one that leads acts, and one elected
-later acts on the target it holds.
+`GroupRuntime::retarget`: the voters the group should have, the
+target's version, and the term it is told for. It keeps only the newest
+target it was told, or the same one told for a newer term, in memory.
+Every member can be told. Only the one that leads acts, and only on a
+target told for the term it leads: one elected later does nothing until
+it is told again.
 
 A target names members, not brokers, and a member is a copy id. The copy
 id of a broker the group does not have yet is minted on that broker, when
@@ -3883,7 +3885,12 @@ Transfers are counted separately, because each one closes the shard for
 writes until the next term opens. After eight transfers that did not go
 through, the group is reported stuck and the next transfer is asked no
 sooner than 30 seconds after the last. A written step or a new target
-starts that count again.
+starts that count again; the same target told again for a new term does
+not. Each failed transfer ends a term, and the member that leads the next
+one waits to be told the target for it, so for those 30 seconds the group
+stays reported stuck while this member does not lead or has not been told
+yet. Without that, the stuck gauge would drop to zero once a term during
+the very failure it reports.
 
 **The two rules, checked again.** The decision never names a set without
 the leader, and the step writers refuse one. The driver checks a third
