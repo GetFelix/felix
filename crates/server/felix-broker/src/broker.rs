@@ -31,8 +31,8 @@ pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use mounts::MountedStream;
 pub use publish::{
     Attribution, ClaimedPublish, IdempotentClaim, IdempotentOutcome, IdempotentProposal,
-    LogDelivery, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish,
-    PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse,
+    LogDelivery, OwedRecords, OwedSequences, ProducerTurn, ProposalCommitted, ProposalFailed,
+    ProposedPublish, PublishOutcome, RECORD_SEQUENCE_WRAP, RecordsClaim, SequenceReuse,
 };
 pub use read::ReadPage;
 pub use shard_logs::LogKind;

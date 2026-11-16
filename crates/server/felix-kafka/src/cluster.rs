@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use felix_authz::{Action, Namespace, PermissionMatcher, StreamName, TenantId, stream_resource};
 use felix_broker::{Broker, BrokerError, IdempotentOutcome, PublishOutcome, StreamHandle};
+use futures::future::BoxFuture;
 
 /// The broker's side of the Kafka listener.
 #[async_trait]
@@ -67,10 +68,12 @@ pub trait Cluster: Send + Sync + 'static {
     /// does not write, such as one a Raft group runs here. `None` leaves the
     /// batch to that path. `permit` is the one [`Self::admit_write`] gave.
     ///
-    /// Answered once the batch has what its stream's consistency asks for,
-    /// so [`Self::await_consistency`] has nothing left to wait for. Refused
-    /// and answered as the broker's own path would be: a producer's sequence
-    /// is checked per record, from `producer`'s first.
+    /// Returns once the batch holds its place in the shard's order, so the
+    /// next batch can be handed over without waiting for this one's commit.
+    /// [`Proposed`] then resolves once the batch has what its stream's
+    /// consistency asks for, so [`Self::await_consistency`] has nothing left
+    /// to wait for. Refused and answered as the broker's own path would be:
+    /// a producer's sequence is checked per record, from `producer`'s first.
     async fn produce(
         &self,
         broker: &Broker,
@@ -78,7 +81,7 @@ pub trait Cluster: Send + Sync + 'static {
         handle: &StreamHandle,
         permit: &WritePermit,
         produce: Produce<'_>,
-    ) -> Option<Result<IdempotentOutcome, ProduceError>> {
+    ) -> Option<Result<Proposed, ProduceError>> {
         let _ = (broker, shard, handle, permit, produce);
         None
     }
@@ -175,6 +178,9 @@ pub struct Produce<'a> {
     /// An idempotent producer's id and its first record's sequence.
     pub producer: Option<(u64, u64)>,
 }
+
+/// A batch [`Cluster::produce`] handed over, resolving at its commit.
+pub type Proposed = BoxFuture<'static, Result<IdempotentOutcome, ProduceError>>;
 
 /// Why [`Cluster::produce`] did not answer with the batch's offsets.
 #[derive(Debug)]

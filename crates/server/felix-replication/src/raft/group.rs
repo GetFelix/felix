@@ -121,6 +121,9 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
+    /// Stream batches handed to [`Self::propose`], for tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) proposed: AtomicU64,
     /// Reads below a floor this leader served on its lease, with no round.
     #[cfg(test)]
     pub(crate) lease_reads: AtomicU64,
@@ -748,6 +751,8 @@ impl Group {
             gate: Arc::default(),
             #[cfg(test)]
             apply_hold,
+            #[cfg(any(test, feature = "testing"))]
+            proposed: AtomicU64::new(0),
             #[cfg(test)]
             lease_reads: AtomicU64::new(0),
             target: tokio::sync::watch::Sender::default(),
@@ -1407,6 +1412,8 @@ impl Group {
         &self,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+        #[cfg(any(test, feature = "testing"))]
+        self.proposed.fetch_add(1, Ordering::Relaxed);
         let split = match self.cache {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split(batch),

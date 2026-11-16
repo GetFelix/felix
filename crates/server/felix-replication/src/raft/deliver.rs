@@ -503,56 +503,129 @@ impl RaftEngine {
                     sequence,
                     position: owed.position,
                     len: owed.len,
+                    per_record: false,
                 };
-                let count = owed.payloads.len() as u64;
                 let records = with_headers(owed.payloads, owed.headers, timestamp_micros);
-                // The answer waits for the commit whatever this says.
-                // Written is when the log knows the batch, so the
-                // producer's next one is not held for the fsync.
-                let batch = Batch {
-                    records,
-                    ack: AckAt::Written,
-                    term: Some(term),
-                    producer: Some(producer),
-                    expected: None,
-                    trim: None,
-                    commit: false,
-                    publisher,
-                };
-                let skips = self.claim_skips(shard);
-                let written = self.propose_reaching(shard, batch);
-                // On a task of its own, so the turn is given up when
-                // the batch is written whether or not its publisher
-                // has started waiting.
-                let written = tokio::spawn(async move {
-                    let written = written.await;
-                    drop(turn);
-                    written
-                });
-                let written = async move {
-                    let stopped = |_| Err(super::propose::stopped().into());
-                    written.await.unwrap_or_else(stopped)
-                };
-                let batch = Proposed {
-                    skips,
-                    shard: shard.clone(),
-                    term: Some(term),
-                    count,
-                    timeout,
-                    on_lease: None,
-                    on_majority: None,
-                };
-                settled(self.clone(), batch, written)
+                self.propose_sequenced(shard, term, timeout, publisher, turn, producer, records)
             },
         )?;
+        Ok(self.idempotent_answer(shard, term, timeout, proposal))
+    }
+
+    /// [`Self::publish_idempotent`] for a producer that numbers records,
+    /// not batches (Kafka): `payloads` are records `first_sequence..`, each
+    /// a one-record batch of its own, checked and proposed together under
+    /// one turn ([`Broker::propose_records_idempotent`]). Their entries are
+    /// the ones a call per record would write, so a leader change that cuts
+    /// them leaves whole batches, and the re-send writes only the rest.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_records_idempotent(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        turn: ProducerTurn,
+        first_sequence: u64,
+        payloads: Vec<Bytes>,
+        attribution: Attribution,
+        timeout: Duration,
+    ) -> Result<IdempotentPublish, BrokerError> {
+        let producer_id = turn.producer_id();
+        let attribution = broker.admit_attribution(&payloads, attribution)?;
+        let publisher = attribution.publisher.clone();
+        let proposal = broker.propose_records_idempotent(
+            stream,
+            turn,
+            first_sequence,
+            payloads,
+            attribution,
+            timeout,
+            |timestamp_micros, turn, owed| {
+                let producer = Sequenced {
+                    producer_id,
+                    sequence: owed.sequence,
+                    position: 0,
+                    len: 1,
+                    per_record: true,
+                };
+                let records = with_headers(owed.payloads, owed.headers, timestamp_micros);
+                self.propose_sequenced(shard, term, timeout, publisher, turn, producer, records)
+            },
+        )?;
+        Ok(self.idempotent_answer(shard, term, timeout, proposal))
+    }
+
+    /// Queue an idempotent producer's `records`, marked `producer`, and give
+    /// up `turn` once they are on this broker's log or given up on.
+    #[allow(clippy::too_many_arguments)]
+    fn propose_sequenced(
+        &self,
+        shard: &ShardKey,
+        term: u64,
+        timeout: Duration,
+        publisher: Option<Bytes>,
+        turn: ProducerTurn,
+        producer: Sequenced,
+        records: Vec<Record>,
+    ) -> impl Future<Output = Result<ProposalCommitted, ProposalFailed<CommitError>>> + use<> {
+        let count = records.len() as u64;
+        // The answer waits for the commit whatever this says. Written is
+        // when the log knows the batch, so the producer's next one is not
+        // held for the fsync.
+        let batch = Batch {
+            records,
+            ack: AckAt::Written,
+            term: Some(term),
+            producer: Some(producer),
+            expected: None,
+            trim: None,
+            commit: false,
+            publisher,
+        };
+        let skips = self.claim_skips(shard);
+        let written = self.propose_reaching(shard, batch);
+        // On a task of its own, so the turn is given up when the batch is
+        // written whether or not its publisher has started waiting.
+        let written = tokio::spawn(async move {
+            let written = written.await;
+            drop(turn);
+            written
+        });
+        let written = async move {
+            let stopped = |_| Err(super::propose::stopped().into());
+            written.await.unwrap_or_else(stopped)
+        };
+        let batch = Proposed {
+            skips,
+            shard: shard.clone(),
+            term: Some(term),
+            count,
+            timeout,
+            on_lease: None,
+            on_majority: None,
+        };
+        settled(self.clone(), batch, written)
+    }
+
+    /// What an idempotent publish waits on: the commit of what it proposed,
+    /// or of what the log held.
+    fn idempotent_answer(
+        &self,
+        shard: &ShardKey,
+        term: u64,
+        timeout: Duration,
+        proposal: IdempotentProposal<CommitError>,
+    ) -> IdempotentPublish {
         let timed_out = move || CommitError::TimedOut {
             what: "batch",
             timeout,
         };
-        Ok(IdempotentPublish(match proposal {
+        IdempotentPublish(match proposal {
             IdempotentProposal::Proposed(proposed) => {
                 Answer::Proposed(proposed.answer_within(timeout, timed_out))
             }
+            IdempotentProposal::Empty => Answer::Empty,
             IdempotentProposal::Held { first, last } => {
                 // Below the bound it is committed, whoever wrote it.
                 // Above, this term wrote it: a term is served only once
@@ -577,7 +650,7 @@ impl RaftEngine {
                     }),
                 }
             }
-        }))
+        })
     }
 
     /// Serve `stream`'s readers each time `shard`'s commit index moves here:
@@ -642,6 +715,8 @@ pub struct IdempotentPublish(Answer);
 
 enum Answer {
     Proposed(ProposedPublish<CommitError>),
+    /// A batch of no records: nothing to wait for.
+    Empty,
     Held {
         offsets: (u64, u64),
         committed: BoxFuture<'static, Result<(), CommitError>>,
@@ -656,6 +731,13 @@ impl IdempotentPublish {
         match self.0 {
             Answer::Proposed(proposed) => Ok(IdempotentOutcome {
                 outcome: proposed.complete().await?,
+                duplicate: false,
+            }),
+            Answer::Empty => Ok(IdempotentOutcome {
+                outcome: PublishOutcome {
+                    subscribers: 0,
+                    offsets: None,
+                },
                 duplicate: false,
             }),
             Answer::Held { offsets, committed } => {
