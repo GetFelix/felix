@@ -2936,12 +2936,13 @@ never ends a subscriber of the new term.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_term_led_again_keeps_its_subscribers`.
 
-Consumer-group operations on a Raft shard are refused by name before they
-reach the hybrid's fence (#2446). A head trim and an atomic commit go to
-the shard's engine ("Head trims" and "Atomic commits", above).
+Consumer-group operations on a Raft shard go to the shard's own groups
+("Consumer groups", below), and are refused by name until the fleet
+finalizes `raft_consumer_groups` (#2446). A head trim and an atomic commit
+go to the shard's engine ("Head trims" and "Atomic commits", above).
 
-> `services/felix-broker-service/src/serving/group_ops/tests.rs`,
-> `a_group_operation_on_a_raft_shard_is_refused_by_name`.
+> `services/felix-broker-service/src/serving/quic/streams/tests/raft_groups.rs`,
+> `group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid`.
 
 **Kafka produce and MQTT publish.** Both work on a Raft shard and get the
 same answers as on the hybrid.
