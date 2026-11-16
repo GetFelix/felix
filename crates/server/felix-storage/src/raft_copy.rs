@@ -38,6 +38,11 @@ mod reclaim;
 )]
 mod reform;
 mod rotated_by;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the re-form command, not built yet, calls it")
+)]
+mod start;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg_attr(
@@ -80,15 +85,27 @@ pub(crate) use rotated_by::RotatedBy;
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
+pub(crate) use start::{Role, Start, building, start_copy};
+#[allow(
+    unused_imports,
+    reason = "the re-form command, not built yet, uses them"
+)]
 pub(crate) use vouch::{
     BrokerReport, GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource,
     plan_reform, probes,
 };
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::raft_log::LogPoint;
+
+/// The group epoch of the copy in `dir`: how many re-forms its log went
+/// through, from `raft-epoch`, and 0 for a copy that never re-formed.
+pub fn group_epoch(dir: &Path) -> std::io::Result<u64> {
+    Ok(epoch_file::load(dir)?.map_or(0, |file| file.epoch()))
+}
 
 /// A saved vote as the marks keep it: the generation (term plus one), the
 /// leader it names and whether it is committed. Generation 0 with no leader

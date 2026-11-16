@@ -88,6 +88,7 @@ fn record(
         incarnation: INC,
         bases: bases.to_vec(),
         floor,
+        offset_floor: None,
         placed: Some(placed.iter().copied().collect()),
         dead: dead.iter().copied().collect(),
         // These traces seed every placed broker as a voter.
@@ -258,6 +259,13 @@ fn the_reservation_pads_above_an_entry_nothing_vouches_for() {
 
     // The model's trace: with no reservation the offset is reused.
     assert_eq!(plan(&rec, reports(None)).first_index, 0);
+
+    // The offset floor a leader of an earlier epoch reported keeps it, even
+    // with no reservation left on any disk.
+    let mut floored = rec.clone();
+    floored.offset_floor = Some(6);
+    let floored = plan(&floored, reports(None));
+    assert_eq!(floored.first_index, 7);
 }
 
 /// An index in a re-form's gap of a later epoch than the floor's stands for

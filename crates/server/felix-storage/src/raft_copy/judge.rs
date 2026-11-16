@@ -131,6 +131,13 @@ impl CopyRoot {
                 format!("a shard name of {} bytes is too long", shard.len()),
             ));
         }
+        // A re-form start that did not finish has to be run again first.
+        if super::start::building(dir)? {
+            return Err(io::Error::other(format!(
+                "{}: a re-form start did not finish; run it again before opening",
+                dir.display()
+            )));
+        }
         let shard: Arc<str> = Arc::from(shard);
         let label = label.into();
         let (found, reason) = self.judge_files(&shard, dir)?;

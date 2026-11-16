@@ -789,7 +789,8 @@ What `plan` works out for one group, and `apply` then does:
    learner. The record of brokers placed in the new epoch starts with the
    brokers placed now and every listed broker, voter or learner.
 5. **Start.** Members start at the new epoch from the base, as in the
-   switch. Messages carry the epoch, so the two never mix.
+   switch. Messages carry the epoch, so the two never mix. See "Starting
+   the new epoch" below for what a start writes.
 
 **What it keeps and what it loses.** Every record held by a copy the
 command reached is at or below the base, or is cut as uncommitted. What is
@@ -853,9 +854,62 @@ one report interval while the control plane is reachable and the whole
 outage while it is not, since writes go on without it. Brokers batch the
 floors of their shards into one report, so the control plane makes one
 metadata write per broker per interval, not one per shard. The new epoch's
-log starts above the base with an index gap up to the floor, and how the
-adapter represents that gap is settled in the pull request that builds
-re-forming. See Questions, 13.
+log starts above the base with an index gap up to the floor. How a copy
+holds that gap is in "Starting the new epoch" below.
+
+**Starting the new epoch.** openraft numbers entries densely after the
+last log id it knows, so a copy cannot simply leave the gap empty. A
+voter's start keeps its base records and writes a purged id, a snapshot id
+and a saved commit, all at `first_index - 1` in the base's last term. The
+first leader then appends at `first_index`, and nothing is ever written in
+the gap. On the next re-form, a copy whose purged id ends its newest
+epoch's gap and whose records end at that epoch's base reads as its base:
+its last log id is the base's, and terms below come from its records. A
+record in the gap, or a base whose records are gone, keeps the purged id,
+and the plan refuses with a record in the gap.
+
+A voter whose base is in a kept directory, the records a rotation moved
+aside, rebuilds its log from there: each segment and the durable mark are
+copied in under a temporary name and synced, then renamed into place. The
+kept directory is only read, and read whole before the voter's own log is
+touched, so a missing or damaged one fails the start with that log intact. A voter holding records past the base cuts
+them. When its saved commit covers any of them (for a copy rebuilt from a kept
+directory, the higher of its own and the kept one's), those records were acknowledged, and
+only a re-form that accepts the loss may cut them. Either way the log must
+then end at the base's last index in the base's term, or the start fails.
+
+A voter's saved commit is set to `first_index`. One saved above it claims
+entries past the base that the copy does not hold, so it is lowered only by
+a re-form that accepts the loss, and the start refuses otherwise.
+
+A learner keeps its log only when all of it is a prefix of the base: no
+record past the base's last index, no purged id, and every record in the
+base's term at its index, none in a gap an earlier re-form left. Anything else empties it, rather than cutting it
+to the part that agrees, and it catches up from the leader by snapshot. An
+empty learner's saved commit is set to zero, so it never counts entries it
+does not hold.
+
+Two promises the vouch rule depends on are checked before a start
+finishes, and a start that cannot keep them fails (#2640):
+
+- every copy is reserved through `first_index - 1` before its first
+  append, so an offset below the new first index is never given out again;
+- a voter's saved commit is at or above the base's end, which the gap
+  clause of the vouch rule relies on.
+
+The first index also stays above the shard record's `offset_floor`, the
+highest index any leader of the incarnation reported committed.
+
+A start runs under a `reform-building` file in the copy's directory, and
+`raft-epoch` is written before the purged id, because a purged id at the
+gap's end only reads as the base under the epoch that made the gap. A
+directory holding the marker does not open and is not read by a plan, and
+running the start again over a crashed one redoes every step: a rebuilt
+voter empties its log and copies again.
+
+Each leader's offset floor report names the group epoch from the copy's
+`raft-epoch`, so a floor from before a re-form is never taken for one of
+the new epoch.
 
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take

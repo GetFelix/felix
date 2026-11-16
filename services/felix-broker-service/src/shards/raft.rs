@@ -115,6 +115,10 @@ pub(crate) struct RaftShards {
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
+    /// The group epoch of each open member, read from its copy at open. The
+    /// floor report sends it, and only a re-form changes it, which needs the
+    /// member closed.
+    epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -204,6 +208,7 @@ impl RaftShards {
             root: std::sync::OnceLock::new(),
             wake: std::sync::OnceLock::new(),
             open: tokio::sync::Mutex::default(),
+            epochs: parking_lot::Mutex::default(),
         });
         shards
             .broker
@@ -227,12 +232,22 @@ impl RaftShards {
     }
 
     /// The committed log id of every group this broker leads, with the
-    /// stream incarnation the group runs.
-    pub(crate) fn led_floors(&self) -> Vec<(ShardKey, u64, felix_replication::raft::LogPoint)> {
+    /// stream incarnation the group runs and the group epoch of its copy.
+    /// A group whose epoch is not known yet is left out until it is.
+    pub(crate) fn led_floors(&self) -> Vec<floor::Led> {
+        let epochs = self.epochs.lock();
         self.runtime
             .led_commits()
             .into_iter()
-            .map(|(group, at)| ((*group.shard).clone(), group.epoch, at))
+            .filter_map(|(group, at)| {
+                let epoch = *epochs.get(&*group.shard)?;
+                Some(floor::Led {
+                    key: (*group.shard).clone(),
+                    incarnation: group.epoch,
+                    epoch,
+                    at,
+                })
+            })
             .collect()
     }
 
@@ -304,6 +319,20 @@ impl RaftShards {
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
             .await
             .context("open the Raft member")?;
+        let epoch = {
+            let dir = dir.clone();
+            tokio::task::spawn_blocking(move || felix_storage::raft_copy::group_epoch(&dir)).await
+        };
+        match epoch {
+            Ok(Ok(epoch)) => {
+                self.epochs.lock().insert(key.clone(), epoch);
+            }
+            // The member still serves; only its floor report waits.
+            Ok(Err(err)) => {
+                tracing::warn!(shard = ?key, error = %err, "could not read a Raft member's group epoch; its floor is not reported")
+            }
+            Err(err) => tracing::warn!(shard = ?key, error = %err, "group epoch read task"),
+        }
         let mut member = Member {
             incarnation,
             log: opened.log,
@@ -561,6 +590,7 @@ impl RaftShards {
     /// until it has stopped.
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
+        self.epochs.lock().remove(key);
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();

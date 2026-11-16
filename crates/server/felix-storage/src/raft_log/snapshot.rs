@@ -305,6 +305,12 @@ impl SnapshotStore {
     }
 }
 
+/// Replace the snapshot in `dir`, which no store has open, with `snapshot`.
+pub(crate) fn store_in(dir: &Path, snapshot: &StoredSnapshot) -> io::Result<()> {
+    let header = encode_header(snapshot)?;
+    state_file::store(dir, FILE_NAME, &[&header, &snapshot.meta, &snapshot.data])
+}
+
 fn encode_header(snapshot: &StoredSnapshot) -> io::Result<[u8; HEADER_LEN]> {
     let mut out = header_without_crc(
         snapshot.last,
