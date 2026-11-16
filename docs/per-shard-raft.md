@@ -3506,8 +3506,9 @@ if the member no longer leads it, and answered only once applied. If the
 append's outcome is unknown, the leader closes the term before answering, so
 only a later term's read index can see the entry. Claims are the leader's
 memory: when it stops leading a shard it drops the shard's trackers, and the
-next leader hands out what was in flight again once the visibility lapses
-(at least once, as on the hybrid). Group writes are log entries, so they
+next leader hands out what was in flight again at once, without waiting out
+the visibility timeout (at least once; #2644 tracks keeping claims across a
+failover). Group writes are log entries, so they
 take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
 its finish, a discard, a seek, a delete) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
@@ -3556,9 +3557,9 @@ seek or a delete of its group is dropped rather than applied to the group
 that replaced it. A seek's own token is its entry's log id.
 
 A group entry has its own tag, 9, in the Raft wire's entry payloads, and a
-member built before it refuses the whole append by that tag. Serving groups
-on Raft will wait for the fleet feature `raft_consumer_groups`, which no
-build reports yet.
+member built before it refuses the whole append by that tag. Groups are
+served on Raft once the fleet finalizes `raft_consumer_groups`, which every
+broker on this build reports.
 
 > `crates/server/felix-replication/src/raft/wire/tests.rs`,
 > `a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
