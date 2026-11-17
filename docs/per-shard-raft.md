@@ -2146,7 +2146,7 @@ point and the loss are the same on Raft and on the hybrid:
 | --- | --- | --- | --- |
 | `Quorum`, fsync on commit | At the commit: a majority has fsynced it | A majority has fsynced it | Losing the disks of a majority |
 | `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | Lost only if a majority of copies each lose their unsynced tail, by a power cut or a failed flush, on both. One such loss does not: that copy comes back under a new copy id and cannot vote the record away (issues #2423, #2469) |
-| `Leader` | On the leader's log while the lease holds, else at the commit | On the leader's log | A change of leader before the commit |
+| `Leader` | On the leader's log while the lease holds, else as `Quorum` on the same stream | On the leader's log | A change of leader before the commit |
 
 A record a majority has written in the leader's term survives a change of
 leader without a power cut. Any majority that elects a later leader holds a
@@ -2203,7 +2203,8 @@ and so does a follower's report of what it has written.
 > `an_advance_wakes_the_waiters_it_satisfies_not_the_whole_queue`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
-passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
+passes: `now < last_quorum_acked + lease`, or the leader is the group's
+only voter (below). openraft 0.10 publishes
 `last_quorum_acked` as an instant; the older `millis_since_quorum_ack` is
 deprecated. The value only moves forward, so a stale read errs toward
 refusing. The lease must satisfy the inequality on the engine page
@@ -2212,8 +2213,8 @@ added to it: both only make a message or a timeout later, and the lease is
 counted from the hand-off of the message, on a clock read by the check
 itself.
 
-If the check fails, the write waits on `await_commit` like a `Quorum`
-write. Its commit renews the lease, and later writes are local again. The
+If the check fails, the write is answered as a `Quorum` write is: once a
+majority has written it under `periodic`, at its commit under `on_commit`. Its commit renews the lease, and later writes are local again. The
 shard stays open. The lease rests on openraft's `last_quorum_acked` and on
 nothing else: store liveness is not part of it.
 
@@ -2230,10 +2231,31 @@ passes when all of these hold, read in this order:
 1. The broker was not suspended less than one lease ago (below).
 2. openraft's metrics say this member leads `term`.
 3. The newest message a majority answered was handed off less than one
-   lease ago. A leader that is the only voter is answered by nobody, so
-   past its first lease its `Leader` writes wait for commit, which needs
-   nobody else.
+   lease ago, or this member is the group's only voter: openraft's newest
+   membership, committed or not, is one voter set holding this member
+   alone. Learners do not count.
 4. The term is above the member's void (below).
+
+**A sole voter.** Nobody answers a group's only voter, so the third rule
+would never hold for it by the majority half, and every `Leader` write
+on a single-node shard would be answered as a `Quorum` one. It needs no
+answer. Every membership is written to the log by the leader, and
+openraft's effective membership is the newest one appended, so the rule
+stops holding once a membership with a second voter is appended, before it
+commits. The member reads it from openraft's metrics, which publish once
+per core loop, so a write in the same loop as the change can still be
+answered locally; that is safe because the first membership after `{a}`
+still needs `a`'s vote, and voting voids the lease. Until then no majority can leave this member out:
+openraft writes a change from `{a}` as one entry only when every majority
+of the new set holds `a`, and otherwise writes a joint membership first,
+which already has more than one voter and needs `a` in both halves. A zero lease turns this off with the rest.
+`FelixRaftLease.tla` checks the single-server case with the fixed
+`Servers = {a}` (`FelixRaftLeaseRestoreSingle.cfg`); the change of
+membership is argued here and tested, not modelled.
+
+> `crates/server/felix-replication/src/raft/tests/change.rs`,
+> `a_sole_voter_loses_its_lease_when_it_appends_a_second_voter` and
+> `a_sole_voter_loses_its_lease_on_a_direct_change_to_two_voters`.
 
 `RaftEngine::await_ack(shard, written, timeout)` is the acknowledgement of
 a `Leader` write: it returns at once when the check passes, and otherwise
@@ -2244,8 +2266,12 @@ when the write is committed.
 leader's log as far as the stream's fsync policy asks, and written under
 the term the publish was routed at, it asks `admit_local_ack` once. If the
 check passes the publisher is answered then. If it does not, the publisher
-is answered when the batch has committed and taken its place in the
-delivery order, like a `Quorum` one. The check is not asked again for that
+is answered where a `Quorum` publisher on the same stream would be: once a
+majority has written the batch on a stream not fsynced on commit
+("`Quorum` on a `Periodic` stream"), and otherwise when the batch has
+committed and taken its place in the delivery order. A `Leader` write
+never waits longer than a `Quorum` one, and the answer it falls back to
+promises more than the lease does. The check is not asked again for that
 batch. Subscribers are not part of this: they get the batch at its commit
 whichever way the publisher was answered ("Delivering committed records").
 
@@ -2283,8 +2309,8 @@ sequenceDiagram
 ```
 
 The lease is set with `FELIX_SHARD_RAFT_LEASE_MS` (1500 by default). `0`
-turns the local acknowledgement off: the check never passes and every
-`Leader` publish waits for its commit. A broker refuses to start with a
+turns the local acknowledgement off: the check never passes, a sole
+voter's included, and every `Leader` publish is answered as a `Quorum` one. A broker refuses to start with a
 lease the inequality above does not allow, which with the shipped
 election timeout and drift bound is anything over 1636 ms.
 
@@ -2293,6 +2319,8 @@ election timeout and drift bound is anything over 1636 ms.
 > `a_term_given_up_after_the_write_landed_is_not_answered_on_the_lease`,
 > `a_leader_publish_written_across_a_suspend_waits_for_its_commit`,
 > `a_leader_publish_outside_the_lease_waits_for_its_commit`,
+> `a_sole_voter_answers_a_leader_publish_on_its_lease`,
+> `a_sole_voter_with_no_lease_answers_a_leader_publish_once_written`,
 > `a_replaced_leader_answers_no_leader_publish`,
 > `a_batch_written_at_another_term_is_not_answered_on_the_lease` and
 > `a_publish_answered_on_the_lease_and_then_replaced_reaches_no_subscriber`;
@@ -2564,9 +2592,9 @@ was answered:
 
 | Answered | Observed by a read that starts after the answer |
 |---|---|
-| At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
+| At its commit: `Quorum`, idempotent, `Leader` with no lease on a stream fsynced on commit | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. A stream read that could start below a head trim's floor takes it on the leader ("Head trims"); a tail subscribe and live delivery are bounded by the commit (`read_bound`) alone. A `state_get` does ("Atomic commits") |
+| When a majority has written it (`Quorum`, or `Leader` with no lease, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. A stream read that could start below a head trim's floor takes it on the leader ("Head trims"); a tail subscribe and live delivery are bounded by the commit (`read_bound`) alone. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
@@ -2827,8 +2855,8 @@ On a broker that holds a member:
 A publish served here is proposed in the order the shard's publishes
 arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
 and on a written majority under `periodic` or `none`. On a `Leader` stream it is answered once it is on this
-leader's log, while the group's leader lease holds, and at its commit
-while it does not ("Acknowledging a write"). Either way its subscribers
+leader's log, while the group's leader lease holds, and as a `Quorum`
+publish is while it does not ("Acknowledging a write"). Either way its subscribers
 get it at the commit. It does not enter the hybrid's write fence and does
 not need the hybrid's ownership lease on this broker: the term is what
 holds the shard. A publish routed at a

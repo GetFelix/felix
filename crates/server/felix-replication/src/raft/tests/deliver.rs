@@ -10,8 +10,9 @@ use felix_storage::EphemeralCache;
 use tokio::sync::oneshot;
 
 use super::super::deliver::{Proposed, settled};
+use super::super::lease;
 use super::super::propose::Unacknowledged;
-use super::commit::{Led, led};
+use super::commit::{Led, led, lost};
 use super::propose::cut_after_first;
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -537,7 +538,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             term,
             count: 1,
             timeout: PATIENCE,
-            on_lease: Some(on_lease),
+            on_lease: Some((AckAt::Flushed, on_lease)),
             on_majority: None,
         };
         settled(engine, batch, written)
@@ -702,7 +703,7 @@ async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
         term: Some(written.generation + 1),
         count: 1,
         timeout: PATIENCE,
-        on_lease: Some(on_lease),
+        on_lease: Some((AckAt::Flushed, on_lease)),
         on_majority: None,
     };
     let admitted = led.engine.admit_local_ack(&shard(0), written.generation);
@@ -1119,6 +1120,97 @@ async fn a_quorum_publish_is_answered_once_a_majority_has_written_it() {
     assert_eq!(envelope.base_offset(), Some(offset));
     assert_eq!(envelope.payloads()[0], Bytes::from_static(b"early"));
     led.cluster.stop().await;
+}
+
+/// `a` alone in group 0, leading with its first entry applied.
+async fn sole_voter(cluster: &mut Cluster) -> (RaftEngine, u64) {
+    cluster.open(0).await;
+    let only = BTreeSet::from([MemberId::new("a", 1)]);
+    let runtime = cluster.runtime("a");
+    runtime
+        .initialize(&shard(0), only)
+        .await
+        .expect("initialize");
+    let engine = RaftEngine::new(runtime.clone());
+    let term = eventually(|| {
+        let status = runtime.status(&shard(0))?;
+        let ready =
+            status.role == Role::Leader && engine.read_bound(&shard(0)).is_ok_and(|b| b > 0);
+        ready.then_some(status.term)
+    })
+    .await;
+    (engine, term)
+}
+
+/// Publish `payload` as a `Leader` write on the sole voter `a` with its
+/// flushes held, so nothing commits: the answer comes at the write or not
+/// at all. Its
+/// subscribers get it only once the flushes go.
+async fn sole_voter_answers_before_its_commit(
+    cluster: &Cluster,
+    engine: &RaftEngine,
+    payload: &'static [u8],
+) {
+    let (broker, handle) = broker_on(engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    let held = log.hold_flushes().await;
+    let payload = Bytes::from_static(payload);
+    let published = publish_acked(
+        engine,
+        &broker,
+        &handle,
+        payload.clone(),
+        AckAt::Written,
+        AnswerAt::Lease,
+        PATIENCE,
+    );
+    let outcome = tokio::time::timeout(ON_MAJORITY, published).await;
+    let outcome = outcome
+        .expect("answered before its commit")
+        .expect("joined");
+    let (offset, _) = outcome.expect("answered").offsets.expect("offsets");
+    nothing(&mut receiver).await;
+
+    drop(held);
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(offset));
+    assert_eq!(envelope.payloads()[0], payload);
+}
+
+/// **A sole voter answers a `Leader` publish on a stream not fsynced on
+/// commit on its lease, once written, for as long as it is the only
+/// voter**, and its subscribers get it only at the commit. Nobody answers
+/// a sole voter, and no other member can lead without taking a membership
+/// it wrote first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_answers_a_leader_publish_on_its_lease() {
+    let mut cluster = Cluster::new(true);
+    let (engine, term) = sole_voter(&mut cluster).await;
+    // Past openraft's first answer, which counts as a majority's.
+    tokio::time::sleep(timers().lease + Duration::from_millis(100)).await;
+    assert_eq!(engine.admit_local_ack(&shard(0), term), Ok(()));
+    sole_voter_answers_before_its_commit(&cluster, &engine, b"sole").await;
+    assert_eq!(engine.admit_local_ack(&shard(0), term), Ok(()));
+    cluster.stop().await;
+}
+
+/// **A zero lease turns local acknowledgements off for a sole voter too**,
+/// and a `Leader` publish on a stream not fsynced on commit is answered
+/// where a `Quorum` one is: once a majority, here the voter alone, has
+/// written it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_with_no_lease_answers_a_leader_publish_once_written() {
+    let off = RuntimeConfig {
+        lease: Duration::ZERO,
+        ..timers()
+    };
+    let mut cluster = Cluster::with(off, true);
+    let (engine, term) = sole_voter(&mut cluster).await;
+    let refused = engine.admit_local_ack(&shard(0), term);
+    assert_eq!(lost(&refused), lease::LAPSED);
+    sole_voter_answers_before_its_commit(&cluster, &engine, b"sole").await;
+    cluster.stop().await;
 }
 
 /// **A read confirmed after a `Quorum` publish was answered on a written

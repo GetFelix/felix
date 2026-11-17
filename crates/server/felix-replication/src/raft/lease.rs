@@ -28,6 +28,11 @@ pub(crate) struct View {
     /// How long ago the newest message a majority has answered was handed
     /// off.
     pub(crate) acked: Option<Duration>,
+    /// Its newest membership, committed or not, has one voter set and that
+    /// set is this member alone. Nobody answers a sole voter, and no other
+    /// member can lead without first taking a membership this one wrote, so
+    /// it needs no answer to hold the lease.
+    pub(crate) sole: bool,
 }
 
 /// One member's lease state. In memory only: a restarted member starts with
@@ -127,9 +132,12 @@ impl Lease {
         if view.leads != Some(term) {
             return Err(NOT_LEADING);
         }
-        let acked = view.acked.ok_or(UNHEARD)?;
-        if acked.saturating_add(slept) >= self.length {
-            return Err(LAPSED);
+        // A zero lease turns local acknowledgements off, for a sole voter too.
+        if !view.sole || self.length.is_zero() {
+            let acked = view.acked.ok_or(UNHEARD)?;
+            if acked.saturating_add(slept) >= self.length {
+                return Err(LAPSED);
+            }
         }
         // Last, so a void taken at any time before this line refuses.
         if term <= self.void.load(Ordering::SeqCst) {

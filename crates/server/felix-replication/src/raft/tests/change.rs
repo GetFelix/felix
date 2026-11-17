@@ -526,3 +526,60 @@ async fn a_member_that_does_not_lead_has_no_basis_and_writes_no_step() {
     assert_eq!((after.at, &after.membership), (held.at, &held.membership));
     cluster.stop().await;
 }
+
+/// Past one lease, so a lease that held came from being the sole voter
+/// and not from openraft's first answer.
+async fn past_first_lease(cluster: &Cluster, leader: &Group) -> u64 {
+    tokio::time::sleep(timers().lease + Duration::from_millis(100)).await;
+    let term = cluster.runtime("a").status(&shard(0)).expect("status").term;
+    assert_eq!(leader.admit_local_ack(term), Ok(()), "learners count");
+    term
+}
+
+/// `b` and `c` answered as learners until just now, so the ordinary lease
+/// may run out its length. Past that, only the sole-voter rule could hold.
+async fn refused_soon(leader: &Group, term: u64) {
+    let deadline = tokio::time::Instant::now() + timers().lease * 2;
+    while leader.admit_local_ack(term).is_ok() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "still a sole voter's lease"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// **A sole voter holds the lease with learners beside it, and loses it
+/// the moment it appends a membership with a second voter**, before that
+/// membership commits. No answer is heard, so neither the joint nor the
+/// direct change below commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_loses_its_lease_when_it_appends_a_second_voter() {
+    let (mut cluster, leader) = one_voter().await;
+    let term = past_first_lease(&cluster, &leader).await;
+    let (change, _) = stalled_in_the_joint(&cluster, &leader).await;
+    refused_soon(&leader, term).await;
+    change.abort();
+    cluster.stop().await;
+}
+
+/// The same for a change openraft writes in one entry: `{a}` to `{a, b}`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_loses_its_lease_on_a_direct_change_to_two_voters() {
+    let (mut cluster, leader) = one_voter().await;
+    let term = past_first_lease(&cluster, &leader).await;
+    cluster.net.lose_answers.store(true, Relaxed);
+    let decided = basis(&leader).await;
+    let change = tokio::spawn({
+        let leader = Arc::clone(&leader);
+        async move { leader.change_voters(&decided, set(&["a", "b"]), v(2)).await }
+    });
+    let two = vec![set(&["a", "b"])];
+    while latest(&cluster, "a").await.get_joint_config() != &two {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!basis(&leader).await.committed);
+    refused_soon(&leader, term).await;
+    change.abort();
+    cluster.stop().await;
+}

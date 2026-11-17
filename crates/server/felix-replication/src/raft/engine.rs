@@ -83,8 +83,9 @@ impl RaftEngine {
     /// Whether a write at `generation`, the term [`Self::propose`] wrote
     /// it in, may be acknowledged on this leader's log alone. That is the
     /// leader lease: this broker leads that term, a majority answered a
-    /// message it sent less than [`super::RuntimeConfig::lease`] ago, and
-    /// it has neither given the term up nor just woken from a suspend.
+    /// message it sent less than [`super::RuntimeConfig::lease`] ago (a
+    /// sole voter needs no answer), and it has neither given the term up
+    /// nor just woken from a suspend. A zero lease refuses every write.
     ///
     /// On an error the write waits for its commit instead
     /// ([`Self::await_ack`]). A refusal never closes the shard.

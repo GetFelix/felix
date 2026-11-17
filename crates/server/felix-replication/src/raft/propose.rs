@@ -68,9 +68,10 @@ pub enum AnswerAt {
     Commit,
     /// Once the batch is on this leader's log as far as its [`AckAt`]
     /// asks, if the leader lease holds then
-    /// ([`super::RaftEngine::admit_local_ack`]), and at the commit if it
-    /// does not. A `Leader` stream: the batch can still be lost if this
-    /// broker stops leading before it commits.
+    /// ([`super::RaftEngine::admit_local_ack`]). If it does not, as
+    /// [`Self::Majority`] answers under the same [`AckAt`], so never later
+    /// than a `Quorum` publish. A `Leader` stream: the batch can still be
+    /// lost if this broker stops leading before it commits.
     Lease,
     /// Once a majority of the shard's voters has written the batch
     /// ([`super::RaftEngine::await_quorum_ack`]), or at the commit if that
