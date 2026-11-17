@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794879495555,
+  "lastUpdate": 1794885574889,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60996,6 +60996,58 @@ window.BENCHMARK_DATA = {
             "range": "31532.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1168108.35\nmean: 1155209.40\nstdev: 31532.13\ncv: 2.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b9b01587a9f2a01a636efd7ad6e11ad0f5f9ce32",
+          "message": "fix(perf): do not copy the client token onto the box it is on (#2718)\n\nThe mqtt-tail cell can pick the control-plane box as the loadgen box. The\ntoken hand-off then piped client.jwt onto itself and truncated it, so the\nloadgen connected with no token and the broker refused it. felix-loadgen\nnow rejects an empty token file.",
+          "timestamp": "2026-11-17T03:12:59Z",
+          "tree_id": "e3f41ab7392ec0409105b10d174f8cd53601fb85",
+          "url": "https://github.com/GetFelix/felix/commit/b9b01587a9f2a01a636efd7ad6e11ad0f5f9ce32"
+        },
+        "date": 1794885574211,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 658880.65,
+            "range": "69735.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 658880.65\nmean: 666422.96\nstdev: 69735.50\ncv: 10.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 658880.65,
+            "range": "69735.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 658880.65\nmean: 666422.96\nstdev: 69735.50\ncv: 10.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 155643.62,
+            "range": "1461.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 155643.62\nmean: 156019.16\nstdev: 1461.00\ncv: 0.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1556436.2,
+            "range": "14610.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1556436.20\nmean: 1560191.57\nstdev: 14610.07\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
