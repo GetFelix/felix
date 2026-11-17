@@ -1,13 +1,13 @@
 //! Retention on a Raft shard.
 //!
 //! A Raft log takes no retention bounds: its entries leave only through a
-//! purge, which stream shards do not run yet. Instead the shard's leader
-//! reads the stream's bounds on the storage's retention timer and, when they
-//! would start the log past the current floor, proposes a head trim to the
-//! segment boundary they name. Followers never evaluate the bounds, whose
-//! clocks and sizes differ; they apply the floor at the trim's entry like any
-//! other. The records are hidden on every member, and no disk is freed. See
-//! `docs/per-shard-raft.md`, "Retention".
+//! purge. Instead the shard's leader reads the stream's bounds on the
+//! storage's retention timer and, when they would start the log past the
+//! current floor, proposes a head trim to the segment boundary they name.
+//! Followers never evaluate the bounds, whose clocks and sizes differ; they
+//! apply the floor at the trim's entry like any other. On the same tick every
+//! member purges its log below the floor it applied, which frees the disk.
+//! See `docs/per-shard-raft.md`, "Retention".
 
 use std::sync::Weak;
 use std::time::Duration;
@@ -80,6 +80,7 @@ impl RaftShards {
             ticker.tick().await;
             // Logged when it changes, not on every tick.
             let mut refused: Option<String> = None;
+            let mut purged = None;
             loop {
                 ticker.tick().await;
                 let Some(shards) = me.upgrade() else { return };
@@ -103,6 +104,7 @@ impl RaftShards {
                     .fleet
                     .supports(felix_common::fleet::RAFT_STREAM_PURGE)
                     && let Some(at) = shards.runtime.purge_below_floor(&key).await
+                    && purged.replace(at) != Some(at)
                 {
                     tracing::debug!(shard = ?key, through = at, "purged the Raft log below its floor");
                 }

@@ -1917,9 +1917,9 @@ swaps the bounds the next sweep uses and starts the timer if it was not
 running. The control plane refuses a zero bound, which no log could meet.
 Group cursor and dead-letter logs keep the broker's bounds. A shard that runs on
 Raft takes the same bounds, but its leader enforces them with a head trim to
-where a sweep would start the log, so the records are hidden on every member
-and stay on disk until Raft logs can purge
-([#2602](https://github.com/GetFelix/felix/issues/2602)). See
+where a sweep would start the log, so the records are hidden on every member.
+Once the cluster finalizes `raft_stream_purge`, each member then frees the
+disk below that floor by purging its Raft log, as below. See
 `docs/per-shard-raft.md`, "Retention". `DiskLog::retention_cut` names that
 offset without deleting anything.
 
@@ -2016,14 +2016,23 @@ trim record is cut like any other torn record.
 
 A Raft log (`LogConfig::raft_log`) applies a trim's floor only once the trim
 record is below its commit offset, since an entry above it may still be cut
-by a later leader, and it deletes no segment below a floor: only openraft's
-purge may move a Raft log's start, and stream shards are never purged
-today. The records stay on disk, unreadable. See `docs/per-shard-raft.md`, "Head trims".
+by a later leader. Its retention sweep deletes no segment below a floor,
+because only openraft's purge may move a Raft log's start. That purge is
+what frees the disk: on the same retention timer every member writes a
+snapshot just below the floor and purges its log up to it, once the cluster
+finalizes `raft_stream_purge`. Until then the records stay on disk,
+unreadable. A leader purges no further than the match of a member that still
+answers; a member that is down is not waited for, and installs the snapshot
+when it is back. See `docs/per-shard-raft.md`, "Head trims" and "Purging
+below the floor".
 
 > `crates/server/felix-storage/src/raft_log/tests.rs`,
 > `a_trim_entry_applies_once_it_is_committed`;
 > `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
-> `a_trim_entry_deletes_no_segment`
+> `a_trim_entry_deletes_no_segment`;
+> `services/felix-broker-service/src/shards/raft/tests/purge.rs`,
+> `a_leader_keeps_the_log_a_lagging_member_needs` and
+> `a_leader_purges_past_a_member_that_stopped_answering`
 
 ### The `head` file
 

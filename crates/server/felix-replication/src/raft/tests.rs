@@ -1017,6 +1017,30 @@ async fn a_busy_group_beats_at_200_ms_and_an_idle_one_at_2_s() {
     assert!((6000..6000 + timers.election_max).contains(&wait), "{wait}");
 }
 
+/// A re-elected leader has not waited through the silence that built up
+/// while it was a follower, so a peer that answered before is still live,
+/// and one that stays quiet for a window of its own reign is not.
+#[tokio::test(start_paused = true)]
+async fn a_new_leader_counts_a_peer_live_for_a_window_of_its_own() {
+    let (pace, timers) = pace();
+    let b = MemberId::new("b", 1);
+    let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
+
+    pace.answered(&b, &pace.sending(&b, true));
+    assert!(pace.live(1).contains(&b));
+
+    let window = timers
+        .silent()
+        .max(2 * timers.idle_heartbeat + timers.election_min);
+    later(window + 1).await;
+    assert!(!pace.live(1).contains(&b), "silent through its own reign");
+    assert!(pace.live(2).contains(&b), "a new reign has not waited yet");
+    assert!(pace.live(2).contains(&b));
+
+    later(window + 1).await;
+    assert!(!pace.live(2).contains(&b));
+}
+
 /// The leader's side of the idle rule: it slows down only once every
 /// follower has answered a heartbeat that named the idle gap, an entry
 /// voids those answers, and a follower long silent no longer counts.

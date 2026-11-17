@@ -229,9 +229,10 @@ async fn no_member_is_read_below_the_floor_after_a_purge() {
     stop(&restarted).await;
 }
 
-/// **A leader never purges past a member's match.** `broker-b` is behind
-/// the trim, so the leader keeps the entries it still needs, and `broker-b`
-/// catches up from the log without an install.
+/// **A leader never purges past the match of a member that answers.**
+/// `broker-b` is behind the trim but hears heartbeats, so the leader keeps
+/// the entries it still needs, and `broker-b` catches up from the log
+/// without an install.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_keeps_the_log_a_lagging_member_needs() {
     let CutAndTrimmed {
@@ -241,12 +242,22 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
         tail,
         held,
     } = cut_and_trimmed().await;
+    // Answering heartbeats again but sent no entries: behind, not down.
+    net.starved.lock().insert(members[1].name.to_string());
+    let before = net.answered_by(members[1].name);
+    net.cut.lock().clear();
+    // Two answered heartbeats: the first is the one the leader has counted
+    // by the time the second is back.
+    until("broker-b answers the leader", || {
+        net.answered_by(members[1].name) >= before + 2
+    })
+    .await;
     let purged = purge(&members[0]).await;
     assert!(
-        purged.is_none_or(|at| at < held),
+        purged.is_some_and(|at| at < held),
         "the leader purged to {purged:?}, past broker-b's {held}"
     );
-    net.cut.lock().clear();
+    net.starved.lock().clear();
     let orders = key("orders", 0);
     let log = members[1].shards.log_of(&orders).await.expect("log");
     until("broker-b catches up", || {
@@ -256,6 +267,118 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
     assert!(
         log.carried_floor().is_none(),
         "broker-b installed a snapshot"
+    );
+    stop(&members).await;
+}
+
+/// **A member that stopped answering does not keep the leader's disk.**
+/// `broker-b` stays cut off past the time after which a peer counts as
+/// silent, so the leader purges to `floor - 1` as a follower would. When
+/// `broker-b` is back it catches up by installing the leader's snapshot and
+/// serves from the floor it carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_purges_past_a_member_that_stopped_answering() {
+    let CutAndTrimmed {
+        net,
+        members,
+        floor,
+        tail,
+        held,
+    } = cut_and_trimmed().await;
+    let orders = key("orders", 0);
+    purged_past_the_cut(&members[0], floor, held).await;
+
+    net.cut.lock().clear();
+    let behind = &members[1];
+    let log = behind.shards.log_of(&orders).await.expect("log");
+    until("broker-b catches up", || log.commit_offset() >= tail).await;
+    let carried = log
+        .carried_floor()
+        .expect("broker-b installed the leader's purge snapshot");
+    assert_eq!(carried.floor, floor);
+    assert_eq!(carried.headers, bytes::Bytes::from_static(b"holder"));
+    until("broker-b serves its term", || behind.bound() >= tail).await;
+    serves_from(behind, floor).await;
+    stop(&members).await;
+}
+
+/// Purge `leader` until its log is purged through `floor - 1`, past the
+/// `held` entries of a member that stopped answering.
+async fn purged_past_the_cut(leader: &Member, floor: u64, held: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let purged = purge(leader).await;
+        if purged == Some(floor - 1) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the leader kept its log for broker-b, which is down: purged to {purged:?}, held {held}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// **A member taken for down that was only cut off loses nothing when it is
+/// back.** The leader purges past `broker-b` and acks `r6` without it.
+/// `broker-b` installs the snapshot, takes the log above it, then leads: it
+/// serves every acked record from the floor, and its own next publish takes
+/// a new offset past `r6`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_back_after_a_purge_leads_with_no_record_lost_or_offset_reused() {
+    let CutAndTrimmed {
+        net,
+        members,
+        floor,
+        tail,
+        held,
+    } = cut_and_trimmed().await;
+    let orders = key("orders", 0);
+    purged_past_the_cut(&members[0], floor, held).await;
+    let term = members[0].shards.leading(&orders).expect("term");
+    let r6 = members[0].publish(term, b"r6").await;
+    assert!(r6 >= tail, "r6 took offset {r6}, below the tail {tail}");
+
+    net.cut.lock().clear();
+    let back = &members[1];
+    let log = back.shards.log_of(&orders).await.expect("log");
+    until("broker-b installs the snapshot and takes r6", || {
+        log.commit_offset() > r6 && log.carried_floor().is_some()
+    })
+    .await;
+    assert_eq!(log.carried_floor().expect("carried").floor, floor);
+
+    let mut moved = replicated();
+    moved.leader = "broker-b".to_string();
+    for member in &members {
+        member.shards.take(&mut assignments([moved.clone()])).await;
+    }
+    until("broker-b leads", || back.shards.leading(&orders).is_some()).await;
+    let term = back.shards.leading(&orders).expect("term");
+    let r7 = back.publish(term, b"r7").await;
+    assert!(r7 > r6, "r7 took offset {r7}, at or below r6's {r6}");
+
+    serves_from(back, floor).await;
+    let records = back
+        .broker
+        .read_committed("t1", "ns", "orders", 0, floor, 1 << 16)
+        .await
+        .expect("a page from the floor");
+    let at = |offset: u64| {
+        records
+            .iter()
+            .find(|record| record.offset == offset)
+            .map(|record| record.payload.clone())
+    };
+    assert_eq!(
+        at(r6),
+        Some(bytes::Bytes::from_static(b"r6")),
+        "r6 was lost"
+    );
+    assert_eq!(
+        at(r7),
+        Some(bytes::Bytes::from_static(b"r7")),
+        "r7 was lost"
     );
     stop(&members).await;
 }

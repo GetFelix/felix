@@ -60,6 +60,8 @@ pub(super) const REACHED_BEFORE: &str =
 /// How long a purge pass waits for its snapshot before the next pass tries
 /// again.
 const PURGE_SNAPSHOT_WITHIN: Duration = Duration::from_secs(30);
+/// How long a purge pass waits for openraft to drop the log it asked for.
+const PURGE_WITHIN: Duration = Duration::from_secs(2);
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
@@ -194,7 +196,7 @@ impl Timers {
     /// hears the leader was told the idle gap, so the slow heartbeats reach
     /// it inside its wait. Only one that restarts meanwhile and loses its
     /// first idle heartbeat can stand (docs/per-shard-raft.md, "Idle groups").
-    fn silent(&self) -> u64 {
+    pub(super) fn silent(&self) -> u64 {
         self.election_min + 2 * self.election_max
     }
 }
@@ -228,6 +230,9 @@ pub(crate) struct Pace {
     led: AtomicU64,
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
+    /// As a leader: the term this member leads and when it was first seen
+    /// leading it.
+    reign: parking_lot::Mutex<(u64, u64)>,
     peers: parking_lot::Mutex<Vec<Peer>>,
     /// As a leader: the newest entry any append has carried.
     sent: parking_lot::Mutex<Option<LogIdOf<ShardTypes>>>,
@@ -277,6 +282,7 @@ impl Pace {
             promised: AtomicU64::new(timers.heartbeat),
             led: AtomicU64::new(NEVER),
             wrote: AtomicU64::new(now),
+            reign: parking_lot::Mutex::new((0, 0)),
             peers: parking_lot::Mutex::new(Vec::new()),
             sent: parking_lot::Mutex::new(None),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
@@ -386,15 +392,27 @@ impl Pace {
 
     /// The peers that answered lately: within the time after which a peer
     /// counts as silent, and never less than two idle heartbeats, which an
-    /// idle group sends that far apart.
-    pub(crate) fn live(&self) -> BTreeSet<MemberId> {
+    /// idle group sends that far apart. A leader of `term` has not heard a
+    /// peer's answers from before it led, so the window starts no earlier
+    /// than its reign: a peer is not written off for silence this leader
+    /// never waited through.
+    pub(crate) fn live(&self, term: u64) -> BTreeSet<MemberId> {
         let timers = &self.timers;
         let now = timers.now();
+        let reign = {
+            let mut reign = self.reign.lock();
+            if reign.0 != term {
+                *reign = (term, now);
+            }
+            reign.1
+        };
         let silent = timers
             .silent()
             .max(2 * timers.idle_heartbeat + timers.election_min);
         let peers = self.peers.lock();
-        let live = peers.iter().filter(|peer| now < peer.answered + silent);
+        let live = peers
+            .iter()
+            .filter(|peer| now < peer.answered.max(reign) + silent);
         live.map(|peer| peer.id.clone()).collect()
     }
 
@@ -1038,12 +1056,16 @@ impl Group {
     }
 
     /// One purge pass on a stream shard: write a snapshot at
-    /// `P = min(applied, floor - 1)`, on the leader also at or below every
-    /// other member's match, then drop the log through `P`. Two steps in
-    /// that order, so the log never starts above the snapshot. The cap keeps
-    /// a leader from sending installs to members that are only behind;
-    /// safety does not rest on it. Returns `P` once the log is purged to it.
-    /// See `docs/per-shard-raft.md`, "Purging below the floor".
+    /// `P = min(applied, floor - 1)`, on the leader also at or below the
+    /// match of every other member that answered lately ([`Pace::live`]),
+    /// then drop the log through `P`. Two steps in that order, so the log
+    /// never starts above the snapshot. The cap keeps a leader from sending
+    /// installs to members that are only behind; safety does not rest on it.
+    /// A member that stopped answering is not waited for, so it cannot keep
+    /// the leader's disk; it installs the snapshot when it is back. Returns
+    /// `P` once the log is purged through it, by this pass or an earlier
+    /// one, and `None` while openraft still holds the purge. See `docs/per-shard-raft.md`,
+    /// "Purging below the floor".
     pub(crate) async fn purge_below_floor(&self) -> Option<u64> {
         use openraft::async_runtime::watch::WatchReceiver;
         if self.id.shard.kind != ShardKind::Stream || self.stopped.load(Ordering::Relaxed) {
@@ -1053,16 +1075,19 @@ impl Group {
         let metrics = self.raft.metrics().borrow_watched().clone();
         let mut at = metrics.last_applied?.index.min(floor.checked_sub(1)?);
         if metrics.state == ServerState::Leader {
+            let live = self.pace.live(metrics.current_term);
             for (id, matched) in metrics.replication.as_ref()?.iter() {
-                if *id != self.member {
+                if *id != self.member && live.contains(id) {
                     at = at.min(matched.as_ref()?.index);
                 }
             }
         }
         let snapshot = metrics.snapshot.map(|id| id.index);
         let purged = metrics.purged.map(|id| id.index);
-        match purge_step(snapshot, purged, at)? {
-            PurgeStep::SnapshotThenPurge => {
+        match purge_step(snapshot, purged, at) {
+            // An earlier pass's purge, which openraft ran late.
+            None => return Some(at),
+            Some(PurgeStep::SnapshotThenPurge) => {
                 *self.purge_at.lock() = Some(at);
                 self.raft.trigger().snapshot().await.ok()?;
                 self.raft
@@ -1074,9 +1099,21 @@ impl Group {
                     .await
                     .ok()?;
             }
-            PurgeStep::Purge => {}
+            Some(PurgeStep::Purge) => {}
         }
         self.raft.trigger().purge_log(at).await.ok()?;
+        // A leader's openraft holds the purge while a replication stream
+        // still reads the range, even one to a member that is down, and runs
+        // it on that stream's next answer or error. Report only a purge that
+        // ran; a later pass sees one that ran late.
+        self.raft
+            .wait(Some(PURGE_WITHIN))
+            .metrics(
+                |m| m.purged.as_ref().is_some_and(|purged| purged.index >= at),
+                "a purge",
+            )
+            .await
+            .ok()?;
         Some(at)
     }
 
