@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794932027460,
+  "lastUpdate": 1794932592129,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61360,6 +61360,58 @@ window.BENCHMARK_DATA = {
             "range": "13697.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1748720.89\nmean: 1744268.76\nstdev: 13697.51\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7994bdcaecdd5eb00e8df8d64c219898d127140d",
+          "message": "formal(raft): main TLA green again after the re-form mark change (#2728) (#2730)\n\n* formal(raft): main TLA green again after the re-form mark change (#2728)\n\nThe voter-set mark from #2666 no longer marks epoch 0 when one voter of\nthree is declared dead. With one term the first re-form then keeps every\nrecord the dead leader committed, so the epoch-1 cap never lowers its\nreturned copy and FelixRaftReformKeptOldKeptCap could not violate\nNeverCaps. Both OldKept configs now give epoch 0 a second term: a later\nvote that no entry carries leaves the first re-form at the saved commits,\nwhich is the path the cap guards.\n\nCpObserve left the new `ordered` variable unassigned, so every config\nwith WaitPlaced FALSE stopped with a TLC error\n(FelixRaftReformStaleMembershipTwoRotatedUnlisted on main).\n\nSix FelixRaftWritten configs from #2666 did not finish in a CI runner's\nsix hours (two filled its disk) and neither twin violated. They are\nunregistered with their CI results in the README until they are bounded.\n\n* formal(raft): small gate pass and twin, to measure for #2729\n\n* formal(raft): give the small gate twin its specification\n\n* formal(raft): nightly runs the two OffsetNeverReused passes, walks the two twins (#2729)\n\n* formal(raft): record the KeptOldKept pair's states and times, mark the unproven twins (#2729)\n\n* formal(tla): drop the GateSmall configs, too slow per PR and the twin is vacuous (#2728)",
+          "timestamp": "2026-11-17T08:17:23-08:00",
+          "tree_id": "03b77da4c40059864cc0ae4877717d4973e8916d",
+          "url": "https://github.com/GetFelix/felix/commit/7994bdcaecdd5eb00e8df8d64c219898d127140d"
+        },
+        "date": 1794932590965,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517538.63,
+            "range": "20524.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517538.63\nmean: 519526.22\nstdev: 20524.32\ncv: 3.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517538.63,
+            "range": "20524.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517538.63\nmean: 519526.22\nstdev: 20524.32\ncv: 3.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123908.14,
+            "range": "833.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123908.14\nmean: 123657.53\nstdev: 833.05\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1239081.36,
+            "range": "8330.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1239081.36\nmean: 1236575.29\nstdev: 8330.43\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
