@@ -672,7 +672,7 @@ CpObserve(b) ==
     /\ cpMem # Config(b)
     /\ cpMem' = Config(b)
     /\ UNCHANGED brokerVars
-    /\ UNCHANGED <<cpEpoch, placed, everPlaced, dead, cpFloor, plans, forms, lost, counters>>
+    /\ UNCHANGED <<cpEpoch, ordered, placed, everPlaced, dead, cpFloor, plans, forms, lost, counters>>
     /\ UNCHANGED diskVars
 
 \* The leader's report carries the log id of its commit.
@@ -1142,7 +1142,10 @@ TwoReformsShape ==
 
 \* The shape of the OldKept configs: epoch 0 writes and a broker is declared
 \* dead in it; epoch 1 elects nobody, and the dead broker returns in it with
-\* its epoch-0 copy, which the second re-form reads.
+\* its epoch-0 copy, which the second re-form reads. The configs give epoch 0
+\* two terms: one dead voter of three no longer marks the epoch, so the cap
+\* is reached only when a later vote no entry carries leaves the first
+\* re-form at the saved commits.
 OldKeptShape ==
     /\ writes' # writes => cpEpoch = 0
     /\ dead' \ dead # {} => cpEpoch = 0

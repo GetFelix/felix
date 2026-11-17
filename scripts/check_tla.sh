@@ -575,12 +575,6 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
   "FelixRaftWrittenReformVouchDead pass"
-  "FelixRaftWrittenReformVouchDeadFive pass"
-  "FelixRaftWrittenCommitsReformJointDead pass"
-  "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
-  "FelixRaftWrittenCommitsReformJointCutDead pass"
-  "FelixRaftWrittenReformGate pass"
-  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
   "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
   "FelixRaftWrittenReformReplacedHappens violates NoDeposedAppend"
   "FelixRaftBatch pass"
@@ -1161,6 +1155,12 @@ fi
 # on a box, queue still growing), FelixRaftWrittenReformReplacedFull and
 # FelixRaftReformReplacedDisk are not registered: they run past a pull
 # request's time; run them as a TLA workflow dispatch.
+# FelixRaftWrittenReform{VouchDeadFive,Gate,GateOpen} and
+# FelixRaftWrittenCommitsReformJoint{Dead,DeadOneSet,CutDead} are not
+# registered: in main run 43961999904 none finished in its CI runner's time
+# (the two Joint{Dead,DeadOneSet} filled the runner's disk past 440M distinct
+# states), and neither twin had violated. Each is registered once bounded
+# so a run gives its declared outcome (issue 2728).
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly
