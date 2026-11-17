@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794870702589,
+  "lastUpdate": 1794878764360,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60840,6 +60840,58 @@ window.BENCHMARK_DATA = {
             "range": "20742.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1736846.67\nmean: 1736781.40\nstdev: 20742.64\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ef3244056f5344b9a33e4e92a870941608b48dcb",
+          "message": "perf(mqtt): forward a connection's batch whole to a Raft leader (#2713)\n\n* perf(mqtt): forward a connection's batch whole to a Raft leader\n\nA broker that is a member of a shard's Raft group but does not lead it\nforwarded each MQTT message on its own and waited for its commit before\nthe next, so a connection's batch cost one forward and one commit per\nmessage. It now goes in one forward to a leader that offers\nRECORD_SEQUENCED_FORWARDS, and the leader proposes its records back to\nback at consecutive sequences.\n\n* WIP: owner test, docs, changelog for whole-batch Raft forwards\n\nBreaks a_forwarded_resend_of_a_cut_batch_is_finished_on_the_owner: a\nmulti-record sequenced forward can also be a re-send of a batch cut on the\nhybrid, so the owner needs an explicit per-record flag on the wire.\n\n* WIP: mark per-record forwards on the wire\n\n* perf(mqtt): mark a Raft forward whose records each take a sequence\n\nA multi-record sequenced forward is one batch at one sequence, which is\nhow a re-send of a batch cut partway must travel. The MQTT listener's\nwhole-batch forward to a Raft leader now travels as its own kind,\nRecordSequencedForwardPublish, gated on RECORD_SEQUENCED_FORWARDS, and\nonly that kind is proposed record by record. A hybrid owner refuses it\nbefore writing.\n\n* fix(mqtt): keep a lost whole forward unknown across per-record sends; pass on a cut forward's permanent refusal\n\n* perf(mqtt): propose a Raft batch's records in one proposal\n\nThe leader proposed each MQTT record of a batch on its own, each waiting\nfor the one before it to reach the log, so a 64-message window paid 64\nturns on the log per batch. Both the ingress leader and the owner of a\nRecordSequencedForwardPublish now hand the batch to the group as one\nproposal of one-record batches, as Kafka produce does. The records path\ntakes a SequenceReuse so MQTT keeps refusing a held sequence whose\npayload differs; Kafka keeps answering by numbers alone.\n\n* raft: record that the MQTT batch proposal leaves the specs unaffected\n\nSpec-Unaffected: a batch is still written as one Raft command per record with the same marks (producer, sequence+i, position 0, length 1) the per-record calls wrote (raft/propose.rs), so the log entries the models describe are unchanged. Putting several of one producer's sequences in one proposal is not checked by TLC; that is a reading, and the model work is #2710.",
+          "timestamp": "2026-11-16T17:18:58-08:00",
+          "tree_id": "0da5189157e020680d978725fd97dec6d9ad20e1",
+          "url": "https://github.com/GetFelix/felix/commit/ef3244056f5344b9a33e4e92a870941608b48dcb"
+        },
+        "date": 1794878763409,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 545562.12,
+            "range": "30345.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 545562.12\nmean: 540172.57\nstdev: 30345.01\ncv: 5.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 545562.12,
+            "range": "30345.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 545562.12\nmean: 540172.57\nstdev: 30345.01\ncv: 5.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120463.19,
+            "range": "7111.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120463.19\nmean: 117447.54\nstdev: 7111.42\ncv: 6.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1204631.94,
+            "range": "71114.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1204631.94\nmean: 1174475.38\nstdev: 71114.19\ncv: 6.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
