@@ -30,6 +30,55 @@ def _ratio(d, num, den):
     return d[num] / d[den] if d.get(num) is not None and d.get(den) else None
 
 
+# What a loadgen document counts as a message in its window, first key present wins:
+# acked publishes (ingest, MQTT, Kafka), deliveries (pubsub, subscribe), replayed records
+# (resume), consumed records (Kafka tail).
+MESSAGE_KEYS = ("acked_records", "received", "replayed", "consumed_records")
+# Raft may use at most this much more broker CPU per message than hybrid.
+CPU_TOLERANCE = float(os.environ.get("CPU_TOLERANCE", "0.10"))
+
+
+def cpu_ms_per_kmsg(d):
+    """Broker CPU milliseconds per 1000 messages over the measured window, summed over
+    every broker: (utime + stime at the end - at the start) / ticks per second, divided
+    by the messages the generator counted. `broker_cpu` is {"hz": n, "boxes": {box:
+    [ticks before, ticks after]}}. None when a sample or the count is missing or a
+    counter went backwards (a restarted broker)."""
+    cpu = d.get("broker_cpu")
+    if not cpu or not cpu.get("boxes") or not cpu.get("hz"):
+        return None
+    ticks = 0
+    for before, after in cpu["boxes"].values():
+        if before is None or after is None or after < before:
+            return None
+        ticks += after - before
+    msgs = next((d[k] for k in MESSAGE_KEYS if d.get(k)), None)
+    if not msgs:
+        return None
+    return ticks / cpu["hz"] * 1e6 / msgs
+
+
+def read_cpu(cell_dir):
+    """The `broker_cpu` of a cell from the cpu-before-box<N>.txt and cpu-after-box<N>.txt
+    files run.sh wrote ("ticks=<n> hz=<n>"), or None if the cell has none."""
+    boxes, hz = {}, None
+    for name in sorted(os.listdir(cell_dir)):
+        if not (name.startswith("cpu-before-box") and name.endswith(".txt")):
+            continue
+        box = name[len("cpu-before-box"):-len(".txt")]
+        pair = []
+        for phase in ("before", "after"):
+            try:
+                with open(os.path.join(cell_dir, "cpu-%s-box%s.txt" % (phase, box))) as f:
+                    kv = dict(p.split("=", 1) for p in f.read().split() if "=" in p)
+                pair.append(int(kv["ticks"]))
+                hz = int(kv["hz"])
+            except (OSError, KeyError, ValueError):
+                pair.append(None)
+        boxes[box] = pair
+    return {"hz": hz, "boxes": boxes} if boxes else None
+
+
 # Metrics that are not compared Raft against hybrid: a count that must be zero on both
 # engines, or a ratio that must reach a floor on both. Anything else fails the cell.
 MUST_BE_ZERO = {"resume_errors", "short_reads", "bad_first", "gaps"}
@@ -57,13 +106,18 @@ METRICS = {
     "completeness": ("consumed / produced records", lambda d: _ratio(d, "consumed_records", "produced_records"), True),
     "rate_attain": ("publisher rate / target", lambda d: _ratio(d, "publish_throughput_msg_s", "publish_target_msg_s"), True),
     "consume_msg_s": ("consumed throughput (msg/s)", lambda d: d.get("consumed_throughput_msg_s"), True),
+    "cpu_kmsg": ("broker CPU per 1000 messages (ms)", cpu_ms_per_kmsg, False),
     "first_commit": ("leader kill to first commit (ms)", lambda d: d.get("first_commit_ms"), False),
     "caught_up": ("leader kill to subscriber caught up (ms)", lambda d: d.get("caught_up_ms"), False),
 }
 
 # cell id -> (title, [(metric id, gates the verdict)])
-LAT = [("ack_p50", True), ("ack_p99", True), ("ack_p999", True), ("msg_s", False), ("failed", True)]
-TPUT = [("msg_s", True), ("ack_p99", True), ("ack_p50", False), ("failed", True)]
+LAT = [("ack_p50", True), ("ack_p99", True), ("ack_p999", True), ("msg_s", False), ("failed", True),
+       ("cpu_kmsg", True)]
+TPUT = [("msg_s", True), ("ack_p99", True), ("ack_p50", False), ("failed", True), ("cpu_kmsg", True)]
+# A Kafka or MQTT latency cell: p50 and p99 gate, p999 is reported.
+MQTT_LAT = [("ack_p50", True), ("ack_p99", True), ("ack_p999", False), ("msg_s", False),
+            ("cpu_kmsg", True)]
 # Kafka and MQTT report no failed-send count.
 TPUT_NOFAIL = [m for m in TPUT if m[0] != "failed"]
 MODES = [("oncommit", "Quorum, fsync on_commit"), ("quorum", "Quorum, fsync periodic"),
@@ -79,17 +133,24 @@ CELLS["rf3-kafka"] = ("RF 3, Quorum on_commit, Kafka produce", TPUT)
 CELLS["rf3-mqtt"] = ("RF 3, Quorum on_commit, MQTT QoS 1 publish", TPUT_NOFAIL)
 CELLS["rf3-fanout"] = ("RF 3, Quorum on_commit, consumer fanout",
                        [("deliv_msg_s", True), ("pub_msg_s", False), ("pubsub_ack_p99", True),
-                        ("deliv_p99", True)])
+                        ("deliv_p99", True), ("cpu_kmsg", True)])
 CELLS["rf3-kafka-tail"] = ("RF 3, Quorum on_commit, Kafka consumer tailing a steady produce",
                            [("consume_msg_s", True), ("completeness", True), ("rate_attain", True),
-                            ("pub_msg_s", False)])
+                            ("pub_msg_s", False), ("cpu_kmsg", True)])
+CELLS["rf3-mqtt-lat"] = ("RF 3, Quorum on_commit, MQTT QoS 1 publish, one connection, one in flight",
+                         MQTT_LAT)
+CELLS["rf3-mqtt-tail"] = ("RF 3, Quorum on_commit, MQTT subscribers tailing a steady QoS 1 publish",
+                          [("deliv_msg_s", True), ("rate_attain", True), ("pub_msg_s", False),
+                           ("cpu_kmsg", True)])
 CELLS["rf3-resume"] = ("RF 3, Quorum on_commit, resume and replay on the leader under steady produce",
                        [("replay_msg_s", True), ("resume_p50", True), ("resume_p99", True),
                         ("replay_p99", False), ("resume_errors", True), ("short_reads", True),
-                        ("bad_first", True), ("rate_attain", True), ("pub_msg_s", False)])
+                        ("bad_first", True), ("rate_attain", True), ("pub_msg_s", False),
+                        ("cpu_kmsg", True)])
 CELLS["rf3-follower-tail"] = ("RF 3, Quorum on_commit, tail subscribe on a follower under steady produce",
                               [("deliv_msg_s", True), ("deliv_p50", True), ("deliv_p99", True),
-                               ("gaps", True), ("rate_attain", True), ("pub_msg_s", False)])
+                               ("gaps", True), ("rate_attain", True), ("pub_msg_s", False),
+                               ("cpu_kmsg", True)])
 
 
 def mean_sd(vals):
@@ -99,8 +160,10 @@ def mean_sd(vals):
     return m, sd
 
 
-def compare(raft, hybrid, higher):
-    """Verdict for one metric from the per-round values of each side."""
+def compare(raft, hybrid, higher, fixed_tolerance=None):
+    """Verdict for one metric from the per-round values of each side. A fixed tolerance
+    replaces the noise band: lower-is-better then passes while Raft's mean is at most
+    (1 + tolerance) times hybrid's, higher-is-better while it is at least (1 - tolerance)."""
     if not raft or not hybrid:
         return {"verdict": "FAIL", "reason": "no data on %s" % ("raft" if not raft else "hybrid"),
                 "ratio": None, "tolerance": None}
@@ -120,8 +183,12 @@ def compare(raft, hybrid, higher):
         noise = None
     else:
         noise = NOISE_K * math.sqrt((rsd / rm) ** 2 / len(raft) + (hsd / hm) ** 2 / len(hybrid))
-    tol = max(min(noise or 0.0, NOISE_CAP), NOISE_FLOOR)
-    ok = ratio >= 1.0 - tol
+    if fixed_tolerance is not None:
+        tol = fixed_tolerance
+        ok = rm <= hm * (1.0 + tol) if not higher else rm >= hm * (1.0 - tol)
+    else:
+        tol = max(min(noise or 0.0, NOISE_CAP), NOISE_FLOOR)
+        ok = ratio >= 1.0 - tol
     return {"verdict": "PASS" if ok else "FAIL", "ratio": ratio, "tolerance": tol,
             "noise": noise, "rounds": n,
             "raft": {"mean": rm, "sd": rsd, "min": min(raft), "max": max(raft), "values": raft},
@@ -155,6 +222,9 @@ def load_run(run):
         if r["status"] == "ok" and os.path.exists(p):
             with open(p) as f:
                 d = json.load(f)
+            cpu = read_cpu(os.path.dirname(p))
+            if cpu and "broker_cpu" not in d:
+                d["broker_cpu"] = cpu
         data.setdefault((r["cell"], r["side"]), []).append((r["round"], r["status"], d))
     return rows, env, data
 
@@ -196,7 +266,8 @@ def summarize(run):
                 res = compare_exact(side_vals["raft"], side_vals["hybrid"], lambda v: v >= floor,
                                     ">= %g" % floor)
             else:
-                res = compare(side_vals["raft"], side_vals["hybrid"], higher)
+                res = compare(side_vals["raft"], side_vals["hybrid"], higher,
+                              CPU_TOLERANCE if mid == "cpu_kmsg" else None)
             res.update({"id": mid, "label": label, "higher_is_better": higher, "gates": gates})
             cell["metrics"].append(res)
         gating = [m for m in cell["metrics"] if m["gates"]]
@@ -219,16 +290,35 @@ def fmt(v):
     return "%.0f" % v if abs(v) >= 100 else "%.2f" % v
 
 
+def cpu_table(res):
+    """Broker CPU per 1000 messages, hybrid against Raft, one row per cell that has it."""
+    rows = []
+    for c in res["cells"]:
+        for m in c["metrics"]:
+            if m["id"] == "cpu_kmsg" and m.get("raft") and m.get("hybrid"):
+                h, r = m["hybrid"]["mean"], m["raft"]["mean"]
+                rows.append("| %s | %s | %s | %.3f | %s |" % (
+                    c["id"], fmt(h), fmt(r), r / h if h else float("nan"), m["verdict"]))
+    if not rows:
+        return []
+    return ["Broker CPU per 1000 messages (ms, all brokers; Raft over hybrid must be at most "
+            "%.2f):\n" % (1 + CPU_TOLERANCE),
+            "| cell | hybrid | raft | raft / hybrid | verdict |", "|---|---|---|---|---|"] + rows + [""]
+
+
 def markdown(res):
     out = ["# Raft vs hybrid parity matrix\n", "Verdict: **%s**\n" % res["verdict"],
            "```\n%s\n```\n" % "\n".join("%s %s" % kv for kv in res["env"].items()),
            "Gate: Raft >= hybrid on every gating metric within the measured noise. The ratio is "
            "Raft's standing (above 1 is better, for latency too). The tolerance is "
-           "between %g%% and %g%%, %g standard errors of the ratio.\n" % (res["noise_floor"] * 100, NOISE_CAP * 100, res["noise_k"]),
+           "between %g%% and %g%%, %g standard errors of the ratio. Broker CPU per 1000 messages "
+           "is gated apart from that: Raft may use at most %g%% more than hybrid.\n" % (res["noise_floor"] * 100, NOISE_CAP * 100, res["noise_k"],
+                                     CPU_TOLERANCE * 100),
            "| cell | verdict |\n|---|---|"]
     for c in res["cells"]:
         out.append("| %s | %s |" % (c["title"], c["verdict"]))
     out.append("")
+    out.extend(cpu_table(res))
     for c in res["cells"]:
         out.append("## %s: %s\n" % (c["id"], c["verdict"]))
         out.append("| metric | gates | hybrid mean (sd) | raft mean (sd) | ratio | tolerance | verdict |")

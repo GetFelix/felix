@@ -43,6 +43,14 @@ class Compare(unittest.TestCase):
 
 
 class Run(unittest.TestCase):
+    @staticmethod
+    def cpu(per_kmsg=50.0, msgs=1_000_000, boxes=2, hz=100):
+        """The CPU fields of a loadgen document: `per_kmsg` ms of broker CPU per 1000
+        messages, spread over `boxes` brokers."""
+        ticks = round(per_kmsg * msgs / 1e6 * hz / boxes)
+        return {"acked_records": msgs,
+                "broker_cpu": {"hz": hz, "boxes": {str(b): [1000, 1000 + ticks] for b in range(boxes)}}}
+
     def write(self, cells):
         d = tempfile.mkdtemp()
         os.makedirs(os.path.join(d, "cells"))
@@ -53,6 +61,8 @@ class Run(unittest.TestCase):
             for rnd, cell, side, status, doc in cells:
                 f.write("%d\t%s\t%s\t1\t%s\n" % (rnd, cell, side, status))
                 if doc is not None:
+                    if cell != "rf3-failover":
+                        doc = {**self.cpu(), **doc}
                     p = os.path.join(d, "cells", "r%d-%s-%s" % (rnd, cell, side))
                     os.makedirs(p)
                     with open(os.path.join(p, "loadgen.json"), "w") as g:
@@ -203,6 +213,153 @@ class Run(unittest.TestCase):
         res = s.summarize(self.write(rows))
         self.assertEqual(res["verdict"], "FAIL")
         self.assertEqual(self.verdicts(res)["gaps"], "FAIL")
+
+    def mqtt_lat(self, p50, p99, p999=None):
+        return {"batch_ack_latency_us": {"p50": p50, "p99": p99, "p999": p999 or p99 * 2},
+                "throughput_msg_s": 900}
+
+    def mqtt_tail(self, delivered=60000, held=15000):
+        return {"scenario": "mqtt-subscribe", "received": 1_800_000,
+                "delivered_throughput_msg_s": delivered,
+                "publish_throughput_msg_s": held, "publish_target_msg_s": 15000}
+
+    def test_mqtt_lat_gates_p50_and_p99_and_only_reports_p999(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-mqtt-lat", "hybrid", "ok", self.mqtt_lat(400, 900)))
+            rows.append((rnd, "rf3-mqtt-lat", "raft", "ok", self.mqtt_lat(400, 900, p999=9000)))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(sorted(self.verdicts(res)), ["ack_p50", "ack_p99", "cpu_kmsg"])
+        for slow, metric in (((800, 900), "ack_p50"), ((400, 1800), "ack_p99")):
+            rows = []
+            for rnd in (1, 2, 3):
+                rows.append((rnd, "rf3-mqtt-lat", "hybrid", "ok", self.mqtt_lat(400, 900)))
+                rows.append((rnd, "rf3-mqtt-lat", "raft", "ok", self.mqtt_lat(*slow)))
+            res = s.summarize(self.write(rows))
+            self.assertEqual(self.verdicts(res)[metric], "FAIL", metric)
+            self.assertEqual(res["verdict"], "FAIL")
+
+    def test_mqtt_tail_gates_delivered_throughput_and_publisher_rate(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-mqtt-tail", "hybrid", "ok", self.mqtt_tail()))
+            rows.append((rnd, "rf3-mqtt-tail", "raft", "ok", self.mqtt_tail()))
+        self.assertEqual(s.summarize(self.write(rows))["verdict"], "PASS")
+        rows = [(rnd, "rf3-mqtt-tail", side, "ok", self.mqtt_tail(delivered=60000 if side == "hybrid" else 30000))
+                for rnd in (1, 2, 3) for side in ("hybrid", "raft")]
+        res = s.summarize(self.write(rows))
+        self.assertEqual(self.verdicts(res)["deliv_msg_s"], "FAIL")
+        # A publisher under 95% of its rate on both engines is an invalid cell, not a tie.
+        rows = [(rnd, "rf3-mqtt-tail", side, "ok", self.mqtt_tail(held=14000))
+                for rnd in (1, 2, 3) for side in ("hybrid", "raft")]
+        res = s.summarize(self.write(rows))
+        self.assertEqual(self.verdicts(res)["rate_attain"], "FAIL")
+        self.assertEqual(res["verdict"], "FAIL")
+
+
+class Cpu(Run):
+    def cell_rows(self, hybrid, raft, cell="rf3-oncommit-tput"):
+        rows = []
+        for rnd in (1, 2, 3):
+            for side, per in (("hybrid", hybrid), ("raft", raft)):
+                rows.append((rnd, cell, side, "ok", {**self.ingest(1000, 500), **self.cpu(per)}))
+        return rows
+
+    def test_cpu_per_kmsg_sums_every_broker(self):
+        d = self.cpu(per_kmsg=30.0)
+        self.assertAlmostEqual(s.cpu_ms_per_kmsg(d), 30.0, places=2)
+        # 3 brokers x 1000 ticks at 100/s = 30 CPU s over 1e6 messages = 30 ms per 1000.
+        d = {"acked_records": 1_000_000,
+             "broker_cpu": {"hz": 100, "boxes": {"1": [5, 1005], "2": [0, 1000], "3": [7, 1007]}}}
+        self.assertAlmostEqual(s.cpu_ms_per_kmsg(d), 30.0)
+
+    def test_the_message_count_is_what_the_generator_counted(self):
+        boxes = {"1": [0, 100]}
+        for key in ("acked_records", "received", "replayed", "consumed_records"):
+            d = {key: 10_000, "broker_cpu": {"hz": 100, "boxes": boxes}}
+            self.assertAlmostEqual(s.cpu_ms_per_kmsg(d), 100.0, msg=key)
+
+    def test_a_missing_or_backwards_sample_is_no_value(self):
+        good = {"acked_records": 1000, "broker_cpu": {"hz": 100, "boxes": {"1": [0, 10]}}}
+        self.assertIsNotNone(s.cpu_ms_per_kmsg(good))
+        for bad in ({"acked_records": 1000},
+                    {"broker_cpu": good["broker_cpu"]},
+                    {"acked_records": 1000, "broker_cpu": {"hz": 100, "boxes": {"1": [10, 0]}}},
+                    {"acked_records": 1000, "broker_cpu": {"hz": 100, "boxes": {"1": [0, None]}}},
+                    {"acked_records": 1000, "broker_cpu": {"hz": 100, "boxes": {"1": [0, 10], "2": [None, 4]}}}):
+            self.assertIsNone(s.cpu_ms_per_kmsg(bad), bad)
+
+    def test_raft_within_10_percent_of_hybrid_passes(self):
+        res = s.summarize(self.write(self.cell_rows(100.0, 109.0)))
+        self.assertEqual(res["verdict"], "PASS")
+
+    def test_raft_over_10_percent_more_cpu_fails_like_a_throughput_miss(self):
+        res = s.summarize(self.write(self.cell_rows(100.0, 112.0)))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(self.verdicts(res)["cpu_kmsg"], "FAIL")
+        # Everything else matched, so only CPU failed.
+        others = {k: v for k, v in self.verdicts(res).items() if k != "cpu_kmsg"}
+        self.assertEqual(set(others.values()), {"PASS"})
+
+    def test_noise_does_not_widen_the_cpu_tolerance(self):
+        rows = []
+        for rnd, (h, r) in enumerate([(100, 100), (60, 140), (140, 60)], 1):
+            rows.append((rnd, "rf3-oncommit-tput", "hybrid", "ok", {**self.ingest(1000, 500), **self.cpu(h)}))
+            rows.append((rnd, "rf3-oncommit-tput", "raft", "ok", {**self.ingest(1000, 500), **self.cpu(r * 1.15)}))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(self.verdicts(res)["cpu_kmsg"], "FAIL")
+
+    def test_less_cpu_on_raft_passes(self):
+        self.assertEqual(s.summarize(self.write(self.cell_rows(100.0, 60.0)))["verdict"], "PASS")
+
+    def test_a_cell_with_no_cpu_sample_fails(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-oncommit-tput", "hybrid", "ok", self.ingest(1000, 500)))
+            doc = {**self.ingest(1000, 500), "broker_cpu": None}
+            rows.append((rnd, "rf3-oncommit-tput", "raft", "ok", doc))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "FAIL")
+
+    def test_the_report_lists_cpu_per_cell_with_the_ratio(self):
+        md = s.markdown(s.summarize(self.write(self.cell_rows(100.0, 105.0))))
+        self.assertIn("Broker CPU per 1000 messages (ms, all brokers", md)
+        self.assertIn("| rf3-oncommit-tput | 100 | 105 | 1.050 | PASS |", md)
+
+    def test_cpu_files_are_read_from_the_cell_directory(self):
+        d = tempfile.mkdtemp()
+        for box, (before, after) in {"1": (100, 400), "2": (50, 250)}.items():
+            for phase, ticks in (("before", before), ("after", after)):
+                with open(os.path.join(d, "cpu-%s-box%s.txt" % (phase, box)), "w") as f:
+                    f.write("ticks=%d hz=100\n" % ticks)
+        self.assertEqual(s.read_cpu(d), {"hz": 100, "boxes": {"1": [100, 400], "2": [50, 250]}})
+        # A box whose after-sample failed is kept as missing, so the cell has no value.
+        os.remove(os.path.join(d, "cpu-after-box2.txt"))
+        got = s.read_cpu(d)
+        self.assertEqual(got["boxes"]["2"], [50, None])
+        self.assertIsNone(s.cpu_ms_per_kmsg({"acked_records": 1000, "broker_cpu": got}))
+        self.assertIsNone(s.read_cpu(tempfile.mkdtemp()))
+
+    def test_load_run_attaches_the_cpu_files_to_the_cell(self):
+        rows = [(1, "rf3-mqtt", side, "ok", self.ingest(1000, 500)) for side in ("hybrid", "raft")]
+        run = self.write(rows)
+        for side, per in (("hybrid", 4000), ("raft", 4200)):
+            cell = os.path.join(run, "cells", "r1-rf3-mqtt-%s" % side)
+            with open(os.path.join(cell, "loadgen.json")) as f:
+                doc = json.load(f)
+            doc.pop("broker_cpu"); doc.pop("acked_records")
+            doc["acked_records"] = 100_000
+            with open(os.path.join(cell, "loadgen.json"), "w") as f:
+                json.dump(doc, f)
+            for phase, ticks in (("before", 10), ("after", 10 + per)):
+                with open(os.path.join(cell, "cpu-%s-box1.txt" % phase), "w") as f:
+                    f.write("ticks=%d hz=100\n" % ticks)
+        res = s.summarize(run)
+        cpu = [m for m in res["cells"][0]["metrics"] if m["id"] == "cpu_kmsg"][0]
+        self.assertAlmostEqual(cpu["hybrid"]["mean"], 400.0)
+        self.assertAlmostEqual(cpu["raft"]["mean"], 420.0)
+        self.assertEqual(cpu["verdict"], "PASS")
 
 
 if __name__ == "__main__":

@@ -341,7 +341,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             } else {
                 written as u64
             };
-            *publishing.sequences.entry(batch.key).or_insert(0) += sequences;
+            *publishing.sequences.entry(batch.key.clone()).or_insert(0) += sequences;
             let done = &batch.owed[..written];
             let acknowledged = done.iter().flatten().count();
             metrics::published("1", acknowledged as u64);
@@ -360,6 +360,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             }
             Some(Unwritten::Refused(refusal)) => {
                 let (reason, label) = describe(refusal);
+                let credential = publishing.credential.is_some();
                 for position in &batch.owed[written..] {
                     match (version, position) {
                         (Version::V5, Some(position)) => {
@@ -367,6 +368,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                             publishing.answer(*position, reason, Some(label));
                         }
                         (_, Some(_)) => {
+                            // The connection ends here, so this logs once per connection.
+                            let (namespace, stream, shard) = &batch.key;
+                            tracing::warn!(
+                                reason = label,
+                                credential,
+                                namespace = %namespace,
+                                stream = %stream,
+                                shard,
+                                "publish refused, closing the 3.1.1 connection: {}",
+                                refusal_hint(refusal, credential),
+                            );
                             self.release(publishing)?;
                             return Err(End::Close(label));
                         }
@@ -409,6 +421,18 @@ fn describe(refusal: Refusal) -> (ReasonCode, &'static str) {
         // 0x88 is not allowed on a PUBACK.
         Refusal::StreamUnavailable => (ReasonCode::UnspecifiedError, "stream_unavailable"),
         Refusal::NotAuthorized => (NOT_AUTHORIZED.reason, NOT_AUTHORIZED.label),
+    }
+}
+
+/// What an operator can do about a refusal that ends a 3.1.1 connection.
+fn refusal_hint(refusal: Refusal, credential: bool) -> &'static str {
+    match (refusal, credential) {
+        (Refusal::NotOwner, false) => {
+            "the connection has no credential to forward, so a shard led by another broker \
+             cannot be written; connect with a tenant token or to the shard's leader"
+        }
+        (Refusal::NotOwner, true) => "this broker does not lead the shard and could not forward",
+        _ => "the broker refused the write",
     }
 }
 

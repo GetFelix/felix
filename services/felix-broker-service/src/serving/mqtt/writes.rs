@@ -31,6 +31,7 @@ use felix_replication::peer::{PeerPool, PeerRequester};
 use felix_replication::quorum::QuorumError;
 use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer, PeerCapabilities};
 
+use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::observability::tenants;
 use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
 use crate::serving::limits::TenantRates;
@@ -51,6 +52,9 @@ pub struct BrokerWrites<P = PeerPool> {
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
     forwarding: Option<Forwarding<P>>,
+    /// The node catalog's live broker count, for [`Writes::may_forward`]. Absent
+    /// outside a cluster.
+    cluster: Option<Arc<ClientEndpoints>>,
 }
 
 /// How a batch reaches a shard another broker owns.
@@ -87,6 +91,7 @@ impl BrokerWrites<PeerPool> {
             quorum_timeout,
             quotas: Arc::new(TenantRates::unlimited()),
             forwarding: None,
+            cluster: None,
         }
     }
 }
@@ -107,7 +112,15 @@ impl<P> BrokerWrites<P> {
             quorum_timeout: self.quorum_timeout,
             quotas: self.quotas,
             forwarding: Some(Forwarding { peers, budget }),
+            cluster: self.cluster,
         }
+    }
+
+    /// Count the cluster's brokers from `endpoints`, which the node catalog
+    /// refresh keeps current.
+    pub(crate) fn with_cluster(mut self, endpoints: Arc<ClientEndpoints>) -> Self {
+        self.cluster = Some(endpoints);
+        self
     }
 
     /// The tenant publish quotas a write is charged to: the broker's own, so a
@@ -135,6 +148,20 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
 
     fn sequence_per_record(&self) -> bool {
         self.engine.runs_raft()
+    }
+
+    /// Read at every `CONNECT`, so a cluster that grows past one broker
+    /// refuses credential-less connections from the next refresh on. One
+    /// already connected meets the refusal at its first forwarded publish.
+    /// Before the first node catalog pass the size is unknown and counts as
+    /// more than one, so a node that has just started never accepts a
+    /// connection it may have to drop at its first forwarded publish.
+    fn may_forward(&self) -> bool {
+        self.forwarding.is_some()
+            && self
+                .cluster
+                .as_ref()
+                .is_some_and(|cluster| cluster.brokers().is_none_or(|n| n > 1))
     }
 
     async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {

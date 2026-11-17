@@ -128,6 +128,17 @@ pub enum Scenario {
         topic_prefix: String,
         window: usize,
         duration: Duration,
+        /// Messages a second across all connections; `None` is as fast as acks allow.
+        rate: Option<u64>,
+        start_at: Option<SystemTime>,
+    },
+    /// MQTT subscribers (`fanout` connections, QoS 1) on every topic under the
+    /// prefix, counting deliveries for a fixed time. Something else publishes.
+    MqttSubscribe {
+        addrs: Vec<String>,
+        topic_prefix: String,
+        duration: Duration,
+        start_at: Option<SystemTime>,
     },
     /// Subscribers only, at the live tail, for a fixed time. Something else
     /// publishes.
@@ -170,7 +181,26 @@ pub async fn run(common: &Common, scenario: &Scenario) -> Result<serde_json::Val
             topic_prefix,
             window,
             duration,
-        } => mqtt::mqtt_publish(common, addrs, topic_prefix, *window, *duration).await,
+            rate,
+            start_at,
+        } => {
+            mqtt::mqtt_publish(
+                common,
+                addrs,
+                topic_prefix,
+                *window,
+                *duration,
+                *rate,
+                *start_at,
+            )
+            .await
+        }
+        Scenario::MqttSubscribe {
+            addrs,
+            topic_prefix,
+            duration,
+            start_at,
+        } => mqtt::mqtt_subscribe(common, addrs, topic_prefix, *duration, *start_at).await,
         Scenario::Subscribe { stream, options } => {
             subscribe::subscribe(common, stream, options).await
         }

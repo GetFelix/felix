@@ -168,6 +168,28 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
     echo "env=$env raft_dirs=$raft alive=$(kill -0 "$pid" 2>/dev/null && echo 1 || echo 0)"
     ;;
 
+  # cpu <dir>: "ticks=<utime+stime> hz=<ticks a second>" of this box's broker, read from
+  # /proc/<pid>/stat. Two reads bracket a window; the difference is the broker's CPU time.
+  # The command name is skipped by cutting at the last ")" since it can hold spaces.
+  cpu)
+    dir=$1; in_run "$dir"; pid=$(cat "$dir/broker.pid")
+    python3 - "$pid" "$(getconf CLK_TCK)" <<'PY'
+import sys
+stat = open("/proc/%s/stat" % sys.argv[1]).read()
+f = stat[stat.rindex(")") + 2:].split()
+# After the command name the fields start at 3 (state): utime and stime are 14 and 15.
+print("ticks=%d hz=%s" % (int(f[11]) + int(f[12]), sys.argv[2]))
+PY
+    ;;
+
+  # cpu-at <dir> <unix-secs>: wait for that wall-clock time, then the same as cpu. Lets a
+  # window that starts at --start-at be opened at its start and not at the connect.
+  cpu-at)
+    dir=$1 at=$2; in_run "$dir"
+    python3 -c 'import sys, time; time.sleep(max(0.0, float(sys.argv[1]) - time.time()))' "$at"
+    exec bash "$R/node.sh" cpu "$dir"
+    ;;
+
   # loadgen <dir> <timeout-secs> <args...>: felix-loadgen with the client token; prints its output.
   loadgen)
     dir=$1 limit=$2; shift 2; in_run "$dir"
