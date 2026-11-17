@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794905581255,
+  "lastUpdate": 1794908427963,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61256,6 +61256,58 @@ window.BENCHMARK_DATA = {
             "range": "5197.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 836951.81\nmean: 835352.32\nstdev: 5197.63\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e32c6804aaf026c322f0be8d9e3d842d2952e3b2",
+          "message": "fix(raft): a leader's purge waits only for members that answer (#2602) (#2727)\n\n* fix(raft): a leader's purge waits only for members that answer (#2602)\n\nA leader capped its purge below a head trim at every other member's\nmatch, so one member that was down kept the leader's whole log. The cap\nnow ranges over the members that answered lately (Pace::live). One that\ncomes back installs the purge snapshot and keeps the floor it carries,\nwhich FelixRaftStreamPurgeNoCap.cfg checks.\n\nDocs: Raft retention now frees disk through the purge once\nraft_stream_purge is finalized.\n\n* fix(raft): report a leader's purge only once openraft ran it (#2602)\n\nopenraft holds a leader's purge while any replication stream still reads\nthe range, a stream to a member that is down included, and runs it on that\nstream's next answer or error. purge_below_floor returned the point as soon\nas it asked, and a later pass that found the purge done returned None. It\nnow waits briefly for the purge and returns the point when the log is\nalready purged through it, so the retention loop and tests see the real\nstate.\n\nAdds a test for a member cut off past a purge that installs the snapshot,\nthen leads with every acked record and no offset given out again.\n\n* fix(raft): a new leader counts a peer live for a window of its own reign\n\nPace kept a peer's last answer across leaderships, so a re-elected leader\nsaw every peer as silent until the first heartbeat came back and could\npurge past a follower that was only behind. The purge test now waits on\nanswered heartbeats instead of a fixed sleep.\n\n* chore: state why the purge change leaves the Raft spec unaffected\n\nSpec-Unaffected: FelixRaftCache.tla lets a member purge up to its own snapshot index regardless of other members' match, and a member behind the purge installs the snapshot. Capping the leader's purge by live members' match only removes behaviours the model already allows.",
+          "timestamp": "2026-11-17T09:35:15Z",
+          "tree_id": "ed843714351da8f2816b9c47b9f98d2b0b26efc5",
+          "url": "https://github.com/GetFelix/felix/commit/e32c6804aaf026c322f0be8d9e3d842d2952e3b2"
+        },
+        "date": 1794908427145,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510484.73,
+            "range": "32744.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510484.73\nmean: 515532.05\nstdev: 32744.44\ncv: 6.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510484.73,
+            "range": "32744.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510484.73\nmean: 515532.05\nstdev: 32744.44\ncv: 6.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119564.17,
+            "range": "652.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119564.17\nmean: 119858.38\nstdev: 652.07\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1195641.7,
+            "range": "6520.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1195641.70\nmean: 1198583.82\nstdev: 6520.73\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
