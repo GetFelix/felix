@@ -381,6 +381,14 @@ fn timers() -> RuntimeConfig {
         tick: Duration::from_millis(10),
         // Inside the shortest election timeout, as the runtime requires.
         lease: Duration::from_millis(100),
+        // Production pacing (10 s led_min, 30 s backoff) outlasts `until`.
+        placement: felix_replication::raft::Placement {
+            settle: Duration::from_millis(200),
+            led_min: Duration::from_secs(1),
+            backoff: Duration::from_secs(1),
+            backoff_cap: Duration::from_secs(5),
+            ..felix_replication::raft::Placement::default()
+        },
         ..RuntimeConfig::default()
     }
 }
