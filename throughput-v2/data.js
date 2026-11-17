@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794891394224,
+  "lastUpdate": 1794900711264,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61152,6 +61152,58 @@ window.BENCHMARK_DATA = {
             "range": "3899.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1254697.68\nmean: 1254807.39\nstdev: 3899.51\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9068d76fb1ceb8b91ba6664e25c987885a6174e6",
+          "message": "perf(raft): fewer task hops on the write path (#2577) (#2720)\n\n* fix(raft): answer a Leader publish without the lease as a Quorum one (#2707)\n\nA Leader publish whose lease check failed waited for its commit, which on a\nRaft log opened OnCommit (every log until the fleet finalizes\nraft_written_commit) means an fsync. A sole voter is answered by nobody, so\npast its first lease every single-node Leader publish took that path, while\na Quorum publish on the same periodic stream was answered on a written\nmajority, which for a sole voter is its own write.\n\nA refused lease now hands the answer to the written-majority wait under\nAckAt::Written, and keeps the commit under AckAt::Flushed. A Leader write\nnever waits longer than a Quorum one, and the fallback promises more than\nthe lease does.\n\nSpec-Unaffected: the fallback is the Quorum written-majority answer that FelixRaftWritten models; FelixRaftLease models the lease answer, which is unchanged, and treats the refused case as whatever a Quorum write does.\n\n* docs(raft): a refused lease is answered as Quorum is\n\nThree places still said a refused Leader publish waits for its commit.\nThe TLA+ change is to the header comment only.\n\n* fix(raft): a sole voter holds the leader lease without an answer (#2707)\n\nNobody answers a group's only voter, so its lease never held and every\nLeader publish on a single-node shard took the written-majority answer.\nadmit_local_ack now passes for a leader whose effective membership (the\nnewest appended, committed or not) is one voter set holding it alone.\n\nThe self-grant ends at the append of any membership with a second voter.\nopenraft writes a change from {a} as one entry only when every majority\nof the new set holds a, and otherwise appends a joint first, which has\nmore than one voter. Learners do not count. A zero lease still refuses.\n\nFelixRaftLease.tla: GroupLease holds for Servers = {l}. RestoreSingle\nchecks it with a write and a restart; ReachSoleLocalAck is its witness.\nMembership change is outside the model (fixed Servers) and argued in\ndocs/per-shard-raft.md.\n\n* docs(raft): a sole voter's lease ends at the next metrics flush, not the append\n\n* WIP: hop clock for one publish (FELIX_HOP_TRACE)\n\n* perf(raft): finish an early-answered publish on its own task; hop clock (#2577)\n\nProposedPublish::complete_then answers the publisher, then drives the\nbatch to its commit and delivery on the same task, instead of dropping\nit into a task spawned only to finish it. FELIX_HOP_TRACE=1 prints a\nper-stage latency histogram for one publish in flight.\n\n* docs(raft): low-load latency is the per-append log flush; register FELIX_HOP_TRACE (#2577)\n\nOn a Mac, with the Raft log on the broker's periodic mode (local\nexperiment), Raft Quorum acks at 28 us p50 against 119 us with the\nOnCommit log; the write itself matches the hybrid's.\n\n* perf(raft): handle a follower's append on the receiving task, no spawn (#2577)\n\nA request the sender stops waiting for is finished on a task of its own,\nso it still restarts the election timer.\n\n* docs(raft): the hop trace's last stage is the ack written, not queued",
+          "timestamp": "2026-11-16T23:26:36-08:00",
+          "tree_id": "51808e2f825d4c4cad47c1815c927e9c28dd60d1",
+          "url": "https://github.com/GetFelix/felix/commit/9068d76fb1ceb8b91ba6664e25c987885a6174e6"
+        },
+        "date": 1794900710511,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 466646.24,
+            "range": "46094.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 466646.24\nmean: 496558.67\nstdev: 46094.33\ncv: 9.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 466646.24,
+            "range": "46094.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 466646.24\nmean: 496558.67\nstdev: 46094.33\ncv: 9.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120807.92,
+            "range": "773.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120807.92\nmean: 120650.09\nstdev: 773.58\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1208079.18,
+            "range": "7735.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1208079.18\nmean: 1206500.86\nstdev: 7735.85\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
