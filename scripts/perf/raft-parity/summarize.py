@@ -7,7 +7,11 @@ gate: the current hybrid and the current Raft must each be no worse than the bas
 every cell, by the same noise rule. A baseline cell marked n/a (the release cannot run it)
 is left out of that gate; a baseline cell that failed to measure fails it.
 
-    summarize.py <run dir> [--strict]
+    summarize.py <run dir> [--strict] [--raft-from <run dir>]
+
+A side missing from the run is reported "not in this run" and is not a failure: the gates
+cover only the sides present. --raft-from takes the raft side from another run dir (for the
+baseline gate), so a baseline+hybrid run can be judged against a separate raft run.
 
 --strict exits 1 when any cell fails. The files are written either way.
 """
@@ -216,14 +220,24 @@ def compare_exact(raft, hybrid, ok, rule):
             "rounds": min(len(raft), len(hybrid)), "raft": _side(raft), "hybrid": _side(hybrid)}
 
 
-def load_run(run):
+def _read_rows(run):
     with open(os.path.join(run, "cells.tsv")) as f:
-        rows = list(csv.DictReader(f, delimiter="\t"))
+        return list(csv.DictReader(f, delimiter="\t"))
+
+
+def load_run(run, raft_from=None):
+    """Rows, env and per-cell data of a run. `raft_from` is another run dir whose raft rows
+    stand in for this run's (a run that had no raft side)."""
+    rows = [dict(r, dir=run) for r in _read_rows(run)]
     with open(os.path.join(run, "run.env")) as f:
         env = dict(line.split(" ", 1) for line in f.read().splitlines() if " " in line)
+    if raft_from:
+        rows = [r for r in rows if r["side"] != "raft"]
+        rows += [dict(r, dir=raft_from) for r in _read_rows(raft_from) if r["side"] == "raft"]
+        env["raft_from"] = raft_from
     data = {}
     for r in rows:
-        p = os.path.join(run, "cells", "r%s-%s-%s" % (r["round"], r["cell"], r["side"]), "loadgen.json")
+        p = os.path.join(r["dir"], "cells", "r%s-%s-%s" % (r["round"], r["cell"], r["side"]), "loadgen.json")
         d = None
         if r["status"] == "ok" and os.path.exists(p):
             with open(p) as f:
@@ -264,13 +278,17 @@ def baseline_state(data, cid):
     return "ok" if all(d is not None for _, _, d in rounds) else "incomplete"
 
 
-def summarize(run):
-    rows, env, data = load_run(run)
+def summarize(run, raft_from=None):
+    rows, env, data = load_run(run, raft_from)
     seen = []
     for r in rows:
         if r["cell"] not in seen:
             seen.append(r["cell"])
     has_baseline = any(r["side"] == "baseline" for r in rows)
+    present = {r["side"] for r in rows}
+    # Without both hybrid and raft there is no Raft-vs-hybrid comparison to make.
+    pair = "hybrid" in present and "raft" in present
+    cur = tuple(sd for sd in CURRENT if sd in present)
     cells = []
     for cid in [c for c in CELLS if c in seen] + [c for c in seen if c not in CELLS]:
         title, plan = CELLS.get(cid, (cid, [("msg_s", True)]))
@@ -286,7 +304,17 @@ def summarize(run):
         for mid, gates in plan:
             label, get, higher = METRICS[mid]
             side_vals = {side: _values(data, cid, side, get) for side in SIDES}
-            if mid in MUST_BE_ZERO:
+            if not pair:
+                res = {"verdict": "N/A", "reason": "%s not in this run" % (
+                    "raft" if "raft" not in present else "hybrid"), "ratio": None, "tolerance": None}
+                if bstate in ("ok", "incomplete"):
+                    base = _values(data, cid, "baseline", get)
+                    res["vs_baseline"] = {
+                        side: compare(side_vals[side], base, higher,
+                                      CPU_TOLERANCE if mid == "cpu_kmsg" else None,
+                                      names=("current", "baseline"))
+                        for side in cur}
+            elif mid in MUST_BE_ZERO:
                 res = compare_exact(side_vals["raft"], side_vals["hybrid"], lambda v: v == 0, "= 0")
             elif mid in FLOORS:
                 floor = FLOORS[mid]
@@ -301,7 +329,7 @@ def summarize(run):
                     # the way Raft is compared to hybrid.
                     res["vs_baseline"] = {
                         side: compare(side_vals[side], base, higher, tol, names=("current", "baseline"))
-                        for side in CURRENT}
+                        for side in cur}
             res.update({"id": mid, "label": label, "higher_is_better": higher, "gates": gates})
             cell["metrics"].append(res)
         gating = [m for m in cell["metrics"] if m["gates"]]
@@ -311,13 +339,16 @@ def summarize(run):
                       for rd, st, d in data.get((cid, side), []) if d is None]
         if incomplete:
             cell["notes"].append("incomplete: a cell with an unmeasured round fails")
-        cell["verdict"] = "PASS" if (gating and not incomplete
-                                     and all(m["verdict"] == "PASS" for m in gating)) else "FAIL"
+        if not pair:
+            cell["verdict"] = "N/A"
+        else:
+            cell["verdict"] = "PASS" if (gating and not incomplete
+                                         and all(m["verdict"] == "PASS" for m in gating)) else "FAIL"
         if has_baseline:
             fails = []
             if bstate == "incomplete":
                 fails.append("baseline had an unmeasured round")
-            for side in CURRENT:
+            for side in cur:
                 if incomplete and any(s_ == side for s_, _, _ in incomplete):
                     fails.append("%s had an unmeasured round" % side)
             for m in gating:
@@ -327,8 +358,9 @@ def summarize(run):
             cell["baseline_verdict"] = "N/A" if bstate in (None, "na") else ("FAIL" if fails else "PASS")
             cell["baseline_failures"] = fails
         cells.append(cell)
-    overall = "PASS" if cells and all(c["verdict"] == "PASS" for c in cells) else "FAIL"
-    res = {"env": env, "noise_floor": NOISE_FLOOR, "noise_k": NOISE_K, "verdict": overall, "cells": cells}
+    overall = ("N/A" if not pair else
+               "PASS" if cells and all(c["verdict"] == "PASS" for c in cells) else "FAIL")
+    res = {"sides": sorted(present), "env": env, "noise_floor": NOISE_FLOOR, "noise_k": NOISE_K, "verdict": overall, "cells": cells}
     if has_baseline:
         judged = [c for c in cells if c["baseline_verdict"] != "N/A"]
         res["baseline_verdict"] = "PASS" if judged and all(c["baseline_verdict"] == "PASS" for c in judged) else "FAIL"
@@ -378,23 +410,34 @@ def baseline_section(res):
         out.append("### %s: %s\n" % (c["id"], c["baseline_verdict"]))
         out.append("| metric | gates | baseline mean | hybrid ratio | raft ratio | tolerance | hybrid | raft |")
         out.append("|---|---|---|---|---|---|---|---|")
+        absent = "not in this run"
         for m in rows:
-            h, r = m["vs_baseline"]["hybrid"], m["vs_baseline"]["raft"]
-            if h.get("ratio") is None or r.get("ratio") is None:
+            vb = m["vs_baseline"]
+            gate = "yes" if m["gates"] else "no"
+            done = [x for x in vb.values() if x.get("ratio") is not None]
+            if not done:
                 out.append("| %s | %s | - | - | - | - | %s | %s |" % (
-                    m["label"], "yes" if m["gates"] else "no", h["verdict"], r["verdict"]))
+                    m["label"], gate, vb["hybrid"]["verdict"] if "hybrid" in vb else absent,
+                    vb["raft"]["verdict"] if "raft" in vb else absent))
                 continue
             def v(x):
                 return x["verdict"] if m["gates"] else "info"
-            out.append("| %s | %s | %s | %.3f | %.3f | %.1f%% | %s | %s |" % (
-                m["label"], "yes" if m["gates"] else "no", fmt(h["baseline"]["mean"]),
-                h["ratio"], r["ratio"], max(h["tolerance"], r["tolerance"]) * 100, v(h), v(r)))
+            def ratio(side):
+                x = vb.get(side)
+                return absent if x is None else ("-" if x.get("ratio") is None else "%.3f" % x["ratio"])
+            def verdict(side):
+                return absent if side not in vb else v(vb[side])
+            out.append("| %s | %s | %s | %s | %s | %.1f%% | %s | %s |" % (
+                m["label"], gate, fmt(done[0]["baseline"]["mean"]), ratio("hybrid"), ratio("raft"),
+                max(x["tolerance"] for x in done) * 100, verdict("hybrid"), verdict("raft")))
         out.append("")
     return out
 
 
 def markdown(res):
-    out = ["# Raft vs hybrid parity matrix\n", "Verdict: **%s**\n" % res["verdict"],
+    out = ["# Raft vs hybrid parity matrix\n", "Verdict: **%s**\n" % (
+        res["verdict"] if res["verdict"] != "N/A" else
+        "N/A (needs hybrid and raft; only %s in this run)" % ", ".join(res["sides"])),
            "```\n%s\n```\n" % "\n".join("%s %s" % kv for kv in res["env"].items()),
            "Gate: Raft >= hybrid on every gating metric within the measured noise. The ratio is "
            "Raft's standing (above 1 is better, for latency too). The tolerance is "
@@ -447,8 +490,14 @@ def markdown(res):
 
 
 def main(argv):
-    run = argv[1]
-    res = summarize(run)
+    args = argv[1:]
+    raft_from = None
+    if "--raft-from" in args:
+        i = args.index("--raft-from")
+        raft_from = args[i + 1]
+        del args[i:i + 2]
+    run = args[0]
+    res = summarize(run, raft_from)
     md = markdown(res)
     with open(os.path.join(run, "results.json"), "w") as f:
         json.dump(res, f, indent=2)

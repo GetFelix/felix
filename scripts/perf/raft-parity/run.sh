@@ -77,7 +77,7 @@ fi
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
 : "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
 : "${SIDES:=hybrid raft}" "${BASELINE_REF:=v0.7.2}" "${BASELINE_NA:=}"
-: "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}"
+: "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
   for topo in single rf3; do for mode in oncommit quorum leader; do
@@ -331,8 +331,20 @@ run_cell() {
   # The engine check: the broker's own environment, and the Raft marker that only
   # a Raft member writes into its shard directory.
   if [ "$status" = ok ]; then
+    # The repl check reads placement leaders; a Raft member opens (and writes its
+    # marker) a moment later, so poll the raft side until the markers exist.
+    local t0=$SECONDS
     for b in "${brokers[@]}"; do
-      e=$(on "$b" engine "$dir"); echo "box$b before $e" >> "$loc/engine.txt"
+      e=$(on "$b" engine "$dir")
+      if [ "$side" = raft ]; then
+        while :; do
+          n=${e#*raft_dirs=}; n=${n%% *}
+          case "$e" in "env=raft raft_dirs="*) [ "$n" -ge "$NSHARDS" ] && break ;; esac
+          [ $((SECONDS - t0)) -lt "$RAFT_OPEN_WAIT_SECS" ] || break
+          sleep 0.5; e=$(on "$b" engine "$dir")
+        done
+      fi
+      echo "box$b before $e" >> "$loc/engine.txt"
       case "$side:$e" in
         hybrid:"env=hybrid raft_dirs=0 alive=1") ;;
         baseline:"env= raft_dirs=0 alive=1") ;;
@@ -342,6 +354,7 @@ run_cell() {
         *) status=engine-mismatch ;;
       esac
     done
+    [ "$side" != raft ] || [ "$status" != ok ] || echo "raft members open after $((SECONDS - t0)) s" >> "$loc/engine.txt"
   fi
   if [ "$status" = ok ]; then
     sleep "$SETTLE_SECS"
@@ -391,7 +404,7 @@ run_cell() {
               for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && { tgt=$b; break; }; done
               for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && [ "$b" != "$tgt" ] && { lg=$b; break; }; done
             fi
-            raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
+            [ "$lg" = "$CP_BOX" ] || raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
           fi
         fi
         stamp="" tail_rate=$KAFKA_TAIL_RATE
@@ -419,7 +432,7 @@ run_cell() {
         lead=$(on "$CP_BOX" repl "$dir" | sed -n 's/.*leaders=broker-\([0-9]*\):.*/\1/p')
         [ -n "$lead" ] || status=no-leader
         for b in "${BOXES[@]}"; do [ "$b" != "$lead" ] && lg=$b && break; done
-        raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
+        [ "$lg" = "$CP_BOX" ] || raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
         args="--scenario failover --payload-bytes 256 --duration-secs $FAIL_SECS"
         limit=$((FAIL_SECS + 240)) ;;
     esac

@@ -445,10 +445,44 @@ class Baseline(Run):
         self.assertEqual(s.main(["summarize.py", run]), 0)
         self.assertTrue(os.path.exists(os.path.join(run, "results.md")))
 
+    def test_a_side_absent_from_the_run_is_not_a_failure(self):
+        res = s.summarize(self.write([r for r in self.rows(hybrid=1000, base=1000) if r[2] != "raft"]))
+        self.assertEqual(res["verdict"], "N/A")
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertEqual(res["cells"][0]["baseline_failures"], [])
+        md = s.markdown(res)
+        self.assertIn("not in this run", md)
+        self.assertIn("1.000", md)
+        self.assertEqual(s.main(["summarize.py", self.write([r for r in self.rows() if r[2] != "raft"]), "--strict"]), 0)
+
+    def test_hybrid_regression_still_fails_without_a_raft_side(self):
+        res = s.summarize(self.write([r for r in self.rows(hybrid=700, base=1000) if r[2] != "raft"]))
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertIn("hybrid msg_s", res["cells"][0]["baseline_failures"])
+
+    def test_raft_from_another_run_is_judged_against_the_baseline(self):
+        a = self.write([r for r in self.rows(hybrid=1000, base=1000) if r[2] != "raft"])
+        b = self.write([r for r in self.rows(raft=600) if r[2] == "raft"])
+        res = s.summarize(a, raft_from=b)
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertEqual(res["cells"][0]["baseline_failures"], ["raft msg_s"])
+
     def test_failed_baseline_does_not_hide_a_raft_vs_hybrid_failure(self):
         res = s.summarize(self.write(self.rows(hybrid=1000, raft=600, base=1000)))
         self.assertEqual(res["verdict"], "FAIL")
         self.assertEqual(res["baseline_verdict"], "FAIL")
+
+
+class TokenHandoffTest(unittest.TestCase):
+    def test_a_token_is_never_copied_onto_the_box_it_comes_from(self):
+        # A self-copy truncates client.jwt, and the loadgen then connects with no token.
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "run.sh")) as f:
+            lines = [l for l in f if 'put "$dir/tokens/client.jwt"' in l]
+        self.assertTrue(lines)
+        for l in lines:
+            self.assertIn('[ "$lg" = "$CP_BOX" ] ||', l)
 
 
 if __name__ == "__main__":

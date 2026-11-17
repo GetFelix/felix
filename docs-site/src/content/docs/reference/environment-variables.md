@@ -2215,6 +2215,25 @@ export FELIX_DURABLE_PREALLOCATE="false"
 **Note**: Disable on filesystems where reservations are expensive or where thin
 provisioning makes them counter-productive.
 
+### `FELIX_HOP_TRACE`
+
+**Description**: Print how long a publish takes to reach each stage on its way
+through the broker, from the frame arriving to its ack being written to the stream. Every
+five seconds the broker writes one line per stage to stderr, starting with
+`hop`, with that stage's p50 and p99 in microseconds. For debugging latency.
+
+**Type**: Boolean (`1` to enable)
+
+**Default**: unset (off)
+
+**Example**:
+```bash
+export FELIX_HOP_TRACE="1"
+```
+
+**Note**: The clock keeps one start time for the whole process, so it is exact
+only with one publish in flight. Under load the numbers mix publishes.
+
 ### `FELIX_STORAGE_IO_URING`
 
 **Description**: Submit device flushes through `io_uring` (`IORING_OP_FSYNC`) on
