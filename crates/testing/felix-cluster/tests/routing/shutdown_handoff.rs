@@ -811,19 +811,26 @@ async fn a_handoff_that_times_out_loses_no_acknowledged_record() {
          {moved} move steps, {still_led} still led"
     );
 
-    // The rest fail over.
+    // The rest fail over. The pass that fails the last of them over can also
+    // start a rebalancing move onto the three brokers left, and the harness
+    // runs no placement timer, so keep stepping until no move is in flight:
+    // a leader fenced for a cut-over stops serving until placement finishes it.
     let mut placed = 0usize;
     let exited_at = Instant::now();
     loop {
         let outcome = cluster.place_shards_moving(1).await;
         placed += outcome.placed + outcome.failed;
         let owners = cluster.shard_owners_for(STREAM).await.unwrap_or_default();
-        if owners.len() == SHARDS as usize && owners.values().all(|owner| owner != &stopping) {
+        let moving = cluster.moving_shards().await.unwrap_or_default();
+        if owners.len() == SHARDS as usize
+            && owners.values().all(|owner| owner != &stopping)
+            && moving.is_empty()
+        {
             break;
         }
         assert!(
             exited_at.elapsed() < Duration::from_secs(60),
-            "shards still on {stopping}: {owners:?}"
+            "shards still on {stopping} or moving: {owners:?}, moving {moving:?}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
