@@ -244,11 +244,17 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
     } = cut_and_trimmed().await;
     // Answering heartbeats again but sent no entries: behind, not down.
     net.starved.lock().insert(members[1].name.to_string());
+    let before = net.answered_by(members[1].name);
     net.cut.lock().clear();
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Two answered heartbeats: the first is the one the leader has counted
+    // by the time the second is back.
+    until("broker-b answers the leader", || {
+        net.answered_by(members[1].name) >= before + 2
+    })
+    .await;
     let purged = purge(&members[0]).await;
     assert!(
-        purged.is_none_or(|at| at < held),
+        purged.is_some_and(|at| at < held),
         "the leader purged to {purged:?}, past broker-b's {held}"
     );
     net.starved.lock().clear();

@@ -196,7 +196,7 @@ impl Timers {
     /// hears the leader was told the idle gap, so the slow heartbeats reach
     /// it inside its wait. Only one that restarts meanwhile and loses its
     /// first idle heartbeat can stand (docs/per-shard-raft.md, "Idle groups").
-    fn silent(&self) -> u64 {
+    pub(super) fn silent(&self) -> u64 {
         self.election_min + 2 * self.election_max
     }
 }
@@ -230,6 +230,9 @@ pub(crate) struct Pace {
     led: AtomicU64,
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
+    /// As a leader: the term this member leads and when it was first seen
+    /// leading it.
+    reign: parking_lot::Mutex<(u64, u64)>,
     peers: parking_lot::Mutex<Vec<Peer>>,
     /// As a leader: the newest entry any append has carried.
     sent: parking_lot::Mutex<Option<LogIdOf<ShardTypes>>>,
@@ -279,6 +282,7 @@ impl Pace {
             promised: AtomicU64::new(timers.heartbeat),
             led: AtomicU64::new(NEVER),
             wrote: AtomicU64::new(now),
+            reign: parking_lot::Mutex::new((0, 0)),
             peers: parking_lot::Mutex::new(Vec::new()),
             sent: parking_lot::Mutex::new(None),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
@@ -388,15 +392,27 @@ impl Pace {
 
     /// The peers that answered lately: within the time after which a peer
     /// counts as silent, and never less than two idle heartbeats, which an
-    /// idle group sends that far apart.
-    pub(crate) fn live(&self) -> BTreeSet<MemberId> {
+    /// idle group sends that far apart. A leader of `term` has not heard a
+    /// peer's answers from before it led, so the window starts no earlier
+    /// than its reign: a peer is not written off for silence this leader
+    /// never waited through.
+    pub(crate) fn live(&self, term: u64) -> BTreeSet<MemberId> {
         let timers = &self.timers;
         let now = timers.now();
+        let reign = {
+            let mut reign = self.reign.lock();
+            if reign.0 != term {
+                *reign = (term, now);
+            }
+            reign.1
+        };
         let silent = timers
             .silent()
             .max(2 * timers.idle_heartbeat + timers.election_min);
         let peers = self.peers.lock();
-        let live = peers.iter().filter(|peer| now < peer.answered + silent);
+        let live = peers
+            .iter()
+            .filter(|peer| now < peer.answered.max(reign) + silent);
         live.map(|peer| peer.id.clone()).collect()
     }
 
@@ -1059,7 +1075,7 @@ impl Group {
         let metrics = self.raft.metrics().borrow_watched().clone();
         let mut at = metrics.last_applied?.index.min(floor.checked_sub(1)?);
         if metrics.state == ServerState::Leader {
-            let live = self.pace.live();
+            let live = self.pace.live(metrics.current_term);
             for (id, matched) in metrics.replication.as_ref()?.iter() {
                 if *id != self.member && live.contains(id) {
                     at = at.min(matched.as_ref()?.index);

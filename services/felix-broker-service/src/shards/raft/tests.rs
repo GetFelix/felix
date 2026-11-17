@@ -1538,6 +1538,8 @@ pub(crate) struct Loopback {
     /// Brokers whose own requests reach nobody. With `cut` as well, a
     /// leader in here is cut off without hearing that it was deposed.
     pub(crate) muted: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Requests that reached each broker's runtime and were answered.
+    answered: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 /// One broker's way onto a [`Loopback`], so the net knows who sent what.
@@ -1564,6 +1566,11 @@ impl Loopback {
     pub(crate) fn forget(&self, broker: &str) {
         self.runtimes.lock().remove(broker);
     }
+
+    /// How many requests `broker` has answered so far.
+    pub(crate) fn answered_by(&self, broker: &str) -> u64 {
+        self.answered.lock().get(broker).copied().unwrap_or(0)
+    }
 }
 
 #[async_trait::async_trait]
@@ -1589,7 +1596,11 @@ impl RaftTransport for Loopback {
                     "the answer from {to} was lost"
                 )))
             }
-            Some(runtime) => runtime.handle(request).await,
+            Some(runtime) => {
+                let reply = runtime.handle(request).await;
+                *self.answered.lock().entry(to).or_default() += 1;
+                reply
+            }
             None => Err(Refused::Unreachable(format!("broker {to} is down"))),
         }
     }

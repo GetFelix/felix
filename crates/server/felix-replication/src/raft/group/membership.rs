@@ -124,7 +124,7 @@ impl Group {
             matched: matched
                 .filter_map(|(member, at)| Some((member.clone(), at.as_ref()?.index)))
                 .collect(),
-            live: self.pace.live(),
+            live: self.pace.live(metrics.current_term),
         }
     }
 
