@@ -362,5 +362,94 @@ class Cpu(Run):
         self.assertEqual(cpu["verdict"], "PASS")
 
 
+class Baseline(Run):
+    CELL = "rf3-oncommit-tput"
+
+    def rows(self, hybrid=1000, raft=1000, base=1000, base_status="ok", rounds=3, p99=500, cell=None):
+        cell = cell or self.CELL
+        out = []
+        for rnd in range(1, rounds + 1):
+            out.append((rnd, cell, "hybrid", "ok", self.ingest(hybrid, p99)))
+            out.append((rnd, cell, "raft", "ok", self.ingest(raft, p99)))
+            out.append((rnd, cell, "baseline", base_status,
+                        self.ingest(base, p99) if base_status == "ok" else None))
+        return out
+
+    def test_no_baseline_side_leaves_the_gate_off(self):
+        res = s.summarize(self.write([r for r in self.rows() if r[2] != "baseline"]))
+        self.assertNotIn("baseline_verdict", res)
+        self.assertNotIn("Versus", s.markdown(res))
+
+    def test_all_three_equal_pass(self):
+        res = s.summarize(self.write(self.rows()))
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertEqual(res["cells"][0]["baseline_verdict"], "PASS")
+        self.assertIn("Versus", s.markdown(res))
+
+    def test_raft_slower_than_baseline_fails_only_raft(self):
+        # Raft equals hybrid, so the Raft-vs-hybrid gate passes, and both are 30% under the baseline.
+        res = s.summarize(self.write(self.rows(hybrid=1000, raft=1000, base=1400)))
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertIn("raft msg_s", res["cells"][0]["baseline_failures"])
+        self.assertIn("hybrid msg_s", res["cells"][0]["baseline_failures"])
+
+    def test_hybrid_regression_alone_is_named(self):
+        # Raft beats a hybrid that has itself regressed: Raft vs hybrid passes, hybrid vs baseline fails.
+        res = s.summarize(self.write(self.rows(hybrid=700, raft=1000, base=1000)))
+        self.assertEqual(res["verdict"], "PASS")
+        fails = res["cells"][0]["baseline_failures"]
+        self.assertIn("hybrid msg_s", fails)
+        self.assertNotIn("raft msg_s", fails)
+
+    def test_faster_than_baseline_passes_and_noise_is_the_same_rule(self):
+        self.assertEqual(s.summarize(self.write(self.rows(base=500)))["baseline_verdict"], "PASS")
+        # 2% under the baseline is inside the noise floor.
+        self.assertEqual(s.summarize(self.write(self.rows(hybrid=980, raft=980)))["baseline_verdict"], "PASS")
+
+    def test_latency_regression_against_baseline_fails(self):
+        rows = self.rows(p99=500)
+        rows = [(r, c, sd, st, self.ingest(1000, 800) if sd == "raft" else d) for r, c, sd, st, d in rows]
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertTrue(any(f.startswith("raft ack_p") for f in res["cells"][0]["baseline_failures"]))
+
+    def test_na_cell_is_left_out_and_not_a_failure(self):
+        rows = self.rows()
+        for rnd in (1, 2):
+            rows.append((rnd, "rf3-mqtt", "hybrid", "ok", self.ingest(1000, 500)))
+            rows.append((rnd, "rf3-mqtt", "raft", "ok", self.ingest(1000, 500)))
+            rows.append((rnd, "rf3-mqtt", "baseline", "na", None))
+        res = s.summarize(self.write(rows))
+        mqtt = [c for c in res["cells"] if c["id"] == "rf3-mqtt"][0]
+        self.assertEqual(mqtt["baseline_verdict"], "N/A")
+        self.assertEqual(mqtt["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertIn("baseline n/a", " ".join(mqtt["notes"]))
+        self.assertNotIn("baseline not measured", " ".join(mqtt["notes"]))
+
+    def test_every_cell_na_judges_nothing(self):
+        res = s.summarize(self.write(self.rows(base_status="na")))
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+    def test_a_baseline_cell_that_failed_is_not_n_a(self):
+        res = s.summarize(self.write(self.rows(base_status="loadgen-failed")))
+        self.assertEqual(res["cells"][0]["baseline_verdict"], "FAIL")
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+    def test_baseline_fail_makes_strict_exit_nonzero(self):
+        run = self.write(self.rows(base=1500))
+        self.assertEqual(s.main(["summarize.py", run, "--strict"]), 1)
+        self.assertEqual(s.main(["summarize.py", run]), 0)
+        self.assertTrue(os.path.exists(os.path.join(run, "results.md")))
+
+    def test_failed_baseline_does_not_hide_a_raft_vs_hybrid_failure(self):
+        res = s.summarize(self.write(self.rows(hybrid=1000, raft=600, base=1000)))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+
 if __name__ == "__main__":
     unittest.main()

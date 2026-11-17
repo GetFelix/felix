@@ -7,6 +7,9 @@ set -euo pipefail
 
 R=/mnt/build/raft-parity
 BIN=$R/bin
+# The release baseline's broker and control plane (build.sh BASELINE_REF); its loadgen is a
+# copy of the one in $BIN, which every side uses.
+BASE_BIN=$R/bin-baseline
 TENANT=perf
 NS=default
 # Fixed ports, away from anything the lanes' tests bind (they pick ephemeral ports).
@@ -70,16 +73,18 @@ case "$cmd" in
   # quiet: 1 min load, foreign heavy processes (TLC, builds), and the runnable count right now.
   quiet) echo "load=$(cut -d' ' -f1 /proc/loadavg) busy=$(pgrep -c -x 'java|cargo|rustc|cc1|cc1plus|ld' || true) run=$(awk '/^procs_running/{print $2}' /proc/stat)" ;;
 
-  # cp <dir>: the control plane, in memory, bootstrap with dev tokens on loopback.
+  # cp <dir> [side]: the control plane, in memory, bootstrap with dev tokens on loopback.
+  # The baseline side runs the baseline's own control plane, so its broker meets its own release.
   cp)
-    dir=$1; in_run "$dir"; mkdir -p "$dir"; ip=$(ip_self)
+    dir=$1 side=${2:-}; in_run "$dir"; mkdir -p "$dir"; ip=$(ip_self)
+    cpbin=$BIN/felix-controlplane; [ "$side" != baseline ] || cpbin=$BASE_BIN/felix-controlplane
     start "$dir" cp env \
       FELIX_CONTROLPLANE_STORAGE_BACKEND=memory \
       FELIX_CONTROLPLANE_BIND="$ip:$CP_PORT" FELIX_CONTROLPLANE_METRICS_BIND="$ip:$CP_METRICS" \
       FELIX_REGION_ID=gcp FELIX_BOOTSTRAP_ENABLED=true FELIX_BOOTSTRAP_BIND_ADDR="127.0.0.1:$CP_BOOT" \
       FELIX_BOOTSTRAP_TOKEN=$BOOT_TOKEN FELIX_BOOTSTRAP_DEV_TOKENS=true \
       FELIX_EXCHANGE_TOKEN_TTL_SECONDS=86400 RUST_LOG=info \
-      "$BIN/felix-controlplane"
+      "$cpbin"
     wait_http "http://$ip:$CP_METRICS/ready" 60 || { tail -20 "$dir/cp.log" >&2; die "control plane not ready"; }
     ;;
 
@@ -118,11 +123,15 @@ case "$cmd" in
   put) in_run "$1"; mkdir -p "$(dirname "$1")"; umask 077; cat > "$1" ;;
 
   # broker <dir> <index> <cp-ip> <engine> <fsync>: one broker, waits for /ready.
+  # Engine "baseline" is the release baseline: its own binary, hybrid by construction, and
+  # no FELIX_SHARD_ENGINE (v0.7.2 reads no such variable and has no other engine).
   broker)
     dir=$1 i=$2 cpip=$3 engine=$4 fsync=$5; in_run "$dir"; ip=$(ip_self)
     mkdir -p "$dir/data"
+    brokerbin=$BIN/felix-broker; engine_env=(FELIX_SHARD_ENGINE="$engine")
+    if [ "$engine" = baseline ]; then brokerbin=$BASE_BIN/felix-broker; engine_env=(); fi
     start "$dir" broker env \
-      FELIX_SHARD_ENGINE="$engine" FELIX_DURABLE_FSYNC_MODE="$fsync" \
+      "${engine_env[@]}" FELIX_DURABLE_FSYNC_MODE="$fsync" \
       FELIX_NODE_ID="broker-$i" FELIX_REGION_ID=gcp \
       FELIX_CONTROLPLANE_URL="http://$cpip:$CP_PORT" \
       FELIX_QUIC_BIND="$ip:$QUIC_PORT" FELIX_CLIENT_ADVERTISE_ADDR="$ip:$QUIC_PORT" \
@@ -132,7 +141,7 @@ case "$cmd" in
       FELIX_KAFKA_LISTEN="$ip:$KAFKA_PORT" FELIX_KAFKA_TLS=false FELIX_KAFKA_ANONYMOUS_TENANT=$TENANT \
       FELIX_MQTT_LISTEN="$ip:$MQTT_PORT" FELIX_MQTT_TLS=false FELIX_MQTT_ANONYMOUS_TENANT=$TENANT \
       FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true FELIX_MTU_UPPER_BOUND=4096 RUST_LOG=info \
-      "$BIN/felix-broker"
+      "$brokerbin"
     wait_http "http://$ip:$METRICS_PORT/ready" 120 || { tail -30 "$dir/broker.log" >&2; die "broker-$i not ready"; }
     ;;
 
