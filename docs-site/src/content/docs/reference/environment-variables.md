@@ -2218,7 +2218,7 @@ provisioning makes them counter-productive.
 ### `FELIX_HOP_TRACE`
 
 **Description**: Print how long a publish takes to reach each stage on its way
-through the broker, from the frame arriving to its ack being queued. Every
+through the broker, from the frame arriving to its ack being written to the stream. Every
 five seconds the broker writes one line per stage to stderr, starting with
 `hop`, with that stage's p50 and p99 in microseconds. For debugging latency.
 

@@ -5696,7 +5696,7 @@ behind every append, so with one publish in flight each publish shares the
 machine with the last one's flush. Measured with `FELIX_HOP_TRACE=1`, one
 publish in flight, 1 KiB, on a Mac (microseconds, p50 / p99):
 
-| Engine, consistency | Append begins | Written | Ack queued |
+| Engine, consistency | Append begins | Written | Ack written |
 |---|---|---|---|
 | Hybrid, `Leader` | (no Raft log) | 13 / 19 | 17 / 24 |
 | Raft, `Leader` | 10 / 56 | 42 / 2762 | 55 / 2803 |
