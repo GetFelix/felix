@@ -38,8 +38,14 @@ class Compare(unittest.TestCase):
         self.assertEqual(s.compare([0, 0], [0, 0], False)["verdict"], "PASS")
         self.assertEqual(s.compare([3, 0], [0, 0], False)["verdict"], "FAIL")
 
-    def test_missing_side_fails(self):
+    def test_missing_current_side_fails(self):
         self.assertEqual(s.compare([], [1, 2], True)["verdict"], "FAIL")
+
+    def test_missing_reference_side_is_not_a_verdict(self):
+        self.assertEqual(s.compare([1, 2], [], True)["verdict"], "N/A")
+        self.assertEqual(s.compare([], [], True)["verdict"], "N/A")
+        self.assertEqual(s.compare_exact([0], [], lambda v: v == 0, "= 0")["verdict"], "N/A")
+        self.assertEqual(s.compare_exact([], [0], lambda v: v == 0, "= 0")["verdict"], "FAIL")
 
 
 class Run(unittest.TestCase):
@@ -360,6 +366,218 @@ class Cpu(Run):
         self.assertAlmostEqual(cpu["hybrid"]["mean"], 400.0)
         self.assertAlmostEqual(cpu["raft"]["mean"], 420.0)
         self.assertEqual(cpu["verdict"], "PASS")
+
+
+class Baseline(Run):
+    CELL = "rf3-oncommit-tput"
+
+    def rows(self, hybrid=1000, raft=1000, base=1000, base_status="ok", rounds=3, p99=500, cell=None):
+        cell = cell or self.CELL
+        out = []
+        for rnd in range(1, rounds + 1):
+            out.append((rnd, cell, "hybrid", "ok", self.ingest(hybrid, p99)))
+            out.append((rnd, cell, "raft", "ok", self.ingest(raft, p99)))
+            out.append((rnd, cell, "baseline", base_status,
+                        self.ingest(base, p99) if base_status == "ok" else None))
+        return out
+
+    def test_no_baseline_side_leaves_the_gate_off(self):
+        res = s.summarize(self.write([r for r in self.rows() if r[2] != "baseline"]))
+        self.assertNotIn("baseline_verdict", res)
+        self.assertNotIn("Versus", s.markdown(res))
+
+    def test_all_three_equal_pass(self):
+        res = s.summarize(self.write(self.rows()))
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertEqual(res["cells"][0]["baseline_verdict"], "PASS")
+        self.assertIn("Versus", s.markdown(res))
+
+    def test_raft_slower_than_baseline_fails_only_raft(self):
+        # Raft equals hybrid, so the Raft-vs-hybrid gate passes, and both are 30% under the baseline.
+        res = s.summarize(self.write(self.rows(hybrid=1000, raft=1000, base=1400)))
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertIn("raft msg_s", res["cells"][0]["baseline_failures"])
+        self.assertIn("hybrid msg_s", res["cells"][0]["baseline_failures"])
+
+    def test_hybrid_regression_alone_is_named(self):
+        # Raft beats a hybrid that has itself regressed: Raft vs hybrid passes, hybrid vs baseline fails.
+        res = s.summarize(self.write(self.rows(hybrid=700, raft=1000, base=1000)))
+        self.assertEqual(res["verdict"], "PASS")
+        fails = res["cells"][0]["baseline_failures"]
+        self.assertIn("hybrid msg_s", fails)
+        self.assertNotIn("raft msg_s", fails)
+
+    def test_faster_than_baseline_passes_and_noise_is_the_same_rule(self):
+        self.assertEqual(s.summarize(self.write(self.rows(base=500)))["baseline_verdict"], "PASS")
+        # 2% under the baseline is inside the noise floor.
+        self.assertEqual(s.summarize(self.write(self.rows(hybrid=980, raft=980)))["baseline_verdict"], "PASS")
+
+    def test_latency_regression_against_baseline_fails(self):
+        rows = self.rows(p99=500)
+        rows = [(r, c, sd, st, self.ingest(1000, 800) if sd == "raft" else d) for r, c, sd, st, d in rows]
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertTrue(any(f.startswith("raft ack_p") for f in res["cells"][0]["baseline_failures"]))
+
+    def test_na_cell_is_left_out_and_not_a_failure(self):
+        rows = self.rows()
+        for rnd in (1, 2):
+            rows.append((rnd, "rf3-mqtt", "hybrid", "ok", self.ingest(1000, 500)))
+            rows.append((rnd, "rf3-mqtt", "raft", "ok", self.ingest(1000, 500)))
+            rows.append((rnd, "rf3-mqtt", "baseline", "na", None))
+        res = s.summarize(self.write(rows))
+        mqtt = [c for c in res["cells"] if c["id"] == "rf3-mqtt"][0]
+        self.assertEqual(mqtt["baseline_verdict"], "N/A")
+        self.assertEqual(mqtt["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertIn("baseline n/a", " ".join(mqtt["notes"]))
+        self.assertNotIn("baseline not measured", " ".join(mqtt["notes"]))
+
+    def test_every_cell_na_judges_nothing(self):
+        res = s.summarize(self.write(self.rows(base_status="na")))
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+    def test_a_baseline_cell_that_failed_is_not_n_a(self):
+        res = s.summarize(self.write(self.rows(base_status="loadgen-failed")))
+        self.assertEqual(res["cells"][0]["baseline_verdict"], "FAIL")
+        self.assertEqual(res["verdict"], "PASS")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+    def test_baseline_fail_makes_strict_exit_nonzero(self):
+        run = self.write(self.rows(base=1500))
+        self.assertEqual(s.main(["summarize.py", run, "--strict"]), 1)
+        self.assertEqual(s.main(["summarize.py", run]), 0)
+        self.assertTrue(os.path.exists(os.path.join(run, "results.md")))
+
+    def test_a_side_absent_from_the_run_is_not_a_failure(self):
+        res = s.summarize(self.write([r for r in self.rows(hybrid=1000, base=1000) if r[2] != "raft"]))
+        self.assertEqual(res["verdict"], "N/A")
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertEqual(res["cells"][0]["baseline_failures"], [])
+        md = s.markdown(res)
+        self.assertIn("not in this run", md)
+        self.assertIn("1.000", md)
+        self.assertEqual(s.main(["summarize.py", self.write([r for r in self.rows() if r[2] != "raft"]), "--strict"]), 0)
+
+    def test_hybrid_regression_still_fails_without_a_raft_side(self):
+        res = s.summarize(self.write([r for r in self.rows(hybrid=700, base=1000) if r[2] != "raft"]))
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertIn("hybrid msg_s", res["cells"][0]["baseline_failures"])
+
+    def test_raft_from_another_run_is_judged_against_the_baseline(self):
+        a = self.write([r for r in self.rows(hybrid=1000, base=1000) if r[2] != "raft"])
+        b = self.write([r for r in self.rows(raft=600) if r[2] == "raft"])
+        res = s.summarize(a, raft_from=b)
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+        self.assertEqual(res["cells"][0]["baseline_failures"], ["raft msg_s"])
+
+    def test_failed_baseline_does_not_hide_a_raft_vs_hybrid_failure(self):
+        res = s.summarize(self.write(self.rows(hybrid=1000, raft=600, base=1000)))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+
+class MissingData(Baseline):
+    def no_cpu(self, doc):
+        return {**doc, "broker_cpu": None}
+
+    def test_a_baseline_without_cpu_files_is_not_a_failure(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            for side in ("hybrid", "raft"):
+                rows.append((rnd, self.CELL, side, "ok", self.ingest(1000, 500)))
+            rows.append((rnd, self.CELL, "baseline", "ok", self.no_cpu(self.ingest(1000, 500))))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["baseline_verdict"], "PASS")
+        self.assertEqual(res["cells"][0]["baseline_failures"], [])
+
+    def test_a_cell_with_no_cpu_on_either_engine_is_judged_on_the_rest(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            for side in ("hybrid", "raft"):
+                rows.append((rnd, self.CELL, side, "ok", self.no_cpu(self.ingest(1000, 500))))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "PASS")
+
+    def test_a_cell_where_nothing_was_judged_is_n_a(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            for side in ("hybrid", "raft"):
+                rows.append((rnd, self.CELL, side, "ok", self.no_cpu({})))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["cells"][0]["verdict"], "N/A")
+        self.assertEqual(res["verdict"], "N/A")
+
+    def test_current_run_without_cpu_against_a_baseline_with_it_fails(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            for side in ("hybrid", "raft"):
+                rows.append((rnd, self.CELL, side, "ok", self.no_cpu(self.ingest(1000, 500))))
+            rows.append((rnd, self.CELL, "baseline", "ok", self.ingest(1000, 500)))
+        res = s.summarize(self.write(rows))
+        self.assertIn("hybrid cpu_kmsg", res["cells"][0]["baseline_failures"])
+
+
+class ExactRulesAgainstBaseline(Run):
+    CELL = "rf3-follower-tail"
+
+    def rows(self, hybrid_gaps, raft_gaps, base_gaps, with_raft=True):
+        out = []
+        for rnd in (1, 2, 3):
+            out.append((rnd, self.CELL, "hybrid", "ok", self.tail(20000, 800, 2500, gaps=hybrid_gaps)))
+            if with_raft:
+                out.append((rnd, self.CELL, "raft", "ok", self.tail(20000, 800, 2500, gaps=raft_gaps)))
+            out.append((rnd, self.CELL, "baseline", "ok", self.tail(20000, 800, 2500, gaps=base_gaps)))
+        return out
+
+    def tail(self, msg_s, p50, p99, gaps=0, held=20000):
+        return {"delivered_throughput_msg_s": msg_s, "gaps": gaps,
+                "publish_throughput_msg_s": held, "publish_target_msg_s": 20000,
+                "delivery_latency_us": {"p50": p50, "p99": p99}}
+
+    def test_gaps_equal_to_the_baseline_still_fail_without_a_raft_side(self):
+        res = s.summarize(self.write(self.rows(4, 0, 4, with_raft=False)))
+        self.assertEqual(res["cells"][0]["baseline_failures"], ["hybrid gaps"])
+
+    def test_gaps_are_judged_against_the_baseline_when_both_engines_ran(self):
+        res = s.summarize(self.write(self.rows(0, 4, 0)))
+        self.assertEqual(res["cells"][0]["baseline_failures"], ["raft gaps"])
+        self.assertEqual(res["baseline_verdict"], "FAIL")
+
+
+class RaftFrom(Baseline):
+    def test_only_cells_in_both_runs_are_judged(self):
+        a = self.write(self.rows(cell="rf3-oncommit-tput") + self.rows(cell="rf3-mqtt"))
+        b = self.write([r for r in self.rows(cell="rf3-oncommit-tput") if r[2] == "raft"])
+        res = s.summarize(a, raft_from=b)
+        by = {c["id"]: c for c in res["cells"]}
+        self.assertEqual(by["rf3-oncommit-tput"]["verdict"], "PASS")
+        self.assertEqual(by["rf3-mqtt"]["verdict"], "N/A")
+        self.assertEqual(by["rf3-mqtt"]["baseline_verdict"], "N/A")
+        self.assertIn("not in both runs", " ".join(by["rf3-mqtt"]["notes"]))
+        self.assertEqual(res["verdict"], "PASS")
+
+    def test_differing_round_counts_warn_and_both_envs_print(self):
+        a = self.write(self.rows(rounds=3))
+        b = self.write([r for r in self.rows(rounds=2) if r[2] == "raft"])
+        res = s.summarize(a, raft_from=b)
+        self.assertEqual(len(res["warnings"]), 1)
+        md = s.markdown(res)
+        self.assertIn("WARNING: round counts differ", md)
+        self.assertIn("raft_from.rev abc", md)
+        self.assertIn("rev abc", md)
+
+
+class Cli(Baseline):
+    def test_flags_parse_in_any_position(self):
+        a = self.write([r for r in self.rows() if r[2] != "raft"])
+        b = self.write([r for r in self.rows(raft=600) if r[2] == "raft"])
+        self.assertEqual(s.main(["summarize.py", "--raft-from", b, a, "--strict"]), 1)
+        with self.assertRaises(SystemExit):
+            s.main(["summarize.py"])
 
 
 class TokenHandoffTest(unittest.TestCase):

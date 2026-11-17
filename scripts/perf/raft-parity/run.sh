@@ -47,7 +47,14 @@
 #   RESUME_SPAN=100 RESUME_WORKERS=4 TAIL_SUBS=4 RESUME_HISTORY=20000
 #                 records per resume, resume loops, follower subscribers, records prefilled
 #                 before a resume cell measures (offsets are drawn from them)
-#   ONLY_SIDE=hybrid|raft   one engine only (a harness check, not a comparison)
+#   SIDES="hybrid raft"   the engines to run, per cell and round. Add "baseline" to measure
+#                 the release build too (needs `BASELINE_REF=v0.7.2 build.sh` first): the
+#                 release's broker and control plane, hybrid by construction, with the current
+#                 loadgen. The order of the sides rotates by round, so ROUNDS a multiple of 6
+#                 balances it for two sides or three.
+#   BASELINE_REF=v0.7.2   the tag build.sh built, named in the results (default v0.7.2)
+#   BASELINE_NA="..."   cell ids the baseline cannot run; recorded as n/a, not failed (default none)
+#   ONLY_SIDE=hybrid|raft|baseline   one engine only (a harness check, not a comparison)
 #   SLOT_WAIT_SECS=3600 QUIET_WAIT_SECS=300
 set -euo pipefail
 
@@ -69,6 +76,7 @@ fi
 : "${KEYS:=$((SHARDS * 8))}" "${FANOUT:=4}" "${FANOUT_TOTAL:=200000}"
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
 : "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
+: "${SIDES:=hybrid raft}" "${BASELINE_REF:=v0.7.2}" "${BASELINE_NA:=}"
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
@@ -85,6 +93,11 @@ mkdir -p "$OUT/cells"
 exec > >(tee -a "$OUT/run.log") 2>&1 < /dev/null
 
 read -ra BOXES <<< "$BOXES"
+read -ra SIDE_LIST <<< "${ONLY_SIDE:-$SIDES}"
+WANT_BASELINE=0
+for sd in "${SIDE_LIST[@]}"; do
+  case "$sd" in hybrid|raft) ;; baseline) WANT_BASELINE=1 ;; *) echo "!! unknown side $sd" >&2; exit 2 ;; esac
+done
 CP_BOX=${BOXES[0]}
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 raw() { local b=$1; shift; "$RSSH" "$user@felix-build-$b" "$@"; }
@@ -115,6 +128,19 @@ for b in "${BOXES[@]}"; do
   [ -z "$sums" ] || [ "$s" = "$sums" ] || { echo "!! felix-build-$b has different binaries; run build.sh" >&2; exit 1; }
   sums=$s
 done
+bsums=""
+if [ "$WANT_BASELINE" = 1 ]; then
+  for b in "${BOXES[@]}"; do
+    s=$(raw "$b" "cd $R/bin-baseline 2>/dev/null && sha256sum -c --quiet SHA256SUMS >&2 && cat REV SHA256SUMS") \
+      || { echo "!! felix-build-$b has no intact $R/bin-baseline; run BASELINE_REF=$BASELINE_REF build.sh" >&2; exit 1; }
+    [ -z "$bsums" ] || [ "$s" = "$bsums" ] || { echo "!! felix-build-$b has different baseline binaries; run build.sh" >&2; exit 1; }
+    bsums=$s
+  done
+  case "$(echo "$bsums" | head -1)" in "$BASELINE_REF "*) ;; *) echo "!! $R/bin-baseline holds $(echo "$bsums" | head -1), not $BASELINE_REF" >&2; exit 1 ;; esac
+  # The baseline and the current side must share one client binary.
+  [ "$(echo "$bsums" | grep ' felix-loadgen$')" = "$(echo "$sums" | grep ' felix-loadgen$')" ] \
+    || { echo "!! the baseline's felix-loadgen is not the current one; rebuild the baseline" >&2; exit 1; }
+fi
 case " $CELLS " in *-kafka*)
   # Download once on the first box, relay the tarball to the rest.
   on "${BOXES[0]}" kafka-install
@@ -132,11 +158,17 @@ case " $CELLS " in *-kafka*)
   echo "runid $RUNID"
   echo "rev $(echo "$sums" | head -1)"
   echo "$sums" | tail -n +2 | sed 's/^/sha256 /'
+  if [ "$WANT_BASELINE" = 1 ]; then
+    echo "baseline_ref $BASELINE_REF"
+    echo "baseline_rev $(echo "$bsums" | head -1)"
+    echo "$bsums" | tail -n +2 | sed 's/^/baseline_sha256 /'
+    echo "baseline_na ${BASELINE_NA:-none}"
+  fi
   for b in "${BOXES[@]}"; do
     echo "box$b ${IP[$b]} ${MT[$b]} $(on "$b" sysinfo)"
   done
   echo "control plane on felix-build-$CP_BOX"
-  echo "config ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE MQTT_TAIL_RATE=$MQTT_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
+  echo "config SIDES=\"${ONLY_SIDE:-$SIDES}\" ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE MQTT_TAIL_RATE=$MQTT_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
 } | tee "$OUT/run.env"
 
 # --- reservation -----------------------------------------------------------------
@@ -264,7 +296,13 @@ run_cell() {
   wait_quiet cell || exit 3
   echo "$report" > "$loc/quiet.txt"
   status=ok
-  { on "$CP_BOX" cp "$dir" && on "$CP_BOX" seed "$dir" 3; } > "$loc/setup.txt" 2>&1 || status=setup-failed
+  # A cell the release cannot run is n/a: no cluster, no number, and not a failure.
+  if [ "$side" = baseline ]; then
+    case " $BASELINE_NA " in *" $cell "*)
+      printf '%s\t%s\t%s\t%s\t%s\n' "$r" "$cell" "$side" "$lg" na >> "$OUT/cells.tsv"
+      log "   $name: n/a on $BASELINE_REF"; CUR=""; return 0 ;; esac
+  fi
+  { on "$CP_BOX" cp "$dir" "$side" && on "$CP_BOX" seed "$dir" 3; } > "$loc/setup.txt" 2>&1 || status=setup-failed
   if [ "$status" = ok ]; then
     for b in "${brokers[@]}"; do
       raw "$CP_BOX" "cat $dir/tokens/node-$b.jwt" | on "$b" put "$dir/node.jwt"
@@ -309,6 +347,7 @@ run_cell() {
       echo "box$b before $e" >> "$loc/engine.txt"
       case "$side:$e" in
         hybrid:"env=hybrid raft_dirs=0 alive=1") ;;
+        baseline:"env= raft_dirs=0 alive=1") ;;
         raft:"env=raft raft_dirs="*" alive=1")
           n=${e#*raft_dirs=}; n=${n%% *}
           [ "$n" -ge "$NSHARDS" ] || status=engine-mismatch ;;
@@ -491,7 +530,8 @@ sys.exit(0 if 3 < d["kill_at_s"] < dur - 5 else 1)' "$loc/loadgen.json" "$FAIL_S
     for b in "${brokers[@]}"; do
       [ "$b" = "$killed" ] && continue
       e=$(on "$b" engine "$dir"); echo "box$b after $e" >> "$loc/engine.txt"
-      case "$e" in *"env=$side "*"alive=1") ;; *) status=engine-mismatch-after ;; esac
+      want=$side; [ "$side" != baseline ] || want=""
+      case "$e" in *"env=$want "*"alive=1") ;; *) status=engine-mismatch-after ;; esac
     done
   fi
   for b in "${BOXES[@]}"; do on "$b" logs "$dir" > "$loc/logs-box$b.txt" 2>&1 || true; done
@@ -507,8 +547,9 @@ sys.exit(0 if 3 < d["kill_at_s"] < dur - 5 else 1)' "$loc/loadgen.json" "$FAIL_S
 # --- rounds ----------------------------------------------------------------------
 printf 'round\tcell\tside\tloadgen_box\tstatus\n' > "$OUT/cells.tsv"
 for r in $(seq 1 "$ROUNDS"); do
-  if [ $((r % 2)) = 1 ]; then sides="hybrid raft"; else sides="raft hybrid"; fi
-  [ -z "${ONLY_SIDE:-}" ] || sides=$ONLY_SIDE
+  # Rotate the starting side each round: with two sides that is hybrid-first on odd rounds.
+  n=${#SIDE_LIST[@]}; sides=""
+  for ((k = 0; k < n; k++)); do sides="$sides ${SIDE_LIST[$(( (r - 1 + k) % n ))]}"; done
   log "round $r: $sides"
   for cell in $CELLS; do
     for side in $sides; do run_cell "$r" "$cell" "$side"; done

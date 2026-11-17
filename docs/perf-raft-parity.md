@@ -98,6 +98,42 @@ and a missing or backwards sample (a restarted broker) fails the cell. The repor
 CPU per cell and the ratio in its own table. The per category CPU profiles that explain a
 failing ratio are captured separately and are not part of this harness.
 
+## Against the last release
+
+The gate also asks that no cell regresses against the last release (v0.7.2). Add the release
+as a third side:
+
+```bash
+scripts/perf/raft-parity/build.sh                        # the current binaries first
+BASELINE_REF=v0.7.2 scripts/perf/raft-parity/build.sh    # then the release's
+SIDES="baseline hybrid raft" ROUNDS=6 task perf:raft-parity
+```
+
+- The baseline build checks out the tag in its own worktree (`parity-baseline-v0.7.2` next to
+  this one) and builds `felix-broker` and `felix-controlplane` from it on box 3, without the
+  `raft` feature. It installs them in `/mnt/build/raft-parity/bin-baseline`, so the current
+  `bin` stays as it was. The build refuses a baseline broker that contains the Raft engine.
+- The baseline side starts the release's own control plane and broker, with the same settings
+  as the other sides except `FELIX_SHARD_ENGINE`, which v0.7.2 does not read (it has the hybrid
+  engine only). The harness checks that the broker has no engine variable and no Raft marker.
+- Every side uses the current `felix-loadgen`. The v0.7.2 loadgen has no `mqtt-publish`,
+  `mqtt-subscribe`, `resume` or failover kill-file scenario, and one client for all sides is the
+  fairer comparison. `build.sh` copies it into `bin-baseline`, and `run.sh` refuses to start
+  if the two copies differ.
+- The sides rotate their starting order by round; use `ROUNDS` as a multiple of 6.
+- A cell the release cannot run goes in `BASELINE_NA="cell ..."`. It is recorded as `na`,
+  leaves no cluster behind, and is left out of the baseline gate. Nothing is listed by default:
+  `rf3-follower-tail` still runs on v0.7.2 because a follower that answers `NotLeader` makes
+  the subscriber move to the leader. A baseline cell that fails to run for any other reason is
+  a failure, not n/a.
+
+`results.md` gains a "Versus v0.7.2" section. For each cell, the current hybrid and the current
+Raft are each compared with the baseline by the rule used between Raft and hybrid (same noise
+band, same 10% CPU tolerance, ratios above 1 are better), and the cell fails if either is
+worse. The section names which side and metric failed. The absolute rules (zero gaps, 95%
+publisher rate) apply to the current sides only. `--strict` and `task perf:raft-parity` exit
+non-zero if either gate fails.
+
 ## Read it
 
 Each cell has a table of its metrics:
