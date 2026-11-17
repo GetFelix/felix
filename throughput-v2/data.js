@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794878764360,
+  "lastUpdate": 1794879164676,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60892,6 +60892,58 @@ window.BENCHMARK_DATA = {
             "range": "71114.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1204631.94\nmean: 1174475.38\nstdev: 71114.19\ncv: 6.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "903d8cdca50c9975208fd7eebec3c7ee9b1f35ae",
+          "message": "perf(parity): broker CPU per 1000 messages, MQTT latency and tail cells (#2706) (#2715)\n\n* fix(mqtt): log a refused publish that closes a 3.1.1 connection; authenticate the parity rf3-mqtt cell (#2708)\n\n* fix(mqtt): refuse a connection with no credential to forward at CONNECT on a multi-broker cluster (#2708)\n\nA publish for a shard another broker leads is forwarded with the client's\ntoken. A connection without one (the anonymous development tenant) was\naccepted and then dropped at its first such publish. A broker that forwards\nand whose node catalog lists more than one broker now refuses it at CONNECT\nwith not authorized (0x87, 3.1.1: 5) and a 5.0 reason string, logs a warning\nand counts credential_required. A single broker still accepts it; a cluster\nthat grows later keeps the publish-time refusal and warning as the backstop,\nwhich now says \"no credential to forward\".\n\n* fix(mqtt): fail closed on an unknown cluster size and count only live brokers (#2708)\n\n* test(mqtt): capture the refusal log through one global subscriber\n\nA scoped subscriber missed the log when other tests had already cached the\ncallsite as disabled, so the test failed under the coverage run.\n\nSpec-Unaffected: the MQTT write path only forwards a refusal to the client and logs it; no lease, quorum mark, report, promotion or handoff changes.\n\n* perf(parity): broker CPU per 1000 messages and MQTT latency and tail cells (#2706)\n\nReads each broker's utime and stime around the measured window on every box and gates Raft within 10% of hybrid. Adds rf3-mqtt-lat and rf3-mqtt-tail, with mqtt-subscribe and a paced mqtt-publish in felix-loadgen.",
+          "timestamp": "2026-11-16T17:19:15-08:00",
+          "tree_id": "9faa29732e1107652dc28ec9de75b4b9c8aa2be5",
+          "url": "https://github.com/GetFelix/felix/commit/903d8cdca50c9975208fd7eebec3c7ee9b1f35ae"
+        },
+        "date": 1794879163667,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354119.28,
+            "range": "9661.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354119.28\nmean: 355902.58\nstdev: 9661.36\ncv: 2.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354119.28,
+            "range": "9661.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354119.28\nmean: 355902.58\nstdev: 9661.36\ncv: 2.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79973.17,
+            "range": "5674.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79973.17\nmean: 76223.28\nstdev: 5674.21\ncv: 7.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 799731.65,
+            "range": "56742.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 799731.65\nmean: 762232.81\nstdev: 56742.11\ncv: 7.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
