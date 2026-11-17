@@ -131,12 +131,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             "--token" => token = Some(value("--token")?),
             "--token-file" => {
                 let path = value("--token-file")?;
-                token = Some(
-                    std::fs::read_to_string(&path)
-                        .with_context(|| format!("read {path}"))?
-                        .trim()
-                        .to_string(),
-                );
+                token = Some(read_token_file(&path)?);
             }
             "--namespace" => namespace = value("--namespace")?,
             "--scenario" => scenario = Some(value("--scenario")?),
@@ -297,4 +292,32 @@ pub(crate) fn parse_args() -> Result<Args> {
     common.slow_subscribers = slow_subscribers;
     common.slow_delay = std::time::Duration::from_millis(slow_delay_ms);
     Ok(Args { common, scenario })
+}
+
+/// An empty token file is an error, not an anonymous run: an MQTT client with
+/// no token connects as the anonymous tenant, and a cluster broker refuses it.
+fn read_token_file(path: &str) -> Result<String> {
+    let token = std::fs::read_to_string(path).with_context(|| format!("read {path}"))?;
+    let token = token.trim();
+    if token.is_empty() {
+        bail!("{path} is empty");
+    }
+    Ok(token.to_string())
+}
+
+#[cfg(test)]
+mod token_file_tests {
+    use super::read_token_file;
+
+    #[test]
+    fn an_empty_token_file_is_refused() {
+        let dir = std::env::temp_dir().join(format!("loadgen-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("client.jwt");
+        std::fs::write(&path, "\n").unwrap();
+        assert!(read_token_file(path.to_str().unwrap()).is_err());
+        std::fs::write(&path, "abc\n").unwrap();
+        assert_eq!(read_token_file(path.to_str().unwrap()).unwrap(), "abc");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

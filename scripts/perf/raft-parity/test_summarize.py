@@ -362,5 +362,16 @@ class Cpu(Run):
         self.assertEqual(cpu["verdict"], "PASS")
 
 
+class TokenHandoffTest(unittest.TestCase):
+    def test_a_token_is_never_copied_onto_the_box_it_comes_from(self):
+        # A self-copy truncates client.jwt, and the loadgen then connects with no token.
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "run.sh")) as f:
+            lines = [l for l in f if 'put "$dir/tokens/client.jwt"' in l]
+        self.assertTrue(lines)
+        for l in lines:
+            self.assertIn('[ "$lg" = "$CP_BOX" ] ||', l)
+
+
 if __name__ == "__main__":
     unittest.main()

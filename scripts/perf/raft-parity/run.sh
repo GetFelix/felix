@@ -352,7 +352,7 @@ run_cell() {
               for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && { tgt=$b; break; }; done
               for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && [ "$b" != "$tgt" ] && { lg=$b; break; }; done
             fi
-            raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
+            [ "$lg" = "$CP_BOX" ] || raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
           fi
         fi
         stamp="" tail_rate=$KAFKA_TAIL_RATE
@@ -380,7 +380,7 @@ run_cell() {
         lead=$(on "$CP_BOX" repl "$dir" | sed -n 's/.*leaders=broker-\([0-9]*\):.*/\1/p')
         [ -n "$lead" ] || status=no-leader
         for b in "${BOXES[@]}"; do [ "$b" != "$lead" ] && lg=$b && break; done
-        raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
+        [ "$lg" = "$CP_BOX" ] || raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
         args="--scenario failover --payload-bytes 256 --duration-secs $FAIL_SECS"
         limit=$((FAIL_SECS + 240)) ;;
     esac
