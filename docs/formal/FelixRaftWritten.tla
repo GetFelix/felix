@@ -625,6 +625,23 @@ ReplacedScope ==
     /\ used'.crashes > used.crashes =>
             dead # {} /\ \E s \in Servers : role[s] = "leader" /\ role'[s] # "leader"
 
+\* Scopes for the vouch-gate configurations (#2729), as ACTION_CONSTRAINTs.
+\* NoReports: no written reports. With the commit on fsynced copies they only
+\* release early acknowledgements, and with no power cut a written commit
+\* can also be reached through fsyncs, so the re-form sees the same logs.
+NoReports == wrote' = wrote
+\* OneCandidate: only the first broker to reach a term campaigns in it. A
+\* losing candidate holds the same vote term as a broker that voted.
+OneCandidate ==
+    \A c \in Servers : (term'[c] > term[c] /\ role'[c] = "candidate")
+            => \A s \in Servers \ {c} : term[s] < term'[c]
+\* DeadAfterCut: a broker is declared dead only after the power cut.
+DeadAfterCut == dead' # dead => used.cuts > 0
+GateScope == NoReports
+GateScopeOne == NoReports /\ OneCandidate
+CutDeadScope == OneCandidate
+CutDeadScopeAfter == OneCandidate /\ DeadAfterCut
+
 ----------------------------------------------------------------------------
 
 TypeOK ==
