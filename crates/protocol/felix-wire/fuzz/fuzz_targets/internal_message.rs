@@ -97,6 +97,7 @@ fn capability_rules(kind: Kind) -> (PeerCapabilities, PeerCapabilities) {
             C::SEQUENCED_FORWARDS.union(C::PLAIN_SEQUENCED_FORWARDS),
             none,
         ),
+        Kind::RecordSequencedForwardPublish => (C::RECORD_SEQUENCED_FORWARDS, none),
         // Writer runs; a set generation adds ELECTION.
         Kind::ReplicateStampedRecords => (C::WRITER_GENERATIONS, C::ELECTION),
         Kind::ReplicateStampedFetch => (C::WRITER_GENERATIONS, none),
@@ -110,6 +111,7 @@ fn capability_rules(kind: Kind) -> (PeerCapabilities, PeerCapabilities) {
                 .union(C::RECORD_HEADERS)
                 .union(C::SEQUENCED_FORWARDS)
                 .union(C::PLAIN_SEQUENCED_FORWARDS)
+                .union(C::RECORD_SEQUENCED_FORWARDS)
                 .union(C::WRITER_GENERATIONS),
         ),
         _ => (none, none),

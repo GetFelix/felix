@@ -1,0 +1,1 @@
+The Raft parity matrix records broker CPU per 1000 messages on every cell and gates Raft within 10% of hybrid, and gains `rf3-mqtt-lat` and `rf3-mqtt-tail`. `felix-loadgen` gains `mqtt-subscribe` and a `--rate` for `mqtt-publish` to drive them (#2706).

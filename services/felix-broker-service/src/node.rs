@@ -519,7 +519,8 @@ where
         Arc::clone(&engine),
         std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
     )
-    .with_quotas(Arc::clone(&limits.tenant_rates));
+    .with_quotas(Arc::clone(&limits.tenant_rates))
+    .with_cluster(Arc::clone(&client_endpoints));
     let mqtt_writes = match &peers {
         Some(pool) => mqtt_writes.with_forwarding(Arc::clone(pool), config.forward_budget()),
         None => mqtt_writes,

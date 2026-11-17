@@ -194,7 +194,8 @@ async fn a_batch_for_another_owner_is_forwarded_under_its_sequence() {
         publish.producer,
         Some(ForwardProducer {
             producer_id: 41,
-            sequence: 6
+            sequence: 6,
+            per_record: false,
         })
     );
     assert_eq!(publish.credential, "token");
@@ -490,7 +491,8 @@ async fn a_local_write_whose_leadership_moved_is_sent_to_the_new_owner() {
         sent[0].1.producer,
         Some(ForwardProducer {
             producer_id: 41,
-            sequence: 0
+            sequence: 0,
+            per_record: false,
         })
     );
 }

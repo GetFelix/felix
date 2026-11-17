@@ -447,6 +447,7 @@ fn sequenced_forward(headers: Option<Vec<Option<Bytes>>>) -> InternalMessage {
         producer: Some(ForwardProducer {
             producer_id: 0xfeed,
             sequence: 9,
+            per_record: false,
         }),
         ..base
     })
@@ -571,4 +572,41 @@ fn a_sequenced_forward_without_its_sequence_is_refused() {
     let length = (cut.len() - InternalHeader::LEN) as u32;
     cut[InternalHeader::LEN - 4..InternalHeader::LEN].copy_from_slice(&length.to_be_bytes());
     assert!(InternalMessage::decode(Bytes::from(cut)).is_err());
+}
+
+/// **A forward whose records each take a sequence is its own kind, sent only
+/// to an owner that offered it, and round-trips with or without blocks.**
+/// The same forward without the marker keeps the kind and bytes it always
+/// had, so a re-send of a cut batch still reads as one batch.
+#[test]
+fn a_per_record_forward_is_its_own_kind_and_round_trips() {
+    let marked = |message: InternalMessage| {
+        let InternalMessage::ForwardPublish(mut forward) = message else {
+            panic!("a forward");
+        };
+        forward.producer.as_mut().expect("producer").per_record = true;
+        InternalMessage::ForwardPublish(forward)
+    };
+    for headers in [Some(vec![Some(Bytes::from_static(b"block")), None]), None] {
+        let batch = sequenced_forward(headers.clone());
+        let per_record = marked(batch.clone());
+        assert_eq!(per_record.kind(), Kind::RecordSequencedForwardPublish);
+        assert_eq!(
+            per_record.required_capability(),
+            Some(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
+        );
+        let bytes = per_record.encode().expect("encode");
+        assert_eq!(
+            &bytes[bytes.len() - 16..],
+            &[0, 0, 0, 0, 0, 0, 0xfe, 0xed, 0, 0, 0, 0, 0, 0, 0, 9]
+        );
+        assert_eq!(InternalMessage::decode(bytes).expect("decode"), per_record);
+        assert_ne!(batch.kind(), Kind::RecordSequencedForwardPublish);
+        let InternalMessage::ForwardPublish(decoded) =
+            InternalMessage::decode(batch.encode().expect("encode")).expect("decode")
+        else {
+            panic!("a forward");
+        };
+        assert!(!decoded.producer.expect("producer").per_record);
+    }
 }

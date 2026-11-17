@@ -1,19 +1,27 @@
-//! MQTT QoS 1 publish throughput against a mounted stream.
+//! MQTT QoS 1 publish throughput, a fixed-rate publisher, and tail subscribers
+//! against a mounted stream.
 //!
 //! Plain MQTT 3.1.1 over TCP, hand-encoded: the broker side must run with
-//! `FELIX_MQTT_TLS=false` and `FELIX_MQTT_ANONYMOUS_TENANT`. Each connection
+//! `FELIX_MQTT_TLS=false`. Connections send the tenant as the username and the
+//! run's token as the password, so a publish for a shard another broker leads
+//! can be forwarded; an anonymous connection has nothing to forward. Each connection
 //! keeps `window` publishes unacknowledged, which is what the broker's
 //! `FELIX_MQTT_MAX_INFLIGHT` allows, so the latency reported is a window-full
 //! one, not an unloaded round trip.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::Common;
+use super::{Common, start_instant};
 use crate::stats::{Samples, report};
+
+mod paced;
+mod subscribe;
+
+pub(crate) use subscribe::mqtt_subscribe;
 
 /// The MQTT variable-length integer.
 pub(super) fn remaining_length(mut n: usize, out: &mut Vec<u8>) {
@@ -35,11 +43,18 @@ fn put_str(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
-pub(super) fn connect_packet(client_id: &str) -> Vec<u8> {
+/// A 3.1.1 CONNECT, with a username and password when `credentials` is set.
+pub(super) fn connect_packet(client_id: &str, credentials: Option<(&str, &str)>) -> Vec<u8> {
     let mut body = Vec::new();
     put_str(&mut body, "MQTT");
-    body.extend_from_slice(&[4, 0x02, 0x00, 0x3c]); // 3.1.1, clean session, keepalive 60
+    // 3.1.1, clean session (plus username and password flags), keepalive 60
+    let flags = if credentials.is_some() { 0xc2 } else { 0x02 };
+    body.extend_from_slice(&[4, flags, 0x00, 0x3c]);
     put_str(&mut body, client_id);
+    if let Some((username, password)) = credentials {
+        put_str(&mut body, username);
+        put_str(&mut body, password);
+    }
     let mut out = vec![0x10];
     remaining_length(body.len(), &mut out);
     out.extend(body);
@@ -60,26 +75,40 @@ struct Tally {
     samples: Samples,
 }
 
-async fn publisher(
-    addr: String,
-    index: usize,
-    topic: String,
-    window: usize,
-    payload_bytes: usize,
-    duration: Duration,
-) -> Result<Tally> {
-    let mut stream = TcpStream::connect(&addr)
+/// A connection that has been accepted: CONNECT sent, CONNACK read.
+async fn open(
+    addr: &str,
+    credentials: Option<&(String, String)>,
+    client_id: &str,
+) -> Result<TcpStream> {
+    let mut stream = TcpStream::connect(addr)
         .await
         .with_context(|| format!("connect {addr}"))?;
     stream.set_nodelay(true)?;
     stream
-        .write_all(&connect_packet(&format!("loadgen-{index}")))
+        .write_all(&connect_packet(
+            client_id,
+            credentials.map(|(u, p)| (u.as_str(), p.as_str())),
+        ))
         .await?;
     let mut connack = [0u8; 4];
     stream.read_exact(&mut connack).await.context("CONNACK")?;
     if connack[0] != 0x20 || connack[3] != 0 {
         bail!("CONNECT refused: {connack:?}");
     }
+    Ok(stream)
+}
+
+async fn publisher(
+    addr: String,
+    credentials: Option<(String, String)>,
+    index: usize,
+    topic: String,
+    window: usize,
+    payload_bytes: usize,
+    duration: Duration,
+) -> Result<Tally> {
+    let mut stream = open(&addr, credentials.as_ref(), &format!("loadgen-{index}")).await?;
     let body = vec![0xa5u8; payload_bytes];
     let mut sent_at = vec![None::<Instant>; 65536];
     let mut next_id: u16 = 1;
@@ -118,29 +147,51 @@ async fn publisher(
     }
 }
 
+/// `rate` holds the publishers to that many messages a second in total, starting
+/// together at `start_at`; without it they run as fast as acks allow.
 pub(crate) async fn mqtt_publish(
     common: &Common,
     addrs: &[String],
     topic_prefix: &str,
     window: usize,
     duration: Duration,
+    rate: Option<u64>,
+    start_at: Option<SystemTime>,
 ) -> Result<serde_json::Value> {
     if addrs.is_empty() {
         bail!("mqtt-publish needs --mqtt-addrs");
     }
-    let started = Instant::now();
     let mut tasks = Vec::new();
+    let began = Instant::now();
+    let window_start = rate.map(|_| start_instant(start_at, "mqtt-publish"));
+    let connections = common.concurrency.max(1);
     for i in 0..common.concurrency.max(1) {
         let addr = addrs[i % addrs.len()].clone();
         let topic = format!("{topic_prefix}c{i}");
-        tasks.push(tokio::spawn(publisher(
-            addr,
-            i,
-            topic,
-            window.max(1),
-            common.payload_bytes,
-            duration,
-        )));
+        let credentials =
+            (!common.token.is_empty()).then(|| (common.tenant.clone(), common.token.clone()));
+        tasks.push(match (rate, window_start) {
+            (Some(rate), Some(start)) => tokio::spawn(paced::publisher(
+                addr,
+                credentials,
+                i,
+                topic,
+                window.max(1),
+                common.payload_bytes,
+                rate as f64 / connections as f64,
+                start,
+                duration,
+            )),
+            _ => tokio::spawn(publisher(
+                addr,
+                credentials,
+                i,
+                topic,
+                window.max(1),
+                common.payload_bytes,
+                duration,
+            )),
+        });
     }
     let mut acked = 0u64;
     let mut samples = Samples::default();
@@ -149,7 +200,11 @@ pub(crate) async fn mqtt_publish(
         acked += tally.acked;
         samples.merge(tally.samples);
     }
-    let secs = started.elapsed().as_secs_f64();
+    // A paced run is measured over its window, not the drain after it.
+    let secs = match rate {
+        Some(_) => duration.as_secs_f64(),
+        None => began.elapsed().as_secs_f64(),
+    };
     let p = samples.percentiles();
     let msg_s = acked as f64 / secs;
     report!(
@@ -168,6 +223,7 @@ pub(crate) async fn mqtt_publish(
         "duration_s": secs,
         "throughput_msg_s": msg_s,
         "throughput_mb_s": msg_s * common.payload_bytes as f64 / 1_000_000.0,
+        "target_rate_msg_s": rate,
         "batch_ack_latency_us": { "p50": p.p50_us, "p99": p.p99_us, "p999": p.p999_us, "max": p.max_us },
     }))
 }

@@ -539,6 +539,7 @@ async fn an_empty_numbered_batch_is_answered_and_proposes_nothing() {
             0,
             Vec::new(),
             Default::default(),
+            SequenceReuse::AnswerDuplicate,
             PATIENCE,
         )
         .expect("an empty batch is not refused")
@@ -579,6 +580,7 @@ async fn numbered_records_cut_by_a_leader_change_are_finished_by_the_resend() {
             sequence,
             payloads,
             Default::default(),
+            SequenceReuse::AnswerDuplicate,
             PATIENCE,
         );
         proposed

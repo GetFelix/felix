@@ -27,7 +27,7 @@ use felix_storage::log::{ProducerBatch, RecordMark};
 
 use super::{
     Append, Attribution, IdempotentOutcome, IdempotentProposal, ProducerTurn, ProposalCommitted,
-    ProposalFailed, PublishOutcome,
+    ProposalFailed, PublishOutcome, SequenceReuse,
 };
 use crate::broker::Broker;
 use crate::broker::shards::StreamHandle;
@@ -228,7 +228,8 @@ impl Broker {
     ///
     /// Every record held is [`IdempotentProposal::Held`]. Otherwise the
     /// answer runs from the first held record's offset, if any, to the last
-    /// written. A re-send is answered by its numbers alone, as Kafka does.
+    /// written. A held record is checked against its payload as `reuse`
+    /// says; Kafka answers a re-send by its numbers alone.
     /// `propose` must store record `i` of [`OwedSequences`] with sequence
     /// `sequence + i`, position 0 and length 1, and drop the turn once the
     /// engine has written them or given up, whether or not its future is
@@ -241,6 +242,7 @@ impl Broker {
         first_sequence: u64,
         mut payloads: Vec<Bytes>,
         mut attribution: Attribution,
+        reuse: SequenceReuse,
         stalled_after: Duration,
         propose: impl FnOnce(u64, ProducerTurn, OwedSequences) -> F,
     ) -> Result<IdempotentProposal<E>>
@@ -271,7 +273,12 @@ impl Broker {
                 return Err(BrokerError::SequenceExpired { sequence });
             }
             match log.producer_sequence(producer_id, sequence) {
-                ProducerSequence::Held { first, last, .. } => {
+                ProducerSequence::Held {
+                    first,
+                    last,
+                    digest,
+                } => {
+                    reuse.check(sequence, digest, &payloads[held..=held])?;
                     start = Some((start.map_or(first, |(first, _)| first), last));
                     held += 1;
                     continue;

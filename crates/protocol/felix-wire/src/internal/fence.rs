@@ -167,6 +167,11 @@ impl PeerCapabilities {
     /// records carry no key-and-headers block. Offered with
     /// `SEQUENCED_FORWARDS`, whose kind cannot carry a batch without one.
     pub const PLAIN_SEQUENCED_FORWARDS: Self = Self(1 << 25);
+    /// Reads `RecordSequencedForwardPublish`: a sequenced forward whose
+    /// records each take their own sequence, from the one it names. An owner
+    /// on Raft proposes them back to back and answers once all commit. A
+    /// sender sends each record on its own to an owner without it.
+    pub const RECORD_SEQUENCED_FORWARDS: Self = Self(1 << 26);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

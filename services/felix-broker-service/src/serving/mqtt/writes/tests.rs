@@ -257,9 +257,11 @@ async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
     EngineShards::shutdown(&*shards).await;
 }
 
-/// **A batch of several MQTT messages for a Raft shard is written whole**,
-/// each record at its own sequence, and sent again it writes nothing. The
-/// next batch starts at the sequence after its last record.
+/// **A batch of several MQTT messages for a Raft shard is written whole in
+/// one proposal**, each record at its own sequence, and sent again it
+/// proposes nothing. The next batch starts at the sequence after its last
+/// record. A proposal per record costs a turn on the log per record, which
+/// is what kept a Raft shard's MQTT throughput well under the hybrid's.
 #[cfg(feature = "raft")]
 #[tokio::test]
 async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
@@ -289,16 +291,31 @@ async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
         message
     };
 
+    let proposals = || {
+        let engine = shards.engine_for(&orders).expect("a member here");
+        engine.proposals(&orders)
+    };
+
     let first = ["plant/a", "plant/b", "plant/c"];
+    let before = proposals();
     writes.write(message(0, &first)).await.expect("written");
+    assert_eq!(proposals() - before, 1, "three records, one proposal");
     writes
         .write(message(0, &first))
         .await
         .expect("answered from the log");
+    assert_eq!(proposals() - before, 1, "a re-send proposes nothing");
     writes
         .write(message(3, &["plant/d", "plant/e"]))
         .await
         .expect("written");
+    assert_eq!(proposals() - before, 2);
+    // Another message under a sequence the log holds is not answered as
+    // written.
+    assert!(matches!(
+        writes.write(message(3, &["plant/x", "plant/e"])).await,
+        Err(WriteError::OutcomeUnknown(_))
+    ));
 
     let stored: Vec<_> = broker
         .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)
@@ -319,10 +336,8 @@ async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
 }
 
 /// Forwards nothing: a test whose writes all stay on this broker.
-#[cfg(feature = "raft")]
 struct NoPeers;
 
-#[cfg(feature = "raft")]
 impl felix_replication::peer::PeerRequester for NoPeers {
     async fn request(
         &self,
@@ -397,4 +412,79 @@ fn a_failure_partway_names_the_records_written() {
             rest: Unwritten::OutcomeUnknown("quorum_timeout")
         }
     );
+}
+
+fn catalog_of(brokers: &[&str]) -> crate::cluster::node_catalog::NodeCatalog {
+    crate::cluster::node_catalog::NodeCatalog {
+        nodes: brokers
+            .iter()
+            .map(|id| {
+                let node = felix_router::NodeRef {
+                    node_id: id.to_string(),
+                    advertise_addr: "127.0.0.1:5000".parse().unwrap(),
+                    region: "local".into(),
+                    live: true,
+                };
+                (id.to_string(), node)
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// A connection needs a credential to forward only where a publish can be
+/// forwarded: this broker forwards and the catalog lists another broker. A
+/// cluster that grows is seen at the next `CONNECT`.
+#[tokio::test]
+async fn a_publish_may_be_forwarded_only_on_a_cluster_of_more_than_one_broker() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker(false, dir.path()).await;
+    let endpoints = Arc::new(ClientEndpoints::new());
+
+    assert!(!writes(&broker).may_forward(), "a broker outside a cluster");
+    let writes = writes(&broker)
+        .with_cluster(Arc::clone(&endpoints))
+        .with_forwarding(Arc::new(NoPeers), Duration::from_secs(1));
+    assert!(
+        writes.may_forward(),
+        "before the catalog is read the size is unknown"
+    );
+
+    endpoints.refresh(&catalog_of(&["broker-a"]));
+    assert!(!writes.may_forward(), "a cluster of one broker");
+
+    endpoints.refresh(&catalog_of(&["broker-a", "broker-b"]));
+    assert!(writes.may_forward(), "a cluster that grew to two brokers");
+
+    let unforwarding = super::BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        Duration::from_secs(1),
+    )
+    .with_cluster(endpoints);
+    assert!(
+        !unforwarding.may_forward(),
+        "a broker that does not forward refuses no one for it"
+    );
+}
+
+/// A dead stale registration is not a second broker: a lone broker keeps
+/// accepting credential-less clients.
+#[tokio::test]
+async fn a_dead_node_does_not_make_a_lone_broker_a_cluster() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker(false, dir.path()).await;
+    let endpoints = Arc::new(ClientEndpoints::new());
+    let writes = writes(&broker)
+        .with_cluster(Arc::clone(&endpoints))
+        .with_forwarding(Arc::new(NoPeers), Duration::from_secs(1));
+
+    let mut catalog = catalog_of(&["broker-a", "broker-b"]);
+    catalog.nodes.get_mut("broker-b").unwrap().live = false;
+    endpoints.refresh(&catalog);
+    assert!(!writes.may_forward());
+
+    catalog.nodes.get_mut("broker-b").unwrap().live = true;
+    endpoints.refresh(&catalog);
+    assert!(writes.may_forward());
 }

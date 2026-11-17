@@ -278,9 +278,15 @@ acknowledged.
 
 On a broker that runs stream shards on Raft, a shard takes an idempotent batch
 of one record only, so each message in the batch gets a producer sequence of its
-own. The shard's leader proposes them back to back without waiting for each
-commit, so the batch still costs about one commit round trip
-(`docs/per-shard-raft.md`, "Kafka produce and MQTT publish").
+own. The shard's leader proposes them together in one proposal, so the batch
+still costs one commit round trip
+(`docs/per-shard-raft.md`, "Kafka produce and MQTT publish"). A broker in the
+shard's group that does not lead it sends the whole batch to the leader in one
+forward marked as one record per sequence, and the leader does the same. A
+batch is acknowledged only once every message in it is committed; if the
+leader stops partway, each message is sent again on its own and the ones
+already written are answered from the log, so none is written twice or
+acknowledged at a second offset.
 
 Publishes from one session to one shard stay in order through the forwarding
 hop because each session keeps one ordered queue per shard it is writing to, and
@@ -581,7 +587,9 @@ feed the QUIC listeners follow.
 
 `FELIX_MQTT_ANONYMOUS_TENANT` is the development switch, as on Kafka: an
 unauthenticated connection gets every stream grant in that tenant, and the
-broker logs a warning at startup. Unset by default.
+broker logs a warning at startup. Unset by default. It works on a single broker
+only: a forward carries the client's token, so a broker in a cluster of more
+than one broker refuses a connection without one at `CONNECT`.
 
 ## Isolation and limits
 
@@ -603,7 +611,7 @@ variable the broker does not read today:
 |---|---|---|
 | `FELIX_MQTT_LISTEN` | unset | `ip:port`. Unset turns the listener off. |
 | `FELIX_MQTT_TLS` | `true` | `false` serves plain TCP and logs that tokens cross in clear text. |
-| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development only. |
+| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development only. Refused in a cluster of more than one live broker, and until the node catalog is first read. |
 | `FELIX_MQTT_WORKER_THREADS` | 2 | Threads in the listener's runtime. |
 | `FELIX_MQTT_MAX_CONNECTIONS` | 100000 | Connections served at once; extra ones are closed on arrival. |
 | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | 1024 | Higher than Kafka's 128 because fleets sit behind carrier NAT. `0` is unlimited. |

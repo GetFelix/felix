@@ -44,6 +44,7 @@ struct FakeWrites {
     quota_hold: std::sync::Mutex<Duration>,
     producers: std::sync::atomic::AtomicU64,
     sequence_per_record: AtomicBool,
+    may_forward: AtomicBool,
 }
 
 impl FakeWrites {
@@ -55,6 +56,7 @@ impl FakeWrites {
             quota_hold: std::sync::Mutex::new(Duration::ZERO),
             producers: std::sync::atomic::AtomicU64::new(1),
             sequence_per_record: AtomicBool::new(false),
+            may_forward: AtomicBool::new(false),
         })
     }
 
@@ -89,6 +91,10 @@ impl Writes for FakeWrites {
 
     fn sequence_per_record(&self) -> bool {
         self.sequence_per_record.load(Ordering::SeqCst)
+    }
+
+    fn may_forward(&self) -> bool {
+        self.may_forward.load(Ordering::SeqCst)
     }
 
     async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {
@@ -378,6 +384,58 @@ async fn anonymous_tenant_admits_only_connections_without_credentials() {
         connack(h.client.recv().await).reason,
         ReasonCode::BadUserNameOrPassword
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_without_a_credential_to_forward_is_refused_on_a_cluster() {
+    let settings = Settings {
+        anonymous_tenant: Some("acme".into()),
+        ..Settings::default()
+    };
+    let anonymous = |version| Connect {
+        username: None,
+        password: None,
+        ..connect(version)
+    };
+    let clustered = || {
+        let writes = FakeWrites::new();
+        writes.may_forward.store(true, Ordering::SeqCst);
+        writes
+    };
+
+    // 3.1.1 has no reason string: 0x05, not authorized.
+    let mut h = start_with(settings.clone(), None, clustered());
+    h.client
+        .send(Packet::Connect(anonymous(Version::V311)), Version::V311)
+        .await;
+    let ack = connack(h.client.recv().await);
+    assert_eq!(ack.reason, ReasonCode::NotAuthorized);
+    assert!(h.client.closed().await);
+
+    let mut h = start_with(settings.clone(), None, clustered());
+    h.client.version = Some(Version::V5);
+    h.client
+        .send(Packet::Connect(anonymous(Version::V5)), Version::V5)
+        .await;
+    let ack = connack(h.client.recv().await);
+    assert_eq!(ack.reason, ReasonCode::NotAuthorized);
+    let text = ack.properties.reason_string.expect("a reason string");
+    assert!(text.as_str().contains("tenant token"), "{text:?}");
+    assert!(h.client.closed().await);
+
+    // A token is forwardable, so the same cluster accepts it.
+    let mut h = start_with(settings.clone(), None, clustered());
+    h.client
+        .send(Packet::Connect(connect(Version::V311)), Version::V311)
+        .await;
+    assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
+
+    // A single broker never forwards, so it still accepts anonymous clients.
+    let mut h = start_with(settings, None, FakeWrites::new());
+    h.client
+        .send(Packet::Connect(anonymous(Version::V311)), Version::V311)
+        .await;
+    assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
 }
 
 #[tokio::test(start_paused = true)]

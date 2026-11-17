@@ -46,16 +46,18 @@ and every setting.
 | `rf3-failover` | The shard's leader is killed with SIGKILL mid-run. The harness stamps the kill on the killed box's clock just before the signal and the generator measures from that instant (GCP's synced clocks make the skew negligible next to the recovery). First commit is the kill to the first acked publish after it. Caught up is the kill until a live-tail subscriber receives a record published after recovery. |
 | `rf3-kafka` | Kafka's own `kafka-producer-perf-test`, `acks=all`, 64 KiB batches, same settings on both engines. |
 | `rf3-mqtt` | MQTT 3.1.1 QoS 1 publishes, a window of 64 per connection, to a stream mounted at `bench/`. |
+| `rf3-mqtt-lat` | One authenticated MQTT connection on the shard leader, one QoS 1 publish in flight, 1 KiB, one shard. Reports publish to PUBACK p50, p99 and p999; p50 and p99 gate, p999 is shown. The connection is on the leader so the number is the engine's and not the forwarding hop, which `rf3-mqtt` covers. |
 | `rf3-fanout` | One publisher, four subscribers. Gates delivered throughput and delivery p99. |
 | `rf3-kafka-tail` | One shard. `kafka-console-consumer` (partition 0, no consumer group, because Felix's Kafka layer refuses groups) tails the topic while `kafka-producer-perf-test` publishes at a fixed rate (`KAFKA_TAIL_RATE`, 15000 records/s; Raft's single-shard Kafka produce holds about 17000, [#2704](https://github.com/GetFelix/felix/issues/2704)). Gates the consumed rate over the producer's run time, and that the consumer got every record produced. The fetch rate over the consumer's own run includes the seconds before the producer starts, so it is recorded but not gated. There are no latency percentiles. |
+| `rf3-mqtt-tail` | One shard. `TAIL_SUBS` MQTT subscribers (QoS 1, filter `bench/#`) sit on the shard's leader, because a broker serves a SUBSCRIBE only for a shard it leads, while `TAIL_PUBLISHERS` QoS 1 connections publish at a fixed rate (`MQTT_TAIL_RATE`, 15000 messages/s) for exactly the subscribers' window. Gates delivered throughput and the publisher's rate against 95% of the target. |
 | `rf3-resume` | A resume loop on the shard's leader: each pass subscribes at a seed-derived offset in the first `RESUME_HISTORY` records (20000, written before the window opens, the same on both engines), reads `RESUME_SPAN` records and drops the subscription, over `RESUME_WORKERS` loops. Gates replayed throughput and the p50 and p99 from the subscribe to the first record, which is where the leader's read check (a lease or a read index round on Raft) lands. A publisher runs beside it. |
 | `rf3-follower-tail` | `TAIL_SUBS` plain tail subscribers connect to a node that does not lead the shard, with a publisher beside them. Raft serves them from the follower's own log after the read index check, so this measures that read. An engine that does not serve followers answers `NotLeader` and the subscriber moves to the leader (one hop, host names resolved), so the cell compares what a client attached to a follower gets on each engine. The loadgen JSON says which happened (`served_directly`, `redirected`). Gates delivered throughput, delivery p50 and p99 and offset gaps. |
 | `single-resume` | The resume loop against one node, to check the harness on one box. Not in the default list. |
 
-The three read cells run on a single shard stream so an offset or a follower names one place.
+The read cells run on a single shard stream so an offset or a follower names one place.
 The Felix cells share one background publisher shape: `TAIL_PUBLISHERS` acked publishers held to
 `KAFKA_TAIL_RATE` records a second in total (`ingest --rate`), the same rate the Kafka producer
-uses, for exactly the reader's window. A fixed rate keeps the load identical on both engines, so
+uses (`rf3-mqtt-tail`'s MQTT publishers use `mqtt-publish --rate` at `MQTT_TAIL_RATE`), for exactly the reader's window. A fixed rate keeps the load identical on both engines, so
 the delivered and replayed rates are bounded by it and the latencies are what separate them. The
 harness waits for the publisher to finish before it reads its result, and fails the cell if the
 publisher's JSON is missing, if it failed a send, or if it published under 95% of the target.
@@ -76,6 +78,25 @@ differs from it by the fanout factor.
 A cell that Raft refuses or cannot run (a Kafka produce or MQTT publish on a shard engine that
 does not support it yet, say) is recorded with its failure status, has no data on the Raft side
 and fails the gate. That is the intent: an unbuilt feature is a gap, not a pass. `rf3-kafka` and `rf3-mqtt` fail until #2633 lands.
+
+## Broker CPU
+
+Every cell except `rf3-failover` also records how much CPU the brokers spent. `node.sh cpu` reads
+each broker process's `utime` and `stime` from `/proc/<pid>/stat` (clock ticks) just before the
+measuring command and just after it, on every broker box. For the cells with a `--start-at`
+(`rf3-mqtt-tail`, `rf3-resume`, `rf3-follower-tail`) the first read waits for the start time, so
+the idle wait before the window is not counted; the others open at the loadgen's start, which
+includes its connection setup. `summarize.py` sums the difference over the brokers and divides by
+the messages the generator counted in the window: acknowledged publishes (ingest, MQTT, Kafka),
+deliveries (fanout, MQTT tail, follower tail), replayed records (resume) or consumed records
+(Kafka tail). The result is broker CPU milliseconds per 1000 messages, the same quantity as the
+us/msg of an earlier profile. The tail cells' publisher is held to the same rate on both engines, so
+its CPU is a fixed part of both sides.
+
+The gate is not noise adjusted: Raft's mean must be at most 110% of hybrid's (`CPU_TOLERANCE`),
+and a missing or backwards sample (a restarted broker) fails the cell. The report lists the
+CPU per cell and the ratio in its own table. The per category CPU profiles that explain a
+failing ratio are captured separately and are not part of this harness.
 
 ## Read it
 

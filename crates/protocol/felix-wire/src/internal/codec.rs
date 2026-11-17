@@ -79,8 +79,23 @@ impl InternalMessage {
                     Kind::HeaderedForwardPublish | Kind::SequencedForwardPublish
                 );
                 let plain_sequenced = self.kind() == Kind::PlainSequencedForwardPublish;
-                if !m.credential.is_empty() || blocks || plain_sequenced {
+                let per_record = self.kind() == Kind::RecordSequencedForwardPublish;
+                if !m.credential.is_empty() || blocks || plain_sequenced || per_record {
                     put_credential(&mut body, &m.credential)?;
+                }
+                if per_record {
+                    match m.headers.as_deref().filter(|headers| any_block(headers)) {
+                        Some(headers) if headers.len() != m.payloads.len() => {
+                            return Err(Error::InvalidRecordHeaders(
+                                "headers count differs from payloads",
+                            ));
+                        }
+                        Some(headers) => {
+                            body.put_u8(1);
+                            put_blocks(&mut body, headers);
+                        }
+                        None => body.put_u8(0),
+                    }
                 }
                 if blocks {
                     let headers = m.headers.as_deref().unwrap_or_default();
@@ -636,7 +651,8 @@ impl InternalMessage {
             | Kind::AuthorizedForwardPublish
             | Kind::HeaderedForwardPublish
             | Kind::SequencedForwardPublish
-            | Kind::PlainSequencedForwardPublish) => {
+            | Kind::PlainSequencedForwardPublish
+            | Kind::RecordSequencedForwardPublish) => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -666,22 +682,32 @@ impl InternalMessage {
                 } else {
                     take_credential(&mut body)?
                 };
-                let headers = if matches!(
-                    kind,
-                    Kind::HeaderedForwardPublish | Kind::SequencedForwardPublish
-                ) {
+                let per_record = kind == Kind::RecordSequencedForwardPublish;
+                let blocks = match kind {
+                    Kind::HeaderedForwardPublish | Kind::SequencedForwardPublish => true,
+                    Kind::RecordSequencedForwardPublish => match take_u8(&mut body)? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(Error::Incomplete),
+                    },
+                    _ => false,
+                };
+                let headers = if blocks {
                     Some(take_blocks(&mut body, payloads.len(), true)?)
                 } else {
                     None
                 };
                 let sequenced = matches!(
                     kind,
-                    Kind::SequencedForwardPublish | Kind::PlainSequencedForwardPublish
+                    Kind::SequencedForwardPublish
+                        | Kind::PlainSequencedForwardPublish
+                        | Kind::RecordSequencedForwardPublish
                 );
                 let producer = if sequenced {
                     Some(ForwardProducer {
                         producer_id: take_u64(&mut body)?,
                         sequence: take_u64(&mut body)?,
+                        per_record,
                     })
                 } else {
                     None

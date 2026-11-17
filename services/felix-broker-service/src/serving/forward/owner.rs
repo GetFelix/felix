@@ -173,6 +173,20 @@ impl ForwardingHandler {
         if on_raft {
             return self.apply_on_raft(&key, &handle, publish, publisher).await;
         }
+        // Off Raft a batch takes one sequence, so records that each take one
+        // are refused before anything is written, and the requester sends
+        // them one by one.
+        if publish.producer.is_some_and(|producer| producer.per_record)
+            && publish.payloads.len() > 1
+        {
+            metrics::record_served(metrics::OUTCOME_REFUSED);
+            let detail = "records that each take a sequence are taken only on Raft";
+            return error(
+                correlation_id,
+                ErrorCode::UnsupportedKind,
+                detail.to_string(),
+            );
+        }
         let fenced = match self.ingress.fence().admit(&key, publish.shard.generation) {
             Ok(fenced) => fenced,
             Err(refused) => {
@@ -291,7 +305,50 @@ impl ForwardingHandler {
             };
             error(correlation_id, code, refused.to_string())
         };
+        // A refused sequence is answered as the hybrid refuses it. So is a
+        // batch the engine does not take: answered `Unavailable` it would be
+        // sent again, and `UnsupportedKind` would be read as an owner too old
+        // for the request.
+        let refused = |refused: RaftRefusal| match refused {
+            RaftRefusal::Broker(err) if permanent(&err) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                error(correlation_id, ErrorCode::StorageFailed, err.to_string())
+            }
+            refused => not_taken(refused),
+        };
+        // As on the hybrid: a sequenced forward can be sent again to whoever
+        // leads now.
+        let resendable = |err: CommitError| {
+            let code = match err {
+                CommitError::LeadershipLost { .. } => ErrorCode::LeadershipLost,
+                _ => ErrorCode::StorageFailed,
+            };
+            (code, err.to_string())
+        };
         let committed = match publish.producer {
+            Some(producer) if producer.per_record => {
+                let turn = self
+                    .broker
+                    .producer_turn(handle, producer.producer_id)
+                    .await;
+                let proposed = self.engine.publish_records_idempotent_on_raft(
+                    &self.broker,
+                    handle,
+                    key,
+                    term,
+                    turn,
+                    producer.sequence,
+                    publish.payloads,
+                    attribution,
+                    SequenceReuse::Refuse,
+                    self.quorum_timeout,
+                );
+                match proposed {
+                    Some(Ok(proposed)) => proposed.complete().await.map_err(resendable),
+                    Some(Err(refusal)) => return refused(refusal),
+                    None => return not_taken(RaftRefusal::NotLeading { term }),
+                }
+            }
             Some(producer) => {
                 let turn = self
                     .broker
@@ -310,31 +367,8 @@ impl ForwardingHandler {
                     self.quorum_timeout,
                 );
                 match proposed {
-                    Some(Ok(proposed)) => proposed.complete().await.map_err(|err| {
-                        // As on the hybrid: a sequenced forward can be sent
-                        // again to whoever leads now.
-                        let code = match err {
-                            CommitError::LeadershipLost { .. } => ErrorCode::LeadershipLost,
-                            _ => ErrorCode::StorageFailed,
-                        };
-                        (code, err.to_string())
-                    }),
-                    // The sequence was refused, as the hybrid refuses it.
-                    // So is a batch the engine does not take: answered
-                    // `Unavailable` it would be sent again, and
-                    // `UnsupportedKind` would be read as an owner too old
-                    // for the request.
-                    Some(Err(RaftRefusal::Broker(
-                        err @ (felix_broker::BrokerError::SequenceGap { .. }
-                        | felix_broker::BrokerError::UnknownProducer { .. }
-                        | felix_broker::BrokerError::SequenceExpired { .. }
-                        | felix_broker::BrokerError::SequenceReused { .. }
-                        | felix_broker::BrokerError::NotOnEngineStream { .. }),
-                    ))) => {
-                        metrics::record_served(metrics::OUTCOME_ERROR);
-                        return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
-                    }
-                    Some(Err(refused)) => return not_taken(refused),
+                    Some(Ok(proposed)) => proposed.complete().await.map_err(resendable),
+                    Some(Err(refusal)) => return refused(refusal),
                     None => return not_taken(RaftRefusal::NotLeading { term }),
                 }
             }
@@ -1141,3 +1175,15 @@ fn outcome(written: felix_storage::ConditionalWrite) -> ForwardCacheOutcome {
 
 #[cfg(test)]
 mod tests;
+
+/// A refusal of a sequence or batch that sending it again cannot change.
+fn permanent(err: &felix_broker::BrokerError) -> bool {
+    matches!(
+        err,
+        felix_broker::BrokerError::SequenceGap { .. }
+            | felix_broker::BrokerError::UnknownProducer { .. }
+            | felix_broker::BrokerError::SequenceExpired { .. }
+            | felix_broker::BrokerError::SequenceReused { .. }
+            | felix_broker::BrokerError::NotOnEngineStream { .. }
+    )
+}

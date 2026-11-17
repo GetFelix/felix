@@ -126,6 +126,7 @@ never have dialled the one that shipped to it.
 | `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
 | `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
+| `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | reads `RecordSequencedForwardPublish`, a sequenced forward whose records each take their own sequence from the one named (see "A forward that names its producer"). A Raft leader proposes them together in one proposal and answers once all commit. An MQTT listener on a member of the shard's group sends a batch that way only to a leader that offered it, and record by record otherwise |
 
 #### Storage identity
 
@@ -372,6 +373,27 @@ owner that offered `PLAIN_SEQUENCED_FORWARDS` and `SEQUENCED_FORWARDS`. A
 batch with a block still travels as kind 52, byte for byte as before. The
 MQTT listener, today's only sender of a sequenced forward, always attaches a
 block.
+
+`RecordSequencedForwardPublish` (65) says the records are independent: each
+is a one-record batch at the next sequence, from the one named. Its body is
+the `AuthorizedForwardPublish` body, a `u8` that is 1 when each record's
+key-and-headers block follows (the same section kind 52 carries) and 0 when
+none does, then the producer id and the first record's sequence. Kinds 52
+and 64 keep meaning one batch at one sequence, which is how a re-send of a
+batch a leader change cut partway must travel, since the owner finishes that
+batch as a whole. A Raft leader proposes the records of kind 65 together, in
+one proposal of one-record batches, and answers with the first's first offset
+and the last's last once all commit. Each record is checked against the log
+under its own sequence first, so a re-send is answered from the log for the
+records it holds, and a held record whose payload differs is refused as a
+reused sequence. Only the records after the held ones are proposed, so the
+log never holds a gap in a connection's records. A leader change can cut the
+proposal between two records; the sender is told `LeadershipLost` and sends
+each record again on its own, answered from the log. An
+owner whose shard is not on Raft refuses kind 65 with `UnsupportedKind`
+before writing, and the sender falls back to one forward per record. Kind 65
+goes only to an owner that offered `RECORD_SEQUENCED_FORWARDS`, which only
+the MQTT listener on a member of a Raft group sends.
 
 This is what lets the ingress broker send a batch again after its answer was
 lost (see "Retrying a forwarded publish"). The sequences live in the log and
@@ -1440,7 +1462,8 @@ back to the detail whenever the fields are absent.
 `FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
 `ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
 `SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62, `FromCopy` 63 and
-`PlainSequencedForwardPublish` 64. A peer
+`PlainSequencedForwardPublish` 64 and
+`RecordSequencedForwardPublish` 65. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

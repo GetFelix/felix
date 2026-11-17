@@ -22,18 +22,28 @@
 #   ROUNDS=3 (6 balances order)
 #   CELLS="..."   cell ids, default all (see summarize.py); names are
 #                 <single|rf3>-<oncommit|quorum|leader>-<lat|tput>, rf3-failover,
-#                 rf3-kafka, rf3-mqtt, rf3-fanout, and the read cells rf3-kafka-tail,
-#                 rf3-resume, rf3-follower-tail (single-resume is a one-node check of
-#                 the resume loop; it is not in the default list)
+#                 rf3-kafka, rf3-mqtt, rf3-mqtt-lat, rf3-fanout, and the read cells
+#                 rf3-kafka-tail, rf3-mqtt-tail, rf3-resume, rf3-follower-tail (single-resume
+#                 is a one-node check of the resume loop; it is not in the default list)
 #   BOXES="1 2 3" the first holds the control plane. A smoke run uses one.
 #   SECS=60 LAT_SECS=30 FAIL_SECS=40 PAYLOAD=1024 BATCH=16 PUBLISHERS=8 IN_FLIGHT=4
 #   LAT_PUBLISHERS=1 SHARDS=6 KEYS=$((SHARDS*8)) FANOUT=4 FANOUT_TOTAL=200000
 #   KAFKA_RECORDS=1000000 MQTT_CONNS=8 MQTT_WINDOW=64
-#   TAIL_SECS=30 TAIL_PUBLISHERS=4 TAIL_IN_FLIGHT=4 KAFKA_TAIL_RATE=15000   read cells: the
-#   window, and a background publisher held to KAFKA_TAIL_RATE records/s (the same rate for the
-#   Kafka producer and the Felix publisher) for exactly that window. A cell fails if either
-#   engine publishes under 95% of it, if the publisher fails a send, or if it does not finish.
-#   15000 because Raft's Kafka produce on one shard holds about 17000 (#2704).
+#   rf3-mqtt: MQTT 3.1.1 QoS 1, MQTT_WINDOW unacknowledged per connection, each connection
+#   authenticated (tenant as username, the client token as password) so a publish for a
+#   shard another broker leads is forwarded; an anonymous connection is closed instead.
+#   rf3-mqtt-lat: one authenticated connection on the shard leader (one shard), one QoS 1
+#   publish in flight, PAYLOAD bytes, for LAT_SECS; publish-to-PUBACK p50/p99/p999.
+#   TAIL_SECS=30 TAIL_PUBLISHERS=4 TAIL_IN_FLIGHT=4 KAFKA_TAIL_RATE=15000 MQTT_TAIL_RATE=15000
+#   read cells: the window, and a background publisher held to KAFKA_TAIL_RATE records/s (the
+#   same rate for the Kafka producer and the Felix publisher; MQTT_TAIL_RATE for the MQTT one)
+#   for exactly that window. A cell fails if either engine publishes under 95% of it, if the
+#   publisher fails a send, or if it does not finish. 15000 because Raft's Kafka produce on
+#   one shard holds about 17000 (#2704). rf3-mqtt-tail's TAIL_SUBS subscribers sit on the
+#   shard leader (a broker serves a SUBSCRIBE only for a shard it leads) at QoS 1.
+#   Broker CPU: every cell except rf3-failover reads each broker's utime+stime from /proc
+#   before and after the measured window, on all brokers; summarize.py divides by the messages
+#   the loadgen counted and gates Raft within 10% of hybrid.
 #   RESUME_SPAN=100 RESUME_WORKERS=4 TAIL_SUBS=4 RESUME_HISTORY=20000
 #                 records per resume, resume loops, follower subscribers, records prefilled
 #                 before a resume cell measures (offsets are drawn from them)
@@ -58,14 +68,14 @@ fi
 : "${PAYLOAD:=1024}" "${BATCH:=16}" "${PUBLISHERS:=8}" "${IN_FLIGHT:=4}" "${LAT_PUBLISHERS:=1}" "${SHARDS:=6}"
 : "${KEYS:=$((SHARDS * 8))}" "${FANOUT:=4}" "${FANOUT_TOTAL:=200000}"
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
-: "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
+: "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
   for topo in single rf3; do for mode in oncommit quorum leader; do
     CELLS="$CELLS $topo-$mode-lat $topo-$mode-tput"
   done; done
-  CELLS="$CELLS rf3-failover rf3-kafka rf3-mqtt rf3-fanout rf3-kafka-tail rf3-resume rf3-follower-tail"
+  CELLS="$CELLS rf3-failover rf3-kafka rf3-mqtt rf3-mqtt-lat rf3-fanout rf3-kafka-tail rf3-mqtt-tail rf3-resume rf3-follower-tail"
 fi
 MAX_HOLD_SECS=$(( 3600 + ROUNDS * 40 * 600 ))
 
@@ -126,7 +136,7 @@ case " $CELLS " in *-kafka*)
     echo "box$b ${IP[$b]} ${MT[$b]} $(on "$b" sysinfo)"
   done
   echo "control plane on felix-build-$CP_BOX"
-  echo "config ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
+  echo "config ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE MQTT_TAIL_RATE=$MQTT_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
 } | tee "$OUT/run.env"
 
 # --- reservation -----------------------------------------------------------------
@@ -193,6 +203,8 @@ cell_shape() {
     # and the kafka-tail consumer reads partition 0 only.
     single-resume|rf3-resume) TOPO=${1%%-*} CONS=Quorum FSYNC=on_commit KIND=resume NSHARDS=1 ;;
     rf3-follower-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=follower-tail NSHARDS=1 ;;
+    rf3-mqtt-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=mqtt-tail STREAM_NAME=mbench MOUNT="bench/" NSHARDS=1 ;;
+    rf3-mqtt-lat) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=mqtt-lat STREAM_NAME=mbench MOUNT="bench/" NSHARDS=1 ;;
     rf3-kafka-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=kafka-tail STREAM_NAME=kbench NSHARDS=1 ;;
     single-*|rf3-*-lat|rf3-*-tput) TOPO=${1%%-*}; local rest=${1#*-}; local mode=${rest%%-*} prof=${rest#*-}
       case "$mode" in
@@ -209,6 +221,27 @@ cell_shape() {
     *) echo "!! unknown cell $1" >&2; exit 2 ;;
   esac
   if [ "$TOPO" = single ]; then RF=1; else RF=3; fi
+}
+
+# The broker's CPU over the measured window (see node.sh cpu). Call cpu_before just before the
+# measuring command (with the --start-at time when the window opens then, so the idle wait
+# before it is not counted) and cpu_after once it has returned. The files sit in the cell
+# directory; summarize.py reads them. A killed broker (rf3-failover) has no pid to read.
+cpu_before() { # [unix-secs]
+  CPU_PIDS=()
+  for b in "${brokers[@]}"; do
+    if [ -n "${1:-}" ]; then
+      on "$b" cpu-at "$dir" "$1" > "$loc/cpu-before-box$b.txt" 2>&1 &
+      CPU_PIDS+=($!)
+    else
+      on "$b" cpu "$dir" > "$loc/cpu-before-box$b.txt" 2>&1 || true
+    fi
+  done
+}
+cpu_after() {
+  [ "${#CPU_PIDS[@]}" -eq 0 ] || wait "${CPU_PIDS[@]}" || true
+  CPU_PIDS=()
+  for b in "${brokers[@]}"; do on "$b" cpu "$dir" > "$loc/cpu-after-box$b.txt" 2>&1 || true; done
 }
 
 pick() { # <n> <fallback>: the n-th box of BOXES, or the fallback box
@@ -286,13 +319,20 @@ run_cell() {
       ingest-lat)
         args="--scenario ingest --payload-bytes $PAYLOAD --batch 1 --concurrency $LAT_PUBLISHERS --in-flight 1 --duration-secs $LAT_SECS --keys $KEYS --shards $NSHARDS --cluster"
         limit=$((LAT_SECS + 240)) ;;
+      mqtt-lat)
+        # One connection straight to the shard's leader, so the number is the engine's and
+        # not the forwarding hop (rf3-mqtt covers that path).
+        lead=$(on "$CP_BOX" repl "$dir" | sed -n 's/.*leaders=broker-\([0-9]*\):.*/\1/p')
+        [ -n "$lead" ] || status=no-leader
+        args="--scenario mqtt-publish --payload-bytes $PAYLOAD --concurrency 1 --in-flight 1 --duration-secs $LAT_SECS --mqtt-addrs ${IP[${lead:-0}]:-none}:11883 --mqtt-topic-prefix bench/"
+        limit=$((LAT_SECS + 240)) ;;
       pubsub)
         args="--scenario pubsub --payload-bytes $PAYLOAD --batch $BATCH --fanout $FANOUT --warmup 2000 --total $FANOUT_TOTAL"
         limit=900 ;;
       mqtt)
         args="--scenario mqtt-publish --payload-bytes $PAYLOAD --concurrency $MQTT_CONNS --in-flight $MQTT_WINDOW --duration-secs $SECS --mqtt-addrs $mqtt_addrs --mqtt-topic-prefix bench/"
         limit=$((SECS + 240)) ;;
-      resume|follower-tail)
+      resume|follower-tail|mqtt-tail)
         # Placement: the loadgen sits on the box that is neither the shard leader nor the
         # target follower, on both engines. A fixed-rate publisher runs beside the reader for
         # exactly the reader's window.
@@ -304,13 +344,22 @@ run_cell() {
           [ -n "$lead" ] || status=no-leader
           [ "${#brokers[@]}" -ge 3 ] || status=needs-3-boxes
           if [ "$status" = ok ]; then
-            for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && { tgt=$b; break; }; done
-            for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && [ "$b" != "$tgt" ] && { lg=$b; break; }; done
-            raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
+            if [ "$KIND" = mqtt-tail ]; then
+              # MQTT subscribers must be on the leader; the generator is on a box that is not.
+              tgt=$lead
+              for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && { lg=$b; break; }; done
+            else
+              for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && { tgt=$b; break; }; done
+              for b in "${brokers[@]}"; do [ "$b" != "$lead" ] && [ "$b" != "$tgt" ] && { lg=$b; break; }; done
+            fi
+            [ "$lg" = "$CP_BOX" ] || raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
           fi
         fi
-        stamp=""
-        if [ "$KIND" = follower-tail ]; then
+        stamp="" tail_rate=$KAFKA_TAIL_RATE
+        if [ "$KIND" = mqtt-tail ]; then
+          tail_rate=$MQTT_TAIL_RATE
+          args="--scenario mqtt-subscribe --fanout $TAIL_SUBS --duration-secs $TAIL_SECS --mqtt-addrs ${IP[$tgt]}:11883 --mqtt-topic-prefix bench/"
+        elif [ "$KIND" = follower-tail ]; then
           fb="${IP[$tgt]}:15000"
           args="--scenario subscribe --direct --fanout $TAIL_SUBS --concurrency $TAIL_SUBS --duration-secs $TAIL_SECS --stamp-send-time"
           stamp=--stamp-send-time
@@ -318,7 +367,11 @@ run_cell() {
           args="--scenario resume --concurrency $RESUME_WORKERS --resume-span $RESUME_SPAN --resume-history $RESUME_HISTORY --duration-secs $TAIL_SECS"
         fi
         fg_common="--brokers $fb --environment gcp-build-$side --stream $STREAM_NAME"
-        bg_args="--scenario ingest --payload-bytes $PAYLOAD --batch $BATCH --concurrency $TAIL_PUBLISHERS --in-flight $TAIL_IN_FLIGHT --rate $KAFKA_TAIL_RATE --duration-secs $TAIL_SECS --keys 8 --shards 1 --cluster $stamp"
+        if [ "$KIND" = mqtt-tail ]; then
+          bg_args="--scenario mqtt-publish --payload-bytes $PAYLOAD --concurrency $TAIL_PUBLISHERS --in-flight $TAIL_IN_FLIGHT --rate $tail_rate --duration-secs $TAIL_SECS --mqtt-addrs $mqtt_addrs --mqtt-topic-prefix bench/"
+        else
+          bg_args="--scenario ingest --payload-bytes $PAYLOAD --batch $BATCH --concurrency $TAIL_PUBLISHERS --in-flight $TAIL_IN_FLIGHT --rate $tail_rate --duration-secs $TAIL_SECS --keys 8 --shards 1 --cluster $stamp"
+        fi
         limit=$((TAIL_SECS + 240)) ;;
       kafka-tail)
         limit=$((TAIL_SECS + 600)) ;;
@@ -327,7 +380,7 @@ run_cell() {
         lead=$(on "$CP_BOX" repl "$dir" | sed -n 's/.*leaders=broker-\([0-9]*\):.*/\1/p')
         [ -n "$lead" ] || status=no-leader
         for b in "${BOXES[@]}"; do [ "$b" != "$lead" ] && lg=$b && break; done
-        raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
+        [ "$lg" = "$CP_BOX" ] || raw "$CP_BOX" "cat $dir/tokens/client.jwt" | on "$lg" put "$dir/tokens/client.jwt"
         args="--scenario failover --payload-bytes 256 --duration-secs $FAIL_SECS"
         limit=$((FAIL_SECS + 240)) ;;
     esac
@@ -335,13 +388,17 @@ run_cell() {
   if [ "$status" = ok ]; then
     if [ "$KIND" = kafka ]; then
       on "$lg" kafka-install > "$loc/kafka-install.txt" 2>&1 || true
+      cpu_before
       on "$lg" kafka "$dir" 1800 "$kafka_boot" "default.$STREAM_NAME" "$KAFKA_RECORDS" "$PAYLOAD" > "$loc/loadgen.txt" 2>&1 \
         || status=loadgen-failed
+      cpu_after
     elif [ "$KIND" = kafka-tail ]; then
       on "$lg" kafka-install > "$loc/kafka-install.txt" 2>&1 || true
+      cpu_before
       on "$lg" kafka-tail "$dir" "$limit" "$kafka_boot" "default.$STREAM_NAME" "$((KAFKA_TAIL_RATE * TAIL_SECS))" "$PAYLOAD" "$KAFKA_TAIL_RATE" > "$loc/loadgen.txt" 2>&1 \
         || status=loadgen-failed
-    elif [ "$KIND" = resume ] || [ "$KIND" = follower-tail ]; then
+      cpu_after
+    elif [ "$KIND" = resume ] || [ "$KIND" = follower-tail ] || [ "$KIND" = mqtt-tail ]; then
       if [ "$KIND" = resume ]; then
         # The history the resumes draw from is written first and is the same size on both
         # engines, so the offsets do not depend on how fast the publisher ran.
@@ -351,8 +408,10 @@ run_cell() {
       fi
       if [ "$status" = ok ]; then
         start=$(raw "$lg" "date +%s.%N"); start=$(python3 -c "print(float('$start') + 15)")
+        cpu_before "$start"
         on "$lg" loadgen-bg "$dir" ingest $((TAIL_SECS + 240)) $common $bg_args --start-at "$start" > "$loc/ingest-start.txt" 2>&1 || status=loadgen-failed
         on "$lg" loadgen "$dir" "$limit" $fg_common $args --start-at "$start" > "$loc/loadgen.txt" 2>&1 || status=loadgen-failed
+        cpu_after
         # The publisher ends with the window. Wait for it, so its rate is read and not
         # guessed at and nothing carries into the next cell.
         on "$lg" wait-json "$dir" ingest 90 > "$loc/ingest-wait.txt" 2>&1 || status=publisher-failed
@@ -371,15 +430,17 @@ run_cell() {
       wait "$LGPID" || status=loadgen-failed
       LGPID=""
     else
+      cpu_before
       on "$lg" loadgen "$dir" "$limit" $common $args > "$loc/loadgen.txt" 2>&1 || status=loadgen-failed
+      cpu_after
     fi
     grep -m1 '^LOADGEN_JSON ' "$loc/loadgen.txt" | sed 's/^LOADGEN_JSON //' > "$loc/loadgen.json" || true
     [ -s "$loc/loadgen.json" ] || { [ "$status" != ok ] || status=loadgen-failed; }
     # The background publisher is part of the measurement: it must have finished, sent
     # nothing that failed, and held 95% of the target rate. Otherwise the two engines were
     # not read under the same load and the cell is invalid, not a pass.
-    if [ "$status" = ok ] && { [ "$KIND" = resume ] || [ "$KIND" = follower-tail ]; }; then
-      python3 - "$loc/loadgen.json" "$loc/ingest.txt" "$KAFKA_TAIL_RATE" "$lead" "$tgt" "$lg" <<'PY' || status=publisher-invalid
+    if [ "$status" = ok ] && { [ "$KIND" = resume ] || [ "$KIND" = follower-tail ] || [ "$KIND" = mqtt-tail ]; }; then
+      python3 - "$loc/loadgen.json" "$loc/ingest.txt" "$tail_rate" "$lead" "$tgt" "$lg" <<'PY' || status=publisher-invalid
 import json, sys
 path, ingest, target, lead, tgt, lg = sys.argv[1:7]
 d = json.load(open(path))
