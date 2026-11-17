@@ -72,6 +72,7 @@ pub(crate) mod fs;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
+pub mod hops;
 mod incarnation;
 mod index_snapshot;
 pub(crate) mod io;

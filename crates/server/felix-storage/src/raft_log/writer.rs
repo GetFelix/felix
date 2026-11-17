@@ -129,6 +129,7 @@ where
         I: IntoIterator<Item = C::Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
+        crate::hops::mark(crate::hops::Stage::AppendBegin);
         let shared = &self.shared;
         // A batched log mark that stopped moving would let the log run ahead
         // of it without bound: the append waits while the mark is too far
@@ -286,6 +287,7 @@ where
         // Written, not yet on disk: the signal an acknowledgement that does
         // not wait for the fsync goes by.
         shared.positions.send_modify(|at| at.written = last);
+        crate::hops::mark(crate::hops::Stage::Written);
         // After the position, so a proposer woken here finds it moved. A
         // write that failed returned above and dropped its tokens unresolved.
         for (token, at) in tokens {
