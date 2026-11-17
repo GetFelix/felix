@@ -3552,14 +3552,19 @@ holds the trim. A leader purges no further than the lowest match among
 the members that answered it lately (within the time after which a peer
 counts as silent, at least two idle heartbeats). A member that is down is
 not waited for, so it cannot keep the leader's disk; when it is back it is
-behind the purge and installs the snapshot. The model's leader cap ranges
+behind the purge and installs the snapshot. openraft itself holds a
+leader's purge while a replication stream still reads the range, a stream
+to a down member included, and runs it on that stream's next answer or
+error; a purge pass reports a purge only once openraft has run it. The
+model's leader cap ranges
 over live members the same way, and the design passes without the cap
 (`FelixRaftStreamPurgeNoCap.cfg`): the cap only saves sending a snapshot.
 
 > `services/felix-broker-service/src/shards/raft/tests/purge.rs`,
 > `a_member_behind_a_purge_installs_the_snapshot_and_keeps_the_floor`,
-> `a_leader_keeps_the_log_a_lagging_member_needs` and
-> `a_leader_purges_past_a_member_that_stopped_answering`
+> `a_leader_keeps_the_log_a_lagging_member_needs`,
+> `a_leader_purges_past_a_member_that_stopped_answering` and
+> `a_member_back_after_a_purge_leads_with_no_record_lost_or_offset_reused`
 
 On the leader the trim reaches the replay ring in its entry's turn and
 drops the ring's records below the floor, and the answer waits for that, so

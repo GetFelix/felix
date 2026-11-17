@@ -60,6 +60,8 @@ pub(super) const REACHED_BEFORE: &str =
 /// How long a purge pass waits for its snapshot before the next pass tries
 /// again.
 const PURGE_SNAPSHOT_WITHIN: Duration = Duration::from_secs(30);
+/// How long a purge pass waits for openraft to drop the log it asked for.
+const PURGE_WITHIN: Duration = Duration::from_secs(2);
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
@@ -1045,7 +1047,8 @@ impl Group {
     /// installs to members that are only behind; safety does not rest on it.
     /// A member that stopped answering is not waited for, so it cannot keep
     /// the leader's disk; it installs the snapshot when it is back. Returns
-    /// `P` once the log is purged to it. See `docs/per-shard-raft.md`,
+    /// `P` once the log is purged through it, by this pass or an earlier
+    /// one, and `None` while openraft still holds the purge. See `docs/per-shard-raft.md`,
     /// "Purging below the floor".
     pub(crate) async fn purge_below_floor(&self) -> Option<u64> {
         use openraft::async_runtime::watch::WatchReceiver;
@@ -1065,8 +1068,10 @@ impl Group {
         }
         let snapshot = metrics.snapshot.map(|id| id.index);
         let purged = metrics.purged.map(|id| id.index);
-        match purge_step(snapshot, purged, at)? {
-            PurgeStep::SnapshotThenPurge => {
+        match purge_step(snapshot, purged, at) {
+            // An earlier pass's purge, which openraft ran late.
+            None => return Some(at),
+            Some(PurgeStep::SnapshotThenPurge) => {
                 *self.purge_at.lock() = Some(at);
                 self.raft.trigger().snapshot().await.ok()?;
                 self.raft
@@ -1078,9 +1083,21 @@ impl Group {
                     .await
                     .ok()?;
             }
-            PurgeStep::Purge => {}
+            Some(PurgeStep::Purge) => {}
         }
         self.raft.trigger().purge_log(at).await.ok()?;
+        // A leader's openraft holds the purge while a replication stream
+        // still reads the range, even one to a member that is down, and runs
+        // it on that stream's next answer or error. Report only a purge that
+        // ran; a later pass sees one that ran late.
+        self.raft
+            .wait(Some(PURGE_WITHIN))
+            .metrics(
+                |m| m.purged.as_ref().is_some_and(|purged| purged.index >= at),
+                "a purge",
+            )
+            .await
+            .ok()?;
         Some(at)
     }
 
