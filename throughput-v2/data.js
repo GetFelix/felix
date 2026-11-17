@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794879164676,
+  "lastUpdate": 1794879495555,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60944,6 +60944,58 @@ window.BENCHMARK_DATA = {
             "range": "56742.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 799731.65\nmean: 762232.81\nstdev: 56742.11\ncv: 7.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f1868103894354a170f9f0512bea62468eae187",
+          "message": "fix(raft): answer a refused Leader lease as Quorum is, not at commit (#2707) (#2711)\n\n* fix(raft): answer a Leader publish without the lease as a Quorum one (#2707)\n\nA Leader publish whose lease check failed waited for its commit, which on a\nRaft log opened OnCommit (every log until the fleet finalizes\nraft_written_commit) means an fsync. A sole voter is answered by nobody, so\npast its first lease every single-node Leader publish took that path, while\na Quorum publish on the same periodic stream was answered on a written\nmajority, which for a sole voter is its own write.\n\nA refused lease now hands the answer to the written-majority wait under\nAckAt::Written, and keeps the commit under AckAt::Flushed. A Leader write\nnever waits longer than a Quorum one, and the fallback promises more than\nthe lease does.\n\nSpec-Unaffected: the fallback is the Quorum written-majority answer that FelixRaftWritten models; FelixRaftLease models the lease answer, which is unchanged, and treats the refused case as whatever a Quorum write does.\n\n* docs(raft): a refused lease is answered as Quorum is\n\nThree places still said a refused Leader publish waits for its commit.\nThe TLA+ change is to the header comment only.\n\n* fix(raft): a sole voter holds the leader lease without an answer (#2707)\n\nNobody answers a group's only voter, so its lease never held and every\nLeader publish on a single-node shard took the written-majority answer.\nadmit_local_ack now passes for a leader whose effective membership (the\nnewest appended, committed or not) is one voter set holding it alone.\n\nThe self-grant ends at the append of any membership with a second voter.\nopenraft writes a change from {a} as one entry only when every majority\nof the new set holds a, and otherwise appends a joint first, which has\nmore than one voter. Learners do not count. A zero lease still refuses.\n\nFelixRaftLease.tla: GroupLease holds for Servers = {l}. RestoreSingle\nchecks it with a write and a restart; ReachSoleLocalAck is its witness.\nMembership change is outside the model (fixed Servers) and argued in\ndocs/per-shard-raft.md.\n\n* docs(raft): a sole voter's lease ends at the next metrics flush, not the append",
+          "timestamp": "2026-11-16T17:30:20-08:00",
+          "tree_id": "17609bb32abd6c992a540f8ed80e6998ed162c2a",
+          "url": "https://github.com/GetFelix/felix/commit/7f1868103894354a170f9f0512bea62468eae187"
+        },
+        "date": 1794879494574,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 497432.32,
+            "range": "39969.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497432.32\nmean: 500588.73\nstdev: 39969.74\ncv: 7.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 497432.32,
+            "range": "39969.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497432.32\nmean: 500588.73\nstdev: 39969.74\ncv: 7.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116810.83,
+            "range": "3153.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116810.83\nmean: 115520.94\nstdev: 3153.21\ncv: 2.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1168108.35,
+            "range": "31532.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1168108.35\nmean: 1155209.40\nstdev: 31532.13\ncv: 2.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
