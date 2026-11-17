@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794879492098,
+  "lastUpdate": 1794885571941,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -77418,6 +77418,72 @@ window.BENCHMARK_DATA = {
             "range": "140.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 570.00\nmean: 499.20\nstdev: 140.28\ncv: 28.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b9b01587a9f2a01a636efd7ad6e11ad0f5f9ce32",
+          "message": "fix(perf): do not copy the client token onto the box it is on (#2718)\n\nThe mqtt-tail cell can pick the control-plane box as the loadgen box. The\ntoken hand-off then piped client.jwt onto itself and truncated it, so the\nloadgen connected with no token and the broker refused it. felix-loadgen\nnow rejects an empty token file.",
+          "timestamp": "2026-11-17T03:12:59Z",
+          "tree_id": "e3f41ab7392ec0409105b10d174f8cd53601fb85",
+          "url": "https://github.com/GetFelix/felix/commit/b9b01587a9f2a01a636efd7ad6e11ad0f5f9ce32"
+        },
+        "date": 1794885562760,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 66.40\nstdev: 0.89\ncv: 1.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "19.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 99.00\nstdev: 19.60\ncv: 19.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 126,
+            "range": "197.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 231.60\nstdev: 197.41\ncv: 85.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 84.00\nstdev: 1.41\ncv: 1.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "18.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 194.20\nstdev: 18.99\ncv: 9.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 339,
+            "range": "402.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 339.00\nmean: 500.00\nstdev: 402.74\ncv: 80.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
