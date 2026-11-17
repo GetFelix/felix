@@ -22,7 +22,7 @@ pub(crate) fn usage() -> ! {
   --namespace <ns>            default: default
   --scenario <name>           pubsub | cache | counter | watch | queue | retained |
                               ingest | subscribe | resume | failover |
-                              mqtt-publish (required)
+                              mqtt-publish | mqtt-subscribe (required)
   --stream <name>             stream for pubsub, queue, ingest, subscribe (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
                               unkeyed -- every record lands on shard 0)
@@ -38,10 +38,12 @@ pub(crate) fn usage() -> ! {
   --kill-file <path>          failover: file the harness writes the leader's kill
                               time (unix seconds) to before the run ends; needs
                               --start-at and --duration-secs
-  --mqtt-addrs <a,b,...>      mqtt-publish: plain-TCP MQTT listeners (host:port)
-  --mqtt-topic-prefix <p>     mqtt-publish: the mounted prefix (default: bench/);
-                              --in-flight sets the window, --concurrency the
-                              connections
+  --mqtt-addrs <a,b,...>      mqtt-publish, mqtt-subscribe: plain-TCP MQTT listeners
+                              (host:port); a subscriber needs the shard's leader
+  --mqtt-topic-prefix <p>     mqtt-publish, mqtt-subscribe: the mounted prefix (default:
+                              bench/); --in-flight sets the window, --concurrency the
+                              publishing connections, --fanout the subscribers;
+                              --rate and --start-at pace a publisher
   --direct                    subscribe: connect each subscriber to one of --brokers
                               (round robin) and read shard 0 there, instead of following
                               the shard to its leader. A NotLeader answer is followed one
@@ -51,9 +53,10 @@ pub(crate) fn usage() -> ! {
                               [0, n - span] (default 20 x --resume-span)
   --duration-secs <n>         ingest: publish for n seconds instead of --total records;
                               subscribe, resume: how long to count (required)
-  --start-at <unix-secs>      ingest, subscribe: connect, then start at this wall-clock
+  --start-at <unix-secs>      ingest, subscribe, mqtt-subscribe, mqtt-publish with
+                              --rate: connect, then start at this wall-clock
                               time (fractional seconds), so generators overlap
-  --rate <n>                  ingest: publish n records/s in total across publishers
+  --rate <n>                  ingest, mqtt-publish: publish n records/s in total across publishers
                               (default: as fast as acks allow)
   --stamp-send-time           ingest: put the wall-clock send time in each payload's first
                               8 bytes; subscribe: report delivery latency from it (needs
@@ -263,13 +266,23 @@ pub(crate) fn parse_args() -> Result<Args> {
             duration: ingest
                 .duration
                 .context("mqtt-publish needs --duration-secs")?,
+            rate: ingest.rate,
+            start_at: ingest.start_at,
+        },
+        "mqtt-subscribe" => Scenario::MqttSubscribe {
+            addrs: mqtt_addrs,
+            topic_prefix: mqtt_prefix,
+            duration: ingest
+                .duration
+                .context("mqtt-subscribe needs --duration-secs")?,
+            start_at: ingest.start_at,
         },
         "ingest" => Scenario::Ingest {
             stream,
             options: ingest,
         },
         other => bail!(
-            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe | resume | failover | mqtt-publish)"
+            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe | resume | failover | mqtt-publish | mqtt-subscribe)"
         ),
     };
 
