@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794932592129,
+  "lastUpdate": 1794932928308,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61412,6 +61412,58 @@ window.BENCHMARK_DATA = {
             "range": "8330.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1239081.36\nmean: 1236575.29\nstdev: 8330.43\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b91a2c514a9577bc08a5c930a3b115a0bb3ec38f",
+          "message": "test(cluster): settle in-flight moves before replaying after a timed-out handoff (#2733) (#2734)\n\n* test(cluster): settle in-flight moves before replaying after a timed-out handoff (#2733)\n\nThe pass that fails the last shard over can also start a rebalancing move\nonto the three brokers left. The harness runs no placement timer, so the\nloop stopped stepping with that leader fenced for the cut-over, not serving,\nand the replay on it timed out. Keep stepping until no move is in flight.\n\n* ci: temporary repro loop for #2733 (to be removed)\n\n* ci: drop the temporary #2733 repro loop",
+          "timestamp": "2026-11-17T08:17:38-08:00",
+          "tree_id": "5dfca6a0211f8dd5c29d4bb8e6b977263fd4da1b",
+          "url": "https://github.com/GetFelix/felix/commit/b91a2c514a9577bc08a5c930a3b115a0bb3ec38f"
+        },
+        "date": 1794932927802,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 524931.56,
+            "range": "23673.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524931.56\nmean: 515051.37\nstdev: 23673.05\ncv: 4.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 524931.56,
+            "range": "23673.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 524931.56\nmean: 515051.37\nstdev: 23673.05\ncv: 4.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123290.88,
+            "range": "577.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123290.88\nmean: 123152.17\nstdev: 577.86\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1232908.79,
+            "range": "5778.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1232908.79\nmean: 1231521.71\nstdev: 5778.56\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
