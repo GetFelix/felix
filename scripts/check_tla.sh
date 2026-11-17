@@ -921,6 +921,7 @@ expectations=(
   "FelixRaftLeaseAckLong violates NoAckBehindNewLeader"
   "FelixRaftLeaseDeliverUncommitted violates DeliveredNeverReplaced"
   "FelixRaftLeaseReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseReachSoleLocalAck violates NeverLocalAck"
   "FelixRaftLeaseReachRenewed violates NeverLapsedThenRenewed"
   "FelixRaftLeaseReachFailover violates NeverFailoverAfterLease"
   "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"

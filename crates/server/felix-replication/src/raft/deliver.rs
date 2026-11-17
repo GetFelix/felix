@@ -71,7 +71,9 @@ impl RaftEngine {
     /// fewer than [`felix_broker::ANSWERED_AHEAD`] batches waiting for a
     /// commit, none of them for a quarter of `timeout`. Delivery does not
     /// move: such a batch is acknowledged before its commit is known, and
-    /// is lost if this broker stops leading before it commits.
+    /// is lost if this broker stops leading before it commits. If the
+    /// lease does not hold, it is answered as [`AnswerAt::Majority`] is
+    /// under [`AckAt::Written`], and at the commit under [`AckAt::Flushed`].
     /// [`AnswerAt::Majority`] returns early the same way, under the same
     /// limits, once a majority of the voters has written the batch.
     /// A timeout leaves the batch in its place: it is still delivered if it
@@ -137,7 +139,7 @@ impl RaftEngine {
         let (on_lease, answered) = oneshot::channel();
         let (on_lease, on_majority) = match answer {
             AnswerAt::Commit => (None, None),
-            AnswerAt::Lease => (Some(on_lease), None),
+            AnswerAt::Lease => (Some((ack, on_lease)), None),
             AnswerAt::Majority => (None, Some((ack, on_lease))),
         };
         // A leader cut off from its majority is not deposed, and every batch
@@ -411,7 +413,7 @@ impl RaftEngine {
         trim: Option<u64>,
         commit: bool,
         ack: AckAt,
-        on_lease: Option<oneshot::Sender<u64>>,
+        on_lease: Option<(AckAt, oneshot::Sender<u64>)>,
         on_majority: Option<(AckAt, oneshot::Sender<u64>)>,
         timeout: Duration,
     ) -> impl FnOnce(u64) -> Settling + use<> {
@@ -763,8 +765,9 @@ pub(super) struct Proposed {
     /// How many records it holds.
     pub(super) count: u64,
     pub(super) timeout: Duration,
-    /// Told the batch's end if it may be acknowledged on the lease.
-    pub(super) on_lease: Option<oneshot::Sender<u64>>,
+    /// Told the batch's end if it may be acknowledged on the lease, and
+    /// otherwise as `on_majority` is under [`AckAt::Written`].
+    pub(super) on_lease: Option<(AckAt, oneshot::Sender<u64>)>,
     /// Told the batch's end once a majority of the voters has written it,
     /// as far as the [`AckAt`] asks.
     pub(super) on_majority: Option<(AckAt, oneshot::Sender<u64>)>,
@@ -800,13 +803,16 @@ pub(super) async fn settled(
         return Err(ProposalFailed::written(moved, written.end));
     }
     // The lease is asked only now, with the batch on this log under the
-    // term it names. A refusal leaves the publisher waiting for the commit
-    // below, like a `Quorum` one.
-    if let Some(on_lease) = on_lease
-        && engine.admit_local_ack(&shard, written.generation).is_ok()
-    {
-        let _ = on_lease.send(written.end);
-    }
+    // term it names. A refusal answers the publisher where a `Quorum` one
+    // would be: a `Leader` write never waits longer than a `Quorum` one.
+    let on_majority = match on_lease {
+        Some((_, on_lease)) if engine.admit_local_ack(&shard, written.generation).is_ok() => {
+            let _ = on_lease.send(written.end);
+            None
+        }
+        Some((AckAt::Written, on_lease)) => Some((AckAt::Written, on_lease)),
+        Some((AckAt::Flushed, _)) | None => on_majority,
+    };
     // Beside the commit, never in front of it: delivery still waits for
     // the commit. A batch of this term on a majority is in every later
     // leader's log, since a voter refuses a candidate whose log is behind

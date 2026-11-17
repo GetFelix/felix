@@ -53,10 +53,12 @@
 (*   election timeout from its start.                                      *)
 (*                                                                         *)
 (*   A write is acknowledged on local durability when                      *)
-(*   `now < last_quorum_acked + Lease`. Otherwise it waits for commit,     *)
-(*   which is also what a `Quorum` write does, so the model has no         *)
-(*   separate `Quorum` level. A failed check changes no role. The          *)
-(*   subscriber is given records up to the commit index only.              *)
+(*   `now < last_quorum_acked + Lease`, or at any time by the only         *)
+(*   server, whom nobody answers and nobody else can replace. Otherwise    *)
+(*   it is answered as a `Quorum` write is (FelixRaftWritten checks that   *)
+(*   answer), so the model has no separate `Quorum` level. A failed check  *)
+(*   changes no role.                                                      *)
+(*   The subscriber is given records up to the commit index only.          *)
 (*                                                                         *)
 (* Part 2, store-liveness leases.                                          *)
 (*                                                                         *)
@@ -384,10 +386,11 @@ FelixTerm(l) ==
     IF RoleSync THEN (IF role[l] = "leader" THEN term[l] ELSE 0) ELSE seenTerm[l]
 FelixAge(l) == IF RoleSync THEN QAge(l) ELSE seenAge[l]
 
+\* A sole voter needs no answer: Servers is fixed, so nobody else can lead.
 GroupLease(l) ==
     LET t == FelixTerm(l) IN
     /\ t # 0
-    /\ FelixAge(l) < Lease
+    /\ (Servers = {l} \/ FelixAge(l) < Lease)
     /\ ~Voided(l, t)
     /\ Up(l)
     /\ sinceWake[l] >= Lease
