@@ -1198,6 +1198,8 @@ fi
 # A configuration missing here weighs one, so it is never left to
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
+  "FelixRaftReformKeptOldKept 12"
+  "FelixRaftReformKeptOldKeptCap 6"
   "FelixShardMoveGiveUpKeep 22"
   "FelixShardMoveGiveUpKeepLive 22"
   "FelixShardMoveGiveUpFailoverLive 13"
