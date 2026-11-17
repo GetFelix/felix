@@ -1,0 +1,1 @@
+A Raft stream shard's leader no longer keeps its whole log for a member that is down. Its purge below a head trim waits only for the members that answered it lately; one that comes back installs the purge snapshot and serves from the floor it carries (#2602).

@@ -1866,8 +1866,9 @@ and is then retried early at most once a second, which openraft's backoff
 would do anyway.
 
 **Retention.** A Raft log takes no retention bounds of its own, since only
-a purge may drop its entries and a stream shard's log is never purged yet.
-Its leader enforces them with head trims instead. On the storage's retention
+a purge may drop its entries. Its leader enforces them with head trims
+instead, and every member then purges below the floor ("Purging below the
+floor"). On the storage's retention
 timer (`FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`) it reads the stream's
 bounds, the control plane's `retention` with the broker-wide
 `FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS` for a
@@ -1889,12 +1890,11 @@ applies the floor at the trim's entry, so every member hides the same
 records. The size bound counts the hidden segments too, which stay on disk,
 so it keeps about that many bytes readable.
 
-What this does not do yet is free disk. The records below the floor stay
-in the log until stream shards can purge, which needs a snapshot that
-carries the floor and a member that accepts one
-([#2602](https://github.com/GetFelix/felix/issues/2602)). A trim needs the
-fleet to have finalized `raft_head_trim`; until then the log grows as
-before. A pass that cannot trim counts
+The trim only hides records. The same timer then has every member purge
+its log below the floor, which is what frees the disk, once the fleet has
+finalized `raft_stream_purge`; until then the hidden records stay on disk.
+A trim needs the fleet to have finalized `raft_head_trim`; until then the
+log grows as before. A pass that cannot trim counts
 `felix_broker_raft_retention_trims_refused_total` and logs a warning when
 its reason changes. A leader deposed mid-pass says nothing, and the next
 one runs its own pass. A zero retention interval, valid while no stream
@@ -1916,7 +1916,7 @@ segments.
 > `a_retention_cut_does_not_judge_hidden_segments`
 
 A snapshot must not cost a record, and a stream shard's snapshot holds none.
-Two settings keep that true until stream shards purge:
+Two settings keep that true:
 
 - `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
   default keeps only the last 1,000 entries under a snapshot and purges
@@ -1926,7 +1926,7 @@ Two settings keep that true until stream shards purge:
   Installing one purges the log up to it, so any other snapshot would make a
   member behind its leader drop records it was never sent, or still serves.
   The member's own floor does not count. Otherwise it answers `NoSnapshots`
-  and logs an error. Leaders do not purge yet, so a member that is behind
+  and logs an error. A member behind a leader that has not purged past it
   is sent the entries.
 
 So the snapshot message between brokers carries its metadata and the cut
@@ -3525,12 +3525,11 @@ of its proposal (one budget for both) is answered as on the hybrid: `unacknowled
 may still land.
 
 The other difference from the hybrid is deletion:
-a Raft log never deletes a segment below a floor, because only openraft's
-purge may move a Raft log's start, and stream shards are never purged
-today. So a trim on Raft hides records but frees no disk
-([#2602](https://github.com/GetFelix/felix/issues/2602)). Retention on a Raft
-shard is a trim the leader proposes, so the same holds for it ("Retention",
-above).
+a Raft log's retention sweep never deletes a segment below a floor, because
+only openraft's purge may move a Raft log's start. The disk below a trim is
+freed by that purge, below, on the storage's retention timer. Retention on a
+Raft shard is a trim the leader proposes, so the same holds for it
+("Retention", above).
 
 **Purging below the floor** (gated by the `raft_stream_purge` fleet
 feature, which needs `head_trim` and `raft_head_trim`). The design is checked in
@@ -3549,8 +3548,18 @@ again. A re-form reads every copy's floor, from `raft-floor` or a trim
 record at or below its saved commit, starts the new epoch past the highest
 floor's trim, and raises that floor and its headers into every started
 copy's `raft-floor`, so reads below it stay refused even when no copy still
-holds the trim. A leader purges no further than the lowest match it
-still has to feed from its log.
+holds the trim. A leader purges no further than the lowest match among
+the members that answered it lately (within the time after which a peer
+counts as silent, at least two idle heartbeats). A member that is down is
+not waited for, so it cannot keep the leader's disk; when it is back it is
+behind the purge and installs the snapshot. The model's leader cap ranges
+over live members the same way, and the design passes without the cap
+(`FelixRaftStreamPurgeNoCap.cfg`): the cap only saves sending a snapshot.
+
+> `services/felix-broker-service/src/shards/raft/tests/purge.rs`,
+> `a_member_behind_a_purge_installs_the_snapshot_and_keeps_the_floor`,
+> `a_leader_keeps_the_log_a_lagging_member_needs` and
+> `a_leader_purges_past_a_member_that_stopped_answering`
 
 On the leader the trim reaches the replay ring in its entry's turn and
 drops the ring's records below the floor, and the answer waits for that, so

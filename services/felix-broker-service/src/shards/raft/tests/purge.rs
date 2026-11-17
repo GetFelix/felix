@@ -229,9 +229,10 @@ async fn no_member_is_read_below_the_floor_after_a_purge() {
     stop(&restarted).await;
 }
 
-/// **A leader never purges past a member's match.** `broker-b` is behind
-/// the trim, so the leader keeps the entries it still needs, and `broker-b`
-/// catches up from the log without an install.
+/// **A leader never purges past the match of a member that answers.**
+/// `broker-b` is behind the trim but hears heartbeats, so the leader keeps
+/// the entries it still needs, and `broker-b` catches up from the log
+/// without an install.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_keeps_the_log_a_lagging_member_needs() {
     let CutAndTrimmed {
@@ -241,12 +242,16 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
         tail,
         held,
     } = cut_and_trimmed().await;
+    // Answering heartbeats again but sent no entries: behind, not down.
+    net.starved.lock().insert(members[1].name.to_string());
+    net.cut.lock().clear();
+    tokio::time::sleep(Duration::from_millis(500)).await;
     let purged = purge(&members[0]).await;
     assert!(
         purged.is_none_or(|at| at < held),
         "the leader purged to {purged:?}, past broker-b's {held}"
     );
-    net.cut.lock().clear();
+    net.starved.lock().clear();
     let orders = key("orders", 0);
     let log = members[1].shards.log_of(&orders).await.expect("log");
     until("broker-b catches up", || {
@@ -257,6 +262,48 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
         log.carried_floor().is_none(),
         "broker-b installed a snapshot"
     );
+    stop(&members).await;
+}
+
+/// **A member that stopped answering does not keep the leader's disk.**
+/// `broker-b` stays cut off past the time after which a peer counts as
+/// silent, so the leader purges to `floor - 1` as a follower would. When
+/// `broker-b` is back it catches up by installing the leader's snapshot and
+/// serves from the floor it carries.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_purges_past_a_member_that_stopped_answering() {
+    let CutAndTrimmed {
+        net,
+        members,
+        floor,
+        tail,
+        held,
+    } = cut_and_trimmed().await;
+    let orders = key("orders", 0);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let purged = purge(&members[0]).await;
+        if purged == Some(floor - 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the leader kept its log for broker-b, which is down: purged to {purged:?}, held {held}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    net.cut.lock().clear();
+    let behind = &members[1];
+    let log = behind.shards.log_of(&orders).await.expect("log");
+    until("broker-b catches up", || log.commit_offset() >= tail).await;
+    let carried = log
+        .carried_floor()
+        .expect("broker-b installed the leader's purge snapshot");
+    assert_eq!(carried.floor, floor);
+    assert_eq!(carried.headers, bytes::Bytes::from_static(b"holder"));
+    until("broker-b serves its term", || behind.bound() >= tail).await;
+    serves_from(behind, floor).await;
     stop(&members).await;
 }
 

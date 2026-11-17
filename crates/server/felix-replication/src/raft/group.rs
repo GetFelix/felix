@@ -1038,12 +1038,15 @@ impl Group {
     }
 
     /// One purge pass on a stream shard: write a snapshot at
-    /// `P = min(applied, floor - 1)`, on the leader also at or below every
-    /// other member's match, then drop the log through `P`. Two steps in
-    /// that order, so the log never starts above the snapshot. The cap keeps
-    /// a leader from sending installs to members that are only behind;
-    /// safety does not rest on it. Returns `P` once the log is purged to it.
-    /// See `docs/per-shard-raft.md`, "Purging below the floor".
+    /// `P = min(applied, floor - 1)`, on the leader also at or below the
+    /// match of every other member that answered lately ([`Pace::live`]),
+    /// then drop the log through `P`. Two steps in that order, so the log
+    /// never starts above the snapshot. The cap keeps a leader from sending
+    /// installs to members that are only behind; safety does not rest on it.
+    /// A member that stopped answering is not waited for, so it cannot keep
+    /// the leader's disk; it installs the snapshot when it is back. Returns
+    /// `P` once the log is purged to it. See `docs/per-shard-raft.md`,
+    /// "Purging below the floor".
     pub(crate) async fn purge_below_floor(&self) -> Option<u64> {
         use openraft::async_runtime::watch::WatchReceiver;
         if self.id.shard.kind != ShardKind::Stream || self.stopped.load(Ordering::Relaxed) {
@@ -1053,8 +1056,9 @@ impl Group {
         let metrics = self.raft.metrics().borrow_watched().clone();
         let mut at = metrics.last_applied?.index.min(floor.checked_sub(1)?);
         if metrics.state == ServerState::Leader {
+            let live = self.pace.live();
             for (id, matched) in metrics.replication.as_ref()?.iter() {
-                if *id != self.member {
+                if *id != self.member && live.contains(id) {
                     at = at.min(matched.as_ref()?.index);
                 }
             }
