@@ -135,6 +135,22 @@ impl RaftPublish {
             None => Ok(None),
         }
     }
+
+    /// [`Self::complete`], handing the answer to `answered` and then
+    /// finishing the batch's delivery on this task rather than one spawned
+    /// for it.
+    pub async fn complete_then(self, answered: impl FnOnce(Result<Option<u64>, CommitError>)) {
+        match self.0 {
+            Some(proposed) => {
+                proposed
+                    .complete_then(|outcome| {
+                        answered(outcome.map(|o| o.offsets.map(|(first, _)| first)));
+                    })
+                    .await;
+            }
+            None => answered(Ok(None)),
+        }
+    }
 }
 
 /// A head trim on its way to an answer from a Raft shard.

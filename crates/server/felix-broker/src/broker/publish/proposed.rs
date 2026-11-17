@@ -593,6 +593,24 @@ impl<E: Send + 'static> ProposedPublish<E> {
     /// the last one written now, and are not one run: other records lie
     /// between its pieces.
     pub async fn complete(mut self) -> std::result::Result<PublishOutcome, E> {
+        self.answer().await
+    }
+
+    /// [`Self::complete`], handing the answer to `answered` as soon as it
+    /// is known, then finishing the batch on this task. An answer given
+    /// before the commit otherwise leaves the delivery to a task spawned
+    /// for it, one more wakeup per publish.
+    pub async fn complete_then(
+        mut self,
+        answered: impl FnOnce(std::result::Result<PublishOutcome, E>),
+    ) {
+        answered(self.answer().await);
+        if let Some(finishing) = self.finishing.take() {
+            let _ = finishing.await;
+        }
+    }
+
+    async fn answer(&mut self) -> std::result::Result<PublishOutcome, E> {
         let Some(finishing) = self.finishing.as_mut() else {
             return Ok(PublishOutcome {
                 subscribers: 0,

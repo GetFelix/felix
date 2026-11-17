@@ -619,9 +619,19 @@ impl LaneWork {
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
+                // The delivery is finished on this task once the publisher
+                // is answered: one task per publish, not two.
                 self.work.spawn(async move {
-                    let result = proposed.complete().await.map_err(Into::into);
-                    settle(job.response, job.acked_on_enqueue, Some(&shard), result);
+                    proposed
+                        .complete_then(|result| {
+                            settle(
+                                job.response,
+                                job.acked_on_enqueue,
+                                Some(&shard),
+                                result.map_err(Into::into),
+                            );
+                        })
+                        .await;
                 });
             }
             Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
