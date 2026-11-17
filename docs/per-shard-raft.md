@@ -5680,6 +5680,30 @@ batched mark removes on its own (Questions, 11), so the gain must be
 measured after that change, on the three-box layout. `on_commit` cells do
 not move.
 
+The same fsync sets single-node latency at low load, even where the ack
+does not wait for it. A `Quorum` or `Leader` publish on a `periodic`
+broker is answered once its entry is written, but its log still flushes
+behind every append, so with one publish in flight each publish shares the
+machine with the last one's flush. Measured with `FELIX_HOP_TRACE=1`, one
+publish in flight, 1 KiB, on a Mac (microseconds, p50 / p99):
+
+| Engine, consistency | Append begins | Written | Ack queued |
+|---|---|---|---|
+| Hybrid, `Leader` | (no Raft log) | 13 / 19 | 17 / 24 |
+| Raft, `Leader` | 10 / 56 | 42 / 2762 | 55 / 2803 |
+| Raft, `Quorum` | 19 / 62 | 97 / 2548 | 119 / 2607 |
+| Raft, either, log flushed on the broker's own mode | 6 / 9 | 20 / 27 | 28 / 41 |
+
+The last row is a local experiment, not a setting: the log opened with the
+broker's `periodic` mode, as counting a written entry would. The write
+itself costs the same as the hybrid's (about 14 us). Every stage is slower
+under the per-append flush, including the ones before the log, so this is
+contention with the flush, not work the append does. On macOS that flush
+is `F_FULLFSYNC`, which empties the drive's cache and takes about 1.8 ms;
+Linux's `fdatasync` on NVMe is far cheaper, so the gap there should be
+smaller, and it needs measuring on the boxes. The fix is this proposal,
+not a weaker flush.
+
 ### What is built
 
 - The reservation file, carried by a rotation and holding a kept
