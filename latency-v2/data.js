@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794932024393,
+  "lastUpdate": 1794932587669,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -77880,6 +77880,72 @@ window.BENCHMARK_DATA = {
             "range": "121.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 273.00\nmean: 324.00\nstdev: 121.03\ncv: 37.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7994bdcaecdd5eb00e8df8d64c219898d127140d",
+          "message": "formal(raft): main TLA green again after the re-form mark change (#2728) (#2730)\n\n* formal(raft): main TLA green again after the re-form mark change (#2728)\n\nThe voter-set mark from #2666 no longer marks epoch 0 when one voter of\nthree is declared dead. With one term the first re-form then keeps every\nrecord the dead leader committed, so the epoch-1 cap never lowers its\nreturned copy and FelixRaftReformKeptOldKeptCap could not violate\nNeverCaps. Both OldKept configs now give epoch 0 a second term: a later\nvote that no entry carries leaves the first re-form at the saved commits,\nwhich is the path the cap guards.\n\nCpObserve left the new `ordered` variable unassigned, so every config\nwith WaitPlaced FALSE stopped with a TLC error\n(FelixRaftReformStaleMembershipTwoRotatedUnlisted on main).\n\nSix FelixRaftWritten configs from #2666 did not finish in a CI runner's\nsix hours (two filled its disk) and neither twin violated. They are\nunregistered with their CI results in the README until they are bounded.\n\n* formal(raft): small gate pass and twin, to measure for #2729\n\n* formal(raft): give the small gate twin its specification\n\n* formal(raft): nightly runs the two OffsetNeverReused passes, walks the two twins (#2729)\n\n* formal(raft): record the KeptOldKept pair's states and times, mark the unproven twins (#2729)\n\n* formal(tla): drop the GateSmall configs, too slow per PR and the twin is vacuous (#2728)",
+          "timestamp": "2026-11-17T08:17:23-08:00",
+          "tree_id": "03b77da4c40059864cc0ae4877717d4973e8916d",
+          "url": "https://github.com/GetFelix/felix/commit/7994bdcaecdd5eb00e8df8d64c219898d127140d"
+        },
+        "date": 1794932576969,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.20\nstdev: 0.45\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 121,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 121.80\nstdev: 3.03\ncv: 2.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 142,
+            "range": "171.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 219.60\nstdev: 171.31\ncv: 78.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "3.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 88.20\nstdev: 3.49\ncv: 3.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 190,
+            "range": "353.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 370.20\nstdev: 353.80\ncv: 95.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 470,
+            "range": "826.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 470.00\nmean: 978.60\nstdev: 826.16\ncv: 84.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
