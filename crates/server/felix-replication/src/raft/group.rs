@@ -576,6 +576,42 @@ pub(crate) enum Round {
     Stopped,
 }
 
+/// Runs a future on the caller's task, and finishes it on a task of its
+/// own if the caller stops waiting first. An append or vote handed to
+/// openraft must still restart the election timer once it is taken, and a
+/// task per request would cost a spawn and a wakeup on every append.
+struct FinishOnDrop<F: Future<Output: Send> + Send + 'static>(Option<std::pin::Pin<Box<F>>>);
+
+impl<F: Future<Output: Send> + Send + 'static> Future for FinishOnDrop<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        // Out of the slot while it runs, so a panic is not finished again
+        // on drop.
+        let Some(mut work) = self.0.take() else {
+            return std::task::Poll::Pending;
+        };
+        let polled = work.as_mut().poll(cx);
+        if polled.is_pending() {
+            self.0 = Some(work);
+        }
+        polled
+    }
+}
+
+impl<F: Future<Output: Send> + Send + 'static> Drop for FinishOnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(work) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(work);
+        }
+    }
+}
+
 /// What a member is told and asks of the broker it runs on.
 pub(crate) struct Host {
     /// Who is told when the shard opens and closes here.
@@ -1114,7 +1150,7 @@ impl Group {
         let arrived = self.pace.timers.now();
         // A granted pre-vote promises nothing, so it leaves the pace alone.
         let pre_vote = matches!(body, Request::PreVote(_));
-        let handled = tokio::spawn(async move {
+        FinishOnDrop(Some(Box::pin(async move {
             let reply = group.answer(body, report).await?;
             match &reply {
                 Reply::Append(Ok(_)) => group.pace.took(beat, arrived, deadline),
@@ -1122,18 +1158,8 @@ impl Group {
                 _ => {}
             }
             Ok(reply)
-        });
-        match handled.await {
-            Ok(reply) => reply,
-            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-            Err(err) => Err(Refused::Stopped(
-                Box::new(Addressee {
-                    group: self.id.clone(),
-                    to: self.member.clone(),
-                }),
-                err.to_string(),
-            )),
-        }
+        })))
+        .await
     }
 
     /// Answer `body`. When it is an append whose leader asked for a report,
