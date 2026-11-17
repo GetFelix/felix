@@ -422,10 +422,12 @@ impl LaneWork {
         metrics::histogram!(PUBLISH_CLAIM_JOBS).record(group.members.len() as f64);
         // The only ordered part: offsets are consumed here, so the order
         // claims return in is the order records land on disk.
+        felix_storage::hops::mark(felix_storage::hops::Stage::Handed);
         let claimed = self
             .broker
             .claim_publish(&handle, &payloads, publisher.as_ref(), headers.as_deref())
             .await;
+        felix_storage::hops::mark(felix_storage::hops::Stage::Written);
         drop(lane);
         let claimed = match claimed {
             Ok(claimed) => claimed,
@@ -598,6 +600,7 @@ impl LaneWork {
             publisher: job.publisher.take(),
             headers: job.headers.take(),
         };
+        felix_storage::hops::mark(felix_storage::hops::Stage::Handed);
         let proposed = self
             .engine
             .publish_on_raft(
@@ -616,9 +619,19 @@ impl LaneWork {
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
+                // The delivery is finished on this task once the publisher
+                // is answered: one task per publish, not two.
                 self.work.spawn(async move {
-                    let result = proposed.complete().await.map_err(Into::into);
-                    settle(job.response, job.acked_on_enqueue, Some(&shard), result);
+                    proposed
+                        .complete_then(|result| {
+                            settle(
+                                job.response,
+                                job.acked_on_enqueue,
+                                Some(&shard),
+                                result.map_err(Into::into),
+                            );
+                        })
+                        .await;
                 });
             }
             Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
@@ -1115,6 +1128,7 @@ fn settle(
     shard: Option<&ShardKey>,
     result: super::PublishResult,
 ) {
+    felix_storage::hops::mark(felix_storage::hops::Stage::Answered);
     match (response, result) {
         (Some(response), result) => {
             response.send(result);

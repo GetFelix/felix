@@ -130,6 +130,7 @@ async fn enqueue(
     record: bool,
     pending: &mut Option<PendingAck>,
 ) -> Result<Enqueued> {
+    felix_storage::hops::start();
     // Byte-based admission gate, independent of the item-count queue depth: bounds total bytes
     // queued-or-processing so a handful of large payloads/batches can't blow past the intended
     // ingress memory budget. Three gates, narrowest first: the publishing identity's share of

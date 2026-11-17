@@ -617,6 +617,7 @@ pub(crate) async fn run(
             term,
             answers,
         } = drain(first, &mut queue, &mut held);
+        felix_storage::hops::mark(felix_storage::hops::Stage::Dequeued);
         // Every entry of a cache shard is a stamped command, and a stream's
         // are raw records. A mix would stamp the wrong entries and append
         // ones no member can apply. A cache write names no term: it is
@@ -665,6 +666,7 @@ pub(crate) async fn run(
         let Some(sent) = sent else {
             return;
         };
+        felix_storage::hops::mark(felix_storage::hops::Stage::Proposed);
         match sent {
             Ok(results) => answering.push(answer(results, answers, term.is_some())),
             Err(fatal) => {
@@ -815,6 +817,7 @@ pub(super) async fn answer(
                 Some(Err(_)) | None => Err(stopped()),
             };
             if let Ok(at) = applied {
+                felix_storage::hops::mark(felix_storage::hops::Stage::Applied);
                 written_end = Some(at.index + 1);
             }
             span = match (span, applied) {
@@ -917,7 +920,10 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     let span = tokio::select! {
         biased;
         answered = &mut answer => return committed(answered),
-        span = written => span,
+        span = written => {
+            felix_storage::hops::mark(felix_storage::hops::Stage::WrittenSeen);
+            span
+        }
         why = leading.lost(None) => return Err(unled(why, true).into()),
         () = stop.cancelled() => return Err(stopped().into()),
     };

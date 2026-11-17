@@ -119,6 +119,7 @@ pub(super) async fn run_writer_loop(
                 let failed = write_ready(&mut send, &mut ready, &mut chunks, &error_codes)
                     .await
                     .is_err();
+                felix_storage::hops::mark(felix_storage::hops::Stage::AckSent);
                 // One decrement per dequeue, however many answers it released.
                 let mut depth_update: Option<(usize, usize)> = None;
                 for _ in 0..dequeued {

@@ -686,3 +686,39 @@ async fn a_publisher_answered_early_waits_once_the_oldest_batch_is_late() {
     let late = late.await.expect("joined").expect("committed, not refused");
     assert_eq!(late.offsets, Some((1, 1)));
 }
+
+/// **`complete_then` answers at the write and then finishes the batch
+/// itself.** The publisher hears before the commit, and the same future
+/// runs to the commit and the delivery, so no task is spawned to finish it.
+#[tokio::test]
+async fn complete_then_answers_early_and_finishes_on_its_own_task() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    let proposer = Arc::clone(&engine);
+    let (written, answer) = oneshot::channel();
+    let proposed = broker
+        .propose_publish(
+            &handle,
+            vec![Bytes::from_static(b"p")],
+            Duration::MAX,
+            move |_| proposer.propose(1),
+        )
+        .expect("handed over");
+    let (told, heard) = oneshot::channel();
+    let finished = tokio::spawn(proposed.answer_at(answer).complete_then(move |outcome| {
+        let _ = told.send(outcome);
+    }));
+    written.send(1).expect("waiting");
+    let outcome = heard.await.expect("answered").expect("written");
+    assert_eq!(outcome.offsets, Some((0, 0)));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !finished.is_finished(),
+        "returned before the batch it answered was committed"
+    );
+    nothing(&mut receiver).await;
+    engine.commit(0, Ok(()));
+    finished.await.expect("finished");
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
+}
