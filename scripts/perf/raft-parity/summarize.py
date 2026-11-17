@@ -15,6 +15,7 @@ baseline gate), so a baseline+hybrid run can be judged against a separate raft r
 
 --strict exits 1 when any cell fails. The files are written either way.
 """
+import argparse
 import csv
 import json
 import math
@@ -169,14 +170,25 @@ def mean_sd(vals):
     return m, sd
 
 
+def _missing(cur, ref, names):
+    """No verdict when a side has no values. An empty reference leaves nothing to judge
+    against (N/A); an empty current side against a reference that has data is a failure."""
+    if not ref:
+        return {"verdict": "N/A", "reason": "no baseline data (%s has none)" % names[1],
+                "ratio": None, "tolerance": None}
+    if not cur:
+        return {"verdict": "FAIL", "reason": "no data on %s" % names[0], "ratio": None, "tolerance": None}
+    return None
+
+
 def compare(raft, hybrid, higher, fixed_tolerance=None, names=("raft", "hybrid")):
     """Verdict for one metric from the per-round values of each side. A fixed tolerance
     replaces the noise band: lower-is-better then passes while Raft's mean is at most
     (1 + tolerance) times hybrid's, higher-is-better while it is at least (1 - tolerance).
     `names` labels the two sides in the result: the current engine first, the reference second."""
-    if not raft or not hybrid:
-        return {"verdict": "FAIL", "reason": "no data on %s" % (names[0] if not raft else names[1]),
-                "ratio": None, "tolerance": None}
+    missing = _missing(raft, hybrid, names)
+    if missing:
+        return missing
     rm, rsd = mean_sd(raft)
     hm, hsd = mean_sd(hybrid)
     if not higher and hm == 0 and rm == 0:
@@ -209,15 +221,26 @@ def _side(vals):
     return {"mean": sum(vals) / len(vals), "sd": None, "min": min(vals), "max": max(vals), "values": vals}
 
 
-def compare_exact(raft, hybrid, ok, rule):
+def compare_exact(raft, hybrid, ok, rule, names=("raft", "hybrid")):
     """An absolute rule that has to hold on both sides in every round. Not a ratio:
     a side that breaks it fails the cell however the other side did."""
-    if not raft or not hybrid:
-        return {"verdict": "FAIL", "reason": "no data on %s" % ("raft" if not raft else "hybrid"),
-                "ratio": None, "tolerance": None}
+    missing = _missing(raft, hybrid, names)
+    if missing:
+        return missing
     held = all(ok(v) for v in raft + hybrid)
     return {"verdict": "PASS" if held else "FAIL", "ratio": None, "tolerance": None, "rule": rule,
-            "rounds": min(len(raft), len(hybrid)), "raft": _side(raft), "hybrid": _side(hybrid)}
+            "rounds": min(len(raft), len(hybrid)), names[0]: _side(raft), names[1]: _side(hybrid)}
+
+
+def judge(mid, cur, ref, higher, names):
+    """One metric's verdict: an exact rule for the correctness counters, the noise rule
+    for the rest. The same rules apply against hybrid and against the baseline."""
+    if mid in MUST_BE_ZERO:
+        return compare_exact(cur, ref, lambda v: v == 0, "= 0", names)
+    if mid in FLOORS:
+        floor = FLOORS[mid]
+        return compare_exact(cur, ref, lambda v: v >= floor, ">= %g" % floor, names)
+    return compare(cur, ref, higher, CPU_TOLERANCE if mid == "cpu_kmsg" else None, names)
 
 
 def _read_rows(run):
@@ -235,6 +258,13 @@ def load_run(run, raft_from=None):
         rows = [r for r in rows if r["side"] != "raft"]
         rows += [dict(r, dir=raft_from) for r in _read_rows(raft_from) if r["side"] == "raft"]
         env["raft_from"] = raft_from
+        with open(os.path.join(raft_from, "run.env")) as f:
+            for line in f.read().splitlines():
+                if " " in line:
+                    k, v = line.split(" ", 1)
+                    env["raft_from." + k] = v
+        env["raft_from.rounds"] = str(len({r["round"] for r in rows if r["dir"] == raft_from}))
+    env["rounds"] = str(len({r["round"] for r in rows if r["dir"] == run}))
     data = {}
     for r in rows:
         p = os.path.join(r["dir"], "cells", "r%s-%s-%s" % (r["round"], r["cell"], r["side"]), "loadgen.json")
@@ -301,34 +331,31 @@ def summarize(run, raft_from=None):
         bstate = baseline_state(data, cid) if has_baseline else None
         if bstate == "na":
             cell["notes"].append("baseline n/a: the release cannot run this cell")
+        sides_here = {r["side"] for r in rows if r["cell"] == cid}
+        # With --raft-from only cells both runs contain can be judged against each other.
+        partial = bool(raft_from) and pair and not {"hybrid", "raft"} <= sides_here
+        if partial:
+            cell["notes"].append("not judged: %s is not in both runs" % cid)
         for mid, gates in plan:
             label, get, higher = METRICS[mid]
             side_vals = {side: _values(data, cid, side, get) for side in SIDES}
-            if not pair:
+            if not pair or partial:
                 res = {"verdict": "N/A", "reason": "%s not in this run" % (
-                    "raft" if "raft" not in present else "hybrid"), "ratio": None, "tolerance": None}
-                if bstate in ("ok", "incomplete"):
+                    "raft" if "raft" not in (present if not partial else sides_here) else "hybrid"),
+                    "ratio": None, "tolerance": None}
+                if bstate in ("ok", "incomplete") and not partial:
                     base = _values(data, cid, "baseline", get)
                     res["vs_baseline"] = {
-                        side: compare(side_vals[side], base, higher,
-                                      CPU_TOLERANCE if mid == "cpu_kmsg" else None,
-                                      names=("current", "baseline"))
+                        side: judge(mid, side_vals[side], base, higher, ("current", "baseline"))
                         for side in cur}
-            elif mid in MUST_BE_ZERO:
-                res = compare_exact(side_vals["raft"], side_vals["hybrid"], lambda v: v == 0, "= 0")
-            elif mid in FLOORS:
-                floor = FLOORS[mid]
-                res = compare_exact(side_vals["raft"], side_vals["hybrid"], lambda v: v >= floor,
-                                    ">= %g" % floor)
             else:
-                tol = CPU_TOLERANCE if mid == "cpu_kmsg" else None
-                res = compare(side_vals["raft"], side_vals["hybrid"], higher, tol)
+                res = judge(mid, side_vals["raft"], side_vals["hybrid"], higher, ("raft", "hybrid"))
                 if bstate in ("ok", "incomplete"):
                     base = _values(data, cid, "baseline", get)
                     # The baseline is the reference side; a current engine is compared to it
                     # the way Raft is compared to hybrid.
                     res["vs_baseline"] = {
-                        side: compare(side_vals[side], base, higher, tol, names=("current", "baseline"))
+                        side: judge(mid, side_vals[side], base, higher, ("current", "baseline"))
                         for side in cur}
             res.update({"id": mid, "label": label, "higher_is_better": higher, "gates": gates})
             cell["metrics"].append(res)
@@ -339,11 +366,13 @@ def summarize(run, raft_from=None):
                       for rd, st, d in data.get((cid, side), []) if d is None]
         if incomplete:
             cell["notes"].append("incomplete: a cell with an unmeasured round fails")
-        if not pair:
+        judged = [m for m in gating if m["verdict"] != "N/A"]
+        if not pair or partial:
             cell["verdict"] = "N/A"
+        elif incomplete or any(m["verdict"] != "PASS" for m in judged):
+            cell["verdict"] = "FAIL"
         else:
-            cell["verdict"] = "PASS" if (gating and not incomplete
-                                         and all(m["verdict"] == "PASS" for m in gating)) else "FAIL"
+            cell["verdict"] = "PASS" if judged else "N/A"
         if has_baseline:
             fails = []
             if bstate == "incomplete":
@@ -353,14 +382,22 @@ def summarize(run, raft_from=None):
                     fails.append("%s had an unmeasured round" % side)
             for m in gating:
                 for side, r in (m.get("vs_baseline") or {}).items():
-                    if r["verdict"] != "PASS":
+                    if r["verdict"] == "FAIL":
                         fails.append("%s %s" % (side, m["id"]))
-            cell["baseline_verdict"] = "N/A" if bstate in (None, "na") else ("FAIL" if fails else "PASS")
+            compared = any(r["verdict"] != "N/A" for m in gating for r in (m.get("vs_baseline") or {}).values())
+            cell["baseline_verdict"] = ("N/A" if bstate in (None, "na") or partial else
+                                        "FAIL" if fails else "PASS" if compared else "N/A")
             cell["baseline_failures"] = fails
         cells.append(cell)
-    overall = ("N/A" if not pair else
-               "PASS" if cells and all(c["verdict"] == "PASS" for c in cells) else "FAIL")
+    judged_cells = [c for c in cells if c["verdict"] != "N/A"]
+    overall = ("N/A" if not pair or (cells and not judged_cells) else
+               "PASS" if cells and all(c["verdict"] == "PASS" for c in judged_cells) else "FAIL")
     res = {"sides": sorted(present), "env": env, "noise_floor": NOISE_FLOOR, "noise_k": NOISE_K, "verdict": overall, "cells": cells}
+    warnings = []
+    if raft_from and env.get("rounds") != env.get("raft_from.rounds"):
+        warnings.append("round counts differ: %s round(s) in the main run, %s in the --raft-from run" % (
+            env.get("rounds"), env.get("raft_from.rounds")))
+    res["warnings"] = warnings
     if has_baseline:
         judged = [c for c in cells if c["baseline_verdict"] != "N/A"]
         res["baseline_verdict"] = "PASS" if judged and all(c["baseline_verdict"] == "PASS" for c in judged) else "FAIL"
@@ -437,8 +474,11 @@ def baseline_section(res):
 def markdown(res):
     out = ["# Raft vs hybrid parity matrix\n", "Verdict: **%s**\n" % (
         res["verdict"] if res["verdict"] != "N/A" else
-        "N/A (needs hybrid and raft; only %s in this run)" % ", ".join(res["sides"])),
-           "```\n%s\n```\n" % "\n".join("%s %s" % kv for kv in res["env"].items()),
+        "N/A (needs hybrid and raft; only %s in this run)" % ", ".join(res["sides"])
+        if not {"hybrid", "raft"} <= set(res["sides"]) else "N/A (no cell had data on both sides)"),
+           "```\n%s\n```\n" % "\n".join("%s %s" % kv for kv in res["env"].items())]
+    out.extend("WARNING: %s\n" % w for w in res.get("warnings", []))
+    out += [
            "Gate: Raft >= hybrid on every gating metric within the measured noise. The ratio is "
            "Raft's standing (above 1 is better, for latency too). The tolerance is "
            "between %g%% and %g%%, %g standard errors of the ratio. Broker CPU per 1000 messages "
@@ -490,21 +530,20 @@ def markdown(res):
 
 
 def main(argv):
-    args = argv[1:]
-    raft_from = None
-    if "--raft-from" in args:
-        i = args.index("--raft-from")
-        raft_from = args[i + 1]
-        del args[i:i + 2]
-    run = args[0]
-    res = summarize(run, raft_from)
+    ap = argparse.ArgumentParser(description="Summarize a Raft vs hybrid parity run.")
+    ap.add_argument("run", help="run directory holding cells.tsv and run.env")
+    ap.add_argument("--raft-from", help="another run dir whose raft rows stand in for this run's")
+    ap.add_argument("--strict", action="store_true", help="exit 1 when a verdict is FAIL")
+    args = ap.parse_args(argv[1:])
+    run = args.run
+    res = summarize(run, args.raft_from)
     md = markdown(res)
     with open(os.path.join(run, "results.json"), "w") as f:
         json.dump(res, f, indent=2)
     with open(os.path.join(run, "results.md"), "w") as f:
         f.write(md)
     print(md)
-    if "--strict" in argv and "FAIL" in (res["verdict"], res.get("baseline_verdict")):
+    if args.strict and "FAIL" in (res["verdict"], res.get("baseline_verdict")):
         return 1
     return 0
 
