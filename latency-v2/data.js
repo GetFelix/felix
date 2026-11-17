@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794905576943,
+  "lastUpdate": 1794908424750,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -77748,6 +77748,72 @@ window.BENCHMARK_DATA = {
             "range": "46.60",
             "unit": "us",
             "extra": "trials: 5\nmedian: 537.00\nmean: 526.60\nstdev: 46.60\ncv: 8.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e32c6804aaf026c322f0be8d9e3d842d2952e3b2",
+          "message": "fix(raft): a leader's purge waits only for members that answer (#2602) (#2727)\n\n* fix(raft): a leader's purge waits only for members that answer (#2602)\n\nA leader capped its purge below a head trim at every other member's\nmatch, so one member that was down kept the leader's whole log. The cap\nnow ranges over the members that answered lately (Pace::live). One that\ncomes back installs the purge snapshot and keeps the floor it carries,\nwhich FelixRaftStreamPurgeNoCap.cfg checks.\n\nDocs: Raft retention now frees disk through the purge once\nraft_stream_purge is finalized.\n\n* fix(raft): report a leader's purge only once openraft ran it (#2602)\n\nopenraft holds a leader's purge while any replication stream still reads\nthe range, a stream to a member that is down included, and runs it on that\nstream's next answer or error. purge_below_floor returned the point as soon\nas it asked, and a later pass that found the purge done returned None. It\nnow waits briefly for the purge and returns the point when the log is\nalready purged through it, so the retention loop and tests see the real\nstate.\n\nAdds a test for a member cut off past a purge that installs the snapshot,\nthen leads with every acked record and no offset given out again.\n\n* fix(raft): a new leader counts a peer live for a window of its own reign\n\nPace kept a peer's last answer across leaderships, so a re-elected leader\nsaw every peer as silent until the first heartbeat came back and could\npurge past a follower that was only behind. The purge test now waits on\nanswered heartbeats instead of a fixed sleep.\n\n* chore: state why the purge change leaves the Raft spec unaffected\n\nSpec-Unaffected: FelixRaftCache.tla lets a member purge up to its own snapshot index regardless of other members' match, and a member behind the purge installs the snapshot. Capping the leader's purge by live members' match only removes behaviours the model already allows.",
+          "timestamp": "2026-11-17T09:35:15Z",
+          "tree_id": "ed843714351da8f2816b9c47b9f98d2b0b26efc5",
+          "url": "https://github.com/GetFelix/felix/commit/e32c6804aaf026c322f0be8d9e3d842d2952e3b2"
+        },
+        "date": 1794908413613,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 97.00\nstdev: 1.22\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "7.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 134.20\nstdev: 7.98\ncv: 5.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 172,
+            "range": "739.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 508.00\nstdev: 739.13\ncv: 145.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 132.80\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "4.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 259.20\nstdev: 4.09\ncv: 1.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 351,
+            "range": "22.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 351.00\nmean: 360.40\nstdev: 22.55\ncv: 6.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
