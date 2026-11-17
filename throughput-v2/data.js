@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794900711264,
+  "lastUpdate": 1794905581255,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61204,6 +61204,58 @@ window.BENCHMARK_DATA = {
             "range": "7735.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1208079.18\nmean: 1206500.86\nstdev: 7735.85\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6bb94ae7c2c122cf551ad1f1ea7b9db1819f595",
+          "message": "perf: measure the parity matrix against the v0.7.2 release baseline (#2716)\n\n* perf: measure the parity matrix against the v0.7.2 release baseline\n\n* perf(parity): treat an absent reference as N/A, judge only shared cells with --raft-from, use argparse",
+          "timestamp": "2026-11-17T08:46:11Z",
+          "tree_id": "f541b7dd090acc761a77184b584bee8b23b4a73e",
+          "url": "https://github.com/GetFelix/felix/commit/e6bb94ae7c2c122cf551ad1f1ea7b9db1819f595"
+        },
+        "date": 1794905580521,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362802.81,
+            "range": "12919.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362802.81\nmean: 368019.07\nstdev: 12919.88\ncv: 3.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362802.81,
+            "range": "12919.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362802.81\nmean: 368019.07\nstdev: 12919.88\ncv: 3.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83695.18,
+            "range": "519.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83695.18\nmean: 83535.23\nstdev: 519.76\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 836951.81,
+            "range": "5197.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 836951.81\nmean: 835352.32\nstdev: 5197.63\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
