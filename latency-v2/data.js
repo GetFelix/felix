@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794878760119,
+  "lastUpdate": 1794879160328,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -77286,6 +77286,72 @@ window.BENCHMARK_DATA = {
             "range": "42.42",
             "unit": "us",
             "extra": "trials: 5\nmedian: 361.00\nmean: 362.20\nstdev: 42.42\ncv: 11.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "903d8cdca50c9975208fd7eebec3c7ee9b1f35ae",
+          "message": "perf(parity): broker CPU per 1000 messages, MQTT latency and tail cells (#2706) (#2715)\n\n* fix(mqtt): log a refused publish that closes a 3.1.1 connection; authenticate the parity rf3-mqtt cell (#2708)\n\n* fix(mqtt): refuse a connection with no credential to forward at CONNECT on a multi-broker cluster (#2708)\n\nA publish for a shard another broker leads is forwarded with the client's\ntoken. A connection without one (the anonymous development tenant) was\naccepted and then dropped at its first such publish. A broker that forwards\nand whose node catalog lists more than one broker now refuses it at CONNECT\nwith not authorized (0x87, 3.1.1: 5) and a 5.0 reason string, logs a warning\nand counts credential_required. A single broker still accepts it; a cluster\nthat grows later keeps the publish-time refusal and warning as the backstop,\nwhich now says \"no credential to forward\".\n\n* fix(mqtt): fail closed on an unknown cluster size and count only live brokers (#2708)\n\n* test(mqtt): capture the refusal log through one global subscriber\n\nA scoped subscriber missed the log when other tests had already cached the\ncallsite as disabled, so the test failed under the coverage run.\n\nSpec-Unaffected: the MQTT write path only forwards a refusal to the client and logs it; no lease, quorum mark, report, promotion or handoff changes.\n\n* perf(parity): broker CPU per 1000 messages and MQTT latency and tail cells (#2706)\n\nReads each broker's utime and stime around the measured window on every box and gates Raft within 10% of hybrid. Adds rf3-mqtt-lat and rf3-mqtt-tail, with mqtt-subscribe and a paced mqtt-publish in felix-loadgen.",
+          "timestamp": "2026-11-16T17:19:15-08:00",
+          "tree_id": "9faa29732e1107652dc28ec9de75b4b9c8aa2be5",
+          "url": "https://github.com/GetFelix/felix/commit/903d8cdca50c9975208fd7eebec3c7ee9b1f35ae"
+        },
+        "date": 1794879140028,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 154.40\nstdev: 0.89\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "5.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 212.40\nstdev: 5.46\ncv: 2.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "66.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 303.60\nstdev: 66.75\ncv: 21.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.40\nstdev: 1.14\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 396,
+            "range": "10.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 396.00\nmean: 395.00\nstdev: 10.00\ncv: 2.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 559,
+            "range": "366.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 559.00\nmean: 772.60\nstdev: 366.51\ncv: 47.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
