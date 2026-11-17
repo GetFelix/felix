@@ -518,6 +518,7 @@ impl RaftEngine {
     /// one turn ([`Broker::propose_records_idempotent`]). Their entries are
     /// the ones a call per record would write, so a leader change that cuts
     /// them leaves whole batches, and the re-send writes only the rest.
+    /// `reuse` says how a held record whose payload differs is answered.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_records_idempotent(
         &self,
@@ -529,6 +530,7 @@ impl RaftEngine {
         first_sequence: u64,
         payloads: Vec<Bytes>,
         attribution: Attribution,
+        reuse: SequenceReuse,
         timeout: Duration,
     ) -> Result<IdempotentPublish, BrokerError> {
         let producer_id = turn.producer_id();
@@ -540,6 +542,7 @@ impl RaftEngine {
             first_sequence,
             payloads,
             attribution,
+            reuse,
             timeout,
             |timestamp_micros, turn, owed| {
                 let producer = Sequenced {

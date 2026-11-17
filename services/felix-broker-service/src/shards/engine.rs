@@ -542,9 +542,10 @@ impl StreamEngine {
 
 impl StreamEngine {
     /// [`Self::publish_idempotent_on_raft`] for a producer that numbers
-    /// records, not batches (Kafka): `payloads` are records
-    /// `first_sequence..`, each its own one-record batch, proposed together
-    /// under one turn. `None` when the hybrid runs the shard.
+    /// records, not batches (Kafka, and MQTT on Raft): `payloads` are
+    /// records `first_sequence..`, each its own one-record batch, proposed
+    /// together under one turn. `reuse` says how a held record whose payload
+    /// differs is answered. `None` when the hybrid runs the shard.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_records_idempotent_on_raft(
         &self,
@@ -556,6 +557,7 @@ impl StreamEngine {
         first_sequence: u64,
         payloads: Vec<bytes::Bytes>,
         attribution: felix_broker::Attribution,
+        reuse: felix_broker::SequenceReuse,
         timeout: Duration,
     ) -> Option<Result<RaftIdempotentPublish, RaftRefusal>> {
         #[cfg(feature = "raft")]
@@ -573,6 +575,7 @@ impl StreamEngine {
                 first_sequence,
                 payloads,
                 attribution,
+                reuse,
                 timeout,
             );
             Some(
@@ -592,6 +595,7 @@ impl StreamEngine {
                 first_sequence,
                 payloads,
                 attribution,
+                reuse,
                 timeout,
             );
             None

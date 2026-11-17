@@ -11,7 +11,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use felix_authz::AuthzError;
-use felix_broker::{Attribution, Broker, IdempotentOutcome, PublishOutcome, StreamHandle};
+use felix_broker::{
+    Attribution, Broker, IdempotentOutcome, PublishOutcome, SequenceReuse, StreamHandle,
+};
 use felix_kafka::{
     Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Proposed,
     Settings, ShardRef, WriteError, WritePermit,
@@ -379,6 +381,8 @@ impl BrokerCluster {
             first,
             produce.payloads.to_vec(),
             attribution,
+            // Kafka answers a re-send by its numbers alone.
+            SequenceReuse::AnswerDuplicate,
             self.quorum_timeout,
         );
         let proposed = raft_proposed(proposed, term)?;

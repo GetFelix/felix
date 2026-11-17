@@ -2163,8 +2163,9 @@ mod on_raft {
     }
 
     /// **An MQTT batch written on a member that does not lead goes to the
-    /// leader in one forward when the leader takes records that each take a
-    /// sequence, and one forward per record when it does not.** Either way
+    /// leader in one forward, which it proposes in one proposal, when the
+    /// leader takes records that each take a sequence, and one forward per
+    /// record when it does not.** Either way
     /// the records land once, in order, each at its own sequence.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_mqtt_batch_is_forwarded_whole_only_to_a_leader_that_takes_it() {
@@ -2240,13 +2241,20 @@ mod on_raft {
             .with_forwarding(Arc::clone(handlers), Duration::from_secs(30))
         };
 
+        let proposals = || {
+            let shards = &members[leader].shards;
+            let engine = shards.engine_for(&orders).expect("a member here");
+            engine.proposals(&orders)
+        };
         let current = handlers(
             PeerCapabilities::FORWARD_OFFSETS.union(PeerCapabilities::RECORD_SEQUENCED_FORWARDS),
         );
+        let before = proposals();
         writes(&current)
             .write(batch(0, &["a", "b", "c"]))
             .await
             .expect("written");
+        assert_eq!(proposals() - before, 1, "one proposal on the leader");
         assert_eq!(
             *current.kinds.lock().expect("lock"),
             [Kind::RecordSequencedForwardPublish]
