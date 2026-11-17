@@ -257,9 +257,11 @@ async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
     EngineShards::shutdown(&*shards).await;
 }
 
-/// **A batch of several MQTT messages for a Raft shard is written whole**,
-/// each record at its own sequence, and sent again it writes nothing. The
-/// next batch starts at the sequence after its last record.
+/// **A batch of several MQTT messages for a Raft shard is written whole in
+/// one proposal**, each record at its own sequence, and sent again it
+/// proposes nothing. The next batch starts at the sequence after its last
+/// record. A proposal per record costs a turn on the log per record, which
+/// is what kept a Raft shard's MQTT throughput well under the hybrid's.
 #[cfg(feature = "raft")]
 #[tokio::test]
 async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
@@ -289,16 +291,31 @@ async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
         message
     };
 
+    let proposals = || {
+        let engine = shards.engine_for(&orders).expect("a member here");
+        engine.proposals(&orders)
+    };
+
     let first = ["plant/a", "plant/b", "plant/c"];
+    let before = proposals();
     writes.write(message(0, &first)).await.expect("written");
+    assert_eq!(proposals() - before, 1, "three records, one proposal");
     writes
         .write(message(0, &first))
         .await
         .expect("answered from the log");
+    assert_eq!(proposals() - before, 1, "a re-send proposes nothing");
     writes
         .write(message(3, &["plant/d", "plant/e"]))
         .await
         .expect("written");
+    assert_eq!(proposals() - before, 2);
+    // Another message under a sequence the log holds is not answered as
+    // written.
+    assert!(matches!(
+        writes.write(message(3, &["plant/x", "plant/e"])).await,
+        Err(WriteError::OutcomeUnknown(_))
+    ));
 
     let stored: Vec<_> = broker
         .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)

@@ -2991,16 +2991,25 @@ hybrid, and each is answered at its commit. A Raft shard takes an idempotent
 batch of one record only (#2524), so a broker that runs Raft shards gives
 each message of a connection's batch a producer sequence of its own, the way
 a Kafka producer's records are numbered. When this broker leads the shard,
-it proposes the batch's messages one after another, each once the one
-before it is on its own log rather than once it commits, so a batch of
-queued messages costs about one commit round trip, as one batch does on the
-hybrid. A message proposed after one that was never written is refused as a
-gap, so the log never holds a message without the ones the connection sent
-before it. The messages are settled in order: one whose proposal failed is
-sent again on its own and answered from whichever log holds it by then.
+it proposes the batch's messages together, as a Kafka producer's records
+are: one proposal under the producer's turn, each message a one-record
+batch at its own sequence. A batch of queued messages costs one commit
+round trip and one turn on the log, as one batch does on the hybrid.
+Proposing them one at a time, each once the one before it was on the log,
+cost a turn per message and kept a 64-message window well below the
+hybrid's throughput. If the proposal is refused, or a leader change leaves
+its outcome unknown, the messages are settled in order: each is sent again
+on its own and answered from whichever log holds it by then.
 
-A broker that is not a member forwards each message to the leader under
-its sequence, one at a time, and the leader proposes it. Until
+A member that does not lead the group forwards the whole batch to the
+leader in one forward, `RecordSequencedForwardPublish`, which marks each
+message as its own batch at the next sequence, and the leader proposes them
+in one proposal, so the batch again costs one commit round trip
+plus the forward, as on the hybrid. That needs a leader that offers
+`RECORD_SEQUENCED_FORWARDS`; to any other, and from a broker that is not a
+member, each message is forwarded on its own under its sequence. A forward
+that fails partway is answered as a lost leadership, and the sender sends
+each message again on its own, answered from the log. Until
 the cluster finalizes `raft_record_headers` an MQTT message, which always
 carries headers, is refused `record_headers_disabled`. While the shard has
 no leader (an election), a broker that is a member of its group waits for

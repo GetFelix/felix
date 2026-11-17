@@ -131,6 +131,9 @@ impl InternalMessage {
             // the owner's duplicate check. Then the credential, so a
             // forwarder that has one always sends the kind an owner will
             // check it on.
+            Self::ForwardPublish(m) if m.producer.is_some_and(|p| p.per_record) => {
+                Kind::RecordSequencedForwardPublish
+            }
             Self::ForwardPublish(m) if m.producer.is_some() => {
                 if m.headers
                     .as_deref()
@@ -256,6 +259,8 @@ impl InternalMessage {
                 PeerCapabilities::SEQUENCED_FORWARDS
                     .union(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS),
             )
+        } else if self.kind() == Kind::RecordSequencedForwardPublish {
+            Some(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
         } else {
             headers
         };
