@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794932587669,
+  "lastUpdate": 1794932925814,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -77946,6 +77946,72 @@ window.BENCHMARK_DATA = {
             "range": "826.16",
             "unit": "us",
             "extra": "trials: 5\nmedian: 470.00\nmean: 978.60\nstdev: 826.16\ncv: 84.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b91a2c514a9577bc08a5c930a3b115a0bb3ec38f",
+          "message": "test(cluster): settle in-flight moves before replaying after a timed-out handoff (#2733) (#2734)\n\n* test(cluster): settle in-flight moves before replaying after a timed-out handoff (#2733)\n\nThe pass that fails the last shard over can also start a rebalancing move\nonto the three brokers left. The harness runs no placement timer, so the\nloop stopped stepping with that leader fenced for the cut-over, not serving,\nand the replay on it timed out. Keep stepping until no move is in flight.\n\n* ci: temporary repro loop for #2733 (to be removed)\n\n* ci: drop the temporary #2733 repro loop",
+          "timestamp": "2026-11-17T08:17:38-08:00",
+          "tree_id": "5dfca6a0211f8dd5c29d4bb8e6b977263fd4da1b",
+          "url": "https://github.com/GetFelix/felix/commit/b91a2c514a9577bc08a5c930a3b115a0bb3ec38f"
+        },
+        "date": 1794932916956,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 68.40\nstdev: 0.55\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 117,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 117.00\nmean: 117.20\nstdev: 1.48\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 147,
+            "range": "71.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 147.00\nmean: 175.80\nstdev: 71.87\ncv: 40.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 85.80\nstdev: 0.45\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "33.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 204.80\nstdev: 33.85\ncv: 16.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 316,
+            "range": "651.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 316.00\nmean: 595.80\nstdev: 651.79\ncv: 109.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
