@@ -69,7 +69,7 @@ fi
 : "${KEYS:=$((SHARDS * 8))}" "${FANOUT:=4}" "${FANOUT_TOTAL:=200000}"
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
 : "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
-: "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}"
+: "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
   for topo in single rf3; do for mode in oncommit quorum leader; do
@@ -293,8 +293,20 @@ run_cell() {
   # The engine check: the broker's own environment, and the Raft marker that only
   # a Raft member writes into its shard directory.
   if [ "$status" = ok ]; then
+    # The repl check reads placement leaders; a Raft member opens (and writes its
+    # marker) a moment later, so poll the raft side until the markers exist.
+    local t0=$SECONDS
     for b in "${brokers[@]}"; do
-      e=$(on "$b" engine "$dir"); echo "box$b before $e" >> "$loc/engine.txt"
+      e=$(on "$b" engine "$dir")
+      if [ "$side" = raft ]; then
+        while :; do
+          n=${e#*raft_dirs=}; n=${n%% *}
+          case "$e" in "env=raft raft_dirs="*) [ "$n" -ge "$NSHARDS" ] && break ;; esac
+          [ $((SECONDS - t0)) -lt "$RAFT_OPEN_WAIT_SECS" ] || break
+          sleep 0.5; e=$(on "$b" engine "$dir")
+        done
+      fi
+      echo "box$b before $e" >> "$loc/engine.txt"
       case "$side:$e" in
         hybrid:"env=hybrid raft_dirs=0 alive=1") ;;
         raft:"env=raft raft_dirs="*" alive=1")
@@ -303,6 +315,7 @@ run_cell() {
         *) status=engine-mismatch ;;
       esac
     done
+    [ "$side" != raft ] || [ "$status" != ok ] || echo "raft members open after $((SECONDS - t0)) s" >> "$loc/engine.txt"
   fi
   if [ "$status" = ok ]; then
     sleep "$SETTLE_SECS"
