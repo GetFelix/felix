@@ -1061,6 +1061,8 @@ walks=(
   "FelixShardFencedCrashUnprobed pass"
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
   "FelixShardElectUncleanContinuingDoubtedFull pass"
+  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
+  "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ] || [ -n "${affected_walks:-}" ]; then registered=("${walks[@]}"); fi
@@ -1159,8 +1161,9 @@ fi
 # FelixRaftWrittenCommitsReformJoint{Dead,DeadOneSet,CutDead} are not
 # registered: in main run 43961999904 none finished in its CI runner's time
 # (the two Joint{Dead,DeadOneSet} filled the runner's disk past 440M distinct
-# states), and neither twin had violated. Each is registered once bounded
-# so a run gives its declared outcome (issue 2728).
+# states), and neither twin had violated. VouchDeadFive and JointCutDead run
+# nightly (tla-walk.yml); the two twins are walked there (#2729), and
+# FelixRaftWrittenReformGateSmall{,Open} check BaseAgrees at smaller bounds.
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly
