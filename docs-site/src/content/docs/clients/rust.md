@@ -153,7 +153,7 @@ broker refuses it.
 
 **When it is called.** When a stream is about to authenticate and the client
 holds no token, the held one is due for replacement, or a broker just refused
-it. A stream that carries writes (a publish or cache stream) also asks, at most every five seconds and only when it has a request to send. If the provider's token has changed, the stream finishes what is in flight and moves to a new stream authenticated with it, so a write the broker forwards to the shard's owner never carries an expired token. A provider that does not cache is called that often per stream. A client with nothing to send makes no calls, and there is no timer. The client never runs
+it. A stream that carries writes (a publish or cache stream) also asks, at most every five seconds and only when it has a request to send. If the provider's token has changed, the stream finishes what is in flight and moves to a new stream authenticated with it, so a write the broker forwards to the shard's owner never carries an expired token. A provider that does not cache is called that often per stream, and those calls can overlap; one that cannot be called concurrently should serialize itself. A client with nothing to send makes no calls, and there is no timer. The client never runs
 two calls at once: streams that open together wait on one and share its token.
 That is also what makes it safe to rotate a refresh token inside the provider.
 The first fetch at connect is cut off at 30 seconds and not counted in

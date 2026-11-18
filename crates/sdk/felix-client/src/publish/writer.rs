@@ -282,6 +282,7 @@ pub(crate) async fn run_publisher_writer_with_limit(
         // stream that outlives it moves to a new one. In-flight publishes
         // finish on the old stream first, which keeps their order.
         if let Some(renewal) = renewal.as_mut()
+            && !matches!(request, PublishRequest::Finish { .. })
             && renewal.due()
             && let Some(fresh) = renewal.newer_token().await
         {

@@ -50,6 +50,11 @@ impl Credentials {
         crate::client::fetch_from(self.tokens.as_ref()).await
     }
 
+    /// See [`TokenProvider::bounds_its_own_fetch`].
+    pub(crate) fn bounds_its_own_fetch(&self) -> bool {
+        self.tokens.bounds_its_own_fetch()
+    }
+
     /// The same offers, authenticating as a different principal.
     pub(crate) fn for_identity(&self, tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
         Self {

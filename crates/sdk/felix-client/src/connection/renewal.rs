@@ -28,6 +28,12 @@ const CHECK_EVERY: Duration = Duration::from_secs(5);
 /// token it has meanwhile.
 const FETCH_WAIT: Duration = Duration::from_secs(1);
 
+/// How long a moved stream waits for the broker to end the old one.
+const DRAIN_WAIT: Duration = Duration::from_secs(5);
+
+/// Extra time before asking again after a check that got no token.
+const FAILED_CHECK_BACKOFF: Duration = Duration::from_secs(25);
+
 /// One stream's token, and what it takes to replace the stream when the
 /// provider has a newer one.
 pub(crate) struct Renewal {
@@ -78,13 +84,25 @@ impl Renewal {
     /// carries on with the token it has and the next check asks again.
     pub(crate) async fn newer_token(&mut self) -> Option<String> {
         self.checked = Instant::now();
-        let fresh = match tokio::time::timeout(FETCH_WAIT, self.credentials.current_token()).await {
-            Ok(Ok(fresh)) => fresh,
-            Ok(Err(err)) => {
-                debug!(error = %err, "token renewal check could not get a token");
+        // Only a provider that bounds its own fetch is cut off here: dropping
+        // another's call mid-way could lose a refresh token it was rotating.
+        let fetch = self.credentials.current_token();
+        let fresh = if self.credentials.bounds_its_own_fetch() {
+            tokio::time::timeout(FETCH_WAIT, fetch).await.ok()
+        } else {
+            Some(fetch.await)
+        };
+        let fresh = match fresh {
+            Some(Ok(fresh)) => fresh,
+            other => {
+                if let Some(Err(err)) = other {
+                    debug!(error = %err, "token renewal check could not get a token");
+                }
+                // A provider that is down is not asked again at once, so its
+                // wait is not paid on every interval.
+                self.checked = Instant::now() + FAILED_CHECK_BACKOFF;
                 return None;
             }
-            Err(_) => return None,
         };
         (fresh != self.token).then_some(fresh)
     }
@@ -117,7 +135,15 @@ impl Renewal {
             Ok((new_send, new_recv, _, token)) => {
                 let _ = send.finish();
                 *send = new_send;
-                *recv = new_recv;
+                let mut old = std::mem::replace(recv, new_recv);
+                // Wait for the broker to end the old stream, so a write sent
+                // on it without an ack is applied before anything on the new
+                // one, and an error it sent is not left unread.
+                let _ = tokio::time::timeout(DRAIN_WAIT, async {
+                    let mut scratch = [0u8; 4096];
+                    while let Ok(Some(_)) = old.read(&mut scratch).await {}
+                })
+                .await;
                 self.token = token;
                 debug!("stream moved onto the renewed token");
                 true
