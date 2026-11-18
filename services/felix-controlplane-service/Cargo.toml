@@ -44,6 +44,7 @@ chrono = { version = "0.4", features = ["serde"] }
 casbin = { workspace = true }
 dashmap = { workspace = true }
 base64 = { workspace = true }
+aws-lc-rs = "1"
 ed25519-dalek = { workspace = true }
 hex = "0.4"
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs", "use_pem"] }
@@ -72,6 +73,7 @@ tower = "0.5"
 tempfile = { workspace = true }
 serial_test = { workspace = true }
 base64 = { workspace = true }
+aws-lc-rs = "1"
 # Certificate fixtures for the bootstrap mTLS tests.
 rcgen = { workspace = true }
 
