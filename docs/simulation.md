@@ -664,9 +664,10 @@ above, a seed fails when:
   seconds before it stopped, which its log mark covers;
 - a copy the fault did not touch rotates.
 
-A stopped or replaced copy counts toward a majority for the offsets below its
-read bound when it stopped, until its new copy has flushed that far: those
-were committed, so it held them. A read bound is checked against the same
+A stopped or replaced copy counts toward a majority for the records it held
+below its read bound when it stopped, read from its log then, until its new
+copy has flushed that far: those were committed, so it held them. A disk-mode
+seed that never wiped or restored a directory checked too little. A read bound is checked against the same
 member's earlier bounds only within one start.
 
 `a_majority_wipe_stalls_its_shard_and_loses_nothing` wipes one shard's

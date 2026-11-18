@@ -483,6 +483,20 @@ async fn serve(member: &mut Member, shard: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// What a stopped or replaced copy held below its read bound when it
+/// stopped, read from its log then, so it counts only for those records.
+#[derive(Default)]
+struct Credit {
+    bound: u64,
+    records: BTreeMap<u64, Held>,
+}
+
+/// Whether `credit` counts its copy as holding `record` at `offset`: only
+/// the record it held there, not whatever another member holds.
+fn credited(credit: Option<&Credit>, offset: u64, record: &Held) -> bool {
+    credit.is_some_and(|credit| credit.records.get(&offset) == Some(record))
+}
+
 /// When a copy's flushed index was sampled, and what it was.
 type Samples = VecDeque<(Instant, u64)>;
 
@@ -511,7 +525,7 @@ struct Sim {
     /// Per (member, shard): a copy that is stopped or was replaced counts
     /// as holding every offset below its read bound when it stopped. Those
     /// were committed, so it had them. Cleared once its new copy has them.
-    credit: Mutex<BTreeMap<(usize, u32), u64>>,
+    credit: Mutex<BTreeMap<(usize, u32), Credit>>,
     /// Per (member, shard): its flushed index, sampled each second.
     flushed: Mutex<BTreeMap<(usize, u32), Samples>>,
     saves: Mutex<Vec<Save>>,
@@ -554,6 +568,36 @@ async fn record_in(at: &Member, shard: u32, offset: u64) -> Option<Held> {
         mark: record.mark,
         payload: record.payload,
     })
+}
+
+/// Every record of `at`'s log of `shard` below `bound`, by offset.
+async fn records_below(at: &Member, shard: u32, bound: u64) -> BTreeMap<u64, Held> {
+    let (mut records, mut start) = (BTreeMap::new(), 0);
+    let log = &at.logs[shard as usize];
+    while start < bound {
+        let range = ReadRange {
+            start,
+            max_bytes: 1 << 20,
+        };
+        let Ok(page) = log.read_range(range).await else {
+            break;
+        };
+        if page.records.is_empty() {
+            break;
+        }
+        for record in page.records {
+            start = record.offset + 1;
+            if record.offset < bound {
+                let held = Held {
+                    generation: record.generation,
+                    mark: record.mark,
+                    payload: record.payload,
+                };
+                records.insert(record.offset, held);
+            }
+        }
+    }
+    records
 }
 
 /// A shard's directory below a member's data root, in the disk modes.
@@ -852,8 +896,7 @@ impl Sim {
         let key = key(shard);
         let mut members = Vec::new();
         for member in 0..self.members.len() {
-            let credited = self.credit.lock().get(&(member, shard)).copied();
-            if credited.is_some_and(|bound| offset < bound) {
+            if credited(self.credit.lock().get(&(member, shard)), offset, record) {
                 let point = LogPoint {
                     term: 0,
                     index: offset,
@@ -1068,7 +1111,7 @@ impl Sim {
         while Instant::now() < end {
             tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
             let pick = rng.below(count as u64) as usize;
-            if self.disks == Disks::Restore && disk.percent(50) {
+            if self.disks == Disks::Restore {
                 self.save(&mut disk);
             }
             if matches!(self.disks, Disks::Wipe | Disks::Restore) && disk.percent(40) {
@@ -1264,7 +1307,7 @@ impl Sim {
         let mut credit = self.credit.lock();
         let caught_up = credit
             .get(&(member, shard))
-            .is_some_and(|bound| index + 1 >= *bound);
+            .is_some_and(|credit| index + 1 >= credit.bound);
         if caught_up && !self.at(member).down.is_cancelled() {
             credit.remove(&(member, shard));
         }
@@ -1396,9 +1439,11 @@ impl Sim {
             for shard in 0..self.shards {
                 // A stopped copy still holds what it committed.
                 let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
+                let records = records_below(&at, shard, bound).await;
                 let mut credit = self.credit.lock();
-                let held = credit.entry((member, shard)).or_insert(0);
-                *held = (*held).max(bound);
+                let held = credit.entry((member, shard)).or_default();
+                held.bound = held.bound.max(bound);
+                held.records.extend(records);
             }
             self.links.set_down(member, true);
             at.down.cancel();
