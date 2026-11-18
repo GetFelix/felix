@@ -625,15 +625,29 @@ impl RaftHandle {
         loop {
             let mut floor = 0;
             let mut waiting = Vec::new();
+            let mut withheld = Vec::new();
             for (id, base) in others {
                 match term_of(client, *id, base.as_deref()).await {
-                    Ok(term) => floor = floor.max(term.unwrap_or(0)),
+                    Ok(Some(term)) => floor = floor.max(term),
+                    Ok(None) => withheld.push(*id),
                     Err(why) => waiting.push(format!("member {id}: {why}")),
                 }
             }
             if waiting.is_empty() {
                 self.floor.store(floor, Ordering::SeqCst);
-                tracing::info!(floor, "every raft member reported its term");
+                // A majority that lost its volumes can no longer prove the
+                // terms it promised, and the group goes on without them.
+                if withheld.len() + 1 > others.len().div_ceil(2) {
+                    tracing::warn!(
+                        floor,
+                        ?withheld,
+                        "this member and the withheld members are a majority of the raft \
+                         group: if their volumes were lost, acknowledged writes may be lost \
+                         with them; check the members and restore from an export if needed"
+                    );
+                } else {
+                    tracing::info!(floor, ?withheld, "every raft member reported its term");
+                }
                 return;
             }
             if last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL) {

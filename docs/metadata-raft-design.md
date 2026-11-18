@@ -535,8 +535,11 @@ and on a build that reports its term. With one of three members wiped,
 writes need both of the others until it has learned its floor. Two members
 wiped at once do not wait for each other: each says it is withheld, and
 each takes its floor from the rest. Past what the group survives (two of
-three wiped) the one member left may not hold the term the pair promised,
-and that is the [restore](#restoring-beyond-quorum-loss) case. A slot that
+three wiped) the one member left may not hold the term the pair promised.
+The group then goes on, and an acknowledged write the pair held can be
+lost: each member logs a warning when it and the withheld members it heard
+from are a majority, and the [restore](#restoring-beyond-quorum-loss) path
+is how to get the write back. A slot that
 a `form-without` waiver named and that never started is silent, so a
 member wiped in that group learns no floor until the slot answers.
 
