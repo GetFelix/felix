@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794932925814,
+  "lastUpdate": 1795035959001,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78012,6 +78012,72 @@ window.BENCHMARK_DATA = {
             "range": "651.79",
             "unit": "us",
             "extra": "trials: 5\nmedian: 316.00\nmean: 595.80\nstdev: 651.79\ncv: 109.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e106403f2d4e16bcda07dcea97d94d2e6465a5c3",
+          "message": "fix: SonarCloud supply-chain and reliability findings (#2738) (#2739)\n\n* fix: non-blocking credential file reads, Sonar reliability cleanups in tests and scripts (#2738)\n\n* test(capi): do not copy batch results when the callback gets none (#2738)\n\n* build(controlplane): aws-lc-rs is a dev-dependency only (#2738)\n\n* Workspace: aws-lc-rs for the control plane auth test keys comes from workspace.dependencies",
+          "timestamp": "2026-11-18T12:09:19-08:00",
+          "tree_id": "3b49ccd910ae57a5461fe62178e1bb21a6ce9011",
+          "url": "https://github.com/GetFelix/felix/commit/e106403f2d4e16bcda07dcea97d94d2e6465a5c3"
+        },
+        "date": 1795035948907,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 122,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 121.40\nstdev: 1.52\ncv: 1.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 377,
+            "range": "149.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 377.00\nmean: 305.00\nstdev: 149.61\ncv: 49.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.80\nstdev: 0.84\ncv: 0.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "9.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 183.60\nstdev: 9.91\ncv: 5.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 591,
+            "range": "212.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 591.00\nmean: 547.40\nstdev: 212.46\ncv: 38.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
