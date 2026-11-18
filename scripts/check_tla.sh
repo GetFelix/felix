@@ -115,6 +115,7 @@ module_of() {
     FelixRaftBatch*) echo FelixRaftBatch ;;
     FelixRaftGroups*) echo FelixRaftGroups ;;
     FelixRaftCond*) echo FelixRaftCond ;;
+    FelixRaftIdempotent*) echo FelixRaftIdempotent ;;
     FelixRaftStreamPurge*) echo FelixRaftStreamPurge ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
@@ -651,6 +652,11 @@ expectations=(
   "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
   "FelixRaftCondLeaderDecidesNoMembers pass"
   "FelixRaftCondReachAnswers violates NeverOkAndMismatch"
+  "FelixRaftIdempotent pass"
+  "FelixRaftIdempotentTwoTerms pass"
+  "FelixRaftIdempotentMemory violates NoDuplicate"
+  "FelixRaftIdempotentReachFinish violates NeverFinishesACut"
+  "FelixRaftIdempotentReachHeld violates NeverHeldByLaterLeader"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityBatched pass"
   "FelixRaftIdentityRelaxedCrash pass"
@@ -1443,6 +1449,7 @@ weights=(
   "FelixRaftCond 300"
   "FelixRaftCondTwoTerms 40"
   "FelixRaftCondLeaderDecidesNoMembers 200"
+  "FelixRaftIdempotent 20"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"

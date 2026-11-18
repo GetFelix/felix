@@ -3082,6 +3082,12 @@ replica does (`docs/storage-format.md`, "Producer marks"). A log that a
 later leader cuts back forgets the batches that were cut. Nothing about a
 producer is kept in a leader's memory alone.
 
+`FelixRaftIdempotent.tla` checks this over Raft elections: a re-send to any
+leader, after a change of leader and after a batch cut short by one, never
+commits a record twice. Its twin `FelixRaftIdempotentMemory`, where a leader
+keeps the table in memory and starts it empty when it wins a term, writes a
+re-send to the next leader a second time.
+
 ```mermaid
 sequenceDiagram
     participant P as Producer
