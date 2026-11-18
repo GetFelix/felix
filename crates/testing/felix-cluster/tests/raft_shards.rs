@@ -1224,3 +1224,80 @@ async fn raft_shard_leaders_return_to_placement_after_a_restart() {
     .expect("leadership returns to the restarted broker");
     cluster.shutdown().await;
 }
+
+/// Bytes of segment files under `node`'s storage: what its logs hold on disk.
+fn segment_bytes(cluster: &Cluster, node: &str) -> u64 {
+    fn walk(dir: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let path = entry.path();
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => walk(&path),
+                    Ok(_) if path.extension().is_some_and(|ext| ext == "log") => {
+                        entry.metadata().map_or(0, |meta| meta.len())
+                    }
+                    _ => 0,
+                }
+            })
+            .sum()
+    }
+    walk(&cluster.node(node).expect("node").storage_dir())
+}
+
+/// **Retention frees disk on every member of a Raft shard.** The brokers
+/// keep 16 KiB of 4 KiB segments. Once the fleet finalizes
+/// `raft_stream_purge`, the leader's head trims hide what that drops and
+/// every member's purge deletes the segments below the floor, so each
+/// broker's segment files shrink to about the bound while the stream keeps
+/// taking publishes.
+#[tokio::test]
+#[serial]
+async fn retention_frees_the_disk_of_every_raft_member() {
+    if !opted_in() {
+        return;
+    }
+    const BOUND: u64 = 16 * 1024;
+    let mut config = raft_cluster();
+    config.broker_env.extend(
+        [
+            ("FELIX_DURABLE_SEGMENT_BYTES", "4096"),
+            ("FELIX_DURABLE_RETENTION_BYTES", "16384"),
+            ("FELIX_DURABLE_RETENTION_INTERVAL_SECONDS", "1"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string())),
+    );
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(&["raft_stream_purge"], Duration::from_secs(30))
+        .await
+        .expect("finalize raft_stream_purge");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let payload = vec![7u8; 512];
+    for _ in 0..512 {
+        publish_acked(&cluster, &leader, &payload).await;
+    }
+    // 256 KiB was written; the bound, the segment the purge point falls in
+    // and the open one are kept, plus a margin for the other logs.
+    let kept = BOUND + 4 * 4096 + 16 * 1024;
+    for node in &nodes {
+        felix_cluster::wait::until(Duration::from_secs(60), "the member's disk freed", || {
+            let held = segment_bytes(&cluster, node);
+            async move { held <= kept }
+        })
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "{node} holds {} bytes of segments: {err:#}",
+                segment_bytes(&cluster, node)
+            )
+        });
+    }
+    // Still taking publishes after the purge.
+    publish_acked(&cluster, &leader, b"after").await;
+    cluster.shutdown().await;
+}

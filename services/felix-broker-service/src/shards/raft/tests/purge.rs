@@ -527,3 +527,90 @@ async fn a_member_restarted_after_a_purge_serves_from_its_floor() {
     assert!(next >= tail, "offset {next} given out again below {tail}");
     EngineShards::shutdown(&*shards).await;
 }
+
+/// Bytes of segment files in `log`'s directory: what the shard holds on disk.
+fn segment_bytes(log: &felix_storage::DiskLog) -> u64 {
+    std::fs::read_dir(log.dir())
+        .expect("the log's directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".log"))
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+/// **Retention frees the disk of every member, and a member cut off past it
+/// catches up from the snapshot.** The fleet finalized `raft_stream_purge`,
+/// so only the retention timer trims and purges here: no test call does.
+/// `broker-b` is cut off after the first record, the leader publishes far
+/// past the bound, and the timer must shrink the leader's and `broker-c`'s
+/// segment files to about the bound. Back on the network, `broker-b` can
+/// only catch up by installing a purge snapshot, which it does, and then its
+/// own timer frees its disk too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retention_frees_every_members_disk_and_a_member_cut_off_catches_up() {
+    const BOUND: u64 = 2048;
+    let config = || LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        segment_size_bytes: 512,
+        retention_bytes: Some(BOUND),
+        retention_check_interval: Duration::from_millis(20),
+        ..LogConfig::default()
+    };
+    let net = Arc::new(Loopback::default());
+    let mut members = Vec::new();
+    for name in BROKERS.iter().rev() {
+        let member = Member::start_purging(&net, name, config()).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    members.reverse();
+    let leader = served(&members).await;
+    assert_eq!(members[leader].name, "broker-a");
+    let orders = key("orders", 0);
+    let lead = &members[0];
+    let term = lead.shards.leading(&orders).expect("term");
+    let first = lead.publish(term, b"r0").await;
+    let behind = members[1].shards.log_of(&orders).await.expect("log");
+    until("broker-b holds r0", || behind.commit_offset() > first).await;
+    net.cut.lock().insert(members[1].name.to_string());
+
+    const FILL: &[u8] = &[7; 64];
+    let mut tail = 0;
+    for _ in 0..160 {
+        tail = lead.publish(term, FILL).await + 1;
+    }
+    // The bound, the segment the purge point falls in, and the open one.
+    let kept = BOUND + 2 * 512 + 256;
+    for member in [&members[0], &members[2]] {
+        let log = member.shards.log_of(&orders).await.expect("log");
+        until("retention frees the member's disk", || {
+            log.head_trim().is_some_and(|trim| trim.floor > first)
+                && segment_bytes(&log) <= kept
+                && log
+                    .segments()
+                    .first()
+                    .is_some_and(|s| s.base_offset > first)
+        })
+        .await;
+    }
+
+    net.cut.lock().clear();
+    until("broker-b catches up", || behind.commit_offset() >= tail).await;
+    let floor = behind
+        .carried_floor()
+        .expect("broker-b installed a purge snapshot")
+        .floor;
+    assert!(
+        floor > first,
+        "broker-b keeps the floor the snapshot carries"
+    );
+    until("broker-b frees its disk", || segment_bytes(&behind) <= kept).await;
+    until("broker-b serves its term", || members[1].bound() >= tail).await;
+    assert!(
+        too_old(&members[1].broker, first).await,
+        "broker-b read r0 after a purge"
+    );
+    stop(&members).await;
+}

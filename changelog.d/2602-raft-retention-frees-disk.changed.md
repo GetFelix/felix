@@ -1,0 +1,1 @@
+Tests now show retention freeing disk on every member of a Raft stream shard once the fleet finalizes `raft_stream_purge`, including a member cut off past the purge that catches up from the snapshot, in-process and across real broker processes (#2602).
