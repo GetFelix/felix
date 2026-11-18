@@ -1026,7 +1026,10 @@ impl Group {
     /// nobody.
     fn leads_heard(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
         use openraft::Instant as _;
-        if metrics.membership_config.membership().voter_ids().count() <= 1 {
+        // Only when the one voter is this member: a leader kept on as a
+        // learner beside one voter still needs that voter's answers.
+        let mut voters = metrics.membership_config.membership().voter_ids();
+        if voters.all(|voter| voter == self.member) {
             return true;
         }
         let now = self.pace.timers.now();
@@ -1940,8 +1943,9 @@ impl Group {
             let metrics = metrics.borrow_watched();
             let leads = metrics.state == ServerState::Leader;
             // openraft's effective membership is the newest one appended, but
-            // metrics publish it once per core loop, so a change that adds a
-            // voter ends this at the next flush. Safe: the next membership
+            // metrics publish it once per core loop (which can be long under
+            // load), so a change that adds a voter ends this at the next
+            // flush. Safe: the next membership
             // still needs this member's vote, and voting voids the lease.
             let voters = metrics.membership_config.membership().get_joint_config();
             let sole = matches!(voters.as_slice(), [only] if only.len() == 1 && only.contains(&self.member));
