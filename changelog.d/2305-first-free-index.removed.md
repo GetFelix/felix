@@ -1,0 +1,1 @@
+Removed the unused `raft_copy::first_free_index`, which padded only above the base, the floor and the reservations on one broker. A re-form takes its first index from `ReformPlan::first_index`, which also covers every earlier epoch's first index and every record a copy of the incarnation holds (#2305).
