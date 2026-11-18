@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794932928308,
+  "lastUpdate": 1795035962799,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61464,6 +61464,58 @@ window.BENCHMARK_DATA = {
             "range": "5778.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1232908.79\nmean: 1231521.71\nstdev: 5778.56\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e106403f2d4e16bcda07dcea97d94d2e6465a5c3",
+          "message": "fix: SonarCloud supply-chain and reliability findings (#2738) (#2739)\n\n* fix: non-blocking credential file reads, Sonar reliability cleanups in tests and scripts (#2738)\n\n* test(capi): do not copy batch results when the callback gets none (#2738)\n\n* build(controlplane): aws-lc-rs is a dev-dependency only (#2738)\n\n* Workspace: aws-lc-rs for the control plane auth test keys comes from workspace.dependencies",
+          "timestamp": "2026-11-18T12:09:19-08:00",
+          "tree_id": "3b49ccd910ae57a5461fe62178e1bb21a6ce9011",
+          "url": "https://github.com/GetFelix/felix/commit/e106403f2d4e16bcda07dcea97d94d2e6465a5c3"
+        },
+        "date": 1795035962098,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 519392.47,
+            "range": "11681.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519392.47\nmean: 516178.23\nstdev: 11681.46\ncv: 2.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 519392.47,
+            "range": "11681.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519392.47\nmean: 516178.23\nstdev: 11681.46\ncv: 2.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127640.11,
+            "range": "3539.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127640.11\nmean: 126195.82\nstdev: 3539.22\ncv: 2.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1276401.07,
+            "range": "35392.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1276401.07\nmean: 1261958.23\nstdev: 35392.20\ncv: 2.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
