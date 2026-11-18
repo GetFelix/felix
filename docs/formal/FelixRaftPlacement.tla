@@ -1066,10 +1066,16 @@ NeverAcks == Acked = {}
 \* A transfer hands leadership to its successor.
 NeverTransfers == ~\E i \in Brokers : xfer[i] # Nobody /\ role[xfer[i]] = "leader"
 
-\* A transfer lands while the leader's membership is not yet the target: a
-\* placed hand-over racing a target change.
+\* A placed transfer lands mid-change: the leader stays in the target, so
+\* no membership reason sends it away, and the target's new member is
+\* already its learner while its voters are not yet the target's.
 NeverTransfersOffTarget ==
-    ~\E i \in Brokers : xfer[i] # Nobody /\ role[xfer[i]] = "leader" /\ Cfg(i).new # target
+    ~\E i \in Brokers :
+        /\ xfer[i] # Nobody
+        /\ role[xfer[i]] = "leader"
+        /\ Me(i) \in target \cap Cfg(i).new
+        /\ Cfg(i).new # target
+        /\ target \subseteq Members(Cfg(i))
 
 \* No member of a first boot forms.
 NobodyForms == \A s \in Brokers : hold[s] = 1

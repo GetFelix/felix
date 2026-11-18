@@ -10,12 +10,12 @@ FelixRaftPlacementDirectTerms  runs past a CI runner's six hours
 FelixRaftPlacementMoveWipeFailover  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeFull  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeTwoMoves  runs past a CI runner's six hours
-FelixRaftPlacementPlacedTargetOneCall  measuring in dispatch 44385374109
-FelixRaftPlacementReachPlacedTargetOneCall  measuring in dispatch 44385374109
-FelixRaftPlacementPlacedTarget  runs past a CI runner's six hours; PlacedTargetOneCall is its bounded twin
+FelixRaftPlacementPlacedTargetNoWrite  measuring by dispatch, run id in PR #2780
+FelixRaftPlacementReachPlacedTargetNoWrite  measuring by dispatch, run id in PR #2780
+FelixRaftPlacementPlacedTarget  runs past a CI runner's six hours; PlacedTargetNoWrite is its bounded twin
 FelixRaftPlacementStaleReturnWipe  measuring in dispatch 44384289786
 FelixRaftPlacementStaleReturnWipeAnyVersion  measuring in dispatch 44384289786
-FelixRaftPlacementStaleWipeRewindNoAck  runs past a CI runner's six hours
+FelixRaftPlacementStaleWipeRewindNoAck  expected violation not shown yet: no result in six hours
 FelixRaftPlacementTransferMoveFull  runs past a CI runner's six hours
 FelixRaftPlacementTransferMoveWipe  runs past a CI runner's six hours
 FelixRaftReformReplacedDisk  measuring in dispatch 44384289786
@@ -43,20 +43,20 @@ FelixRaftWrittenFailoverPowerCut  measuring in dispatch 44384289786
 FelixRaftWrittenJoint  measuring in dispatch 44384289786
 FelixRaftWrittenJointFailover  measuring in dispatch 44384289786
 FelixRaftWrittenReformGate  runs past a CI runner's six hours; re-form bounds in #2729
-FelixRaftWrittenReformReplaced  runs past a CI runner's six hours; re-form bounds in #2729
-FelixRaftWrittenReformReplacedFull  runs past a CI runner's six hours; re-form bounds in #2729
+FelixRaftWrittenReformReplaced  past a pull request's time, never run to the end; re-form bounds in #2729
+FelixRaftWrittenReformReplacedFull  past a pull request's time, never run to the end; re-form bounds in #2729
 FelixRaftWrittenTerms  measuring in dispatch 44384289786
 FelixShardCpDown  runs past a CI runner's six hours
 FelixShardCpDownPreVoteUnbounded  runs past a CI runner's six hours
 FelixShardCpDownStandBehindDeadOnly  runs past a CI runner's six hours
 FelixShardCpLive  runs past a CI runner's six hours
 FelixShardCpLiveNoOwnBallotRefused  runs past a CI runner's six hours
-FelixShardCpLiveNoStandBehindBallot  runs past a CI runner's six hours
-FelixShardCpLiveRefusals  runs past a CI runner's six hours
-FelixShardCpLiveRefusalsUnknownNoBallot  runs past a CI runner's six hours
+FelixShardCpLiveNoStandBehindBallot  expected violation not shown yet: none in 3.9M distinct states and 26 minutes; never run to the end
+FelixShardCpLiveRefusals  never run to the end: 15 minutes on a laptop
+FelixShardCpLiveRefusalsUnknownNoBallot  expected violation not shown yet: 10 minutes on a laptop; never run to the end
 FelixShardCpLiveReleasedFull  runs past a CI runner's six hours
-FelixShardElectAdoptAboveKeptSetReissued  measuring in dispatch 44385374109
-FelixShardElectAdoptFailover  checked in pieces
+FelixShardElectAdoptAboveKeptSetReissued  measuring by dispatch, run id in PR #2780
+FelixShardElectAdoptFailover  checked in pieces, not whole: five pieces run past six hours, the eight Stood pieces are measuring in dispatch 44384313179
 FelixShardElectAdoptFailoverApart0Gen3  runs past a CI runner's six hours
 FelixShardElectAdoptFailoverApart1Gen3  runs past a CI runner's six hours
 FelixShardElectAdoptFailoverSame0Gen2  runs past a CI runner's six hours
