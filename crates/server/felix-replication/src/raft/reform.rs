@@ -8,7 +8,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use felix_storage::raft_copy::{BrokerReport, MembershipReader, build_report};
+use felix_storage::raft_copy::{BrokerReport, MembershipReader, VoterSets, build_report};
 use felix_storage::raft_log::EntryCodec;
 
 use super::codec::ShardCodec;
@@ -18,20 +18,17 @@ use super::types::{MemberId, ShardTypes};
 pub(super) struct Memberships;
 
 impl MembershipReader<Arc<str>> for Memberships {
-    fn voter_sets(&self, payload: &[u8]) -> io::Result<Vec<BTreeSet<(Arc<str>, u64)>>> {
+    fn voter_sets(&self, payload: &[u8]) -> io::Result<VoterSets<Arc<str>>> {
         let membership = EntryCodec::<ShardTypes>::decode_membership(&ShardCodec, payload)?;
         Ok(sets(membership.get_joint_config()))
     }
 
-    fn snapshot_voter_sets(
-        &self,
-        meta: &[u8],
-    ) -> io::Result<Option<(u64, Vec<BTreeSet<(Arc<str>, u64)>>)>> {
+    fn snapshot_voter_sets(&self, meta: &[u8]) -> io::Result<Option<(u64, VoterSets<Arc<str>>)>> {
         Ok(super::machine::snapshot_membership(meta)?.map(|(index, joint)| (index, sets(&joint))))
     }
 }
 
-fn sets(joint: &[BTreeSet<MemberId>]) -> Vec<BTreeSet<(Arc<str>, u64)>> {
+fn sets(joint: &[BTreeSet<MemberId>]) -> VoterSets<Arc<str>> {
     joint
         .iter()
         .map(|set| {

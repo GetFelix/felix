@@ -80,10 +80,15 @@ async fn write(dir: &Path, at: &[(u64, &[&[u64]])]) -> Log {
     raft
 }
 
-fn snapshot_holding(dir: &Path, index: u64, joint: &[&[u64]]) {
+/// A snapshot covering `last` whose membership came from the entry at
+/// `index`.
+fn snapshot_holding(dir: &Path, last: u64, index: u64, joint: &[&[u64]]) {
     let joint: Vec<Vec<u64>> = joint.iter().map(|set| set.to_vec()).collect();
     let stored = StoredSnapshot {
-        last: Some(SnapshotId { term: 1, index }),
+        last: Some(SnapshotId {
+            term: 1,
+            index: last,
+        }),
         meta: Bytes::from(serde_json::to_vec(&(index, joint)).expect("meta")),
         data: Bytes::new(),
     };
@@ -122,7 +127,7 @@ async fn a_membership_purged_from_the_log_is_read_from_the_snapshot() {
     let mut raft = write(dir.path(), &[(2, &[&[1, 2], &[3, 4]])]).await;
     raft.purge(log_id(1, 6)).await.expect("purge");
     raft.disk_log().close().await.expect("close");
-    snapshot_holding(dir.path(), 2, &[&[1, 2], &[3, 4]]);
+    snapshot_holding(dir.path(), 6, 2, &[&[1, 2], &[3, 4]]);
 
     let report = report(dir.path(), 0);
     assert_eq!(report.memberships, Some(sets(&[&[1, 2], &[3, 4]])));
@@ -137,7 +142,7 @@ async fn only_the_epochs_own_memberships_are_reported() {
     let dir = tempfile::tempdir().expect("dir");
     let raft = write(dir.path(), &[(1, &[&[7, 8, 9]]), (7, &[&[1, 2, 3]])]).await;
     raft.disk_log().close().await.expect("close");
-    snapshot_holding(dir.path(), 1, &[&[7, 8, 9]]);
+    snapshot_holding(dir.path(), 1, 1, &[&[7, 8, 9]]);
     let file = EpochFile {
         incarnation: 3,
         bases: vec![EpochBase {
@@ -159,8 +164,8 @@ async fn only_the_epochs_own_memberships_are_reported() {
     assert!(at_two.names.is_empty());
 }
 
-/// A kept copy's memberships count as the current one's do, but only the
-/// current copy names brokers.
+/// A kept copy's memberships count as the current one's do, and its newest
+/// membership names brokers when the current copy holds none.
 #[tokio::test]
 async fn a_kept_copys_memberships_are_reported() {
     let root = Root::new();
@@ -168,11 +173,11 @@ async fn a_kept_copys_memberships_are_reported() {
     let (_copies, old, new) = rotated(&root, 3).await;
     new.log.close().await.expect("close");
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
-    snapshot_holding(&kept, 1, &[&[4, 5, 6]]);
+    snapshot_holding(&kept, 1, 1, &[&[4, 5, 6]]);
 
     let report = report(&dir, 0);
     assert_eq!(report.memberships, Some(sets(&[&[4, 5, 6]])));
-    assert!(report.names.is_empty());
+    assert_eq!(report.names, BTreeSet::from([4, 5, 6]));
     assert_eq!(report.copies.kept.len(), 1);
 }
 
@@ -189,4 +194,35 @@ async fn a_membership_that_does_not_decode_fails_the_report() {
     };
     snapshot::store_in(dir.path(), &stored).expect("snapshot");
     build_report(dir.path(), SPACING, &BTreeSet::new(), 0, false, &Reader).expect_err("refused");
+}
+
+/// A purge past the snapshot would hide the newest purged membership, so
+/// the report refuses instead of reading it as none.
+#[tokio::test]
+async fn a_purge_past_the_snapshot_fails_the_report() {
+    let dir = tempfile::tempdir().expect("dir");
+    let mut raft = write(dir.path(), &[(2, &[&[1, 2, 3]])]).await;
+    raft.purge(log_id(1, 6)).await.expect("purge");
+    raft.disk_log().close().await.expect("close");
+    build_report(dir.path(), SPACING, &BTreeSet::new(), 0, false, &Reader)
+        .expect_err("no snapshot");
+    snapshot_holding(dir.path(), 5, 2, &[&[1, 2, 3]]);
+    build_report(dir.path(), SPACING, &BTreeSet::new(), 0, false, &Reader).expect_err("behind");
+    snapshot_holding(dir.path(), 6, 2, &[&[1, 2, 3]]);
+    let report = report(dir.path(), 0);
+    assert_eq!(report.memberships, Some(sets(&[&[1, 2, 3]])));
+}
+
+/// A copy with no `raft-epoch` past epoch 0 could be of the epoch (a
+/// learner placed fresh), so every membership it holds counts. It names no
+/// broker: it may be of an older epoch.
+#[tokio::test]
+async fn a_copy_with_no_epoch_file_past_epoch_zero_reports_every_membership() {
+    let dir = tempfile::tempdir().expect("dir");
+    let raft = write(dir.path(), &[(1, &[&[7, 8, 9]]), (7, &[&[1, 2, 3]])]).await;
+    raft.disk_log().close().await.expect("close");
+
+    let report = report(dir.path(), 1);
+    assert_eq!(report.memberships, Some(sets(&[&[7, 8, 9], &[1, 2, 3]])));
+    assert!(report.names.is_empty());
 }

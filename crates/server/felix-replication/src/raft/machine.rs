@@ -331,11 +331,15 @@ pub(crate) fn snapshot_membership(
 ) -> io::Result<Option<(u64, Vec<std::collections::BTreeSet<super::types::MemberId>>)>> {
     let meta: StoredMeta = serde_json::from_slice(meta)
         .map_err(|err| invalid(format!("a snapshot's metadata does not parse: {err}")))?;
-    let Some((_, index)) = meta.membership_at else {
-        return Ok(None);
-    };
     let membership = meta.membership.membership()?;
-    Ok(Some((index, membership.get_joint_config().clone())))
+    let joint = membership.get_joint_config();
+    match meta.membership_at {
+        Some((_, index)) => Ok(Some((index, joint.clone()))),
+        None if joint.iter().all(std::collections::BTreeSet::is_empty) => Ok(None),
+        None => Err(invalid(
+            "a snapshot's membership names voters but no entry".into(),
+        )),
+    }
 }
 
 async fn store(

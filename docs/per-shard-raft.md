@@ -1011,10 +1011,13 @@ entries of the record's epoch, from the epoch's first index up, in the
 current copy and every kept one. A purge drops entries once a snapshot
 covers them, and the snapshot then holds the newest membership, so each
 copy's snapshot is read too when its membership entry is in the epoch.
-Earlier memberships a purge dropped come back through the targets the
-control plane ordered. A copy at another epoch adds no voter set. Below
-the first index is the base, whose voters are the seed. A membership or
-snapshot that does not decode fails the answer.
+A membership purged below the snapshot's own was replaced by a committed
+one, so no term is elected under it alone. A copy purged past its snapshot
+fails the answer. A copy whose `raft-epoch` names another epoch adds no
+voter set; one with no `raft-epoch` past epoch 0 (a learner placed fresh,
+an old restore) adds every membership it holds, which can only mark the
+plan. Below the first index is the base, whose voters are the seed. A
+membership or snapshot that does not decode fails the answer.
 
 With one of three seeded voters dead, a read follower that holds a
 committed entry it has not yet seen committed keeps it in the base; with two
