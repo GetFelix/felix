@@ -255,7 +255,8 @@ broker with nothing enabled.
 `raft_written_commit` lets a Raft shard on a `periodic` or `none` broker
 commit on a written majority (`per-shard-raft.md`, "Proposal: commit on a
 written majority on relaxed brokers"), so its log fsyncs on the broker's
-schedule rather than on every commit. Every build reports it and a new
+periodic schedule, or once a second under `none`, rather than on every
+commit. Every build reports it and a new
 cluster finalizes it. Brokers act on it only when they open a member, so a
 member opened before the finalize fsyncs on commit until it opens again.
 Once it is finalized, no broker may be downgraded to a build without the

@@ -607,7 +607,8 @@ start.
 
 Once finalized, a Raft shard on a broker whose `fsync_mode` is `periodic` or
 `none` counts an entry toward its commit once the entry is written, and its
-log fsyncs on the broker's periodic schedule instead of on every commit. That
+log fsyncs on the broker's periodic schedule (once a second under `none`)
+instead of on every commit. That
 is the same loss window the default engine has under `periodic`: a power cut
 of a majority of a shard's brokers before the flush can take records that
 were acknowledged. A broker applies it when it next opens a shard, so a shard
