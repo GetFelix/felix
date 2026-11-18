@@ -61,6 +61,14 @@
 (* below the base, so it cannot read the table from its log. The code      *)
 (* carries the refused cuts and, per producer a purge forgot, its newest   *)
 (* sequence, so a whole batch re-sent after that is refused as expired.    *)
+(*                                                                         *)
+(* The code takes an install's reset in two durable steps: it saves what   *)
+(* the reset keeps (the installed base and the carried table, with the     *)
+(* pending-rewind marker), then drops the log. A crash between them loses  *)
+(* what the member held in memory, and the open, finding the marker,      *)
+(* finishes the reset from what was saved. `SaveReset`, `Crash` and        *)
+(* `FinishReset` model that; the atomic `Install` stays for runs with no   *)
+(* crash budget.                                                           *)
 (* Producer expiry is abstracted below: a whole batch is never re-sent     *)
 (* here, so neither is modelled.                                           *)
 (*                                                                         *)
@@ -95,6 +103,9 @@
 (*                              holds above the base.                      *)
 (*   HeldAfterCommit = FALSE -- a batch is answered as held while its      *)
 (*                              pieces are still uncommitted.              *)
+(*   SaveKeepsTable = FALSE  -- the reset's save drops the carried table,  *)
+(*                              so a reset finished after a crash leaves   *)
+(*                              the member with the base and no table.     *)
 (*                                                                         *)
 (* Abstracted: elections, replication and the uncommitted tails of         *)
 (* followers (FelixRaft.tla has them; here a change of leader is one step  *)
@@ -125,7 +136,9 @@ CONSTANTS
     AtPurge,
     TableAtAppend,
     HeldAfterCommit,
-    InstallKeepsTable
+    InstallKeepsTable,
+    SaveKeepsTable,
+    MaxCrashes       \* crashes between a reset's save and its drop
 
 ASSUME
     /\ MaxSeq \in Nat /\ MaxChanges \in Nat /\ MaxPurges \in Nat /\ MaxLog \in Nat
@@ -133,6 +146,7 @@ ASSUME
     /\ TermBoundBatch \in BOOLEAN /\ ResendFinishes \in BOOLEAN
     /\ TableAtAppend \in BOOLEAN /\ HeldAfterCommit \in BOOLEAN
     /\ InstallKeepsTable \in BOOLEAN
+    /\ SaveKeepsTable \in BOOLEAN /\ MaxCrashes \in Nat
     /\ AtPurge \in {"refuse", "keep", "forget"}
 
 VARIABLES
@@ -146,9 +160,12 @@ VARIABLES
     blen,      \* per producer: the length of that batch
     acked,     \* history: every <<producer, sequence>> acknowledged
     changes,   \* budgets spent
-    purges
+    purges,
+    pending,   \* per member: the reset it saved and has not finished, or NoReset
+    crashes
 
-vars == <<log, tail, inflight, leader, base, snap, cur, blen, acked, changes, purges>>
+vars == <<log, tail, inflight, leader, base, snap, cur, blen, acked, changes, purges, pending, crashes>>
+rvars == <<pending, crashes>>
 
 Symm == Permutations(Members) \cup Permutations(Producers)
 
@@ -170,6 +187,7 @@ Sorted(S) == CHOOSE f \in [1..Cardinality(S) -> S] :
 \* No batch seen. `known` is whether `held` can be trusted.
 None == [seq |-> 0, held |-> 0, len |-> 0, known |-> TRUE]
 NoSnap == [p \in Producers |-> None]
+NoReset == [base |-> 0, saved |-> NoSnap, held |-> NoSnap, set |-> FALSE]
 
 Whole(e) == e.known /\ e.held = e.len
 
@@ -229,6 +247,8 @@ Init ==
     /\ acked = {}
     /\ changes = 0
     /\ purges = 0
+    /\ pending = [m \in Members |-> NoReset]
+    /\ crashes = 0
 
 \* A producer starts its next batch once the one before is acknowledged.
 Begin(p, n) ==
@@ -237,6 +257,7 @@ Begin(p, n) ==
     /\ cur' = [cur EXCEPT ![p] = @ + 1]
     /\ blen' = [blen EXCEPT ![p] = n]
     /\ UNCHANGED <<log, tail, inflight, leader, base, snap, acked, changes, purges>>
+    /\ UNCHANGED rvars
 
 \* The sets of positions one write of positions k..n-1 can append.
 Lands(k, n) == IF TermBoundBatch THEN {k..(n - 1)} ELSE (SUBSET (k..(n - 1))) \ {{}}
@@ -251,6 +272,7 @@ Propose(p) ==
         k == IF d.do = "finish" /\ ResendFinishes THEN d.from ELSE 0
     IN
     /\ s > 0
+    /\ ~pending[leader].set
     /\ <<p, s>> \notin acked
     /\ \/ /\ d.do = "held"
           /\ HeldAfterCommit => Place(Table(leader)[p], s).do = "held"
@@ -264,6 +286,7 @@ Propose(p) ==
                       {[p |-> p, s |-> s, from |-> Sorted(S)[1], whole |-> S = k..(blen[p] - 1)]}
           /\ UNCHANGED acked
     /\ UNCHANGED <<log, leader, base, snap, cur, blen, changes, purges>>
+    /\ UNCHANGED rvars
 
 \* The leader's tail commits. A proposal is acknowledged when all it asked
 \* for was appended.
@@ -274,6 +297,7 @@ Commit ==
     /\ acked' = acked \cup {<<q.p, q.s>> : q \in {r \in inflight : r.whole}}
     /\ inflight' = {}
     /\ UNCHANGED <<leader, base, snap, cur, blen, changes, purges>>
+    /\ UNCHANGED rvars
 
 \* A change of leader. The new leader holds a prefix of the old one's tail,
 \* still uncommitted, and appends its blank entry. The rest is dropped and
@@ -281,28 +305,64 @@ Commit ==
 ChangeLeader(n, k) ==
     /\ changes < MaxChanges
     /\ k \in 0..Len(tail)
+    /\ ~pending[n].set
     /\ tail' = SubSeq(tail, 1, k) \o <<Blank>>
     /\ inflight' = {}
     /\ leader' = n
     /\ changes' = changes + 1
     /\ UNCHANGED <<log, base, snap, cur, blen, acked, purges>>
+    /\ UNCHANGED rvars
 
 \* A member purges its log up to b and writes its table snapshot there.
 Purge(m, b) ==
     /\ purges < MaxPurges
+    /\ ~pending[m].set
     /\ b \in (base[m] + 1)..Len(log)
     /\ snap' = [snap EXCEPT ![m] =
           LET t == Over(snap[m], log, base[m] + 1, b) IN [p \in Producers |-> Kept(t[p])]]
     /\ base' = [base EXCEPT ![m] = b]
     /\ purges' = purges + 1
     /\ UNCHANGED <<log, tail, inflight, leader, cur, blen, acked, changes>>
+    /\ UNCHANGED rvars
 
 \* A member installs another member's snapshot: its base and its table.
 Install(m, n) ==
+    /\ ~pending[m].set
     /\ base[n] > base[m]
     /\ base' = [base EXCEPT ![m] = base[n]]
     /\ snap' = [snap EXCEPT ![m] = IF InstallKeepsTable THEN snap[n] ELSE NoSnap]
     /\ UNCHANGED <<log, tail, inflight, leader, cur, blen, acked, changes, purges>>
+    /\ UNCHANGED rvars
+
+\* The same install in the code's two durable steps. First the save: the
+\* installed base, the table to carry, and the marker. `held` is the table
+\* in memory, which a crash loses. Only with a crash left to spend, so a
+\* run without crashes explores exactly the atomic install.
+SaveReset(m, n) ==
+    /\ crashes < MaxCrashes
+    /\ ~pending[m].set
+    /\ base[n] > base[m]
+    /\ LET t == IF InstallKeepsTable THEN snap[n] ELSE NoSnap IN
+       pending' = [pending EXCEPT ![m] =
+          [base |-> base[n], saved |-> IF SaveKeepsTable THEN t ELSE NoSnap, held |-> t, set |-> TRUE]]
+    /\ UNCHANGED <<log, tail, inflight, leader, base, snap, cur, blen, acked, changes, purges, crashes>>
+
+\* A crash before the drop. The member reopens over its old records, which
+\* it still holds, and keeps only what the save made durable.
+Crash(m) ==
+    /\ pending[m].set
+    /\ crashes' = crashes + 1
+    /\ pending' = [pending EXCEPT ![m].held = pending[m].saved]
+    /\ UNCHANGED <<log, tail, inflight, leader, base, snap, cur, blen, acked, changes, purges>>
+
+\* The drop, run by the reset or, after a crash, by the open that found the
+\* marker. Nothing reads the member's table in between.
+FinishReset(m) ==
+    /\ pending[m].set
+    /\ base' = [base EXCEPT ![m] = pending[m].base]
+    /\ snap' = [snap EXCEPT ![m] = pending[m].held]
+    /\ pending' = [pending EXCEPT ![m] = NoReset]
+    /\ UNCHANGED <<log, tail, inflight, leader, cur, blen, acked, changes, purges, crashes>>
 
 Next ==
     \/ \E p \in Producers, n \in Lens : Begin(p, n)
@@ -311,6 +371,8 @@ Next ==
     \/ \E n \in Members : \E k \in 0..Len(tail) : ChangeLeader(n, k)
     \/ \E m \in Members : \E b \in 1..Len(log) : Purge(m, b)
     \/ \E m, n \in Members : Install(m, n)
+    \/ \E m, n \in Members : SaveReset(m, n)
+    \/ \E m \in Members : Crash(m) \/ FinishReset(m)
 
 Spec == Init /\ [][Next]_vars
 
@@ -332,6 +394,8 @@ TypeOK ==
     /\ acked \subseteq (Producers \X (1..MaxSeq))
     /\ changes \in 0..MaxChanges
     /\ purges \in 0..MaxPurges
+    /\ crashes \in 0..MaxCrashes
+    /\ \A m \in Members : pending[m].set => pending[m].base <= Len(log)
 
 IsPiece(i, p, s) == log[i].kind = "piece" /\ log[i].p = p /\ log[i].s = s
 At(p, s) == {i \in 1..Len(log) : IsPiece(i, p, s)}

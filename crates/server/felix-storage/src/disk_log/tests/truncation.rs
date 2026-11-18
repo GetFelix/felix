@@ -120,11 +120,12 @@ async fn reset_to_discards_everything_and_rebases_in_either_direction() {
     assert_eq!(read_all(&log, 5).await, vec!["after"]);
 }
 
-/// A reset that crashes once its records are gone is not redone at open, so
-/// the history must already be gone too: an entry left from the old log
-/// would claim offsets below the new base that this copy never held.
+/// Every crash point of a reset reopens as before it or as after it. Old
+/// records past the commit offset with no history would switch off the
+/// divergence check that compares them; a history over no records would
+/// claim offsets below the new base this copy never held.
 #[tokio::test]
-async fn a_reset_cut_short_at_any_step_leaves_no_history_of_the_old_log() {
+async fn a_reset_cut_short_at_any_step_reopens_whole() {
     for stop in 0.. {
         let dir = tempdir().expect("dir");
         let log = open(&dir, FsyncMode::OnCommit);
@@ -139,19 +140,81 @@ async fn a_reset_cut_short_at_any_step_leaves_no_history_of_the_old_log() {
         log.shutdown().await.ok();
         drop(log);
 
-        let log = open(&dir, FsyncMode::OnCommit);
-        if log.base_offset() == 100 {
-            assert_eq!(log.tail_offset().await.expect("tail"), 100);
-            assert!(
-                log.generations().is_empty(),
-                "stopped at step {stop}: history outlived its records: {:?}",
-                log.generations()
-            );
-        } else {
-            assert!(!finished, "stopped at step {stop}");
-            assert_eq!(read_all(&log, 0).await, vec!["v0", "v1", "v2"]);
+        for _ in 0..2 {
+            let log = open(&dir, FsyncMode::OnCommit);
+            if log.base_offset() == 100 {
+                assert_eq!(log.tail_offset().await.expect("tail"), 100);
+                assert!(
+                    log.generations().is_empty(),
+                    "stopped at step {stop}: history outlived its records: {:?}",
+                    log.generations()
+                );
+            } else {
+                assert!(!finished, "stopped at step {stop}");
+                assert_eq!(read_all(&log, 0).await, vec!["v0", "v1", "v2"]);
+                assert_eq!(
+                    log.generations(),
+                    vec![Epoch {
+                        generation: 3,
+                        start_offset: 0
+                    }],
+                    "stopped at step {stop}: records kept without their history"
+                );
+            }
+            log.shutdown().await.expect("shutdown");
         }
-        log.shutdown().await.expect("shutdown");
+        if finished {
+            break;
+        }
+    }
+}
+
+/// Every crash point of a truncation reopens as before it or as after it,
+/// so no generation is left starting at or past the new tail, where a
+/// promoted copy's own generation would be recorded after it.
+#[tokio::test]
+async fn a_truncation_cut_short_at_any_step_reopens_whole() {
+    let before = vec![
+        Epoch {
+            generation: 3,
+            start_offset: 0,
+        },
+        Epoch {
+            generation: 4,
+            start_offset: 3,
+        },
+    ];
+    for stop in 0.. {
+        let dir = tempdir().expect("dir");
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.append(&records(&["v0", "v1", "v2", "v3", "v4"]))
+            .await
+            .expect("append");
+        log.record_generation(3, 0).expect("generation");
+        log.record_generation(4, 3).expect("generation");
+
+        crate::disk_log::crash_point::watch(dir.path(), Some(stop));
+        let finished = log.truncate(2).await.is_ok();
+        crate::disk_log::crash_point::unwatch(dir.path());
+        log.shutdown().await.ok();
+        drop(log);
+
+        for _ in 0..2 {
+            let log = open(&dir, FsyncMode::OnCommit);
+            if log.tail_offset().await.expect("tail") == 2 {
+                assert_eq!(read_all(&log, 0).await, vec!["v0", "v1"]);
+                assert_eq!(
+                    log.generations(),
+                    before[..1],
+                    "stopped at step {stop}: history outlived its records"
+                );
+            } else {
+                assert!(!finished, "stopped at step {stop}");
+                assert_eq!(read_all(&log, 0).await, vec!["v0", "v1", "v2", "v3", "v4"]);
+                assert_eq!(log.generations(), before, "stopped at step {stop}");
+            }
+            log.shutdown().await.expect("shutdown");
+        }
         if finished {
             break;
         }

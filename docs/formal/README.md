@@ -644,6 +644,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchForgetsCut.cfg` | a purge past a cut batch drops it from the table snapshot | violate `BatchExactlyOnce`: the member takes the re-send as new |
 | `FelixRaftBatchForgetsCutPlace.cfg` | the same, checked one step earlier | violate `ProducerPlaceAgrees`: two members place one re-send differently |
 | `FelixRaftBatchInstallWithoutTable.cfg` | a snapshot install gives the base and not the table snapshot (#2562) | violate `BatchExactlyOnce`: a member installed past a cut batch takes the re-send as new |
+| `FelixRaftBatchResetCrash.cfg` | the install taken in the code's two durable steps (save, then drop) with one crash between them, finished at open from the pending-rewind marker (#2574, #2579); one producer, two batches of two or three records, two changes of leader, two purges | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (counts from the first Actions run) |
+| `FelixRaftBatchResetCrashDropsTable.cfg` | the save does not keep the carried table | violate `BatchExactlyOnce`: a reset finished after the crash leaves the member with the base and no table |
 | `FelixRaftBatchTableAtApply.cfg` | the leader's table reads committed entries only; no change of leader | violate `BatchExactlyOnce`: a send that arrives while the first is in flight is written too |
 | `FelixRaftBatchHeldBeforeCommit.cfg` | a send is answered as held while its pieces are uncommitted | violate `BatchExactlyOnce`: a batch is acknowledged with nothing committed |
 | `FelixRaftBatchReachFinish.cfg` | witness: a cut batch is finished by its re-send and acknowledged | violate `NeverFinishesACut` |

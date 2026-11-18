@@ -585,6 +585,8 @@ expectations=(
   "FelixRaftBatchForgetsCut violates BatchExactlyOnce"
   "FelixRaftBatchForgetsCutPlace violates ProducerPlaceAgrees"
   "FelixRaftBatchInstallWithoutTable violates BatchExactlyOnce"
+  "FelixRaftBatchResetCrash pass"
+  "FelixRaftBatchResetCrashDropsTable violates BatchExactlyOnce"
   "FelixRaftBatchTableAtApply violates BatchExactlyOnce"
   "FelixRaftBatchHeldBeforeCommit violates BatchExactlyOnce"
   "FelixRaftBatchReachFinish violates NeverFinishesACut"

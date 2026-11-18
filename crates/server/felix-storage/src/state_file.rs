@@ -1,5 +1,5 @@
 //! The small files kept beside a log's segments: a Raft group's purged id,
-//! carried floor, snapshot and the metadata store's member file. Each is replaced whole, so a crash leaves the old file or
+//! carried floor, snapshot, a log's pending rewind and the metadata store's member file. Each is replaced whole, so a crash leaves the old file or
 //! the new one.
 
 use std::io::{self, Write};
@@ -39,7 +39,6 @@ pub(crate) fn load(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
 }
 
 /// Delete `name` in `dir`, if it is there, and sync the directory.
-#[cfg(feature = "raft")]
 pub(crate) fn remove(dir: &Path, name: &str) -> io::Result<()> {
     match crate::fs::remove_file(dir.join(name)) {
         Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),

@@ -75,6 +75,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.log
     00000000000000000001.index
     epochs                                   ← where each generation began
+    rewind-pending                           ← a reset or truncation a crash cut short, finished at the next open
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
     replica-set                              ← the replicas this one counts, and the set it is leaving
@@ -1074,19 +1075,44 @@ The entries are bounded, because every open reads the whole file and a
 generation older than the oldest retained record cannot be one two brokers
 diverge within.
 
-**A reset empties the file before it drops the records.** A reset that
-crashes after the drop is not redone, so a history written after the drop
-could outlive it and claim offsets below the new base that the copy never
-held. Emptied first, a crash in between leaves old records with no history,
-which only refuses a truncation point. A truncation goes the other way: it
-cuts the records first, since a history cut first would leave the surviving
-records labelled by the entry before the cut. An entry a crash leaves at or
-past the new tail is dropped when the next copied batch is labelled from
-there ([#2746](https://github.com/GetFelix/felix/issues/2746) tracks the
-promoted-copy case).
+**A reset or truncation changes it under the `rewind-pending` marker.** The
+records and this file are written in separate steps, so a crash between them
+could leave records with no history (which switches off the divergence check
+for them) or a history over records that are gone. The marker below makes the
+pair change as one.
 
 See `docs/replication-design.md`, "Divergence and truncation", for what it is
 for.
+
+## `rewind-pending`: a reset or truncation in progress
+
+A reset (`reset_to`) or a truncation stores this file before its first step
+and removes it after its last:
+
+```text
+ 0   4  magic     u32  "FLRW"
+ 4   2  version   u16  1
+ 6   1  kind      u8   1 = reset, 2 = truncation
+ 7   1  reserved  u8   zero
+ 8   8  offset    u64  the reset's new base, or where the truncation cuts
+16   4  crc       u32  CRC-32 (IEEE) of bytes 0..16
+```
+
+A rewind drops records, then rewrites what described them: the `epochs` file,
+the producer state and the durable mark. An open that finds the file does the
+rewind again, from the start, before anything reads the log. Every step is
+safe to repeat, so whichever step the crash interrupted, the log reopens as it
+was before the rewind or as it is after it, never in between.
+
+The marker is removed, durably, before the rewind returns. A marker left in
+place over records appended later would drop them at the next open, so a
+failure to remove it poisons the log, and nothing is appended until it reopens.
+
+The open refuses to start when the file does not decode, or when finishing the
+rewind would cut below the commit offset. The first attempt checked the same
+bound, so either one means the state files disagree, and starting would risk
+an acknowledged record. A broker that predates the file ignores it, so a
+downgrade right after a crash mid-rewind loses this repair.
 
 ## `replica`: the accepted generation and the commit offset
 
