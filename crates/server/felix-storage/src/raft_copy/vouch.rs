@@ -51,10 +51,11 @@ pub(crate) struct GroupRecord<B> {
 
 /// One broker's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BrokerReport<B> {
+pub struct BrokerReport<B> {
     /// Whether it leads the current epoch.
     pub(crate) leads: bool,
-    /// The voters its newest membership names.
+    /// The brokers of the newest membership of the record's epoch in its
+    /// copies, both halves of a joint one.
     pub(crate) names: BTreeSet<B>,
     /// Both halves of every membership entry of the record's epoch in every
     /// copy read, uncommitted ones included. `None` when not read.
