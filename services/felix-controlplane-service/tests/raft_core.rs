@@ -362,10 +362,7 @@ async fn a_three_node_group_replicates_and_survives_restart() {
     assert_eq!(restarted.app.get("k7").as_deref(), Some("while-away"));
 
     restarted.stop().await;
-    for node in nodes
-        .iter()
-        .filter(|node| node.handle.status().id == leader_id)
-    {
+    for node in &nodes {
         node.stop().await;
     }
 }
@@ -1345,7 +1342,10 @@ async fn a_wiped_member_is_counted_by_no_leader_until_every_peer_reports_its_ter
     shutdown.cancel();
     wiped.stop().await;
     restarted.stop().await;
-    for node in &nodes {
+    for node in nodes
+        .iter()
+        .filter(|node| node.handle.status().id == leader_id)
+    {
         node.stop().await;
     }
 }
