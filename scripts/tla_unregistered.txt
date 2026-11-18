@@ -1,0 +1,82 @@
+# Configurations in docs/formal that no CI job checks, one per line: the name,
+# then why. scripts/check_tla_registry.sh fails on a .cfg that is not
+# registered in scripts/check_tla.sh, not run by a workflow, and not listed
+# here, so a new configuration cannot sit unchecked without saying so.
+# docs/formal/README.md has how far each of these got.
+FelixHeadTrim  runs past a CI runner's six hours
+FelixRaftLeaseAckWide  measuring in dispatch 44384289786
+FelixRaftLeaseRestoreTransferThreeTermsWrite  about ten hours on a CI runner; a box run checks it
+FelixRaftPlacementDirectTerms  runs past a CI runner's six hours
+FelixRaftPlacementMoveWipeFailover  measuring in dispatch 44384289786
+FelixRaftPlacementMoveWipeFull  measuring in dispatch 44384289786
+FelixRaftPlacementMoveWipeTwoMoves  runs past a CI runner's six hours
+FelixRaftPlacementPlacedTargetOneCall  measuring in dispatch PENDING
+FelixRaftPlacementReachPlacedTargetOneCall  measuring in dispatch PENDING
+FelixRaftPlacementPlacedTarget  runs past a CI runner's six hours; PlacedTargetOneCall is its bounded twin
+FelixRaftPlacementStaleReturnWipe  measuring in dispatch 44384289786
+FelixRaftPlacementStaleReturnWipeAnyVersion  measuring in dispatch 44384289786
+FelixRaftPlacementStaleWipeRewindNoAck  runs past a CI runner's six hours
+FelixRaftPlacementTransferMoveFull  runs past a CI runner's six hours
+FelixRaftPlacementTransferMoveWipe  runs past a CI runner's six hours
+FelixRaftReformReplacedDisk  measuring in dispatch 44384289786
+FelixRaftReformStaleMembershipFull  measuring in dispatch 44384289786
+FelixRaftReformStaleMembershipTwoMoves  measuring in dispatch 44384289786
+FelixRaftStreamPurge  measuring in dispatch 44384289786
+FelixRaftStreamPurgeFive  measuring in dispatch 44384289786
+FelixRaftStreamPurgeFiveReform  measuring in dispatch 44384289786
+FelixRaftStreamPurgeInstallKeepsFloor  measuring in dispatch 44384289786
+FelixRaftStreamPurgeInstallKeepsFloorLong  measuring in dispatch 44384289786
+FelixRaftStreamPurgeInstallRefusesLowerFloorSafe  measuring in dispatch 44384289786
+FelixRaftStreamPurgeLearner  measuring in dispatch 44384289786
+FelixRaftStreamPurgeLearnerReform  measuring in dispatch 44384289786
+FelixRaftStreamPurgeLearnerReformInstall  measuring in dispatch 44384289786
+FelixRaftStreamPurgeNoCap  measuring in dispatch 44384289786
+FelixRaftStreamPurgeNoCapRefuse  measuring in dispatch 44384289786
+FelixRaftStreamPurgeReformNoFloorOnce  measuring in dispatch 44384289786
+FelixRaftStreamPurgeTwoReforms  measuring in dispatch 44384289786
+FelixRaftStreamPurgeTwoReformsRefuse  measuring in dispatch 44384289786
+FelixRaftStreamPurgeTwoReformsWrite  measuring in dispatch 44384289786
+FelixRaftWrittenCommitsFailoverPowerCut  measuring in dispatch 44384289786
+FelixRaftWrittenCommitsReformJointDead  runs past a CI runner's six hours; re-form bounds in #2729
+FelixRaftWrittenCommitsReformTerms  runs past a CI runner's six hours; re-form bounds in #2729
+FelixRaftWrittenFailoverPowerCut  measuring in dispatch 44384289786
+FelixRaftWrittenJoint  measuring in dispatch 44384289786
+FelixRaftWrittenJointFailover  measuring in dispatch 44384289786
+FelixRaftWrittenReformGate  runs past a CI runner's six hours; re-form bounds in #2729
+FelixRaftWrittenReformReplaced  runs past a CI runner's six hours; re-form bounds in #2729
+FelixRaftWrittenReformReplacedFull  runs past a CI runner's six hours; re-form bounds in #2729
+FelixRaftWrittenTerms  measuring in dispatch 44384289786
+FelixShardCpDown  runs past a CI runner's six hours
+FelixShardCpDownPreVoteUnbounded  runs past a CI runner's six hours
+FelixShardCpDownStandBehindDeadOnly  runs past a CI runner's six hours
+FelixShardCpLive  runs past a CI runner's six hours
+FelixShardCpLiveNoOwnBallotRefused  runs past a CI runner's six hours
+FelixShardCpLiveNoStandBehindBallot  runs past a CI runner's six hours
+FelixShardCpLiveRefusals  runs past a CI runner's six hours
+FelixShardCpLiveRefusalsUnknownNoBallot  runs past a CI runner's six hours
+FelixShardCpLiveReleasedFull  runs past a CI runner's six hours
+FelixShardElectAdoptAboveKeptSetReissued  unmeasured: dispatch pending
+FelixShardElectAdoptFailover  checked in pieces
+FelixShardElectAdoptFailoverApart0Gen3  runs past a CI runner's six hours
+FelixShardElectAdoptFailoverApart1Gen3  runs past a CI runner's six hours
+FelixShardElectAdoptFailoverSame0Gen2  runs past a CI runner's six hours
+FelixShardElectAdoptFailoverSame0Gen3  runs past a CI runner's six hours
+FelixShardElectAdoptFailoverSame0StoodOneDestGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame0StoodOneOtherGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame0StoodSeveralDestGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame0StoodSeveralOtherGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame1Gen3  runs past a CI runner's six hours
+FelixShardElectAdoptFailoverSame1StoodOneDestGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame1StoodOneOtherGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame1StoodSeveralDestGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptFailoverSame1StoodSeveralOtherGen2  measuring in dispatch 44384313179
+FelixShardElectAdoptNoMatch  measuring in dispatch 44384313179
+FelixShardElectRename  checked in pieces
+FelixShardElectSwap  checked in pieces
+FelixShardElectSwapFlip  checked in pieces
+FelixShardReplacedPendingLeftKeptLog  measuring in dispatch 44384313179
+FelixShardReplacedPendingLeftTwiceAllLogReport  runs past a CI runner's six hours
+FelixShardReplacedSetUnknown  runs past a CI runner's six hours
+FelixShardReplacedSetUnknownMark  runs past a CI runner's six hours
+FelixShardWalkElectStaleSet  replayed by FelixShardWalkElectStaleSetReplay
+FelixShardWalkSparesSeatEarly  replayed by FelixShardWalkSparesSeatEarlyReplay

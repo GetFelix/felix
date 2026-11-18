@@ -1066,6 +1066,11 @@ NeverAcks == Acked = {}
 \* A transfer hands leadership to its successor.
 NeverTransfers == ~\E i \in Brokers : xfer[i] # Nobody /\ role[xfer[i]] = "leader"
 
+\* A transfer lands while the leader's membership is not yet the target: a
+\* placed hand-over racing a target change.
+NeverTransfersOffTarget ==
+    ~\E i \in Brokers : xfer[i] # Nobody /\ role[xfer[i]] = "leader" /\ Cfg(i).new # target
+
 \* No member of a first boot forms.
 NobodyForms == \A s \in Brokers : hold[s] = 1
 
