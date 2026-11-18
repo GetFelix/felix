@@ -3,7 +3,7 @@
 //! arrives, or one that is handled and whose answer is lost.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -12,18 +12,34 @@ use felix_replication::raft::{GroupRuntime, RaftReply, RaftRequest, RaftTranspor
 use parking_lot::Mutex;
 
 /// Which member can reach which. `(from, to)` in `cut` drops everything
-/// `from` sends `to`, answers included.
+/// `from` sends `to`, answers included. A member in `down` is stopped: it
+/// reaches nobody and nobody reaches it, whatever a heal does.
 #[derive(Default)]
 pub(crate) struct Links {
     cut: Mutex<BTreeSet<(usize, usize)>>,
-    runtimes: OnceLock<Vec<GroupRuntime>>,
+    down: Mutex<BTreeSet<usize>>,
+    runtimes: Mutex<Vec<GroupRuntime>>,
 }
 
 impl Links {
-    /// The runtimes messages are handed to, in member order. Set once, after
-    /// every runtime has been started on its wire.
+    /// The runtimes messages are handed to, in member order, once every
+    /// runtime has been started on its wire.
     pub(crate) fn connect(&self, runtimes: Vec<GroupRuntime>) {
-        let _ = self.runtimes.set(runtimes);
+        *self.runtimes.lock() = runtimes;
+    }
+
+    /// Hand `member`'s messages to `runtime` from now on, as after a restart.
+    pub(crate) fn replace(&self, member: usize, runtime: GroupRuntime) {
+        self.runtimes.lock()[member] = runtime;
+    }
+
+    pub(crate) fn set_down(&self, member: usize, down: bool) {
+        let mut stopped = self.down.lock();
+        if down {
+            stopped.insert(member);
+        } else {
+            stopped.remove(&member);
+        }
     }
 
     pub(crate) fn cut(&self, from: usize, to: usize) {
@@ -43,7 +59,8 @@ impl Links {
     }
 
     fn is_cut(&self, from: usize, to: usize) -> bool {
-        self.cut.lock().contains(&(from, to))
+        let down = self.down.lock();
+        down.contains(&from) || down.contains(&to) || self.cut.lock().contains(&(from, to))
     }
 }
 
@@ -86,12 +103,8 @@ impl RaftTransport for Wire {
         if self.links.is_cut(self.from, to) {
             return Err(lost("request dropped"));
         }
-        let runtime = self
-            .links
-            .runtimes
-            .get()
-            .and_then(|runtimes| runtimes.get(to))
-            .ok_or_else(|| lost("not connected"))?;
+        let runtime = self.links.runtimes.lock().get(to).cloned();
+        let runtime = runtime.ok_or_else(|| lost("not connected"))?;
         let answer = runtime.handle(request).await;
         tokio::time::sleep(self.delay()).await;
         // Checked after the member handled it: a one-way cut loses the

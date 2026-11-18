@@ -6,13 +6,15 @@
 //! `each_raft_seed_runs_the_same_twice` are skipped; CI's `sim-seeds` job
 //! runs them with it. `raft_seeds` is the batch: `FELIX_SIM_SEED_START` and
 //! `FELIX_SIM_SEEDS` pick the seeds and `FELIX_SIM_CLOCKS=bounded` skews the
-//! members' timers. `each_raft_seed_runs_the_same_twice` takes the same
-//! variables.
+//! members' timers. `FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1` add disk
+//! faults: a member stopped, a shard directory or data root wiped or put
+//! back, and the member started again. `each_raft_seed_runs_the_same_twice`
+//! takes the same variables.
 
 use std::time::Duration;
 
 use felix_cluster::history::model::Action;
-use felix_sim::raft::{Clocks, RaftOutcome, RaftSimConfig, run_seed};
+use felix_sim::raft::{Clocks, Disks, RaftOutcome, RaftSimConfig, run_seed};
 use felix_sim::run::first_difference;
 
 fn env(name: &str, default: u64) -> u64 {
@@ -58,9 +60,10 @@ fn vacuous(outcome: &RaftOutcome, shards: u32) -> Option<String> {
 }
 
 /// Run `seed` and say what failed, if anything did, with the whole outcome.
-fn failure(seed: u64, clocks: Clocks) -> Option<String> {
+fn failure(seed: u64, clocks: Clocks, disks: Disks) -> Option<String> {
     let config = RaftSimConfig {
         clocks,
+        disks,
         ..RaftSimConfig::default()
     };
     let shards = config.shards;
@@ -71,11 +74,11 @@ fn failure(seed: u64, clocks: Clocks) -> Option<String> {
     } else {
         Some(format!("failed: {}", outcome.first_failure()))
     };
-    why.map(|why| format!("raft seed {seed} ({clocks:?}) {why}\n{outcome}"))
+    why.map(|why| format!("raft seed {seed} ({clocks:?}, {disks:?}) {why}\n{outcome}"))
 }
 
-fn check(seed: u64, clocks: Clocks) {
-    if let Some(failure) = failure(seed, clocks) {
+fn check(seed: u64, clocks: Clocks, disks: Disks) {
+    if let Some(failure) = failure(seed, clocks, disks) {
         panic!("{failure}");
     }
 }
@@ -86,7 +89,7 @@ fn check(seed: u64, clocks: Clocks) {
     ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
 )]
 fn raft_seed_1() {
-    check(1, Clocks::Off);
+    check(1, Clocks::Off, Disks::Off);
 }
 
 #[test]
@@ -95,7 +98,60 @@ fn raft_seed_1() {
     ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
 )]
 fn raft_seed_2_with_skewed_timers() {
-    check(2, Clocks::Bounded);
+    check(2, Clocks::Bounded, Disks::Off);
+}
+
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn raft_seed_2_with_wipes() {
+    check(2, Clocks::Off, Disks::Wipe);
+}
+
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn raft_seed_1_with_restores() {
+    check(1, Clocks::Off, Disks::Restore);
+}
+
+/// One shard's directory wiped on a majority at once leaves no copy that
+/// may vote under its old id, so the shard stalls until an operator
+/// re-forms it (#2350). Nothing acknowledged is reported lost, the other
+/// shard carries on, and the stall is the only finding.
+#[test]
+fn a_majority_wipe_stalls_its_shard_and_loses_nothing() {
+    let config = RaftSimConfig {
+        disks: Disks::WipeMajority,
+        nemesis: Duration::from_secs(20),
+        ..RaftSimConfig::default()
+    };
+    let outcome = run_seed(1, config);
+    println!("{outcome}");
+    assert!(
+        outcome.report.violations.is_empty(),
+        "{}",
+        outcome.first_failure()
+    );
+    let stalled = "t/ns/s0: no leader acknowledged a write within 30s of the heal";
+    assert!(outcome.findings.iter().any(|f| f == stalled), "{outcome}");
+    let elsewhere: Vec<_> = outcome
+        .findings
+        .iter()
+        .filter(|f| !f.starts_with("t/ns/s0: "))
+        .collect();
+    assert!(elsewhere.is_empty(), "only s0 stalls: {elsewhere:?}");
+    let wiped = outcome
+        .history
+        .faults
+        .iter()
+        .filter(|fault| fault.what.starts_with("wipe "))
+        .count();
+    assert_eq!(wiped, outcome.members / 2 + 1);
 }
 
 /// A run that never finishes fails with a finding that says where it was,
@@ -144,6 +200,17 @@ fn clocks() -> Clocks {
     }
 }
 
+fn disks() -> Disks {
+    let set = |name: &str| std::env::var(name).is_ok_and(|value| value == "1");
+    if set("FELIX_SIM_RESTORE") {
+        Disks::Restore
+    } else if set("FELIX_SIM_WIPE") {
+        Disks::Wipe
+    } else {
+        Disks::Off
+    }
+}
+
 /// What the seed draws is the same in every run, even without a seeded
 /// `select!`: the member count and every fault's time. Which member a leader
 /// isolation hits can differ there, since the runs can differ in who leads.
@@ -175,6 +242,7 @@ fn each_raft_seed_runs_the_same_twice() {
     for seed in start..start + count {
         let config = || RaftSimConfig {
             clocks: clocks(),
+            disks: disks(),
             ..RaftSimConfig::default()
         };
         let (first, second) = (run_seed(seed, config()), run_seed(seed, config()));
@@ -202,12 +270,12 @@ fn each_raft_seed_runs_the_same_twice() {
 #[test]
 #[ignore = "a batch of seeds; run it by name"]
 fn raft_seeds() {
-    let clocks = clocks();
+    let (clocks, disks) = (clocks(), disks());
     let start = env("FELIX_SIM_SEED_START", 1);
     let count = env("FELIX_SIM_SEEDS", 4);
     // Every seed runs, so one batch says which seeds a change breaks.
     let failures: Vec<String> = (start..start + count)
-        .filter_map(|seed| failure(seed, clocks))
+        .filter_map(|seed| failure(seed, clocks, disks))
         .collect();
     assert!(
         failures.is_empty(),
