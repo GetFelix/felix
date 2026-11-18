@@ -1194,12 +1194,13 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 5 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
+| send number | `u64`: on a leader's append, its place among the leader's appends in that term. A follower stores the beat only from an append numbered above the last one it stored a beat from. 0 otherwise |
 | report | `u8`: 1 on a leader's append with entries when it wants the member's written position back (message 7); 0 otherwise. Any other value is refused |
 | vote | term `u64`, the member voted for, committed `u8` |
 | log id | term `u64`, index `u64` |
@@ -1308,6 +1309,24 @@ fsync and the answer. The sender cuts a longer append, and openraft takes the
 answer as a partial acknowledgement and sends the rest next. An append that
 could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
+
+The first record is sent however large, so its size also sets the deadline.
+An append whose first record is past the budget gets as long as that record
+needs at the same rate, up to the 10 s a follower allows: about 1.1 s for the
+largest record. The follower is told the same deadline. Without this, a record
+that takes longer than the heartbeat to cross the link would time out on every
+retry, and every entry after it would wait behind it for good.
+
+On a Raft shard a record over 32 MiB (payload, key and headers, and
+publisher) is refused before it is proposed, with nothing written. That is
+the most one append carries, and it keeps every entry well inside a frame
+and its deadline near a second. Cache writes take the same bound on key and
+value. The hybrid engine takes records up to the frame limit. A client
+publishing to the shard's leader is told the request is invalid and not to
+retry; an MQTT publish there is refused with `PUBACK` 0x83, reason string
+`record_too_large`. A publish forwarded from another broker is answered as a
+storage failure instead (#2773). The defaults (16 MiB client frames, 1 MiB MQTT
+packets) stay under the bound.
 
 Two smaller limits apply first, when the leader builds the append: at most
 1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records

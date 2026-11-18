@@ -7,6 +7,7 @@ mod marks;
 mod placement_ack;
 mod reclaim;
 mod reform;
+mod report;
 mod start;
 mod vouch;
 

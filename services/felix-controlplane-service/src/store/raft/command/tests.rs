@@ -353,6 +353,7 @@ fn a_shard_switch_needs_level_34() {
         node_incarnation: 1,
         copy_id: 1,
         keep_ordered: false,
+        shard_incarnation: None,
     });
     // Matched by name too.
     assert_eq!(op_of(&copy_id).as_deref(), Some(COPY_ID_OP));

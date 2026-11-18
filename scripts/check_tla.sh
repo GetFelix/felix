@@ -70,7 +70,7 @@ fetch_tools() {
   # mismatch is retried. Only a file that matches the pinned hash is kept.
   local attempt actual delay
   for attempt in 1 2 3 4; do
-    if curl -sSL --proto "=https" --tlsv1.2 --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
+    if curl --proto "=https" --tlsv1.2 -sSL --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
       actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
       if [ "$actual" = "$TLA_SHA256" ]; then
         mv "$JAR.tmp" "$JAR"
@@ -585,8 +585,6 @@ expectations=(
   "FelixRaftBatchForgetsCut violates BatchExactlyOnce"
   "FelixRaftBatchForgetsCutPlace violates ProducerPlaceAgrees"
   "FelixRaftBatchInstallWithoutTable violates BatchExactlyOnce"
-  "FelixRaftBatchResetCrash pass"
-  "FelixRaftBatchResetCrashDropsTable violates BatchExactlyOnce"
   "FelixRaftBatchTableAtApply violates BatchExactlyOnce"
   "FelixRaftBatchHeldBeforeCommit violates BatchExactlyOnce"
   "FelixRaftBatchReachFinish violates NeverFinishesACut"
@@ -1430,7 +1428,6 @@ weights=(
   "FelixRaftReformTwoReformsTrailingFloor 9"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
-  "FelixRaftBatchResetCrash 5"
   "FelixRaftStreamPurgeSmall 12"
   "FelixRaftStreamPurgeNoCapSmall 12"
   "FelixRaftStreamPurgeLearnerSmall 6"

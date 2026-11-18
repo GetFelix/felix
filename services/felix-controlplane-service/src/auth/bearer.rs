@@ -82,7 +82,7 @@ pub(crate) fn refused(reason: Refusal, message: &str) -> ApiError {
     metrics::counter!(AUTH_REJECTED_TOTAL, "reason" => reason.label()).increment(1);
     tracing::info!(
         reason = reason.label(),
-        message,
+        detail = message,
         "refused a control-plane credential"
     );
     match reason {

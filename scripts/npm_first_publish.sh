@@ -97,7 +97,7 @@ else
   for dir in "$pkg"/npm/*/; do
     node_file="felix.$(basename "$dir").node"
     url="https://github.com/GetFelix/felix/releases/download/${tag}/${node_file}"
-    if ! curl -fsSL --max-time 300 -o "$work/$node_file" "$url"; then
+    if ! curl --proto "=https" --tlsv1.2 -fsSL --max-time 300 -o "$work/$node_file" "$url"; then
       echo "error: could not download $node_file from $tag" >&2
       exit 1
     fi
