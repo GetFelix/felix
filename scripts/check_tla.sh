@@ -655,6 +655,7 @@ expectations=(
   "FelixRaftIdempotent pass"
   "FelixRaftIdempotentTwoTerms pass"
   "FelixRaftIdempotentMemory violates NoDuplicate"
+  "FelixRaftIdempotentRewrite violates NoDuplicate"
   "FelixRaftIdempotentReachFinish violates NeverFinishesACut"
   "FelixRaftIdempotentReachHeld violates NeverHeldByLaterLeader"
   "FelixRaftIdentity pass"

@@ -404,9 +404,10 @@ Each has an issue and blocks what is named.
    `NoStaleGroupCommit` or `NoLostDelivery`. Issue #2266.
 2. **Idempotent publish across a leader change.** Closed by
    `FelixRaftIdempotent.tla`: `NoDuplicate` holds across changes of Raft
-   leader, for batches of one or two records and for the re-send of a
-   batch a change of leader cut short, with the table read from the
-   leader's log. Its twin with the table in memory fails it. Issue #2267.
+   leader, with two batches in flight and for the re-send of a batch a
+   change of leader cut short, with the table read from the leader's log.
+   It models new two-record batches ahead of the engine, which refuses
+   them until #2524. Its twin with the table in memory fails it. Issue #2267.
 3. **Placement liveness under Raft membership is unmodelled**, and two
    specs that stay still speak of fences and promotions. `EventuallyAtFactor`
    and the move give-up configs need a twin over joint consensus.

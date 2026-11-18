@@ -2,9 +2,10 @@
 (***************************************************************************)
 (* Idempotent publishes across a change of Raft leader.                    *)
 (*                                                                         *)
-(* One producer numbers its batches and sends batch s + 1 only after s was *)
-(* acknowledged. It re-sends an unacknowledged batch to whichever member   *)
-(* leads, as often as it likes. A batch of N records is N log entries,     *)
+(* One producer numbers its batches and starts batch s + 1 once s is      *)
+(* written whole to some member's log, so two can be unanswered at once,  *)
+(* as the client pipelines. It re-sends any unacknowledged batch to       *)
+(* whichever member leads, as often as it likes, in any order. A batch of N records is N log entries,     *)
 (* each a piece carrying the sequence, its position and the batch length.  *)
 (*                                                                         *)
 (* The leader places a send by its producer table: the highest sequence    *)
@@ -31,7 +32,7 @@
 (*   MembersAgree -- two members that committed an index hold the same     *)
 (*                   entry there.                                          *)
 (*                                                                         *)
-(* The knob:                                                               *)
+(* The knobs:                                                              *)
 (*                                                                         *)
 (*   TableFromLog = FALSE -- the leader keeps its table in memory, filled  *)
 (*                           by its own appends and started empty when it  *)
@@ -39,13 +40,21 @@
 (*                           unknown to it, so a re-send after a change of *)
 (*                           leader is taken as new.                       *)
 (*                                                                         *)
-(* With the knob TRUE the table is read from the leader's whole stored     *)
+(*   FinishFromHeld = FALSE -- the re-send of a cut batch is written whole, *)
+(*                           over the pieces already held.                 *)
+(*                                                                         *)
+(* With TableFromLog TRUE the table is read from the leader's whole stored *)
 (* log, uncommitted entries included, as the broker reads its own log.     *)
 (*                                                                         *)
 (* Abstracted: disks, crashes, snapshots and purges (FelixRaftBatch.tla    *)
 (* has the table across purges and installs), payloads and the digest that *)
 (* ties a re-send to its batch, the lease, and producer expiry. A message  *)
-(* is one atomic step that reads both members.                             *)
+(* is one atomic step that reads both members. A leader's own write never  *)
+(* fails partway: with batches of at most two records the rest of a cut    *)
+(* batch is one entry, so that matters only for longer batches. A new      *)
+(* leader places sends at once; the code first applies every earlier       *)
+(* entry, so the model allows more than the code. New batches of several  *)
+(* records are modelled ahead of the engine, which refuses them today.     *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -56,12 +65,13 @@ CONSTANTS
     MaxLog,
     MaxSeq,
     Lens,          \* the batch lengths the producer may pick
-    TableFromLog
+    TableFromLog,
+    FinishFromHeld
 
 ASSUME
     /\ MaxTerm \in Nat /\ MaxLog \in Nat /\ MaxSeq \in Nat
     /\ Lens # {} /\ \A n \in Lens : n \in Nat /\ n > 0
-    /\ TableFromLog \in BOOLEAN
+    /\ TableFromLog \in BOOLEAN /\ FinishFromHeld \in BOOLEAN
     /\ Nobody \notin Servers
 
 VARIABLES
@@ -72,8 +82,8 @@ VARIABLES
     log,       \* per member: its stored entries
     commit,    \* per member: its commit index
     mem,       \* per member: its in-memory table (TableFromLog = FALSE only)
-    cur,       \* the sequence the producer is sending, 0 before the first
-    blen,      \* that batch's length
+    cur,       \* the producer's highest sequence begun, 0 before the first
+    blen,      \* per sequence: that batch's length
     props,     \* proposals written and not yet answered
     acked      \* history: every acknowledgement, and how it was given
 
@@ -137,7 +147,7 @@ Init ==
     /\ commit = [s \in Servers |-> 0]
     /\ mem = [s \in Servers |-> None]
     /\ cur = 0
-    /\ blen = 0
+    /\ blen = [s \in 1..MaxSeq |-> 0]
     /\ props = {}
     /\ acked = {}
 
@@ -186,33 +196,34 @@ LearnTerm(i, j) ==
     /\ StepDown(j, term[i])
     /\ UNCHANGED <<log, commit, mem, cur, blen, props, acked>>
 
-\* The producer starts its next batch once the one before is acknowledged.
+\* The producer starts its next batch once the one before is written whole
+\* to a member's log, committed or not.
 Begin(n) ==
     /\ cur < MaxSeq
-    /\ cur = 0 \/ IsAcked(cur)
+    /\ cur = 0 \/ \E m \in Servers : WholeIn(m, cur, Len(log[m]), blen[cur])
     /\ cur' = cur + 1
-    /\ blen' = n
+    /\ blen' = [blen EXCEPT ![cur + 1] = n]
     /\ UNCHANGED <<term, role, votedFor, granted, log, commit, mem, props, acked>>
 
-\* The producer sends its batch, for the first time or again, to leader i.
-Propose(i) ==
-    LET d == Place(Table(i), cur)
-        n == blen - d.from
+\* The producer sends batch s, for the first time or again, to leader i.
+Propose(i, s) ==
+    LET d == Place(Table(i), s)
+        from == IF d.do = "finish" /\ FinishFromHeld THEN d.from ELSE 0
+        n == blen[s] - from
     IN
     /\ role[i] = "leader"
-    /\ cur > 0
-    /\ ~IsAcked(cur)
+    /\ ~IsAcked(s)
     /\ \/ /\ d.do = "held"
-          /\ WholeIn(i, cur, commit[i], blen)
-          /\ acked' = acked \cup {[s |-> cur, len |-> blen, how |-> "held", t |-> term[i]]}
+          /\ WholeIn(i, s, commit[i], blen[s])
+          /\ acked' = acked \cup {[s |-> s, len |-> blen[s], how |-> "held", t |-> term[i]]}
           /\ UNCHANGED <<log, mem, props>>
        \/ /\ d.do \in {"new", "finish"}
           /\ Len(log[i]) + n <= MaxLog
           /\ log' = [log EXCEPT ![i] =
-                @ \o [k \in 1..n |-> Piece(term[i], cur, d.from + k - 1, blen)]]
-          /\ mem' = [mem EXCEPT ![i] = [seq |-> cur, held |-> blen, len |-> blen]]
-          /\ props' = props \cup {[by |-> i, t |-> term[i], s |-> cur, len |-> blen,
-                                    last |-> Len(log[i]) + n, from |-> d.from]}
+                @ \o [k \in 1..n |-> Piece(term[i], s, from + k - 1, blen[s])]]
+          /\ mem' = [mem EXCEPT ![i] = [seq |-> s, held |-> blen[s], len |-> blen[s]]]
+          /\ props' = props \cup {[by |-> i, t |-> term[i], s |-> s, len |-> blen[s],
+                                    last |-> Len(log[i]) + n, from |-> from]}
           /\ UNCHANGED acked
     /\ UNCHANGED <<term, role, votedFor, granted, commit, cur, blen>>
 
@@ -267,7 +278,7 @@ Next ==
     \/ \E s \in Servers : BecomeLeader(s)
     \/ \E i, j \in Servers : LearnTerm(i, j)
     \/ \E n \in Lens : Begin(n)
-    \/ \E i \in Servers : Propose(i)
+    \/ \E i \in Servers, s \in 1..cur : Propose(i, s)
     \/ \E q \in props : Answer(q) \/ Forget(q)
     \/ \E i, j \in Servers : Replicate(i, j)
     \/ \E i \in Servers : AdvanceCommit(i)
@@ -292,7 +303,7 @@ TypeOK ==
           /\ \A k \in 1..Len(log[s]) : log[s][k] \in Entries
           /\ commit[s] <= Len(log[s])
     /\ cur \in 0..MaxSeq
-    /\ blen \in {0} \cup Lens
+    /\ blen \in [1..MaxSeq -> {0} \cup Lens]
 
 IsPiece(e) == e.kind = "piece"
 
