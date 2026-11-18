@@ -254,15 +254,15 @@ broker with nothing enabled.
 
 `raft_written_commit` lets a Raft shard on a `periodic` or `none` broker
 commit on a written majority (`per-shard-raft.md`, "Proposal: commit on a
-written majority on relaxed brokers"). Brokers act on it only when they open
-a member, so a member opened before the finalize fsyncs on commit until it
-opens again. No build reports it yet, so its finalize is refused: a
-re-form that starts above every copy's reservation must exist first. Once it
-is finalized, no broker may be downgraded to a build without the
+written majority on relaxed brokers"), so its log fsyncs on the broker's
+schedule rather than on every commit. Every build reports it and a new
+cluster finalizes it. Brokers act on it only when they open a member, so a
+member opened before the finalize fsyncs on commit until it opens again.
+Once it is finalized, no broker may be downgraded to a build without the
 reservation file, since that build would rotate or reclaim a copy without
 carrying it.
 
-`joint_fence` and `replica_election` are declared the same way: the first
+`joint_fence` and `replica_election` are declared with their prerequisites too: the first
 after `generation_start`, `stream_incarnations` and `cache_incarnations`, the
 second after those, `majority_ack`, `lease_free_reads` and the first. A
 replaced copy stops being a learner only once it holds its generation's start

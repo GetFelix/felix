@@ -237,6 +237,25 @@ held 50 ms, eight appends on four logs and two workers leave a 1 ms ticker
 running, and finish faster than two workers writing in turn could. With the
 write on the caller, the ticker stops for 280–340 ms.
 
+### 12. A Raft log on a relaxed broker fsyncs on the broker's schedule
+
+openraft counts an entry toward a commit only once the log says it is
+flushed. A Raft log that fsyncs on commit therefore puts an fsync on every
+copy in front of every commit, whatever the broker's `fsync_mode`: a box
+profile of RF 3 `Quorum` on `periodic` counted 97 `fdatasync` calls per 1,000
+messages on Raft against 0.4 on the hybrid, at 118k msg/s against 198k.
+
+On a `periodic` or `none` broker whose run rotates its storage id after a
+crash, a Raft log tells openraft an entry is flushed once it is written and
+covered by the copy's synced reservation, and leaves the fsync to the periodic
+flusher, so one flush serves every commit since the last
+(`docs/per-shard-raft.md`, "Proposal: commit on a written majority on relaxed
+brokers"). Votes and terms are still synced before a vote is answered. It is
+on once the fleet finalizes `raft_written_commit`, which a new cluster does.
+`periodic_quorum_commits_share_the_periodic_fsync` counts it with
+`DiskLog::flushes`: 32 commits on three copies take 96 flushes fsynced on
+commit and none on `periodic`.
+
 ## Where the time goes
 
 ```mermaid
