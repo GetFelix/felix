@@ -106,6 +106,9 @@ impl Credentials {
     /// Authenticate `first`, a stream just opened on `connection`, with
     /// `token`, from [`Credentials::current_token`].
     ///
+    /// Also returns the token the broker accepted, which is not `token` after
+    /// a retry.
+    ///
     /// If the broker refuses the token and the provider has a different one,
     /// retry once on a new stream (the broker closes a stream after a failed
     /// auth). This catches a token that expired earlier than `exp` suggested,
@@ -116,7 +119,7 @@ impl Credentials {
         first: (SendStream, RecvStream),
         token: String,
         max_frame_bytes: usize,
-    ) -> Result<(SendStream, RecvStream, Negotiated)> {
+    ) -> Result<(SendStream, RecvStream, Negotiated, String)> {
         let mut token = token;
         let mut retried = false;
         let mut next = Some(first);
@@ -136,7 +139,7 @@ impl Credentials {
             )
             .await
             {
-                Ok(negotiated) => return Ok((send, recv, negotiated)),
+                Ok(negotiated) => return Ok((send, recv, negotiated, token)),
                 Err(err) if !retried && is_auth_refusal(&err) => {
                     self.tokens.invalidate(&token);
                     let fresh = self.tokens.token().await.map_err(token_failure)?;
