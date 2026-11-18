@@ -1309,6 +1309,19 @@ answer as a partial acknowledgement and sends the rest next. An append that
 could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
 
+The first record is sent however large, so its size also sets the deadline.
+An append whose first record is past the budget gets as long as that record
+needs at the same rate, up to the 10 s a follower allows: about 1.1 s for the
+largest record. The follower is told the same deadline. Without this, a record
+that takes longer than the heartbeat to cross the link would time out on every
+retry, and every entry after it would wait behind it for good.
+
+A record over 32 MiB (payload, key and headers, and publisher) is refused
+before it is proposed, with nothing written: no append could carry it. Cache
+writes take the same bound on key and value. The client is told the request
+is invalid and not to retry; an MQTT publish is refused with `PUBACK` 0x83,
+reason string `record_too_large`.
+
 Two smaller limits apply first, when the leader builds the append: at most
 1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
 read from the log (the log reader's page). At 1 KiB records that is about

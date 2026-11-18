@@ -327,6 +327,7 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
+        let deadline = super::wire::append_deadline(option.hard_ttl(), &body);
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -335,11 +336,11 @@ impl Router {
                 Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
                 _ => Ask::Nothing,
             },
-            deadline: option.hard_ttl(),
+            deadline,
             body,
         };
         let sent_at = self.reach.now();
-        let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
+        let answer = tokio::time::timeout(deadline, self.transport.send(request)).await;
         if let Some(sent) = sent.sent.take() {
             match &answer {
                 Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, &sent),

@@ -100,6 +100,54 @@ pub(crate) fn append_budget(deadline: Duration) -> usize {
         .clamp(MIN_APPEND_BYTES, MAX_APPEND_BYTES)
 }
 
+/// The most record bytes one entry may hold: what one append can carry. A
+/// larger record could never be sent, so the proposer refuses it.
+pub(crate) const MAX_RECORD_BYTES: usize = MAX_APPEND_BYTES;
+
+/// The deadline for an append, given the one openraft set. An append always
+/// carries its first entry, so a record past the budget of `deadline` gets
+/// as long as it needs at the same rate. Otherwise it would time out the
+/// same way on every retry and the follower would never get past it.
+pub(crate) fn append_deadline(deadline: Duration, body: &Request) -> Duration {
+    let Request::Append(rpc) = body else {
+        return deadline;
+    };
+    let Some(first) = rpc.entries.first() else {
+        return deadline;
+    };
+    let bytes = entry_bytes(first);
+    if bytes <= append_budget(deadline) {
+        return deadline;
+    }
+    let millis = (bytes as u128 * WIRE_SHARE_OF_DEADLINE * 1000).div_ceil(LINK_BYTES_PER_SEC);
+    let needed = Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX));
+    needed.clamp(deadline, crate::peer::RAFT_MAX_DEADLINE.max(deadline))
+}
+
+/// What one entry costs an append's budget.
+fn entry_bytes(entry: &EntryOf<ShardTypes>) -> usize {
+    ENTRY_OVERHEAD
+        + match &entry.payload {
+            EntryPayload::Normal(command) => command_bytes(command),
+            _ => 0,
+        }
+}
+
+/// A command's record bytes: its payload, headers and publisher, and the
+/// attributed wrapper around them.
+pub(crate) fn command_bytes(command: &Command) -> usize {
+    // A tag, a flags byte, and a length for each block it holds.
+    let wrapper = match (&command.headers, &command.publisher) {
+        (None, None) => 0,
+        (Some(_), Some(_)) => ATTRIBUTED_WRAPPER + 8,
+        _ => ATTRIBUTED_WRAPPER + 4,
+    };
+    command.payload.len()
+        + command.headers.as_ref().map_or(0, |headers| headers.len())
+        + command.publisher.as_ref().map_or(0, Bytes::len)
+        + wrapper
+}
+
 /// Cut an append's entries to its [`append_budget`], keeping at least one.
 pub(crate) fn fit(request: &mut RaftRequest) {
     let budget = append_budget(request.deadline);
@@ -111,23 +159,7 @@ pub(crate) fn fit(request: &mut RaftRequest) {
         .entries
         .iter()
         .position(|entry| {
-            bytes += ENTRY_OVERHEAD
-                + match &entry.payload {
-                    EntryPayload::Normal(command) => {
-                        // The attributed wrapper: a tag, a flags byte, and a
-                        // length for each block it holds.
-                        let wrapper = match (&command.headers, &command.publisher) {
-                            (None, None) => 0,
-                            (Some(_), Some(_)) => ATTRIBUTED_WRAPPER + 8,
-                            _ => ATTRIBUTED_WRAPPER + 4,
-                        };
-                        command.payload.len()
-                            + command.headers.as_ref().map_or(0, |headers| headers.len())
-                            + command.publisher.as_ref().map_or(0, Bytes::len)
-                            + wrapper
-                    }
-                    _ => 0,
-                };
+            bytes += entry_bytes(entry);
             bytes > budget
         })
         .unwrap_or(rpc.entries.len())
