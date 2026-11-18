@@ -874,7 +874,8 @@ jobs:
       - name: Install the binding
         run: |
           python -m pip install --require-hashes --only-binary :all: -r scripts/ci/requirements/binding.txt
-          python -m pip install --no-deps --no-build-isolation ./crates/sdk/felix-python
+          maturin build --release --manifest-path crates/sdk/felix-python/Cargo.toml --out "$RUNNER_TEMP/wheels"
+          python -m pip install --no-deps --no-index --only-binary :all: --find-links "$RUNNER_TEMP/wheels" felix-client
           python -c "import felix; print('felix binding imported OK')"
 
       - name: Run the conformance suite
