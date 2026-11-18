@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795040735315,
+  "lastUpdate": 1795042469940,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78210,6 +78210,72 @@ window.BENCHMARK_DATA = {
             "range": "783.59",
             "unit": "us",
             "extra": "trials: 5\nmedian: 739.00\nmean: 1122.00\nstdev: 783.59\ncv: 69.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a8f9e5e40d161ee1f34dc8ea5baff6e8df30474e",
+          "message": "Re-form report builder: memberships from log entries and snapshots (part of #2250) (#2763)\n\n* raft(reform): a broker's survey answer reads every membership of the epoch\n\nThe re-form plan marks a group while no report carries memberships, and\nnothing filled them. build_report reads both halves of every membership\nentry of the record's epoch from each copy, current and kept, without\nopening it, and the membership in each copy's snapshot, since a purge\nmoves the newest one there. felix-replication's reform_report decodes the\nstored format. Nothing calls it yet; the re-form command will.\n\nPart of #2250 and #2689.\n\n* raft(reform): fail closed on unknown-epoch copies and purges past the snapshot\n\nA copy with no raft-epoch past epoch 0 now reports every membership it\nholds instead of none, a purge past the stored snapshot fails the report,\nnames come from the newest membership across current and kept copies, and\na snapshot naming voters without an entry does not decode.\n\nPart of #2250 and #2689.\nSpec-Unaffected: fills an input ReformKept and VoterSets already assume; no rule changes.\n\n* raft(reform): name the indexed membership type for clippy\n\nPart of #2250.\nSpec-Unaffected: type alias only.",
+          "timestamp": "2026-11-18T22:16:06Z",
+          "tree_id": "21a3f994fd939effae72effc992f91249abd1af2",
+          "url": "https://github.com/GetFelix/felix/commit/a8f9e5e40d161ee1f34dc8ea5baff6e8df30474e"
+        },
+        "date": 1795042457491,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 124.80\nstdev: 0.84\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 170,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 170.40\nstdev: 1.67\ncv: 0.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 233,
+            "range": "8.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 233.00\nmean: 228.60\nstdev: 8.65\ncv: 3.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 172,
+            "range": "5.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 174.00\nstdev: 5.10\ncv: 2.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 360,
+            "range": "191.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 360.00\nmean: 436.60\nstdev: 191.16\ncv: 43.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1255,
+            "range": "751.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1255.00\nmean: 1192.40\nstdev: 751.85\ncv: 63.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
