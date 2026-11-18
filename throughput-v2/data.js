@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795038543357,
+  "lastUpdate": 1795040738601,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61568,6 +61568,58 @@ window.BENCHMARK_DATA = {
             "range": "8727.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 785625.68\nmean: 788253.24\nstdev: 8727.66\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3bc4392ca84e3ae30adbf163cac9f21485a18fad",
+          "message": "fix(storage): a forgotten boot still rotates when the run record cannot be rewritten (#2558) (#2750)\n\n* fix(storage): a forgotten boot still rotates when the run record cannot be rewritten (#2558)\n\nA failed flush relies on the poison marker or the forgotten boot to make\na process restart in the same boot rotate the copy. Both are new files on\nthe disk that just failed, so on a full disk both could fail and the copy\nkept its id with pages the kernel dropped. forget_boot now falls back to\ncutting the run record to nothing in place, which needs no free block and\nreads as a relaxed crash in an unknown boot.\n\nSpec-Unaffected: FelixRaftWritten already models every cut of a copy's\nunsynced tail as rotating it (CutRotates; PowerCutKeeps is the config\nthat must violate without it). This makes the failed-flush path, with its\nmarker and record rewrite lost, rotate as the model assumes.\n\n* docs(storage): the in-place cut needs no free block on ext4 or XFS only",
+          "timestamp": "2026-11-18T21:42:33Z",
+          "tree_id": "37cde7832210af7c5a1cd3a8f1f133679bb46fb7",
+          "url": "https://github.com/GetFelix/felix/commit/3bc4392ca84e3ae30adbf163cac9f21485a18fad"
+        },
+        "date": 1795040737774,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 349732.2,
+            "range": "18489.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349732.20\nmean: 354052.35\nstdev: 18489.31\ncv: 5.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 349732.2,
+            "range": "18489.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 349732.20\nmean: 354052.35\nstdev: 18489.31\ncv: 5.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81963.91,
+            "range": "574.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81963.91\nmean: 82167.28\nstdev: 574.96\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819639.1,
+            "range": "5749.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819639.10\nmean: 821672.79\nstdev: 5749.63\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
