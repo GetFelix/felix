@@ -15,6 +15,11 @@ name: Perf - Raft against hybrid, RF 3
 # compare a PR branch and main by running it once on each.
 
 on:
+  # A change to this file runs a short check of it (two rounds, 15 s); the
+  # real runs are dispatched by hand.
+  pull_request:
+    paths:
+      - .github/workflows/perf-raft-rf3.yml
   workflow_dispatch:
     inputs:
       ref:
@@ -49,8 +54,8 @@ jobs:
       - name: Check the inputs
         env:
           REF: ${{ inputs.ref }}
-          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
-          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds || '15' }}
+          ROUNDS: ${{ inputs.rounds || '2' }}
         run: |
           set -euo pipefail
           [ -z "$REF" ] || [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "bad ref"; exit 1; }
@@ -89,8 +94,8 @@ jobs:
 
       - name: Run the cells, alternating engines
         env:
-          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
-          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds || '15' }}
+          ROUNDS: ${{ inputs.rounds || '2' }}
         run: |
           set -euo pipefail
           results=/tmp/felix-raft-rf3/results.jsonl
