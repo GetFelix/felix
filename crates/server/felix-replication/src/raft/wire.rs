@@ -24,15 +24,16 @@ use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 
 use super::codec::invalid;
 use super::membership::TargetVersion;
-use super::network::{Addressee, Ask, RaftReply, RaftRequest, Refused, Reply, Request};
+use super::network::{Addressee, Ask, Beat, RaftReply, RaftRequest, Refused, Reply, Request};
 use super::types::{Command, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
-/// version to a membership, 5 the piece entry.
-const LAYOUT: u8 = 5;
+/// version to a membership, 5 the piece entry, 6 the send number after the
+/// gap.
+const LAYOUT: u8 = 6;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -152,7 +153,8 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
     put_group(&mut buf, &request.group)?;
     put_member(&mut buf, &request.to)?;
-    buf.put_u64(request.beat);
+    buf.put_u64(request.beat.gap);
+    buf.put_u64(request.beat.seq);
     // 0 and 1 read as the boolean older builds take. Only a written-commit
     // log sends 2, and that needs the fleet to finalize `raft_written_commit`,
     // which no build without this byte reports.
@@ -221,7 +223,10 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let deadline = Duration::from_millis(u64::from(take_u32(&mut buf)?));
     let group = take_group(&mut buf)?;
     let to = take_member(&mut buf)?;
-    let beat = take_u64(&mut buf)?;
+    let beat = Beat {
+        gap: take_u64(&mut buf)?,
+        seq: take_u64(&mut buf)?,
+    };
     let report = match take_u8(&mut buf)? {
         0 => Ask::Nothing,
         1 => Ask::Written,
