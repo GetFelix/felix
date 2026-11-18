@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795040738601,
+  "lastUpdate": 1795042473815,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61620,6 +61620,58 @@ window.BENCHMARK_DATA = {
             "range": "5749.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819639.10\nmean: 821672.79\nstdev: 5749.63\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a8f9e5e40d161ee1f34dc8ea5baff6e8df30474e",
+          "message": "Re-form report builder: memberships from log entries and snapshots (part of #2250) (#2763)\n\n* raft(reform): a broker's survey answer reads every membership of the epoch\n\nThe re-form plan marks a group while no report carries memberships, and\nnothing filled them. build_report reads both halves of every membership\nentry of the record's epoch from each copy, current and kept, without\nopening it, and the membership in each copy's snapshot, since a purge\nmoves the newest one there. felix-replication's reform_report decodes the\nstored format. Nothing calls it yet; the re-form command will.\n\nPart of #2250 and #2689.\n\n* raft(reform): fail closed on unknown-epoch copies and purges past the snapshot\n\nA copy with no raft-epoch past epoch 0 now reports every membership it\nholds instead of none, a purge past the stored snapshot fails the report,\nnames come from the newest membership across current and kept copies, and\na snapshot naming voters without an entry does not decode.\n\nPart of #2250 and #2689.\nSpec-Unaffected: fills an input ReformKept and VoterSets already assume; no rule changes.\n\n* raft(reform): name the indexed membership type for clippy\n\nPart of #2250.\nSpec-Unaffected: type alias only.",
+          "timestamp": "2026-11-18T22:16:06Z",
+          "tree_id": "21a3f994fd939effae72effc992f91249abd1af2",
+          "url": "https://github.com/GetFelix/felix/commit/a8f9e5e40d161ee1f34dc8ea5baff6e8df30474e"
+        },
+        "date": 1795042473132,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359239.77,
+            "range": "11752.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359239.77\nmean: 358277.92\nstdev: 11752.77\ncv: 3.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359239.77,
+            "range": "11752.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359239.77\nmean: 358277.92\nstdev: 11752.77\ncv: 3.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82726.86,
+            "range": "2057.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82726.86\nmean: 81859.71\nstdev: 2057.41\ncv: 2.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 827268.6,
+            "range": "20574.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 827268.60\nmean: 818597.07\nstdev: 20574.09\ncv: 2.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
