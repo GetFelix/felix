@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795038538518,
+  "lastUpdate": 1795040735315,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78144,6 +78144,72 @@ window.BENCHMARK_DATA = {
             "range": "701.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1693.00\nmean: 1321.80\nstdev: 701.48\ncv: 53.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3bc4392ca84e3ae30adbf163cac9f21485a18fad",
+          "message": "fix(storage): a forgotten boot still rotates when the run record cannot be rewritten (#2558) (#2750)\n\n* fix(storage): a forgotten boot still rotates when the run record cannot be rewritten (#2558)\n\nA failed flush relies on the poison marker or the forgotten boot to make\na process restart in the same boot rotate the copy. Both are new files on\nthe disk that just failed, so on a full disk both could fail and the copy\nkept its id with pages the kernel dropped. forget_boot now falls back to\ncutting the run record to nothing in place, which needs no free block and\nreads as a relaxed crash in an unknown boot.\n\nSpec-Unaffected: FelixRaftWritten already models every cut of a copy's\nunsynced tail as rotating it (CutRotates; PowerCutKeeps is the config\nthat must violate without it). This makes the failed-flush path, with its\nmarker and record rewrite lost, rotate as the model assumes.\n\n* docs(storage): the in-place cut needs no free block on ext4 or XFS only",
+          "timestamp": "2026-11-18T21:42:33Z",
+          "tree_id": "37cde7832210af7c5a1cd3a8f1f133679bb46fb7",
+          "url": "https://github.com/GetFelix/felix/commit/3bc4392ca84e3ae30adbf163cac9f21485a18fad"
+        },
+        "date": 1795040722104,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 123,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 123.60\nstdev: 1.34\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 169,
+            "range": "4.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 170.80\nstdev: 4.15\ncv: 2.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 234,
+            "range": "1339.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 234.00\nmean: 828.40\nstdev: 1339.87\ncv: 161.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 173,
+            "range": "13.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 179.80\nstdev: 13.44\ncv: 7.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 351,
+            "range": "254.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 351.00\nmean: 479.60\nstdev: 254.83\ncv: 53.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 739,
+            "range": "783.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 739.00\nmean: 1122.00\nstdev: 783.59\ncv: 69.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
