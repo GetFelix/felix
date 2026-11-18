@@ -3,4 +3,4 @@
   switched off the divergence check for them), a history over records the
   reset dropped, or a generation left past the new tail. Both now store a
   `rewind-pending` marker first, and an open that finds it finishes the rewind
-  before anything reads the log (#2579, #2746).
+  before the log is served (#2579, #2746).

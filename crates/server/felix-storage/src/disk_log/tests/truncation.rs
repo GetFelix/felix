@@ -137,6 +137,14 @@ async fn a_reset_cut_short_at_any_step_reopens_whole() {
         crate::disk_log::crash_point::watch(dir.path(), Some(stop));
         let finished = log.reset_to(100).await.is_ok();
         crate::disk_log::crash_point::unwatch(dir.path());
+        // A step that failed may have left the marker, and a record appended
+        // over it would be dropped at the next open.
+        if !finished {
+            assert!(
+                log.append(&records(&["late"])).await.is_err(),
+                "stopped at step {stop}: a failed rewind left the log writable"
+            );
+        }
         log.shutdown().await.ok();
         drop(log);
 
@@ -196,6 +204,14 @@ async fn a_truncation_cut_short_at_any_step_reopens_whole() {
         crate::disk_log::crash_point::watch(dir.path(), Some(stop));
         let finished = log.truncate(2).await.is_ok();
         crate::disk_log::crash_point::unwatch(dir.path());
+        // A step that failed may have left the marker, and a record appended
+        // over it would be dropped at the next open.
+        if !finished {
+            assert!(
+                log.append(&records(&["late"])).await.is_err(),
+                "stopped at step {stop}: a failed rewind left the log writable"
+            );
+        }
         log.shutdown().await.ok();
         drop(log);
 

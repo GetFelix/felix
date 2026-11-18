@@ -2568,6 +2568,7 @@ impl LogInner {
         }
         epochs::store(&self.dir, &epochs)?;
         drop(epochs);
+        crash_point::reached(&self.dir).map_err(StorageError::Io)?;
         self.discard_snapshots()?;
         self.reset_producers(segments)?;
         rewind::finish(&self.dir).map_err(StorageError::Io)
@@ -2666,8 +2667,10 @@ impl LogInner {
 
 impl LogInner {
     /// Redo the rewind a crash interrupted, at open. A redo that would cut
-    /// below the commit offset fails the open: the first attempt checked
-    /// the same bound, so getting here means the state files disagree.
+    /// below the persisted commit offset fails the open: a reset or
+    /// truncation checked that bound, and a restore lowered the commit
+    /// durably before its marker, so getting here means the state files
+    /// disagree.
     fn finish_rewind(&self, pending: rewind::Rewind) -> Result<()> {
         match pending {
             rewind::Rewind::Reset(base) => self.reset_holding(base),
@@ -2700,9 +2703,13 @@ impl LogInner {
             });
         }
         segments.check_open()?;
-        rewind::begin(&self.dir, rewind::Rewind::Reset(base_offset)).map_err(StorageError::Io)?;
-        self.forget_all_offloaded(&mut manifest)?;
+        // Inside the closure: a marker left by a failed step must poison the
+        // log, or records appended later would be dropped at the next open.
         let rewound = (|| {
+            rewind::begin(&self.dir, rewind::Rewind::Reset(base_offset))
+                .map_err(StorageError::Io)?;
+            self.forget_all_offloaded(&mut manifest)?;
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
             // Saved before the records go. A batch the log held part of
             // below the new base stays refused.
             {
@@ -2732,6 +2739,7 @@ impl LogInner {
                 *epochs = epochs::EpochMap::default();
                 epochs::store(&self.dir, &epochs)?;
             }
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
             self.reset_producers(&segments)?;
             rewind::finish(&self.dir).map_err(StorageError::Io)
         })();

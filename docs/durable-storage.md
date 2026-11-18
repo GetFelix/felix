@@ -768,7 +768,7 @@ old segment before it creates the new one, so after a crash the directory
 holds either a prefix of the old log or the new empty one. The state that
 describes the records, such as the generation history, is rewritten after
 them, so both rewinds keep a `rewind-pending` marker on disk while they run,
-and an open that finds it finishes the rewind before anything reads the log
+and an open that finds it finishes the rewind before it hands the log out
 (`docs/storage-format.md`). Retention and
 compaction delete from the head, so they go oldest first under the same
 rule.

@@ -350,6 +350,7 @@ SaveReset(m, n) ==
 \* A crash before the drop. The member reopens over its old records, which
 \* it still holds, and keeps only what the save made durable.
 Crash(m) ==
+    /\ crashes < MaxCrashes
     /\ pending[m].set
     /\ crashes' = crashes + 1
     /\ pending' = [pending EXCEPT ![m].held = pending[m].saved]

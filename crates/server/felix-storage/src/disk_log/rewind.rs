@@ -6,7 +6,7 @@
 //! found the history gone and the records not would lose the history the
 //! divergence check reads. So the marker is stored before the first step and
 //! removed after the last, and an open that finds it does the rewind again
-//! before anything reads the log: every crash point reopens as before the
+//! before the log is handed out: every crash point reopens as before the
 //! rewind or as after it.
 //!
 //! Nothing can rebuild it, so a file that does not decode fails the open.

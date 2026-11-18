@@ -1430,6 +1430,7 @@ weights=(
   "FelixRaftReformTwoReformsTrailingFloor 9"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
+  "FelixRaftBatchResetCrash 5"
   "FelixRaftStreamPurgeSmall 12"
   "FelixRaftStreamPurgeNoCapSmall 12"
   "FelixRaftStreamPurgeLearnerSmall 6"

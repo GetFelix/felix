@@ -1,6 +1,7 @@
 //! The small files kept beside a log's segments: a Raft group's purged id,
-//! carried floor, snapshot, a log's pending rewind and the metadata store's member file. Each is replaced whole, so a crash leaves the old file or
-//! the new one.
+//! carried floor, snapshot, a log's pending rewind and the metadata store's
+//! member file. Each is replaced whole, so a crash leaves the old file or the
+//! new one.
 
 use std::io::{self, Write};
 use std::path::Path;

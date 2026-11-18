@@ -1086,8 +1086,10 @@ for.
 
 ## `rewind-pending`: a reset or truncation in progress
 
-A reset (`reset_to`) or a truncation stores this file before its first step
-and removes it after its last:
+A reset (`reset_to`) or a truncation stores this file before it drops a
+record and removes it after its last step. (A truncation or restore first
+forgets the offloaded copies past the cut, and a restore lowers the commit
+offset; both are safe to have happened without the rest.)
 
 ```text
  0   4  magic     u32  "FLRW"
@@ -1100,19 +1102,23 @@ and removes it after its last:
 
 A rewind drops records, then rewrites what described them: the `epochs` file,
 the producer state and the durable mark. An open that finds the file does the
-rewind again, from the start, before anything reads the log. Every step is
+rewind again, from the start, before the open hands the log out or rebuilds
+anything from it after recovery. Every step is
 safe to repeat, so whichever step the crash interrupted, the log reopens as it
 was before the rewind or as it is after it, never in between.
 
 The marker is removed, durably, before the rewind returns. A marker left in
-place over records appended later would drop them at the next open, so a
-failure to remove it poisons the log, and nothing is appended until it reopens.
+place over records appended later would drop them at the next open, so any
+failed step of the rewind, storing and removing the marker included, poisons
+the log, and nothing is appended until it reopens.
 
 The open refuses to start when the file does not decode, or when finishing the
 rewind would cut below the commit offset. The first attempt checked the same
 bound, so either one means the state files disagree, and starting would risk
-an acknowledged record. A broker that predates the file ignores it, so a
-downgrade right after a crash mid-rewind loses this repair.
+an acknowledged record. A broker that predates the file ignores it. So do not
+downgrade over a log that holds it: the older broker would serve the
+half-done rewind, and after an upgrade back the stale marker would be redone
+over records appended in between. Open the log once with this version first.
 
 ## `replica`: the accepted generation and the commit offset
 
