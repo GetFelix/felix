@@ -239,7 +239,7 @@ static void on_batch(void *user_data, FelixStatus status, const char *message,
   struct batch_waiter *b = user_data;
   b->has_results = results != NULL;
   b->count = count;
-  for (size_t i = 0; i < count && i < MAX_RECORDS; i++) {
+  for (size_t i = 0; results != NULL && i < count && i < MAX_RECORDS; i++) {
     b->results[i] = results[i];
     /* Only valid while the callback runs. */
     b->results[i].message = NULL;
