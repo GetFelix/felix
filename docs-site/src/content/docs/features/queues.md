@@ -105,7 +105,10 @@ as it takes, and nobody else gets them in the meantime. Taking a record back is
 the same delivery, not another attempt: its `attempts` stays what it was, so a
 member that restarts while it holds work never pushes that work toward the dead
 letters. One whose claim lapses before you take it back goes to the whole group,
-as any lapsed claim does, and that redelivery is an attempt.
+as any lapsed claim does, and that redelivery is an attempt. So the attempt bound
+counts lapses, nacks and deliveries to someone else, not restarts: a record that
+crashes its consumer every time is dead-lettered only once its claim lapses
+between restarts often enough.
 
 Only that first poll reclaims. Leaving `reclaim` set on every poll is harmless,
 and a connection older than the last one to reclaim never takes anything back.
@@ -122,7 +125,9 @@ of a claim's time had passed, so it gives each one its full visibility (or
 extension) again from when it takes over: a claim lapses later than the old
 leader would have let it, never sooner. Acknowledgements ahead of the group's
 position and plain nacks are not written, so a new leader holds those records
-as claimed until they lapse and then delivers them again.
+as claimed until they lapse and then delivers them again. Those rebuilt claims
+do not count against `FELIX_GROUP_MAX_IN_FLIGHT`, so the new leader keeps
+handing out new records meanwhile.
 
 On the default engine claims are kept in the leader's memory, so this holds
 while the shard's leader stays put; after a failover the group resumes from its

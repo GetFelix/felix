@@ -965,3 +965,21 @@ fn a_restored_claim_below_the_cursor_counts_only_on_a_redrive() {
     assert_eq!(group.in_flight(), 1);
     assert_eq!(group.claim(6, 5, now, VIS).offsets, [5]);
 }
+
+/// Restored claims do not count against the in-flight cap: many may be acks
+/// ahead of the cursor that were never written, and a new leader must not
+/// answer every poll empty until they lapse.
+#[test]
+fn restored_claims_leave_the_in_flight_cap_free() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    group.set_max_in_flight(2);
+    for offset in 1..4 {
+        group.restore_claim(offset, 1, None, now + VIS);
+    }
+    assert_eq!(group.claim(10, 5, now, VIS).offsets, [0, 4]);
+    assert!(
+        group.claim(10, 5, now, VIS).offsets.is_empty(),
+        "the cap holds for new claims"
+    );
+}

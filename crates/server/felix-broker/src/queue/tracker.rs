@@ -55,6 +55,11 @@ pub(crate) struct GroupTracker {
     /// Offsets a member took back by reclaiming them, handed out without
     /// counting an attempt. Cleared with the claim.
     reclaimed: BTreeSet<u64>,
+    /// Claims rebuilt from a Raft shard's table and still standing. Many may
+    /// be acks ahead of the cursor that were never written, so they do not
+    /// count against `max_in_flight`: a new leader would otherwise answer
+    /// every poll empty until they lapse. Cleared with the claim.
+    restored: BTreeSet<u64>,
     /// Offsets an operator redrove whose redrive is recorded on disk and not
     /// yet finished. Settling one has to clear that record too, or every
     /// later leader would redeliver it again.
@@ -97,6 +102,7 @@ impl GroupTracker {
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
             reclaimed: BTreeSet::new(),
+            restored: BTreeSet::new(),
             redriven: BTreeSet::new(),
             holders: BTreeMap::new(),
             members: HashMap::default(),
@@ -206,7 +212,8 @@ impl GroupTracker {
         let holder = consumer.map(|consumer| self.register(consumer));
 
         let wanted = max.min(MAX_CLAIM);
-        let room = self.max_in_flight.saturating_sub(self.in_flight.len());
+        let counted = self.in_flight.len() - self.restored.len();
+        let room = self.max_in_flight.saturating_sub(counted);
         let max = wanted.min(room);
         let deadline = now + visibility;
         let mut claim = Claim {
@@ -499,6 +506,7 @@ impl GroupTracker {
         self.redeliver.remove(&offset);
         self.take_in_flight(offset);
         self.hold(offset, deadline);
+        self.restored.insert(offset);
         self.attempts.insert(offset, attempts.max(1));
         if let Some((principal, name)) = holder {
             let member = GroupConsumer::new(principal, name, 0, false);
@@ -530,6 +538,7 @@ impl GroupTracker {
             self.in_flight.remove(&offset);
             self.delayed.remove(&offset);
             self.reclaimed.remove(&offset);
+            self.restored.remove(&offset);
             self.release_holder(offset);
             self.redeliver.insert(offset);
         }
@@ -663,6 +672,7 @@ impl GroupTracker {
         self.release_holder(offset);
         self.delayed.remove(&offset);
         self.reclaimed.remove(&offset);
+        self.restored.remove(&offset);
         match self.in_flight.remove(&offset) {
             Some(deadline) => {
                 self.lapses.remove(&(deadline, offset));

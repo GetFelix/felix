@@ -372,7 +372,8 @@ impl Connection {
     /// (`FELIX_GROUP_MAX_VISIBILITY_MS`).
     ///
     /// Refused with `stale_claim` once the claim has lapsed or the record has
-    /// been handed out again, even to this consumer: the record is then the
+    /// been handed out again at another attempt, even to this consumer (a reclaim
+    /// keeps the attempt): the record is then the
     /// group's, and finishing it is no longer this delivery's to do. On a
     /// Raft shard the extension survives a failover; on the default engine it
     /// is the leader's memory, so a failover hands the record out again sooner.

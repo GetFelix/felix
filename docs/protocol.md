@@ -668,8 +668,9 @@ leader would otherwise answer from state its successor has moved past.
 where it stands. In `group_info`, `committed` is left out for a group with no
 cursor, `tail` is the shard's committed tail, so `tail - committed` is how far
 behind the group is, and `owed` counts records owed again after a nack or a
-lapsed claim. `in_flight` and `owed` are the leader's memory: a snapshot that
-starts again from zero when the shard changes leader.
+lapsed claim. `owed` is the leader's memory, and so is `in_flight` on the
+default engine: a snapshot that starts again from zero when the shard changes
+leader. On a Raft shard `in_flight` starts from the claims the new leader rebuilt.
 
 ### GroupAck / GroupNack
 ```
@@ -727,7 +728,8 @@ granted. `extend_ms` of `0` is refused with `invalid_request`.
 `attempts` is the count the record was delivered with, and names that one
 delivery. The extension is refused with `stale_claim` (`fatal`: retrying cannot
 bring the claim back) once that claim no longer stands: it lapsed, the record
-was handed out again, which counted another attempt, or a seek, eviction, or a
+was handed out again at another attempt (a reclaim by the same member keeps
+the attempt, so the delivery still stands), or a seek, eviction, or a
 failover on the default engine rebuilt the group's in-flight state. Without the check, a consumer
 that lost a record could extend the claim of whoever holds it now, and keep it
 from the group should that consumer die. A record nacked with a delay is not a
