@@ -3871,6 +3871,15 @@ Membership changes are not built yet
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
+- The set formed is the target the control plane stored, copy ids
+  included (#2688). The broker compares the members it asked with the
+  feed's `target` and forms only when they are equal. With no target, a
+  withheld one, or one naming another copy, it forms nothing and asks again
+  on a later pass. A re-form reads the voter sets of the epoch from the
+  control plane ("Targets ordered in an epoch"), and the stored target is
+  on that list before any broker can read it, or the list reads as lost.
+  A set formed from copies no record names could lose
+  its majority with no re-form source seeing that set.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
