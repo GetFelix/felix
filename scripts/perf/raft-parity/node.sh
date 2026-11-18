@@ -277,7 +277,7 @@ PY
     tgz=/mnt/build/kafka-cache/kafka_2.13-$KAFKA_VER.tgz
     if [ ! -s "$tgz" ]; then
       mkdir -p "$(dirname "$tgz")"
-      curl -fsSL -o "$tgz.part" "https://archive.apache.org/dist/kafka/$KAFKA_VER/kafka_2.13-$KAFKA_VER.tgz"
+      curl --proto "=https" --tlsv1.2 -fsSL -o "$tgz.part" "https://archive.apache.org/dist/kafka/$KAFKA_VER/kafka_2.13-$KAFKA_VER.tgz"
       mv "$tgz.part" "$tgz"
     fi
     mkdir -p "$R/kafka-dl"; cd "$R/kafka-dl"

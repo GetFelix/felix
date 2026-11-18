@@ -47,7 +47,7 @@ pub async fn run(
             _ = tokio::time::sleep(interval) => {}
         }
 
-        let token = match std::fs::read_to_string(&path) {
+        let token = match tokio::fs::read_to_string(&path).await {
             Ok(contents) => contents.trim().to_string(),
             Err(err) => {
                 // Not fatal, and not even necessarily wrong: a rotation that

@@ -26,7 +26,7 @@ cmd_install_server() {
   if [ ! -x "$dir/nats-server" ]; then
     tmp=$(mktemp -d /var/tmp/nats-dl.XXXXXX)
     f="nats-server-v$ver-linux-amd64.tar.gz"
-    curl -fsSL -o "$tmp/$f" "https://github.com/nats-io/nats-server/releases/download/v$ver/$f"
+    curl --proto "=https" --tlsv1.2 -fsSL -o "$tmp/$f" "https://github.com/nats-io/nats-server/releases/download/v$ver/$f"
     echo "$sum  $tmp/$f" | sha256sum -c --quiet
     mkdir -p "$dir"
     tar -xzf "$tmp/$f" -C "$dir" --strip-components=1
@@ -44,7 +44,7 @@ cmd_install_cli() {
   if [ ! -x "$dir/nats" ]; then
     tmp=$(mktemp -d /var/tmp/nats-dl.XXXXXX)
     f="nats-$ver-linux-amd64.zip"
-    curl -fsSL -o "$tmp/$f" "https://github.com/nats-io/natscli/releases/download/v$ver/$f"
+    curl --proto "=https" --tlsv1.2 -fsSL -o "$tmp/$f" "https://github.com/nats-io/natscli/releases/download/v$ver/$f"
     echo "$sum  $tmp/$f" | sha256sum -c --quiet
     python3 -m zipfile -e "$tmp/$f" "$tmp/x"
     mkdir -p "$dir"

@@ -164,7 +164,8 @@ async fn refresh_once(
 
     // Read every time rather than held in memory, so an operator who
     // re-provisions the file by hand is picked up without a restart.
-    let refresh_token = std::fs::read_to_string(refresh_token_file)
+    let refresh_token = tokio::fs::read_to_string(refresh_token_file)
+        .await
         .with_context(|| format!("read {}", refresh_token_file.display()))?
         .trim()
         .to_string();
