@@ -28,7 +28,7 @@ async fn stopped_copy(copies: &CopyRoot, dir: &Path) -> u64 {
     opened.marks.vote(vote(2, "1", true)).await.expect("mark");
     drop(log);
     opened.log.close().await.expect("close");
-    stop(dir).expect("stop");
+    stop(dir, Some(1)).expect("stop");
     opened.copy
 }
 
@@ -40,7 +40,11 @@ async fn a_stopped_copy_never_opens_under_its_own_id() {
     let copy = Some(stopped_copy(&copies, &dir).await);
     assert_eq!(
         stopped(&dir).expect("read"),
-        Some(StoppedCopy { epoch: 0, copy })
+        Some(StoppedCopy {
+            epoch: 0,
+            copy,
+            last: Some(1)
+        })
     );
 
     for open in [copies.open_copy(SHARD, &dir, LABEL, config()).await, {
@@ -48,7 +52,14 @@ async fn a_stopped_copy_never_opens_under_its_own_id() {
         root.open().open_copy(SHARD, &dir, LABEL, config()).await
     }] {
         let err = open.err().expect("a stopped copy opened");
-        assert_eq!(StoppedCopy::of(&err), Some(StoppedCopy { epoch: 0, copy }));
+        assert_eq!(
+            StoppedCopy::of(&err),
+            Some(StoppedCopy {
+                epoch: 0,
+                copy,
+                last: Some(1)
+            })
+        );
     }
 }
 
@@ -124,7 +135,7 @@ fn a_marker_from_an_earlier_epoch_does_not_stop_the_copy() {
     let root = Root::new();
     let dir = root.shard_dir();
     std::fs::create_dir_all(&dir).expect("dir");
-    stop(&dir).expect("stop");
+    stop(&dir, None).expect("stop");
     epoch_file::store(
         &dir,
         &EpochFile {
@@ -137,14 +148,15 @@ fn a_marker_from_an_earlier_epoch_does_not_stop_the_copy() {
     )
     .expect("epoch");
     assert_eq!(stopped(&dir).expect("read"), None);
-    stop(&dir).expect("stop again");
+    stop(&dir, Some(7)).expect("stop again");
     assert_eq!(
         stopped(&dir).expect("read"),
         Some(StoppedCopy {
             epoch: 1,
-            copy: None
+            copy: None,
+            last: Some(7),
         })
     );
-    std::fs::write(dir.join("raft-stopped"), b"stopped x\n").expect("garble");
+    std::fs::write(dir.join("raft-stopped"), b"stopped 1\n").expect("garble");
     assert!(stopped(&dir).is_err());
 }

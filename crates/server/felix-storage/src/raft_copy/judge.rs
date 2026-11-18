@@ -181,9 +181,9 @@ impl CopyRoot {
     /// Open `dir`, which a re-form stopped in the epoch it is at, as a new
     /// copy of `shard`: a new copy id that never voted, an empty log, and
     /// the stopped directory kept in `.kept` as any rotation keeps it. Call
-    /// it only once a leader of that epoch is heard, so the group went on
-    /// without the copy; until then a re-run of the re-form may still need
-    /// it as a voter. A directory that is not stopped is an error.
+    /// it only once a leader is heard committing past its last entry, so
+    /// the group went on without the copy; until then a re-run of the
+    /// re-form may still need it as a voter. A directory that is not stopped is an error.
     pub async fn rejoin(
         &self,
         shard: &str,

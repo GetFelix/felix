@@ -1544,12 +1544,13 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
     cluster.write(0, b"before").await;
 
     let a = cluster.runtime("a");
-    let old = a.status(&key).expect("status").member;
+    let before = a.status(&key).expect("status");
+    let old = before.member.clone();
     // Cut until the stale leader below has been tried.
     cluster.net.cut.lock().insert("a".into());
     assert!(a.close(&key).await);
     logs.remove("a").expect("log").close().await.expect("close");
-    felix_storage::raft_copy::stop(&roots.shard_dir("a")).expect("stop");
+    felix_storage::raft_copy::stop(&roots.shard_dir("a"), before.last_index).expect("stop");
     let a_dir = roots.shard_dir("a");
     let reopen = || a.open_copy(group(0), &a_dir, log_config(), &roots.roots["a"]);
     assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
@@ -1573,23 +1574,30 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
         Err(Refused::Stopped(..))
     ));
 
-    // A leader below the copy's own vote was deposed before the stop, so
-    // its append is no sign the group went on.
-    let stale = RaftRequest {
+    // A leader far ahead that commits no further than the copy's last
+    // entry may have counted the copy, so it may still need it.
+    let at_own = |commit: Option<u64>| RaftRequest {
         body: {
-            let leader = LeaderIdOf::<ShardTypes>::new(0, MemberId::new("b", 1));
+            let leader = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("b", 1));
             let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, true);
             Request::Append(openraft::raft::AppendEntriesRequest {
                 vote,
                 prev_log_id: None,
                 entries: Vec::new(),
-                leader_commit: None,
+                leader_commit: commit.map(|index| {
+                    openraft::type_config::alias::LogIdOf::<ShardTypes>::new(99.into(), index)
+                }),
             })
         },
         ..ask_vote()
     };
-    assert!(matches!(a.handle(stale).await, Err(Refused::Stopped(..))));
-    assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
+    for commit in [None, before.last_index] {
+        assert!(matches!(
+            a.handle(at_own(commit)).await,
+            Err(Refused::Stopped(..))
+        ));
+        assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
+    }
     cluster.net.cut.lock().clear();
 
     // b and c elect and go on; the next open of a after the leader's

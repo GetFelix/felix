@@ -12,16 +12,15 @@ use std::path::Path;
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
-    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, StoppedCopy, VoteMark,
-    reached_before, reclaim_kept,
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, StoppedCopy, reached_before,
+    reclaim_kept,
 };
-use felix_storage::raft_log::{EntryCodec, LogPoint, LogPositions, TailBudget};
+use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::impls::leader_id_std::LeaderId;
 use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
-use super::codec::ShardCodec;
 use super::group::driver::MembershipProgress;
 use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
@@ -484,13 +483,15 @@ struct Inner {
     stopped: parking_lot::Mutex<BTreeMap<ShardKey, StoppedMember>>,
 }
 
-/// A copy an open found stopped, which rejoins once a leader of its epoch
-/// is heard.
+/// A copy an open found stopped, which rejoins once a leader is heard
+/// committing past its last entry.
 struct StoppedMember {
     group: GroupId,
     member: MemberId,
-    /// The newest vote it saved.
-    voted: VoteMark,
+    /// The marker's epoch, so a stop in a later epoch starts over.
+    epoch: u64,
+    /// The index of its last entry when it stopped.
+    last: Option<u64>,
     heard: bool,
 }
 
@@ -636,10 +637,10 @@ impl GroupRuntime {
             .await
         {
             Err(err) if let Some(stopped) = StoppedCopy::of(&err) => {
-                if !self.heard_leader(&group, stopped, root.mark_log().marks(&name)) {
+                if !self.heard_leader(&group, stopped) {
                     return Err(OpenError::Stopped(stopped));
                 }
-                tracing::info!(shard = ?shard, epoch = stopped.epoch, "a stopped copy heard a leader of its epoch and rejoins under a new copy id");
+                tracing::info!(shard = ?shard, epoch = stopped.epoch, "a stopped copy heard a leader commit past it and rejoins under a new copy id");
                 root.rejoin(&name, dir, group.to_string(), config).await?
             }
             opened => opened?,
@@ -1219,34 +1220,28 @@ impl GroupRuntime {
         }
     }
 
-    /// Whether a leader of `group`'s epoch was heard since the open that
-    /// found its copy stopped. The first such open only starts listening.
-    fn heard_leader(
-        &self,
-        group: &GroupId,
-        stopped: StoppedCopy,
-        marks: Option<felix_storage::raft_copy::ShardMarks>,
-    ) -> bool {
+    /// Whether a leader was heard committing past the stopped copy's last
+    /// entry since the open that found it stopped. The first such open only
+    /// starts listening.
+    fn heard_leader(&self, group: &GroupId, stopped: StoppedCopy) -> bool {
         let mut held = self.inner.stopped.lock();
         if let Some(found) = held.get(&*group.shard)
             && found.group == *group
             && Some(found.member.copy) == stopped.copy
+            && (found.epoch, found.last) == (stopped.epoch, stopped.last)
         {
             return found.heard;
         }
         let Some(copy) = stopped.copy else {
             return false;
         };
-        let voted = marks
-            .filter(|marks| marks.copy == copy)
-            .map(|marks| marks.vote)
-            .unwrap_or_default();
         held.insert(
             (*group.shard).clone(),
             StoppedMember {
                 group: group.clone(),
                 member: MemberId::new(self.inner.broker.clone(), copy),
-                voted,
+                epoch: stopped.epoch,
+                last: stopped.last,
                 heard: false,
             },
         );
@@ -1254,11 +1249,11 @@ impl GroupRuntime {
     }
 
     /// A message for a copy a re-form stopped. It is answered with nothing
-    /// but the refusal. An append from a committed leader of the copy's
-    /// epoch, at or above the copy's own vote, is what lets the next open
-    /// rejoin it: the epoch has a leader, so the group goes on without it
-    /// and no re-run of the re-form needs it. A leader below that vote was
-    /// deposed before the stop.
+    /// but the refusal. An append from a committed leader whose commit is
+    /// past the copy's last entry is what lets the next open rejoin it: a
+    /// majority without the copy committed it, so the group goes on without
+    /// it and a re-run of the re-form needs none of its votes. A leader that
+    /// only proves an election may still need the copy.
     fn stopped_member(&self, group: &GroupId, to: &MemberId, body: &Request) -> bool {
         let mut held = self.inner.stopped.lock();
         let Some(found) = held.get_mut(&*group.shard) else {
@@ -1269,14 +1264,9 @@ impl GroupRuntime {
         }
         if let Request::Append(append) = body
             && append.vote.is_committed()
+            && let Some(commit) = &append.leader_commit
         {
-            let leader = append.vote.leader_id();
-            let seen = VoteMark {
-                generation: leader.term.saturating_add(1),
-                leader: Some(Arc::from(ShardCodec.encode_node_id(&leader.voted_for))),
-                committed: true,
-            };
-            found.heard |= seen.at_or_above(&found.voted);
+            found.heard |= found.last.is_none_or(|last| commit.index > last);
         }
         true
     }

@@ -1481,11 +1481,12 @@ file existed. Any other content is an error for the re-form's reads.
 
 ## `raft-stopped`: a copy a re-form stopped
 
-A re-form's `apply` writes `stopped <epoch>\n` into a shard directory
-before it reads the copy's report, with `<epoch>` the copy's group epoch in
-decimal, and syncs it. While the copy's `raft-epoch` is still at that
+A re-form's `apply` writes `stopped <epoch> <last>\n` into a shard
+directory before it reads the copy's report, and syncs it. `<epoch>` is the
+copy's group epoch and `<last>` the index of its last entry, both in
+decimal, or `-` for a copy with no entry. While the copy's `raft-epoch` is still at that
 epoch, no member opens on the directory. It opens only as a new copy id,
-after a leader of that epoch is heard, and the rotation moves the
+after a leader is heard committing past `<last>`, and the rotation moves the
 directory with the marker into `.kept/`. A marker for an older epoch is
 spent: a re-form started the copy in a later one. Any other content is an
 error, since it may stop the copy. See `docs/per-shard-raft.md`,

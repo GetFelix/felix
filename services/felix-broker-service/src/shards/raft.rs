@@ -925,7 +925,7 @@ impl EngineShards for RaftShards {
                             ) =>
                         {
                             if self.held_warn.lock().due(key) {
-                                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "a Raft shard's copy here was stopped by a re-form that did not finish; it rejoins as a learner once a leader of its epoch is heard");
+                                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "a Raft shard's copy here was stopped by a re-form that did not finish; it rejoins as a learner once a leader commits past its last entry");
                             }
                             if keep {
                                 short.push(held());

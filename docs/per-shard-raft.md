@@ -839,9 +839,12 @@ stopped copy comes back the way a wiped one does (#2403):
   While the copy is still in that epoch, no member runs on its directory,
   also after a restart: an open refuses it, and a message for its member
   id gets a refusal and nothing else. It never votes or serves.
-- It rejoins only once it hears a leader of that epoch: an append from a
-  committed leader at or above the copy's own vote. Until then a re-run of
-  `apply` may still need it as a voter, so it waits.
+- It rejoins only once it hears a committed leader whose commit is past
+  the copy's last entry, which the marker records. A majority without the
+  copy committed that entry, so the group goes on without it and a re-run
+  of `apply` needs none of its votes. A leader that only proves an
+  election may have been elected, and may commit, only with the copy, so
+  until then the copy waits stopped.
 - The broker's next open of the shard then rotates the copy (rotation
   reason `Stopped`): a new copy id that never voted, an empty log, and the
   old directory kept in `.kept` as `restore`, so a later re-form reads its
