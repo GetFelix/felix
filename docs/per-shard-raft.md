@@ -4670,9 +4670,10 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   included, blank and membership entries skipped), or the snapshot's time
   when its log holds none. Expiry in apply is judged by the entry's stamp.
   The leader's clock is read only to stamp an entry, to judge a get and to
-  find values to expire. The default engine's cache compaction and counter
-  log stamp records from the local clock; the group uses neither, and a unit
-  test fails if the state machine's source names a clock or those logs.
+  find values to expire and when the next one is due. The hybrid engine's
+  cache compaction and counter log stamp records from the local clock; the
+  group uses neither, and a unit test fails if the state machine's source
+  names a clock or those logs.
 - **Expiry is a conditional delete.** The leader proposes a delete that names
   the version it saw expire. A key written again meanwhile keeps its value.
 - **A read never serves an expired key.** A read evaluates expiry at the

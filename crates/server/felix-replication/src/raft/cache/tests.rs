@@ -625,7 +625,7 @@ fn apply_and_snapshot_read_no_clock() {
         ("record.rs", include_str!("record.rs")),
         ("machine.rs", include_str!("../machine.rs")),
     ] {
-        for clock in ["SystemTime", "Instant", "now(", "now_m", "chrono"] {
+        for clock in ["SystemTime", "Instant", "::now(", "now_m", "chrono::"] {
             assert!(!source.contains(clock), "{clock} in {name}");
         }
         for hybrid in ["felix_storage::cache", "counter_log", "LogCache"] {

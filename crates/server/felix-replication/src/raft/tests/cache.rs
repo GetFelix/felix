@@ -1612,13 +1612,14 @@ async fn members_with_skewed_clocks_agree_after_every_write() {
     const TTL: u64 = 300;
     let mut cluster = Cluster::new(true);
     let clocks = clocks(&cluster, 10_000);
-    // The leader's clock is `at`; one follower's runs ahead, one behind.
-    let skew = |leader: &str, at: u64| {
-        let followers = BROKERS.iter().filter(|broker| **broker != leader);
-        for (broker, clock) in followers.zip([at + 1_000, at - 1_000]) {
+    // The leader's clock is `leads`. Of the members it reaches, one runs
+    // ahead of it and, if there is another, one behind.
+    let skew = |leader: &str, leads: u64, live: &[&str]| {
+        let followers = live.iter().filter(|broker| **broker != leader);
+        for (broker, clock) in followers.zip([leads + 1_000, leads - 1_000]) {
             clocks[broker].store(clock, Relaxed);
         }
-        clocks[leader].store(at, Relaxed);
+        clocks[leader].store(leads, Relaxed);
     };
     cluster.form(N).await;
     let mut at = 10_000;
@@ -1634,7 +1635,9 @@ async fn members_with_skewed_clocks_agree_after_every_write() {
             cut = Some(old);
         }
         let (engine, leader) = leading(&cluster).await;
-        skew(&leader.member.broker, at);
+        // The second leader's clock runs ahead of the first's.
+        let leads = if cut.is_some() { at + 500 } else { at };
+        skew(&leader.member.broker, leads, &live);
         sequence += 1;
         let put = put(&format!("k{step}"), b"v", sequence);
         let answer = engine.cache_write(&shard(N), put, TTL, PATIENCE).await;
