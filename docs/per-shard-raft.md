@@ -6380,12 +6380,17 @@ ones settled by the decisions of issue #2167 say so.
     report interval, or the whole outage if the control plane was down. A
     crash or a power cut cannot cause it, since Raft logs are fsync on
     commit. Closing it fully means telling the control plane of every
-    commit, which puts the control plane on the write path. Recommended: accept it, keep the report
-    interval short (start: one second, one batched metadata write per
-    broker), and say so where the loss of a majority of disks is
-    documented. The records themselves are already
-    lost in that case. The floor only keeps a reader from seeing other
-    records under most of their offsets.
+    commit, which puts the control plane on the write path.
+    Decided: accept. A re-form after a majority of disks is lost or
+    restored at once starts at the last reported commit floor, so offsets
+    acknowledged inside the last report interval and lost with that
+    majority can be reused. The trailing-floor TLA twin pins it. The
+    report interval stays short (start: one second, one batched metadata
+    write per broker), and the loss of a majority of disks is documented
+    as where this shows. The records themselves are already lost in that
+    case. The floor only keeps a reader from seeing other records under
+    most of their offsets. Issue #2305 closes when the re-form command of
+    #2250 uses `ReformPlan::first_index`.
 
 14. **What does a false alarm about a follower cost?** Moot for 0.8: it
     is about sleep, which is deferred. Kept under "Deferred: sleep and
