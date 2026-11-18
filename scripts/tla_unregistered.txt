@@ -10,8 +10,8 @@ FelixRaftPlacementDirectTerms  runs past a CI runner's six hours
 FelixRaftPlacementMoveWipeFailover  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeFull  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeTwoMoves  runs past a CI runner's six hours
-FelixRaftPlacementPlacedTargetOneCall  measuring in dispatch PENDING
-FelixRaftPlacementReachPlacedTargetOneCall  measuring in dispatch PENDING
+FelixRaftPlacementPlacedTargetOneCall  measuring in dispatch 44385374109
+FelixRaftPlacementReachPlacedTargetOneCall  measuring in dispatch 44385374109
 FelixRaftPlacementPlacedTarget  runs past a CI runner's six hours; PlacedTargetOneCall is its bounded twin
 FelixRaftPlacementStaleReturnWipe  measuring in dispatch 44384289786
 FelixRaftPlacementStaleReturnWipeAnyVersion  measuring in dispatch 44384289786
@@ -55,7 +55,7 @@ FelixShardCpLiveNoStandBehindBallot  runs past a CI runner's six hours
 FelixShardCpLiveRefusals  runs past a CI runner's six hours
 FelixShardCpLiveRefusalsUnknownNoBallot  runs past a CI runner's six hours
 FelixShardCpLiveReleasedFull  runs past a CI runner's six hours
-FelixShardElectAdoptAboveKeptSetReissued  unmeasured: dispatch pending
+FelixShardElectAdoptAboveKeptSetReissued  measuring in dispatch 44385374109
 FelixShardElectAdoptFailover  checked in pieces
 FelixShardElectAdoptFailoverApart0Gen3  runs past a CI runner's six hours
 FelixShardElectAdoptFailoverApart1Gen3  runs past a CI runner's six hours
