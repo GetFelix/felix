@@ -11,7 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::epoch_file::{self, EpochFile};
-use super::judge::{KeptCopy, highest_reserved, kept_copies};
+use super::judge::{KeptCopy, kept_copies};
 use super::rotated_by::{self, RotatedBy};
 use crate::disk_log::CarriedFloor;
 use crate::raft_log::{LogPoint, held, reserved};
@@ -79,24 +79,6 @@ pub(crate) fn read_kept(path: &Path, index_spacing_bytes: u64) -> io::Result<Kep
         copy: None,
         last: held.last,
         committed,
-    })
-}
-
-/// The first index a re-form's new epoch may give out on this broker's
-/// copy: above the base it starts from, above the stored offset floor, and
-/// above every reservation in `dir` and its kept copies. Every entry a
-/// relaxed copy counted toward a commit is at or below a reservation that
-/// was synced first, so no committed offset is given out again.
-pub(crate) fn first_free_index(
-    dir: &Path,
-    base_last: Option<u64>,
-    floor: Option<u64>,
-) -> io::Result<u64> {
-    let highest = base_last.max(floor).max(highest_reserved(dir)?);
-    highest.map_or(Ok(0), |index| {
-        index
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("every index is reserved"))
     })
 }
 

@@ -402,7 +402,7 @@ fn decode_owned(bytes: Bytes) -> Option<StoredSnapshot> {
     })
 }
 
-fn read(dir: &Path) -> io::Result<Option<StoredSnapshot>> {
+pub(crate) fn read(dir: &Path) -> io::Result<Option<StoredSnapshot>> {
     let Some(bytes) = state_file::load(dir, FILE_NAME)? else {
         return Ok(None);
     };

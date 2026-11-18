@@ -429,13 +429,15 @@ kernel may have dropped pages, which then read as one. Two cases:
   as above. Opening a copy root registers its root for this
   (`run_state::watch_poison`), so it does not depend on the caller. That
   record is written to
-  the same disk without a sync. If both writes are lost and the machine
-  lost power, the start rotates if the run was relaxed. A copy that never
-  vouched keeps its id, and loses nothing a peer counted: it was counted
-  only for synced records, and the failed flush acknowledged none. If both
-  are lost and only the process restarted, nothing on disk says a flush
-  failed and the copy keeps its id
-  ([#2558](https://github.com/GetFelix/felix/issues/2558)).
+  the same disk without a sync. If the new record cannot be written, as
+  on a full disk, the record there is cut to nothing in place, which needs
+  no free block on ext4 or XFS and also rotates on the next start. If the
+  marker and the record change are lost and the machine lost power, the start rotates if the run was relaxed. A
+  copy that never vouched keeps its id, and loses nothing a peer counted: it
+  was counted only for synced records, and the failed flush acknowledged
+  none. Only if the marker, the new record and the cut all fail and the
+  process alone restarts does nothing on disk say a flush failed, and the
+  copy keeps its id. The broker logs an error when that happens.
 - **The copy is closed and opened again in the same process.** The
   process does not re-read the run record, so the storage crate remembers
   every directory whose log was poisoned in this process, and opening one
@@ -1003,7 +1005,23 @@ entry of the epoch in every copy read (uncommitted ones included), and every
 target the control plane ordered in the epoch, which it records before it
 asks the leader. If any of these is not known, the group is marked. The set
 of placed brokers is never used: learners and brokers not yet added inflate
-it. With one of three seeded voters dead, a read follower that holds a
+it.
+
+A broker builds its answer from disk without opening the copy
+(`felix_replication::raft::reform_report`). It reads the membership
+entries of the record's epoch, from the epoch's first index up, in the
+current copy and every kept one. A purge drops entries once a snapshot
+covers them, and the snapshot then holds the newest membership, so each
+copy's snapshot is read too when its membership entry is in the epoch.
+A membership purged below the snapshot's own was replaced by a committed
+one, so no term is elected under it alone. A copy purged past its snapshot
+fails the answer. A copy whose `raft-epoch` names another epoch adds no
+voter set; one with no `raft-epoch` past epoch 0 (a learner placed fresh,
+an old restore) adds every membership it holds, which can only mark the
+plan. Below the first index is the base, whose voters are the seed. A
+membership or snapshot that does not decode fails the answer.
+
+With one of three seeded voters dead, a read follower that holds a
 committed entry it has not yet seen committed keeps it in the base; with two
 of three dead, or a dead single seed voter, or a joint target whose new half
 is mostly dead, the group is marked and the plan names the voter set.
@@ -1628,20 +1646,18 @@ Nothing is negotiated. Each side acts only on what it has seen:
   next heartbeat due within 200 ms. A publish does the same when it hands
   its batch to the group, before anything is sent. So a group with one
   member, or with no follower in reach, is fast again on its first write.
-- An answer to a message that named the idle gap counts only if no
-  message naming the short gap was still on its way to that follower when
-  it left. A follower stores the gap once it has handled the message, and
-  an append it took first can finish its fsync after a later heartbeat's
-  answer, which would leave it at the short gap under a slow leader. For
-  the same reason a follower keeps the gap it has when handling a
-  short-gap append took longer than the append's deadline: the leader has
-  stopped waiting for it by then. A late idle gap is still stored. The cost:
-  a follower already at the idle gap whose appends all outlast their
-  deadline (a slow disk after a burst of writes) stays at the long wait, so
-  it notices a dead leader a few seconds later than it otherwise would. The
-  one case left is an append that spends part of its
-  deadline in transit, since the follower counts the deadline from when
-  the append arrives. That needs a send sequence on the wire (#2600).
+- Every append carries a send number, which rises with each append the
+  leader sends. A follower stores a gap only from an append numbered above
+  the one it stored a gap from last, in the same term or a later one. A
+  follower stores the gap once it has handled the append, and an append
+  that is slow in transit or in its fsync can finish after a later
+  heartbeat's. Without the number, its short gap would overwrite the idle
+  one the leader already counted as heard, and leave the follower
+  impatient under a slow leader. The numbers start at the wall clock, so a
+  leader that restarts within its term numbers above its earlier sends,
+  unless its clock stepped back across the restart. Then the follower
+  keeps the gap it has until the numbers pass the old ones or the term
+  changes.
 - An entry is new the first time any append carries it. Sending it again,
   to a follower that did not take it or to one catching up, does not
   count. So a follower that is down does not keep its leader at the short
@@ -5780,9 +5796,12 @@ not a weaker flush.
   mode, so a follower restarted in another mode answers by its new one.
   Skipping a report can only make a `Quorum` write wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
-  (`first_free_index`, `kept_logs`): the first index the new epoch may give
-  out, above the base, the stored floor and every reservation in the shard
-  directory and its kept directories; and for each kept directory, read
+  (`read_copies`, `kept_logs`): every reservation in the shard directory and
+  its kept directories, from which the plan's first index is set
+  (`ReformPlan::first_index`: above the base, the stored offset floor, every
+  reservation read, every earlier epoch's first index, every record a copy
+  of the incarnation holds, and every floor a copy carries); and for each
+  kept directory, read
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
@@ -5842,7 +5861,7 @@ offsets out again (#2620). Also not built: the perf measurement.
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |
 | Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
 | The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |
-| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/reform.rs` (`first_free_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
+| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/vouch.rs` (`ReformPlan::first_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
 | Docs: this page's commit, read-bound and floor claims, `docs/durable-storage.md`, the status table | `docs/` | |
 
 Cluster and simulator tests: the `power-loss` nemesis on a relaxed RF 3
