@@ -5769,8 +5769,10 @@ not a weaker flush.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`read_copies`, `kept_logs`): every reservation in the shard directory and
   its kept directories, from which the plan's first index is set
-  (`ReformPlan::first_index`, above the base, the stored floor and every
-  reservation read); and for each kept directory, read
+  (`ReformPlan::first_index`: above the base, the stored offset floor, every
+  reservation read, every earlier epoch's first index, every record a copy
+  of the incarnation holds, and every floor a copy carries); and for each
+  kept directory, read
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
