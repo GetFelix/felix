@@ -26,7 +26,9 @@ use felix_common::fleet::{self, FleetGate};
 use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
-use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine, Target, TargetVersion};
+use felix_replication::raft::{
+    GroupId, GroupRuntime, MemberId, NotBlank, RaftEngine, Target, TargetVersion,
+};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::raft_copy::{CopyRoot, holds_log_without_copy};
@@ -544,7 +546,18 @@ impl RaftShards {
     /// the set gets here, so a set is formed by one broker or by none, and
     /// only once every other broker has named its copy and said no group
     /// reached it. The rest join when the leader's first append arrives.
-    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
+    ///
+    /// The set formed is exactly `target`, the one the control plane stored:
+    /// it lists every target of the epoch before a broker can read it, so a
+    /// re-form counts the first voters as a voter set. A set formed from
+    /// copies no record names could lose a majority unseen (#2688).
+    fn form(
+        &self,
+        key: ShardKey,
+        brokers: BTreeSet<String>,
+        incarnation: u64,
+        target: Option<BTreeSet<MemberId>>,
+    ) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
@@ -555,7 +568,12 @@ impl RaftShards {
             let asked = me
                 .runtime
                 .first_members(&key, brokers.iter().map(String::as_str), ASK_WITHIN)
-                .await;
+                .await
+                .map_err(Unformed::Asked)
+                .and_then(|members| match &target {
+                    Some(target) if *target == members => Ok(members),
+                    _ => Err(Unformed::NotTarget { members, target }),
+                });
             match asked {
                 Ok(members) => {
                     // Under the pass's lock, so the member formed is the one
@@ -572,7 +590,8 @@ impl RaftShards {
                 }
                 Err(err) => {
                     let first = me.put_off.lock().insert(key.clone());
-                    match (first, err.held_records()) {
+                    let held = matches!(&err, Unformed::Asked(err) if err.held_records());
+                    match (first, held) {
                         (true, true) => {
                             tracing::warn!(shard = ?key, reason = %err, "not forming the shard's Raft group: it is held until an operator re-forms it (docs/per-shard-raft.md, \"Re-forming a group\")")
                         }
@@ -681,6 +700,20 @@ impl RaftShards {
             .get(shard)
             .map(|member| member.log.clone())
     }
+}
+
+/// Why a broker did not form a group it would form.
+#[derive(Debug, thiserror::Error)]
+enum Unformed {
+    #[error(transparent)]
+    Asked(NotBlank),
+    #[error(
+        "the members asked ({members:?}) are not the target the control plane stored ({target:?})"
+    )]
+    NotTarget {
+        members: BTreeSet<MemberId>,
+        target: Option<BTreeSet<MemberId>>,
+    },
 }
 
 /// The engine markers a pass read before it took `open`.
@@ -954,7 +987,18 @@ impl EngineShards for RaftShards {
                 }
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    self.form(key.clone(), brokers, assignment.incarnation);
+                    let target = assignment
+                        .target
+                        .as_ref()
+                        .filter(|_| !assignment.targets_withheld)
+                        .map(|target| {
+                            target
+                                .members
+                                .iter()
+                                .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
+                                .collect()
+                        });
+                    self.form(key.clone(), brokers, assignment.incarnation, target);
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
