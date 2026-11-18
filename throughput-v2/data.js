@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795035962799,
+  "lastUpdate": 1795038543357,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61516,6 +61516,58 @@ window.BENCHMARK_DATA = {
             "range": "35392.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1276401.07\nmean: 1261958.23\nstdev: 35392.20\ncv: 2.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4b4c5253e6d88854868d7975dca6a8710a998274",
+          "message": "refactor(raft): drop the unused first_free_index so a re-form pads only by its plan (#2743)\n\n* refactor(raft): drop the unused first_free_index so a re-form pads only by its plan\n\nReformPlan::first_index is the one bound a re-form start may use. The\nremoved helper ignored earlier epochs' first indexes and records other\ncopies hold, so a caller wired to it could hand out an offset again.\n\nSpec-Unaffected: removes dead code; no behaviour on any path changes.\n\n* docs(raft): list every bound ReformPlan::first_index takes\n\nSpec-Unaffected: documentation only.",
+          "timestamp": "2026-11-18T12:54:37-08:00",
+          "tree_id": "da01b4e56c1a98b3eda65b403238ad62e1f989cb",
+          "url": "https://github.com/GetFelix/felix/commit/4b4c5253e6d88854868d7975dca6a8710a998274"
+        },
+        "date": 1795038542369,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344288.04,
+            "range": "9568.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344288.04\nmean: 343509.45\nstdev: 9568.51\ncv: 2.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344288.04,
+            "range": "9568.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344288.04\nmean: 343509.45\nstdev: 9568.51\ncv: 2.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78562.57,
+            "range": "872.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78562.57\nmean: 78825.32\nstdev: 872.76\ncv: 1.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 785625.68,
+            "range": "8727.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 785625.68\nmean: 788253.24\nstdev: 8727.66\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
