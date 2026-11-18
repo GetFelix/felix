@@ -287,6 +287,27 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
     shards.shutdown().await;
 }
 
+/// **A member placement moved off is not reported.** It stays open a
+/// while, but the control plane refuses a broker outside the set, and each
+/// refused report is an entry in its log.
+#[tokio::test]
+async fn a_member_off_placement_is_not_held_for_the_copy_id_report() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    assert_eq!(shards.held_copies().len(), 1);
+
+    let mut moved = assigned(orders.clone(), INCARNATION);
+    moved.leader = "broker-b".to_string();
+    moved.replicas = vec!["broker-b".to_string()];
+    shards.take(&mut assignments([moved])).await;
+    assert!(shards.runtime.status(&orders).is_some(), "still open");
+    assert!(shards.held_copies().is_empty());
+    shards.shutdown().await;
+}
+
 /// **No member opens on a data root the restore gate has not passed.** A
 /// held root may be a restored one, whose copies would vote a second time
 /// in a term they already voted in. The shard answers "not ready", and the

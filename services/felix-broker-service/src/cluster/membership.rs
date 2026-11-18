@@ -230,8 +230,12 @@ pub struct RootSequenceSlot {
     placement: Arc<std::sync::OnceLock<PlacementRoot>>,
     /// This process's last registration, as (incarnation,
     /// `registered_at_millis`), which the root's copy id reports carry.
-    registration: Arc<parking_lot::Mutex<Option<(u64, u64)>>>,
+    registration: Arc<parking_lot::Mutex<Option<ProcessRegistration>>>,
 }
+
+/// A registration's incarnation, and `registered_at_millis` if the control
+/// plane gave one.
+type ProcessRegistration = (u64, Option<u64>);
 
 type RootRead = Box<dyn Fn() -> (StorageId, u64) + Send + Sync>;
 
@@ -257,11 +261,19 @@ impl RootSequenceSlot {
     /// control plane did not say when it registered the node.
     #[cfg_attr(not(feature = "raft"), allow(dead_code))]
     pub(crate) fn registration(&self) -> Option<(u64, u64)> {
-        *self.registration.lock()
+        let (incarnation, at) = (*self.registration.lock())?;
+        Some((incarnation, at?))
+    }
+
+    /// True once this process registered with a control plane that did not
+    /// say when it registered the node.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn registered_untimed(&self) -> bool {
+        matches!(*self.registration.lock(), Some((_, None)))
     }
 
     fn registered(&self, incarnation: u64, registered_at_millis: Option<u64>) {
-        *self.registration.lock() = registered_at_millis.map(|at| (incarnation, at));
+        *self.registration.lock() = Some((incarnation, registered_at_millis));
     }
 
     /// Acknowledge placement incarnations under `root`, which holds `acked`

@@ -25,9 +25,14 @@ use crate::cluster::membership::RootSequenceSlot;
 /// How often owed copy ids are sent.
 pub(crate) const INTERVAL: Duration = Duration::from_secs(1);
 
-/// How long a report the control plane refused or never answered waits
-/// before it is sent again.
+/// How long a report the control plane refused or never answered first
+/// waits before it is sent again. The wait doubles with each refusal up to
+/// [`MAX_RETRY`]: each report the control plane refuses is still an entry
+/// in its log.
 const RETRY: Duration = Duration::from_secs(5);
+
+/// The longest a refused report waits before it is sent again.
+const MAX_RETRY: Duration = Duration::from_secs(300);
 
 /// How long a report the control plane took waits before it is sent again
 /// while its target still does not name the copy.
@@ -62,6 +67,8 @@ struct Sent {
     set: BTreeSet<String>,
     at: Instant,
     taken: bool,
+    /// Reports in a row for this copy and set that were not taken.
+    refused: u32,
 }
 
 /// The reports owed to the control plane, by shard and stream incarnation.
@@ -90,7 +97,7 @@ impl CopyIds {
                 let wait = match last {
                     None => return Some((None, held)),
                     Some(sent) if sent.taken => RESEND,
-                    Some(_) => RETRY,
+                    Some(sent) => retry_after(sent.refused),
                 };
                 let at = last.map(|sent| sent.at)?;
                 (now.duration_since(at) >= wait).then_some((Some(at), held))
@@ -103,17 +110,35 @@ impl CopyIds {
             .collect()
     }
 
-    fn record(&mut self, held: &Held, now: Instant, taken: bool) {
+    /// Records a report sent for `held`. Returns how many reports in a row
+    /// for this copy and set have now not been taken.
+    fn record(&mut self, held: &Held, now: Instant, taken: bool) -> u32 {
+        let key = (held.key.clone(), held.incarnation);
+        let before = self
+            .sent
+            .get(&key)
+            .filter(|sent| sent.copy == held.copy && sent.set == held.set)
+            .map_or(0, |sent| sent.refused);
+        let refused = if taken { 0 } else { before.saturating_add(1) };
         self.sent.insert(
-            (held.key.clone(), held.incarnation),
+            key,
             Sent {
                 copy: held.copy,
                 set: held.set.clone(),
                 at: now,
                 taken,
+                refused,
             },
         );
+        refused
     }
+}
+
+/// The wait after `refused` reports in a row were not taken.
+fn retry_after(refused: u32) -> Duration {
+    RETRY
+        .saturating_mul(1 << refused.saturating_sub(1).min(16))
+        .min(MAX_RETRY)
 }
 
 /// The registration a report is sent under: the process's incarnation and
@@ -121,7 +146,8 @@ impl CopyIds {
 pub(crate) type Registration = (u64, u64);
 
 /// One tick: send each owed report. Anything but a 200 leaves it owed, to
-/// be sent again after [`RETRY`].
+/// be sent again after a wait that grows from [`RETRY`]. The first refusal
+/// for a copy and set is logged; the rest are debug.
 pub(crate) async fn tick<L: ControlPlaneLink>(
     ids: &mut CopyIds,
     held: &[Held],
@@ -144,29 +170,23 @@ pub(crate) async fn tick<L: ControlPlaneLink>(
             link.report_raft_copy_id(bearer, node_id, &report),
         )
         .await;
-        let taken = match sent {
-            Ok(Ok(answer)) if answer.status == reqwest::StatusCode::OK => true,
+        let refusal = match sent {
+            Ok(Ok(answer)) if answer.status == reqwest::StatusCode::OK => None,
             // A 409 is a shard not on Raft, a placement not yet acknowledged
             // by every broker, or a control plane below the level that takes
             // these; a 404 one that predates them. All are tried again.
-            Ok(Ok(answer)) => {
-                tracing::debug!(
-                    shard = ?held.key,
-                    status = %answer.status,
-                    "the control plane did not take a Raft copy id; retrying"
-                );
-                false
-            }
-            Ok(Err(err)) => {
-                tracing::debug!(shard = ?held.key, error = %err, "could not report a Raft copy id; retrying");
-                false
-            }
-            Err(_) => {
-                tracing::debug!(shard = ?held.key, "a Raft copy id report timed out; retrying");
-                false
-            }
+            Ok(Ok(answer)) => Some(format!("status {}", answer.status)),
+            Ok(Err(err)) => Some(format!("{err:#}")),
+            Err(_) => Some("timed out".to_string()),
         };
-        ids.record(&held, Instant::now(), taken);
+        let refused = ids.record(&held, Instant::now(), refusal.is_none());
+        if let Some(reason) = refusal {
+            if refused == 1 {
+                tracing::info!(shard = ?held.key, %reason, "the control plane did not take a Raft copy id; retrying with backoff");
+            } else {
+                tracing::debug!(shard = ?held.key, %reason, refused, "the control plane did not take a Raft copy id; retrying");
+            }
+        }
     }
 }
 
@@ -181,6 +201,7 @@ pub(crate) async fn run<L: ControlPlaneLink>(
     stop: CancellationToken,
 ) {
     let mut ids = CopyIds::default();
+    let mut warned_untimed = false;
     let mut every = tokio::time::interval(INTERVAL);
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -189,6 +210,14 @@ pub(crate) async fn run<L: ControlPlaneLink>(
             _ = every.tick() => {}
         }
         let Some(registered) = registration.registration() else {
+            // Copy id reports need a control plane that says when it
+            // registered the node; an older one never does.
+            if !warned_untimed && registration.registered_untimed() {
+                warned_untimed = true;
+                tracing::warn!(
+                    "the control plane did not say when it registered this broker; Raft copy ids are not reported"
+                );
+            }
             continue;
         };
         let bearer = credential.as_ref().map(|credential| credential.bearer());

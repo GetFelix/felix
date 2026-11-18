@@ -119,6 +119,42 @@ async fn a_refused_report_is_retried() {
     assert_eq!(sent(&link).len(), 2);
 }
 
+/// Each refused report is an entry in the control plane's log, so a
+/// report it keeps refusing waits longer each time, up to [`MAX_RETRY`].
+#[tokio::test(start_paused = true)]
+async fn a_report_refused_again_backs_off() {
+    let link = accepting().status("report_raft_copy_id", StatusCode::CONFLICT);
+    let mut ids = CopyIds::default();
+    let waiting = [held("a", 7, None)];
+    tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
+    tokio::time::advance(RETRY).await;
+    tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 2);
+    tokio::time::advance(RETRY).await;
+    tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
+    assert_eq!(
+        sent(&link).len(),
+        2,
+        "the second refusal waits twice as long"
+    );
+    tokio::time::advance(RETRY).await;
+    tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 3);
+
+    for _ in 0..20 {
+        tokio::time::advance(MAX_RETRY).await;
+        tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
+    }
+    assert_eq!(sent(&link).len(), 23, "the wait stops growing at the cap");
+
+    // A new copy is owed at once, and starts over from the first wait.
+    tick(&mut ids, &[held("a", 8, None)], (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 24);
+    tokio::time::advance(RETRY).await;
+    tick(&mut ids, &[held("a", 8, None)], (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 25);
+}
+
 /// A rotated copy, or a set the control plane has no ids for, is owed at
 /// once, however recently the last report went.
 #[tokio::test(start_paused = true)]

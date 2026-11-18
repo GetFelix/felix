@@ -37,7 +37,7 @@ pub struct RaftOrdered {
 impl ShardAssignment {
     /// Start an empty list for the group's current epoch. Epoch 0 starts
     /// when the switch to Raft is recorded (`accept_seal_report`), or for a
-    /// shard that started on Raft at its first target
+    /// shard that started on Raft at its first copy id
     /// ([`Self::start_native_raft_ordered`]); a re-form
     /// that writes [`super::PlacedInEpoch::next_epoch`] must call this in the
     /// same write.
@@ -50,8 +50,8 @@ impl ShardAssignment {
         });
     }
 
-    /// Start epoch 0's list for a shard that started on Raft, before its
-    /// first target. Such a shard has no switch to start it at. Left alone
+    /// Start epoch 0's list for a shard that started on Raft, in the write
+    /// that stores its first copy id, before any target. Such a shard has no switch to start it at. Left alone
     /// once started, once any target was written, and for a shard with no
     /// complete record of its epoch (`placed`), such as a restored one: a
     /// list started late would miss targets ordered before it.

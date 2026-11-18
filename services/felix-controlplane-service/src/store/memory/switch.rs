@@ -151,7 +151,13 @@ pub(super) async fn record_raft_copy_id(
             namespace: key.namespace.clone(),
             stream: key.stream.clone(),
         })
-        .map(|stream| (stream.incarnation, stream.durable));
+        .map(|stream| {
+            (
+                stream.incarnation,
+                stream.durable,
+                stream.replication_factor,
+            )
+        });
     // Nodes, then shards, then acknowledgements, the order a node delete
     // takes them in. Held to the write, so no registration or ack lands
     // between the gate and the target.
@@ -175,8 +181,22 @@ pub(super) async fn record_raft_copy_id(
         native.raft_streams
             && existing.switch.is_none()
             && existing.key.kind == crate::model::ShardKind::Stream
-            && durable_stream == Some((existing.incarnation, true))
+            && durable_stream.is_some_and(|(incarnation, durable, _)| {
+                durable && incarnation == existing.incarnation
+            })
     });
+    // A target names only the set it was written from, so one from a set
+    // placement has not filled yet would form a group short of the
+    // stream's replica count. Decided here, not by the reporting broker.
+    if started_on_raft {
+        let wanted = durable_stream.map_or(0, |(_, _, factor)| factor as usize);
+        let placed = 1 + existing.replicas.len();
+        if placed < wanted {
+            return Err(StoreError::Conflict(format!(
+                "placement names {placed} brokers, the stream's replica count is {wanted}"
+            )));
+        }
+    }
     if !existing.switched() && !started_on_raft {
         return Err(StoreError::Conflict(
             "the shard is not on Raft: it neither switched from the hybrid nor \

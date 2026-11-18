@@ -1005,9 +1005,12 @@ impl EngineShards for RaftShards {
             *self.targets.lock() = targets;
             // A short set forms nothing, so it gets no target either: one
             // naming only the brokers placed so far would form that group.
+            // A member placement moved off stays open a while, but the
+            // control plane refuses a broker outside the set.
             let held = fed
                 .iter()
                 .filter(|(_, (_, full))| *full)
+                .filter(|(_, (assignment, _))| brokers_of(assignment).contains(self.local.as_str()))
                 .filter_map(|(key, (assignment, _))| {
                     let member = open
                         .get(key)

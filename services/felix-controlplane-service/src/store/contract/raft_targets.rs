@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::shards::{clear, on_streams_of_its_own};
+use super::shards::{clear, next_stream, on_streams_of_its_own, seed, seed_with_replicas};
 use super::switch::{active, both, read, sealed, written};
 use crate::model::{NodeLifecycle, PlacementAck, ShardAssignment};
 use crate::store::{ControlPlaneStore, StoreError};
@@ -32,6 +32,7 @@ pub(crate) async fn run_raft_native_target_contract(store: Arc<dyn ControlPlaneS
     on_streams_of_its_own(store, async {
         a_shard_started_on_raft_gets_its_target(store).await;
         a_native_report_names_the_streams_incarnation(store).await;
+        a_native_set_short_of_the_replica_count_takes_no_copy_id(store).await;
     })
     .await;
 }
@@ -83,7 +84,7 @@ async fn a_shard_started_on_raft_gets_its_target(store: &dyn ControlPlaneStore) 
         stored.raft_target.as_ref().expect("target").members,
         members
     );
-    // Epoch 0's list starts with the first target, so a re-form counts it.
+    // Epoch 0's list started with the first copy id, so it holds the first target a re-form counts.
     let voters = members.into_iter().collect();
     assert_eq!(stored.ordered_voter_sets(), Some(vec![voters]));
     assert_eq!(stored.generation, shard.generation, "written in place");
@@ -106,6 +107,24 @@ async fn a_native_report_names_the_streams_incarnation(store: &dyn ControlPlaneS
     }
     assert!(read(store, &shard.key).await.raft_copy_ids.is_empty());
     clear(store).await;
+}
+
+/// The control plane checks the set against the stream's replica count
+/// itself: a broker's view of placement may be stale.
+async fn a_native_set_short_of_the_replica_count_takes_no_copy_id(store: &dyn ControlPlaneStore) {
+    next_stream();
+    seed_with_replicas(store, 3).await;
+    let shard = active(store, 0).await;
+    let err = try_native_report(store, &shard, "broker-x", 61, Some(shard.incarnation))
+        .await
+        .expect_err("two brokers for three replicas");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    let stored = read(store, &shard.key).await;
+    assert!(stored.raft_copy_ids.is_empty());
+    assert!(stored.raft_ordered.is_none(), "no list starts either");
+    clear(store).await;
+    next_stream();
+    seed(store).await;
 }
 
 /// On a hybrid cluster a shard that never switched is not on Raft, whatever
