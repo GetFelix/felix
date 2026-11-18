@@ -82,10 +82,10 @@ jobs:
       - name: Build
         run: |
           set -euo pipefail
-          cargo build --locked --release \
-            -p felix-broker-service --features felix-broker-service/raft --bin felix-broker \
-            -p felix-cluster --bin felix-cluster \
-            -p felix-loadgen --bin felix-loadgen
+          # Separate invocations: one build with several -p and a pkg/feature
+          # flag produced a broker without the raft feature.
+          cargo build --locked --release -p felix-broker-service --features raft --bin felix-broker
+          cargo build --locked --release -p felix-cluster --bin felix-cluster -p felix-loadgen --bin felix-loadgen
           mkdir -p /tmp/felix-raft-rf3/bin
           for b in felix-broker felix-cluster felix-loadgen; do
             cp "$CARGO_TARGET_DIR/release/$b" /tmp/felix-raft-rf3/bin/
@@ -100,6 +100,7 @@ jobs:
           set -euo pipefail
           results=/tmp/felix-raft-rf3/results.jsonl
           : > "$results"
+          raft_failures=0
           # cell name, fsync mode, payload bytes, batch. All RF 3. gate_perf.py
           # reads a -b1 suffix as a latency cell. The engine A/B reads the side
           # "baseline" as the hybrid and "head" as Raft.
@@ -115,11 +116,24 @@ jobs:
                 ENGINE=$engine FELIX_DURABLE_FSYNC_MODE=$fsync \
                   scripts/ci/gate-perf-cell.sh /tmp/felix-raft-rf3/bin "$side" "$name" 3 "$payload" "$batch" \
                     "$SECONDS_PER_TRIAL" "$round" "$results" \
-                  || echo "::warning::$engine $name round $round failed"
+                  || {
+                    echo "::warning::$engine $name round $round failed"
+                    # A raft cell that fails must fail the job, or a green run proves nothing.
+                    [ "$engine" = raft ] && raft_failures=$((raft_failures + 1))
+                  }
               done
             done
             echo "::endgroup::"
           done
+          if [ "$raft_failures" -gt 0 ]; then
+            echo "::error::$raft_failures raft cell run(s) failed"
+            exit 1
+          fi
+          # Every raft run that succeeds logs its engine check; none means Raft never ran.
+          if [ "$(jq -s '[.[] | select(.engine == "raft")] | length' "$results")" -eq 0 ]; then
+            echo "::error::no raft cell completed"
+            exit 1
+          fi
 
       - name: Report
         if: always()
