@@ -106,7 +106,7 @@ pub(crate) fn spawn_broker(
         )
         .env(
             "RUST_LOG",
-            std::env::var("RUST_LOG").as_deref().unwrap_or("warn"),
+            std::env::var("RUST_LOG").as_deref().unwrap_or("info"),
         );
     let mut tcp_ports = Vec::new();
     for (env_var, template) in &config.tcp_listeners {
