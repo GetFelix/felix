@@ -1310,6 +1310,24 @@ answer as a partial acknowledgement and sends the rest next. An append that
 could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
 
+The first record is sent however large, so its size also sets the deadline.
+An append whose first record is past the budget gets as long as that record
+needs at the same rate, up to the 10 s a follower allows: about 1.1 s for the
+largest record. The follower is told the same deadline. Without this, a record
+that takes longer than the heartbeat to cross the link would time out on every
+retry, and every entry after it would wait behind it for good.
+
+On a Raft shard a record over 32 MiB (payload, key and headers, and
+publisher) is refused before it is proposed, with nothing written. That is
+the most one append carries, and it keeps every entry well inside a frame
+and its deadline near a second. Cache writes take the same bound on key and
+value. The hybrid engine takes records up to the frame limit. A client
+publishing to the shard's leader is told the request is invalid and not to
+retry; an MQTT publish there is refused with `PUBACK` 0x83, reason string
+`record_too_large`. A publish forwarded from another broker is answered as a
+storage failure instead (#2773). The defaults (16 MiB client frames, 1 MiB MQTT
+packets) stay under the bound.
+
 Two smaller limits apply first, when the leader builds the append: at most
 1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
 read from the log (the log reader's page). At 1 KiB records that is about

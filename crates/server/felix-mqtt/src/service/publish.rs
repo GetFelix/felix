@@ -421,6 +421,8 @@ fn describe(refusal: Refusal) -> (ReasonCode, &'static str) {
         // 0x88 is not allowed on a PUBACK.
         Refusal::StreamUnavailable => (ReasonCode::UnspecifiedError, "stream_unavailable"),
         Refusal::NotAuthorized => (NOT_AUTHORIZED.reason, NOT_AUTHORIZED.label),
+        // 0x95 is not allowed on a PUBACK.
+        Refusal::TooLarge => (ReasonCode::ImplementationSpecificError, "record_too_large"),
     }
 }
 
