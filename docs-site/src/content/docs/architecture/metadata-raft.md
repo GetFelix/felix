@@ -167,8 +167,10 @@ wipe while the first member is still catching up is the usual cause, and it
 clears on its own once that member has caught up. If it does not clear in
 `FELIX_RAFT_FLOOR_REPORT_AFTER_MS` (default 60 s), the member logs an error,
 sets `felix_meta_raft_floor_blocked` to 1, and its readiness check reports
-the block and the members it waits on. If those members are lost for good,
-accept the loss on the blocked member, naming each of them:
+the block and the members it waits on. If those members are lost for good
+and a member that kept its volume still leads, accept the loss on each
+blocked member, naming every member it waits on (even one that is only
+catching up):
 
 ```bash
 curl --fail-with-body -X POST \
@@ -184,7 +186,9 @@ Use `http://` when the peer listener has no TLS, and with peer mTLS add
 reason and goes on. Writes that only the lost members held may be gone;
 [restore from an export](#restoring-beyond-quorum-loss) to get them back.
 The waiver is refused (409) before the block is reported or if it misses a
-member, and a restart of the blocked member drops it. The steps are in
+member, and a restart of the blocked member drops it. A waiver does not
+let a member vote, so if no member that kept its volume leads (the leader
+was one of the lost ones), no waiver helps: restore from an export. The steps are in
 [the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#past-the-failure-tolerance).
 
 Upgrading an existing Raft group to a release with the peer listener is not

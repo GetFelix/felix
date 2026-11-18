@@ -645,7 +645,7 @@ async fn the_floor_waits_for_every_member_and_takes_the_highest_term() {
     let unknown = [(2, Some(second.clone())), (3, Some(withheld))];
     let learned = tokio::time::timeout(
         Duration::from_secs(1),
-        handle.learn_floor(&client, &unknown),
+        handle.learn_floor(&client, &unknown, false),
     )
     .await;
     assert!(learned.is_err(), "a floor from a member that gave no term");
@@ -656,7 +656,7 @@ async fn the_floor_waits_for_every_member_and_takes_the_highest_term() {
 
     let (third, s4) = answering(r#"{"member":3,"term":5}"#).await;
     handle
-        .learn_floor(&client, &[(2, Some(second)), (3, Some(third))])
+        .learn_floor(&client, &[(2, Some(second)), (3, Some(third))], false)
         .await;
     assert!(!handle.serves_leader(4), "served a leader below the floor");
     assert!(handle.serves_leader(5));
@@ -707,6 +707,7 @@ async fn a_member_that_says_it_is_withheld_answers_with_no_term() {
                 (4, Some(fourth)),
                 (5, Some(fifth)),
             ],
+            false,
         ),
     )
     .await
@@ -811,7 +812,7 @@ async fn past_the_failure_tolerance_the_floor_blocks_until_waived() {
         let client = client.clone();
         async move {
             handle
-                .learn_floor(&client, &[(2, Some(second)), (3, Some(withheld))])
+                .learn_floor(&client, &[(2, Some(second)), (3, Some(withheld))], false)
                 .await;
         }
     });
@@ -888,7 +889,7 @@ async fn the_block_lifts_once_a_withheld_member_reports_a_term() {
         let client = client.clone();
         async move {
             handle
-                .learn_floor(&client, &[(2, Some(second)), (3, Some(third))])
+                .learn_floor(&client, &[(2, Some(second)), (3, Some(third))], false)
                 .await;
         }
     });
@@ -911,4 +912,56 @@ async fn the_block_lifts_once_a_withheld_member_reports_a_term() {
     for server in [s2, s3] {
         server.abort();
     }
+}
+
+/// A member resumed from an interrupted catch-up already serves a leader at
+/// or above the floor it learned, and its stored vote refuses older ones.
+/// Blocking it past the tolerance would strand the wiped member that waits
+/// for it to report a term, so it does not block (#2365).
+#[tokio::test]
+async fn a_resumed_catch_up_does_not_block_past_the_tolerance() {
+    let client = reqwest::Client::new();
+    let (second, s2) = answering(r#"{"member":2,"term":3}"#).await;
+    let (withheld, s3) = answering(r#"{"last_log_index":null,"member":3,"withheld":true}"#).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let member = Served::start(member_settings(1, dir.path()), None).await;
+    let handle = member.handle.clone();
+    handle.may_vote.store(false, Ordering::SeqCst);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        handle.learn_floor(&client, &[(2, Some(second)), (3, Some(withheld))], true),
+    )
+    .await
+    .expect("a resumed catch-up blocked past the tolerance");
+    assert!(!handle.serves_leader(2), "served a leader below the floor");
+    assert!(handle.serves_leader(3));
+    member.stop().await;
+    for server in [s2, s3] {
+        server.abort();
+    }
+}
+
+/// A waiver that misses a member withheld since it was given is dropped,
+/// not kept to fire once the set shrinks back.
+#[test]
+fn a_waiver_that_misses_a_newly_withheld_member_is_dropped() {
+    let gate = crate::raft::floor::FloorGate::default();
+    let now = Duration::ZERO;
+    let blocked = gate.judge(3, &BTreeSet::from([3]), 1, false, now);
+    assert_eq!(
+        blocked,
+        crate::raft::floor::Verdict::Blocked { report: true }
+    );
+    let waiver = crate::raft::floor::Waiver {
+        members: BTreeSet::from([3]),
+        reason: "volume destroyed".to_string(),
+    };
+    gate.waive(waiver).expect("waive");
+    let wider = gate.judge(5, &BTreeSet::from([3, 4]), 2, false, now);
+    assert!(matches!(wider, crate::raft::floor::Verdict::Blocked { .. }));
+    let back = gate.judge(5, &BTreeSet::from([3]), 2, false, now);
+    assert!(
+        matches!(back, crate::raft::floor::Verdict::Blocked { .. }),
+        "an old waiver fired: {back:?}"
+    );
 }

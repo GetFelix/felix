@@ -84,21 +84,28 @@ impl FloorGate {
         members: usize,
         withheld: &BTreeSet<NodeId>,
         with_terms: usize,
+        resumed: bool,
         report_after: Duration,
     ) -> Verdict {
         let mut state = self.state();
-        if proven(members, with_terms) {
+        if resumed || proven(members, with_terms) {
             *state = State::default();
             metrics::gauge!("felix_meta_raft_floor_blocked").set(0.0);
             return Verdict::Proven;
         }
-        if let Some(waiver) = state
-            .waiver
-            .take_if(|waiver| withheld.is_subset(&waiver.members))
-        {
-            *state = State::default();
-            metrics::gauge!("felix_meta_raft_floor_blocked").set(0.0);
-            return Verdict::Waived(waiver);
+        // A waiver that misses a member withheld since it was given is
+        // dropped: it was not given for this block.
+        if let Some(waiver) = state.waiver.take() {
+            if withheld.is_subset(&waiver.members) {
+                *state = State::default();
+                metrics::gauge!("felix_meta_raft_floor_blocked").set(0.0);
+                return Verdict::Waived(waiver);
+            }
+            tracing::warn!(
+                waived = ?waiver.members,
+                ?withheld,
+                "dropped a floor waiver: another member is withheld since it was given"
+            );
         }
         let since = state
             .blocked

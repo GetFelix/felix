@@ -461,7 +461,8 @@ impl RaftHandle {
         // Holding state while withholding the vote means an earlier catch-up
         // was interrupted; the group exists, so there is nothing to decide.
         let mut why = "the raft group exists";
-        if !self.member.holds_state().unwrap_or(true) {
+        let resumed = self.member.holds_state().unwrap_or(true);
+        if !resumed {
             let mut mark = match self.mark().await {
                 Ok(mark) => mark,
                 Err(err) => {
@@ -553,7 +554,7 @@ impl RaftHandle {
             }
         }
         self.drop_waiver(why);
-        self.learn_floor(&client, &others).await;
+        self.learn_floor(&client, &others, resumed).await;
         let others: Vec<String> = others.into_iter().filter_map(|(_, base)| base).collect();
         tracing::info!(
             why,
@@ -625,8 +626,17 @@ impl RaftHandle {
     /// Withheld answers prove the floor only within the group's failure
     /// tolerance ([`super::floor`]). Past it the member blocks until enough
     /// members report a term, a withheld member finishing its catch-up
-    /// included, or an operator waives the members it waits on.
-    async fn learn_floor(&self, client: &reqwest::Client, others: &[(NodeId, Option<String>)]) {
+    /// included, or an operator waives the members it waits on. A member
+    /// `resumed` from an interrupted catch-up skips the block: everything
+    /// it stored since its wipe came from a leader at or above the floor it
+    /// learned then, so its stored vote already refuses older leaders, and
+    /// blocking it would strand the member it was the proof for.
+    async fn learn_floor(
+        &self,
+        client: &reqwest::Client,
+        others: &[(NodeId, Option<String>)],
+        resumed: bool,
+    ) {
         let mut last_waiting_log: Option<tokio::time::Instant> = None;
         loop {
             let mut floor = 0;
@@ -648,10 +658,13 @@ impl RaftHandle {
             let due = last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL);
             if waiting.is_empty() {
                 let members = others.len() + 1;
-                match self
-                    .floor_gate
-                    .judge(members, &withheld, with_terms, self.floor_report_after)
-                {
+                match self.floor_gate.judge(
+                    members,
+                    &withheld,
+                    with_terms,
+                    resumed,
+                    self.floor_report_after,
+                ) {
                     Verdict::Proven => {
                         self.floor.store(floor, Ordering::SeqCst);
                         tracing::info!(floor, ?withheld, "the raft members proved the floor");

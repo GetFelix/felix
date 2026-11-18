@@ -555,23 +555,37 @@ A block ends one of two ways:
    learned its floor and serves the current leader, so its catch-up does
    not need the blocked member. Once it votes again it reports a term, and
    the blocked member, which keeps asking, learns its floor. This is the
-   common case: one wipe, then a second before the first has caught up.
-2. **An operator waives the lost members.** If the withheld members are
-   gone for good, or no leader is left for them to catch up from, nothing
-   resolves the block on its own. After `FELIX_RAFT_FLOOR_REPORT_AFTER_MS`
-   (default 60 s) the member logs an error naming the withheld members,
-   sets the gauge `felix_meta_raft_floor_blocked` to 1, and its readiness
-   answer says it is blocked. Only then does it take a waiver: a POST to
-   the peer route `waive-lost`, which needs the peer token (the
-   cluster-admin credential), names every withheld member the block waits
-   on, and gives a reason. The member logs the waiver and goes on with the
-   floor from the members that reported a term. Acknowledged writes only
-   the lost members held may be lost, and the
+   common case: one wipe, then a second before the first has caught up. A
+   member that restarts part way through its catch-up holds state, so it
+   does not block on its next start: what it stored came from a leader at
+   or above the floor it learned, and its stored vote refuses older
+   leaders.
+2. **An operator waives the withheld members.** If they are gone for good,
+   nothing resolves the block on its own. After
+   `FELIX_RAFT_FLOOR_REPORT_AFTER_MS` (default 60 s) the member logs an
+   error naming the withheld members, sets the gauge
+   `felix_meta_raft_floor_blocked` to 1, and its readiness answer says it
+   is blocked. Only then does it take a waiver: a POST to the peer route
+   `waive-lost`, which needs the peer token (the cluster-admin credential),
+   names every withheld member the block waits on, and gives a reason. The
+   waiver must name each of them, even one that is healthy and only
+   catching up. The member logs the waiver and goes on with the floor from
+   the members that reported a term. Acknowledged writes only the lost
+   members held may be lost, and the
    [restore](#restoring-beyond-quorum-loss) path is how to get them back.
+   Each blocked member takes its own waiver.
+
+A waiver only lets a member follow a leader. It does not make it vote, and
+a withheld member never votes before it has caught up. So a waiver helps
+only while a member that kept its volume still leads. If the leader was
+one of the members that lost their volumes, no leader can be elected, and
+the waived member keeps reporting that it is catching up. Go straight to
+the restore path then.
 
 A waiver is held in memory and used once. It is refused before the block
 is reported, when it misses a member the block waits on, or when it names
-this member or one that is not configured. A restart before the block
+this member or one that is not configured. It is dropped when another
+member becomes withheld before it is used, and a restart before the block
 lifts starts it over.
 
 The model checks the rule (`FelixRaftPlacementSameId.cfg`,
