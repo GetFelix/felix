@@ -76,8 +76,9 @@ pub struct ClusterConfig {
     /// 15 seconds.
     pub node_expiry: Duration,
     /// The shard engine the in-memory control plane runs as, its
-    /// `FELIX_SHARD_ENGINE`. `None` is its default, the hybrid. Brokers take
-    /// theirs from `broker_env`. Not used with `metadata_group`.
+    /// `FELIX_SHARD_ENGINE`. `None` is Raft when any broker runs Raft, else
+    /// the hybrid. Brokers take theirs from `broker_env`. Not used with
+    /// `metadata_group`.
     pub control_plane_engine: Option<String>,
 }
 
@@ -105,6 +106,16 @@ impl Default for ClusterConfig {
             node_expiry: Duration::from_secs(1),
             control_plane_engine: None,
         }
+    }
+}
+
+impl ClusterConfig {
+    /// Whether any broker starts with `FELIX_SHARD_ENGINE=raft`.
+    pub(crate) fn raft_brokers(&self) -> bool {
+        std::iter::once(&self.broker_env)
+            .chain(&self.node_env)
+            .flatten()
+            .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft")
     }
 }
 

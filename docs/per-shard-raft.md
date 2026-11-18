@@ -3822,7 +3822,10 @@ publishers are delivered as two batches, as the leader delivers them.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
-every broker: a shard that already holds data cannot change engines yet.
+every broker and on the control plane: a shard that already holds data
+cannot change engines yet, a broker refuses to start under a control plane
+whose identity names the other engine, and only a Raft control plane stores
+the target a group forms on.
 Publishes, routes, subscribes and a leader stopping are tested across three
 brokers in one process and across three broker processes. Both failover
 tests read every acknowledged payload back from the new leader, and the one
@@ -3879,7 +3882,8 @@ Membership changes are not built yet
   control plane ("Targets ordered in an epoch"), and the stored target is
   on that list before any broker can read it, or the list reads as lost.
   A set formed from copies no record names could lose
-  its majority with no re-form source seeing that set.
+  its majority with no re-form source seeing that set. In a cluster this
+  takes a Raft control plane: a hybrid one stores no target.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4000,9 +4004,16 @@ refuses to open it under the other one.
 > `a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker`,
 > `a_raft_broker_refuses_a_shard_shared_with_a_hybrid_broker`,
 > `a_peer_reached_late_closes_the_shard_it_shares`,
-> `a_refusal_ends_once_the_engines_match`;
+> `a_refusal_ends_once_the_engines_match`.
+
+Under a control plane, a broker on the other engine does not get that far:
+the control plane's identity names the cluster's engine, and a broker that
+runs another refuses to start and says so.
+
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
-> `brokers_on_different_engines_refuse_their_shared_shard`.
+> `a_broker_on_another_engine_is_refused_at_start`;
+> `services/felix-broker-service/src/cluster/controlplane_group/tests.rs`,
+> `a_raft_broker_is_admitted_by_a_raft_cluster_only`.
 
 A member's log directory is locked while the member is open, so a second
 broker process started on the same data directory cannot open that log
