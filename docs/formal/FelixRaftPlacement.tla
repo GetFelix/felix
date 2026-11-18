@@ -158,8 +158,13 @@
 (*                     member answers a leader only once every other       *)
 (*                     member has answered, with its term or with word     *)
 (*                     that it is withheld too, and only a leader at or    *)
-(*                     above the highest term given. Silence blocks.       *)
+(*                     above the highest term given. Silence blocks, and   *)
+(*                     so does a set of withheld members that leaves some  *)
+(*                     majority holding this one without a member that     *)
+(*                     reported a term: past the failure tolerance.        *)
 (*                     Read FALSE as "this rule removed".                  *)
+(*   FloorWaiver    -- Floor only: an operator may waive that block, and   *)
+(*                     the member takes its floor from whoever reported.   *)
 (*   AnswerAnyId    -- Rotate = TRUE only: a copy answers a request that   *)
 (*                     names an older copy id of its broker.               *)
 (*   DeleteOnTarget -- a copy is deleted as soon as the target drops it.   *)
@@ -222,6 +227,7 @@ CONSTANTS
     NoWithhold,
     WithheldCounts,
     Floor,          \* a withheld member answers no leader below its peers' terms
+    FloorWaiver,    \* an operator may lift the floor's block past the failure tolerance
     AnswerAnyId,
     DeleteOnTarget,
     PlaceDoomed,
@@ -879,14 +885,20 @@ AskTarget(s, i) ==
     /\ hold' = [hold EXCEPT ![s] = LastIdx(i) + 2]
     /\ UNCHANGED <<election, raft, copy, floor, mark, rec, reached, plane, delivered, used>>
 
+\* Every majority holding s holds a member that holds its vote, so the
+\* terms s promised are held by someone that reports one.
+FloorProven(s) == ~Majority({t \in InitBrokers : hold[t] # 0} \cup {s}, InitBrokers)
+
 \* A withheld member asks every other member for its term. Each must
 \* answer. One that withholds its vote too gives no term; the floor is the
-\* highest term the others give.
+\* highest term the others give. Past the failure tolerance it blocks
+\* until a withheld member votes again, or an operator waives it.
 LearnFloor(s) ==
     /\ Floor
     /\ hold[s] # 0
     /\ floor[s] = -1
     /\ \A k \in InitBrokers \ {s} : k \notin Absent
+    /\ FloorProven(s) \/ FloorWaiver
     /\ floor' = [floor EXCEPT ![s] =
                     MaxOf({0} \cup {term[k] : k \in {t \in InitBrokers \ {s} : hold[t] = 0}})]
     /\ UNCHANGED <<election, raft, copy, hold, mark, rec, reached, plane, delivered, used>>

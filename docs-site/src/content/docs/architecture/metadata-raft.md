@@ -158,6 +158,35 @@ machine with an empty volume takes its place. Use this only under a cluster
 id that no volume has held: it cannot tell whether the absent machine holds
 data.
 
+A member that loses its volume catches up before it votes again, and first
+asks every other member for its term. If more members lost their volumes
+than the group survives (two of three, three of five), the members that
+still have a term cannot prove which leaders are safe to follow, and the
+wiped member blocks rather than risk losing acknowledged writes. A second
+wipe while the first member is still catching up is the usual cause, and it
+clears on its own once that member has caught up. If it does not clear in
+`FELIX_RAFT_FLOOR_REPORT_AFTER_MS` (default 60 s), the member logs an error,
+sets `felix_meta_raft_floor_blocked` to 1, and its readiness check reports
+the block and the members it waits on. If those members are lost for good,
+accept the loss on the blocked member, naming each of them:
+
+```bash
+curl --fail-with-body -X POST \
+  "https://cp-0:8444/internal/raft/v2/waive-lost" \
+  -H "Authorization: Bearer $FELIX_RAFT_PEER_TOKEN" \
+  -H "x-felix-raft-cluster-id: prod-metadata" \
+  -H "content-type: application/json" \
+  -d '{"members": [2], "reason": "cp-1 volume destroyed"}'
+```
+
+Use `http://` when the peer listener has no TLS, and with peer mTLS add
+`--cert`, `--key` and `--cacert`. The member logs the waiver with its
+reason and goes on. Writes that only the lost members held may be gone;
+[restore from an export](#restoring-beyond-quorum-loss) to get them back.
+The waiver is refused (409) before the block is reported or if it misses a
+member, and a restart of the blocked member drops it. The steps are in
+[the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#past-the-failure-tolerance).
+
 Upgrading an existing Raft group to a release with the peer listener is not
 a rolling change: old members send unauthenticated RPCs to the API port, and
 new ones only answer authenticated ones on the peer port. Restart every

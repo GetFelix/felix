@@ -533,20 +533,52 @@ it.
 The cost: a wiped member counts for nothing until every other member is up
 and on a build that reports its term. With one of three members wiped,
 writes need both of the others until it has learned its floor. Two members
-wiped at once do not wait for each other: each says it is withheld, and
-each takes its floor from the rest. Past what the group survives (two of
-three wiped) the one member left may not hold the term the pair promised.
-The group then goes on, and an acknowledged write the pair held can be
-lost: each member logs a warning when it and the withheld members it heard
-from are a majority, and the [restore](#restoring-beyond-quorum-loss) path
-is how to get the write back. A slot that
-a `form-without` waiver named and that never started is silent, so a
-member wiped in that group learns no floor until the slot answers.
+of five wiped at once do not wait for each other: each says it is
+withheld, and each takes its floor from the other three. A slot that a
+`form-without` waiver named and that never started is silent, so a member
+wiped in that group learns no floor until the slot answers.
+
+#### Past the failure tolerance
+
+The argument above needs some member of every majority that holds the
+wiped member to still report a term. Count the members that do. If the
+rest, with the asking member, could make up a majority (two of three
+wiped, three of five), the terms the asking member promised may live only
+on members that lost them too. Serving a leader then could lose an
+acknowledged write, so the member blocks instead: it learns no floor and
+answers no leader.
+
+A block ends one of two ways:
+
+1. **A withheld member finishes catching up.** A member that is still
+   catching up after an earlier wipe also says it is withheld. It already
+   learned its floor and serves the current leader, so its catch-up does
+   not need the blocked member. Once it votes again it reports a term, and
+   the blocked member, which keeps asking, learns its floor. This is the
+   common case: one wipe, then a second before the first has caught up.
+2. **An operator waives the lost members.** If the withheld members are
+   gone for good, or no leader is left for them to catch up from, nothing
+   resolves the block on its own. After `FELIX_RAFT_FLOOR_REPORT_AFTER_MS`
+   (default 60 s) the member logs an error naming the withheld members,
+   sets the gauge `felix_meta_raft_floor_blocked` to 1, and its readiness
+   answer says it is blocked. Only then does it take a waiver: a POST to
+   the peer route `waive-lost`, which needs the peer token (the
+   cluster-admin credential), names every withheld member the block waits
+   on, and gives a reason. The member logs the waiver and goes on with the
+   floor from the members that reported a term. Acknowledged writes only
+   the lost members held may be lost, and the
+   [restore](#restoring-beyond-quorum-loss) path is how to get them back.
+
+A waiver is held in memory and used once. It is refused before the block
+is reported, when it misses a member the block waits on, or when it names
+this member or one that is not configured. A restart before the block
+lifts starts it over.
 
 The model checks the rule (`FelixRaftPlacementSameId.cfg`,
 `FelixRaftPlacementSameIdFiveFloor.cfg`; two wipes in five,
 `FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg`; late first-boot members,
-`FelixRaftPlacementFormFiveFloor.cfg`; past quorum,
+`FelixRaftPlacementFormFiveFloor.cfg`; past the tolerance, blocked,
+`FelixRaftPlacementTwoWipesFloorBlock.cfg`, and under a waiver,
 `FelixRaftPlacementTwoWipesFloor.cfg`; a waived slot that never starts,
 `FelixRaftPlacementFormWaiverFloor.cfg`) and shows a write lost without it
 (`FelixRaftPlacementSameIdCounted.cfg`).

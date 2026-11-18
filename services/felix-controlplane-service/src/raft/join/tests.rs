@@ -669,7 +669,8 @@ async fn the_floor_waits_for_every_member_and_takes_the_highest_term() {
 }
 
 /// A member that says it withholds its vote counts as answered with no
-/// term, so two empty members do not wait on each other forever (#2365).
+/// term, so two empty members of five do not wait on each other forever
+/// (#2365).
 /// One that gives a term while saying it is withheld contradicts itself and
 /// does not count.
 #[tokio::test]
@@ -678,6 +679,8 @@ async fn a_member_that_says_it_is_withheld_answers_with_no_term() {
     let (second, s2) = answering(r#"{"last_log_index":4,"member":2,"term":3}"#).await;
     let (withheld, s3) = answering(r#"{"last_log_index":null,"member":3,"withheld":true}"#).await;
     let (both, s4) = answering(r#"{"member":3,"term":7,"withheld":true}"#).await;
+    let (fourth, s5) = answering(r#"{"member":4,"term":2}"#).await;
+    let (fifth, s6) = answering(r#"{"member":5,"term":1}"#).await;
     assert_eq!(term_of(&client, 3, Some(&withheld)).await, Ok(None));
     assert!(
         term_of(&client, 3, Some(&both)).await.is_err(),
@@ -696,7 +699,15 @@ async fn a_member_that_says_it_is_withheld_answers_with_no_term() {
     assert!(standing.withheld && standing.term.is_none(), "{standing:?}");
     tokio::time::timeout(
         Duration::from_secs(5),
-        handle.learn_floor(&client, &[(2, Some(second)), (3, Some(withheld))]),
+        handle.learn_floor(
+            &client,
+            &[
+                (2, Some(second)),
+                (3, Some(withheld)),
+                (4, Some(fourth)),
+                (5, Some(fifth)),
+            ],
+        ),
     )
     .await
     .expect("the floor waited on a member that said it is withheld");
@@ -710,7 +721,194 @@ async fn a_member_that_says_it_is_withheld_answers_with_no_term() {
         "{standing:?}"
     );
     member.stop().await;
-    for server in [s2, s3, s4] {
+    for server in [s2, s3, s4, s5, s6] {
+        server.abort();
+    }
+}
+
+/// Within the tolerance a withheld answer counts as answered; past it the
+/// members that reported a term cannot prove the floor.
+#[test]
+fn the_floor_is_proven_only_within_the_failure_tolerance() {
+    // (members, members that reported a term, proven)
+    for (members, with_terms, want) in [
+        (3, 2, true),
+        (3, 1, false),
+        (5, 3, true),
+        (5, 2, false),
+        (4, 2, true),
+        (4, 1, false),
+        (1, 0, false),
+    ] {
+        assert_eq!(
+            crate::raft::floor::proven(members, with_terms),
+            want,
+            "{with_terms} of {members}"
+        );
+    }
+}
+
+/// An answer that can change while the floor is being learned.
+async fn answering_changing(
+    body: Arc<std::sync::Mutex<&'static str>>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = bind(None).await;
+    let base = format!("http://{}", listener.local_addr().expect("addr"));
+    let route = crate::raft::peer_route("standing");
+    let router = axum::Router::new().route(
+        &route,
+        axum::routing::get(move || {
+            let body = Arc::clone(&body);
+            async move { *body.lock().expect("body") }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (base, server)
+}
+
+/// A withheld member of three, with this one wiped too, is past the
+/// tolerance: the member blocks and serves no leader. Only an operator
+/// waiver that names the withheld member, sent with the cluster-admin
+/// credential after the block is reported, lets it go on (#2365).
+#[tokio::test]
+async fn past_the_failure_tolerance_the_floor_blocks_until_waived() {
+    let client = reqwest::Client::new();
+    let (second, s2) = answering(r#"{"member":2,"term":3}"#).await;
+    let (withheld, s3) = answering(r#"{"last_log_index":null,"member":3,"withheld":true}"#).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut settings = member_settings(1, dir.path());
+    settings.floor_report_after = Duration::from_millis(300);
+    let member = Served::start(settings, None).await;
+    let handle = member.handle.clone();
+    handle.may_vote.store(false, Ordering::SeqCst);
+    let _ = handle.configured.set(BTreeSet::from([1, 2, 3]));
+    let waive_url = format!(
+        "http://{}{}",
+        member.addr,
+        crate::raft::peer_route("waive-lost")
+    );
+    let admin = handle
+        .security
+        .client(Duration::from_secs(5))
+        .expect("client");
+    let waive = |members: &'static str| {
+        let body = format!(r#"{{"members":{members},"reason":"volume destroyed"}}"#);
+        admin
+            .post(&waive_url)
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+    };
+
+    // Too early: nothing is reported yet, so no waiver is taken.
+    let early = waive("[3]").await.expect("send");
+    assert_eq!(early.status(), reqwest::StatusCode::CONFLICT);
+
+    let learning = tokio::spawn({
+        let handle = handle.clone();
+        let client = client.clone();
+        async move {
+            handle
+                .learn_floor(&client, &[(2, Some(second)), (3, Some(withheld))])
+                .await;
+        }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !learning.is_finished(),
+        "went on past the failure tolerance"
+    );
+    assert!(!handle.serves_leader(3), "served a leader while blocked");
+    let ready = handle.readiness().expect_err("ready while blocked");
+    assert!(ready.contains("failure tolerance"), "{ready}");
+
+    let anonymous = client
+        .post(&waive_url)
+        .header("content-type", "application/json")
+        .body(r#"{"members":[3],"reason":"volume destroyed"}"#)
+        .send()
+        .await
+        .expect("send");
+    assert!(
+        matches!(anonymous.status().as_u16(), 401 | 403),
+        "{}",
+        anonymous.status()
+    );
+    for unnamed in ["[]", "[2]", "[1,3]", "[3,9]"] {
+        let refused = waive(unnamed).await.expect("send");
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT, "{unnamed}");
+    }
+    let no_reason = admin
+        .post(&waive_url)
+        .header("content-type", "application/json")
+        .body(r#"{"members":[3],"reason":" "}"#)
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(no_reason.status(), reqwest::StatusCode::CONFLICT);
+    assert!(!learning.is_finished(), "a refused waiver unblocked it");
+
+    let waived = waive("[3]").await.expect("send");
+    assert_eq!(waived.status(), reqwest::StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(5), learning)
+        .await
+        .expect("still blocked after the waiver")
+        .expect("join");
+    assert!(!handle.serves_leader(2), "served a leader below the floor");
+    assert!(handle.serves_leader(3));
+    assert!(handle.floor_gate.reported().is_none(), "block left behind");
+    member.stop().await;
+    for server in [s2, s3] {
+        server.abort();
+    }
+}
+
+/// The catch-up case: the withheld member beside this one is a member
+/// still catching up, not a lost one. It serves the current leader, so
+/// its catch-up finishes and it reports a term, which lifts the block with
+/// no waiver (#2365).
+#[tokio::test]
+async fn the_block_lifts_once_a_withheld_member_reports_a_term() {
+    let client = reqwest::Client::new();
+    let (second, s2) = answering(r#"{"member":2,"term":3}"#).await;
+    let third_says = Arc::new(std::sync::Mutex::new(
+        r#"{"last_log_index":7,"member":3,"withheld":true}"#,
+    ));
+    let (third, s3) = answering_changing(Arc::clone(&third_says)).await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut settings = member_settings(1, dir.path());
+    settings.floor_report_after = Duration::from_millis(100);
+    let member = Served::start(settings, None).await;
+    let handle = member.handle.clone();
+    handle.may_vote.store(false, Ordering::SeqCst);
+    let learning = tokio::spawn({
+        let handle = handle.clone();
+        let client = client.clone();
+        async move {
+            handle
+                .learn_floor(&client, &[(2, Some(second)), (3, Some(third))])
+                .await;
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        !learning.is_finished(),
+        "went on past the failure tolerance"
+    );
+    assert!(handle.floor_gate.reported().is_some(), "block not reported");
+
+    *third_says.lock().expect("body") = r#"{"last_log_index":9,"member":3,"term":4}"#;
+    tokio::time::timeout(Duration::from_secs(5), learning)
+        .await
+        .expect("still blocked once every member reports a term")
+        .expect("join");
+    assert!(!handle.serves_leader(3), "served a leader below the floor");
+    assert!(handle.serves_leader(4));
+    assert!(handle.floor_gate.reported().is_none(), "block left behind");
+    member.stop().await;
+    for server in [s2, s3] {
         server.abort();
     }
 }

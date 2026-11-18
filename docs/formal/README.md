@@ -761,7 +761,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementSameIdFiveFloor.cfg` | `SameIdFive` with the floor the code has | pass: the candidate gives its term, so the member never follows the older leader |
 | `FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg` | `SameIdFiveFloor` with a write and two lost volumes; each wiped member is told the other is withheld | pass `OneLeaderPerTerm` and `AckedSurvive`: the rest of the quorum holds every term the pair promised |
 | `FelixRaftPlacementFormFiveFloor.cfg` | five members on a first start with the floor, a write and a lost volume; late members are still withheld and empty | pass `OneLeaderPerTerm` and `AckedSurvive`: withheld members skip each other's answer and take the floor from the ones that vote |
-| `FelixRaftPlacementTwoWipesFloor.cfg` | three members with the floor and two lost volumes, past what three survive | pass `AckedHeldSurvive`; `OneLeaderPerTerm` is not listed, since the third alone may not hold the term the pair promised |
+| `FelixRaftPlacementTwoWipesFloor.cfg` | three members with the floor and two lost volumes, past what three survive, with an operator waiver | pass `AckedHeldSurvive`; `OneLeaderPerTerm` and `AckedSurvive` are not listed, since under the waiver the third alone may not hold the term the pair promised |
+| `FelixRaftPlacementTwoWipesFloorBlock.cfg` | the same group with no waiver: each wiped member blocks past the tolerance | pass `OneLeaderPerTerm`, `AckedSurvive`, `AckedHeldSurvive` |
 | `FelixRaftPlacementFormWaiverFloor.cfg` | `FormWaiver` with the floor: the waived slot never starts | pass: its silence is not an answer, so a wiped member never learns a floor |
 | `FelixRaftPlacementSkipJoint.cfg` | `change_membership` writes the target in one entry | violate `OneLeaderPerTerm` |
 | `FelixRaftPlacementNoWithhold.cfg` | a wiped member that keeps its id votes at once | violate `LeaderCompleteness` |

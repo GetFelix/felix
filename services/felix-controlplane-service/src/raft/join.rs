@@ -44,6 +44,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use super::floor::{Verdict, Waiver};
 use super::{InitialClusterState, NodeId, RaftHandle, waiver};
 
 /// What a member reports to one deciding how to enter the group.
@@ -620,37 +621,74 @@ impl RaftHandle {
     /// members stranded on each other. Silence is not an answer: a member
     /// that is down may be the only one that knows a term this member
     /// promised.
+    ///
+    /// Withheld answers prove the floor only within the group's failure
+    /// tolerance ([`super::floor`]). Past it the member blocks until enough
+    /// members report a term, a withheld member finishing its catch-up
+    /// included, or an operator waives the members it waits on.
     async fn learn_floor(&self, client: &reqwest::Client, others: &[(NodeId, Option<String>)]) {
         let mut last_waiting_log: Option<tokio::time::Instant> = None;
         loop {
             let mut floor = 0;
+            let mut with_terms = 0;
             let mut waiting = Vec::new();
-            let mut withheld = Vec::new();
+            let mut withheld = BTreeSet::new();
             for (id, base) in others {
                 match term_of(client, *id, base.as_deref()).await {
-                    Ok(Some(term)) => floor = floor.max(term),
-                    Ok(None) => withheld.push(*id),
+                    Ok(Some(term)) => {
+                        floor = floor.max(term);
+                        with_terms += 1;
+                    }
+                    Ok(None) => {
+                        withheld.insert(*id);
+                    }
                     Err(why) => waiting.push(format!("member {id}: {why}")),
                 }
             }
+            let due = last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL);
             if waiting.is_empty() {
-                self.floor.store(floor, Ordering::SeqCst);
-                // A majority that lost its volumes can no longer prove the
-                // terms it promised, and the group goes on without them.
-                if withheld.len() + 1 > others.len().div_ceil(2) {
-                    tracing::warn!(
-                        floor,
+                let members = others.len() + 1;
+                match self
+                    .floor_gate
+                    .judge(members, &withheld, with_terms, self.floor_report_after)
+                {
+                    Verdict::Proven => {
+                        self.floor.store(floor, Ordering::SeqCst);
+                        tracing::info!(floor, ?withheld, "the raft members proved the floor");
+                        return;
+                    }
+                    Verdict::Waived(waiver) => {
+                        self.floor.store(floor, Ordering::SeqCst);
+                        tracing::error!(
+                            floor,
+                            lost = ?waiver.members,
+                            reason = waiver.reason,
+                            "serving raft leaders past the failure tolerance under an operator \
+                             waiver: acknowledged writes held only by the lost members may be lost"
+                        );
+                        return;
+                    }
+                    Verdict::Blocked { report: true } => tracing::error!(
                         ?withheld,
-                        "this member and the withheld members are a majority of the raft \
-                         group: if their volumes were lost, acknowledged writes may be lost \
-                         with them; check the members and restore from an export if needed"
-                    );
-                } else {
-                    tracing::info!(floor, ?withheld, "every raft member reported its term");
+                        with_terms,
+                        members,
+                        "this member and the withheld members lost their raft state, and too few \
+                         members report a term to prove which leaders are safe to serve: blocked. \
+                         It resolves when a withheld member finishes catching up; if they are \
+                         lost for good, waive them with the waive-lost route"
+                    ),
+                    Verdict::Blocked { report: false } if due => {
+                        tracing::warn!(
+                            ?withheld,
+                            with_terms,
+                            members,
+                            "too few raft members report a term to prove the floor; waiting"
+                        );
+                        last_waiting_log = Some(tokio::time::Instant::now());
+                    }
+                    Verdict::Blocked { .. } => {}
                 }
-                return;
-            }
-            if last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL) {
+            } else if due {
                 tracing::warn!(
                     ?waiting,
                     "this member lost its raft state and answers no leader until every other \
@@ -661,6 +699,30 @@ impl RaftHandle {
             }
             tokio::time::sleep(RETRY_INTERVAL).await;
         }
+    }
+
+    /// Accept `waiver` for the floor block, if this member is blocked and it
+    /// names every member the block waits on. The members must be configured
+    /// peers other than this one.
+    pub(super) fn waive_lost(&self, waiver: Waiver) -> Result<(), String> {
+        if waiver.members.is_empty() {
+            return Err("name at least one lost member".to_string());
+        }
+        let configured = self.configured.get().cloned().unwrap_or_default();
+        if let Some(bad) = waiver
+            .members
+            .iter()
+            .find(|id| **id == self.id || !configured.contains(id))
+        {
+            return Err(format!("member {bad} is not another configured member"));
+        }
+        self.floor_gate.waive(waiver.clone())?;
+        tracing::warn!(
+            lost = ?waiver.members,
+            reason = waiver.reason,
+            "operator waived the raft floor block"
+        );
+        Ok(())
     }
 
     async fn catch_up(&self, client: &reqwest::Client, others: &[String]) {
