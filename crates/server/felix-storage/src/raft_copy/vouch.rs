@@ -51,7 +51,7 @@ pub(crate) struct GroupRecord<B> {
 
 /// One broker's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BrokerReport<B> {
+pub struct BrokerReport<B> {
     /// Whether it leads the current epoch.
     pub(crate) leads: bool,
     /// The voters its newest membership names.

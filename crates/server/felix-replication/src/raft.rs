@@ -41,6 +41,7 @@ mod peer;
 mod propose;
 mod reach;
 mod read_rounds;
+mod reform;
 mod root;
 mod runtime;
 mod stream_snapshot;
@@ -64,6 +65,7 @@ pub use membership::{Target, TargetVersion};
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, AnswerAt, Batch, Record, Sequenced};
+pub use reform::reform_report;
 pub use root::{RootOpened, RootReport, open_root};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,

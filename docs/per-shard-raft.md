@@ -1003,7 +1003,20 @@ entry of the epoch in every copy read (uncommitted ones included), and every
 target the control plane ordered in the epoch, which it records before it
 asks the leader. If any of these is not known, the group is marked. The set
 of placed brokers is never used: learners and brokers not yet added inflate
-it. With one of three seeded voters dead, a read follower that holds a
+it.
+
+A broker builds its answer from disk without opening the copy
+(`felix_replication::raft::reform_report`). It reads the membership
+entries of the record's epoch, from the epoch's first index up, in the
+current copy and every kept one. A purge drops entries once a snapshot
+covers them, and the snapshot then holds the newest membership, so each
+copy's snapshot is read too when its membership entry is in the epoch.
+Earlier memberships a purge dropped come back through the targets the
+control plane ordered. A copy at another epoch adds no voter set. Below
+the first index is the base, whose voters are the seed. A membership or
+snapshot that does not decode fails the answer.
+
+With one of three seeded voters dead, a read follower that holds a
 committed entry it has not yet seen committed keeps it in the base; with two
 of three dead, or a dead single seed voter, or a joint target whose new half
 is mostly dead, the group is marked and the plan names the voter set.

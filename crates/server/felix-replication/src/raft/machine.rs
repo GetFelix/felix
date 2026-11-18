@@ -323,6 +323,21 @@ impl StoredMeta {
     }
 }
 
+/// The voter sets of the membership a stored snapshot's metadata holds,
+/// with the index of its entry, for a re-form survey. `None` when the
+/// snapshot names no membership entry.
+pub(crate) fn snapshot_membership(
+    meta: &[u8],
+) -> io::Result<Option<(u64, Vec<std::collections::BTreeSet<super::types::MemberId>>)>> {
+    let meta: StoredMeta = serde_json::from_slice(meta)
+        .map_err(|err| invalid(format!("a snapshot's metadata does not parse: {err}")))?;
+    let Some((_, index)) = meta.membership_at else {
+        return Ok(None);
+    };
+    let membership = meta.membership.membership()?;
+    Ok(Some((index, membership.get_joint_config().clone())))
+}
+
 async fn store(
     snapshots: &SnapshotStore,
     meta: &SnapshotMetaOf<ShardTypes>,
