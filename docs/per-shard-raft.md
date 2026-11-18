@@ -429,13 +429,15 @@ kernel may have dropped pages, which then read as one. Two cases:
   as above. Opening a copy root registers its root for this
   (`run_state::watch_poison`), so it does not depend on the caller. That
   record is written to
-  the same disk without a sync. If both writes are lost and the machine
-  lost power, the start rotates if the run was relaxed. A copy that never
-  vouched keeps its id, and loses nothing a peer counted: it was counted
-  only for synced records, and the failed flush acknowledged none. If both
-  are lost and only the process restarted, nothing on disk says a flush
-  failed and the copy keeps its id
-  ([#2558](https://github.com/GetFelix/felix/issues/2558)).
+  the same disk without a sync. If the new record cannot be written, as
+  on a full disk, the record there is cut to nothing in place, which needs
+  no free block and also rotates on the next start. If both writes are lost
+  and the machine lost power, the start rotates if the run was relaxed. A
+  copy that never vouched keeps its id, and loses nothing a peer counted: it
+  was counted only for synced records, and the failed flush acknowledged
+  none. Only if the marker, the new record and the cut all fail and the
+  process alone restarts does nothing on disk say a flush failed, and the
+  copy keeps its id. The broker logs an error when that happens.
 - **The copy is closed and opened again in the same process.** The
   process does not re-read the run record, so the storage crate remembers
   every directory whose log was poisoned in this process, and opening one

@@ -841,6 +841,11 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// Not synced. Only a crash of the process has to find it, and the page cache
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
 /// also fail on the very device that just failed a sync.
+///
+/// If the new record cannot be written, the record there is cut to nothing
+/// in place, which reads as a relaxed crash in an unknown boot and rotates
+/// too. That needs no new file and no free block, so it still works on a
+/// full disk.
 pub fn forget_boot(root: &Path) -> Result<()> {
     let _rewrite = REWRITE.lock();
     let bytes = match crate::fs::read(path_in(root)) {
@@ -860,9 +865,33 @@ pub fn forget_boot(root: &Path) -> Result<()> {
             id,
             flags: 0,
             boot: None,
-        }) => write(root, &encode(RUNNING, RELAXED, id), false),
+        }) => write(root, &encode(RUNNING, RELAXED, id), false).or_else(|err| {
+            if cut_record(root).is_err() {
+                return Err(err);
+            }
+            tracing::warn!(
+                root = %root.display(),
+                error = %err,
+                "could not rewrite the run state; cut it to nothing, so the next start \
+                 takes a new storage id"
+            );
+            Ok(())
+        }),
         _ => Ok(()),
     }
+}
+
+/// Empty the run record in place: [`forget_boot`]'s way out when writing a
+/// new one fails.
+fn cut_record(root: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::CUT_FAILS.with(std::cell::Cell::get) {
+        return Err(std::io::Error::other("injected cut failure"));
+    }
+    crate::fs::OpenOptions::new()
+        .write(true)
+        .open(path_in(root))?
+        .set_len(0)
 }
 
 /// Call [`forget_boot`] for `root` as soon as any log in this process is
