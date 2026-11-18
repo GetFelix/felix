@@ -782,7 +782,7 @@ jobs:
           version: v3.16.3
 
       - name: PyYAML
-        run: python3 -m pip install --user --require-hashes --only-binary :all: -r scripts/ci/requirements/chart-check.txt
+        run: 'python3 -m pip install --user --require-hashes --only-binary :all: -r scripts/ci/requirements/chart-check.txt'
 
       - name: Lint, render, and check
         run: python3 scripts/check_chart.py
