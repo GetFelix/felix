@@ -63,9 +63,14 @@ fn state(cluster: &Cluster, broker: &str) -> Bytes {
 
 /// Wait until every member holds the state the leader holds.
 async fn agreed(cluster: &Cluster) -> Bytes {
+    agreed_among(cluster, &BROKERS).await
+}
+
+/// Wait until `brokers` all hold the same state.
+async fn agreed_among(cluster: &Cluster, brokers: &[&str]) -> Bytes {
     eventually(|| {
-        let first = state(cluster, BROKERS[0]);
-        BROKERS
+        let first = state(cluster, brokers[0]);
+        brokers
             .iter()
             .all(|broker| state(cluster, broker) == first)
             .then_some(first)
@@ -1592,4 +1597,58 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         1,
         "the log is synced before the snapshot"
     );
+}
+
+/// MembersAgree with skewed clocks: each member's clock is a second apart
+/// from the leader's, far more than a value lives, and leadership moves to
+/// a member with a different clock. After every write the members still
+/// hold the same state, because apply, the snapshot and expiry go by the
+/// entries' stamps. A member that expired values by its own clock would
+/// lose them before the leader does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_with_skewed_clocks_agree_after_every_write() {
+    use super::super::cache::CacheState;
+    use std::sync::atomic::Ordering::Relaxed;
+    const TTL: u64 = 300;
+    let mut cluster = Cluster::new(true);
+    let clocks = clocks(&cluster, 10_000);
+    // The leader's clock is `at`; one follower's runs ahead, one behind.
+    let skew = |leader: &str, at: u64| {
+        let followers = BROKERS.iter().filter(|broker| **broker != leader);
+        for (broker, clock) in followers.zip([at + 1_000, at - 1_000]) {
+            clocks[broker].store(clock, Relaxed);
+        }
+        clocks[leader].store(at, Relaxed);
+    };
+    cluster.form(N).await;
+    let mut at = 10_000;
+    let mut sequence = 0;
+    let mut live = BROKERS.to_vec();
+    let mut cut = None;
+    for step in 0..12 {
+        if step == 6 {
+            // Move leadership to a member whose clock is not the old leader's.
+            let old = cluster.elected(N).await.broker;
+            cut_off(&cluster, &old);
+            live.retain(|broker| **broker != *old);
+            cut = Some(old);
+        }
+        let (engine, leader) = leading(&cluster).await;
+        skew(&leader.member.broker, at);
+        sequence += 1;
+        let put = put(&format!("k{step}"), b"v", sequence);
+        let answer = engine.cache_write(&shard(N), put, TTL, PATIENCE).await;
+        assert!(matches!(answer.expect("put"), Answer::Written { .. }));
+        sequence += 1;
+        let add = add("n", 1, sequence);
+        let answer = engine.cache_write(&shard(N), add, 0, PATIENCE).await;
+        assert!(matches!(answer.expect("add"), Answer::Sum(_)));
+        agreed_among(&cluster, &live).await;
+        at += 100;
+    }
+    joined(&cluster, &cut.expect("cut"));
+    let state = agreed(&cluster).await;
+    let restored = CacheState::restore(&state, true).expect("restore");
+    assert_eq!(restored.sum("n"), Some(12));
+    cluster.stop().await;
 }
