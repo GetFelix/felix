@@ -511,8 +511,8 @@ With `reclaim: true`, the broker reserves for this connection every claim the
 member holds from an older connection: the claims a process that restarted left
 behind. They go to this connection ahead of everything else, records owed to
 the group included, lowest offset first, over as many polls as `max_records`
-takes; other members do not get them meanwhile. Each counts as another attempt,
-so one at the attempt bound is dead-lettered instead. A reserved claim that
+takes; other members do not get them meanwhile. Each goes back as the same
+delivery, at the `attempts` it had, so a restart never dead-letters one. A reserved claim that
 lapses before it is taken back is owed to the whole group, like any lapsed
 claim. The reservation is made once per connection: later polls on it that set
 `reclaim` again are ordinary polls, as is any `reclaim` from a connection older
@@ -521,8 +521,13 @@ processes under one name, cannot keep taking claims still being worked on. Two
 live processes under one name are still a mistake: the newer one takes what
 the older held when it first reclaimed.
 
-Claims and members live in the shard leader's memory, so after a failover there
-is nothing to reclaim: the group resumes from its durable position anyway.
+On a Raft stream shard a poll's claims (offsets, attempts, the member, the
+visibility) are a group entry in the shard's log, applied before the poll is
+answered, so the next leader holds them. It records them as held on a
+connection older than any of its own, so a member's first `reclaim` there takes
+them back. On the default engine claims and members live in the shard leader's
+memory, so after a failover there is nothing to reclaim: the group resumes from
+its durable position.
 
 Both fields are optional and left out when unused, so an older broker reads the
 request it always did. Only a broker that advertised `FEATURE_GROUP_CONSUMER`
@@ -722,14 +727,17 @@ granted. `extend_ms` of `0` is refused with `invalid_request`.
 `attempts` is the count the record was delivered with, and names that one
 delivery. The extension is refused with `stale_claim` (`fatal`: retrying cannot
 bring the claim back) once that claim no longer stands: it lapsed, the record
-was handed out again, which counted another attempt, or a seek, failover or
-eviction rebuilt the group's in-flight state. Without the check, a consumer
+was handed out again, which counted another attempt, or a seek, eviction, or a
+failover on the default engine rebuilt the group's in-flight state. Without the check, a consumer
 that lost a record could extend the claim of whoever holds it now, and keep it
 from the group should that consumer die. A record nacked with a delay is not a
 claim and cannot be extended either.
 
-An extension is the leader's memory, like every claim. A failover redelivers the
-record from the group's durable position, sooner than the extension said. A
+On a Raft stream shard an extension is a group entry like a poll's claims, and
+the next leader holds the record for the whole extension again from when it
+takes over. On the default engine an extension is the leader's memory, like
+every claim, and a failover redelivers the record from the group's durable
+position, sooner than the extension said. A
 group's in-flight state is not evicted while a claim stands, however long.
 
 ### GroupDeadLetter

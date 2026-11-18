@@ -661,8 +661,8 @@ fn a_member_that_reclaims_gets_its_standing_claims_back_first() {
     );
     assert_eq!(
         group.attempts(0),
-        2,
-        "taking a record back is another attempt"
+        1,
+        "taking a record back is the same delivery, not another attempt"
     );
 
     for offset in 0..10 {
@@ -738,7 +738,7 @@ fn two_live_members_under_one_name_reclaim_once() {
     // The newer one's next poll still says `reclaim`: it is not a reclaim.
     assert_eq!(group.claim_as(10, 1, now, VIS, Some(&newer)).offsets, [3]);
     assert_eq!(group.attempts(2), 1, "the older one's new claim is its own");
-    assert_eq!(group.attempts(0), 2);
+    assert_eq!(group.attempts(0), 1);
 }
 
 /// An older connection's reclaim takes nothing from a newer one.
@@ -810,7 +810,7 @@ fn reclaimed_records_beyond_max_records_wait_for_the_member() {
         group.claim_as(12, 3, now, VIS, Some(&next)).offsets,
         [2, 3, 10]
     );
-    assert_eq!(group.attempts(3), 2);
+    assert_eq!(group.attempts(3), 1);
 }
 
 /// **A reserved claim that lapses during the takeover** is owed to the whole
@@ -870,3 +870,98 @@ fn a_run_of_skipped_offsets_is_counted_and_dropped_once_passed() {
 }
 
 mod claim_control;
+
+/// **A member that restarts while holding work spends no attempt taking it
+/// back**, however often it restarts: a record at its last attempt is handed
+/// back rather than dead-lettered, since nobody failed it.
+#[test]
+fn restarting_and_reclaiming_spends_no_attempt() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, 2);
+    assert_eq!(
+        group
+            .claim_as(10, 1, now, VIS, Some(&member("tracker", 1, false)))
+            .offsets,
+        [0]
+    );
+    // It lapses once and goes back out to the same member: two attempts.
+    let later = now + VIS + Duration::from_millis(1);
+    assert_eq!(
+        group
+            .claim_as(10, 1, later, VIS, Some(&member("tracker", 2, false)))
+            .offsets,
+        [0]
+    );
+    assert_eq!(group.attempts(0), 2);
+    for connection in 3..10 {
+        let back = group.claim_as(
+            10,
+            1,
+            later,
+            VIS,
+            Some(&member("tracker", connection, true)),
+        );
+        assert_eq!(back.offsets, [0], "restart {connection}");
+        assert!(back.dead_lettered.is_empty(), "restart {connection}");
+        assert_eq!(group.attempts(0), 2, "restart {connection}");
+    }
+}
+
+/// A reclaimed delivery that never reached the consumer gives back nothing,
+/// since taking it back counted nothing.
+#[test]
+fn an_unclaimed_reclaim_keeps_its_attempt_count() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    group.claim_as(10, 1, now, VIS, Some(&member("w", 1, false)));
+    assert_eq!(
+        group
+            .claim_as(10, 1, now, VIS, Some(&member("w", 2, true)))
+            .offsets,
+        [0]
+    );
+    group.unclaim(0);
+    assert_eq!(group.attempts(0), 1);
+    assert_eq!(group.claim(10, 1, now, VIS).offsets, [0]);
+    assert_eq!(group.attempts(0), 2, "the next delivery is the second");
+}
+
+/// **A claim rebuilt from a Raft shard's table** stands at its attempt
+/// count: it is not handed to anyone else, its holder can extend it, and the
+/// member's next reclaim takes it back at no cost.
+#[test]
+fn a_restored_claim_stands_for_its_holder() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    group.restore_claim(1, 3, Some(("svc", "w")), now + VIS);
+    assert_eq!(
+        group.claim(10, 2, now, VIS).offsets,
+        [0, 2],
+        "a standing claim is nobody else's"
+    );
+    assert!(group.extend(1, 3, now, now + VIS * 2));
+    assert!(!group.extend(1, 2, now, now + VIS), "only that delivery's");
+    assert_eq!(group.holder(1), Some(("svc", "w")));
+    let back = group.claim_as(
+        10,
+        5,
+        now,
+        VIS,
+        Some(&GroupConsumer::new("svc", "w", 1, true)),
+    );
+    assert_eq!(back.offsets[0], 1);
+    assert_eq!(group.attempts(1), 3);
+}
+
+/// A restored claim below the cursor is already finished and is ignored,
+/// unless it is on a redriven record, which is owed below the cursor.
+#[test]
+fn a_restored_claim_below_the_cursor_counts_only_on_a_redrive() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(5, MANY);
+    group.restore_redrive(2);
+    group.restore_claim(2, 1, None, now + VIS);
+    group.restore_claim(3, 1, None, now + VIS);
+    assert_eq!(group.in_flight(), 1);
+    assert_eq!(group.claim(6, 5, now, VIS).offsets, [5]);
+}

@@ -5,11 +5,11 @@
 //! consumer and not yet settled, offsets whose consumer stopped answering, and
 //! the bookkeeping that turns acknowledgements into cursor movement.
 //!
-//! **Deliberately in memory.** A leader that dies loses what was in flight, and
-//! the group resumes from its durable cursor — so those records are delivered
-//! again. That is at-least-once, which is the guarantee a queue offers anyway;
-//! persisting the in-flight set would buy a smaller redelivery window at the
-//! cost of a write per delivery, and would still not make it exactly-once.
+//! **In memory, on the hybrid.** A hybrid leader that dies loses what was in
+//! flight, and the group resumes from its durable cursor, so those records are
+//! delivered again. On a Raft shard every hand-out and extension is also a
+//! group entry, and a new leader rebuilds the claims with
+//! [`GroupTracker::restore_claim`].
 //!
 //! Pure logic with the clock passed in, so every rule here is testable without
 //! waiting for one.
@@ -52,6 +52,9 @@ pub(crate) struct GroupTracker {
     /// Dropped as soon as an offset settles, so this holds only what is
     /// currently in play rather than growing with the log.
     attempts: BTreeMap<u64, u32>,
+    /// Offsets a member took back by reclaiming them, handed out without
+    /// counting an attempt. Cleared with the claim.
+    reclaimed: BTreeSet<u64>,
     /// Offsets an operator redrove whose redrive is recorded on disk and not
     /// yet finished. Settling one has to clear that record too, or every
     /// later leader would redeliver it again.
@@ -93,6 +96,7 @@ impl GroupTracker {
             acked_ahead: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             attempts: BTreeMap::new(),
+            reclaimed: BTreeSet::new(),
             redriven: BTreeSet::new(),
             holders: BTreeMap::new(),
             members: HashMap::default(),
@@ -127,6 +131,12 @@ impl GroupTracker {
     /// sleeps no longer than this, since that record is owed from then on.
     pub(crate) fn next_lapse(&self) -> Option<Instant> {
         self.lapses.first().map(|(deadline, _)| *deadline)
+    }
+
+    /// When the last standing claim lapses, if any stands. Nothing is held
+    /// past this.
+    pub(crate) fn last_lapse(&self) -> Option<Instant> {
+        self.lapses.last().map(|(deadline, _)| *deadline)
     }
 
     /// Whether `offset` has been handed out by this tracker or a predecessor
@@ -457,13 +467,55 @@ impl GroupTracker {
     /// Take back a claim that never reached the consumer. Its attempt is not
     /// counted, since nobody tried the record.
     pub(crate) fn unclaim(&mut self, offset: u64) {
+        // A reclaim counted nothing, so there is nothing to give back.
+        let counted = !self.reclaimed.contains(&offset);
         if !self.take_in_flight(offset) {
             return;
         }
-        if let Some(attempts) = self.attempts.get_mut(&offset) {
+        if counted && let Some(attempts) = self.attempts.get_mut(&offset) {
             *attempts = attempts.saturating_sub(1);
         }
         self.redeliver.insert(offset);
+    }
+
+    /// Hold `offset` as a claim a predecessor made, at its attempt count,
+    /// until `deadline`. For a tracker rebuilt from a Raft shard's table, so
+    /// a holder keeps its delivery across a change of leader.
+    ///
+    /// The claim is recorded on connection 0, older than any: connection ids
+    /// are local to a broker, and every connection here is newer than the one
+    /// that claimed, so the member's next reclaim takes it back.
+    pub(crate) fn restore_claim(
+        &mut self,
+        offset: u64,
+        attempts: u32,
+        holder: Option<(&str, &str)>,
+        deadline: Instant,
+    ) {
+        if offset < self.committed && !self.redriven.contains(&offset) {
+            return;
+        }
+        self.acked_ahead.remove(&offset);
+        self.redeliver.remove(&offset);
+        self.take_in_flight(offset);
+        self.hold(offset, deadline);
+        self.attempts.insert(offset, attempts.max(1));
+        if let Some((principal, name)) = holder {
+            let member = GroupConsumer::new(principal, name, 0, false);
+            let holder = self.register(&member);
+            self.members
+                .get_mut(&holder.member)
+                .expect("registered")
+                .held += 1;
+            self.holders.insert(offset, holder);
+        }
+    }
+
+    /// Who holds `offset`, as `(principal, name)`, if a named member does.
+    pub(crate) fn holder(&self, offset: u64) -> Option<(&str, &str)> {
+        self.holders
+            .get(&offset)
+            .map(|held| (&*held.member.principal, &*held.member.name))
     }
 
     /// Move claims that have lapsed back to owed.
@@ -477,6 +529,7 @@ impl GroupTracker {
             self.lapses.pop_first();
             self.in_flight.remove(&offset);
             self.delayed.remove(&offset);
+            self.reclaimed.remove(&offset);
             self.release_holder(offset);
             self.redeliver.insert(offset);
         }
@@ -505,6 +558,19 @@ impl GroupTracker {
             self.holders.insert(offset, holder.clone());
         }
         *self.attempts.entry(offset).or_insert(0) += 1;
+    }
+
+    /// [`Self::hand_out`] to the member already holding `offset`, keeping its
+    /// attempt count.
+    fn hand_out_again(&mut self, offset: u64, deadline: Instant, holder: &Holder) {
+        self.members
+            .entry(Arc::clone(&holder.member))
+            .or_default()
+            .held += 1;
+        self.take_in_flight(offset);
+        self.hold(offset, deadline);
+        self.holders.insert(offset, holder.clone());
+        self.reclaimed.insert(offset);
     }
 
     /// Keep `offset` in flight until `deadline`. Any earlier entry in
@@ -569,15 +635,10 @@ impl GroupTracker {
             if !still_held {
                 continue;
             }
-            let attempts = self.attempts.get(&offset).copied().unwrap_or(0);
-            if attempts >= self.max_attempts {
-                // As for an owed record: the caller settles it once the dead
-                // letter is durable.
-                self.take_in_flight(offset);
-                claim.dead_lettered.push(DeadLettered { offset, attempts });
-                continue;
-            }
-            self.hand_out(offset, deadline, Some(holder));
+            // The same delivery going back to the member that holds it, not a
+            // new attempt: a restart would otherwise spend one of every
+            // record it held, and dead-letter work nobody failed.
+            self.hand_out_again(offset, deadline, holder);
             claim.offsets.push(offset);
         }
     }
@@ -601,6 +662,7 @@ impl GroupTracker {
     fn take_in_flight(&mut self, offset: u64) -> bool {
         self.release_holder(offset);
         self.delayed.remove(&offset);
+        self.reclaimed.remove(&offset);
         match self.in_flight.remove(&offset) {
             Some(deadline) => {
                 self.lapses.remove(&(deadline, offset));

@@ -373,9 +373,9 @@ impl Connection {
     ///
     /// Refused with `stale_claim` once the claim has lapsed or the record has
     /// been handed out again, even to this consumer: the record is then the
-    /// group's, and finishing it is no longer this delivery's to do. An
-    /// extension is the leader's memory, so a failover hands the record out
-    /// again sooner.
+    /// group's, and finishing it is no longer this delivery's to do. On a
+    /// Raft shard the extension survives a failover; on the default engine it
+    /// is the leader's memory, so a failover hands the record out again sooner.
     #[allow(clippy::too_many_arguments)]
     pub async fn group_extend(
         &self,

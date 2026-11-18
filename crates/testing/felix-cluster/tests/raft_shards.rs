@@ -812,6 +812,85 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
     assert!(drained.is_empty(), "records left after acks: {drained:?}");
 }
 
+/// **A consumer's claims survive its Raft leader dying.** Claims are group
+/// entries in the shard's log, so the member elected next hands a claimed
+/// record to nobody else, the holder can still extend it, and the holder
+/// reconnecting with `reclaim` takes it back at the same attempt.
+#[tokio::test]
+#[serial]
+async fn a_group_claim_survives_its_raft_leader_dying() {
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(&["raft_consumer_groups"], Duration::from_secs(30))
+        .await
+        .expect("finalize the group feature");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    for payload in [b"one".as_slice(), b"two", b"three"] {
+        publish_acked(&cluster, &leader, payload).await;
+    }
+    // Drain whatever the stream held before ours, so the claims below are on
+    // our records.
+    let mut held = Vec::new();
+    while held.len() < 2 {
+        let records = cluster
+            .group_poll_as_via(&leader, STREAM, 0, "workers", "w", false, 1)
+            .await
+            .expect("poll as a member");
+        assert!(!records.is_empty(), "ran out of records: {held:?}");
+        for record in records {
+            if [b"one".as_slice(), b"two"].contains(&record.payload.as_ref()) {
+                held.push(record);
+            } else {
+                cluster
+                    .group_ack_via(&leader, STREAM, 0, "workers", record.offset)
+                    .await
+                    .expect("ack");
+            }
+        }
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+
+    cluster
+        .group_extend_via(
+            &elected,
+            STREAM,
+            0,
+            "workers",
+            &held[0],
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("the holder extends its claim on the new leader");
+    let others = cluster
+        .group_poll_as_via(&elected, STREAM, 0, "workers", "other", false, 10)
+        .await
+        .expect("another member polls the new leader");
+    for record in &others {
+        assert!(
+            held.iter().all(|h| h.offset != record.offset),
+            "{elected} handed a claimed record to another member: {record:?}"
+        );
+    }
+    let back = cluster
+        .group_poll_as_via(&elected, STREAM, 0, "workers", "w", true, 10)
+        .await
+        .expect("the holder reclaims on the new leader");
+    for h in &held {
+        let again = back
+            .iter()
+            .find(|record| record.offset == h.offset)
+            .unwrap_or_else(|| panic!("{} was not reclaimed: {back:?}", h.offset));
+        assert_eq!(again.attempts, h.attempts, "reclaiming spent an attempt");
+    }
+}
+
 /// **An idempotent producer keeps its sequence when its Raft leader dies.**
 /// The producer's id and sequences are in the entries, so the member
 /// elected next answers a re-send of the last batch from its own log
