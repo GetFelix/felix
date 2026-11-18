@@ -111,6 +111,8 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {
 
 /// Start the process's stdout writer, and a panic hook that flushes it
 /// before the panic is reported. Call once.
+// Unit tests log through the test writer instead, so libtest captures them.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) fn install() -> LogWriter {
     let writer = STDOUT
         .get_or_init(|| LogWriter::spawn(std::io::stdout()).expect("start the log writer thread"));

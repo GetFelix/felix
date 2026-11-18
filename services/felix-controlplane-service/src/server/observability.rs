@@ -22,6 +22,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 static OBS_INIT: OnceLock<()> = OnceLock::new();
 
+/// Filter used when `RUST_LOG` is unset. Unit tests keep openraft quiet.
+#[cfg(not(test))]
+pub(crate) const DEFAULT_LOG_FILTER: &str = "info";
+#[cfg(test)]
+pub(crate) const DEFAULT_LOG_FILTER: &str = "warn,openraft=error";
+
 pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
     OBS_INIT.get_or_init(|| {
         global::set_text_map_propagator(
@@ -29,7 +35,8 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
         );
 
         let provider = build_tracer_provider(service_name);
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
         // Unit tests in this crate install this subscriber for the whole
         // binary; the test writer lets libtest capture every test's logs.
         #[cfg(test)]

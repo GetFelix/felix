@@ -28,6 +28,13 @@ use tracing_subscriber::util::SubscriberInitExt;
 static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 static OBS_INIT: OnceLock<()> = OnceLock::new();
 
+/// Filter used when `RUST_LOG` is unset. In unit tests openraft's per-tick
+/// info and heartbeat warnings from in-process clusters would bury real output.
+#[cfg(not(test))]
+pub(crate) const DEFAULT_LOG_FILTER: &str = "info";
+#[cfg(test)]
+pub(crate) const DEFAULT_LOG_FILTER: &str = "warn,openraft=error";
+
 /// Initializes observability for the service.
 ///
 /// Sets up the global OpenTelemetry text map propagator (W3C Trace Context),
@@ -47,9 +54,14 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 
         let provider = build_tracer_provider(service_name);
 
-        // Use environment variable for log filtering; default to "info" if unset or invalid.
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+        // Unit tests install this subscriber for the whole binary; the test
+        // writer lets libtest capture each test's lines.
+        #[cfg(test)]
+        let fmt_layer = tracing_subscriber::fmt::layer().with_test_writer();
         // Off the calling thread: see `log_writer`.
+        #[cfg(not(test))]
         let fmt_layer = tracing_subscriber::fmt::layer().with_writer(log_writer::install());
         let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
 
