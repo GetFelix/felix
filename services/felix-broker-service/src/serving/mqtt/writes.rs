@@ -12,10 +12,9 @@
 //! then, including this one: a log that already holds it answers with its
 //! offsets and writes nothing. `docs/mqtt-design.md`, "Publishing".
 //!
-//! A Raft shard takes an idempotent batch of one record only, and a shard
-//! another broker owns may be on Raft too. So on a broker that runs Raft each
-//! record is a batch of its own at its own sequence, as a Kafka producer's
-//! are. On a Raft group led here they are proposed together, in one
+//! A shard another broker owns may be on Raft too, so on a broker that runs
+//! Raft each record is a batch of its own at its own sequence, as a Kafka
+//! producer's are. On a Raft group led here they are proposed together, in one
 //! proposal, and answered once all are committed. A group led elsewhere gets
 //! them in one forward, and its leader does the same.
 

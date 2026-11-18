@@ -4193,8 +4193,8 @@ Two trim cases are not modelled either:
 ### Idempotent batches on a Raft shard
 
 `FelixRaftBatch.tla` models an idempotent batch of several records on a Raft
-stream shard (#2524), which a Raft shard takes. Its configurations cite no
-tests; the code's are in `crates/server/felix-replication/src/raft/tests/idempotent.rs`.
+stream shard (#2524), which a Raft shard takes. The configurations cite no
+tests; the code's tests are in `crates/server/felix-replication/src/raft/tests/idempotent.rs`.
 
 An idempotent batch carries a producer id and a sequence number, and the shard
 must store each of its records once however often the producer sends it. On

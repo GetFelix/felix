@@ -3017,7 +3017,8 @@ written.
 An MQTT connection's messages are written as idempotent batches, as on the
 hybrid, and each is answered at its commit. A broker that runs Raft shards
 gives each message of a connection's batch a producer sequence of its own, the way
-a Kafka producer's records are numbered. When this broker leads the shard,
+a Kafka producer's records are numbered, so a leader change never leaves part
+of a message's batch. When this broker leads the shard,
 it proposes the batch's messages together, as a Kafka producer's records
 are: one proposal under the producer's turn, each message a one-record
 batch at its own sequence. A batch of queued messages costs one commit
