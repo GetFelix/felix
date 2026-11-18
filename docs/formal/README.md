@@ -630,8 +630,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenCommitsReformJointDead.cfg` | a joint change from {a, b, c} to {a, b, d}, two brokers declared dead | `BaseAgrees` (no base entry differs from the committed one): expected to pass (#2661). Not registered: filled a CI runner's disk after 3 h 25 min (443M distinct states, depth 20) |
 | `FelixRaftWrittenCommitsReformJointDeadOneSet.cfg` | the same, with the gate counting the first voter set only | expected to violate `BaseAgrees` (#2661). Not registered: no violation in 458M distinct states before a CI runner's disk filled (4 h 18 min). Not yet shown to violate (possibly vacuous), see #2729; walked nightly (`tla-walk.yml`) |
 | `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: expected to pass (#2661). Not registered: unfinished after 4 h 53 min on a CI runner (175M distinct states, depth 20); runs nightly (`tla-walk.yml`) |
-| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms | `BaseAgrees`: expected to pass (#2661). Not registered: unfinished after 3 h 41 min on a CI runner (223M distinct states, depth 34) |
-| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | expected to violate `BaseAgrees` (#2661). Not registered: no violation in 235M distinct states, depth 35, after 3 h 56 min on a CI runner. Not yet shown to violate (possibly vacuous), see #2729; walked nightly (`tla-walk.yml`) |
+| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms, one crash and no records, no written reports | `BaseAgrees`: pass (#2661, #2729): c leads term 1 alone and crashes with its blank unshared, a and b elect in term 2, commit and die. The dead are a majority, so c vouches only for its saved commit (878k distinct states, depth 32, 49 s on a CI runner) |
+| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | violates `BaseAgrees` (#2661, #2729): c vouches for its term-1 blank over the term-2 commit (337k distinct states, 15 s). The gate only sets the re-form's base, the last step, so up to the re-form both configurations reach the same states; a pass and its twin of this kind report identical counts when neither stops early |
 | `FelixRaftWrittenReformReplaced.cfg` | voters a1, b1, c1 with b2 a learner; b1's disk is replaced with nothing kept, c1 is declared dead, and a1, deposed, appends its term-1 tail to b2 | `BaseAgrees`: pass (#2671): voters are keyed by copy id, so b1's vote is unknown, {b1, c1} is a majority and the group is marked. Not registered, run by dispatch |
 | `FelixRaftWrittenReformReplacedHappens.cfg` | witness: the same scope, a re-form after b2 saved the deposed term 1 while term 2 committed | violates `NoDeposedAppend` (184k distinct states, 3 s) |
 | `FelixRaftWrittenReformReplacedFull.cfg` | `FelixRaftWrittenReformReplaced.cfg` without `ReplacedScope` and with reservations | `BaseAgrees`: pass. Not registered, run by dispatch |
@@ -3039,9 +3039,9 @@ and counting only the first voter set vouches for a stale tail
 (`FelixRaftWrittenCommitsReformJointDeadOneSet.cfg`). With the gate forced
 open, a copy holding a term-1 tail vouches for it over a term-2 commit the dead
 made (`FelixRaftWrittenReformGateOpen.cfg`; `FelixRaftWrittenReformGate.cfg`
-passes). None of these four configurations has finished on a CI runner yet,
-so these are the outcomes they are built to show, not checked results (see
-their rows above).
+passes). The two joint configurations have not finished on a CI runner yet,
+so their outcomes are the ones they are built to show, not checked results
+(see their rows above).
 
 Voter sets hold copy ids, not brokers. A vote is unknown unless the re-form
 read it from the copy that cast it: the copy in place, or the copy a power cut

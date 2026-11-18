@@ -100,12 +100,12 @@ jobs:
             configs: FelixShardShortCopySeatAnyKeys FelixShardShortCopyStaged
           - family: short-copy-staged-votes
             configs: FelixShardShortCopyStagedVotes FelixShardShortCopyStagedVotesSetOnly
-          # Two re-form twins that found no violation in 235M and 458M
-          # distinct states exhaustively (#2729). A walk reaches a violation
-          # fast if one is reachable. Not finding one is reported, not a
-          # failure, until the twins are shown to violate or dropped.
+          # A re-form twin that found no violation in 458M distinct states
+          # exhaustively (#2729). A walk reaches a violation fast if one is
+          # reachable. Not finding one is reported, not a failure, until the
+          # twin is shown to violate or dropped.
           - family: reform-gate-twins
-            configs: FelixRaftWrittenReformGateOpen FelixRaftWrittenCommitsReformJointDeadOneSet
+            configs: FelixRaftWrittenCommitsReformJointDeadOneSet
             report-only: true
     steps:
       - name: Checkout

@@ -1,0 +1,1 @@
+Formal model: the re-form gate configurations are bounded so a CI runner finishes them. `FelixRaftWrittenReformGate` passes and its open-gate twin `FelixRaftWrittenReformGateOpen` now violates `BaseAgrees` as declared; both are registered (#2729).

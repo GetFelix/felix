@@ -575,6 +575,8 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
   "FelixRaftWrittenReformVouchDead pass"
+  "FelixRaftWrittenReformGate pass"
+  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
   "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
   "FelixRaftWrittenReformReplacedHappens violates NoDeposedAppend"
   "FelixRaftBatch pass"
@@ -1061,7 +1063,6 @@ walks=(
   "FelixShardFencedCrashUnprobed pass"
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
   "FelixShardElectUncleanContinuingDoubtedFull pass"
-  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
   "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
 )
 registered=("${expectations[@]}")
@@ -1157,12 +1158,12 @@ fi
 # on a box, queue still growing), FelixRaftWrittenReformReplacedFull and
 # FelixRaftReformReplacedDisk are not registered: they run past a pull
 # request's time; run them as a TLA workflow dispatch.
-# FelixRaftWrittenReform{VouchDeadFive,Gate,GateOpen} and
+# FelixRaftWrittenReformVouchDeadFive and
 # FelixRaftWrittenCommitsReformJoint{Dead,DeadOneSet,CutDead} are not
 # registered: in main run 43961999904 none finished in its CI runner's time
 # (the two Joint{Dead,DeadOneSet} filled the runner's disk past 440M distinct
-# states), and neither twin had violated. VouchDeadFive and JointCutDead run
-# nightly (tla-walk.yml); the two twins are walked there (#2729).
+# states), and the twin had not violated. VouchDeadFive and JointCutDead run
+# nightly (tla-walk.yml); the twin is walked there (#2729).
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly

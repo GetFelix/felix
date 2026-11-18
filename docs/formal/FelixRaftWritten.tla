@@ -637,10 +637,23 @@ OneCandidate ==
             => \A s \in Servers \ {c} : term[s] < term'[c]
 \* DeadAfterCut: a broker is declared dead only after the power cut.
 DeadAfterCut == dead' # dead => used.cuts > 0
+\* NoFloorReport: no floor report, so the vote gate alone decides what is vouched
+\* for. A floor only raises where the new epoch starts and vouches for
+\* committed entries.
+NoFloorReport == cpFloor' = cpFloor
+\* LeaderCrash: the crash stops a leader. A follower's crash drops only
+\* in-memory state it does not use.
+LeaderCrash == used'.crashes > used.crashes => \E s \in Servers : role[s] = "leader" /\ role'[s] # "leader"
+\* OneUnsynced: a follower holds at most one unsynced entry, which is all a
+\* cut needs to take a tail.
+OneUnsynced == \A s \in Servers : role'[s] # "leader" => Len(log'[s]) - synced'[s] <= 1
 GateScope == NoReports
-GateScopeOne == NoReports /\ OneCandidate
-CutDeadScope == OneCandidate
-CutDeadScopeAfter == OneCandidate /\ DeadAfterCut
+JointScope == NoReports /\ OneCandidate /\ NoFloorReport /\ LeaderCrash
+JointScopeTight == JointScope /\ OneUnsynced
+CutDeadScope == OneCandidate /\ DeadAfterCut /\ NoFloorReport
+CutDeadScopeTight == CutDeadScope /\ OneUnsynced
+FiveScope == NoReports /\ OneCandidate /\ NoFloorReport
+FiveScopeTight == FiveScope /\ OneUnsynced
 
 ----------------------------------------------------------------------------
 
