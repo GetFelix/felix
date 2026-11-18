@@ -545,8 +545,8 @@ fn segment_bytes(log: &felix_storage::DiskLog) -> u64 {
 /// `broker-b` is cut off after the first record, the leader publishes far
 /// past the bound, and the timer must shrink the leader's and `broker-c`'s
 /// segment files to about the bound. Back on the network, `broker-b` can
-/// only catch up by installing a purge snapshot, which it does, and then its
-/// own timer frees its disk too.
+/// only catch up by installing a purge snapshot, which it does, and the
+/// install leaves it holding no more than the others.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retention_frees_every_members_disk_and_a_member_cut_off_catches_up() {
     const BOUND: u64 = 2048;
@@ -606,7 +606,10 @@ async fn retention_frees_every_members_disk_and_a_member_cut_off_catches_up() {
         floor > first,
         "broker-b keeps the floor the snapshot carries"
     );
-    until("broker-b frees its disk", || segment_bytes(&behind) <= kept).await;
+    until("broker-b holds about the bound", || {
+        segment_bytes(&behind) <= kept
+    })
+    .await;
     until("broker-b serves its term", || members[1].bound() >= tail).await;
     assert!(
         too_old(&members[1].broker, first).await,

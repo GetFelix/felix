@@ -1906,10 +1906,12 @@ never offloads (`FELIX_DURABLE_OFFLOAD_DIR`), since only a purge may drop its
 segments.
 
 With the purge on, a member's segment files stay near the bound: the bound
-itself, the segment the purge point falls in, and the open segment. A
-member cut off while the others purged installs the leader's purge
-snapshot when it is back, keeps the floor it carries, and its own timer
-then frees its disk the same way.
+itself, the segment the purge point falls in, and the open segment. On a
+leader that holds only once every live member has caught up, since its
+purge waits for their match. A member cut off while the others purged
+installs the leader's purge snapshot when it is back and keeps the floor it
+carries; the install starts its log at the purge point, so it holds no more
+than the others.
 
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
