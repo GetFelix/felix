@@ -583,3 +583,60 @@ async fn a_sole_voter_loses_its_lease_on_a_direct_change_to_two_voters() {
     change.abort();
     cluster.stop().await;
 }
+
+/// **A leader removed as a voter holds no lease** (#2498). openraft lets it
+/// go on leading as a learner, with a quorum of the remaining voters only,
+/// so its acks could come from a voter that restarts and leads a later
+/// term alone. Felix never writes such a membership (`StepError::
+/// WithoutLeader`), so it is written here through openraft directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_removed_as_a_voter_holds_no_lease() {
+    use openraft::ServerState;
+    use openraft::async_runtime::watch::WatchReceiver;
+    let (mut cluster, leader) = pair().await;
+    let me = leader.raft().metrics().borrow_watched().id.clone();
+    let other = set(&["a", "b"])
+        .into_iter()
+        .find(|member| member != &me)
+        .expect("two members");
+    tokio::time::sleep(timers().lease + Duration::from_millis(100)).await;
+    let term = cluster
+        .runtime(&me.broker)
+        .status(&shard(0))
+        .expect("status")
+        .term;
+    assert_eq!(leader.admit_local_ack(term), Ok(()));
+
+    leader
+        .raft()
+        .change_membership(MembershipEdit::voters([other].into(), v(2)), true)
+        .await
+        .expect("change");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (leads, voter) = {
+            let metrics = leader.raft().metrics();
+            let metrics = metrics.borrow_watched();
+            let voters = metrics.membership_config.membership().get_joint_config();
+            (
+                metrics.state == ServerState::Leader,
+                voters.iter().all(|set| set.contains(&me)),
+            )
+        };
+        if !voter {
+            // The scenario holds only while openraft keeps it leading.
+            assert!(leads, "openraft stepped the removed leader down");
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never removed");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        leader.admit_local_ack(term),
+        Err(crate::engine::CommitError::LeadershipLost {
+            what: "write",
+            detail: crate::raft::lease::NOT_VOTER,
+        })
+    );
+    cluster.stop().await;
+}

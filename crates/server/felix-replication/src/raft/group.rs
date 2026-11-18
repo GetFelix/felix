@@ -1930,8 +1930,8 @@ impl Group {
     /// Whether a write of `term` may be acknowledged on this member's log
     /// alone: it leads `term`, a majority answered a message it handed off
     /// less than one lease ago (or its newest membership has it as the
-    /// only voter), it has not given the term up, and it was not suspended
-    /// since.
+    /// only voter), it is a voter of that membership, it has not given the
+    /// term up, and it was not suspended since.
     pub(crate) fn admit_local_ack(&self, term: u64) -> Result<(), CommitError> {
         use openraft::Instant as _;
         use openraft::async_runtime::watch::WatchReceiver;
@@ -1945,10 +1945,12 @@ impl Group {
             // still needs this member's vote, and voting voids the lease.
             let voters = metrics.membership_config.membership().get_joint_config();
             let sole = matches!(voters.as_slice(), [only] if only.len() == 1 && only.contains(&self.member));
+            let voter = voters.iter().all(|set| set.contains(&self.member));
             View {
                 leads: leads.then(|| metrics.vote.leader_id().term()),
                 acked: metrics.last_quorum_acked.map(|acked| acked.elapsed()),
                 sole,
+                voter,
             }
         };
         self.lease.admit(term, view).map_err(propose::lost)
