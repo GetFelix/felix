@@ -1676,17 +1676,18 @@ async fn writes_with_no_producer_each_apply_and_leave_no_answers_behind() {
         .await
         .expect("write");
     let producer = engine.anonymous_producer();
-    let cache = group.cache().read();
-    assert_eq!(cache.sum("n"), Some(17));
-    for sequence in 1..=16 {
-        assert_eq!(
-            cache.answer(producer, sequence),
-            None,
-            "sequence {sequence}"
-        );
+    {
+        let cache = group.cache().read();
+        assert_eq!(cache.sum("n"), Some(17));
+        for sequence in 1..=16 {
+            assert_eq!(
+                cache.answer(producer, sequence),
+                None,
+                "sequence {sequence}"
+            );
+        }
+        assert!(cache.answer(producer, 17).is_some());
     }
-    assert!(cache.answer(producer, 17).is_some());
-    drop(cache);
     cluster.stop().await;
 }
 
