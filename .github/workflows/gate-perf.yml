@@ -109,8 +109,8 @@ jobs:
         run: |
           set -euo pipefail
           (cd /tmp/felix-gate-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
-            cargo build --release -p felix-broker-service --bin felix-broker)
-          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --release \
+            cargo build --locked --release -p felix-broker-service --bin felix-broker)
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --locked --release \
             -p felix-broker-service --bin felix-broker \
             -p felix-cluster --bin felix-cluster \
             -p felix-loadgen --bin felix-loadgen

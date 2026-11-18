@@ -115,7 +115,9 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) voters: Vec<Voter<B>>,
     /// Every other broker read.
     pub(crate) learners: Vec<B>,
-    /// Above the base, the floor and every reservation read.
+    /// Above the base, the offset floor, every reservation read, every
+    /// earlier epoch's first index, every record a copy of the incarnation
+    /// holds, and every floor a copy carries.
     pub(crate) first_index: u64,
     /// The highest key of any vote or entry read, and of the floor.
     pub(crate) top: Key,

@@ -146,9 +146,9 @@ jobs:
         run: |
           set -euo pipefail
           (cd /tmp/felix-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
-            cargo build --release --bin latency-demo --all-features)
+            cargo build --locked --release --bin latency-demo --all-features)
           CARGO_TARGET_DIR="$CARGO_TARGET_DIR_CANDIDATE" \
-            cargo build --release --bin latency-demo --all-features
+            cargo build --locked --release --bin latency-demo --all-features
 
       - name: Run benchmarks, alternating baseline and candidate
         id: bench

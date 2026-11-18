@@ -429,13 +429,15 @@ kernel may have dropped pages, which then read as one. Two cases:
   as above. Opening a copy root registers its root for this
   (`run_state::watch_poison`), so it does not depend on the caller. That
   record is written to
-  the same disk without a sync. If both writes are lost and the machine
-  lost power, the start rotates if the run was relaxed. A copy that never
-  vouched keeps its id, and loses nothing a peer counted: it was counted
-  only for synced records, and the failed flush acknowledged none. If both
-  are lost and only the process restarted, nothing on disk says a flush
-  failed and the copy keeps its id
-  ([#2558](https://github.com/GetFelix/felix/issues/2558)).
+  the same disk without a sync. If the new record cannot be written, as
+  on a full disk, the record there is cut to nothing in place, which needs
+  no free block on ext4 or XFS and also rotates on the next start. If the
+  marker and the record change are lost and the machine lost power, the start rotates if the run was relaxed. A
+  copy that never vouched keeps its id, and loses nothing a peer counted: it
+  was counted only for synced records, and the failed flush acknowledged
+  none. Only if the marker, the new record and the cut all fail and the
+  process alone restarts does nothing on disk say a flush failed, and the
+  copy keeps its id. The broker logs an error when that happens.
 - **The copy is closed and opened again in the same process.** The
   process does not re-read the run record, so the storage crate remembers
   every directory whose log was poisoned in this process, and opening one
@@ -5767,9 +5769,12 @@ not a weaker flush.
   mode, so a follower restarted in another mode answers by its new one.
   Skipping a report can only make a `Quorum` write wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
-  (`first_free_index`, `kept_logs`): the first index the new epoch may give
-  out, above the base, the stored floor and every reservation in the shard
-  directory and its kept directories; and for each kept directory, read
+  (`read_copies`, `kept_logs`): every reservation in the shard directory and
+  its kept directories, from which the plan's first index is set
+  (`ReformPlan::first_index`: above the base, the stored offset floor, every
+  reservation read, every earlier epoch's first index, every record a copy
+  of the incarnation holds, and every floor a copy carries); and for each
+  kept directory, read
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
@@ -5829,7 +5834,7 @@ offsets out again (#2620). Also not built: the perf measurement.
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |
 | Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
 | The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |
-| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/reform.rs` (`first_free_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
+| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/vouch.rs` (`ReformPlan::first_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
 | Docs: this page's commit, read-bound and floor claims, `docs/durable-storage.md`, the status table | `docs/` | |
 
 Cluster and simulator tests: the `power-loss` nemesis on a relaxed RF 3
