@@ -2677,6 +2677,14 @@ impl LogInner {
             // at the old tail, would pass for the new log's after a crash,
             // and the open would not redo a reset that already moved the base.
             self.discard_snapshots()?;
+            // Also before the drop, since a reset is not redone once the base
+            // moved. Records left with no history only refuse a truncation
+            // point; a history left over no records would claim them.
+            {
+                let mut epochs = self.epochs.lock();
+                *epochs = epochs::EpochMap::default();
+                epochs::store(&self.dir, &epochs)?;
+            }
             crash_point::reached(&self.dir).map_err(StorageError::Io)?;
             segments.reset_to(base_offset)?;
             segments.active_mut().sync()?;
@@ -2690,9 +2698,6 @@ impl LogInner {
             }
             self.note_rewound(&segments)?;
             self.durability.reset_after_truncate(base_offset);
-            let mut epochs = self.epochs.lock();
-            *epochs = epochs::EpochMap::default();
-            epochs::store(&self.dir, &epochs)?;
             self.reset_producers(&segments)
         })();
         self.poison_after_rewind(rewound)

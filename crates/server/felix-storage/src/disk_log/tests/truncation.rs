@@ -120,6 +120,44 @@ async fn reset_to_discards_everything_and_rebases_in_either_direction() {
     assert_eq!(read_all(&log, 5).await, vec!["after"]);
 }
 
+/// A reset that crashes once its records are gone is not redone at open, so
+/// the history must already be gone too: an entry left from the old log
+/// would claim offsets below the new base that this copy never held.
+#[tokio::test]
+async fn a_reset_cut_short_at_any_step_leaves_no_history_of_the_old_log() {
+    for stop in 0.. {
+        let dir = tempdir().expect("dir");
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.append(&records(&["v0", "v1", "v2"]))
+            .await
+            .expect("append");
+        log.record_generation(3, 0).expect("generation");
+
+        crate::disk_log::crash_point::watch(dir.path(), Some(stop));
+        let finished = log.reset_to(100).await.is_ok();
+        crate::disk_log::crash_point::unwatch(dir.path());
+        log.shutdown().await.ok();
+        drop(log);
+
+        let log = open(&dir, FsyncMode::OnCommit);
+        if log.base_offset() == 100 {
+            assert_eq!(log.tail_offset().await.expect("tail"), 100);
+            assert!(
+                log.generations().is_empty(),
+                "stopped at step {stop}: history outlived its records: {:?}",
+                log.generations()
+            );
+        } else {
+            assert!(!finished, "stopped at step {stop}");
+            assert_eq!(read_all(&log, 0).await, vec!["v0", "v1", "v2"]);
+        }
+        log.shutdown().await.expect("shutdown");
+        if finished {
+            break;
+        }
+    }
+}
+
 #[tokio::test]
 async fn on_commit_reflushes_offsets_reused_after_truncation() {
     let dir = tempdir().expect("dir");

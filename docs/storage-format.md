@@ -1074,6 +1074,17 @@ The entries are bounded, because every open reads the whole file and a
 generation older than the oldest retained record cannot be one two brokers
 diverge within.
 
+**A reset empties the file before it drops the records.** A reset that
+crashes after the drop is not redone, so a history written after the drop
+could outlive it and claim offsets below the new base that the copy never
+held. Emptied first, a crash in between leaves old records with no history,
+which only refuses a truncation point. A truncation goes the other way: it
+cuts the records first, since a history cut first would leave the surviving
+records labelled by the entry before the cut. An entry a crash leaves at or
+past the new tail is dropped when the next copied batch is labelled from
+there ([#2746](https://github.com/GetFelix/felix/issues/2746) tracks the
+promoted-copy case).
+
 See `docs/replication-design.md`, "Divergence and truncation", for what it is
 for.
 
