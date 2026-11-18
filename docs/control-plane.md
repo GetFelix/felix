@@ -1107,15 +1107,18 @@ for it, it stops voting until it has caught up (`docs/replication-design.md`,
 reads it, because a registered id is not the id a report vouched for.
 The Raft store writes it only at metadata level 22.
 
-A shard that switched to Raft also carries `raft_copy_ids`, the copy id each
+A shard on Raft also carries `raft_copy_ids`, the copy id each
 broker in its set reported through `POST /v1/nodes/{node_id}/raft-copy-id`,
 and `raft_target`: `counter` and `members`, copy id by node id. The store
 writes the target once every broker in the set has an id, and again with the
 next counter whenever an id changes. A report names the reporting process's
 registration incarnation and is refused from any other process, so a late
-retry of a wiped copy's old id cannot replace its successor's. A restore can
-bring back ids a broker has since replaced, so a broker has to report its ids
-again once it acknowledges a new placement incarnation. Today only a copy-id report moves
+retry of a wiped copy's old id cannot replace its successor's. From metadata
+level 41 it also names the stream incarnation of the copy's group, and a shard
+that started on Raft (a durable stream's shard on a cluster whose engine is
+Raft, with no switch record) takes only such a report. A restore can
+bring back ids a broker has since replaced, so a broker reports its id again
+every 30 seconds until the feed's target names its copy. Today only a copy-id report moves
 the counter; a set change will too once Raft shards are placed. Both are written
 in place, at the shard's generation. A placement write that names the same
 brokers, such as a leader move, keeps the ids and the target with its counter,
@@ -2339,7 +2342,7 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
 | `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
-| `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard that switched to Raft (`{"key": ..., "copy_id": n, "incarnation": i, "registered_at_millis": t}`, the `incarnation` and `registered_at_millis` from the reporting process's registration; both, because a node deleted and registered again starts at incarnation 0 again). Answers `changed`, false when the id was already held; 409 for a hybrid shard, a broker outside the set, a report from a process other than the one the node is registered as (so a delayed retry from before a restart, or from before a delete and new registration, cannot replace the id the new process reported), a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36. Takes `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard on Raft (`{"key": ..., "copy_id": n, "incarnation": i, "registered_at_millis": t, "shard_incarnation": s}`, the `incarnation` and `registered_at_millis` from the reporting process's registration; both, because a node deleted and registered again starts at incarnation 0 again). `shard_incarnation` is the stream incarnation of the copy's group; with it (metadata version 41) a shard that started on Raft takes ids too, without it only one that switched from the hybrid. Answers `changed`, false when the id was already held; 409 for a shard not on Raft, a `shard_incarnation` other than the shard's, a broker outside the set, a report from a process other than the one the node is registered as (so a delayed retry from before a restart, or from before a delete and new registration, cannot replace the id the new process reported), a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/raft-floors` | a broker reports the committed log id of each Raft group it leads (`{"floors": [{"key": ..., "incarnation": i, "epoch": e, "index": n, "term": t}]}`, `epoch` left out while 0). Each entry sets the shard's exact last committed log id for the current epoch when higher and raises its `offset_floor`, which never drops; one for a missing or hybrid shard, another stream incarnation or reform epoch, or a higher index at a lower term is skipped and the rest still apply. Answers `raised`, how many floors moved; 400 for more than 1024 entries; 409 for the whole batch when a member is below metadata version 38. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |

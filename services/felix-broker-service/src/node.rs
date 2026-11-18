@@ -451,6 +451,14 @@ where
             credential.clone(),
             sync_shutdown.clone(),
         );
+        cluster::report_raft_copy_ids(
+            &raft_shards,
+            link.clone(),
+            membership.node_id.clone(),
+            credential.clone(),
+            root_sequence.clone(),
+            sync_shutdown.clone(),
+        );
     }
     startup::bind_read_check(
         &config,

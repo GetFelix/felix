@@ -125,16 +125,25 @@ impl Pause {
 impl ControlPlane {
     /// Start the control plane, holding the signing keys it will issue against.
     pub async fn start(tenant_id: &str) -> Result<Self> {
-        Self::start_with(tenant_id, LIVENESS).await
+        Self::start_with(tenant_id, LIVENESS, None).await
     }
 
-    /// [`Self::start`] with its own liveness timings.
-    pub(crate) async fn start_with(tenant_id: &str, liveness: NodeLivenessConfig) -> Result<Self> {
+    /// [`Self::start`] with its own liveness timings, as the shard engine
+    /// `engine` when one is given.
+    pub(crate) async fn start_with(
+        tenant_id: &str,
+        liveness: NodeLivenessConfig,
+        engine: Option<&str>,
+    ) -> Result<Self> {
         crate::cluster::capture_control_plane();
-        let store = Arc::new(InMemoryStore::new(StoreConfig {
+        let mut store = InMemoryStore::new(StoreConfig {
             changes_limit: felix_controlplane_service::config::DEFAULT_CHANGES_LIMIT,
             change_retention_max_rows: Some(10_000),
-        }));
+        });
+        if let Some(engine) = engine {
+            store = store.with_shard_engine(engine);
+        }
+        let store = Arc::new(store);
         let keys = felix_controlplane_service::auth::keys::generate_signing_keys()
             .context("generate tenant signing keys")?;
         store
@@ -557,6 +566,14 @@ impl ControlPlane {
         node_id: &str,
     ) -> Result<felix_controlplane_service::model::Node> {
         Ok(self.live_store().get_node(node_id).await?)
+    }
+
+    /// The record the control plane holds for `key`, Raft target included.
+    pub async fn shard_record(
+        &self,
+        key: &felix_controlplane_service::model::ShardKey,
+    ) -> Result<felix_controlplane_service::model::ShardAssignment> {
+        Ok(self.live_store().get_shard_assignment(key).await?)
     }
 
     /// The store's clock.

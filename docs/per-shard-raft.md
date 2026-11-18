@@ -4326,6 +4326,37 @@ target counter (metadata level 36):
   liveness only. The way out is to deregister it, which takes it out of
   all brokers, and targets resume.
 
+How a broker reports its copy id:
+
+- **Only once the copy is synced.** A broker reports the copy id of each
+  member it has open, and a member opens only after its copy file is synced,
+  so no target names a copy a crash could take back. A broker reports
+  only for a placement as long as the stream's replica count: a short set
+  forms no group, so it gets no target either.
+- **With its registration and the stream incarnation.**
+  `POST /v1/nodes/{node_id}/raft-copy-id` carries the reporting process's
+  `incarnation` and `registered_at_millis`, and the `shard_incarnation` of
+  the group the copy is in. The control plane refuses a report from an
+  earlier process of the node, or for another incarnation of the stream,
+  so a late retry never lands on a newer copy or a recreated stream.
+- **Until the target names it.** A report is idempotent. The broker sends
+  it every second while the control plane refuses it (a shard not on Raft
+  yet, a placement not acknowledged by every broker, a control plane below
+  metadata level 41), and again every 30 seconds after it was taken, until
+  the feed's target names this broker's copy. The control plane drops a
+  shard's copy ids when its set changes, and a restore can bring back older
+  ones, so a taken report is not enough.
+
+The control plane takes ids for a shard that switched from the hybrid, and
+from metadata level 41 for a shard that started on Raft: a durable stream's
+shard on a cluster whose engine is Raft (`FELIX_SHARD_ENGINE=raft` on the
+control plane, or the group identity it recorded), with no switch record.
+Only a report that carries `shard_incarnation` counts for such a shard.
+A shard that started on Raft starts epoch 0's list of ordered targets
+("Targets ordered in an epoch") in the write that stores its first target,
+and only while its record of placed brokers is complete, so a restored
+shard's list reads as unknown.
+
 A wiped copy reopens under a new copy id ("Group and member identity"). Its
 broker reports the id, and the control plane writes the target again with
 that id in place of the old one at the next counter value. The leader keeps
@@ -4474,11 +4505,6 @@ the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
-- **Brokers do not report copy ids yet.** The control plane keeps the
-  records and the route (`raft_copy_ids`, `raft_target`,
-  `POST /v1/nodes/{node_id}/raft-copy-id`), but no broker sends an id. A
-  broker does read the feed's `target` and tells it to the member it leads
-  ("A target lasts one term").
 - **A dropped copy keeps its directory.** Deleting it needs the control
   plane's doomed set and the leaders' membership reports ("Membership"
   above, `DoomGuard` in the model), which are new metadata.
@@ -4559,7 +4585,9 @@ plane keeps them all on the shard's record as `raft_ordered`: the stream
 
 - **When an epoch starts.** Epoch 0 starts when the switch to Raft is recorded
   (`accept_seal_report` in `store/memory/switch.rs`), before any target can be
-  written, and the list starts empty there. A re-form starts the next epoch
+  written, and the list starts empty there. A shard that started on Raft has
+  no switch: its list starts in the write that stores its first target, if
+  its record of placed brokers is complete (`start_native_raft_ordered`). A re-form starts the next epoch
   where it writes `PlacedInEpoch::next_epoch` and must start a new list in the
   same write. A recreated stream is a new incarnation and a new group; a
   placement write drops a list from another incarnation.
