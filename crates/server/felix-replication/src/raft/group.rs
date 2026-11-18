@@ -238,7 +238,8 @@ pub(crate) struct Pace {
     sent: parking_lot::Mutex<Option<LogIdOf<ShardTypes>>>,
     /// As a leader: the number the next append goes out under. It starts
     /// at the wall clock, so a leader that restarts in the same term
-    /// numbers its appends above the ones it sent before.
+    /// numbers its appends above the ones it sent before, unless the clock
+    /// stepped back across the restart.
     sends: AtomicU64,
     /// As a follower: the term and number of the append whose gap it
     /// stored last.
@@ -434,14 +435,7 @@ impl Pace {
         let timers = &self.timers;
         let now = timers.now();
         if let Some(gap) = gap {
-            // An unknown gap is the short one: checked early is safe. The
-            // value is a peer's, so it is held to the longest gap this
-            // member would name itself: no message can make it wait longer.
-            let gap = match gap {
-                0 => timers.heartbeat,
-                gap => gap.min(timers.idle_heartbeat),
-            };
-            self.promised.store(gap, Ordering::Relaxed);
+            self.promised.store(self.held_to(gap), Ordering::Relaxed);
         }
         self.heard.store(now, Ordering::Relaxed);
         self.due
@@ -454,16 +448,27 @@ impl Pace {
     /// heartbeat's idle gap as heard, and an older short gap stored after
     /// it would leave this member impatient under a slow leader.
     pub(super) fn took(&self, term: u64, gap: u64, seq: u64) {
-        let newer = {
+        {
+            // The gap is written under the lock too, so two appends handled
+            // at once cannot store the older one's gap last.
             let mut stored = self.stored.lock();
-            let newer = (term, seq) > *stored;
-            if newer {
+            if (term, seq) > *stored {
                 *stored = (term, seq);
+                self.promised.store(self.held_to(gap), Ordering::Relaxed);
             }
-            newer
-        };
-        self.followed(newer.then_some(gap));
+        }
+        self.followed(None);
         self.led.store(self.timers.now(), Ordering::Relaxed);
+    }
+
+    /// An unknown gap is the short one: checked early is safe. The value is
+    /// a peer's, so it is held to the longest gap this member would name
+    /// itself: no message can make it wait longer.
+    fn held_to(&self, gap: u64) -> u64 {
+        match gap {
+            0 => self.timers.heartbeat,
+            gap => gap.min(self.timers.idle_heartbeat),
+        }
     }
 
     /// The leader handed its leadership on: this member counts on it no

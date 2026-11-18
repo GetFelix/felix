@@ -1623,7 +1623,10 @@ Nothing is negotiated. Each side acts only on what it has seen:
   heartbeat's. Without the number, its short gap would overwrite the idle
   one the leader already counted as heard, and leave the follower
   impatient under a slow leader. The numbers start at the wall clock, so a
-  leader that restarts within its term numbers above its earlier sends.
+  leader that restarts within its term numbers above its earlier sends,
+  unless its clock stepped back across the restart. Then the follower
+  keeps the gap it has until the numbers pass the old ones or the term
+  changes.
 - An entry is new the first time any append carries it. Sending it again,
   to a follower that did not take it or to one catching up, does not
   count. So a follower that is down does not keep its leader at the short
