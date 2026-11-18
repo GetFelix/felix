@@ -1507,9 +1507,10 @@ miss there is what brings adoption back.
 
 ## One timer for every group
 
-Every group is built with `enable_tick: false`. Its internal ticker task
-stays parked and costs no CPU (measured: idle CPU 0 at 5,000 groups, against
-86% of a core per 1,000 members with the default tick). One task per broker,
+Every group is built with `enable_tick: false`, so openraft's heartbeat
+deadline stays unset and wakes nothing (measured on the previous pin, whose
+internal ticker it replaces: idle CPU 0 at 5,000 groups, against 86% of a
+core per 1,000 members with the default tick). One task per broker,
 the node ticker, calls `Raft::trigger().tick()` on every due group each
 interval. openraft 0.10.1 adds that call (openraft#2305). A leader whose
 heartbeat is due sends one.
@@ -1522,7 +1523,7 @@ ticker turns a member's election timer on at the first tick after its wait
 runs out (below), and the member turns it off again when it takes an append
 or grants a vote. While it is on, openraft starts the election at its own
 deadline and runs the retries. A member inside its vote hold is not ticked,
-so it never stands there.
+unless it promised nobody (below), so it does not stand there.
 
 ```mermaid
 flowchart LR

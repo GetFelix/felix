@@ -936,8 +936,8 @@ impl Group {
         }
     }
 
-    /// One timer check: an election if the election timeout has passed, a
-    /// heartbeat if one is due. Waits while the group's queue is full. A
+    /// One timer check: a heartbeat if one is due, and openraft's election
+    /// timer turned on, since the member's wait for its leader has run out. Waits while the group's queue is full. A
     /// caller that gives up drops the future, which is counted.
     pub(crate) async fn tick(&self) {
         if self.stopped.load(Ordering::Relaxed) {
@@ -1165,8 +1165,9 @@ impl Group {
     /// `election_min` after it last heard its leader, so a follower that
     /// keeps hearing one is never checked. A follower of an idle leader
     /// waits longer ([`Pace::follower_wait`]).
-    /// Once that time has passed it is checked every interval, since the
-    /// timeout openraft picked for it is not visible from here. A learner
+    /// The first check past that time turns openraft's election timer on,
+    /// and openraft runs the election from there. Later checks come once a
+    /// heartbeat, only so a change of role is seen. A learner
     /// never stands, and is checked only so a change of role is seen.
     fn next_due(&self) -> u64 {
         use openraft::async_runtime::watch::WatchReceiver;
