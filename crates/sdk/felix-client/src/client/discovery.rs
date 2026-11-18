@@ -148,6 +148,47 @@ impl Connection {
         namespace: &str,
         stream: &str,
     ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+        let view = self.stream_view(tenant_id, namespace, stream).await?;
+        Ok((view.shards, view.routing))
+    }
+
+    /// What the broker says an acknowledged publish to `stream` means, or
+    /// `None` when it does not say.
+    ///
+    /// `None` means the broker predates the field (it did not advertise
+    /// [`felix_wire::FEATURE_ACK_DURABILITY`]) or does not know the stream. It
+    /// is not "no guarantee": the broker simply gave no answer.
+    ///
+    /// The answer describes the broker asked, as it is configured now, and
+    /// what it says about the sync policy is that broker's own. It does not
+    /// promise what another broker in the cluster, or a later configuration,
+    /// will do. See [`AckDurability`](felix_wire::AckDurability) for what each
+    /// field does and does not guarantee.
+    ///
+    /// Fails when the broker does not report stream shard counts, since this
+    /// rides the same request.
+    pub async fn stream_ack_durability(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<Option<felix_wire::AckDurability>> {
+        if !felix_wire::supports_feature(
+            self.server_features_hi,
+            felix_wire::FEATURE_ACK_DURABILITY,
+        ) {
+            return Ok(None);
+        }
+        let view = self.stream_view(tenant_id, namespace, stream).await?;
+        Ok(view.ack_durability)
+    }
+
+    async fn stream_view(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<StreamView> {
         if !self.supports_stream_shards() {
             anyhow::bail!("broker does not report stream shard counts");
         }
@@ -160,7 +201,7 @@ impl Connection {
         let request_id = self
             .cache_request_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        ask_stream_routing(
+        ask_stream_view(
             &self.event_node,
             &self.credentials,
             request_id,
@@ -324,6 +365,13 @@ impl Connection {
     }
 }
 
+/// What a broker says about a stream's placement and acknowledgements.
+pub(super) struct StreamView {
+    pub(super) shards: u32,
+    pub(super) routing: felix_wire::routing::ShardRouting,
+    pub(super) ack_durability: Option<felix_wire::AckDurability>,
+}
+
 /// Ask a broker for a stream's width and mapping. Takes the event connections
 /// rather than the client, so a publisher can ask too.
 pub(super) async fn ask_stream_routing(
@@ -335,6 +383,29 @@ pub(super) async fn ask_stream_routing(
     namespace: &str,
     stream: &str,
 ) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+    let view = ask_stream_view(
+        event_node,
+        credentials,
+        request_id,
+        runtime_config,
+        tenant_id,
+        namespace,
+        stream,
+    )
+    .await?;
+    Ok((view.shards, view.routing))
+}
+
+/// [`ask_stream_routing`], keeping everything the broker answered.
+pub(super) async fn ask_stream_view(
+    event_node: &NodeConnections,
+    credentials: &Credentials,
+    request_id: u64,
+    runtime_config: ClientRuntimeConfig,
+    tenant_id: &str,
+    namespace: &str,
+    stream: &str,
+) -> Result<StreamView> {
     // Outside the timer, so a slow provider fails with its own typed error.
     credentials.fetch().await?;
     let mut opened = tokio::time::timeout(
@@ -343,7 +414,7 @@ pub(super) async fn ask_stream_routing(
     )
     .await
     .context("open a stream to ask for the routing timed out")??;
-    let answer = ask_stream_routing_on(
+    let answer = ask_stream_view_on(
         &mut opened,
         request_id,
         runtime_config,
@@ -356,16 +427,16 @@ pub(super) async fn ask_stream_routing(
     answer
 }
 
-/// [`ask_stream_routing`] on a stream already open, which stays open for the
+/// [`ask_stream_view`] on a stream already open, which stays open for the
 /// next question. One question at a time: answers are read in order.
-pub(super) async fn ask_stream_routing_on(
+async fn ask_stream_view_on(
     opened: &mut OpenedStream,
     request_id: u64,
     runtime_config: ClientRuntimeConfig,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
-) -> Result<(u32, felix_wire::routing::ShardRouting)> {
+) -> Result<StreamView> {
     let max_frame_bytes = runtime_config.max_frame_bytes;
     write_message(
         &mut opened.send,
@@ -390,12 +461,17 @@ pub(super) async fn ask_stream_routing_on(
             shards,
             routing,
             request_id: answered,
+            ack_durability,
         }) => {
             anyhow::ensure!(
                 answered == request_id,
                 "stream shards answered request {answered}, not {request_id}"
             );
-            Ok((shards, routing.unwrap_or_default()))
+            Ok(StreamView {
+                shards,
+                routing: routing.unwrap_or_default(),
+                ack_durability,
+            })
         }
         Some(Message::Error {
             message,

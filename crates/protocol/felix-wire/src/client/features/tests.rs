@@ -488,7 +488,8 @@ fn publish_width_is_the_third_extended_bit() {
                 | crate::FEATURE_HEAD_TRIM
                 | crate::FEATURE_LEASE_TOKEN
                 | crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION
-                | crate::FEATURE_SUBSCRIBE_END),
+                | crate::FEATURE_SUBSCRIBE_END
+                | crate::FEATURE_ACK_DURABILITY),
         crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED | crate::FEATURE_PUBLISH_WIDTH
     );
     assert_eq!(
@@ -524,6 +525,7 @@ fn head_trim_is_the_fifth_extended_bit() {
             | crate::FEATURE_LEASE_TOKEN
             | crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION
             | crate::FEATURE_SUBSCRIBE_END
+            | crate::FEATURE_ACK_DURABILITY
     );
     assert_eq!(
         crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_HEAD_TRIM, 0),
@@ -570,6 +572,18 @@ fn subscribe_end_is_the_eighth_extended_bit() {
     assert_ne!(crate::KNOWN_FEATURES_HI & crate::FEATURE_SUBSCRIBE_END, 0);
     assert_eq!(
         crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_SUBSCRIBE_END, 0),
+        (crate::KNOWN_FEATURES, None)
+    );
+}
+
+/// Ack durability is the ninth extended bit, in the second word only, so a
+/// client that offered none is never told about it.
+#[test]
+fn ack_durability_is_the_ninth_extended_bit() {
+    assert_eq!(crate::FEATURE_ACK_DURABILITY, 0x0000_0100);
+    assert_ne!(crate::KNOWN_FEATURES_HI & crate::FEATURE_ACK_DURABILITY, 0);
+    assert_eq!(
+        crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_ACK_DURABILITY, 0),
         (crate::KNOWN_FEATURES, None)
     );
 }

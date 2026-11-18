@@ -124,6 +124,35 @@ pub(super) async fn stream_shards(
             routing: Default::default(),
         },
     };
+    // Only for a client that offered the bit and a stream this broker knows,
+    // so every other client reads the frame it always did.
+    let ack_durability = if felix_wire::supports_feature(
+        session.peer_features_hi,
+        felix_wire::FEATURE_ACK_DURABILITY,
+    ) {
+        match broker
+            .stream_metadata(&tenant_id, &namespace, &stream)
+            .await
+        {
+            Some(metadata) => Some(super::ack_durability::describe(
+                &super::ack_durability::Facts {
+                    durable: metadata.durable,
+                    quorum_consistency: metadata.consistency
+                        == felix_broker::ConsistencyLevel::Quorum,
+                    replication_factor: metadata.replication_factor,
+                    raft: publish_ctx.engine.runs_raft(),
+                    commit_ack: session.commit_ack,
+                    ack_durable_on_commit: publish_ctx.ack_durable_on_commit,
+                    fsync: broker
+                        .durable_storage()
+                        .map(|storage| storage.config().fsync_mode),
+                },
+            )),
+            None => None,
+        }
+    } else {
+        None
+    };
     handle_ack_enqueue_result(
         send_outgoing_critical(
             out_ack_tx,
@@ -135,6 +164,7 @@ pub(super) async fn stream_shards(
                 request_id,
                 // Omitted for modulo, so an older client reads the same frame.
                 routing: (!placement.routing.is_modulo()).then_some(placement.routing),
+                ack_durability,
             }),
         )
         .await,
