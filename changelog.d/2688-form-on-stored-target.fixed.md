@@ -1,0 +1,1 @@
+A broker forms a shard's Raft group only on the target the control plane stored, copy ids included, so the group's first voters are always on the epoch's ordered list that a re-form reads. A set the control plane never stored could lose its majority with no re-form source seeing it (#2688).

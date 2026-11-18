@@ -3855,6 +3855,15 @@ Membership changes are not built yet
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
+- The set formed is the target the control plane stored, copy ids
+  included (#2688). The broker compares the members it asked with the
+  feed's `target` and forms only when they are equal. With no target, a
+  withheld one, or one naming another copy, it forms nothing and asks again
+  on a later pass. A re-form reads the voter sets of the epoch from the
+  control plane ("Targets ordered in an epoch"), and the stored target is
+  on that list before any broker can read it, or the list reads as lost.
+  A set formed from copies no record names could lose
+  its majority with no re-form source seeing that set.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4478,7 +4487,8 @@ What placement does not do yet for a Raft shard:
   records and the route (`raft_copy_ids`, `raft_target`,
   `POST /v1/nodes/{node_id}/raft-copy-id`), but no broker sends an id. A
   broker does read the feed's `target` and tells it to the member it leads
-  ("A target lasts one term").
+  ("A target lasts one term"). Since a group forms only on a stored
+  target ("Forming a group"), no group forms until brokers report ids.
 - **A dropped copy keeps its directory.** Deleting it needs the control
   plane's doomed set and the leaders' membership reports ("Membership"
   above, `DoomGuard` in the model), which are new metadata.

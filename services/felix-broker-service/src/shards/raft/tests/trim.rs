@@ -175,9 +175,7 @@ async fn a_trim_holds_after_a_restart() {
         let broker = broker(root.path()).await;
         broker.allow_raft_head_trims_when(|| true);
         let shards = shards(&broker);
-        shards
-            .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-            .await;
+        take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
         until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = engine(&shards);
@@ -217,9 +215,7 @@ async fn a_trim_is_refused_until_raft_head_trim_is_finalized() {
     let gate = Arc::clone(&finalized);
     broker.allow_raft_head_trims_when(move || gate.load(Ordering::Acquire));
     let shards = shards(&broker);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the term is served", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("term");
     let engine = engine(&shards);

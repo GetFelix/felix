@@ -561,6 +561,14 @@ impl RaftShards {
         let Some(me) = self.me.upgrade() else {
             return;
         };
+        // Nothing to ask the others for yet: the control plane stores a
+        // target once every broker in the set has named its copy.
+        let Some(target) = target else {
+            if self.put_off.lock().insert(key.clone()) {
+                tracing::info!(shard = ?key, "not forming the shard's Raft group yet: the control plane has stored no target for it");
+            }
+            return;
+        };
         if !self.forming.lock().insert(key.clone()) {
             return;
         }
@@ -570,9 +578,12 @@ impl RaftShards {
                 .first_members(&key, brokers.iter().map(String::as_str), ASK_WITHIN)
                 .await
                 .map_err(Unformed::Asked)
-                .and_then(|members| match &target {
-                    Some(target) if *target == members => Ok(members),
-                    _ => Err(Unformed::NotTarget { members, target }),
+                .and_then(|members| {
+                    if members == target {
+                        Ok(members)
+                    } else {
+                        Err(Unformed::NotTarget { members, target })
+                    }
                 });
             match asked {
                 Ok(members) => {
@@ -712,7 +723,7 @@ enum Unformed {
     )]
     NotTarget {
         members: BTreeSet<MemberId>,
-        target: Option<BTreeSet<MemberId>>,
+        target: BTreeSet<MemberId>,
     },
 }
 

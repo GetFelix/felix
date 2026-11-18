@@ -1265,7 +1265,7 @@ async fn a_waiting_raft_poll_is_woken_by_a_commit() {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let publish_ctx = build_publish_context(
         Arc::clone(&broker),

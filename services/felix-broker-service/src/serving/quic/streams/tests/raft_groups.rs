@@ -82,7 +82,7 @@ async fn group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid() -> Res
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let gate = Arc::new(FleetGate::new([RAFT_CONSUMER_GROUPS.name()]));
     let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(

@@ -41,7 +41,9 @@ pub(crate) struct GroupRecord<B> {
     /// Brokers declared dead. Their copies are not read.
     pub(crate) dead: BTreeSet<B>,
     /// The voters the epoch started with: the plan that formed it, or the
-    /// group's first voters at epoch 0. `None` when not recorded.
+    /// group's first voters at epoch 0. A broker forms a group only on the
+    /// target the control plane stored, so those are also on `ordered`.
+    /// `None` when not recorded.
     pub(crate) seed: Option<BTreeSet<VoterId<B>>>,
     /// Every voter target the control plane ordered in the epoch, recorded
     /// before the leader was asked: the control plane's

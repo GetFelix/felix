@@ -82,9 +82,7 @@ async fn a_target_waits_for_a_view_that_reaches_the_terms_bar() {
     let orders = key("orders", 0);
     // Sent before the term began.
     lease.record_head(tokio::time::Instant::now() - Duration::from_millis(1), 1);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("led");
     let voters = shards.runtime.voters(&orders).expect("voters");
@@ -124,9 +122,7 @@ async fn a_newer_target_is_told_in_the_same_term() {
     let shards = shards(&broker);
     let lease = lease_of(&shards);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("led");
     let voters = shards.runtime.voters(&orders).expect("voters");
@@ -358,9 +354,7 @@ async fn a_target_from_before_a_restore_is_not_told() {
     let shards = shards(&broker);
     let lease = lease_of(&shards);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("led");
     let voters = shards.runtime.voters(&orders).expect("voters");
@@ -402,9 +396,7 @@ async fn a_leader_does_not_act_on_a_held_target_from_before_a_restore() {
     let shards = shards(&broker);
     let lease = lease_of(&shards);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("led");
     let voters = shards.runtime.voters(&orders).expect("voters");
@@ -449,9 +441,7 @@ async fn the_target_told_is_the_control_planes_record() {
     let shards = shards(&broker);
     let lease = lease_of(&shards);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("led");
     let mut voters = shards.runtime.voters(&orders).expect("voters");
@@ -556,9 +546,7 @@ async fn a_withheld_view_does_not_untarget_a_leader() {
     let lease = lease_of(&shards);
     let orders = key("orders", 0);
     lease.record_head(tokio::time::Instant::now() - Duration::from_millis(1), 1);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead", || shards.leading(&orders).is_some()).await;
     let voters = shards.runtime.voters(&orders).expect("voters");
     let fed = with_target(assigned(orders.clone(), INCARNATION), &voters, 1);
