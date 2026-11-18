@@ -692,7 +692,7 @@ pub struct SealReportResponse {
     pub accepted: bool,
 }
 
-/// A broker's Raft copy id for a shard that switched to Raft.
+/// A broker's Raft copy id for a shard on Raft.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct RaftCopyIdRequest {
     pub key: crate::model::ShardKey,
@@ -708,6 +708,12 @@ pub struct RaftCopyIdRequest {
     /// so the incarnation alone would match a process from before the
     /// delete.
     pub registered_at_millis: u64,
+    /// The stream incarnation of the group the copy is a member of. A
+    /// report for another incarnation is refused. With it a shard that
+    /// started on Raft takes ids too; without it, only one that switched
+    /// from the hybrid. Needs metadata version 41.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_incarnation: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
