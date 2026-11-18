@@ -51,10 +51,11 @@ impl ShardAssignment {
     }
 
     /// Start epoch 0's list for a shard that started on Raft, in the write
-    /// that stores its first copy id, before any target. Such a shard has no switch to start it at. Left alone
-    /// once started, once any target was written, and for a shard with no
-    /// complete record of its epoch (`placed`), such as a restored one: a
-    /// list started late would miss targets ordered before it.
+    /// that stores its first copy id, before any target. Such a shard has
+    /// no switch to start it at. Left alone once started, once any target
+    /// was written, and for a shard with no complete record of its epoch
+    /// (`placed`), such as a restored one: a list started late would miss
+    /// targets ordered before it.
     pub(crate) fn start_native_raft_ordered(&mut self) {
         let started = self.raft_ordered.as_ref().is_some_and(|ordered| {
             ordered.incarnation == self.incarnation && ordered.epoch == self.group_epoch()

@@ -4344,10 +4344,11 @@ How a broker reports its copy id:
 - **Until the target names it.** A report is idempotent. The broker sends
   it again 5 seconds after the control plane refuses it (a shard not on Raft
   yet, a placement not acknowledged by every broker, a control plane below
-  metadata level 41), doubling the wait with each refusal up to 5 minutes,
-  since each refused report is still an entry in the metadata log. It logs
-  the first refusal. It sends a taken report again every 30 seconds, until
-  the feed's target names this broker's copy. The control plane drops a
+  metadata level 41), doubling the wait with each refusal in a row up to a
+  minute, since each refused report is still an entry in the metadata log.
+  It logs the first refusal. A report that got no answer wrote nothing and
+  is sent again every 5 seconds. It sends a taken report again every 30
+  seconds, until the feed's target names this broker's copy. The control plane drops a
   shard's copy ids when its set changes, and a restore can bring back older
   ones, so a taken report is not enough.
 

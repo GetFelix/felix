@@ -18,6 +18,7 @@ pub(crate) struct FakeLink {
     statuses: Arc<Mutex<HashMap<&'static str, StatusCode>>>,
     floors: Arc<Mutex<Vec<Vec<felix_replication::controlplane_link::RaftFloor>>>>,
     copy_ids: Arc<Mutex<Vec<felix_replication::controlplane_link::RaftCopyId>>>,
+    failing: Arc<Mutex<std::collections::HashSet<&'static str>>>,
 }
 
 impl FakeLink {
@@ -30,6 +31,13 @@ impl FakeLink {
     #[cfg_attr(not(feature = "sim"), allow(dead_code))]
     pub(crate) fn status(self, call: &'static str, status: StatusCode) -> Self {
         self.statuses.lock().unwrap().insert(call, status);
+        self
+    }
+
+    /// Fail `call` as if the control plane never answered.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn fail(self, call: &'static str) -> Self {
+        self.failing.lock().unwrap().insert(call);
         self
     }
 
@@ -57,6 +65,9 @@ impl FakeLink {
 
     fn answer(&self, call: &'static str) -> Result<LinkResponse> {
         self.calls.lock().unwrap().push(call);
+        if self.failing.lock().unwrap().contains(call) {
+            anyhow::bail!("{call}: connection refused");
+        }
         if let Some(status) = self.statuses.lock().unwrap().get(call) {
             return Ok(LinkResponse {
                 status: *status,

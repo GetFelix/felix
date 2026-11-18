@@ -25,14 +25,15 @@ use crate::cluster::membership::RootSequenceSlot;
 /// How often owed copy ids are sent.
 pub(crate) const INTERVAL: Duration = Duration::from_secs(1);
 
-/// How long a report the control plane refused or never answered first
-/// waits before it is sent again. The wait doubles with each refusal up to
-/// [`MAX_RETRY`]: each report the control plane refuses is still an entry
-/// in its log.
+/// How long a report the control plane refused or never answered waits
+/// before it is sent again. After an answered refusal the wait doubles with
+/// each one in a row, up to [`MAX_RETRY`]: each is still an entry in the
+/// control plane's log. An unanswered report wrote nothing and keeps this.
 const RETRY: Duration = Duration::from_secs(5);
 
-/// The longest a refused report waits before it is sent again.
-const MAX_RETRY: Duration = Duration::from_secs(300);
+/// The longest a refused report waits before it is sent again. Kept short:
+/// nothing tells the broker when the cause of a refusal clears.
+const MAX_RETRY: Duration = Duration::from_secs(60);
 
 /// How long a report the control plane took waits before it is sent again
 /// while its target still does not name the copy.
@@ -67,8 +68,10 @@ struct Sent {
     set: BTreeSet<String>,
     at: Instant,
     taken: bool,
-    /// Reports in a row for this copy and set that were not taken.
+    /// Answered refusals in a row for this copy and set.
     refused: u32,
+    /// The last report got no answer.
+    unanswered: bool,
 }
 
 /// The reports owed to the control plane, by shard and stream incarnation.
@@ -97,6 +100,7 @@ impl CopyIds {
                 let wait = match last {
                     None => return Some((None, held)),
                     Some(sent) if sent.taken => RESEND,
+                    Some(sent) if sent.unanswered => RETRY,
                     Some(sent) => retry_after(sent.refused),
                 };
                 let at = last.map(|sent| sent.at)?;
@@ -110,31 +114,44 @@ impl CopyIds {
             .collect()
     }
 
-    /// Records a report sent for `held`. Returns how many reports in a row
-    /// for this copy and set have now not been taken.
-    fn record(&mut self, held: &Held, now: Instant, taken: bool) -> u32 {
+    /// Records a report sent for `held`. Returns how many answered
+    /// refusals in a row this copy and set have now had.
+    fn record(&mut self, held: &Held, now: Instant, outcome: Outcome) -> u32 {
         let key = (held.key.clone(), held.incarnation);
         let before = self
             .sent
             .get(&key)
             .filter(|sent| sent.copy == held.copy && sent.set == held.set)
             .map_or(0, |sent| sent.refused);
-        let refused = if taken { 0 } else { before.saturating_add(1) };
+        let refused = match outcome {
+            Outcome::Taken => 0,
+            Outcome::Refused => before.saturating_add(1),
+            Outcome::Unanswered => before,
+        };
         self.sent.insert(
             key,
             Sent {
                 copy: held.copy,
                 set: held.set.clone(),
                 at: now,
-                taken,
+                taken: outcome == Outcome::Taken,
                 refused,
+                unanswered: outcome == Outcome::Unanswered,
             },
         );
         refused
     }
 }
 
-/// The wait after `refused` reports in a row were not taken.
+/// How a report went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Taken,
+    Refused,
+    Unanswered,
+}
+
+/// The wait after `refused` answered refusals in a row.
 fn retry_after(refused: u32) -> Duration {
     RETRY
         .saturating_mul(1 << refused.saturating_sub(1).min(16))
@@ -170,21 +187,21 @@ pub(crate) async fn tick<L: ControlPlaneLink>(
             link.report_raft_copy_id(bearer, node_id, &report),
         )
         .await;
-        let refusal = match sent {
-            Ok(Ok(answer)) if answer.status == reqwest::StatusCode::OK => None,
+        let (outcome, reason) = match sent {
+            Ok(Ok(answer)) if answer.status == reqwest::StatusCode::OK => (Outcome::Taken, None),
             // A 409 is a shard not on Raft, a placement not yet acknowledged
             // by every broker, or a control plane below the level that takes
             // these; a 404 one that predates them. All are tried again.
-            Ok(Ok(answer)) => Some(format!("status {}", answer.status)),
-            Ok(Err(err)) => Some(format!("{err:#}")),
-            Err(_) => Some("timed out".to_string()),
+            Ok(Ok(answer)) => (Outcome::Refused, Some(format!("status {}", answer.status))),
+            Ok(Err(err)) => (Outcome::Unanswered, Some(format!("{err:#}"))),
+            Err(_) => (Outcome::Unanswered, Some("timed out".to_string())),
         };
-        let refused = ids.record(&held, Instant::now(), refusal.is_none());
-        if let Some(reason) = refusal {
-            if refused == 1 {
+        let refused = ids.record(&held, Instant::now(), outcome);
+        if let Some(reason) = reason {
+            if outcome == Outcome::Refused && refused == 1 {
                 tracing::info!(shard = ?held.key, %reason, "the control plane did not take a Raft copy id; retrying with backoff");
             } else {
-                tracing::debug!(shard = ?held.key, %reason, refused, "the control plane did not take a Raft copy id; retrying");
+                tracing::debug!(shard = ?held.key, %reason, refused, "a Raft copy id was not taken; retrying");
             }
         }
     }

@@ -188,3 +188,37 @@ async fn one_tick_sends_at_most_its_share_and_the_rest_follow() {
     tick(&mut ids, &many, (1, 1), &link, "n1", None).await;
     assert_eq!(sent(&link).len(), MAX_PER_TICK + 3);
 }
+
+/// A taken report starts the backoff over, so a later refusal waits only
+/// the first interval again.
+#[tokio::test(start_paused = true)]
+async fn a_taken_report_resets_the_backoff() {
+    let refusing = accepting().status("report_raft_copy_id", StatusCode::CONFLICT);
+    let mut ids = CopyIds::default();
+    let waiting = [held("a", 7, None)];
+    for _ in 0..4 {
+        tick(&mut ids, &waiting, (1, 1), &refusing, "n1", None).await;
+        tokio::time::advance(MAX_RETRY).await;
+    }
+    tick(&mut ids, &waiting, (1, 1), &accepting(), "n1", None).await;
+    tokio::time::advance(RESEND).await;
+    tick(&mut ids, &waiting, (1, 1), &refusing, "n1", None).await;
+    let before = sent(&refusing).len();
+    tokio::time::advance(RETRY).await;
+    tick(&mut ids, &waiting, (1, 1), &refusing, "n1", None).await;
+    assert_eq!(sent(&refusing).len(), before + 1);
+}
+
+/// A report that got no answer wrote nothing to the control plane's log,
+/// so it does not back off.
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_report_does_not_back_off() {
+    let link = FakeLink::default().fail("report_raft_copy_id");
+    let mut ids = CopyIds::default();
+    let waiting = [held("a", 7, None)];
+    for _ in 0..5 {
+        tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
+        tokio::time::advance(RETRY).await;
+    }
+    assert_eq!(sent(&link).len(), 5);
+}
