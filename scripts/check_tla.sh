@@ -70,7 +70,7 @@ fetch_tools() {
   # mismatch is retried. Only a file that matches the pinned hash is kept.
   local attempt actual delay
   for attempt in 1 2 3 4; do
-    if curl -sSL --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
+    if curl -sSL --proto "=https" --tlsv1.2 --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
       actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
       if [ "$actual" = "$TLA_SHA256" ]; then
         mv "$JAR.tmp" "$JAR"
