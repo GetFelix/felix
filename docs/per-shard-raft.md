@@ -4700,6 +4700,19 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").
 
+The broker hands a cache shard's writes to `RaftEngine::write_cache` and
+its reads to `cache_read` and `counter_read`. A write either carries the
+client's producer id and sequence, and is applied once across retries and
+leader changes, or carries none. A write with none gets a producer id the
+engine draws at random when it starts, with the top bit set. Client ids
+never have that bit, so the two cannot collide, and a restarted broker never
+reuses a sequence that an earlier floor has passed. Each such write's floor
+is the lowest of the engine's sequences still waiting for an answer, so
+concurrent writes keep each other's answers and the shard holds no more of
+them than are in flight. Such a write has no retry guarantee: a client that
+sends it again after an unknown outcome may apply it twice, as on the
+hybrid.
+
 ## Moving a shard from the hybrid to Raft
 
 The switch is per shard, one way, and looks to Raft like a snapshot install.

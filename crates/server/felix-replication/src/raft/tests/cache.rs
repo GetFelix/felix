@@ -1593,3 +1593,172 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         "the log is synced before the snapshot"
     );
 }
+
+fn adding(delta: i64) -> crate::raft::CacheOp {
+    crate::raft::CacheOp::Add {
+        key: "n".into(),
+        delta,
+    }
+}
+
+/// A producer's write answered by one leader and sent again to the next,
+/// as a client does when it never heard the answer, is applied once: the
+/// new leader holds the first answer in its state and returns it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_producers_retry_after_a_leader_change_applies_once() {
+    use crate::raft::{CacheReply, ProducerRequest};
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (engine, first) = leading(&cluster).await;
+    let request = ProducerRequest::new(9, 1, 1).expect("a client id");
+    let answer = engine
+        .write_cache(&shard(N), adding(5), Some(request), PATIENCE)
+        .await
+        .expect("write");
+    assert_eq!(answer, CacheReply::Sum(5));
+
+    cut_off(&cluster, &first.member.broker);
+    let (engine, second) = leading(&cluster).await;
+    assert_ne!(second.member, first.member);
+    let retried = engine
+        .write_cache(&shard(N), adding(5), Some(request), PATIENCE)
+        .await
+        .expect("retry");
+    assert_eq!(retried, CacheReply::Sum(5));
+    let read = engine.counter_read(&shard(N), "n", PATIENCE).await;
+    assert_eq!(read.expect("read"), Some(5));
+
+    let next = ProducerRequest::new(9, 2, 1).expect("a client id");
+    let answer = engine
+        .write_cache(&shard(N), adding(5), Some(next), PATIENCE)
+        .await
+        .expect("write");
+    assert_eq!(answer, CacheReply::Sum(10));
+    cluster.stop().await;
+}
+
+/// The ids kept for writes that name no producer are refused to a client.
+#[test]
+fn a_client_producer_id_cannot_take_the_anonymous_range() {
+    use crate::raft::ProducerRequest;
+    assert!(ProducerRequest::new(1 << 63, 1, 1).is_none());
+    assert!(ProducerRequest::new(u64::MAX, 1, 1).is_none());
+    assert!(ProducerRequest::new((1 << 63) - 1, 1, 1).is_some());
+}
+
+/// Writes with no producer each apply, concurrent ones included, and the
+/// shard keeps no answer for one that was already answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_with_no_producer_each_apply_and_leave_no_answers_behind() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (engine, group) = leading(&cluster).await;
+    let writes: Vec<_> = (0..16)
+        .map(|_| {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                engine
+                    .write_cache(&shard(N), adding(1), None, PATIENCE)
+                    .await
+            })
+        })
+        .collect();
+    let mut sums = BTreeSet::new();
+    for write in writes {
+        match write.await.expect("task").expect("write") {
+            crate::raft::CacheReply::Sum(sum) => assert!(sums.insert(sum)),
+            other => panic!("an add answered {other:?}"),
+        }
+    }
+    assert_eq!(sums, (1..=16).collect());
+    engine
+        .write_cache(&shard(N), adding(1), None, PATIENCE)
+        .await
+        .expect("write");
+    let producer = engine.anonymous_producer();
+    let cache = group.cache().read();
+    assert_eq!(cache.sum("n"), Some(17));
+    for sequence in 1..=16 {
+        assert_eq!(
+            cache.answer(producer, sequence),
+            None,
+            "sequence {sequence}"
+        );
+    }
+    assert!(cache.answer(producer, 17).is_some());
+    drop(cache);
+    cluster.stop().await;
+}
+
+/// Each write answers as the cache's contract says: conditions on absence
+/// and on a version, a delete of a version, a plain delete, and a TTL that
+/// runs on the leader's stamps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_cache_write_answers_by_its_condition_and_a_ttl_runs_on_the_stamps() {
+    use crate::raft::{CacheCondition, CacheOp, CacheReply};
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut cluster = Cluster::new(true);
+    let clock = clocked(&cluster, 1_000);
+    cluster.form(N).await;
+    let (engine, _) = leading(&cluster).await;
+    let put = |value: &'static [u8], ttl, condition| CacheOp::Put {
+        key: "k".into(),
+        value: Bytes::from_static(value),
+        ttl,
+        condition,
+    };
+    let key = shard(N);
+    let write = |op| engine.write_cache(&key, op, None, PATIENCE);
+    let CacheReply::Written { version: one } = write(put(b"one", None, CacheCondition::None))
+        .await
+        .expect("put")
+    else {
+        panic!("a put did not write");
+    };
+    let refused = write(put(b"two", None, CacheCondition::Absent)).await;
+    assert_eq!(
+        refused.expect("put if absent"),
+        CacheReply::Refused { version: Some(one) }
+    );
+    let CacheReply::Written { version: two } =
+        write(put(b"two", None, CacheCondition::Version(one)))
+            .await
+            .expect("put if version")
+    else {
+        panic!("a put at the held version did not write");
+    };
+    assert!(two > one);
+    let stale = write(CacheOp::Delete {
+        key: "k".into(),
+        version: Some(one),
+    });
+    assert_eq!(
+        stale.await.expect("delete if"),
+        CacheReply::Refused { version: Some(two) }
+    );
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    assert_eq!(read.expect("read"), Some((Bytes::from_static(b"two"), two)));
+    let removed = write(CacheOp::Delete {
+        key: "k".into(),
+        version: Some(two),
+    });
+    assert_eq!(
+        removed.await.expect("delete if"),
+        CacheReply::Removed { version: two }
+    );
+    let gone = write(CacheOp::Delete {
+        key: "k".into(),
+        version: None,
+    });
+    assert_eq!(gone.await.expect("delete"), CacheReply::Absent);
+
+    let ttl = Some(Duration::from_millis(5));
+    let written = write(put(b"brief", ttl, CacheCondition::Absent)).await;
+    assert!(matches!(written.expect("put"), CacheReply::Written { .. }));
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    assert!(read.expect("read").is_some());
+    clock.store(1_000 + 5_000, Relaxed);
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    assert_eq!(read.expect("read"), None);
+    cluster.stop().await;
+}
