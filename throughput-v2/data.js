@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795042473815,
+  "lastUpdate": 1795046218572,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61672,6 +61672,58 @@ window.BENCHMARK_DATA = {
             "range": "20574.09",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 827268.60\nmean: 818597.07\nstdev: 20574.09\ncv: 2.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e937359bd06cab3a64aef6eb77888e466ce48e47",
+          "message": "fix(client): move pooled publish and cache streams onto the renewed token (#2761)\n\n* fix(client): move pooled publish and cache streams onto the renewed token (#2736)\n\n* fix(client): drain the old stream on a token move and bound the check to self-bounding providers (#2736)",
+          "timestamp": "2026-11-18T22:26:46Z",
+          "tree_id": "b18bd420b17823b5a1cf13c2b709b84ad54fd363",
+          "url": "https://github.com/GetFelix/felix/commit/e937359bd06cab3a64aef6eb77888e466ce48e47"
+        },
+        "date": 1795046217752,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354631.54,
+            "range": "7660.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354631.54\nmean: 355419.93\nstdev: 7660.51\ncv: 2.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354631.54,
+            "range": "7660.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354631.54\nmean: 355419.93\nstdev: 7660.51\ncv: 2.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81987.17,
+            "range": "669.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81987.17\nmean: 81854.16\nstdev: 669.12\ncv: 0.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819871.67,
+            "range": "6691.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819871.67\nmean: 818541.58\nstdev: 6691.23\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
