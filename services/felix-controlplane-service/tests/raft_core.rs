@@ -985,7 +985,7 @@ async fn formed_and_leaderless(
         Duration::from_secs(10),
         || {
             nodes.iter().all(|node| {
-                node.handle.status().voters == [1, 2, 3]
+                node.handle.status().voters == (1..=dirs.len() as NodeId).collect::<Vec<_>>()
                     && node
                         .handle
                         .readiness()
@@ -1346,6 +1346,73 @@ async fn a_wiped_member_is_counted_by_no_leader_until_every_peer_reports_its_ter
         .iter()
         .filter(|node| node.handle.status().id == leader_id)
     {
+        node.stop().await;
+    }
+}
+
+/// #2365. Two members of five lose their volumes. Each learns its floor
+/// from the other three, and the other wiped member says it withholds its
+/// vote instead of giving a term. Both catch up and vote again; waiting on
+/// each other's term, neither would.
+#[tokio::test]
+async fn two_wiped_members_of_five_do_not_wait_on_each_other() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let dirs: Vec<tempfile::TempDir> = (0..5)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    for gate in &gates {
+        gate.votes.store(false, SeqCst);
+    }
+    let leader = leader_of(&nodes.iter().collect::<Vec<_>>()).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    let leader_id = leader.status().id;
+    let followers: Vec<usize> = (0..5)
+        .filter(|i| nodes[*i].handle.status().id != leader_id)
+        .take(2)
+        .collect();
+    let (first, second) = (nodes.remove(followers[1]), nodes.remove(followers[0]));
+    let empties = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let (id, addr) = (first.handle.status().id, first.addr);
+    first.stop().await;
+    let wiped = vec![
+        wipe_and_restart(second, &empties[0], &members, &shutdown).await,
+        start_entering(
+            empties[1].path().into(),
+            settings(id, empties[1].path().into()),
+            Some(addr),
+            &members,
+            &shutdown,
+        )
+        .await,
+    ];
+    leader.write(set("k", "v2")).await.expect("write");
+    wait_until(
+        "both wiped members to catch up",
+        Duration::from_secs(20),
+        || {
+            wiped
+                .iter()
+                .all(|node| node.app.get("k").as_deref() == Some("v2"))
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for node in &wiped {
+        while withholds_its_vote(node).await {
+            assert!(
+                Instant::now() < deadline,
+                "a wiped member never voted again"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    shutdown.cancel();
+    for node in wiped.iter().chain(&nodes) {
         node.stop().await;
     }
 }

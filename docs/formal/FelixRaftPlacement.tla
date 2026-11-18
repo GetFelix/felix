@@ -149,15 +149,16 @@
 (*   NoWithhold     -- Rotate = FALSE only: a wiped member votes at once.  *)
 (*   WithheldCounts -- Rotate = FALSE only: a leader counts the appends    *)
 (*                     and heartbeats a member answers while its vote is   *)
-(*                     withheld. This is what the metadata group does      *)
-(*                     today, and it loses a committed entry (issue        *)
-(*                     2365). With the rule on, three members are safe and *)
-(*                     five are not: the member can vote twice in the term *)
-(*                     it forgot (FelixRaftPlacementSameIdFive.cfg).       *)
+(*                     withheld. The metadata group does this, and alone   *)
+(*                     it loses a committed entry (issue 2365). With the   *)
+(*                     rule on, three members are safe and five are not:   *)
+(*                     the member can vote twice in the term it forgot     *)
+(*                     (FelixRaftPlacementSameIdFive.cfg). Floor closes it.*)
 (*   Floor          -- adds the rule the metadata group has: a withheld    *)
 (*                     member answers a leader only once every other       *)
-(*                     member that holds its vote has given its term, and  *)
-(*                     only a leader at or above the highest of them.      *)
+(*                     member has answered, with its term or with word     *)
+(*                     that it is withheld too, and only a leader at or    *)
+(*                     above the highest term given. Silence blocks.       *)
 (*                     Read FALSE as "this rule removed".                  *)
 (*   AnswerAnyId    -- Rotate = TRUE only: a copy answers a request that   *)
 (*                     names an older copy id of its broker.               *)
@@ -878,14 +879,16 @@ AskTarget(s, i) ==
     /\ hold' = [hold EXCEPT ![s] = LastIdx(i) + 2]
     /\ UNCHANGED <<election, raft, copy, floor, mark, rec, reached, plane, delivered, used>>
 
-\* A withheld member asks every other member for its term. Each must hold
-\* its vote and answer; the floor is the highest term given.
+\* A withheld member asks every other member for its term. Each must
+\* answer. One that withholds its vote too gives no term; the floor is the
+\* highest term the others give.
 LearnFloor(s) ==
     /\ Floor
     /\ hold[s] # 0
     /\ floor[s] = -1
-    /\ \A k \in InitBrokers \ {s} : k \notin Absent /\ hold[k] = 0
-    /\ floor' = [floor EXCEPT ![s] = MaxOf({0} \cup {term[k] : k \in InitBrokers \ {s}})]
+    /\ \A k \in InitBrokers \ {s} : k \notin Absent
+    /\ floor' = [floor EXCEPT ![s] =
+                    MaxOf({0} \cup {term[k] : k \in {t \in InitBrokers \ {s} : hold[t] = 0}})]
     /\ UNCHANGED <<election, raft, copy, hold, mark, rec, reached, plane, delivered, used>>
 
 \* The member votes again once it has applied that far, with the reached

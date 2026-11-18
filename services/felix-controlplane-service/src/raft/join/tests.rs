@@ -628,14 +628,14 @@ async fn the_floor_waits_for_every_member_and_takes_the_highest_term() {
     let client = reqwest::Client::new();
     let (second, s2) = answering(r#"{"last_log_index":4,"member":2,"term":3}"#).await;
     let (withheld, s3) = answering(r#"{"last_log_index":null,"member":3}"#).await;
-    assert_eq!(term_of(&client, 2, Some(&second)).await, Ok(3));
+    assert_eq!(term_of(&client, 2, Some(&second)).await, Ok(Some(3)));
     assert!(
         term_of(&client, 3, Some(&second)).await.is_err(),
         "misdirected"
     );
     assert!(
         term_of(&client, 3, Some(&withheld)).await.is_err(),
-        "no term"
+        "no term and no word that it is withheld"
     );
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -662,6 +662,53 @@ async fn the_floor_waits_for_every_member_and_takes_the_highest_term() {
     assert!(handle.serves_leader(5));
     handle.may_vote.store(true, Ordering::SeqCst);
     assert!(handle.serves_leader(0), "a voting member refused a leader");
+    member.stop().await;
+    for server in [s2, s3, s4] {
+        server.abort();
+    }
+}
+
+/// A member that says it withholds its vote counts as answered with no
+/// term, so two empty members do not wait on each other forever (#2365).
+/// One that gives a term while saying it is withheld contradicts itself and
+/// does not count.
+#[tokio::test]
+async fn a_member_that_says_it_is_withheld_answers_with_no_term() {
+    let client = reqwest::Client::new();
+    let (second, s2) = answering(r#"{"last_log_index":4,"member":2,"term":3}"#).await;
+    let (withheld, s3) = answering(r#"{"last_log_index":null,"member":3,"withheld":true}"#).await;
+    let (both, s4) = answering(r#"{"member":3,"term":7,"withheld":true}"#).await;
+    assert_eq!(term_of(&client, 3, Some(&withheld)).await, Ok(None));
+    assert!(
+        term_of(&client, 3, Some(&both)).await.is_err(),
+        "a term from a member that says it is withheld"
+    );
+    assert!(
+        term_of(&client, 2, Some(&withheld)).await.is_err(),
+        "misdirected"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let member = Served::start(member_settings(1, dir.path()), None).await;
+    let handle = member.handle.clone();
+    handle.may_vote.store(false, Ordering::SeqCst);
+    let standing = handle.standing().await.expect("standing");
+    assert!(standing.withheld && standing.term.is_none(), "{standing:?}");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        handle.learn_floor(&client, &[(2, Some(second)), (3, Some(withheld))]),
+    )
+    .await
+    .expect("the floor waited on a member that said it is withheld");
+    assert!(!handle.serves_leader(2), "served a leader below the floor");
+    assert!(handle.serves_leader(3));
+
+    handle.may_vote.store(true, Ordering::SeqCst);
+    let standing = handle.standing().await.expect("standing");
+    assert!(
+        !standing.withheld && standing.term.is_some(),
+        "{standing:?}"
+    );
     member.stop().await;
     for server in [s2, s3, s4] {
         server.abort();

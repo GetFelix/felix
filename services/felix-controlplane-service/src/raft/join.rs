@@ -73,6 +73,11 @@ pub(super) struct Standing {
     /// build that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) term: Option<u64>,
+    /// The member withholds its vote, so it gives no term. It has promised
+    /// nothing since it lost its volume, and what it promised before went
+    /// with the volume. Absent (false) from a build that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) withheld: bool,
 }
 
 /// No floor learned yet: a withheld member serves no leader.
@@ -300,12 +305,13 @@ fn tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
     wrapped.or_else(|| err.source()).is_some_and(tls_failure)
 }
 
-/// The term member `asked` holds, from its `standing` answer.
+/// The term member `asked` holds, from its `standing` answer, or `None`
+/// when it says it withholds its vote.
 async fn term_of(
     client: &reqwest::Client,
     asked: NodeId,
     base: Option<&str>,
-) -> Result<u64, String> {
+) -> Result<Option<u64>, String> {
     let base = base.ok_or("no address configured")?;
     let response = client
         .get(format!("{base}{}", super::peer_route("standing")))
@@ -323,20 +329,27 @@ async fn term_of(
     match standing {
         Standing {
             member: Some(member),
-            term: Some(term),
-            ..
-        } if member == asked => Ok(term),
-        Standing {
-            member: Some(member),
             ..
         } if member != asked => Err(format!("its address is answered by member {member}")),
         Standing { member: None, .. } => {
             Err("it runs a build that does not say which member it is".to_string())
         }
-        Standing { .. } => Err(
-            "it gives no term: it is withheld itself, or runs a build that predates the term"
-                .to_string(),
-        ),
+        Standing {
+            term: Some(term),
+            withheld: false,
+            ..
+        } => Ok(Some(term)),
+        Standing {
+            term: None,
+            withheld: true,
+            ..
+        } => Ok(None),
+        Standing { term: Some(_), .. } => {
+            Err("it gives a term and says it withholds its vote".to_string())
+        }
+        Standing { .. } => {
+            Err("it gives no term: it runs a build that predates the term".to_string())
+        }
     }
 }
 
@@ -599,11 +612,14 @@ impl RaftHandle {
     }
 
     /// Ask every other member for its term until each one answers, and set
-    /// the floor to the highest. Only a member that holds its vote gives a
-    /// term, and any term this member promised before it lost its volume
-    /// is held by the member it promised it to, so the floor is at least
-    /// that term. Silence is not an answer: a member that is down may be
-    /// the only one that knows a term this member promised.
+    /// the floor to the highest. A term this member promised before it lost
+    /// its volume is held by the quorum it promised it with, so the floor
+    /// is at least that term. A member that withholds its vote too says so
+    /// and gives no term: it promised nothing since its own loss, so it
+    /// holds none of those terms, and waiting on it would leave two empty
+    /// members stranded on each other. Silence is not an answer: a member
+    /// that is down may be the only one that knows a term this member
+    /// promised.
     async fn learn_floor(&self, client: &reqwest::Client, others: &[(NodeId, Option<String>)]) {
         let mut last_waiting_log: Option<tokio::time::Instant> = None;
         loop {
@@ -611,7 +627,7 @@ impl RaftHandle {
             let mut waiting = Vec::new();
             for (id, base) in others {
                 match term_of(client, *id, base.as_deref()).await {
-                    Ok(term) => floor = floor.max(term),
+                    Ok(term) => floor = floor.max(term.unwrap_or(0)),
                     Err(why) => waiting.push(format!("member {id}: {why}")),
                 }
             }
@@ -624,8 +640,8 @@ impl RaftHandle {
                 tracing::warn!(
                     ?waiting,
                     "this member lost its raft state and answers no leader until every other \
-                     member reports its term: a member that is down may hold a term this one \
-                     promised and forgot"
+                     member reports its term or that it withholds its vote: a member that is down \
+                     may hold a term this one promised and forgot"
                 );
                 last_waiting_log = Some(tokio::time::Instant::now());
             }

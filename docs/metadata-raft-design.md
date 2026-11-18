@@ -497,39 +497,55 @@ sequenceDiagram
 So before a wiped member answers any leader, it learns a floor:
 
 1. It asks every other member for its term (`standing`, field `term`).
-   Only a member that holds its vote gives one: a member that is wiped
-   itself, or runs a build that predates the field, gives none.
-2. Once every other member has given a term, the floor is the highest.
-   Silence is never an answer. The member it promised a term to may be the
-   only one that knows that term, and that member may be the one that is
-   down.
+   Only a member that holds its vote gives one. A member that withholds
+   its vote too says so instead (field `withheld`), and that counts as an
+   answer with no term. A member on a build that predates both fields
+   gives neither, and that does not count.
+2. Once every other member has answered, the floor is the highest term
+   given. Silence is never an answer. The member it promised a term to may
+   be the only one that knows that term, and that member may be the one
+   that is down.
 3. Until it votes again, the member answers append-entries, heartbeats and
    snapshot installs only from a leader at or above the floor, and answers
    any other with a 503, like a member that cannot be reached. A leader it
    does not answer counts it for nothing: not toward a commit and not
    toward the read-index round behind `catch-up-target`.
 
-Why that is enough: a term the wiped member promised was promised to a
-candidate or a leader, which keeps it (terms only rise), so the highest term
-among all the others is at least every term the member forgot. A leader at
-or above it is one the member could have backed. Once it answers that
-leader, its stored term is the leader's, and Raft's own checks refuse
-anything older from then on. It votes again only after catching up, so it
-never votes in a term it forgot either.
+Why that is enough: a term the wiped member promised was promised along
+with a majority, to a candidate or a leader, and every member of that
+majority keeps it (terms only rise) unless it lost its volume too. A member
+that lost its volume promised nothing since, and what it promised before
+went with it, so skipping its answer skips no term the asking member needs
+while some member of that majority still holds its vote. So the highest
+term given is at least every term the member forgot. A leader at or above
+it is one the member could have backed. Once it answers that leader, its
+stored term is the leader's, and Raft's own checks refuse anything older
+from then on. It votes again only after catching up, so it never votes in
+a term it forgot either.
 
 Hearing from a majority of the others is not enough with five members. A
 candidate that holds the member's forgotten vote can be the one member left
 out, and the member would then follow an older leader and grant that term's
-vote a second time (`docs/formal/FelixRaftPlacementSameIdFive.cfg`).
+vote a second time. `docs/formal/FelixRaftPlacementSameIdFive.cfg` shows
+that second vote with no floor at all; asking every member is what closes
+it.
 
 The cost: a wiped member counts for nothing until every other member is up
 and on a build that reports its term. With one of three members wiped,
 writes need both of the others until it has learned its floor. Two members
-wiped at once wait for each other: neither gives a term while withheld, so
-both need the operator ([restore](#restoring-beyond-quorum-loss)).
+wiped at once do not wait for each other: each says it is withheld, and
+each takes its floor from the rest. Past what the group survives (two of
+three wiped) the one member left may not hold the term the pair promised,
+and that is the [restore](#restoring-beyond-quorum-loss) case. A slot that
+a `form-without` waiver named and that never started is silent, so a
+member wiped in that group learns no floor until the slot answers.
 
 The model checks the rule (`FelixRaftPlacementSameId.cfg`,
-`FelixRaftPlacementSameIdFiveFloor.cfg`) and shows a write lost without it
+`FelixRaftPlacementSameIdFiveFloor.cfg`; two wipes in five,
+`FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg`; late first-boot members,
+`FelixRaftPlacementFormFiveFloor.cfg`; past quorum,
+`FelixRaftPlacementTwoWipesFloor.cfg`; a waived slot that never starts,
+`FelixRaftPlacementFormWaiverFloor.cfg`) and shows a write lost without it
 (`FelixRaftPlacementSameIdCounted.cfg`).
 
 The withheld vote is written to the member's store before any of this, so a
