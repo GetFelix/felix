@@ -431,8 +431,8 @@ kernel may have dropped pages, which then read as one. Two cases:
   record is written to
   the same disk without a sync. If the new record cannot be written, as
   on a full disk, the record there is cut to nothing in place, which needs
-  no free block and also rotates on the next start. If both writes are lost
-  and the machine lost power, the start rotates if the run was relaxed. A
+  no free block on ext4 or XFS and also rotates on the next start. If the
+  marker and the record change are lost and the machine lost power, the start rotates if the run was relaxed. A
   copy that never vouched keeps its id, and loses nothing a peer counted: it
   was counted only for synced records, and the failed flush acknowledged
   none. Only if the marker, the new record and the cut all fail and the

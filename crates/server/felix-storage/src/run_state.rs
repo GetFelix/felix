@@ -844,8 +844,8 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 ///
 /// If the new record cannot be written, the record there is cut to nothing
 /// in place, which reads as a relaxed crash in an unknown boot and rotates
-/// too. That needs no new file and no free block, so it still works on a
-/// full disk.
+/// too. That needs no new file, and on ext4 or XFS no free block, so it
+/// still works on a full disk.
 pub fn forget_boot(root: &Path) -> Result<()> {
     let _rewrite = REWRITE.lock();
     let bytes = match crate::fs::read(path_in(root)) {
