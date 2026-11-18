@@ -88,6 +88,9 @@ pub fn build_report<B: Ord + Clone>(
     })
 }
 
+/// A membership's voter sets with the index of its entry.
+type Indexed<B> = (u64, VoterSets<B>);
+
 /// Every membership of `epoch` in one copy, by the index of its entry.
 /// `None` for a copy of another epoch or one that does not exist.
 fn epoch_memberships<B>(
@@ -95,7 +98,7 @@ fn epoch_memberships<B>(
     index_spacing_bytes: u64,
     epoch: u64,
     reader: &impl MembershipReader<B>,
-) -> io::Result<Option<Vec<(u64, VoterSets<B>)>>> {
+) -> io::Result<Option<Vec<Indexed<B>>>> {
     if !crate::fs::try_exists(&read.path)? {
         return Ok(None);
     }
