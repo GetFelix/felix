@@ -100,8 +100,9 @@ pub(crate) fn append_budget(deadline: Duration) -> usize {
         .clamp(MIN_APPEND_BYTES, MAX_APPEND_BYTES)
 }
 
-/// The most record bytes one entry may hold: what one append can carry. A
-/// larger record could never be sent, so the proposer refuses it.
+/// The most record bytes one entry on a Raft shard may hold: the most one
+/// append carries. It keeps every entry well inside a frame and its deadline
+/// short, so the proposer refuses a larger record.
 pub(crate) const MAX_RECORD_BYTES: usize = MAX_APPEND_BYTES;
 
 /// The deadline for an append, given the one openraft set. An append always

@@ -1316,11 +1316,16 @@ largest record. The follower is told the same deadline. Without this, a record
 that takes longer than the heartbeat to cross the link would time out on every
 retry, and every entry after it would wait behind it for good.
 
-A record over 32 MiB (payload, key and headers, and publisher) is refused
-before it is proposed, with nothing written: no append could carry it. Cache
-writes take the same bound on key and value. The client is told the request
-is invalid and not to retry; an MQTT publish is refused with `PUBACK` 0x83,
-reason string `record_too_large`.
+On a Raft shard a record over 32 MiB (payload, key and headers, and
+publisher) is refused before it is proposed, with nothing written. That is
+the most one append carries, and it keeps every entry well inside a frame
+and its deadline near a second. Cache writes take the same bound on key and
+value. The hybrid engine takes records up to the frame limit. A client
+publishing to the shard's leader is told the request is invalid and not to
+retry; an MQTT publish there is refused with `PUBACK` 0x83, reason string
+`record_too_large`. A publish forwarded from another broker is answered as a
+storage failure instead (#2773). The defaults (16 MiB client frames, 1 MiB MQTT
+packets) stay under the bound.
 
 Two smaller limits apply first, when the leader builds the append: at most
 1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
