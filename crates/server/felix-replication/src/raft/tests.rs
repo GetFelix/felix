@@ -190,7 +190,7 @@ impl RaftTransport for Net {
         }
         let broker: &str = &request.to().broker;
         let loses = |only: &Option<String>| only.as_deref().is_none_or(|only| only == broker);
-        if request.beat > timers().heartbeat.as_millis() as u64
+        if request.beat.gap > timers().heartbeat.as_millis() as u64
             && loses(&self.lose_idle_to.lock())
             && self
                 .lose_idle
@@ -1075,8 +1075,8 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
 
     // A heartbeat c does not take: c may have restarted and forgotten the
     // gap, so the leader is fast again until c answers.
-    let lost = pace.sending(&c, false);
-    pace.unanswered(&c, &lost);
+    let _lost = pace.sending(&c, false);
+    pace.unanswered(&c);
     assert_eq!(pace.leader_gap(timers.now()), short, "c may have forgotten");
     pace.answered(&c, &pace.sending(&c, false));
     assert_eq!(pace.leader_gap(timers.now()), idle);
@@ -1105,28 +1105,19 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
 }
 
 /// A resend naming the short gap, then a heartbeat naming the idle one. The
-/// follower answers the heartbeat first and stores the short gap last, once
-/// the resend's fsync ends. The leader must stay at the short gap until the
-/// follower has been told the idle one after that (#2595).
+/// follower answers the heartbeat first and handles the resend last, once
+/// its fsync ends. The resend's gap must not overwrite the heartbeat's,
+/// which the leader has slowed down on (#2595).
 #[tokio::test(start_paused = true)]
-async fn a_leader_stays_fast_while_a_short_gap_append_is_on_its_way() {
+async fn a_short_gap_append_handled_after_a_later_heartbeat_is_not_stored() {
     let (leader, timers) = pace();
     let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
     let follower = super::group::Pace::new(timers, &group(0), &b);
     let (short, idle) = (timers.heartbeat, timers.idle_heartbeat);
     let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
-    // The follower stands only if the leader stays silent past its wait.
-    let hears = || {
-        let gap = leader.leader_gap(timers.now());
-        let wait = follower.follower_wait();
-        assert!(
-            gap < wait,
-            "leader silent for {gap} ms, follower waits {wait} ms"
-        );
-    };
 
     let entry = leader.sending(&b, true);
-    follower.followed(Some(entry.gap));
+    follower.took(1, entry.gap, entry.seq);
     leader.answered(&b, &entry);
     leader.answered(&c, &leader.sending(&c, true));
 
@@ -1138,81 +1129,81 @@ async fn a_leader_stays_fast_while_a_short_gap_append_is_on_its_way() {
     assert_eq!(heartbeat.gap, idle);
     leader.answered(&c, &leader.sending(&c, false));
 
-    follower.followed(Some(heartbeat.gap));
+    follower.took(1, heartbeat.gap, heartbeat.seq);
     leader.answered(&b, &heartbeat);
-    hears();
-    follower.followed(Some(resend.gap));
+    follower.took(1, resend.gap, resend.seq);
     leader.answered(&b, &resend);
-    hears();
-    assert_eq!(leader.leader_gap(timers.now()), short);
-
-    // The next heartbeat is told after the resend: now both are idle.
-    later(short).await;
-    let heartbeat = leader.sending(&b, false);
-    follower.followed(Some(heartbeat.gap));
-    leader.answered(&b, &heartbeat);
-    hears();
     assert_eq!(leader.leader_gap(timers.now()), idle);
+    let wait = follower.follower_wait();
+    assert!(
+        idle < wait,
+        "leader silent for {idle} ms, follower waits {wait} ms"
+    );
 }
 
-/// A resend naming the short gap times out on the leader while the
-/// follower's fsync for it runs, and the leader slows down on the next idle
-/// heartbeat. The resend finishing after that must not leave the follower
-/// at the short gap (#2595).
+/// A resend naming the short gap spends long enough in transit that the
+/// leader stops waiting for it and slows down on the next idle heartbeat.
+/// The resend then reaches the follower and is handled at once, well inside
+/// its deadline as the follower counts it. Its gap must not overwrite the
+/// heartbeat's (#2600).
 #[tokio::test(start_paused = true)]
-async fn an_append_past_its_deadline_leaves_the_follower_patient() {
+async fn a_short_gap_append_late_in_transit_is_not_stored() {
     let (leader, timers) = pace();
     let b = MemberId::new("b", 1);
     let follower = super::group::Pace::new(timers, &group(0), &b);
     let (short, idle) = (timers.heartbeat, timers.idle_heartbeat);
-    let deadline = Duration::from_millis(short);
     let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
 
     let entry = leader.sending(&b, true);
-    follower.took(entry.gap, timers.now(), deadline);
+    follower.took(1, entry.gap, entry.seq);
     leader.answered(&b, &entry);
 
     later(timers.idle_after - 1).await;
     let resend = leader.sending(&b, false);
     assert_eq!(resend.gap, short);
-    let arrived = timers.now();
     later(short).await;
-    leader.unanswered(&b, &resend);
+    leader.unanswered(&b);
 
     let heartbeat = leader.sending(&b, false);
     assert_eq!(heartbeat.gap, idle);
-    follower.took(heartbeat.gap, timers.now(), deadline);
+    follower.took(1, heartbeat.gap, heartbeat.seq);
     leader.answered(&b, &heartbeat);
     assert_eq!(leader.leader_gap(timers.now()), idle);
 
-    // The resend's fsync ends after its deadline.
-    later(short / 2).await;
-    follower.took(resend.gap, arrived, deadline);
-    let (gap, wait) = (leader.leader_gap(timers.now()), follower.follower_wait());
+    follower.took(1, resend.gap, resend.seq);
+    let wait = follower.follower_wait();
     assert!(
-        gap < wait,
-        "leader silent for {gap} ms, follower waits {wait} ms"
+        idle < wait,
+        "leader silent for {idle} ms, follower waits {wait} ms"
     );
 }
 
-/// A late append naming the idle gap is still stored: only a late short
-/// gap can leave the follower impatient under a slow leader.
+/// A new leader numbers its appends on its own clock. Its first append is
+/// stored even when its number is below the old leader's last one.
 #[tokio::test(start_paused = true)]
-async fn a_late_idle_gap_is_still_stored() {
+async fn a_new_terms_gap_is_stored_whatever_its_number() {
     let (_, timers) = pace();
     let b = MemberId::new("b", 1);
     let follower = super::group::Pace::new(timers, &group(0), &b);
-    let deadline = Duration::from_millis(timers.heartbeat);
-    follower.took(timers.heartbeat, timers.now(), deadline);
-    let short_wait = follower.follower_wait();
-    let arrived = timers.now();
-    tokio::time::advance(deadline).await;
-    follower.took(timers.idle_heartbeat, arrived, deadline);
+    follower.took(1, timers.idle_heartbeat, u64::MAX);
+    let patient = follower.follower_wait();
+    follower.took(2, timers.heartbeat, 0);
     assert!(
-        follower.follower_wait() > short_wait,
-        "a late idle gap was dropped: follower still waits {} ms",
-        follower.follower_wait()
+        follower.follower_wait() < patient,
+        "the new leader's short gap was dropped"
     );
+}
+
+/// A leader numbers its sends in the order it picks their gaps, across
+/// peers.
+#[tokio::test(start_paused = true)]
+async fn a_leaders_sends_are_numbered_in_order() {
+    let (leader, _) = pace();
+    let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
+    let first = leader.sending(&b, false);
+    let second = leader.sending(&c, true);
+    let third = leader.sending(&b, false);
+    assert!(first.seq < second.seq && second.seq < third.seq);
 }
 
 /// A transport that never answers.
@@ -1289,8 +1280,8 @@ async fn only_an_entry_sent_for_the_first_time_makes_a_group_busy() {
     let sent = pace.sending(&b, true);
     pace.answered(&b, &sent);
     assert!(!pace.new_entries(&entry(1, 1)), "the same entry to c");
-    let lost = pace.sending(&c, false);
-    pace.unanswered(&c, &lost);
+    let _lost = pace.sending(&c, false);
+    pace.unanswered(&c);
 
     // Past the idle wait and c's silence, b answers an idle heartbeat.
     tokio::time::advance(Duration::from_millis(
@@ -1304,7 +1295,7 @@ async fn only_an_entry_sent_for_the_first_time_makes_a_group_busy() {
     assert!(!pace.new_entries(&entry(1, 1)));
     let retry = pace.sending(&c, false);
     assert_eq!(retry.gap, timers.idle_heartbeat);
-    pace.unanswered(&c, &retry);
+    pace.unanswered(&c);
     assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
 
     // A later entry, or one at a lower index under a later term, is new.
@@ -2032,7 +2023,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
     let request = RaftRequest {
         group: group(0),
         to: MemberId::new(behind, 1),
-        beat: 0,
+        beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: Request::Snapshot {
@@ -2207,7 +2198,7 @@ async fn a_message_for_another_member_is_refused() {
     let request = |group: GroupId, to: MemberId| RaftRequest {
         group,
         to,
-        beat: 0,
+        beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: vote(),
@@ -2262,7 +2253,7 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
     let request = RaftRequest {
         group: group(0),
         to: MemberId::new("a", 1),
-        beat: 0,
+        beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_millis(50),
         body: Request::Vote(VoteRequest::new(vote, None)),
@@ -2581,7 +2572,7 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
     let pre_vote = |to: &str| RaftRequest {
         group: group(0),
         to: MemberId::new(to, 1),
-        beat: 0,
+        beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: Request::PreVote(VoteRequest::new(
@@ -2682,7 +2673,7 @@ async fn an_idle_group_elects_soon_after_a_transfer_to_a_dead_target() {
     let pre_vote = || RaftRequest {
         group: group(0),
         to: MemberId::new(other, 1),
-        beat: 0,
+        beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: Request::PreVote(VoteRequest::new(

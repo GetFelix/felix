@@ -446,7 +446,7 @@ impl Led {
         let request = RaftRequest {
             group: group(0),
             to: self.leader.clone(),
-            beat: 0,
+            beat: crate::raft::network::Beat::default(),
             report: crate::raft::network::Ask::Nothing,
             deadline: Duration::from_secs(1),
             body: Request::Written {
@@ -482,7 +482,7 @@ impl Led {
         let request = RaftRequest {
             group: group(0),
             to: member(voter),
-            beat: 0,
+            beat: crate::raft::network::Beat::default(),
             report: crate::raft::network::Ask::Nothing,
             deadline: Duration::from_secs(1),
             body: Request::Vote(rpc),

@@ -1194,12 +1194,13 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 5 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
+| send number | `u64`: on a leader's append, its place among the leader's appends in that term. A follower stores the beat only from an append numbered above the last one it stored a beat from. 0 otherwise |
 | report | `u8`: 1 on a leader's append with entries when it wants the member's written position back (message 7); 0 otherwise. Any other value is refused |
 | vote | term `u64`, the member voted for, committed `u8` |
 | log id | term `u64`, index `u64` |
