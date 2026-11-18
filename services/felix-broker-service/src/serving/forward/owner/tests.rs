@@ -1711,29 +1711,28 @@ mod on_raft {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
-        // A new sequenced batch of several records is refused whole, with
-        // nothing written.
+        // A new sequenced batch of several records is written once; sent
+        // again, it is answered from the log.
         let mut several = plain(b"several");
         several.payloads.push(Bytes::from_static(b"records"));
         several.headers = None;
         if let Some(producer) = several.producer.as_mut() {
             producer.sequence += 1;
         }
-        match handler.apply(several.clone()).await {
-            InternalMessage::ForwardPublishError(err) => {
-                // Not `UnsupportedKind`, which the requester answers by
-                // sending the batch again in the older form.
-                assert_eq!(err.code, ErrorCode::StorageFailed);
-                assert!(err.detail.contains("more than one"), "{}", err.detail);
+        let whole = (third.0 + 2, third.0 + 3);
+        for _ in 0..2 {
+            match handler.apply(several.clone()).await {
+                InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(whole)),
+                other => panic!("expected an acknowledgement, got {other:?}"),
             }
-            other => panic!("expected a refusal, got {other:?}"),
         }
         // Marked as records that each take a sequence, they land in order;
         // sent again, they are answered from the log.
         if let Some(producer) = several.producer.as_mut() {
             producer.per_record = true;
+            producer.sequence += 1;
         }
-        let both = (third.0 + 2, third.0 + 3);
+        let both = (third.0 + 4, third.0 + 5);
         for _ in 0..2 {
             match handler.apply(over_the_wire(several.clone())).await {
                 InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(both)),
@@ -1744,16 +1743,16 @@ mod on_raft {
         // continues from there.
         let mut after = plain(b"after");
         if let Some(producer) = after.producer.as_mut() {
-            producer.sequence += 3;
+            producer.sequence += 4;
         }
         match handler.apply(after).await {
             InternalMessage::ForwardPublishOk(ok) => {
-                assert_eq!(ok.offsets(), Some((third.0 + 4, third.0 + 4)));
+                assert_eq!(ok.offsets(), Some((third.0 + 6, third.0 + 6)));
             }
             other => panic!("expected an acknowledgement, got {other:?}"),
         }
         let stored: Vec<_> = broker
-            .read_durable(TENANT, NAMESPACE, STREAM, 0, both.0, 1 << 20)
+            .read_durable(TENANT, NAMESPACE, STREAM, 0, whole.0, 1 << 20)
             .await
             .expect("read")
             .into_iter()
@@ -1761,9 +1760,15 @@ mod on_raft {
             .collect();
         assert_eq!(
             stored,
-            [&b"several"[..], b"records", b"after"]
-                .map(Bytes::from_static)
-                .to_vec()
+            [
+                &b"several"[..],
+                b"records",
+                b"several",
+                b"records",
+                b"after"
+            ]
+            .map(Bytes::from_static)
+            .to_vec()
         );
 
         // Cut partway: the first record is held, the second reuses a held

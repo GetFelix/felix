@@ -4193,8 +4193,8 @@ Two trim cases are not modelled either:
 ### Idempotent batches on a Raft shard
 
 `FelixRaftBatch.tla` models an idempotent batch of several records on a Raft
-stream shard (#2524). A Raft shard does not take such a batch yet. The model
-is the design the code is being built to, so its configurations cite no tests.
+stream shard (#2524), which a Raft shard takes. Its configurations cite no
+tests; the code's are in `crates/server/felix-replication/src/raft/tests/idempotent.rs`.
 
 An idempotent batch carries a producer id and a sequence number, and the shard
 must store each of its records once however often the producer sends it. On
@@ -4300,35 +4300,21 @@ so its passes still hold for the code. `FelixRaftBatchReachFinishOverTail.cfg`
 and the second case of `FelixRaftBatchTableAtApply.cfg` are behaviour only the
 model has.
 
-What the code has to change. The model describes the producer table as #2524
-will leave it, not as it is today. The code change for #2524 has to make
-these true. "Today" is `origin/main`; "the first storage change" is the branch
-`raft/idem-batch-2524`, which adds batch pieces and cut batches to storage but
-still refuses a batch of several records in `raft/propose.rs`.
+What the code does to match the model. The model's producer table is the
+code's, on a Raft log:
 
 1. Every entry of a batch names the batch: producer, sequence, position and
-   length. Today only the first record does (`RecordMark::Opens`); the rest
-   are `Continues`, matched by offset (`log.rs`, `RecordMark::for_batch`). The
-   first storage change adds `RecordMark::Piece` for the later records of a
-   batch on a Raft log.
-2. A leader's blank entry, or any other record, does not abandon a cut batch.
-   Today `ProducerState::observe` drops the open batch on `GenerationStart`
-   and every other mark (`disk_log/producers.rs`). The first storage change
-   keeps it as a cut batch on a Raft log.
-3. The table keeps an unfinished batch per producer, not one per shard.
-   Today `ProducerState` has one `open` batch, and another producer's batch
-   opening drops it. The first storage change keeps one open batch plus a cut
-   batch per producer. It caps the cut batches at `MAX_CUTS` and forgets the
-   producer of the oldest when the cap is passed, which the model, with two
-   producers, never reaches.
-4. A purge keeps a cut batch or refuses its re-send. It never drops it. Today
-   `ProducerState::prune` drops an open batch whose first record is purged,
-   which is `AtPurge = "forget"`. The first storage change keeps a cut batch
-   that cannot be finished while one of its records is still in the log (the
-   `"refuse"` choice). Once the purge passes its last record it still drops
-   it. A re-send is then refused when the producer is unknown and its
-   sequence is not 0, but a cut first batch (sequence 0) is taken as new.
-   That is the `"forget"` case, and the code change has to close it.
+   length. The first record is `RecordMark::Opens` and the rest are
+   `RecordMark::Piece` (`log.rs`).
+2. A leader's blank entry, or any other record, does not abandon a cut batch:
+   `ProducerState` keeps it as a cut batch (`disk_log/producers.rs`).
+3. The table keeps an unfinished batch per producer, not one per shard. The
+   cut batches are capped at `MAX_CUTS`; past the cap the oldest becomes a
+   forgotten entry, which the model, with two producers, never reaches.
+4. A purge keeps a cut batch or refuses its re-send, never drops it (the
+   `"refuse"` choice of `AtPurge`). A cut batch whose records are all purged
+   is kept as a forgotten entry in `producers.forgotten`, so its re-send,
+   sequence 0 included, is refused with `sequence_expired`.
 
 ### Consumer groups on a Raft shard
 
