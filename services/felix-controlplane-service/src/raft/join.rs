@@ -68,7 +68,15 @@ pub(super) struct Standing {
     /// the member the address was configured for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) member: Option<NodeId>,
+    /// The member's current term, given only by a member that holds its
+    /// vote: a wiped one has forgotten the terms it promised. Absent from a
+    /// build that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) term: Option<u64>,
 }
+
+/// No floor learned yet: a withheld member serves no leader.
+pub(super) const NO_FLOOR: u64 = u64::MAX;
 
 fn has_node() -> bool {
     true
@@ -292,6 +300,46 @@ fn tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
     wrapped.or_else(|| err.source()).is_some_and(tls_failure)
 }
 
+/// The term member `asked` holds, from its `standing` answer.
+async fn term_of(
+    client: &reqwest::Client,
+    asked: NodeId,
+    base: Option<&str>,
+) -> Result<u64, String> {
+    let base = base.ok_or("no address configured")?;
+    let response = client
+        .get(format!("{base}{}", super::peer_route("standing")))
+        .send()
+        .await
+        .map_err(|err| format!("{err:#}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("answered {status}"));
+    }
+    let standing = response
+        .json::<Standing>()
+        .await
+        .map_err(|err| format!("undecodable answer: {err:#}"))?;
+    match standing {
+        Standing {
+            member: Some(member),
+            term: Some(term),
+            ..
+        } if member == asked => Ok(term),
+        Standing {
+            member: Some(member),
+            ..
+        } if member != asked => Err(format!("its address is answered by member {member}")),
+        Standing { member: None, .. } => {
+            Err("it runs a build that does not say which member it is".to_string())
+        }
+        Standing { .. } => Err(
+            "it gives no term: it is withheld itself, or runs a build that predates the term"
+                .to_string(),
+        ),
+    }
+}
+
 const RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// A target can be a tail a deposed leader never commits; past this, ask
@@ -491,6 +539,7 @@ impl RaftHandle {
             }
         }
         self.drop_waiver(why);
+        self.learn_floor(&client, &others).await;
         let others: Vec<String> = others.into_iter().filter_map(|(_, base)| base).collect();
         tracing::info!(
             why,
@@ -538,6 +587,50 @@ impl RaftHandle {
             return;
         }
         self.allow_votes();
+    }
+
+    /// Whether this member answers a leader in `term`. Always, once it may
+    /// vote. Before that it has forgotten which terms it promised, so it
+    /// answers only a leader at or above the floor [`Self::learn_floor`]
+    /// set, and no leader before the floor is known. A leader it did not
+    /// answer counts it for nothing.
+    pub(super) fn serves_leader(&self, term: u64) -> bool {
+        self.may_vote.load(Ordering::SeqCst) || term >= self.floor.load(Ordering::SeqCst)
+    }
+
+    /// Ask every other member for its term until each one answers, and set
+    /// the floor to the highest. Only a member that holds its vote gives a
+    /// term, and any term this member promised before it lost its volume
+    /// is held by the member it promised it to, so the floor is at least
+    /// that term. Silence is not an answer: a member that is down may be
+    /// the only one that knows a term this member promised.
+    async fn learn_floor(&self, client: &reqwest::Client, others: &[(NodeId, Option<String>)]) {
+        let mut last_waiting_log: Option<tokio::time::Instant> = None;
+        loop {
+            let mut floor = 0;
+            let mut waiting = Vec::new();
+            for (id, base) in others {
+                match term_of(client, *id, base.as_deref()).await {
+                    Ok(term) => floor = floor.max(term),
+                    Err(why) => waiting.push(format!("member {id}: {why}")),
+                }
+            }
+            if waiting.is_empty() {
+                self.floor.store(floor, Ordering::SeqCst);
+                tracing::info!(floor, "every raft member reported its term");
+                return;
+            }
+            if last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL) {
+                tracing::warn!(
+                    ?waiting,
+                    "this member lost its raft state and answers no leader until every other \
+                     member reports its term: a member that is down may hold a term this one \
+                     promised and forgot"
+                );
+                last_waiting_log = Some(tokio::time::Instant::now());
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
     }
 
     async fn catch_up(&self, client: &reqwest::Client, others: &[String]) {

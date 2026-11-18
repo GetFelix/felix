@@ -154,6 +154,11 @@
 (*                     2365). With the rule on, three members are safe and *)
 (*                     five are not: the member can vote twice in the term *)
 (*                     it forgot (FelixRaftPlacementSameIdFive.cfg).       *)
+(*   Floor          -- adds the rule the metadata group has: a withheld    *)
+(*                     member answers a leader only once every other       *)
+(*                     member that holds its vote has given its term, and  *)
+(*                     only a leader at or above the highest of them.      *)
+(*                     Read FALSE as "this rule removed".                  *)
 (*   AnswerAnyId    -- Rotate = TRUE only: a copy answers a request that   *)
 (*                     names an older copy id of its broker.               *)
 (*   DeleteOnTarget -- a copy is deleted as soon as the target drops it.   *)
@@ -215,6 +220,7 @@ CONSTANTS
     SkipJoint,
     NoWithhold,
     WithheldCounts,
+    Floor,          \* a withheld member answers no leader below its peers' terms
     AnswerAnyId,
     DeleteOnTarget,
     PlaceDoomed,
@@ -261,6 +267,7 @@ VARIABLES
     committed,  \* history: the committed sequence, each entry with the term that committed it
     copy,       \* the copy id in the broker's directory
     hold,       \* 0: votes. 1: vote withheld. n + 2: withheld until index n is applied
+    floor,      \* -1: not learned. Otherwise the lowest term a leader must be in to be answered while withheld
     mark,       \* the directory holds this member's own mark that it set out to form
     rec,        \* the members this directory records as having set out to form
     reached,    \* the directory records that this member reached the vote
@@ -280,7 +287,7 @@ VARIABLES
 
 election == <<role, term, votedFor, granted, elected, xfer>>
 raft == <<log, commitIdx, match, committed>>
-ident == <<copy, hold, mark, rec, reached>>
+ident == <<copy, hold, floor, mark, rec, reached>>
 plane == <<target, known, past, doomed, tver, inc, named, ack, told, rep>>
 vars == <<election, raft, ident, plane, delivered, used>>
 
@@ -372,6 +379,7 @@ Init ==
     /\ committed = <<>>
     /\ copy = [s \in Brokers |-> 0]
     /\ hold = [s \in Brokers |-> IF FirstBoot THEN 1 ELSE 0]
+    /\ floor = [s \in Brokers |-> -1]
     /\ mark = [s \in Brokers |-> FormRecord /\ ~FirstBoot /\ s \in InitBrokers]
     /\ rec = [s \in Brokers |->
                 IF FormRecord /\ ~FirstBoot /\ s \in InitBrokers THEN InitBrokers \ {s} ELSE {}]
@@ -431,11 +439,16 @@ BecomeLeader(c) ==
     /\ match' = [match EXCEPT ![c] = [m \in Ids |-> 0]]
     /\ UNCHANGED <<term, votedFor, granted, xfer, commitIdx, committed, ident, plane, delivered, used>>
 
+\* Whether j answers leader i. With Floor, a member whose vote is withheld
+\* answers only a leader at or above the floor it learned.
+Serves(i, j) == ~Floor \/ hold[j] = 0 \/ (floor[j] >= 0 /\ term[i] >= floor[j])
+
 \* A heartbeat: the receiver adopts the leader's term. A member whose vote
 \* is withheld still follows.
 Heartbeat(i, j) ==
     /\ i # j
     /\ role[i] = "leader"
+    /\ Serves(i, j)
     /\ term[j] < term[i]
     /\ \E m \in Members(Cfg(i)) : Is(j, m)
     /\ term' = [term EXCEPT ![j] = term[i]]
@@ -449,6 +462,7 @@ Heartbeat(i, j) ==
 Replicate(i, j) ==
     /\ i # j
     /\ role[i] = "leader"
+    /\ Serves(i, j)
     /\ term[j] <= term[i]
     /\ \E m \in Members(Cfg(i)) :
         /\ Is(j, m)
@@ -826,6 +840,7 @@ Emptied(s, whole) ==
     /\ Deposed({s})
     /\ copy' = [copy EXCEPT ![s] = IF Rotate THEN @ + 1 ELSE @]
     /\ hold' = [hold EXCEPT ![s] = IF Rotate \/ NoWithhold THEN 0 ELSE 1]
+    /\ floor' = [floor EXCEPT ![s] = -1]
     /\ mark' = [mark EXCEPT ![s] = @ /\ ~whole]
     /\ rec' = [rec EXCEPT ![s] = IF whole THEN {} ELSE @]
     /\ reached' = [reached EXCEPT ![s] = @ /\ ~whole]
@@ -861,7 +876,17 @@ AskTarget(s, i) ==
     /\ s # i
     /\ Confirmed(i)
     /\ hold' = [hold EXCEPT ![s] = LastIdx(i) + 2]
-    /\ UNCHANGED <<election, raft, copy, mark, rec, reached, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, floor, mark, rec, reached, plane, delivered, used>>
+
+\* A withheld member asks every other member for its term. Each must hold
+\* its vote and answer; the floor is the highest term given.
+LearnFloor(s) ==
+    /\ Floor
+    /\ hold[s] # 0
+    /\ floor[s] = -1
+    /\ \A k \in InitBrokers \ {s} : k \notin Absent /\ hold[k] = 0
+    /\ floor' = [floor EXCEPT ![s] = MaxOf({0} \cup {term[k] : k \in InitBrokers \ {s}})]
+    /\ UNCHANGED <<election, raft, copy, hold, mark, rec, reached, plane, delivered, used>>
 
 \* The member votes again once it has applied that far, with the reached
 \* flag written first.
@@ -870,7 +895,7 @@ VoteAgain(s) ==
     /\ commitIdx[s] >= hold[s] - 2
     /\ hold' = [hold EXCEPT ![s] = 0]
     /\ reached' = [reached EXCEPT ![s] = @ \/ FormReached]
-    /\ UNCHANGED <<election, raft, copy, mark, rec, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, floor, mark, rec, plane, delivered, used>>
 
 \* First start. A is the set of members that answer, and it holds every
 \* waived member that is up. Every other member answers, bar those a
@@ -901,7 +926,7 @@ Intend(s, A) ==
     /\ Standing(s, A)
     /\ \A t \in A : s \notin rec[t]
     /\ mark' = [mark EXCEPT ![s] = TRUE]
-    /\ UNCHANGED <<election, raft, copy, hold, rec, reached, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, floor, hold, rec, reached, plane, delivered, used>>
 
 \* Another member records it, whatever that member's own state.
 Announce(s, t) ==
@@ -912,7 +937,7 @@ Announce(s, t) ==
     /\ mark[s]
     /\ s \notin rec[t]
     /\ rec' = [rec EXCEPT ![t] = @ \cup {s}]
-    /\ UNCHANGED <<election, raft, copy, hold, mark, reached, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, floor, hold, mark, reached, plane, delivered, used>>
 
 \* The member votes. With FormRecord: once every member that answers holds
 \* the record. It does not read the answers again, which allows more than
@@ -927,7 +952,7 @@ Form(s, A) ==
          ELSE Standing(s, A)
     /\ hold' = [hold EXCEPT ![s] = 0]
     /\ reached' = [reached EXCEPT ![s] = @ \/ FormReached]
-    /\ UNCHANGED <<election, raft, copy, mark, rec, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, floor, mark, rec, plane, delivered, used>>
 
 Up == Brokers \ Absent
 
@@ -938,7 +963,7 @@ Next ==
         \/ Campaign(s) \/ BecomeLeader(s) \/ AdvanceCommit(s) \/ AppendRecord(s)
         \/ LeaveJoint(s) \/ StepDown(s)
         \/ CpReport(s) \/ CpDoom(s) \/ Wipe(s, TRUE) \/ Wipe(s, FALSE) \/ Delete(s)
-        \/ VoteAgain(s)
+        \/ VoteAgain(s) \/ LearnFloor(s)
         \/ \E m \in Ids : AddLearner(s, m)
         \/ \E T \in Targets : Change(s, T)
         \/ \E T \in Targets : GrowSelf(s, T)
@@ -962,6 +987,7 @@ TypeOK ==
         /\ commitIdx[s] <= LastIdx(s)
         /\ copy[s] \in 0..MaxCopy
         /\ hold[s] \in Nat
+        /\ floor[s] \in -1..MaxTerm
         /\ mark[s] \in BOOLEAN
         /\ reached[s] \in BOOLEAN
         /\ rec[s] \subseteq InitBrokers \ {s}

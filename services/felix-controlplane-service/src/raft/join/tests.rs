@@ -619,3 +619,51 @@ async fn an_empty_answer_counts_only_for_the_member_that_gave_it() {
     assert_eq!(probe(&client, 1, 3, Some(&holder)).await, Answer::Exists);
     server.abort();
 }
+
+/// The floor is the highest term every other member reports. A member that
+/// gives no term, being withheld itself or on an older build, leaves it
+/// unknown, and until it is known no leader is served (#2365).
+#[tokio::test]
+async fn the_floor_waits_for_every_member_and_takes_the_highest_term() {
+    let client = reqwest::Client::new();
+    let (second, s2) = answering(r#"{"last_log_index":4,"member":2,"term":3}"#).await;
+    let (withheld, s3) = answering(r#"{"last_log_index":null,"member":3}"#).await;
+    assert_eq!(term_of(&client, 2, Some(&second)).await, Ok(3));
+    assert!(
+        term_of(&client, 3, Some(&second)).await.is_err(),
+        "misdirected"
+    );
+    assert!(
+        term_of(&client, 3, Some(&withheld)).await.is_err(),
+        "no term"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let member = Served::start(member_settings(1, dir.path()), None).await;
+    let handle = member.handle.clone();
+    handle.may_vote.store(false, Ordering::SeqCst);
+    let unknown = [(2, Some(second.clone())), (3, Some(withheld))];
+    let learned = tokio::time::timeout(
+        Duration::from_secs(1),
+        handle.learn_floor(&client, &unknown),
+    )
+    .await;
+    assert!(learned.is_err(), "a floor from a member that gave no term");
+    assert!(
+        !handle.serves_leader(1_000),
+        "served before the floor is known"
+    );
+
+    let (third, s4) = answering(r#"{"member":3,"term":5}"#).await;
+    handle
+        .learn_floor(&client, &[(2, Some(second)), (3, Some(third))])
+        .await;
+    assert!(!handle.serves_leader(4), "served a leader below the floor");
+    assert!(handle.serves_leader(5));
+    handle.may_vote.store(true, Ordering::SeqCst);
+    assert!(handle.serves_leader(0), "a voting member refused a leader");
+    member.stop().await;
+    for server in [s2, s3, s4] {
+        server.abort();
+    }
+}

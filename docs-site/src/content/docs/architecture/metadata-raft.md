@@ -72,7 +72,7 @@ flowchart LR
 | Event | Behaviour |
 | --- | --- |
 | One instance of three dies | Writes pause for one election timeout; reads keep serving; no broker call fails |
-| An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. Caught up by snapshot install; no data surgery |
+| An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. It also forgot which terms it promised, so it answers no leader until every other member has reported its term, and then only a leader at or above the highest: a leader the group has replaced cannot commit with it. Until then it counts toward nothing, so with one of three wiped, writes need both others. Caught up by snapshot install; no data surgery |
 | Quorum lost | Survivors fail readiness rather than serve writes that cannot commit; brokers keep serving on their catalogs and leases, as during any control-plane outage |
 
 Library: [openraft](https://github.com/databendlabs/openraft), pinned to one
