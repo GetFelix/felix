@@ -738,6 +738,39 @@ impl LogCache {
             .await)
     }
 
+    /// Mark the directory a cache shard's log lives in at `incarnation` as a
+    /// Raft member's, and return it with the log's label, without opening it.
+    /// See [`crate::DiskLogProvider::claim_for_raft`].
+    ///
+    /// The directory is under this cache's root, so a Raft cache shard never
+    /// shares one with a stream of the same name. This store refuses to open
+    /// the shard from then on, so the log never has two writers.
+    pub fn claim_for_raft(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        incarnation: u64,
+    ) -> Result<(PathBuf, String)> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: cache.to_string(),
+            shard,
+        };
+        let label = layout::shard_label(&key);
+        if self.incarnations.resolve(tenant, namespace, cache) != Some(incarnation) {
+            return Err(StorageError::Closed(label));
+        }
+        // Noted first, as an open does, so a retire finds the directory.
+        self.dirs
+            .created(&layout::incarnation_dir_name(&key, incarnation));
+        let dir = layout::incarnation_dir(&self.root, &key, incarnation);
+        crate::disk_log::engine_marker::claim_for_raft(&dir, &label)?;
+        Ok((dir, label))
+    }
+
     /// Close one cache shard's log and forget it, for a shard this broker no
     /// longer holds. Everything accepted is flushed first.
     ///
