@@ -34,6 +34,7 @@ mod lease;
 mod membership;
 mod propose;
 mod purge;
+mod quiet_log;
 mod read;
 mod root;
 mod switch;

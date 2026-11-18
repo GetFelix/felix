@@ -359,30 +359,3 @@ fn a_failed_node_record_makes_the_broker_not_ready() {
         );
     }
 }
-
-/// Without `RUST_LOG`, unit tests must not print openraft's heartbeat
-/// warnings or tick info lines: they flooded the coverage job's log.
-#[test]
-fn unit_tests_default_to_a_quiet_log_filter() {
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::SubscriberExt;
-
-    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    struct Count(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-    impl<S: tracing::Subscriber> Layer<S> for Count {
-        fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    let subscriber = tracing_subscriber::registry().with(
-        Count(seen.clone()).with_filter(tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
-    );
-    tracing::subscriber::with_default(subscriber, || {
-        tracing::info!(target: "openraft::core::raft_core", "tick");
-        tracing::warn!(target: "openraft::core::heartbeat::worker", "heartbeat");
-        tracing::info!(target: "felix_broker_service", "chatty");
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 0);
-        tracing::warn!(target: "felix_broker_service", "real warning");
-        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
-    });
-}

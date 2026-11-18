@@ -28,12 +28,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 static OBS_INIT: OnceLock<()> = OnceLock::new();
 
-/// Filter used when `RUST_LOG` is unset. In unit tests openraft's per-tick
-/// info and heartbeat warnings from in-process clusters would bury real output.
-#[cfg(not(test))]
-pub(crate) const DEFAULT_LOG_FILTER: &str = "info";
-#[cfg(test)]
-pub(crate) const DEFAULT_LOG_FILTER: &str = "warn,openraft=error";
+/// Filter used when `RUST_LOG` is unset.
+pub(crate) const DEFAULT_LOG_FILTER: &str = felix_common::log_filter::default_filter(cfg!(test));
 
 /// Initializes observability for the service.
 ///
