@@ -1,1 +1,1 @@
-The Raft engine takes cache and counter writes from the broker (`RaftEngine::write_cache`), with or without a client producer id; a write that names none is applied once per call that reaches the log. Groundwork for routing cache shards to Raft (#2774).
+The Raft engine takes cache and counter writes from the broker (`RaftEngine::write_cache`), with or without a client producer id; a write that names none is applied at most once per call, with no retry guarantee. Groundwork for routing cache shards to Raft (#2774).

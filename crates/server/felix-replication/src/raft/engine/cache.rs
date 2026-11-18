@@ -1,7 +1,7 @@
 //! Cache and counter writes as the broker hands them to a Raft cache shard.
 //! See `docs/per-shard-raft.md`, "Cache and counters".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use super::RaftEngine;
@@ -81,38 +81,70 @@ impl ProducerRequest {
 ///
 /// The id is drawn once per engine, so a restarted broker or a new leader
 /// never reuses an earlier one's sequences, whose floor may be past them.
-/// Each write's floor is the lowest sequence still waiting for its answer,
-/// so concurrent writes keep each other's answers and the shard keeps no
-/// more than are in flight.
+/// Each id leaves its floor and at most its last answer in each shard it
+/// wrote to. A write's floor is the lowest sequence of its shard still
+/// waiting for an answer, so concurrent writes keep each other's answers,
+/// the shard keeps no more than are in flight, and a slow shard holds up
+/// no other's floor.
 pub(super) struct Anonymous {
     id: u64,
-    next: parking_lot::Mutex<(u64, BTreeSet<u64>)>,
+    next: parking_lot::Mutex<u64>,
+    waiting: parking_lot::Mutex<HashMap<ShardKey, BTreeSet<u64>>>,
+}
+
+/// A write's place among its shard's waiting sequences. Dropping it, on an
+/// answer, an error or a cancelled call, lets the floor pass the write:
+/// nothing sends it again, and a copy still in flight is an outcome its
+/// caller was not told.
+struct Waiting<'a> {
+    anonymous: &'a Anonymous,
+    shard: &'a ShardKey,
+    sequence: u64,
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        let mut waiting = self.anonymous.waiting.lock();
+        if let Some(shard) = waiting.get_mut(self.shard) {
+            shard.remove(&self.sequence);
+            if shard.is_empty() {
+                waiting.remove(self.shard);
+            }
+        }
+    }
 }
 
 impl Anonymous {
     pub(super) fn new() -> Self {
         Self {
             id: rand::random::<u64>() | ANONYMOUS,
-            next: parking_lot::Mutex::new((1, BTreeSet::new())),
+            next: parking_lot::Mutex::new(1),
+            waiting: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
-    fn take(&self) -> Request {
-        let mut next = self.next.lock();
-        let (sequence, waiting) = &mut *next;
-        let taken = *sequence;
-        *sequence += 1;
-        waiting.insert(taken);
-        let floor = waiting.first().copied().unwrap_or(taken);
-        Request {
+    fn take<'a>(&'a self, shard: &'a ShardKey) -> (Request, Waiting<'a>) {
+        let sequence = {
+            let mut next = self.next.lock();
+            let taken = *next;
+            *next += 1;
+            taken
+        };
+        let mut waiting = self.waiting.lock();
+        let held = waiting.entry(shard.clone()).or_default();
+        held.insert(sequence);
+        let floor = held.first().copied().unwrap_or(sequence);
+        let request = Request {
             producer: self.id,
-            sequence: taken,
+            sequence,
             floor,
-        }
-    }
-
-    fn answered(&self, sequence: u64) {
-        self.next.lock().1.remove(&sequence);
+        };
+        let place = Waiting {
+            anonymous: self,
+            shard,
+            sequence,
+        };
+        (request, place)
     }
 }
 
@@ -129,8 +161,8 @@ impl RaftEngine {
     ///
     /// With `producer`, a retry of the same request, on this leader or a
     /// later one, gets the first answer and is not applied again. Without
-    /// one there is no such guarantee: the write is applied once per call
-    /// that reaches the log.
+    /// one there is no such guarantee: the write is applied at most once
+    /// per call, and a retry after an error may apply it again.
     ///
     /// An error is an unknown outcome: the write may still commit.
     pub async fn write_cache(
@@ -140,23 +172,22 @@ impl RaftEngine {
         producer: Option<ProducerRequest>,
         timeout: Duration,
     ) -> Result<CacheReply, CommitError> {
-        let request = match producer {
-            Some(ProducerRequest(request)) => request,
-            None => self.anonymous.take(),
+        let (request, waiting) = match producer {
+            Some(ProducerRequest(request)) => (request, None),
+            None => {
+                let (request, waiting) = self.anonymous.take(shard);
+                (request, Some(waiting))
+            }
         };
         let (command, ttl) = command(op, request);
         let answer = self.cache_write(shard, command, ttl, timeout).await;
-        if producer.is_none() {
-            // Given up on an error as well: nothing sends it again, and a
-            // copy still in flight is an outcome the caller was not told.
-            self.anonymous.answered(request.sequence);
-        }
+        drop(waiting);
         match answer? {
             // Only a producer's floor drops an answer, and this one's floor
             // stayed at or below the write until now.
             Answer::Forgotten if producer.is_none() => Err(CommitError::LeadershipLost {
                 what: "cache write",
-                detail: "its answer was dropped",
+                detail: "the shard holds no answer for a write it was sent once",
             }),
             answer => Ok(reply(answer)),
         }
@@ -172,7 +203,9 @@ fn command(op: CacheOp, request: Request) -> (CacheCommand, u64) {
             condition,
         } => {
             // A TTL shorter than the stamp's microsecond still expires.
-            let ttl = ttl.map_or(0, |ttl| (ttl.as_micros() as u64).max(1));
+            let ttl = ttl.map_or(0, |ttl| {
+                u64::try_from(ttl.as_micros()).unwrap_or(u64::MAX).max(1)
+            });
             let cond = match condition {
                 CacheCondition::None => Condition::None,
                 CacheCondition::Absent => Condition::Absent,
@@ -217,3 +250,6 @@ fn reply(answer: Answer) -> CacheReply {
         Answer::Forgotten => CacheReply::Forgotten,
     }
 }
+
+#[cfg(test)]
+mod tests;

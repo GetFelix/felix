@@ -4707,9 +4707,10 @@ leader changes, or carries none. A write with none gets a producer id the
 engine draws at random when it starts, with the top bit set. Client ids
 never have that bit, so the two cannot collide, and a restarted broker never
 reuses a sequence that an earlier floor has passed. Each such write's floor
-is the lowest of the engine's sequences still waiting for an answer, so
-concurrent writes keep each other's answers and the shard holds no more of
-them than are in flight. Such a write has no retry guarantee: a client that
+is the lowest of the engine's sequences on that shard still waiting for an
+answer, so concurrent writes keep each other's answers and the shard holds
+no more of them than are in flight. A write that fails or whose caller gives
+up stops holding the floor. Such a write has no retry guarantee: a client that
 sends it again after an unknown outcome may apply it twice, as on the
 hybrid.
 
