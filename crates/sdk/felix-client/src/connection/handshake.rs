@@ -50,6 +50,11 @@ impl Credentials {
         crate::client::fetch_from(self.tokens.as_ref()).await
     }
 
+    /// See [`TokenProvider::bounds_its_own_fetch`].
+    pub(crate) fn bounds_its_own_fetch(&self) -> bool {
+        self.tokens.bounds_its_own_fetch()
+    }
+
     /// The same offers, authenticating as a different principal.
     pub(crate) fn for_identity(&self, tenant_id: String, tokens: Arc<dyn TokenProvider>) -> Self {
         Self {
@@ -106,6 +111,9 @@ impl Credentials {
     /// Authenticate `first`, a stream just opened on `connection`, with
     /// `token`, from [`Credentials::current_token`].
     ///
+    /// Also returns the token the broker accepted, which is not `token` after
+    /// a retry.
+    ///
     /// If the broker refuses the token and the provider has a different one,
     /// retry once on a new stream (the broker closes a stream after a failed
     /// auth). This catches a token that expired earlier than `exp` suggested,
@@ -116,7 +124,7 @@ impl Credentials {
         first: (SendStream, RecvStream),
         token: String,
         max_frame_bytes: usize,
-    ) -> Result<(SendStream, RecvStream, Negotiated)> {
+    ) -> Result<(SendStream, RecvStream, Negotiated, String)> {
         let mut token = token;
         let mut retried = false;
         let mut next = Some(first);
@@ -136,7 +144,7 @@ impl Credentials {
             )
             .await
             {
-                Ok(negotiated) => return Ok((send, recv, negotiated)),
+                Ok(negotiated) => return Ok((send, recv, negotiated, token)),
                 Err(err) if !retried && is_auth_refusal(&err) => {
                     self.tokens.invalidate(&token);
                     let fresh = self.tokens.token().await.map_err(token_failure)?;

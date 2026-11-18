@@ -9,10 +9,12 @@
 mod event_router;
 mod handshake;
 mod node;
+mod renewal;
 
 pub(crate) use event_router::{EventRouterCommand, spawn_event_router_with_config};
 pub(crate) use handshake::{Credentials, Negotiated, is_auth_refusal};
 pub(crate) use node::{NodeConnections, NodeLimits, OpenedStream, StreamLease};
+pub(crate) use renewal::Renewal;
 
 use std::net::SocketAddr;
 

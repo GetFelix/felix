@@ -146,6 +146,46 @@ pub(crate) fn trim_floor(
     Ok(highest)
 }
 
+/// The payload of every membership record in `dir` at or after `from`, by
+/// index, read the way [`read`] reads. Every record is read, so this is for
+/// a re-form's survey, not a hot path. Nothing is written.
+pub(crate) fn memberships(
+    dir: &Path,
+    label: &str,
+    index_spacing_bytes: u64,
+    from: Offset,
+) -> io::Result<Vec<(Offset, bytes::Bytes)>> {
+    let segments = Segments::list(dir, label, index_spacing_bytes)?;
+    let mut out = Vec::new();
+    for (id, path) in &segments.files {
+        let scanned = segments.scan(*id, path)?;
+        if scanned.last_offset().is_none_or(|last| last < from) {
+            continue;
+        }
+        let base = scanned.header.base_offset;
+        let reader = SegmentReader::open(path, *id, base).map_err(io::Error::other)?;
+        let mut budget = ReadBudget::unbounded().with_trims(TrimRecords::Include);
+        let mut records = Vec::new();
+        reader
+            .read_from(
+                &scanned.index,
+                from.max(base),
+                scanned.valid_bytes,
+                &mut budget,
+                label,
+                &mut records,
+            )
+            .map_err(io::Error::other)?;
+        out.extend(
+            records
+                .into_iter()
+                .filter(|record| record.mark == RecordMark::Membership && record.offset >= from)
+                .map(|record| (record.offset, record.payload)),
+        );
+    }
+    Ok(out)
+}
+
 /// A directory's segment files, sorted, with what scanning one needs.
 struct Segments<'a> {
     files: Vec<(u64, std::path::PathBuf)>,
