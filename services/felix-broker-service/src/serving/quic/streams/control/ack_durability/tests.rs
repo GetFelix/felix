@@ -6,8 +6,7 @@ fn facts() -> Facts {
     Facts {
         durable: true,
         quorum_consistency: false,
-        replication_factor: Some(3),
-        clustered: true,
+        replicated: true,
         raft: false,
         commit_ack: false,
         ack_durable_on_commit: true,
@@ -47,17 +46,6 @@ fn a_raft_durable_stream_is_a_majority() {
 }
 
 #[test]
-fn a_replica_set_of_one_is_not_called_a_quorum() {
-    let said = describe(&Facts {
-        quorum_consistency: true,
-        replication_factor: Some(1),
-        ..facts()
-    });
-    assert_eq!(said.copies, AckCopies::Leader);
-    assert_eq!(said.ack_at, AckPoint::Write);
-}
-
-#[test]
 fn acks_on_enqueue_say_so() {
     let said = describe(&Facts {
         ack_durable_on_commit: false,
@@ -93,25 +81,32 @@ fn on_commit_and_none_map_across() {
     assert_eq!(none.fsync, Some(AckFsync::None));
 }
 
+/// The facts are the weakest across the stream's shards, so one shard that is
+/// not on Raft, or has no replica, takes the whole claim back.
 #[test]
-fn a_majority_is_claimed_only_when_replication_is_known() {
-    let quorum = Facts {
+fn one_weak_shard_takes_the_majority_claim_back() {
+    let strong = Facts {
         quorum_consistency: true,
         ..facts()
     };
-    let standalone = describe(&Facts {
-        clustered: false,
-        ..quorum
+    assert_eq!(describe(&strong).copies, AckCopies::Quorum);
+    let unreplicated = describe(&Facts {
+        replicated: false,
+        ..strong
     });
-    assert_eq!(standalone.copies, AckCopies::Leader);
-    let unstated = describe(&Facts {
-        replication_factor: None,
-        ..quorum
-    });
-    assert_eq!(unstated.copies, AckCopies::Leader);
+    assert_eq!(unreplicated.copies, AckCopies::Leader);
     let in_memory = describe(&Facts {
         durable: false,
-        ..quorum
+        ..strong
     });
     assert_eq!(in_memory.copies, AckCopies::Leader);
+    // Raft on only some shards is `raft: false`: the ack point falls back to
+    // the stream's own setting rather than claiming a majority.
+    let mixed = describe(&Facts {
+        raft: false,
+        ack_durable_on_commit: false,
+        ..facts()
+    });
+    assert_eq!(mixed.ack_at, AckPoint::Enqueue);
+    assert_eq!(mixed.copies, AckCopies::Leader);
 }

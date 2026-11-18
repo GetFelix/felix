@@ -1207,12 +1207,12 @@ the same as "no guarantee".
 | Field | Values | Meaning |
 | --- | --- | --- |
 | `ack_at` | `enqueue`, `write` | `enqueue`: the ack is sent before the record is written, so it says only that the broker accepted the publish. `write`: it is sent after the write. |
-| `copies` | `leader`, `quorum` | `leader`: the owning broker holds it, and replicas may still be catching up. `quorum`: a majority of the shard's replica set, the leader included, holds it. Reported only when the broker is clustered, the stream has a log and the control plane says at least two copies; otherwise `leader`. |
+| `copies` | `leader`, `quorum` | `leader`: the owning broker holds it, and replicas may still be catching up. `quorum`: a majority of the shard's replica set, the leader included, holds it. Reported only when the stream has a log and every one of its shards has a replica besides its leader in this broker's routing snapshot; otherwise `leader`. |
 | `fsync` | `none`, `periodic`, `on_commit` | The sync policy of the log, absent for a stream with no log. `none`: survives a process crash, not a machine crash. `periodic`: a machine crash can lose what was acknowledged since the last sync. `on_commit`: synced before the ack. |
 
 What it does not say:
 
-- It describes the broker that answered, as it is configured now. `fsync` is that
+- It is the weakest across the stream's shards: one shard another broker owns, or without a replica, makes the whole view the weaker answer. It describes the broker that answered, as it is configured now. `fsync` is that
   broker's own setting; under `quorum` each member syncs by its own, so a fleet
   is expected to run one policy. Nothing on the wire checks it.
 - `quorum` with `fsync: periodic` means a majority has the record written, not

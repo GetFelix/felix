@@ -8,12 +8,13 @@ use felix_wire::{AckCopies, AckDurability, AckFsync, AckPoint};
 pub(super) struct Facts {
     pub(super) durable: bool,
     pub(super) quorum_consistency: bool,
-    pub(super) replication_factor: Option<u32>,
-    /// This broker is in a cluster, so a shard can have replicas at all.
-    pub(super) clustered: bool,
-    /// A Raft group runs this broker's durable shards, so every ack is a
-    /// majority commit.
+    /// Every shard of the stream is a member of a Raft group on this broker,
+    /// so every ack is a majority commit. A shard owned by another broker, or
+    /// a group not yet formed here, makes this false.
     pub(super) raft: bool,
+    /// Every shard of the stream has a replica besides its leader in this
+    /// broker's routing snapshot.
+    pub(super) replicated: bool,
     /// Acks wait for the write whatever the stream: the broker-wide setting or
     /// this client's `FEATURE_ACK_ON_COMMIT`.
     pub(super) commit_ack: bool,
@@ -22,7 +23,7 @@ pub(super) struct Facts {
     pub(super) fsync: Option<FsyncMode>,
 }
 
-/// Understates rather than overstates (`copies` is `quorum` only when replication is known): a publish forwarded to another owner
+/// Understates rather than overstates (`raft` and `replicated` hold only when true of every shard): a publish forwarded to another owner
 /// is answered after the owner's write whatever this says.
 pub(super) fn describe(facts: &Facts) -> AckDurability {
     let waits_for_majority = facts.quorum_consistency || (facts.raft && facts.durable);
@@ -33,12 +34,10 @@ pub(super) fn describe(facts: &Facts) -> AckDurability {
         } else {
             AckPoint::Enqueue
         };
-    // A majority is claimed only when the control plane said there are at least
-    // two copies on a clustered broker and the stream has a log. A single node,
-    // an in-memory stream or an unstated factor holds one copy whatever the
-    // level says.
-    let replicated = facts.durable && facts.clustered && facts.replication_factor >= Some(2);
-    let copies = if waits_for_majority && replicated {
+    // A majority is claimed only when every shard is known to have a replica
+    // and the stream has a log. A single node, an in-memory stream or a shard
+    // with no replica holds one copy whatever the level says.
+    let copies = if waits_for_majority && facts.durable && facts.replicated {
         AckCopies::Quorum
     } else {
         AckCopies::Leader
