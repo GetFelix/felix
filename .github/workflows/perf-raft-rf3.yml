@@ -1,0 +1,155 @@
+name: Perf - Raft against hybrid, RF 3
+
+# Part of #2646. Three brokers on one runner, one RF 3 Quorum stream, the same
+# felix-cluster harness and felix-loadgen load as the RF 3 cells of gate-perf.yml.
+# One binary: FELIX_SHARD_ENGINE picks the engine, so only the engine differs.
+#
+# Cells: Quorum with fsync on_commit and with fsync periodic, each at batch 64
+# (throughput) and batch 1 (p50 and p99). Rounds alternate engines and the side
+# that goes first flips each round, so runner drift lands on both.
+#
+# A report, not a gate: it is not part of docs/release-gate.md's required set and
+# nothing waits on it, because one shared runner is too noisy to block a PR.
+# The verdict column uses the engine A/B bounds (throughput at least 0.90 of the
+# hybrid, p99 at most 1.20); read it with the A/A noise in mind. Pick `ref` to
+# compare a PR branch and main by running it once on each.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to measure (default: the ref this run was dispatched on)"
+        type: string
+        default: ""
+      seconds:
+        description: "Seconds each trial publishes"
+        type: string
+        default: "30"
+      rounds:
+        description: "Rounds; each runs every cell once per engine"
+        type: string
+        default: "6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-raft-rf3-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: /tmp/felix-raft-rf3-target
+
+jobs:
+  rf3:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 240
+    steps:
+      - name: Check the inputs
+        env:
+          REF: ${{ inputs.ref }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          set -euo pipefail
+          [ -z "$REF" ] || [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "bad ref"; exit 1; }
+          [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
+          [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: perf-raft-rf3
+
+      # The broker needs the raft feature for FELIX_SHARD_ENGINE=raft to mean anything.
+      - name: Build
+        run: |
+          set -euo pipefail
+          cargo build --locked --release \
+            -p felix-broker-service --features felix-broker-service/raft --bin felix-broker \
+            -p felix-cluster --bin felix-cluster \
+            -p felix-loadgen --bin felix-loadgen
+          mkdir -p /tmp/felix-raft-rf3/bin
+          for b in felix-broker felix-cluster felix-loadgen; do
+            cp "$CARGO_TARGET_DIR/release/$b" /tmp/felix-raft-rf3/bin/
+          done
+          echo "Measuring $(git rev-parse --short HEAD) (${{ inputs.ref || github.ref_name }})." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the cells, alternating engines
+        env:
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          set -euo pipefail
+          results=/tmp/felix-raft-rf3/results.jsonl
+          : > "$results"
+          # cell name, fsync mode, payload bytes, batch. All RF 3. gate_perf.py
+          # reads a -b1 suffix as a latency cell. The engine A/B reads the side
+          # "baseline" as the hybrid and "head" as Raft.
+          cells="rf3-oncommit-1k:on_commit:1024:64 rf3-periodic-1k:periodic:1024:64
+                 rf3-oncommit-1k-b1:on_commit:1024:1 rf3-periodic-1k-b1:periodic:1024:1"
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            if [ $((round % 2)) -eq 1 ]; then engines="hybrid raft"; else engines="raft hybrid"; fi
+            for cell in $cells; do
+              IFS=: read -r name fsync payload batch <<<"$cell"
+              for engine in $engines; do
+                side=baseline; [ "$engine" = raft ] && side=head
+                ENGINE=$engine FELIX_DURABLE_FSYNC_MODE=$fsync \
+                  scripts/ci/gate-perf-cell.sh /tmp/felix-raft-rf3/bin "$side" "$name" 3 "$payload" "$batch" \
+                    "$SECONDS_PER_TRIAL" "$round" "$results" \
+                  || echo "::warning::$engine $name round $round failed"
+              done
+            done
+            echo "::endgroup::"
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          set -uo pipefail
+          out=/tmp/felix-raft-rf3
+          [ -s "$out/results.jsonl" ] || { echo "No trials completed." | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          {
+            echo "### Raft against hybrid, RF 3, medians over rounds"
+            echo
+            echo "Engine A/B rule: in the verdict table Baseline is the hybrid and Head is Raft. throughput is acked msg/s (what publishers sent and the brokers acknowledged), latency is per batch ack."
+            echo
+            echo "| Cell | Engine | Rounds | msg/s | p50 us | p99 us | failed sends |"
+            echo "|---|---|---|---|---|---|---|"
+            jq -rs '
+              def med: sort | if length == 0 then null else .[(length / 2 | floor)] end;
+              group_by([.cell, .side]) | .[]
+              | "| \(.[0].cell) | \(if .[0].side == "head" then "raft" else "hybrid" end) | \(length) | \(map(.msg_s) | med | floor) | \(map(.p50_us) | med) | \(map(.p99_us) | med) | \(map(.failed_sends // 0) | add) |"
+            ' "$out/results.jsonl"
+            echo
+          } | tee "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/ci/gate_perf.py compare "$out/results.jsonl" --mode engine \
+            --expect-cells rf3-oncommit-1k,rf3-periodic-1k,rf3-oncommit-1k-b1,rf3-periodic-1k-b1 \
+            --md "$out/table.md" --json "$out/verdict.json" || true
+          { echo "#### Verdict against the engine A/B bounds (informational)"; echo; cat "$out/table.md"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-raft-rf3
+          path: |
+            /tmp/felix-raft-rf3/results.jsonl
+            /tmp/felix-raft-rf3/summary.md
+            /tmp/felix-raft-rf3/table.md
+            /tmp/felix-raft-rf3/verdict.json
+          if-no-files-found: ignore
+          retention-days: 30
