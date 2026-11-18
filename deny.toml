@@ -29,19 +29,14 @@ ignore = [
   # release; drop this entry the moment the chain clears.
   { id = "RUSTSEC-2026-0249", reason = "unmaintained transitive dep via casbin->rhai; no upgrade exists as of 2026-08-10" },
   #
-  # Four more "unmaintained" advisories (no CVE, no known exploit), tracked in
-  # GetFelix/felix#2731. None has an upgrade path as of 2026-11-17:
-  #   - RUSTSEC-2026-0543 chrono: openraft -> display-more -> chrono-tz -> chrono,
-  #     plus openraft-macros, object_store and felix-controlplane-service.
-  #   - RUSTSEC-2026-0555 chrono-tz and RUSTSEC-2026-0559 chrono-tz-build:
-  #     openraft -> display-more 0.2.6 -> chrono-tz 0.8.6. We do not fork openraft.
+  # Two more "unmaintained" advisories (no CVE, no known exploit), tracked in
+  # GetFelix/felix#2731. Neither has an upgrade path as of 2026-11-18:
+  #   - RUSTSEC-2026-0543 chrono: object_store and felix-controlplane-service.
   #   - RUSTSEC-2026-0542 humantime: felix-storage -> object_store 0.14.2, which
   #     requires it unconditionally; 0.14.2 is the latest release.
-  # Each clears when upstream (openraft/display-more, object_store) drops the
+  # Each clears when upstream (object_store, the control plane) drops the
   # crate. Drop the entry when its chain clears.
-  { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono via openraft/object_store; see #2731" },
-  { id = "RUSTSEC-2026-0555", reason = "unmaintained chrono-tz via openraft->display-more; see #2731" },
-  { id = "RUSTSEC-2026-0559", reason = "unmaintained chrono-tz-build via openraft->display-more; see #2731" },
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono via object_store; see #2731" },
   { id = "RUSTSEC-2026-0542", reason = "unmaintained humantime via object_store; see #2731" },
 ]
 

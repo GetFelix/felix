@@ -149,6 +149,12 @@ pub(crate) struct Group {
     /// Timer checks the ticker gave up on because the group had not taken
     /// them by the next interval.
     dropped_ticks: AtomicU64,
+    /// Whether openraft's own election timer is on. openraft times a
+    /// follower out by its fixed election timeout, which an idle leader's
+    /// slow heartbeats outlast, so the timer runs only once this member's
+    /// pace says its leader is gone. The lock orders the switch with
+    /// [`Self::hold_elections`].
+    elections: parking_lot::Mutex<bool>,
     /// The term this member was first seen leading, and when, on the
     /// runtime's clock. It ages a term no majority has answered yet.
     leads_since: parking_lot::Mutex<Option<(u64, u64)>>,
@@ -818,6 +824,7 @@ impl Group {
             acked,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
+            elections: parking_lot::Mutex::new(false),
             leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             proposals: OnceLock::new(),
@@ -945,6 +952,7 @@ impl Group {
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
+        self.allow_elections();
         let mut dropped = Dropped(Some(&self.dropped_ticks));
         let ticked = self.raft.trigger().tick().await;
         dropped.0 = None;
@@ -953,6 +961,29 @@ impl Group {
             && !self.stopped.swap(true, Ordering::Relaxed)
         {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group stopped and is no longer ticked");
+        }
+    }
+
+    /// Turn openraft's election timer on: this member's pace has run out,
+    /// so openraft decides from here when it stands and when it retries. A
+    /// member that heard its leader since the ticker read its due time
+    /// keeps the timer off.
+    fn allow_elections(&self) {
+        let mut on = self.elections.lock();
+        if !*on && self.pace.timers.now() >= self.due_at() {
+            self.raft.runtime_config().elect(true);
+            *on = true;
+        }
+    }
+
+    /// Turn openraft's election timer off: this member hears a leader, or
+    /// voted for one, and its pace times that leader out from now on.
+    /// Called after [`Pace::took`] or [`Pace::voted`] has moved the due time.
+    fn hold_elections(&self) {
+        let mut on = self.elections.lock();
+        if *on {
+            self.raft.runtime_config().elect(false);
+            *on = false;
         }
     }
 
@@ -1159,9 +1190,16 @@ impl Group {
                 };
                 now + gap + 1
             }
+            // Past its wait, openraft's own election timer runs the member's
+            // elections and retries. The ticker looks again only so a change
+            // of role is seen.
             ServerState::Follower | ServerState::Candidate => {
                 let heard = pace.heard.load(Ordering::Relaxed);
-                heard.saturating_add(pace.follower_wait()).max(now + tick)
+                let wait = heard.saturating_add(pace.follower_wait());
+                match *self.elections.lock() {
+                    true => wait.max(now + pace.timers.heartbeat),
+                    false => wait.max(now + tick),
+                }
             }
             ServerState::Learner | ServerState::Shutdown => now + election_min,
         }
@@ -1190,8 +1228,14 @@ impl Group {
         FinishOnDrop(Some(Box::pin(async move {
             let reply = group.answer(body, report).await?;
             match &reply {
-                Reply::Append(Ok(_)) => group.pace.took(beat, arrived, deadline),
-                Reply::Vote(vote) if vote.vote_granted && !pre_vote => group.pace.voted(),
+                Reply::Append(Ok(_)) => {
+                    group.pace.took(beat, arrived, deadline);
+                    group.hold_elections();
+                }
+                Reply::Vote(vote) if vote.vote_granted && !pre_vote => {
+                    group.pace.voted();
+                    group.hold_elections();
+                }
                 _ => {}
             }
             Ok(reply)
