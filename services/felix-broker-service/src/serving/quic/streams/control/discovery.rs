@@ -140,6 +140,7 @@ pub(super) async fn stream_shards(
                     quorum_consistency: metadata.consistency
                         == felix_broker::ConsistencyLevel::Quorum,
                     replication_factor: metadata.replication_factor,
+                    clustered: publish_ctx.ingress.is_some(),
                     raft: publish_ctx.engine.runs_raft(),
                     commit_ack: session.commit_ack,
                     ack_durable_on_commit: publish_ctx.ack_durable_on_commit,

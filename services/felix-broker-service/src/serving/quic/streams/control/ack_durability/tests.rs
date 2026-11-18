@@ -7,6 +7,7 @@ fn facts() -> Facts {
         durable: true,
         quorum_consistency: false,
         replication_factor: Some(3),
+        clustered: true,
         raft: false,
         commit_ack: false,
         ack_durable_on_commit: true,
@@ -90,4 +91,27 @@ fn on_commit_and_none_map_across() {
         ..facts()
     });
     assert_eq!(none.fsync, Some(AckFsync::None));
+}
+
+#[test]
+fn a_majority_is_claimed_only_when_replication_is_known() {
+    let quorum = Facts {
+        quorum_consistency: true,
+        ..facts()
+    };
+    let standalone = describe(&Facts {
+        clustered: false,
+        ..quorum
+    });
+    assert_eq!(standalone.copies, AckCopies::Leader);
+    let unstated = describe(&Facts {
+        replication_factor: None,
+        ..quorum
+    });
+    assert_eq!(unstated.copies, AckCopies::Leader);
+    let in_memory = describe(&Facts {
+        durable: false,
+        ..quorum
+    });
+    assert_eq!(in_memory.copies, AckCopies::Leader);
 }

@@ -9,6 +9,8 @@ pub(super) struct Facts {
     pub(super) durable: bool,
     pub(super) quorum_consistency: bool,
     pub(super) replication_factor: Option<u32>,
+    /// This broker is in a cluster, so a shard can have replicas at all.
+    pub(super) clustered: bool,
     /// A Raft group runs this broker's durable shards, so every ack is a
     /// majority commit.
     pub(super) raft: bool,
@@ -20,7 +22,7 @@ pub(super) struct Facts {
     pub(super) fsync: Option<FsyncMode>,
 }
 
-/// Understates rather than overstates: a publish forwarded to another owner
+/// Understates rather than overstates (`copies` is `quorum` only when replication is known): a publish forwarded to another owner
 /// is answered after the owner's write whatever this says.
 pub(super) fn describe(facts: &Facts) -> AckDurability {
     let waits_for_majority = facts.quorum_consistency || (facts.raft && facts.durable);
@@ -31,8 +33,12 @@ pub(super) fn describe(facts: &Facts) -> AckDurability {
         } else {
             AckPoint::Enqueue
         };
-    // A set of one holds the record on one broker whatever the level says.
-    let copies = if waits_for_majority && facts.replication_factor != Some(1) {
+    // A majority is claimed only when the control plane said there are at least
+    // two copies on a clustered broker and the stream has a log. A single node,
+    // an in-memory stream or an unstated factor holds one copy whatever the
+    // level says.
+    let replicated = facts.durable && facts.clustered && facts.replication_factor >= Some(2);
+    let copies = if waits_for_majority && replicated {
         AckCopies::Quorum
     } else {
         AckCopies::Leader
