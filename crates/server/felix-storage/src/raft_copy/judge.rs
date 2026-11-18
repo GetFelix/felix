@@ -68,6 +68,9 @@ pub enum RotateReason {
     /// or truncation failed partway. The directory can hold less than the
     /// copy reported as written.
     Poisoned,
+    /// A re-form stopped it in the epoch it is at, and a leader of that
+    /// epoch was heard since ([`CopyRoot::rejoin`]).
+    Stopped,
 }
 
 /// A shard directory an earlier rotation moved aside. Its records are
@@ -143,6 +146,10 @@ impl CopyRoot {
         let label = label.into();
         let (found, reason) = self.judge_files(&shard, dir)?;
         let reason = match (found, reason) {
+            // Every other reason rotates it anyway, which is the rejoin.
+            (Some(_), None) if let Some(stopped) = super::stop_file::stopped(dir)? => {
+                return Err(io::Error::other(stopped));
+            }
             (Some(found), None) => {
                 let log = open_log(dir, &label, config.clone())?;
                 match judge_log(&log, &self.marks, &shard).await {
@@ -167,6 +174,50 @@ impl CopyRoot {
             (_, Some(reason)) => reason,
             (None, None) => unreachable!("a directory with no copy file has a reason"),
         };
+        self.rotate_and_open(shard, dir, label, config, reason)
+            .await
+    }
+
+    /// Open `dir`, which a re-form stopped in the epoch it is at, as a new
+    /// copy of `shard`: a new copy id that never voted, an empty log, and
+    /// the stopped directory kept in `.kept` as any rotation keeps it. Call
+    /// it only once a leader of that epoch is heard, so the group went on
+    /// without the copy; until then a re-run of the re-form may still need
+    /// it as a voter. A directory that is not stopped is an error.
+    pub async fn rejoin(
+        &self,
+        shard: &str,
+        dir: &Path,
+        label: impl Into<String>,
+        config: LogConfig,
+    ) -> io::Result<OpenedCopy> {
+        if super::start::building(dir)? || super::stop_file::stopped(dir)?.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: the copy is not stopped, or a re-form start did not finish",
+                    dir.display()
+                ),
+            ));
+        }
+        self.rotate_and_open(
+            Arc::from(shard),
+            dir,
+            label.into(),
+            config,
+            RotateReason::Stopped,
+        )
+        .await
+    }
+
+    async fn rotate_and_open(
+        &self,
+        shard: Arc<str>,
+        dir: &Path,
+        label: String,
+        config: LogConfig,
+        reason: RotateReason,
+    ) -> io::Result<OpenedCopy> {
         let replaced = copy_file::load(dir).ok().flatten().map(|found| found.copy);
         let (copy, kept) = self.rotate(&shard, dir, replaced, reason).await?;
         tracing::info!(

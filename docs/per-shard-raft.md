@@ -832,8 +832,32 @@ and then the plan says that D's records are not counted.
 
 An `apply` that stops copies and then fails before step 4 leaves them
 stopped. Running it again finishes the group. If the group elects without
-the stopped copies in between, the next `plan` leaves it alone, and how
-those copies come back is not decided yet (#2403).
+the stopped copies in between, the next `plan` leaves it alone, and each
+stopped copy comes back the way a wiped one does (#2403):
+
+- The marker (`raft-stopped`, `docs/storage-format.md`) names the epoch.
+  While the copy is still in that epoch, no member runs on its directory,
+  also after a restart: an open refuses it, and a message for its member
+  id gets a refusal and nothing else. It never votes or serves.
+- It rejoins only once it hears a leader of that epoch: an append from a
+  committed leader at or above the copy's own vote. Until then a re-run of
+  `apply` may still need it as a voter, so it waits.
+- The broker's next open of the shard then rotates the copy (rotation
+  reason `Stopped`): a new copy id that never voted, an empty log, and the
+  old directory kept in `.kept` as `restore`, so a later re-form reads its
+  records as evidence like any kept copy's.
+- The leader learns the new copy id from the refusal of the old one, and
+  the target swaps the old member for a learner with the new id. The
+  learner catches up from the leader (a cache group's from its snapshot,
+  a stream group's from its log) and is promoted once caught up, as in
+  "Membership" below.
+
+A re-form that finishes first starts the copy in the next epoch, and the
+marker of the old one no longer stops it.
+
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id`;
+> `crates/server/felix-storage/src/raft_copy/tests/stop.rs`.
 
 **Offsets are not reused.** The leader's report to the control plane
 ("Membership") carries the log id of its commit: the index, and the epoch

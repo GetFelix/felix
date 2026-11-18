@@ -9,7 +9,7 @@
 //! rotates the copy (new copy id, never voted, empty log) when the directory
 //! is empty, was minted under another storage id, names another copy than
 //! its marks, holds a vote or a log below them, or was poisoned in its last
-//! run.
+//! run. A copy a re-form stopped opens only through [`CopyRoot::rejoin`].
 //!
 //! A root opens only through the gate ([`check`]): its sequence, which rises with
 //! every synced mark write, is compared with the run witness's and the
@@ -43,6 +43,7 @@ mod rotated_by;
     allow(dead_code, reason = "the re-form command, not built yet, calls it")
 )]
 mod start;
+mod stop_file;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg_attr(
@@ -86,6 +87,7 @@ pub(crate) use rotated_by::RotatedBy;
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
+pub use stop_file::{StoppedCopy, stop, stopped};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"

@@ -26,7 +26,9 @@ use felix_common::fleet::{self, FleetGate};
 use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
-use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine, Target, TargetVersion};
+use felix_replication::raft::{
+    GroupId, GroupRuntime, MemberId, OpenError, RaftEngine, Target, TargetVersion,
+};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::raft_copy::{CopyRoot, holds_log_without_copy};
@@ -908,6 +910,22 @@ impl EngineShards for RaftShards {
                         Err(err) if err.is::<CarriedOver>() => {
                             if self.carried_over.lock().insert(key.clone()) {
                                 tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
+                            }
+                            if keep {
+                                short.push(held());
+                            }
+                            continue;
+                        }
+                        // Tried again on every pass: the open that follows
+                        // a leader's append rejoins it.
+                        Err(err)
+                            if matches!(
+                                err.downcast_ref::<OpenError>(),
+                                Some(OpenError::Stopped(_))
+                            ) =>
+                        {
+                            if self.held_warn.lock().due(key) {
+                                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "a Raft shard's copy here was stopped by a re-form that did not finish; it rejoins as a learner once a leader of its epoch is heard");
                             }
                             if keep {
                                 short.push(held());

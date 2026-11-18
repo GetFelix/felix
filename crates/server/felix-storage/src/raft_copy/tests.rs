@@ -8,6 +8,7 @@ mod placement_ack;
 mod reclaim;
 mod reform;
 mod start;
+mod stop;
 mod vouch;
 
 use std::io;

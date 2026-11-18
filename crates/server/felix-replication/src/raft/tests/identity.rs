@@ -1508,3 +1508,159 @@ async fn a_kept_copy_is_reclaimed_when_the_last_commit_is_exactly_the_covering_o
     second.log.close().await.ok();
     cluster.stop().await;
 }
+
+/// A re-form's apply stops a copy and fails before the rest (#2403). The
+/// other two elect without it. The stopped copy never runs as its old
+/// member, also after a reopen, and refuses every message. Once it hears
+/// the new leader it rotates, and the target readmits its new id as a
+/// learner that catches up and is promoted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let (key, within) = (shard(0), Duration::from_secs(5));
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&key, members.clone())
+            .await
+            .expect("initialize");
+    }
+    cluster.write(0, b"before").await;
+
+    let a = cluster.runtime("a");
+    let old = a.status(&key).expect("status").member;
+    // Cut until the stale leader below has been tried.
+    cluster.net.cut.lock().insert("a".into());
+    assert!(a.close(&key).await);
+    logs.remove("a").expect("log").close().await.expect("close");
+    felix_storage::raft_copy::stop(&roots.shard_dir("a")).expect("stop");
+    let a_dir = roots.shard_dir("a");
+    let reopen = || a.open_copy(group(0), &a_dir, log_config(), &roots.roots["a"]);
+    assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
+    assert!(a.status(&key).is_none(), "a stopped copy serves");
+
+    // A vote for a candidate far ahead is refused, not granted.
+    let ask_vote = || RaftRequest {
+        group: group(0),
+        to: old.clone(),
+        beat: 0,
+        report: crate::raft::network::Ask::Nothing,
+        deadline: Duration::from_secs(1),
+        body: {
+            let candidate = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("b", 1));
+            let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(candidate, false);
+            Request::Vote(VoteRequest::new(vote, None))
+        },
+    };
+    assert!(matches!(
+        a.handle(ask_vote()).await,
+        Err(Refused::Stopped(..))
+    ));
+
+    // A leader below the copy's own vote was deposed before the stop, so
+    // its append is no sign the group went on.
+    let stale = RaftRequest {
+        body: {
+            let leader = LeaderIdOf::<ShardTypes>::new(0, MemberId::new("b", 1));
+            let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, true);
+            Request::Append(openraft::raft::AppendEntriesRequest {
+                vote,
+                prev_log_id: None,
+                entries: Vec::new(),
+                leader_commit: None,
+            })
+        },
+        ..ask_vote()
+    };
+    assert!(matches!(a.handle(stale).await, Err(Refused::Stopped(..))));
+    assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
+    cluster.net.cut.lock().clear();
+
+    // b and c elect and go on; the next open of a after the leader's
+    // append reaches it is the rejoin.
+    cluster.write(0, b"after").await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let rejoined = loop {
+        match reopen().await {
+            Ok(opened) => break opened,
+            Err(OpenError::Stopped(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => panic!("reopen: {err}"),
+        }
+    };
+    let rotation = rejoined.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::Stopped);
+    assert_eq!(rotation.replaced, Some(old.copy));
+    let new = rejoined.member.clone();
+    assert_ne!(new.copy, old.copy);
+    assert_eq!(kept_copies(&roots.shard_dir("a")).expect("kept").len(), 1);
+    let status = a.status(&key).expect("status");
+    assert_eq!(
+        (status.member.clone(), status.role),
+        (new.clone(), Role::Learner)
+    );
+    assert_eq!(status.term, 0, "the new copy voted");
+
+    // Readmission: the target names a's new copy, so the leader swaps the
+    // old member for a learner with the new id and promotes it once caught
+    // up.
+    // a's new copy hears no leader until the target names it.
+    let leader = ["b", "c"]
+        .into_iter()
+        .find(|broker| {
+            cluster
+                .runtime(broker)
+                .status(&key)
+                .is_some_and(|status| status.role == Role::Leader)
+        })
+        .expect("b or c leads");
+    let voters = cluster
+        .runtime(leader)
+        .target_members(&key, BROKERS, within)
+        .await
+        .expect("members");
+    assert!(
+        voters.contains(&new) && !voters.contains(&old),
+        "{voters:?}"
+    );
+    let target = Target {
+        voters: voters.clone(),
+        version: TargetVersion {
+            incarnation: 0,
+            counter: 1,
+        },
+    };
+    let _telling = Telling::start(cluster.runtimes(), key.clone(), target);
+    eventually(|| {
+        BROKERS
+            .iter()
+            .all(|broker| cluster.runtime(broker).group(&key).expect("group").voters() == voters)
+            .then_some(())
+    })
+    .await;
+    let last = cluster.write(0, b"rejoined").await;
+    eventually(|| (a.status(&key).expect("status").last_index >= Some(last)).then_some(())).await;
+
+    rejoined.log.close().await.ok();
+    cluster.stop().await;
+    for (_, log) in logs {
+        log.close().await.ok();
+    }
+}
