@@ -74,7 +74,7 @@ pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use reform::{
-    BrokerCopies, CopyRead, KeptLog, first_free_index, kept_logs, read_copies, read_copy, read_kept,
+    BrokerCopies, CopyRead, KeptLog, kept_logs, read_copies, read_copy, read_kept,
 };
 #[allow(
     unused_imports,

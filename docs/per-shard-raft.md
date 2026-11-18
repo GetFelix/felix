@@ -5767,9 +5767,10 @@ not a weaker flush.
   mode, so a follower restarted in another mode answers by its new one.
   Skipping a report can only make a `Quorum` write wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
-  (`first_free_index`, `kept_logs`): the first index the new epoch may give
-  out, above the base, the stored floor and every reservation in the shard
-  directory and its kept directories; and for each kept directory, read
+  (`read_copies`, `kept_logs`): every reservation in the shard directory and
+  its kept directories, from which the plan's first index is set
+  (`ReformPlan::first_index`, above the base, the stored floor and every
+  reservation read); and for each kept directory, read
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
@@ -5829,7 +5830,7 @@ offsets out again (#2620). Also not built: the perf measurement.
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |
 | Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
 | The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |
-| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/reform.rs` (`first_free_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
+| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/vouch.rs` (`ReformPlan::first_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
 | Docs: this page's commit, read-bound and floor claims, `docs/durable-storage.md`, the status table | `docs/` | |
 
 Cluster and simulator tests: the `power-loss` nemesis on a relaxed RF 3
