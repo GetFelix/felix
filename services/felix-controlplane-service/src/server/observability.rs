@@ -15,15 +15,11 @@ use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 static OBS_INIT: OnceLock<()> = OnceLock::new();
-
-/// Filter used when `RUST_LOG` is unset.
-pub(crate) const DEFAULT_LOG_FILTER: &str = felix_common::log_filter::default_filter(cfg!(test));
 
 pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
     OBS_INIT.get_or_init(|| {
@@ -32,8 +28,7 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
         );
 
         let provider = build_tracer_provider(service_name);
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
+        let filter = felix_common::log_filter::env_filter(cfg!(test));
         // Unit tests in this crate install this subscriber for the whole
         // binary; the test writer lets libtest capture every test's logs.
         #[cfg(test)]

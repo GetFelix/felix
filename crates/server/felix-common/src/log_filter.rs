@@ -12,3 +12,21 @@ pub const DEFAULT_LOG: &str = "info";
 pub const fn default_filter(quiet: bool) -> &'static str {
     if quiet { QUIET_TEST_LOG } else { DEFAULT_LOG }
 }
+
+/// `RUST_LOG` when it parses, else [`default_filter`].
+#[cfg(feature = "logging")]
+pub fn env_filter(quiet: bool) -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter(quiet)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_only_in_tests() {
+        assert_eq!(default_filter(true), QUIET_TEST_LOG);
+        assert_eq!(default_filter(false), DEFAULT_LOG);
+    }
+}

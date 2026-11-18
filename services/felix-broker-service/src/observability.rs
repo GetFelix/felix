@@ -20,16 +20,12 @@ use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 #[cfg(test)]
 static METRICS_HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
 static OBS_INIT: OnceLock<()> = OnceLock::new();
-
-/// Filter used when `RUST_LOG` is unset.
-pub(crate) const DEFAULT_LOG_FILTER: &str = felix_common::log_filter::default_filter(cfg!(test));
 
 /// Initializes observability for the service.
 ///
@@ -50,14 +46,8 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 
         let provider = build_tracer_provider(service_name);
 
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
-        // Unit tests install this subscriber for the whole binary; the test
-        // writer lets libtest capture each test's lines.
-        #[cfg(test)]
-        let fmt_layer = tracing_subscriber::fmt::layer().with_test_writer();
+        let filter = felix_common::log_filter::env_filter(cfg!(test));
         // Off the calling thread: see `log_writer`.
-        #[cfg(not(test))]
         let fmt_layer = tracing_subscriber::fmt::layer().with_writer(log_writer::install());
         let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
 
