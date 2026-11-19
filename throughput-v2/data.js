@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795050521500,
+  "lastUpdate": 1795051507643,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61880,6 +61880,58 @@ window.BENCHMARK_DATA = {
             "range": "10225.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1239053.61\nmean: 1235999.06\nstdev: 10225.12\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dca9768b4e9525a67d1b30b0929630b04a1bef83",
+          "message": "test(raft): retention frees every member's disk on a Raft shard (#2602) (#2759)\n\n* test(raft): retention frees every member's disk on a Raft shard (#2602)\n\nThe retention timer, with raft_stream_purge finalized, now has end-to-end\ncoverage: every member's segment files shrink to about the bound, and a\nmember cut off past the purge catches up from the snapshot and frees its\nown disk. Adds the same check across real brokers in felix-cluster, and\nfixes the retention doc's claim that hidden segments stay on disk.\n\nSpec-Unaffected: tests and docs only; the purge they exercise is the protocol FelixRaftStreamPurge models (#2656), unchanged here.\n\n* docs(raft): state what a member cut off past a purge holds (#2602)\n\nSpec-Unaffected: docs and test wording only.",
+          "timestamp": "2026-11-18T17:06:21-08:00",
+          "tree_id": "24a8cbd6f41918da78410702def6ad768172a688",
+          "url": "https://github.com/GetFelix/felix/commit/dca9768b4e9525a67d1b30b0929630b04a1bef83"
+        },
+        "date": 1795051506944,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353369.29,
+            "range": "3327.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353369.29\nmean: 354468.87\nstdev: 3327.54\ncv: 0.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353369.29,
+            "range": "3327.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353369.29\nmean: 354468.87\nstdev: 3327.54\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81056.26,
+            "range": "597.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81056.26\nmean: 81313.68\nstdev: 597.75\ncv: 0.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810562.6,
+            "range": "5977.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810562.60\nmean: 813136.81\nstdev: 5977.47\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
