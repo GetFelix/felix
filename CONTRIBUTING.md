@@ -147,6 +147,7 @@ filler that restates what was just said.
   time, so PRs don't conflict on the changelog.
 - `task lint` and `task test` should pass locally before you open a PR. CI
   runs both plus `cargo-deny`.
+- PR CI runs only the jobs your change can affect (below).
 - The `Instructions per message` and `Performance Regression Check` workflows
   run on a PR only when it touches hot-path code (`crates/server`,
   `crates/protocol`, `crates/sdk/felix-client`, the cluster and loadgen test
@@ -164,3 +165,30 @@ filler that restates what was just said.
   `python3 scripts/perf/ipm_gate.py update <ipm-result.json>` (the result is
   an artifact of the run, one per architecture) and commit the baseline with a
   sentence on what the instructions buy. A toolchain bump updates it the same way.
+
+### How pull request CI picks its jobs
+
+On a pull request, the `changes` job in `.github/workflows/ci.yml` runs
+`scripts/ci/affected.py` over the changed files and turns the heavy jobs on or
+off. Pushes to `main` and manual runs still run everything, so a gap in the
+mapping shows up as a red `main`, not a silent miss.
+
+- A changed crate affects itself and every workspace crate that depends on
+  it, from `cargo metadata`. A change only under a crate's tests (`tests/`,
+  `benches/`, `examples/`, a `tests.rs` or `tests/` module) affects that crate
+  alone.
+- Each job runs when a crate it builds is affected. The cluster, simulator,
+  image, compose and chart jobs follow the broker and control plane binaries
+  and the `felix-cluster` harness. Fuzzing follows the fuzzed decoder crates.
+  The Python and Node conformance jobs follow their binding, `felix-client`,
+  and direct changes to the broker service, conformance kit or harness. Chart,
+  Docker, compose and script files turn on the jobs that read them.
+- The `test` job runs the affected crates' doctests. `Coverage` runs the whole
+  workspace whenever any crate is affected, since its gate compares totals.
+- `Cargo.toml`, `Cargo.lock`, the toolchain, `.cargo/`, `Taskfile.yml`, any
+  `build.rs`, `vendor/`, the CI workflow, its actions, the selector itself, and
+  any path the script does not know run everything.
+
+To force a full run, add the `ci:full` label and re-run the workflow (or
+push). Check what a change selects locally with
+`git diff --name-only origin/main... | python3 scripts/ci/affected.py`.
