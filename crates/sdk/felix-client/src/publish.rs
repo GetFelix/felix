@@ -45,6 +45,8 @@ use crate::telemetry::maybe_append_publish_ts_batch;
 use crate::timings;
 use routing::{Routed, STREAM_SHARD_CACHE_CAPACITY, StreamShardCache};
 use send::CancelledAfterEnqueue;
+#[cfg(test)]
+pub(crate) use writer::PublishRequest as TestPublishRequest;
 use writer::PublishRequest;
 
 /// Publishes to one broker over the client's pool of publish streams.
