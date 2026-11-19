@@ -50,11 +50,26 @@ jobs:
       formal: ${{ github.event.pull_request.draft != true && steps.formal.outputs.code || 'false' }}
       docs: ${{ steps.docs.outputs.code }}
       dotnet: ${{ github.event.pull_request.draft != true && steps.dotnet.outputs.code || 'false' }}
+      # Per job, from the crate graph (scripts/ci/affected.py); a pull request
+      # runs only the jobs its change can affect, everything else runs all.
+      test: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.test || 'true') || 'false' }}
+      sim: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.sim || 'true') || 'false' }}
+      cluster: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.cluster || 'true') || 'false' }}
+      images: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.images || 'true') || 'false' }}
+      compose: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.compose || 'true') || 'false' }}
+      chart: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.chart || 'true') || 'false' }}
+      python: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.python || 'true') || 'false' }}
+      typescript: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.typescript || 'true') || 'false' }}
+      fuzz: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.fuzz || 'true') || 'false' }}
+      stress: ${{ steps.code.outputs.code == 'true' && github.event.pull_request.draft != true && (steps.affected.outputs.full == 'false' && steps.affected.outputs.stress || 'true') || 'false' }}
+      # Empty means the whole workspace.
+      test_packages: ${{ steps.affected.outputs.full == 'false' && steps.affected.outputs.test_packages || '' }}
+      test_lib_packages: ${{ steps.affected.outputs.full == 'false' && steps.affected.outputs.test_lib_packages || '' }}
     steps:
+      # Whole tree: the job selection reads every crate's manifest.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-          sparse-checkout: .github/actions
       - id: code
         uses: ./.github/actions/code-changed
         with:
@@ -84,6 +99,10 @@ jobs:
         with:
           ignore: '.*'
           keep: '^docs/|^docs-site/|\.md$|^\.github/workflows/pages\.yml$|^scripts/(build-docs-versions\.sh|latest-stable-tag\.sh|check-docs-links\.mjs)$|^scripts/check_|^scripts/test_check_|^crates/sdk/felix-typescript/(index\.d\.ts|tsconfig\.json|test/)'
+
+      - id: affected
+        if: steps.code.outputs.code == 'true'
+        uses: ./.github/actions/affected-jobs
 
   # `checks` runs docs:evidence on a code change; this is the same check for a
   # change that is docs alone, which `checks` skips. A cited test or a table
@@ -194,7 +213,7 @@ jobs:
     # Changing a comment in the broker should not rebuild two container images,
     # but changing anything either binary compiles from should.
     if: >-
-      needs.changes.outputs.code == 'true' && (
+      needs.changes.outputs.images == 'true' && (
         github.event_name == 'push' ||
         (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
       )
@@ -304,7 +323,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >-
-      needs.changes.outputs.code == 'true' && (
+      needs.changes.outputs.compose == 'true' && (
         github.event_name == 'push' ||
         (github.event_name == 'pull_request' && github.event.pull_request.draft == false)
       )
@@ -337,7 +356,7 @@ jobs:
   # quarters of the suite's time, so they run beside this in `cluster`.
   test:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.test == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
@@ -386,15 +405,24 @@ jobs:
           FELIX_TEST_TIMEOUT_SCALE: "3"
         run: task test:workspace
 
+      # Narrowed to the affected crates when that is not the whole workspace.
       - name: Test (what coverage does not run)
         if: github.event_name == 'pull_request'
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
-        run: task test:residual
+          PACKAGES: ${{ needs.changes.outputs.test_packages }}
+          LIB_PACKAGES: ${{ needs.changes.outputs.test_lib_packages }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PACKAGES" ]; then task test:residual; exit 0; fi
+          # Same two commands as test:residual, on the affected crates.
+          cargo test $PACKAGES --doc
+          if [ -n "$LIB_PACKAGES" ]; then cargo test $LIB_PACKAGES --lib; fi
 
       # Failed 74 times in 640 under load, and never alone, before cache puts
       # staged on a task of their own.
       - name: Cancelled put under load
+        if: needs.changes.outputs.stress == 'true'
         run: task test:stress
 
   # Each simulator seed run twice must give the same run (Taskfile.yml,
@@ -403,7 +431,7 @@ jobs:
   sim:
     name: Simulator determinism
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.sim == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     # The job takes 8 to 15 minutes on main. A seed run that holds its thread
     # ends the process within ten minutes and names the seed
@@ -447,7 +475,7 @@ jobs:
   # saves. Half the seeds run with bounded skew.
   sim-seeds:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.sim == 'true' && github.event_name != 'workflow_dispatch'
     continue-on-error: true
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
@@ -525,7 +553,7 @@ jobs:
   cluster:
     name: Cluster tests (${{ matrix.suite }})
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.cluster == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     env:
@@ -631,7 +659,7 @@ jobs:
   cluster-raft:
     name: Cluster tests (Raft shards)
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.cluster == 'true' && github.event_name != 'workflow_dispatch'
     # Hosted, never the self-hosted pool: a broker built with another feature
     # set would evict the one the `cluster` jobs keep warm there.
     runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
@@ -766,7 +794,7 @@ jobs:
   # docs say it does.
   chart:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.chart == 'true' && github.event_name != 'workflow_dispatch'
     name: Helm chart
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -782,7 +810,7 @@ jobs:
           version: v3.16.3
 
       - name: PyYAML
-        run: python3 -m pip install --user --require-hashes --only-binary :all: -r scripts/ci/requirements/chart-check.txt
+        run: 'python3 -m pip install --user --require-hashes --only-binary :all: -r scripts/ci/requirements/chart-check.txt'
 
       - name: Lint, render, and check
         run: python3 scripts/check_chart.py
@@ -830,7 +858,7 @@ jobs:
   # `crates/sdk/felix-client` can break it just as surely.
   python:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.python == 'true' && github.event_name != 'workflow_dispatch'
     name: Python client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -874,7 +902,8 @@ jobs:
       - name: Install the binding
         run: |
           python -m pip install --require-hashes --only-binary :all: -r scripts/ci/requirements/binding.txt
-          python -m pip install --no-deps --no-build-isolation ./crates/sdk/felix-python
+          maturin build --release --manifest-path crates/sdk/felix-python/Cargo.toml --out "$RUNNER_TEMP/wheels"
+          python -m pip install --no-deps --no-index --only-binary :all: --find-links "$RUNNER_TEMP/wheels" felix-client
           python -c "import felix; print('felix binding imported OK')"
 
       - name: Run the conformance suite
@@ -928,7 +957,7 @@ jobs:
   # filter is a job that breaks silently.
   typescript:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.typescript == 'true' && github.event_name != 'workflow_dispatch'
     name: Node client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1389,7 +1418,7 @@ jobs:
   # mutation reaches still decode or refuse cleanly.
   fuzz:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    if: needs.changes.outputs.fuzz == 'true' && github.event_name != 'workflow_dispatch'
     name: Fuzz the decoders
     runs-on: ubuntu-latest
     timeout-minutes: 45

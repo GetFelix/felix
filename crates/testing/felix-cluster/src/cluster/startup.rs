@@ -46,7 +46,12 @@ impl Cluster {
         let control_plane = if config.metadata_group {
             ControlPlane::start_group(&config.tenant_id, liveness).await?
         } else {
-            ControlPlane::start_with(&config.tenant_id, liveness).await?
+            ControlPlane::start_with(
+                &config.tenant_id,
+                liveness,
+                config.control_plane_engine.as_deref(),
+            )
+            .await?
         };
         let credentials = control_plane.credentials(&config.tenant_id);
 

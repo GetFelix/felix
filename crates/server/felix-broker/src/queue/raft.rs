@@ -19,6 +19,10 @@
 //!   group entry, which a timed-out write leaves unanswered.
 //! - A record that is not data is settled in the tracker alone. No entry is
 //!   proposed for it; the next advance over a data record covers it.
+//! - A poll answers only once a claim entry for what it hands out has
+//!   applied, and an extension likewise, so a new leader holds every claim a
+//!   consumer was told about. It holds each for its full visibility from
+//!   when it rebuilds the tracker, never less than the old leader promised.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -29,7 +33,7 @@ use felix_storage::log::ReadPage;
 use parking_lot::RwLock;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-use super::entry::{CreatedBy, CreationToken, GroupEntry, GroupOp};
+use super::entry::{ClaimHolder, Claims, CreatedBy, CreationToken, GroupEntry, GroupOp};
 use super::reader::{Claimed, GroupKey, GroupSnapshot, Seek};
 use super::table::ShardGroups;
 use super::tracker::{GroupConsumer, GroupTracker};
@@ -335,6 +339,31 @@ impl<C: GroupConsensus> RaftGroups<C> {
             }
             guard.as_mut().expect("applied").created = true;
         }
+        if !claimed.is_empty() {
+            // Before anything goes out, so a new leader never hands a record
+            // a consumer was given to someone else before its claim lapses.
+            let held = guard.as_ref().expect("current hydrates");
+            let entry = GroupOp::Claim {
+                cre: held.cre,
+                claims: Claims {
+                    holder: holder_of(&held.tracker, claimed[0].offset),
+                    visibility_ms: millis(visibility),
+                    records: claimed.iter().map(|c| (c.offset, c.attempts)).collect(),
+                },
+            };
+            let first = claimed[0].offset;
+            if let Err(err) = self
+                .write_held(key, &mut guard, entry, first, deadline)
+                .await
+            {
+                if let Some(held) = guard.as_mut() {
+                    for c in &claimed {
+                        held.tracker.unclaim(c.offset);
+                    }
+                }
+                return Err(err);
+            }
+        }
         Ok(claimed)
     }
 
@@ -390,7 +419,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
     }
 
     /// Keep the claim `attempts` names on `offset` standing until `by` after
-    /// `now`. Leader memory only.
+    /// `now`. Answered once the extension's claim entry has applied.
     pub async fn extend(
         &self,
         key: &GroupKey,
@@ -403,10 +432,19 @@ impl<C: GroupConsensus> RaftGroups<C> {
         let (_fresh, mut guard) = self.current(key, deadline).await?;
         let held = guard.as_mut().expect("current hydrates");
         check_handed_out(&held.tracker, offset)?;
-        if held.tracker.extend(offset, attempts, now, now + by) {
-            return Ok(());
+        if !held.tracker.extend(offset, attempts, now, now + by) {
+            return Err(BrokerError::GroupClaimLapsed { offset });
         }
-        Err(BrokerError::GroupClaimLapsed { offset })
+        let entry = GroupOp::Claim {
+            cre: held.cre,
+            claims: Claims {
+                holder: holder_of(&held.tracker, offset),
+                visibility_ms: millis(by),
+                records: vec![(offset, attempts)],
+            },
+        };
+        self.write_held(key, &mut guard, entry, offset, deadline)
+            .await
     }
 
     /// Give up on one record for a consumer. False, writing nothing, when it
@@ -809,6 +847,20 @@ impl<C: GroupConsensus> RaftGroups<C> {
             for offset in redriven {
                 tracker.restore_redrive(offset);
             }
+            // The table cannot say how much of a claim's time is left, so it
+            // gets all of it again from now: later than the old leader's
+            // deadline, never sooner.
+            if let Some(state) = table.group(&key.group) {
+                let now = Instant::now();
+                for (&offset, claim) in &state.claims {
+                    let holder = claim
+                        .holder
+                        .as_ref()
+                        .map(|h| (h.principal.as_str(), h.name.as_str()));
+                    let lapses = now + Duration::from_millis(claim.visibility_ms);
+                    tracker.restore_claim(offset, claim.attempts, holder, lapses);
+                }
+            }
             groups.track(&key.group, cre);
             drop(groups);
             *guard = Some(Tracked {
@@ -839,7 +891,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
         let evicted = self.evict(|_, slot, held| {
             now.saturating_duration_since(slot.last_used) >= idle_after
                 && held
-                    .is_none_or(|held| held.tracker.next_lapse().is_none_or(|lapse| lapse <= now))
+                    .is_none_or(|held| held.tracker.last_lapse().is_none_or(|lapse| lapse <= now))
         });
         self.slots.lock().last_sweep = Some(now);
         evicted
@@ -921,6 +973,19 @@ fn shard_id(key: &GroupKey) -> ShardId {
         key.stream.clone(),
         key.shard,
     )
+}
+
+fn holder_of(tracker: &GroupTracker, offset: u64) -> Option<ClaimHolder> {
+    tracker.holder(offset).map(|(principal, name)| ClaimHolder {
+        principal: principal.to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+fn millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 fn check_handed_out(tracker: &GroupTracker, offset: u64) -> Result<()> {

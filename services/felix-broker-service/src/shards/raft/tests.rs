@@ -280,6 +280,67 @@ async fn lead_orders(shards: &Arc<RaftShards>) {
     .await;
 }
 
+/// **The copy id report names the copy the open member votes under.** It
+/// is read from the member, which opened only once its copy file was
+/// synced, and carries what the view's target says of this broker, so the
+/// report stops once the control plane names the copy.
+#[tokio::test]
+async fn an_open_member_is_held_for_the_copy_id_report() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    assert!(shards.held_copies().is_empty());
+    lead_orders(&shards).await;
+    let copy = shards.runtime.status(&orders).expect("status").member.copy;
+    let held = |in_target| copy_id::Held {
+        key: orders.clone(),
+        incarnation: INCARNATION,
+        copy,
+        set: ["broker-a".to_string()].into(),
+        in_target,
+    };
+    assert_eq!(shards.held_copies(), vec![held(None)]);
+
+    let mut named = assigned(orders.clone(), INCARNATION);
+    named.target = Some(crate::shards::watch::RaftTarget {
+        version: crate::shards::watch::RaftTargetVersion {
+            incarnation: 0,
+            counter: 1,
+        },
+        members: [("broker-a".to_string(), copy)].into(),
+    });
+    shards.take(&mut assignments([named.clone()])).await;
+    assert_eq!(shards.held_copies(), vec![held(Some(copy))]);
+
+    // A withheld view says nothing of the target.
+    named.targets_withheld = true;
+    shards.take(&mut assignments([named])).await;
+    assert_eq!(shards.held_copies(), vec![held(None)]);
+    shards.shutdown().await;
+}
+
+/// **A member placement moved off is not reported.** It stays open a
+/// while, but the control plane refuses a broker outside the set, and each
+/// refused report is an entry in its log.
+#[tokio::test]
+async fn a_member_off_placement_is_not_held_for_the_copy_id_report() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    assert_eq!(shards.held_copies().len(), 1);
+
+    let mut moved = assigned(orders.clone(), INCARNATION);
+    moved.leader = "broker-b".to_string();
+    moved.replicas = vec!["broker-b".to_string()];
+    shards.take(&mut assignments([moved])).await;
+    assert!(shards.runtime.status(&orders).is_some(), "still open");
+    assert!(shards.held_copies().is_empty());
+    shards.shutdown().await;
+}
+
 /// **No member opens on a data root the restore gate has not passed.** A
 /// held root may be a restored one, whose copies would vote a second time
 /// in a term they already voted in. The shard answers "not ready", and the
@@ -1719,6 +1780,40 @@ impl Member {
         } else {
             no_fleet()
         };
+        Self::assemble(net, name, root, broker, fleet)
+    }
+
+    /// A member of a quorum `orders` whose fleet finalized
+    /// `raft_stream_purge`, so its retention timer trims and then purges,
+    /// with the storage opened on `config`.
+    pub(crate) async fn start_purging(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        config: LogConfig,
+    ) -> Self {
+        use felix_common::fleet::{HEAD_TRIM, RAFT_HEAD_TRIM, RAFT_STREAM_PURGE};
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = broker_with_config(
+            root.path(),
+            3,
+            INCARNATION,
+            ConsistencyLevel::Quorum,
+            config,
+        )
+        .await;
+        broker.allow_raft_head_trims_when(|| true);
+        let features = [HEAD_TRIM, RAFT_HEAD_TRIM, RAFT_STREAM_PURGE].map(|feature| feature.name());
+        let fleet = Arc::new(felix_common::fleet::FleetGate::seeded(features, features));
+        Self::assemble(net, name, root, broker, fleet)
+    }
+
+    fn assemble(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        root: tempfile::TempDir,
+        broker: Arc<Broker>,
+        fleet: Arc<felix_common::fleet::FleetGate>,
+    ) -> Self {
         let sender = Arc::new(Sender {
             from: name.to_string(),
             net: Arc::clone(net),

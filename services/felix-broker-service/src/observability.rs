@@ -20,7 +20,6 @@ use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -47,8 +46,7 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 
         let provider = build_tracer_provider(service_name);
 
-        // Use environment variable for log filtering; default to "info" if unset or invalid.
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = felix_common::log_filter::env_filter(cfg!(test));
         // Off the calling thread: see `log_writer`.
         let fmt_layer = tracing_subscriber::fmt::layer().with_writer(log_writer::install());
         let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);

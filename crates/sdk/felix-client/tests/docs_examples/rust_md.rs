@@ -1183,7 +1183,25 @@ mod naming_the_shard_1 {
     }
 }
 
-/// rust/publishing.md line 112: "At-least-once may duplicate", block 1.
+/// rust/publishing.md line 111: "What an ack means", block 1.
+mod what_an_ack_means_1 {
+    #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
+    use super::prelude::*;
+
+    async fn example(client: &Client) -> Result<()> {
+        let said = client
+            .stream_ack_durability("acme", "prod", "orders")
+            .await?;
+        let survives_a_machine_crash = said.is_some_and(|said| {
+            said.ack_at == AckPoint::Write
+                && said.copies == AckCopies::Quorum
+                && said.fsync == Some(AckFsync::OnCommit)
+        });
+        Ok(())
+    }
+}
+
+/// rust/publishing.md line 136: "At-least-once may duplicate", block 1.
 mod at_least_once_may_duplicate_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1196,7 +1214,7 @@ mod at_least_once_may_duplicate_1 {
     }
 }
 
-/// rust/publishing.md line 131: "Batch Publishing", block 1.
+/// rust/publishing.md line 155: "Batch Publishing", block 1.
 mod batch_publishing_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1215,7 +1233,7 @@ mod batch_publishing_1 {
     }
 }
 
-/// rust/publishing.md line 149: "Batches through a Client", block 1.
+/// rust/publishing.md line 173: "Batches through a Client", block 1.
 mod batches_through_a_client_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1245,7 +1263,7 @@ mod batches_through_a_client_1 {
     }
 }
 
-/// rust/publishing.md line 214: "Keys and headers", block 1.
+/// rust/publishing.md line 238: "Keys and headers", block 1.
 mod keys_and_headers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1292,7 +1310,7 @@ mod keys_and_headers_1 {
     }
 }
 
-/// rust/publishing.md line 281: "Publisher API", block 1.
+/// rust/publishing.md line 305: "Publisher API", block 1.
 mod publisher_api_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1316,7 +1334,7 @@ mod publisher_api_1 {
     }
 }
 
-/// rust/publishing.md line 302: "Publisher Sharding", block 1.
+/// rust/publishing.md line 326: "Publisher Sharding", block 1.
 mod publisher_sharding_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1330,7 +1348,7 @@ mod publisher_sharding_1 {
     }
 }
 
-/// rust/publishing.md line 402: "Errors you can act on", block 1.
+/// rust/publishing.md line 426: "Errors you can act on", block 1.
 mod errors_you_can_act_on_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1356,7 +1374,7 @@ mod errors_you_can_act_on_1 {
     }
 }
 
-/// rust/publishing.md line 459: "Errors you can act on", block 2.
+/// rust/publishing.md line 483: "Errors you can act on", block 2.
 mod errors_you_can_act_on_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1375,7 +1393,7 @@ mod errors_you_can_act_on_2 {
     }
 }
 
-/// rust/publishing.md line 490: "Idempotent producers", block 1.
+/// rust/publishing.md line 514: "Idempotent producers", block 1.
 mod idempotent_producers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1392,7 +1410,7 @@ mod idempotent_producers_1 {
     }
 }
 
-/// rust/publishing.md line 510: "Idempotent producers", block 2.
+/// rust/publishing.md line 534: "Idempotent producers", block 2.
 mod idempotent_producers_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1407,7 +1425,7 @@ mod idempotent_producers_2 {
     }
 }
 
-/// rust/publishing.md line 522: "Idempotent producers", block 3.
+/// rust/publishing.md line 546: "Idempotent producers", block 3.
 mod idempotent_producers_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1422,7 +1440,7 @@ mod idempotent_producers_3 {
     }
 }
 
-/// rust/publishing.md line 542: "Idempotent producers", block 4.
+/// rust/publishing.md line 566: "Idempotent producers", block 4.
 mod idempotent_producers_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;

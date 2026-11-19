@@ -111,11 +111,19 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogWriter {
 
 /// Start the process's stdout writer, and a panic hook that flushes it
 /// before the panic is reported. Call once.
+#[cfg(not(test))]
 pub(crate) fn install() -> LogWriter {
     let writer = STDOUT
         .get_or_init(|| LogWriter::spawn(std::io::stdout()).expect("start the log writer thread"));
     std::panic::set_hook(flushing_hook(writer.clone(), std::panic::take_hook()));
     writer.clone()
+}
+
+/// Unit tests install the subscriber for the whole binary; the test writer
+/// lets libtest capture each test's lines.
+#[cfg(test)]
+pub(crate) fn install() -> tracing_subscriber::fmt::TestWriter {
+    tracing_subscriber::fmt::TestWriter::new()
 }
 
 type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;

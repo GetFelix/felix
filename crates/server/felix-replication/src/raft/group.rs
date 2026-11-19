@@ -149,6 +149,12 @@ pub(crate) struct Group {
     /// Timer checks the ticker gave up on because the group had not taken
     /// them by the next interval.
     dropped_ticks: AtomicU64,
+    /// Whether openraft's own election timer is on. openraft times a
+    /// follower out by its fixed election timeout, which an idle leader's
+    /// slow heartbeats outlast, so the timer runs only once this member's
+    /// pace says its leader is gone. The lock orders the switch with
+    /// [`Self::hold_elections`].
+    elections: parking_lot::Mutex<bool>,
     /// The term this member was first seen leading, and when, on the
     /// runtime's clock. It ages a term no majority has answered yet.
     leads_since: parking_lot::Mutex<Option<(u64, u64)>>,
@@ -819,6 +825,7 @@ impl Group {
             acked,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
+            elections: parking_lot::Mutex::new(false),
             leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             proposals: OnceLock::new(),
@@ -930,8 +937,8 @@ impl Group {
         }
     }
 
-    /// One timer check: an election if the election timeout has passed, a
-    /// heartbeat if one is due. Waits while the group's queue is full. A
+    /// One timer check: a heartbeat if one is due, and openraft's election
+    /// timer turned on, since the member's wait for its leader has run out. Waits while the group's queue is full. A
     /// caller that gives up drops the future, which is counted.
     pub(crate) async fn tick(&self) {
         if self.stopped.load(Ordering::Relaxed) {
@@ -946,6 +953,7 @@ impl Group {
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
+        self.allow_elections();
         let mut dropped = Dropped(Some(&self.dropped_ticks));
         let ticked = self.raft.trigger().tick().await;
         dropped.0 = None;
@@ -954,6 +962,29 @@ impl Group {
             && !self.stopped.swap(true, Ordering::Relaxed)
         {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group stopped and is no longer ticked");
+        }
+    }
+
+    /// Turn openraft's election timer on: this member's pace has run out,
+    /// so openraft decides from here when it stands and when it retries. A
+    /// member that heard its leader since the ticker read its due time
+    /// keeps the timer off.
+    fn allow_elections(&self) {
+        let mut on = self.elections.lock();
+        if !*on && self.pace.timers.now() >= self.due_at() {
+            self.raft.runtime_config().elect(true);
+            *on = true;
+        }
+    }
+
+    /// Turn openraft's election timer off: this member hears a leader, or
+    /// voted for one, and its pace times that leader out from now on.
+    /// Called after [`Pace::took`] or [`Pace::voted`] has moved the due time.
+    fn hold_elections(&self) {
+        let mut on = self.elections.lock();
+        if *on {
+            self.raft.runtime_config().elect(false);
+            *on = false;
         }
     }
 
@@ -1027,7 +1058,10 @@ impl Group {
     /// nobody.
     fn leads_heard(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
         use openraft::Instant as _;
-        if metrics.membership_config.membership().voter_ids().count() <= 1 {
+        // Only when the one voter is this member: a leader kept on as a
+        // learner beside one voter still needs that voter's answers.
+        let mut voters = metrics.membership_config.membership().voter_ids();
+        if voters.all(|voter| voter == self.member) {
             return true;
         }
         let now = self.pace.timers.now();
@@ -1135,8 +1169,9 @@ impl Group {
     /// `election_min` after it last heard its leader, so a follower that
     /// keeps hearing one is never checked. A follower of an idle leader
     /// waits longer ([`Pace::follower_wait`]).
-    /// Once that time has passed it is checked every interval, since the
-    /// timeout openraft picked for it is not visible from here. A learner
+    /// The first check past that time turns openraft's election timer on,
+    /// and openraft runs the election from there. Later checks come once a
+    /// heartbeat, only so a change of role is seen. A learner
     /// never stands, and is checked only so a change of role is seen.
     fn next_due(&self) -> u64 {
         use openraft::async_runtime::watch::WatchReceiver;
@@ -1160,9 +1195,16 @@ impl Group {
                 };
                 now + gap + 1
             }
+            // Past its wait, openraft's own election timer runs the member's
+            // elections and retries. The ticker looks again only so a change
+            // of role is seen.
             ServerState::Follower | ServerState::Candidate => {
                 let heard = pace.heard.load(Ordering::Relaxed);
-                heard.saturating_add(pace.follower_wait()).max(now + tick)
+                let wait = heard.saturating_add(pace.follower_wait());
+                match *self.elections.lock() {
+                    true => wait.max(now + pace.timers.heartbeat),
+                    false => wait.max(now + tick),
+                }
             }
             ServerState::Learner | ServerState::Shutdown => now + election_min,
         }
@@ -1193,8 +1235,14 @@ impl Group {
             };
             let reply = group.answer(body, report).await?;
             match (&reply, term) {
-                (Reply::Append(Ok(_)), Some(term)) => group.pace.took(term, beat.gap, beat.seq),
-                (Reply::Vote(vote), _) if vote.vote_granted && !pre_vote => group.pace.voted(),
+                (Reply::Append(Ok(_)), Some(term)) => {
+                    group.pace.took(term, beat.gap, beat.seq);
+                    group.hold_elections();
+                }
+                (Reply::Vote(vote), _) if vote.vote_granted && !pre_vote => {
+                    group.pace.voted();
+                    group.hold_elections();
+                }
                 _ => {}
             }
             Ok(reply)
@@ -1933,8 +1981,8 @@ impl Group {
     /// Whether a write of `term` may be acknowledged on this member's log
     /// alone: it leads `term`, a majority answered a message it handed off
     /// less than one lease ago (or its newest membership has it as the
-    /// only voter), it has not given the term up, and it was not suspended
-    /// since.
+    /// only voter), it is a voter of that membership, it has not given the
+    /// term up, and it was not suspended since.
     pub(crate) fn admit_local_ack(&self, term: u64) -> Result<(), CommitError> {
         use openraft::Instant as _;
         use openraft::async_runtime::watch::WatchReceiver;
@@ -1943,15 +1991,18 @@ impl Group {
             let metrics = metrics.borrow_watched();
             let leads = metrics.state == ServerState::Leader;
             // openraft's effective membership is the newest one appended, but
-            // metrics publish it once per core loop, so a change that adds a
-            // voter ends this at the next flush. Safe: the next membership
+            // metrics publish it once per core loop (which can be long under
+            // load), so a change that adds a voter ends this at the next
+            // flush. Safe: the next membership
             // still needs this member's vote, and voting voids the lease.
             let voters = metrics.membership_config.membership().get_joint_config();
             let sole = matches!(voters.as_slice(), [only] if only.len() == 1 && only.contains(&self.member));
+            let voter = voters.iter().all(|set| set.contains(&self.member));
             View {
                 leads: leads.then(|| metrics.vote.leader_id().term()),
                 acked: metrics.last_quorum_acked.map(|acked| acked.elapsed()),
                 sole,
+                voter,
             }
         };
         self.lease.admit(term, view).map_err(propose::lost)

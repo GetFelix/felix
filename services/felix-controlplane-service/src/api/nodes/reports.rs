@@ -307,6 +307,7 @@ pub(crate) async fn report_raft_copy_id(
             request.registered_at_millis,
             request.incarnation,
             request.copy_id,
+            request.shard_incarnation,
         )
         .await
     {

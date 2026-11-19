@@ -1649,3 +1649,4 @@
 39 snapshot.state.shards[][].raft_ordered.targets[].members.*
 39 accept_seal_report.keep_ordered
 39 record_raft_copy_id.keep_ordered
+41 record_raft_copy_id.shard_incarnation

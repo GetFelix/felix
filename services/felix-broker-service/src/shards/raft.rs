@@ -26,7 +26,9 @@ use felix_common::fleet::{self, FleetGate};
 use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
-use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine, Target, TargetVersion};
+use felix_replication::raft::{
+    GroupId, GroupRuntime, MemberId, OpenError, RaftEngine, Target, TargetVersion,
+};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::raft_copy::{CopyRoot, holds_log_without_copy};
@@ -37,6 +39,7 @@ use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 use crate::cluster::lease::{Head, LeaseState};
 
+pub(crate) mod copy_id;
 pub(crate) mod floor;
 mod groups;
 pub(crate) use groups::Groups as RaftGroups;
@@ -136,6 +139,9 @@ pub(crate) struct RaftShards {
     /// floor report sends it, and only a re-form changes it, which needs the
     /// member closed.
     epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
+    /// The copy id of each member open at the last pass's view, for the
+    /// copy id report.
+    held_copies: parking_lot::Mutex<Vec<copy_id::Held>>,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -171,6 +177,8 @@ fn raft_fsync_mode(broker: FsyncMode, written_commit: bool, dir: &Path) -> Fsync
 /// provider never opened it.
 struct Member {
     incarnation: u64,
+    /// The copy id the member votes under, synced before the member opened.
+    copy: u64,
     log: DiskLog,
     follow: Option<tokio::task::JoinHandle<()>>,
     /// The leader's retention timer (`retention`), run on every member so
@@ -245,6 +253,7 @@ impl RaftShards {
             told: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
             epochs: parking_lot::Mutex::default(),
+            held_copies: parking_lot::Mutex::default(),
         });
         shards
             .broker
@@ -288,6 +297,12 @@ impl RaftShards {
                 })
             })
             .collect()
+    }
+
+    /// The copy id of every member open here at the last pass, with what
+    /// that pass's view said of the shard.
+    pub(crate) fn held_copies(&self) -> Vec<copy_id::Held> {
+        self.held_copies.lock().clone()
     }
 
     /// The consumer groups of this broker's Raft stream shards.
@@ -412,6 +427,7 @@ impl RaftShards {
         }
         let mut member = Member {
             incarnation,
+            copy: opened.member.copy,
             log: opened.log,
             follow: None,
             retention: None,
@@ -988,6 +1004,22 @@ impl EngineShards for RaftShards {
                             }
                             continue;
                         }
+                        // Tried again on every pass: the open that follows
+                        // a leader's append rejoins it.
+                        Err(err)
+                            if matches!(
+                                err.downcast_ref::<OpenError>(),
+                                Some(OpenError::Stopped(_))
+                            ) =>
+                        {
+                            if self.held_warn.lock().due(key) {
+                                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "a Raft shard's copy here was stopped by a re-form that did not finish; it rejoins as a learner once a leader commits past its last entry");
+                            }
+                            if keep {
+                                short.push(held());
+                            }
+                            continue;
+                        }
                         // Also tried again on the next pass; counted with
                         // the stream shards that hit the same limit.
                         Err(err) if super::lifecycle::out_of_files(&err) => {
@@ -1063,6 +1095,36 @@ impl EngineShards for RaftShards {
                 })
                 .collect();
             *self.targets.lock() = targets;
+            // A short set forms nothing, so it gets no target either: one
+            // naming only the brokers placed so far would form that group.
+            // A member placement moved off stays open a while, but the
+            // control plane refuses a broker outside the set.
+            let held = fed
+                .iter()
+                .filter(|(_, (_, full))| *full)
+                .filter(|(_, (assignment, _))| brokers_of(assignment).contains(self.local.as_str()))
+                .filter_map(|(key, (assignment, _))| {
+                    let member = open
+                        .get(key)
+                        .filter(|member| member.incarnation == assignment.incarnation)?;
+                    let in_target = assignment
+                        .target
+                        .as_ref()
+                        .filter(|_| !assignment.targets_withheld)
+                        .and_then(|target| target.members.get(&self.local).copied());
+                    Some(copy_id::Held {
+                        key: key.clone(),
+                        incarnation: assignment.incarnation,
+                        copy: member.copy,
+                        set: std::iter::once(&assignment.leader)
+                            .chain(&assignment.replicas)
+                            .cloned()
+                            .collect(),
+                        in_target,
+                    })
+                })
+                .collect();
+            *self.held_copies.lock() = held;
             let led: Vec<&ShardKey> = open
                 .keys()
                 .filter(|key| self.leading(key).is_some())
