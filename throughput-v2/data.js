@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795052072202,
+  "lastUpdate": 1795053297947,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61984,6 +61984,58 @@ window.BENCHMARK_DATA = {
             "range": "12638.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1193754.47\nmean: 1193749.76\nstdev: 12638.07\ncv: 1.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "049c06c9760219bebd9da37fa831ea816b3cdd32",
+          "message": "perf: Raft against hybrid RF 3 cells in Actions (#2782)\n\n* perf: Raft against hybrid RF 3 cells in Actions (#2646)\n\n* perf: short self-check of the Raft RF 3 workflow on a PR that edits it\n\n* perf: build the Raft RF 3 broker with the raft feature and fail the job when a raft cell fails",
+          "timestamp": "2026-11-18T17:29:25-08:00",
+          "tree_id": "8d55bbf25a7240394848d73238d1cf29d205f31d",
+          "url": "https://github.com/GetFelix/felix/commit/049c06c9760219bebd9da37fa831ea816b3cdd32"
+        },
+        "date": 1795053297243,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 732058.19,
+            "range": "30073.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 732058.19\nmean: 730422.16\nstdev: 30073.26\ncv: 4.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 732058.19,
+            "range": "30073.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 732058.19\nmean: 730422.16\nstdev: 30073.26\ncv: 4.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 166813.2,
+            "range": "5389.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 166813.20\nmean: 167620.56\nstdev: 5389.56\ncv: 3.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1668132.01,
+            "range": "53895.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1668132.01\nmean: 1676205.64\nstdev: 53895.65\ncv: 3.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
