@@ -26,7 +26,7 @@ on:
         required: false
         default: "1700"
       report:
-        description: "idle, or publish-latency: RF 3 Leader and Quorum publish p50/p99 with the lease on and off"
+        description: "idle, publish-latency (RF 3 Leader and Quorum publish p50/p99 with the lease on and off), or storm (many groups electing at once)"
         required: false
         default: "idle"
       rounds:
@@ -51,7 +51,7 @@ env:
 jobs:
   idle:
     name: Raft idle groups
-    if: github.event_name != 'workflow_dispatch' || inputs.report != 'publish-latency'
+    if: github.event_name != 'workflow_dispatch' || inputs.report == 'idle'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -158,5 +158,87 @@ jobs:
             echo
             echo '```'
             grep -h 'raft publish latency:' raft-publish-latency.log || echo "no result"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  storm:
+    name: Raft election storm
+    if: github.event_name == 'workflow_dispatch' && inputs.report == 'storm'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: raft-idle
+      - name: Build
+        run: cargo test --locked --release -p felix-replication --features raft --test raft_election_storm --no-run
+      - name: Measure
+        run: |
+          ulimit -n "$(ulimit -Hn)"
+          run() {
+            env RAFT_STORM_SETTLE_SECS=180 "$@" cargo test --locked --release -p felix-replication \
+              --features raft --test raft_election_storm -- --ignored --nocapture 2>&1 \
+              | grep -E 'groups,|no leader|panicked' | tee -a storm.log || true
+          }
+          for groups in 1 100 300 1000 2000 5000; do run RAFT_STORM_GROUPS=$groups; done
+          for groups in 300 2000; do run RAFT_STORM_GROUPS=$groups; done
+          run RAFT_STORM_GROUPS=2000 RAFT_STORM_MODE=form
+          run RAFT_STORM_GROUPS=1000 RAFT_STORM_IDLE=1
+          run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=20
+          run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=5 RAFT_STORM_DISK_WIDTH=16
+          run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=5 RAFT_STORM_DISK_WIDTH=4
+          run RAFT_STORM_GROUPS=200 RAFT_STORM_FSYNC_MS=10 RAFT_STORM_DISK_WIDTH=1
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### Raft election storm"; echo; echo '```'; cat storm.log || echo "no result"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  told-at-once:
+    name: Groups told at once
+    if: github.event_name == 'workflow_dispatch' && inputs.report == 'storm'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: raft-told-at-once
+      - name: Build
+        run: cargo test --locked -p felix-replication --features raft --lib --no-run
+      - name: Alone, 40 runs
+        run: |
+          ulimit -n "$(ulimit -Hn)"
+          for i in $(seq 1 40); do
+            cargo test --locked -p felix-replication --features raft --lib \
+              raft::tests::many_groups_told_at_once_all_elect -- --nocapture 2>&1 \
+              | grep -E 'told at once|test result' | tee -a told.log || true
+          done
+      - name: In the raft suite, 6 runs at 4 threads
+        if: always()
+        run: |
+          ulimit -n "$(ulimit -Hn)"
+          for i in $(seq 1 6); do
+            cargo test --locked -p felix-replication --features raft --lib raft:: -- --test-threads=4 --nocapture 2>&1 \
+              | grep -E 'told at once|test result|FAILED|failed' | tee -a suite.log || true
+          done
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### many_groups_told_at_once_all_elect"; echo; echo '```'
+            sort told.log | uniq -c | sort -rn | head -5 || true
+            grep 'told at once' told.log suite.log || true
+            grep -E 'FAILED|failed' suite.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
