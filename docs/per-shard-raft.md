@@ -2252,6 +2252,15 @@ passes when all of these hold, read in this order:
    alone. Learners do not count.
 4. The term is above the member's void (below).
 
+**A leader that is not a voter.** openraft lets a leader go on leading
+after a membership that drops it as a voter, and its quorum is then the
+other voters alone. Its lease would rest on their answers, and one of them
+can restart and lead a later term on its own while that lease still runs.
+So no lease holds while the leader is missing from any voter set of its
+newest membership (`Group::admit_local_ack`). Felix never writes such a
+membership itself (a step that drops the leader is refused); the check
+keeps the lease right whatever wrote it.
+
 **A sole voter.** Nobody answers a group's only voter, so the third rule
 would never hold for it by the majority half, and every `Leader` write
 on a single-node shard would be answered as a `Quorum` one. It needs no
