@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795070709128,
+  "lastUpdate": 1795071739675,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -79266,6 +79266,72 @@ window.BENCHMARK_DATA = {
             "range": "569.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 617.00\nmean: 960.20\nstdev: 569.92\ncv: 59.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77dc0a9803987b775b222462b9bd61fcda1b1933",
+          "message": "feat(controlplane): require client certificates on the API (#2821)\n\n* feat(controlplane): require client certificates on the API\n\nFELIX_CONTROLPLANE_TLS_CLIENT_CA makes the API listener refuse the TLS\nhandshake to a caller without a certificate from that CA, and\nFELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT ties each bearer token to\nthe certificate's principal with the broker's rules, now shared from\nfelix_common::tls. Brokers present a certificate with\nFELIX_CONTROLPLANE_CLIENT_CERT/_KEY, felixctl with\n--controlplane-client-cert-file/--controlplane-client-key-file.\n\nCloses #2811\n\n* fix(controlplane): bind exchange to its principal, probe on the metrics port\n\nSubject binding compared the IdP token's raw sub on token exchange with\nthe certificate, so every exchange failed under binding. The middleware\nnow leaves the exchange route to the handler, which binds the principal it\nresolves, or the actor_token's gateway.\n\nThe metrics listener's /ready runs the same check as /v1/system/ready, and\nthe Helm probes and the Raft bootstrap Job use it, since nothing there has\na client certificate. New chart values for the client CA, binding and the\nbrokers' control-plane client certificate.\n\nA config file tls block keeps the client CA and binding from the\nenvironment instead of dropping them.\n\n* fix(controlplane): report not ready until the API listener is bound\n\n* chore: mark the client-certificate change as outside the model\n\nSpec-Unaffected: serving/auth.rs and serving/tls.rs only move the broker's\nclient-certificate subject check into felix_common::tls unchanged; client\nauthentication is not the lease, quorum mark, reports, promotion or handoff.\n\n* test(broker): pass a ForwardCredential in the Raft cache routing tests\n\n#2795 added these tests passing an empty token string; #2823 changed the\nparameter to &ForwardCredential, so main stopped compiling its tests.",
+          "timestamp": "2026-11-18T22:53:41-08:00",
+          "tree_id": "6998899fae769bcdec320188593dda34141a590e",
+          "url": "https://github.com/GetFelix/felix/commit/77dc0a9803987b775b222462b9bd61fcda1b1933"
+        },
+        "date": 1795071727929,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.80\nstdev: 0.45\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.20\nstdev: 2.39\ncv: 1.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "95.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 211.00\nstdev: 95.95\ncv: 45.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.20\nstdev: 0.45\ncv: 0.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 256,
+            "range": "3.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 254.60\nstdev: 3.71\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 364,
+            "range": "66.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 364.00\nmean: 382.80\nstdev: 66.69\ncv: 17.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
