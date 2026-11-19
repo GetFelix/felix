@@ -83,26 +83,16 @@ impl<E: Engine + 'static> PeerRequestHandler for BrokerPeerHandler<E> {
         // care who asked.
         let sender = peer.as_deref();
         match request {
-            InternalMessage::ForwardPublish(publish) if self.refusing_clients() => {
-                InternalMessage::ForwardPublishError(ForwardPublishError {
-                    correlation_id: publish.correlation_id,
-                    code: ErrorCode::Unavailable,
-                    detail: NOT_REGISTERED.to_string(),
-                })
-            }
-            InternalMessage::ForwardCacheOp(op) | InternalMessage::LeaseForwardCacheOp(op)
-                if self.refusing_clients() =>
-            {
-                InternalMessage::ForwardCacheError(ForwardCacheError {
-                    correlation_id: op.correlation_id,
-                    code: ErrorCode::Unavailable,
-                    detail: NOT_REGISTERED.to_string(),
-                })
+            request if request.is_forward_request() && self.refusing_clients() => {
+                not_registered(&request)
             }
             InternalMessage::ForwardPublish(publish) => self.forwarding.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.forwarding.apply_cache_op(op).await,
             InternalMessage::LeaseForwardCacheOp(op) => {
                 self.forwarding.apply_lease_cache_op(op).await
+            }
+            InternalMessage::ClientCertified(certified) => {
+                self.forwarding.apply_certified(certified).await
             }
             request @ (InternalMessage::ReplicateRecords(_)
             | InternalMessage::ReplicateMarkedRecords(_)
@@ -130,6 +120,30 @@ impl<E: Engine + 'static> PeerRequestHandler for BrokerPeerHandler<E> {
                 detail: format!("{:?} is not a request", other.kind()),
             }),
         }
+    }
+}
+
+/// A forwarded client request refused before registration, in its own shape.
+fn not_registered(request: &InternalMessage) -> InternalMessage {
+    let detail = NOT_REGISTERED.to_string();
+    let correlation_id = request.correlation_id();
+    let request = match request {
+        InternalMessage::ClientCertified(certified) => &*certified.message,
+        request => request,
+    };
+    match request {
+        InternalMessage::ForwardCacheOp(_) | InternalMessage::LeaseForwardCacheOp(_) => {
+            InternalMessage::ForwardCacheError(ForwardCacheError {
+                correlation_id,
+                code: ErrorCode::Unavailable,
+                detail,
+            })
+        }
+        _ => InternalMessage::ForwardPublishError(ForwardPublishError {
+            correlation_id,
+            code: ErrorCode::Unavailable,
+            detail,
+        }),
     }
 }
 

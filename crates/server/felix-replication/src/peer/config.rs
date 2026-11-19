@@ -286,6 +286,7 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::SEQUENCED_FORWARDS)
             .union(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS)
             .union(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
+            .union(PeerCapabilities::CLIENT_CERTS)
             .union(PeerCapabilities::WRITER_GENERATIONS);
         if self.fence {
             labels

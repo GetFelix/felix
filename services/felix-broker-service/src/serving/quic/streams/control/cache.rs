@@ -105,10 +105,11 @@ pub(super) async fn cache_put(
         (&publish_ctx.engine, publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
-        session
+        &session
             .auth_ctx
             .as_ref()
-            .map_or("", |ctx| ctx.token.as_str()),
+            .map(|ctx| ctx.forward_credential())
+            .unwrap_or_default(),
         tenant_id.as_str(),
         namespace.as_str(),
         cache.as_str(),
@@ -258,10 +259,11 @@ pub(super) async fn cache_get(
         (&publish_ctx.engine, publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
-        session
+        &session
             .auth_ctx
             .as_ref()
-            .map_or("", |ctx| ctx.token.as_str()),
+            .map(|ctx| ctx.forward_credential())
+            .unwrap_or_default(),
         &tenant_id,
         &namespace,
         &cache,
@@ -409,10 +411,11 @@ pub(super) async fn cache_delete(
         (&publish_ctx.engine, publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
-        session
+        &session
             .auth_ctx
             .as_ref()
-            .map_or("", |ctx| ctx.token.as_str()),
+            .map(|ctx| ctx.forward_credential())
+            .unwrap_or_default(),
         &tenant_id,
         &namespace,
         &cache,
@@ -557,10 +560,11 @@ pub(super) async fn cache_conditional(
             (&publish_ctx.engine, publish_ctx.quorum_timeout),
             publish_ctx.ingress.as_deref(),
             publish_ctx.peers.as_deref(),
-            session
+            &session
                 .auth_ctx
                 .as_ref()
-                .map_or("", |ctx| ctx.token.as_str()),
+                .map(|ctx| ctx.forward_credential())
+                .unwrap_or_default(),
             &tenant_id,
             &namespace,
             &cache,

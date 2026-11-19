@@ -167,6 +167,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::SEQUENCED_FORWARDS)
         .union(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS)
         .union(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
+        .union(PeerCapabilities::CLIENT_CERTS)
         .union(PeerCapabilities::WRITER_GENERATIONS)
         .union(if cfg!(feature = "raft") {
             PeerCapabilities::SWITCH_SEAL
@@ -564,6 +565,8 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .union(PeerCapabilities::SEQUENCED_FORWARDS)
             .union(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS)
             .union(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
+            .union(PeerCapabilities::CLIENT_CERTS)
+            .union(PeerCapabilities::CLIENT_CERTS)
             .union(PeerCapabilities::WRITER_GENERATIONS)
     );
     let err = pool
@@ -1081,6 +1084,7 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
         assert!(offered.contains(PeerCapabilities::SEQUENCED_FORWARDS));
         assert!(offered.contains(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS));
         assert!(offered.contains(PeerCapabilities::RECORD_SEQUENCED_FORWARDS));
+        assert!(offered.contains(PeerCapabilities::CLIENT_CERTS));
         assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
         assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
     }

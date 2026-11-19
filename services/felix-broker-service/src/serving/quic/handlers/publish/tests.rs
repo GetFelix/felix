@@ -133,6 +133,7 @@ fn make_auth_ctx(tenant_id: &str, perms: &[&str]) -> AuthContext {
             None,
             0,
         ),
+        client_chain: None,
     }
 }
 
