@@ -12,7 +12,7 @@ fn elections(most: usize) -> Elections<Member> {
         election_min: 1000,
         election_max: 2000,
         lease: 1500,
-        elections: most,
+        max_elections_at_once: most,
     };
     Elections::new(&timers, Arc::default())
 }
@@ -26,6 +26,11 @@ struct Member {
     settled: AtomicBool,
     asks: AtomicU64,
     out: AtomicU64,
+    /// Its pre-vote round is answered and it is saving its own vote.
+    saving: AtomicBool,
+    urgent: bool,
+    /// Real vote rounds it started.
+    votes: AtomicU64,
 }
 
 impl Member {
@@ -40,10 +45,25 @@ impl Member {
         self.armed.load(Ordering::Relaxed)
     }
 
+    fn urgent(order: u64) -> Arc<Self> {
+        Arc::new(Self {
+            order,
+            urgent: true,
+            ..Self::default()
+        })
+    }
+
     /// It sends a round of two requests; `answered` of them come back.
     fn stand(&self, answered: u64) {
         self.asks.fetch_add(2, Ordering::Relaxed);
         self.out.fetch_add(2 - answered, Ordering::Relaxed);
+    }
+
+    /// Its own vote is saved and its real vote requests go out.
+    fn vote(&self, answered: u64) {
+        self.saving.store(false, Ordering::Relaxed);
+        self.votes.fetch_add(1, Ordering::Relaxed);
+        self.stand(answered);
     }
 }
 
@@ -67,6 +87,12 @@ impl Campaigner for Member {
             self.asks.load(Ordering::Relaxed),
             self.out.load(Ordering::Relaxed),
         )
+    }
+    fn saving_its_vote(&self) -> bool {
+        self.saving.load(Ordering::Relaxed)
+    }
+    fn urgent(&self) -> bool {
+        self.urgent
     }
     fn set_waiting(&self, _waiting: bool) {}
     fn order(&self) -> u64 {
@@ -146,31 +172,145 @@ fn a_member_that_never_stands_gives_its_place_back() {
     assert!(!a.armed() && b.armed());
 }
 
-/// The limit falls only when a vote save here was slow: to what the disk
-/// would have saved in time. Each election that ends gives a place back.
+/// A vote save of `took` ms ended at `now`, alone on the disk or not.
+fn saved(elections: &Elections<Member>, now: u64, took: u64, alone: bool) {
+    let ticket = elections.saves.began();
+    let ticket = if alone { ticket } else { NOT_ALONE };
+    elections.saves.ended(ticket, now, Some(took * 1000));
+}
+
+/// Before any save had the disk to itself, a save over a quarter of
+/// election_min is slow: the limit falls to what the disk would have saved
+/// in time, and a save that began under the old limit only lowers it
+/// further if it was slower than the one it fell for.
 #[test]
 fn a_slow_vote_save_lowers_the_limit() {
     let mut elections = elections(64);
-    elections.saves.saved(1000, 10);
+    saved(&elections, 1000, 10, false);
     elections.settle(1000);
     assert_eq!(elections.limit, 64);
-    elections.saves.saved(2000, 250);
+    saved(&elections, 2000, 250, false);
     elections.settle(2000);
     assert_eq!(elections.limit, 64, "250 ms is not slow");
-    elections.saves.saved(3000, 1000);
+    saved(&elections, 3000, 1000, false);
     elections.settle(3000);
     assert_eq!(elections.limit, 16);
     // Queued before the limit fell: it says nothing about the new one,
-    elections.saves.saved(3500, 900);
+    saved(&elections, 3500, 900, false);
     elections.settle(3500);
     assert_eq!(elections.limit, 16);
     // unless it was slower than the save the limit fell for.
-    elections.saves.saved(3600, 2000);
+    saved(&elections, 3600, 1500, false);
     elections.settle(3600);
-    assert_eq!(elections.limit, 8);
-    let member = Member::new(0);
-    interval(&mut elections, std::slice::from_ref(&member), 3650);
-    member.settled.store(true, Ordering::Relaxed);
-    elections.settle(3700);
-    assert_eq!(elections.limit, 9);
+    assert_eq!(elections.limit, 10);
+    elections.settle(3650);
+    assert_eq!(elections.limit, 11);
+}
+
+/// The limit never falls below the floor, and climbs back one place an
+/// interval with no slow save, with no election ending.
+#[test]
+fn the_limit_recovers_without_elections() {
+    let mut elections = elections(64);
+    saved(&elections, 1000, 10_000, false);
+    elections.settle(1000);
+    assert_eq!(elections.limit, FLOOR);
+    for n in 1..=10 {
+        elections.settle(1000 + n * 50);
+    }
+    assert_eq!(elections.limit, FLOOR + 10);
+    for n in 11..=100 {
+        elections.settle(1000 + n * 50);
+    }
+    assert_eq!(elections.limit, 64);
+}
+
+/// A bound under the floor is its own floor.
+#[test]
+fn a_bound_under_the_floor_is_not_lowered() {
+    let mut small = elections(3);
+    saved(&small, 1000, 10_000, false);
+    small.settle(1000);
+    assert_eq!(small.limit, 3);
+}
+
+/// A disk whose every save is slow, with nothing else on it, is not
+/// overloaded by elections: saves near that pace keep the limit where it
+/// is. Only a save well over it is slow.
+#[test]
+fn a_uniformly_slow_disk_does_not_pin_the_limit() {
+    let mut elections = elections(64);
+    saved(&elections, 1000, 100, true);
+    elections.settle(1000);
+    for n in 1..=40 {
+        let now = 1000 + n * 50;
+        saved(&elections, now, 100 + n * 7, false);
+        elections.settle(now);
+        assert_eq!(elections.limit, 64, "{} ms", 100 + n * 7);
+    }
+    saved(&elections, 4000, 1000, false);
+    elections.settle(4000);
+    assert_eq!(elections.limit, 25, "ten times the baseline is slow");
+}
+
+/// A burst of slow saves on a fast disk lowers the limit, and it comes
+/// back once the saves are fast again.
+#[test]
+fn a_burst_of_slow_saves_lowers_the_limit_and_it_comes_back() {
+    let mut elections = elections(64);
+    saved(&elections, 1000, 5, true);
+    elections.settle(1000);
+    saved(&elections, 1050, 200, false);
+    elections.settle(1050);
+    assert_eq!(elections.limit, 16);
+    saved(&elections, 1500, 300, false);
+    elections.settle(1500);
+    assert_eq!(elections.limit, FLOOR);
+    for n in 1..=56 {
+        let now = 1500 + n * 50;
+        saved(&elections, now, 6, false);
+        elections.settle(now);
+    }
+    assert_eq!(elections.limit, 64);
+}
+
+/// A candidate whose pre-vote round is answered saves its own vote before
+/// its real vote requests go out. With nothing out for a few ticks it has
+/// not lost, and no other member here may start a vote round meanwhile.
+#[test]
+fn a_candidate_saving_its_vote_keeps_its_place() {
+    let mut elections = elections(1);
+    let [a, b] = [Member::new(0), Member::new(1)];
+    interval(&mut elections, &[a.clone(), b.clone()], 0);
+    a.stand(2);
+    a.saving.store(true, Ordering::Relaxed);
+    for now in (50..=500).step_by(50) {
+        interval(&mut elections, &[], now);
+        // `b` starts a vote round as soon as it is let stand.
+        if b.armed() && b.votes.load(Ordering::Relaxed) == 0 {
+            b.vote(0);
+        }
+    }
+    a.vote(0);
+    assert_eq!(
+        b.votes.load(Ordering::Relaxed),
+        0,
+        "two vote rounds at once"
+    );
+    assert!(a.armed());
+}
+
+/// Members of groups that took writes go ahead of idle ones that came due
+/// with them or before them.
+#[test]
+fn members_of_busy_groups_go_first() {
+    let mut elections = elections(1);
+    let [first, idle, other] = [Member::new(0), Member::new(1), Member::new(2)];
+    let busy = Member::urgent(3);
+    interval(&mut elections, &[first.clone(), idle.clone()], 0);
+    interval(&mut elections, &[other.clone(), busy.clone()], 50);
+    assert!(first.armed());
+    first.settled.store(true, Ordering::Relaxed);
+    interval(&mut elections, &[], 100);
+    assert!(busy.armed() && !idle.armed() && !other.armed());
 }

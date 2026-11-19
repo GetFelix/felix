@@ -91,7 +91,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
         registry.tail_budget.report();
         back.retry(&registry, Duration::from_millis(timers.heartbeat));
         let due = looks.due(registry.ticked(), &timers);
-        if timers.elections > 0 {
+        if timers.max_elections_at_once > 0 {
             let now = timers.now();
             elections.settle(now);
             let wanting = due.iter().filter(|group| group.wants_to_stand());
@@ -284,6 +284,11 @@ pub(super) trait Campaigner {
     fn settled(&self) -> bool;
     /// Vote and pre-vote requests sent so far, and how many are unanswered.
     fn asks(&self) -> (u64, u64);
+    /// A candidate whose real vote requests have not gone out yet: its
+    /// pre-vote round is answered and it is saving its own vote.
+    fn saving_its_vote(&self) -> bool;
+    /// Its group took writes when it last heard its leader.
+    fn urgent(&self) -> bool;
     fn set_waiting(&self, waiting: bool);
     /// Its place among the members that came due together.
     fn order(&self) -> u64;
@@ -305,6 +310,12 @@ impl Campaigner for Group {
     fn asks(&self) -> (u64, u64) {
         Group::asks(self)
     }
+    fn saving_its_vote(&self) -> bool {
+        Group::saving_its_vote(self)
+    }
+    fn urgent(&self) -> bool {
+        Group::urgent(self)
+    }
     fn set_waiting(&self, waiting: bool) {
         Group::set_waiting(self, waiting);
     }
@@ -313,30 +324,48 @@ impl Campaigner for Group {
     }
 }
 
+/// The lowest the limit falls to, unless the configured bound is lower.
+/// Below this a broker that lost hundreds of leaders would take minutes to
+/// elect them all.
+const FLOOR: usize = 8;
+
+/// A vote save this many times slower than one that had the disk to itself
+/// is slow.
+const SLOWER: u64 = 4;
+
 /// The bound on elections at once on this broker.
 ///
 /// A member whose wait for its leader ran out gets its election timer
 /// turned on only while fewer than `limit` members here have theirs on;
-/// the rest wait in the order they came due. openraft still decides when a
-/// member stands and whether it wins. A place is given back when the
-/// member leads, hears a leader or grants a vote, or lost: every request
-/// of its round answered without it leading (seen on two looks), no stand
+/// the rest wait. Members of groups that took writes go ahead of the
+/// others the first time they queue; a member that lost goes to the back.
+/// openraft still decides when a member stands and whether it wins. A
+/// place is given back when the member leads, hears a leader or grants a
+/// vote, or lost: every request of its round answered without it leading
+/// (seen on two looks, and not while it saves its own vote), no stand
 /// within `election_max`, or no result within `election_min` of standing.
 /// One that lost has its timer turned off and waits again at the back.
 ///
-/// `limit` starts at [`super::RuntimeConfig::elections`] and follows this
-/// broker's vote saves: a slow one cuts it to what the disk would have
-/// saved in time, and each election that ends gives one place back.
+/// `limit` starts at [`super::RuntimeConfig::max_elections_at_once`] and
+/// follows this broker's vote saves. A save over [`SLOWER`] times what one
+/// takes with the disk to itself cuts it to what the disk would have saved
+/// in time, never below [`FLOOR`]. Every interval without a slow save gives
+/// one place back.
 pub(super) struct Elections<M: Campaigner = Group> {
     most: usize,
+    floor: usize,
     limit: usize,
+    urgent: VecDeque<Waiting<M>>,
     queue: VecDeque<Waiting<M>>,
     held: Vec<Held<M>>,
     /// Queued or held, by address.
     known: HashSet<usize>,
-    /// A vote save slower than this lowers `limit`: a quarter of
-    /// `election_min`, so a round's saves end well inside the timeout.
-    slow: u64,
+    /// Before any save had the disk to itself, a save slower than this (in
+    /// microseconds) is slow: a quarter of `election_min`.
+    slow_at_first: u64,
+    /// No save faster than this (microseconds) is slow, whatever the
+    /// baseline: a twentieth of `election_min`.
+    never_slow: u64,
     /// The longest an armed member keeps its place before it stands.
     stand: u64,
     /// The longest a member that stood keeps its place.
@@ -369,7 +398,8 @@ struct Lowered {
     took: u64,
 }
 
-/// How long this broker's vote saves take, waits for the disk included.
+/// How long this broker's vote saves take, waits for the disk included. In
+/// microseconds, on the runtime's clock in milliseconds for `since`.
 #[derive(Default)]
 pub(crate) struct VoteSaves {
     /// When `limit` was last lowered.
@@ -378,16 +408,63 @@ pub(crate) struct VoteSaves {
     slowest: AtomicU64,
     /// The slowest that began before it, under the limit as it was.
     slowest_before: AtomicU64,
+    /// Saves under way here, and saves begun, to tell one that had the
+    /// disk to itself.
+    saving: AtomicU64,
+    begun: AtomicU64,
+    /// A moving average of the saves that had the disk to themselves, or 0
+    /// before the first.
+    alone: AtomicU64,
 }
 
+/// The ticket of a save that began while another was under way.
+const NOT_ALONE: u64 = u64::MAX;
+
 impl VoteSaves {
-    /// A vote save that ended at `now` took `took`.
-    pub(crate) fn saved(&self, now: u64, took: u64) {
-        let slowest = match now.saturating_sub(took) >= self.since.load(Ordering::Relaxed) {
+    fn began(&self) -> u64 {
+        let others = self.saving.fetch_add(1, Ordering::Relaxed);
+        let id = self.begun.fetch_add(1, Ordering::Relaxed);
+        if others == 0 { id } else { NOT_ALONE }
+    }
+
+    /// The save with `ticket` ended at `now`; it took `took` microseconds.
+    fn ended(&self, ticket: u64, now: u64, took: Option<u64>) {
+        self.saving.fetch_sub(1, Ordering::Relaxed);
+        let Some(took) = took else {
+            return;
+        };
+        let took = took.max(1);
+        // Nothing began beside it either.
+        if ticket != NOT_ALONE && self.begun.load(Ordering::Relaxed) == ticket + 1 {
+            let alone = self.alone.load(Ordering::Relaxed);
+            let alone = match alone {
+                0 => took,
+                alone => (alone * 7 + took) / 8,
+            };
+            self.alone.store(alone.max(1), Ordering::Relaxed);
+        }
+        let began = now.saturating_sub(took / 1000);
+        let slowest = match began >= self.since.load(Ordering::Relaxed) {
             true => &self.slowest,
             false => &self.slowest_before,
         };
         slowest.fetch_max(took, Ordering::Relaxed);
+    }
+}
+
+/// [`VoteSaves`] as one member's log tells it.
+pub(crate) struct VoteClock {
+    pub(crate) saves: Arc<VoteSaves>,
+    pub(crate) timers: Timers,
+}
+
+impl felix_storage::raft_log::VoteTimer for VoteClock {
+    fn began(&self) -> u64 {
+        self.saves.began()
+    }
+    fn ended(&self, ticket: u64, took: Option<Duration>) {
+        let took = took.map(|took| took.as_micros() as u64);
+        self.saves.ended(ticket, self.timers.now(), took);
     }
 }
 
@@ -397,13 +474,17 @@ fn address<M>(member: &Arc<M>) -> usize {
 
 impl<M: Campaigner> Elections<M> {
     fn new(timers: &Timers, saves: Arc<VoteSaves>) -> Self {
+        let most = timers.max_elections_at_once;
         Self {
-            most: timers.elections,
-            limit: timers.elections,
+            most,
+            floor: most.min(FLOOR.max(most / 8)),
+            limit: most,
+            urgent: VecDeque::new(),
             queue: VecDeque::new(),
             held: Vec::new(),
             known: HashSet::new(),
-            slow: timers.election_min / 4,
+            slow_at_first: timers.election_min * 1000 / 4,
+            never_slow: timers.election_min * 1000 / 20,
             stand: timers.election_max,
             round: timers.election_min,
             saves,
@@ -413,28 +494,31 @@ impl<M: Campaigner> Elections<M> {
         }
     }
 
-    /// Queue the members in `wanting` that are not queued or held yet, in
-    /// their order.
+    /// Queue the members in `wanting` that are not queued or held yet:
+    /// urgent ones ahead of the rest, each in their order.
     fn queue(&mut self, wanting: impl Iterator<Item = Arc<M>>, now: u64) {
-        let mut new: Vec<Arc<M>> = wanting
+        let mut new: Vec<(bool, Arc<M>)> = wanting
             .filter(|member| !self.known.contains(&address(member)))
+            .map(|member| (member.urgent(), member))
             .collect();
-        new.sort_by_key(|member| member.order());
-        for member in new {
+        new.sort_by_key(|(_, member)| member.order());
+        for (urgent, member) in new {
             self.known.insert(address(&member));
-            self.wait(member, now);
+            member.set_waiting(true);
+            let waiting = Waiting { member, since: now };
+            match urgent {
+                true => self.urgent.push_back(waiting),
+                false => self.queue.push_back(waiting),
+            }
         }
     }
 
-    fn wait(&mut self, member: Arc<M>, since: u64) {
-        member.set_waiting(true);
-        self.queue.push_back(Waiting { member, since });
-    }
-
-    /// Let members in from the front of the queue while places are free.
+    /// Let members in from the front of the queues while places are free.
     fn admit(&mut self, now: u64) {
         while self.held.len() < self.limit {
-            let Some(Waiting { member, since }) = self.queue.pop_front() else {
+            let Some(Waiting { member, since }) =
+                self.urgent.pop_front().or_else(|| self.queue.pop_front())
+            else {
                 break;
             };
             member.set_waiting(false);
@@ -457,13 +541,11 @@ impl<M: Campaigner> Elections<M> {
     /// Give back the places of elections that are over, drop waiting
     /// members that heard a leader, and move `limit`.
     fn settle(&mut self, now: u64) {
-        let mut ended = 0;
         let mut lost = Vec::new();
         let (stand, round) = (self.stand, self.round);
         let known = &mut self.known;
         self.held.retain_mut(|held| {
             if held.member.settled() {
-                ended += 1;
                 known.remove(&address(&held.member));
                 return false;
             }
@@ -471,11 +553,14 @@ impl<M: Campaigner> Elections<M> {
             if held.stood.is_none() && asks > held.asks {
                 held.stood = Some(now);
             }
+            // A candidate saving its vote has nothing out, but its vote
+            // requests go out once the save ends: its round is not over.
+            let answered = out == 0 && held.stood.is_some() && !held.member.saving_its_vote();
             let over = match held.stood {
                 None => now >= held.since + stand,
-                Some(stood) => (held.answered && out == 0) || now >= stood + round,
+                Some(stood) => (held.answered && answered) || now >= stood + round,
             };
-            held.answered = held.stood.is_some() && out == 0;
+            held.answered = answered;
             if over {
                 lost.push(Arc::clone(&held.member));
             }
@@ -485,21 +570,31 @@ impl<M: Campaigner> Elections<M> {
             // Its round may still be won: openraft takes the answers
             // either way. It just does not start another before its turn.
             member.disarm();
-            self.wait(member, now);
+            member.set_waiting(true);
+            self.queue.push_back(Waiting { member, since: now });
         }
-        let known = &mut self.known;
-        self.queue.retain(|waiting| {
-            let keep = waiting.member.may_stand(waiting.since);
-            if !keep {
-                waiting.member.set_waiting(false);
-                known.remove(&address(&waiting.member));
-            }
-            keep
-        });
+        for queue in [&mut self.urgent, &mut self.queue] {
+            queue.retain(|waiting| {
+                let keep = waiting.member.may_stand(waiting.since);
+                if !keep {
+                    waiting.member.set_waiting(false);
+                    known.remove(&address(&waiting.member));
+                }
+                keep
+            });
+        }
+        self.follow_the_disk(now);
+    }
 
-        let slow = self.slow;
+    /// Cut `limit` on a slow vote save, or give a place back.
+    fn follow_the_disk(&mut self, now: u64) {
+        let slow = match self.saves.alone.load(Ordering::Relaxed) {
+            0 => self.slow_at_first,
+            alone => (alone * SLOWER).max(self.never_slow),
+        };
+        let floor = self.floor;
         // To what the disk would have saved inside `slow`.
-        let fits = |from: usize, took: u64| ((from as u64 * slow / took) as usize).max(1);
+        let fits = |from: usize, took: u64| ((from as u64 * slow / took) as usize).max(floor);
         let slowest = self.saves.slowest.swap(0, Ordering::Relaxed);
         let before = self.saves.slowest_before.swap(0, Ordering::Relaxed);
         if slowest > slow {
@@ -507,22 +602,24 @@ impl<M: Campaigner> Elections<M> {
                 from: self.limit,
                 took: slowest,
             };
-            self.limit = fits(self.limit, slowest);
+            self.limit = self.limit.min(fits(self.limit, slowest));
             self.saves.since.store(now, Ordering::Relaxed);
-        } else if before > slow && before > self.lowered.took {
-            // Queued under the limit as it was, and slower than the save
-            // it was lowered for: that limit was further off than it looked.
-            self.lowered.took = before;
-            self.limit = self.limit.min(fits(self.lowered.from, before));
+        } else if before > slow {
+            // Queued under the limit as it was. Slower than the save it was
+            // lowered for, that limit was further off than it looked.
+            if before > self.lowered.took {
+                self.lowered.took = before;
+                self.limit = self.limit.min(fits(self.lowered.from, before));
+            }
         } else {
-            self.limit = (self.limit + ended).min(self.most);
+            self.limit = (self.limit + 1).min(self.most);
         }
     }
 
     fn load(&self) -> ElectionLoad {
         ElectionLoad {
             in_flight: self.held.len(),
-            waiting: self.queue.len(),
+            waiting: self.urgent.len() + self.queue.len(),
             limit: self.limit,
             peak: self.peak,
         }

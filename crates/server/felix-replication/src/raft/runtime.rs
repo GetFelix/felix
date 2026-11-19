@@ -105,9 +105,10 @@ pub struct RuntimeConfig {
     /// The most groups on this broker that may be in an election at once.
     /// The rest wait their turn, so the vote fsyncs of one round cannot
     /// outlast the election timeout and set off another. The runtime lowers
-    /// it while this broker's vote saves are slow. 0 takes the bound off.
+    /// it while this broker's vote saves are slow, to no less than 8. 0
+    /// takes the bound off.
     /// See `docs/per-shard-raft.md`, "Many groups electing at once".
-    pub elections: usize,
+    pub max_elections_at_once: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -131,7 +132,7 @@ impl Default for RuntimeConfig {
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
             append_entries: 1024,
             placement: Placement::default(),
-            elections: 64,
+            max_elections_at_once: 64,
         }
     }
 }
@@ -143,9 +144,9 @@ pub struct ElectionLoad {
     pub in_flight: usize,
     /// Members whose wait for a leader ran out and that wait for a place.
     pub waiting: usize,
-    /// How many may be in flight now. It moves between 1 and
-    /// [`RuntimeConfig::elections`] with how long this broker's vote saves
-    /// take.
+    /// How many may be in flight now. It moves between 8 (or the bound,
+    /// if lower) and [`RuntimeConfig::max_elections_at_once`] with how long
+    /// this broker's vote saves take.
     pub limit: usize,
     /// The most that were in flight at once since the ticker started.
     pub peak: usize,
@@ -561,7 +562,7 @@ impl GroupRuntime {
                     election_min: config.election_min.as_millis() as u64,
                     election_max: config.election_max.as_millis() as u64,
                     lease: config.lease.as_millis() as u64,
-                    elections: config.elections,
+                    max_elections_at_once: config.max_elections_at_once,
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),

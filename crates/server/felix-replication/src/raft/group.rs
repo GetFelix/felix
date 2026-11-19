@@ -40,7 +40,7 @@ use super::propose::{
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
 use super::runtime::{GroupStatus, OpenError, Role};
-use super::ticker::VoteSaves;
+use super::ticker::{VoteClock, VoteSaves};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
@@ -193,8 +193,8 @@ pub(crate) struct Timers {
     pub(crate) election_min: u64,
     pub(crate) election_max: u64,
     pub(crate) lease: u64,
-    /// [`super::RuntimeConfig::elections`].
-    pub(crate) elections: usize,
+    /// [`super::RuntimeConfig::max_elections_at_once`].
+    pub(crate) max_elections_at_once: usize,
 }
 
 impl Timers {
@@ -264,6 +264,8 @@ pub(crate) struct Pace {
     /// end.
     asks: AtomicU64,
     asks_out: AtomicU64,
+    /// The highest term this member sent a real vote request at.
+    asked_term: AtomicU64,
 }
 
 /// A vote or pre-vote request on its way, counted in [`Pace`] until it is
@@ -313,6 +315,7 @@ impl Pace {
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
             asks: AtomicU64::new(0),
             asks_out: AtomicU64::new(0),
+            asked_term: AtomicU64::new(0),
         }
     }
 
@@ -532,6 +535,11 @@ impl Pace {
         Asking(self)
     }
 
+    /// This member is sending a real vote request at `term`.
+    pub(crate) fn asking_at(&self, term: u64) {
+        self.asked_term.fetch_max(term, Ordering::Relaxed);
+    }
+
     /// This member granted a vote. Whoever wins starts at the short gap.
     pub(super) fn voted(&self) {
         self.promised
@@ -715,8 +723,9 @@ impl Group {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
             RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
-        log.time_vote_saves(Arc::new(move |took| {
-            vote_saves.saved(timers.now(), took.as_millis() as u64);
+        log.time_vote_saves(Arc::new(VoteClock {
+            saves: vote_saves,
+            timers,
         }));
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
@@ -989,7 +998,7 @@ impl Group {
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
         // Under the election bound the ticker turns the timer on instead.
-        if self.pace.timers.elections == 0 {
+        if self.pace.timers.max_elections_at_once == 0 {
             self.allow_elections();
         }
         let mut dropped = Dropped(Some(&self.dropped_ticks));
@@ -1035,6 +1044,25 @@ impl Group {
         }
         let state = self.raft.metrics().borrow_watched().state;
         matches!(state, ServerState::Follower | ServerState::Candidate)
+    }
+
+    /// A candidate whose real vote requests for its term have not gone out
+    /// yet: openraft sends them once its own vote is saved.
+    pub(crate) fn saving_its_vote(&self) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let watched = self.raft.metrics();
+        let metrics = watched.borrow_watched();
+        metrics.state == ServerState::Candidate
+            && metrics.current_term > self.pace.asked_term.load(Ordering::Relaxed)
+    }
+
+    /// Its group took writes when this member last heard its leader: the
+    /// leader was at the short gap. A member that never had a leader is
+    /// not urgent.
+    pub(crate) fn urgent(&self) -> bool {
+        let pace = &self.pace;
+        pace.led.load(Ordering::Relaxed) != NEVER
+            && pace.promised.load(Ordering::Relaxed) <= pace.timers.heartbeat
     }
 
     /// Mark this member as waiting for a place, or as not.

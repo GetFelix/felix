@@ -986,7 +986,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
         lease: millis(config.lease),
-        elections: config.elections,
+        max_elections_at_once: config.max_elections_at_once,
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -1522,7 +1522,7 @@ async fn a_broker_bounds_the_elections_it_starts() {
     const GROUPS: u32 = 30;
     const BOUND: usize = 3;
     let config = RuntimeConfig {
-        elections: BOUND,
+        max_elections_at_once: BOUND,
         ..timers()
     };
     let mut cluster = Cluster::with(config, true);

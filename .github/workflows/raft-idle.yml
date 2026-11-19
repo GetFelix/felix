@@ -37,6 +37,10 @@ on:
         description: "Groups in the write-burst run"
         required: false
         default: "300"
+      storm_rows:
+        description: "Storm report rows: all, or pr (2000 leader lost, formed at once, +20 ms and the slow disks)"
+        required: false
+        default: "all"
 
 permissions:
   contents: read
@@ -179,6 +183,8 @@ jobs:
       - name: Build
         run: cargo test --locked --release -p felix-replication --features raft --test raft_election_storm --no-run
       - name: Measure
+        env:
+          STORM_ROWS: ${{ inputs.storm_rows || 'all' }}
         run: |
           ulimit -n "$(ulimit -Hn)"
           run() {
@@ -186,10 +192,14 @@ jobs:
               --features raft --test raft_election_storm -- --ignored --nocapture 2>&1 \
               | grep -E 'groups,|no leader|panicked' | tee -a storm.log || true
           }
-          for groups in 1 100 300 1000 2000 5000; do run RAFT_STORM_GROUPS=$groups; done
-          for groups in 300 2000; do run RAFT_STORM_GROUPS=$groups; done
+          if [ "$STORM_ROWS" = pr ]; then
+            run RAFT_STORM_GROUPS=2000
+          else
+            for groups in 1 100 300 1000 2000 5000; do run RAFT_STORM_GROUPS=$groups; done
+            for groups in 300 2000; do run RAFT_STORM_GROUPS=$groups; done
+          fi
           run RAFT_STORM_GROUPS=2000 RAFT_STORM_MODE=form
-          run RAFT_STORM_GROUPS=1000 RAFT_STORM_IDLE=1
+          [ "$STORM_ROWS" = pr ] || run RAFT_STORM_GROUPS=1000 RAFT_STORM_IDLE=1
           run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=20
           run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=5 RAFT_STORM_DISK_WIDTH=16
           run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=5 RAFT_STORM_DISK_WIDTH=4
