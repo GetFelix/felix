@@ -356,6 +356,7 @@ async fn register_cache(broker: &Broker, incarnation: u64) {
             felix_broker::CacheMetadata {
                 consistency: felix_broker::ConsistencyLevel::Quorum,
                 incarnation,
+                replication_factor: None,
             },
         )
         .await

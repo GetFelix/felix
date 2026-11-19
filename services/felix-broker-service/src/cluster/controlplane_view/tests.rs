@@ -127,6 +127,7 @@ async fn fixture() -> Fixture {
             CacheMetadata {
                 consistency: ConsistencyLevel::Quorum,
                 incarnation: 4,
+                replication_factor: None,
             },
         )
         .await

@@ -20,6 +20,7 @@ mod fence;
 mod groups;
 mod headers;
 mod incarnation;
+mod lost_history;
 mod non_voting;
 #[cfg(feature = "raft")]
 mod seal;

@@ -43,6 +43,7 @@ async fn cache_broker(dir: &std::path::Path, incarnation: u64) -> Arc<Broker> {
             CacheMetadata {
                 consistency: ConsistencyLevel::Quorum,
                 incarnation,
+                replication_factor: None,
             },
         )
         .await

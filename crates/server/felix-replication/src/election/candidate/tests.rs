@@ -2236,6 +2236,7 @@ async fn the_stuck_scan_opens_no_cache_log() {
             felix_broker::CacheMetadata {
                 consistency: ConsistencyLevel::Quorum,
                 incarnation: 0,
+                replication_factor: None,
             },
         )
         .await
