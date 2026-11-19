@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795101382234,
+  "lastUpdate": 1795102590956,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62660,6 +62660,58 @@ window.BENCHMARK_DATA = {
             "range": "69232.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817922.80\nmean: 786545.20\nstdev: 69232.82\ncv: 8.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f86f5a49a9f46fb12f183b29160bf7a62a07d744",
+          "message": "fix: Raft cache shards get a stored target and form (main red after #2789) (#2833)\n\n* fix: Raft cache shards get a stored target and form (main red after #2789)\n\nSince #2789 a Raft group forms only on the target the control plane\nstores. The control plane took copy ids only for stream shards that\nstarted on Raft (record_raft_copy_id gated on kind == Stream), so no\ncache shard ever got a target and its group, with the counters it holds,\nnever formed. a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies\ntimed out waiting for a leader.\n\nCache shards now take copy ids through the same path, checked against\nthe cache's incarnation and replica count. Brokers already reported cache\nmembers and formed a cache group from a stored target; a broker test now\npins that the reporter covers a cache member.\n\n* test(controlplane): the cache refusals name the check that refused",
+          "timestamp": "2026-11-19T07:26:48-08:00",
+          "tree_id": "663f14b2b8cfb3e07d4100d838ed7248ad914812",
+          "url": "https://github.com/GetFelix/felix/commit/f86f5a49a9f46fb12f183b29160bf7a62a07d744"
+        },
+        "date": 1795102590339,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 361856.69,
+            "range": "10254.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361856.69\nmean: 361561.55\nstdev: 10254.43\ncv: 2.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 361856.69,
+            "range": "10254.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361856.69\nmean: 361561.55\nstdev: 10254.43\ncv: 2.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82096.35,
+            "range": "320.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82096.35\nmean: 82203.17\nstdev: 320.93\ncv: 0.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820963.46,
+            "range": "3209.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820963.46\nmean: 822031.65\nstdev: 3209.30\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
