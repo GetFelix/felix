@@ -912,12 +912,10 @@ fn one_issuer_filling_its_record_does_not_affect_another() {
 async fn single_use_caps_the_lifetime_even_when_the_stored_config_does_not() {
     let mut cfg = inline_cfg(&["k1"]);
     cfg.single_use_jti = true;
+    let validator = UpstreamOidcValidator::default();
     let now = chrono::Utc::now().timestamp();
     let token = mint_claims("k1", claims_with(json!({"jti": "z", "exp": now + 3600})));
-    let err = UpstreamOidcValidator::default()
-        .validate(&token, &[cfg])
-        .await
-        .unwrap_err();
+    let err = validator.validate(&token, &[cfg]).await.unwrap_err();
     assert!(matches!(err, OidcError::InvalidClaim(_)), "{err:?}");
 }
 
@@ -968,15 +966,13 @@ async fn an_overlong_jti_is_refused() {
     let mut cfg = inline_cfg(&["k1"]);
     cfg.single_use_jti = true;
     cfg.max_token_lifetime_seconds = Some(120);
+    // The validator goes first: its store refuses tokens issued before it
+    // started, so a token minted ahead of it can straddle a second boundary.
+    let validator = UpstreamOidcValidator::default();
     let token = mint_claims("k1", claims_with(json!({"jti": "x".repeat(129)})));
-    assert!(
-        UpstreamOidcValidator::default()
-            .validate(&token, &[cfg.clone()])
-            .await
-            .is_err()
-    );
+    assert!(validator.validate(&token, &[cfg.clone()]).await.is_err());
     let token = mint_claims("k1", claims_with(json!({"jti": "x".repeat(128)})));
-    UpstreamOidcValidator::default()
+    validator
         .validate(&token, &[cfg])
         .await
         .expect("128 bytes is fine");
