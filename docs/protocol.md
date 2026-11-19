@@ -1190,7 +1190,8 @@ in exactly the way any routing answer can.
 ### StreamShardsView (server -> client)
 ```
 { "type": "stream_shards_view", "shards": <u32>, "request_id": <u64>,
-  "routing": "jump_hash" }
+  "routing": "jump_hash",
+  "ack_durability": { "ack_at": "write", "copies": "quorum", "fsync": "periodic" } }
 ```
 
 `0` means this broker knows nothing of that stream, which is **not** the same as
@@ -1203,6 +1204,35 @@ only for a `jump_hash` stream; absent means `modulo`, so a modulo stream's
 answer is byte-identical to what a broker sent before the field existed. A
 client that routes keyed publishes itself must use it, or it computes a
 different shard than the broker does.
+
+#### AckDurability
+
+`ack_durability` says what the broker has done by the time it acknowledges a
+publish to this stream. It is sent only to a client that offered
+`FEATURE_ACK_DURABILITY` and only for a stream the broker knows, so every other
+client reads the frame it always did, byte for byte. A client that offered the
+bit and gets no field is talking to a broker that does not say, which is not
+the same as "no guarantee".
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `ack_at` | `enqueue`, `write` | `enqueue`: the ack is sent before the record is written, so it says only that the broker accepted the publish. `write`: it is sent after the write. |
+| `copies` | `leader`, `quorum` | `leader`: the owning broker holds it, and replicas may still be catching up. `quorum`: a majority of the shard's replica set, the leader included, holds it. Reported only when the stream has a log and every one of its shards has a replica besides its leader in this broker's routing snapshot; otherwise `leader`. |
+| `fsync` | `none`, `periodic`, `on_commit` | The sync policy of the log, absent for a stream with no log. `none`: survives a process crash, not a machine crash. `periodic`: a machine crash can lose what was acknowledged since the last sync. `on_commit`: synced before the ack. |
+
+What it does not say:
+
+- It is the weakest across the stream's shards: one shard another broker owns, or without a replica, makes the whole view the weaker answer. It describes the broker that answered, as it is configured now. `fsync` is that
+  broker's own setting; under `quorum` each member syncs by its own, so a fleet
+  is expected to run one policy. Nothing on the wire checks it.
+- `quorum` with `fsync: periodic` means a majority has the record written, not
+  synced. Losing that majority to a machine crash inside the interval loses it.
+- It is a view of the stream's settings, not a receipt. The ack of one publish
+  can be stronger than reported (a publish this broker forwards to another
+  owner is answered after the owner's write whatever `ack_at` says), never
+  weaker.
+- It says nothing about reads. Whether a read reflects every acknowledged
+  write is a separate question this field does not answer.
 
 ### PublishWidth
 ```
@@ -2156,6 +2186,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
 | `0x40` | `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` | Offered by a client with `FEATURE_PUBLISH_PIPELINE`, answered by a broker that grants it a window: plain acked publishes are answered as they complete, and only idempotent ones keep request order. See [answers on completion](#answers-on-completion) |
 | `0x80` | `FEATURE_SUBSCRIBE_END` | The broker honours `end` on `subscribe` and finishes such a subscription with `subscription_ended`. See [Subscribe](#subscribe) |
+| `0x100` | `FEATURE_ACK_DURABILITY` | Offered by a client and advertised by a broker: `stream_shards_view` says what an acknowledged publish to the stream means. See [AckDurability](#ackdurability) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2246,7 +2277,7 @@ ignores.
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
 `FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth,
 `FEATURE_LEASE_TOKEN` the sixth, `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` the
-seventh and `FEATURE_SUBSCRIBE_END` the eighth. The Rust constants are
+seventh, `FEATURE_SUBSCRIBE_END` the eighth and `FEATURE_ACK_DURABILITY` the ninth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

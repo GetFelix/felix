@@ -266,6 +266,12 @@ impl StubBroker {
         self.seen.checks_width.store(true, Ordering::SeqCst);
     }
 
+    /// Advertise `FEATURE_ACK_DURABILITY` and put `said` on every
+    /// `stream_shards_view`, as a broker does for a client that offered it.
+    pub(super) fn say_ack_durability(&self, said: felix_wire::AckDurability) {
+        *self.seen.ack_durability.lock().unwrap() = Some(said);
+    }
+
     /// Delay every `stream_shards` answer by `millis`.
     pub(super) fn delay_widths(&self, millis: u64) {
         self.seen.width_latency.store(millis, Ordering::SeqCst);
@@ -347,6 +353,7 @@ struct Seen {
     explicit_shard: Arc<AtomicBool>,
     /// Advertise `FEATURE_HEAD_TRIM`.
     head_trim: Arc<AtomicBool>,
+    ack_durability: Arc<Mutex<Option<felix_wire::AckDurability>>>,
     /// Answer `EXT_RECORD_HEADERS` to a client that offered it.
     record_headers: Arc<AtomicBool>,
     /// The record headers blocks of each acked batch, in arrival order.
@@ -381,6 +388,7 @@ impl Default for Seen {
             batches: Arc::default(),
             explicit_shard: Arc::default(),
             head_trim: Arc::default(),
+            ack_durability: Arc::default(),
             record_headers: Arc::default(),
             blocks: Arc::default(),
             offers: Arc::default(),
@@ -497,6 +505,10 @@ async fn serve_stream(
                     0
                 } | if seen.head_trim.load(Ordering::SeqCst) {
                     felix_wire::FEATURE_HEAD_TRIM
+                } else {
+                    0
+                } | if seen.ack_durability.lock().unwrap().is_some() {
+                    felix_wire::FEATURE_ACK_DURABILITY
                 } else {
                     0
                 };
@@ -657,6 +669,7 @@ async fn serve_stream(
                     shards: seen.width.load(Ordering::SeqCst),
                     request_id,
                     routing: None,
+                    ack_durability: *seen.ack_durability.lock().unwrap(),
                 };
                 // Each answer delayed on its own, as a network round trip is,
                 // so pipelined questions overlap their waits.

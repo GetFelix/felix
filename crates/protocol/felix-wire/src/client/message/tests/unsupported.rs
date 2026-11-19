@@ -99,6 +99,7 @@ fn stream_shards_view_only_names_a_routing_mode_that_is_not_modulo() {
         shards: 4,
         request_id: 1,
         routing: None,
+        ack_durability: None,
     };
     assert_eq!(
         plain.encode().unwrap().payload,
@@ -108,6 +109,7 @@ fn stream_shards_view_only_names_a_routing_mode_that_is_not_modulo() {
         shards: 4,
         request_id: 1,
         routing: Some(crate::routing::ShardRouting::JumpHash),
+        ack_durability: None,
     };
     let frame = jump.encode().unwrap();
     assert_eq!(Message::decode(frame).unwrap(), jump);
@@ -127,4 +129,65 @@ fn an_extension_body_keeps_its_floats_exact() {
     let message = Message::decode(frame).unwrap();
     let again = Message::decode(message.encode().unwrap()).unwrap();
     assert_eq!(again, message);
+}
+
+/// The durability field is new, so a view without it is the frame every
+/// broker sent before it existed. One with it round-trips, and a decoder that
+/// predates the field (this one with the field removed from the JSON) still
+/// reads the rest.
+#[test]
+fn stream_shards_view_carries_ack_durability_only_when_given() {
+    use crate::{AckCopies, AckDurability, AckFsync, AckPoint};
+    let plain = Message::StreamShardsView {
+        shards: 2,
+        request_id: 9,
+        routing: None,
+        ack_durability: None,
+    };
+    assert_eq!(
+        plain.encode().unwrap().payload,
+        Bytes::from_static(br#"{"type":"stream_shards_view","shards":2,"request_id":9}"#)
+    );
+    let said = Message::StreamShardsView {
+        shards: 2,
+        request_id: 9,
+        routing: None,
+        ack_durability: Some(AckDurability {
+            ack_at: AckPoint::Write,
+            copies: AckCopies::Quorum,
+            fsync: Some(AckFsync::Periodic),
+        }),
+    };
+    let frame = said.encode().unwrap();
+    assert_eq!(
+        frame.payload,
+        Bytes::from_static(
+            br#"{"type":"stream_shards_view","shards":2,"request_id":9,"ack_durability":{"ack_at":"write","copies":"quorum","fsync":"periodic"}}"#
+        )
+    );
+    assert_eq!(Message::decode(frame).unwrap(), said);
+    // An in-memory stream has no log to sync, so the field is left out.
+    let memory = Message::StreamShardsView {
+        shards: 1,
+        request_id: 1,
+        routing: None,
+        ack_durability: Some(AckDurability {
+            ack_at: AckPoint::Enqueue,
+            copies: AckCopies::Leader,
+            fsync: None,
+        }),
+    };
+    assert_eq!(
+        memory.encode().unwrap().payload,
+        Bytes::from_static(
+            br#"{"type":"stream_shards_view","shards":1,"request_id":1,"ack_durability":{"ack_at":"enqueue","copies":"leader"}}"#
+        )
+    );
+    // The frame an older broker sent decodes with no durability.
+    let old = Frame::new(
+        0,
+        Bytes::from_static(br#"{"type":"stream_shards_view","shards":2,"request_id":9}"#),
+    )
+    .unwrap();
+    assert_eq!(Message::decode(old).unwrap(), plain);
 }

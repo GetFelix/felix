@@ -132,6 +132,14 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         },
     ),
     example(
+        "What an ack means",
+        1,
+        Body {
+            params: "client: &Client",
+            context: "",
+        },
+    ),
+    example(
         "At-least-once may duplicate",
         1,
         Body {
