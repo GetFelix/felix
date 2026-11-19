@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795064426469,
+  "lastUpdate": 1795064862461,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62192,6 +62192,58 @@ window.BENCHMARK_DATA = {
             "range": "40802.44",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 780806.46\nmean: 766194.05\nstdev: 40802.44\ncv: 5.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a8e02d6cf605eb6386539e2d51077e0b591ab9d3",
+          "message": "feat(broker): serve durable cache and counter shards from their Raft group (#2774) (#2795)\n\n* wip(storage): a Raft cache member claims its directory under the cache root (#2774)\n\n* wip(broker): route cache and counter shards to their Raft group (#2774)\n\n* wip(broker): leave caches to the hybrid on a broker without a log-backed cache store (#2774)\n\n* chore(broker): format, fill CacheMetadata literals, point the watch gap at #2792 (#2774)\n\n* fix(broker): a plain delete on a Raft cache cannot starve; refuse a shard with hybrid counters (#2774)\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* test(raft): fix the Raft cache failover and group cluster tests' checks\n\nThe cache failover test ran beside the default `orders` stream, a group\nof one on some broker, so `leader_among` saw two brokers leading and\nnever named one unless both groups landed on the same broker. It now\nstarts with no stream.\n\nThe consumer group test told records apart by payload. The startup probe\nretries a publish that went unanswered across the first leadership\nhand-over, so the stream can hold two `harness-probe` records at\ndifferent offsets. Records are now told apart by offset, and each of the\ntest's own payloads must come out exactly once.\n\nAdds a unit test that a three-broker cache group serves its placed\nleader's term.\n\nSpec-Unaffected: test-only change; no modelled path is touched.",
+          "timestamp": "2026-11-19T04:55:44Z",
+          "tree_id": "4c3758d30d65f289699dc3b01312e40ff7653bc9",
+          "url": "https://github.com/GetFelix/felix/commit/a8e02d6cf605eb6386539e2d51077e0b591ab9d3"
+        },
+        "date": 1795064861856,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 526016.36,
+            "range": "38870.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526016.36\nmean: 542277.48\nstdev: 38870.01\ncv: 7.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 526016.36,
+            "range": "38870.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526016.36\nmean: 542277.48\nstdev: 38870.01\ncv: 7.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121260.89,
+            "range": "7666.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121260.89\nmean: 117616.02\nstdev: 7666.95\ncv: 6.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1212608.86,
+            "range": "76669.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1212608.86\nmean: 1176160.17\nstdev: 76669.52\ncv: 6.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
