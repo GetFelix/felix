@@ -118,9 +118,18 @@ pub(super) async fn accept_seal_report(
     Ok(AssignmentWrite::Written(stored))
 }
 
+/// What a copy id report carries from level 41: the stream incarnation of
+/// the copy's group, and whether the cluster runs durable streams on Raft.
+/// Only such a report is taken for a shard that started on Raft.
+pub(super) struct NativeShard {
+    shard_incarnation: u64,
+    raft_streams: bool,
+}
+
 /// [`crate::store::ControlPlaneStore::record_raft_copy_id`]. Deterministic,
 /// as a Raft apply must be: decided from the record and acknowledgements
 /// this store holds.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn record_raft_copy_id(
     store: &InMemoryStore,
     key: &ShardKey,
@@ -129,7 +138,26 @@ pub(super) async fn record_raft_copy_id(
     node_incarnation: u64,
     copy_id: u64,
     keep_ordered: bool,
+    native: Option<NativeShard>,
 ) -> StoreResult<bool> {
+    // Read before the locks below, which no stream write takes. A stream's
+    // durability never changes, and a recreated one has another incarnation.
+    let durable_stream = store
+        .streams
+        .read()
+        .await
+        .get(&crate::model::StreamKey {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+        })
+        .map(|stream| {
+            (
+                stream.incarnation,
+                stream.durable,
+                stream.replication_factor,
+            )
+        });
     // Nodes, then shards, then acknowledgements, the order a node delete
     // takes them in. Held to the write, so no registration or ack lands
     // between the gate and the target.
@@ -139,9 +167,41 @@ pub(super) async fn record_raft_copy_id(
     let Some(existing) = state.records.get(key) else {
         return Err(StoreError::NotFound("shard assignment".into()));
     };
-    if !existing.switched() {
+    // A copy belongs to one stream incarnation's group, so a late report
+    // from before a delete and recreate never lands on the new group.
+    if let Some(native) = &native
+        && native.shard_incarnation != existing.incarnation
+    {
+        return Err(StoreError::Conflict(format!(
+            "the report is for stream incarnation {}, the shard is at {}",
+            native.shard_incarnation, existing.incarnation
+        )));
+    }
+    let started_on_raft = native.as_ref().is_some_and(|native| {
+        native.raft_streams
+            && existing.switch.is_none()
+            && existing.key.kind == crate::model::ShardKind::Stream
+            && durable_stream.is_some_and(|(incarnation, durable, _)| {
+                durable && incarnation == existing.incarnation
+            })
+    });
+    // A target names only the set it was written from, so one from a set
+    // placement has not filled yet would form a group short of the
+    // stream's replica count. Decided here, not by the reporting broker.
+    if started_on_raft {
+        let wanted = durable_stream.map_or(0, |(_, _, factor)| factor as usize);
+        let placed = 1 + existing.replicas.len();
+        if placed < wanted {
+            return Err(StoreError::Conflict(format!(
+                "placement names {placed} brokers, the stream's replica count is {wanted}"
+            )));
+        }
+    }
+    if !existing.switched() && !started_on_raft {
         return Err(StoreError::Conflict(
-            "the shard has not switched to Raft".into(),
+            "the shard is not on Raft: it neither switched from the hybrid nor \
+             started on Raft"
+                .into(),
         ));
     }
     if existing.leader != node_id && !existing.replicas.iter().any(|r| r == node_id) {
@@ -165,6 +225,9 @@ pub(super) async fn record_raft_copy_id(
         return Ok(false);
     }
     let mut stored = existing.clone();
+    if started_on_raft && keep_ordered {
+        stored.start_native_raft_ordered();
+    }
     stored.raft_copy_ids.insert(node_id.to_string(), copy_id);
     let moved = stored
         .settle_raft_target()
@@ -248,6 +311,7 @@ impl InMemoryStore {
         seal_shard(self, key, expected_generation).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn apply_record_raft_copy_id(
         &self,
         key: &ShardKey,
@@ -256,7 +320,20 @@ impl InMemoryStore {
         node_incarnation: u64,
         copy_id: u64,
         keep_ordered: bool,
+        shard_incarnation: Option<u64>,
+        in_group: bool,
     ) -> StoreResult<bool> {
+        // A group decides the engine from its recorded identity alone, so
+        // every member applies the same; one with none recorded holds no
+        // shard started on Raft.
+        let raft_streams = match self.recorded_identity().await {
+            Some(identity) => identity.shard_engine == crate::config::ShardEngine::Raft.as_str(),
+            None => !in_group && self.shard_engine == crate::config::ShardEngine::Raft.as_str(),
+        };
+        let native = shard_incarnation.map(|shard_incarnation| NativeShard {
+            shard_incarnation,
+            raft_streams,
+        });
         record_raft_copy_id(
             self,
             key,
@@ -265,6 +342,7 @@ impl InMemoryStore {
             node_incarnation,
             copy_id,
             keep_ordered,
+            native,
         )
         .await
     }

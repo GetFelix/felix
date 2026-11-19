@@ -15,6 +15,10 @@ use crate::ShardKey;
 use crate::engine::{CommitError, Written};
 use crate::quorum::Unreadable;
 
+mod cache;
+
+pub use cache::{CacheCondition, CacheOp, CacheReply, ProducerRequest};
+
 const NO_GROUP: &str = "this broker holds no group for the shard";
 
 /// Writes to the Raft shards a [`GroupRuntime`] holds.
@@ -23,11 +27,15 @@ const NO_GROUP: &str = "this broker holds no group for the shard";
 #[derive(Clone)]
 pub struct RaftEngine {
     runtime: GroupRuntime,
+    anonymous: std::sync::Arc<cache::Anonymous>,
 }
 
 impl RaftEngine {
     pub fn new(runtime: GroupRuntime) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            anonymous: std::sync::Arc::new(cache::Anonymous::new()),
+        }
     }
 
     /// Write `batch` on this leader. openraft gives each record the next
@@ -326,19 +334,12 @@ impl RaftEngine {
         Some(self.runtime.group(shard)?.claim_skips())
     }
 
-    // HOOK(#2238 broker routing): the broker's cache and counter paths call
-    // the four below once a shard is routed to Raft.
-
     /// Commit a cache write on this leader and return what it answered
     /// when it was first applied. A retry of the same request gets that
     /// answer and is not applied again. `ttl` is in microseconds and only
     /// a put has one; zero is none.
     ///
     /// An error is an unknown outcome: the write may still commit.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no cache shard is routed here yet")
-    )]
     pub(crate) async fn cache_write(
         &self,
         shard: &ShardKey,
@@ -353,11 +354,7 @@ impl RaftEngine {
 
     /// `key`'s value and version on this leader, never one that has
     /// expired by its clock or by the log's time.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no cache shard is routed here yet")
-    )]
-    pub(crate) async fn cache_read(
+    pub async fn cache_read(
         &self,
         shard: &ShardKey,
         key: &str,
@@ -369,11 +366,7 @@ impl RaftEngine {
     }
 
     /// A counter's sum on this leader.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no cache shard is routed here yet")
-    )]
-    pub(crate) async fn counter_read(
+    pub async fn counter_read(
         &self,
         shard: &ShardKey,
         key: &str,

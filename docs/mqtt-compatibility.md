@@ -278,6 +278,7 @@ dropped silently: each is counted in `felix_mqtt_refused_total{reason}`.
 | The owner refused the connection's token on a forward: revoked, expired, or no `stream.publish` there (`not_authorized`) | `PUBACK` 0x87 | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Broker does not accept record headers (`record_headers_disabled`) | `PUBACK` 0x83, reason string `record_headers_disabled` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Mounted stream is gone or not durable (`stream_unavailable`) | `PUBACK` 0x80, reason string `stream_unavailable` | Dropped, counted | Closes (QoS 0: dropped, counted) |
+| Record larger than a Raft shard takes, 32 MiB (`record_too_large`) | `PUBACK` 0x83, reason string `record_too_large` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | User property starting with `felix.` (`reserved_header`) | `PUBACK` 0x83 | `DISCONNECT` 0x83 | Not possible |
 | QoS 2 (`qos2_unsupported`) | `DISCONNECT` 0x9B | the same | Closes |
 | Retain flag set (`retain_unsupported`) | `DISCONNECT` 0x9A | the same | Closes |

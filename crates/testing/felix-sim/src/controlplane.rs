@@ -863,6 +863,21 @@ impl ControlPlaneLink for SimLink {
         .await
     }
 
+    async fn report_raft_copy_id(
+        &self,
+        _bearer: Option<&str>,
+        node_id: &str,
+        report: &felix_replication::controlplane_link::RaftCopyId,
+    ) -> Result<LinkResponse> {
+        self.call(
+            Method::POST,
+            &format!("/v1/nodes/{node_id}/raft-copy-id"),
+            Some(serde_json::to_value(report)?),
+            None,
+        )
+        .await
+    }
+
     async fn confirmed_assignment(
         &self,
         _bearer: Option<&str>,

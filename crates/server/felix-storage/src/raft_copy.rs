@@ -37,6 +37,7 @@ mod reclaim;
     allow(dead_code, reason = "the re-form command, not built yet, calls it")
 )]
 mod reform;
+mod report;
 mod rotated_by;
 #[cfg_attr(
     not(test),
@@ -75,8 +76,9 @@ pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use reform::{
-    BrokerCopies, CopyRead, KeptLog, first_free_index, kept_logs, read_copies, read_copy, read_kept,
+    BrokerCopies, CopyRead, KeptLog, kept_logs, read_copies, read_copy, read_kept,
 };
+pub use report::{MembershipReader, VoterSets, build_report};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
@@ -88,13 +90,14 @@ pub(crate) use rotated_by::RotatedBy;
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
 pub use stop_file::{StoppedCopy, stop, stopped};
+pub use vouch::BrokerReport;
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use vouch::{
-    BrokerReport, GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterId,
-    VoterSource, plan_reform, probes,
+    GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterId, VoterSource,
+    plan_reform, probes,
 };
 
 use std::path::Path;
