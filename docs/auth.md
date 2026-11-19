@@ -659,6 +659,15 @@ Without `act`, only `sub` binds, so a gateway's certificate carries a user's
 token only after delegation. The claim is signed with the rest of the token,
 so nobody but the control plane can add it.
 
+Binding holds across a forward too. When the broker a client is connected to
+forwards its publish or cache operation to the shard's owner, it sends the
+certificate chain the client presented along with the token. An owner that
+binds subjects verifies that chain against its own `FELIX_TLS_CLIENT_CA` and
+binds the token to it by the same rules, rather than trusting that the first
+broker did; a forward without a chain is refused. Brokers from before this
+check forward without a chain, so in a cluster that binds subjects, upgrade
+every broker before relying on forwarding.
+
 A user's token can only be delegated to the gateway it was minted for. When
 the gateway exchanges the user's IdP token at `/token/exchange`, it sends its
 own `felix-controlplane` token as `actor_token`. The control plane checks that
