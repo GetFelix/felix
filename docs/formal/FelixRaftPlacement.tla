@@ -164,7 +164,12 @@
 (*                     reported a term: past the failure tolerance.        *)
 (*                     Read FALSE as "this rule removed".                  *)
 (*   FloorWaiver    -- Floor only: an operator may waive that block, and   *)
-(*                     the member takes its floor from whoever reported.   *)
+(*                     the member takes its floor from whoever answered.   *)
+(*   FloorVotersOnly -- Floor only: the floor takes the terms of voting    *)
+(*                     members alone, and a withheld member's term, the    *)
+(*                     term of a leader it follows, is dropped. Under a    *)
+(*                     waiver that loses an acked write (issue 2824,       *)
+(*                     FelixRaftPlacementTwoWipesFloorVotersOnly.cfg).     *)
 (*   AnswerAnyId    -- Rotate = TRUE only: a copy answers a request that   *)
 (*                     names an older copy id of its broker.               *)
 (*   DeleteOnTarget -- a copy is deleted as soon as the target drops it.   *)
@@ -208,7 +213,7 @@
 (* The read-index round is one step that reads every broker's term at      *)
 (* once, which is stricter than a round of answers collected over time.    *)
 (***************************************************************************)
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Brokers,
@@ -228,6 +233,7 @@ CONSTANTS
     WithheldCounts,
     Floor,          \* a withheld member answers no leader below its peers' terms
     FloorWaiver,    \* an operator may lift the floor's block past the failure tolerance
+    FloorVotersOnly, \* the floor ignores a withheld member's term
     AnswerAnyId,
     DeleteOnTarget,
     PlaceDoomed,
@@ -890,8 +896,9 @@ AskTarget(s, i) ==
 FloorProven(s) == ~Majority({t \in InitBrokers : hold[t] # 0} \cup {s}, InitBrokers)
 
 \* A withheld member asks every other member for its term. Each must
-\* answer. One that withholds its vote too gives no term; the floor is the
-\* highest term the others give. Past the failure tolerance it blocks
+\* answer. The floor is the highest term any of them gives, a withheld
+\* member's included: its term is that of a leader it follows. Only voting
+\* members count toward FloorProven. Past the failure tolerance it blocks
 \* until a withheld member votes again, or an operator waives it.
 LearnFloor(s) ==
     /\ Floor
@@ -900,7 +907,8 @@ LearnFloor(s) ==
     /\ \A k \in InitBrokers \ {s} : k \notin Absent
     /\ FloorProven(s) \/ FloorWaiver
     /\ floor' = [floor EXCEPT ![s] =
-                    MaxOf({0} \cup {term[k] : k \in {t \in InitBrokers \ {s} : hold[t] = 0}})]
+                    MaxOf({0} \cup {term[k] : k \in {t \in InitBrokers \ {s} :
+                                                    hold[t] = 0 \/ ~FloorVotersOnly}})]
     /\ UNCHANGED <<election, raft, copy, hold, mark, rec, reached, plane, delivered, used>>
 
 \* The member votes again once it has applied that far, with the reached
