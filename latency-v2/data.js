@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795113788767,
+  "lastUpdate": 1795119249618,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -79860,6 +79860,72 @@ window.BENCHMARK_DATA = {
             "range": "17.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 292.00\nmean: 284.60\nstdev: 17.23\ncv: 6.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0a50ae1d111eda563532c49de4b9404e21283f9c",
+          "message": "feat(placement): keep tenant shards off brokers marked internal (#2840) (#2841)\n\n* feat(placement): keep tenant shards off brokers marked internal (#2840)\n\nFELIX_NODE_ROLE=internal registers the label felix.dev/node-role=internal\nwith the node. Placement drops such a node from every candidate list\n(creation, balancing, failover, restore) and treats a shard already on it as\ndraining. An operator move onto it is refused with internal_node.\n\nSpec-Unaffected: the TLA models do not model node roles; placement's choice among eligible nodes is unchanged.\n\n* fix(placement): keep the internal role once recorded; gate it on control-plane level 42 (#2840)\n\nA label edit no longer drops the role, a registration without it is refused\nfor a node recorded as internal, and PATCH with internal (cluster-scoped\nnode.manage) is the one explicit way to change it. A registration with the\nrole waits until every control-plane member supports it.\n\nSpec-Unaffected: the TLA models do not model node roles.\n\n* fix(placement): the internal role's level gate covers imports and rides the command's level (#2840)\n\nA registration or an import carrying the internal role now has command\nlevel 44, so propose refuses it below that level on the level it reads\nonce. The role-change warning logs after the store applies it.\n\nSpec-Unaffected: the TLA models do not model node roles.",
+          "timestamp": "2026-11-19T20:02:58Z",
+          "tree_id": "f00b0652c8a2886a2432f1a21986fc85299d662e",
+          "url": "https://github.com/GetFelix/felix/commit/0a50ae1d111eda563532c49de4b9404e21283f9c"
+        },
+        "date": 1795119237971,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 129.20\nstdev: 1.92\ncv: 1.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "62.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 207.20\nstdev: 62.09\ncv: 29.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.40\nstdev: 1.14\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 264,
+            "range": "7.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 264.60\nstdev: 7.50\ncv: 2.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 348,
+            "range": "923.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 348.00\nmean: 786.00\nstdev: 923.98\ncv: 117.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
