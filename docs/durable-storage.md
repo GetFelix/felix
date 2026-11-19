@@ -1442,7 +1442,10 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   a stop whose flush failed. The record of an `OnCommit` run, which names no
   boot, is rewritten as a relaxed run without one. A crash after that
   rotates the id in any boot. That rewrite is not synced: only a process crash
-  has to find it, and a machine crash rotates anyway.
+  has to find it, and a machine crash rotates anyway. When the rewrite fails,
+  for example because the disk is full, the record is cut to nothing in place
+  instead. An empty record reads as a relaxed crash in an unknown boot, so it
+  rotates too, and the cut needs no new file, nor a free block on ext4 or XFS.
 
 A rotation also tells the broker's own fence answers that a copy may be
 short. Before the new id is written, the start records in `<root>/copy-trust`

@@ -166,6 +166,10 @@ const RAFT_ORDERED_LEVEL: u16 = 39;
 /// on an import (`MetaCommand::ImportState::lose_ordered`).
 const RESTORED_ORDERED_LEVEL: u16 = 40;
 
+/// The metadata level whose members take copy ids for shards that started
+/// on Raft (`MetaCommand::RecordRaftCopyId::shard_incarnation`).
+const RAFT_NATIVE_LEVEL: u16 = 41;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -1153,15 +1157,21 @@ impl ControlPlaneStore for RaftStore {
         node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
+        shard_incarnation: Option<u64>,
     ) -> StoreResult<bool> {
+        let needs = if shard_incarnation.is_some() {
+            RAFT_NATIVE_LEVEL
+        } else {
+            RAFT_TARGET_LEVEL
+        };
         if self
             .handle
             .cluster_version_if_known()
             .await
-            .is_none_or(|level| level < RAFT_TARGET_LEVEL)
+            .is_none_or(|level| level < needs)
         {
             return Err(StoreError::Conflict(format!(
-                "a control-plane member is below metadata version {RAFT_TARGET_LEVEL}"
+                "a control-plane member is below metadata version {needs}"
             )));
         }
         match self
@@ -1172,6 +1182,7 @@ impl ControlPlaneStore for RaftStore {
                 node_incarnation,
                 copy_id,
                 keep_ordered: false,
+                shard_incarnation,
             })
             .await?
         {

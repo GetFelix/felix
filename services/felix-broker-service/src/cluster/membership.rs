@@ -228,7 +228,14 @@ pub struct Registration {
 pub struct RootSequenceSlot {
     read: Arc<std::sync::OnceLock<RootRead>>,
     placement: Arc<std::sync::OnceLock<PlacementRoot>>,
+    /// This process's last registration, as (incarnation,
+    /// `registered_at_millis`), which the root's copy id reports carry.
+    registration: Arc<parking_lot::Mutex<Option<ProcessRegistration>>>,
 }
+
+/// A registration's incarnation, and `registered_at_millis` if the control
+/// plane gave one.
+type ProcessRegistration = (u64, Option<u64>);
 
 type RootRead = Box<dyn Fn() -> (StorageId, u64) + Send + Sync>;
 
@@ -247,6 +254,26 @@ impl RootSequenceSlot {
 
     pub(crate) fn read(&self) -> Option<(StorageId, u64)> {
         self.read.get().map(|read| read())
+    }
+
+    /// This process's last registration, as (incarnation,
+    /// `registered_at_millis`). `None` before it registered, and when the
+    /// control plane did not say when it registered the node.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn registration(&self) -> Option<(u64, u64)> {
+        let (incarnation, at) = (*self.registration.lock())?;
+        Some((incarnation, at?))
+    }
+
+    /// True once this process registered with a control plane that did not
+    /// say when it registered the node.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn registered_untimed(&self) -> bool {
+        matches!(*self.registration.lock(), Some((_, None)))
+    }
+
+    fn registered(&self, incarnation: u64, registered_at_millis: Option<u64>) {
+        *self.registration.lock() = Some((incarnation, registered_at_millis));
     }
 
     /// Acknowledge placement incarnations under `root`, which holds `acked`
@@ -1017,6 +1044,7 @@ pub(crate) fn spawn_with(
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
                 incarnation.store(registration.incarnation, Ordering::Release);
+                root.registered(registration.incarnation, registration.registered_at_millis);
                 registered.send_replace(Some(registration.incarnation));
                 let pace = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
                 registration.root = root.clone();
