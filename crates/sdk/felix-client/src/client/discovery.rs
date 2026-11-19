@@ -399,7 +399,7 @@ pub(super) async fn ask_stream_routing(
 /// [`ask_stream_routing`], keeping everything the broker answered.
 pub(super) async fn ask_stream_view(
     event_node: &NodeConnections,
-    credentials: &Credentials,
+    credentials: &std::sync::Arc<Credentials>,
     request_id: u64,
     runtime_config: ClientRuntimeConfig,
     tenant_id: &str,
