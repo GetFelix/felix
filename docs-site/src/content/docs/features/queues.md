@@ -101,17 +101,37 @@ name gets nothing of yours. A name is 1 to 128 bytes.
 The first poll on a new connection that sets `reclaim` reserves every record the
 member still holds from older connections. Those come back to that connection
 before anything else, including records owed to the group, over as many polls
-as it takes, and nobody else gets them in the meantime. Each counts as another
-attempt. One whose claim lapses before you take it back goes to the whole group,
-as any lapsed claim does.
+as it takes, and nobody else gets them in the meantime. Taking a record back is
+the same delivery, not another attempt: its `attempts` stays what it was, so a
+member that restarts while it holds work never pushes that work toward the dead
+letters. One whose claim lapses before you take it back goes to the whole group,
+as any lapsed claim does, and that redelivery is an attempt. So the attempt bound
+counts lapses, nacks and deliveries to someone else, not restarts: a record that
+crashes its consumer every time is dead-lettered only once its claim lapses
+between restarts often enough.
 
 Only that first poll reclaims. Leaving `reclaim` set on every poll is harmless,
 and a connection older than the last one to reclaim never takes anything back.
 Give each live process its own name: two under one name work, but the newer
 takes what the older held when it first reclaims.
 
-Claims are kept in the leader's memory, so this holds while the shard's leader
-stays put; after a failover the group resumes from its durable position anyway.
+On a Raft shard (`FELIX_SHARD_ENGINE=raft`) claims survive a change of leader.
+Every poll that hands records out, and every extension, is written to the
+shard's log before the consumer gets an answer, and the new leader rebuilds the
+claims from it. A holder can still extend, acknowledge or hand back its record,
+nobody else gets it while the claim stands, and a member that reconnects with
+`reclaim` takes it back from the new leader. The new leader cannot tell how much
+of a claim's time had passed, so it gives each one its full visibility (or
+extension) again from when it takes over: a claim lapses later than the old
+leader would have let it, never sooner. Acknowledgements ahead of the group's
+position and plain nacks are not written, so a new leader holds those records
+as claimed until they lapse and then delivers them again. Those rebuilt claims
+do not count against `FELIX_GROUP_MAX_IN_FLIGHT`, so the new leader keeps
+handing out new records meanwhile.
+
+On the default engine claims are kept in the leader's memory, so this holds
+while the shard's leader stays put; after a failover the group resumes from its
+durable position.
 
 ## Retries and giving up
 
@@ -268,9 +288,12 @@ A record already finished is refused and not listed.
 
 All three need `group.consume`, like an ack, and like an ack they are taken for
 whatever the group has in play, from any consumer of the group: claims do not
-yet say who holds them. Extensions and delays are the leader's memory, so a
-failover hands those records out from the group's durable position, sooner
-than asked. A consumer dead letter is durable and replicates with the shard.
+yet say who holds them. On a Raft shard an extension is written to the log and
+survives a failover (see [A member that restarts](#a-member-that-restarts)); a
+delay is the leader's memory there too, so a new leader holds the record for the
+visibility of the delivery it was nacked from. On the default engine extensions
+and delays are the leader's memory, so a failover hands those records out from
+the group's durable position, sooner than asked. A consumer dead letter is durable and replicates with the shard.
 The broker caps visibility, extensions and delays at
 `FELIX_GROUP_MAX_VISIBILITY_MS`. The same calls are on `Client` and on
 `ShardedGroup` (`extend`, `nack_after`, `dead_letter`).

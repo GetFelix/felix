@@ -338,6 +338,28 @@ impl Client {
         .await
     }
 
+    /// What an acknowledged publish to `stream` means. See
+    /// [`Connection::stream_ack_durability`].
+    ///
+    /// Asked of the broker in use, so the answer describes that broker's
+    /// configuration. Brokers of one cluster are expected to be configured
+    /// alike; nothing here checks it.
+    pub async fn stream_ack_durability(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> Result<Option<felix_wire::AckDurability>> {
+        self.paced(true, |_| {
+            self.through_entry(|client| async move {
+                client
+                    .stream_ack_durability(tenant_id, namespace, stream)
+                    .await
+            })
+        })
+        .await
+    }
+
     /// `request` once through the broker in use. When that broker is gone the
     /// connection is replaced before the error is returned, so the next try
     /// goes to another one.

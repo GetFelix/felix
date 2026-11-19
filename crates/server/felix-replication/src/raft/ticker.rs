@@ -1,10 +1,10 @@
 //! The node ticker: the one timer behind every group on a broker.
 //!
-//! openraft notices an election timeout or a due heartbeat only when its
-//! timer check runs. Each group is built with its own tick off, and this
-//! task asks for a check, each interval, from the groups whose timer can
-//! have run out. A follower that hears its leader is
-//! never asked, and a leader is asked once per heartbeat. See
+//! Each group is built with openraft's heartbeat and election timers off.
+//! This task asks a leader for a heartbeat check once per heartbeat, at the
+//! short or the idle gap, and turns a follower's election timer on once its
+//! wait for the leader has run out. A follower that hears its leader is
+//! never asked. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
 
 use std::panic::AssertUnwindSafe;
@@ -28,8 +28,8 @@ const TICKER_RESTARTS_TOTAL: &str = "felix_broker_raft_ticker_restarts_total";
 
 /// Run the ticker until `stop`, starting it again if it panics.
 ///
-/// Without a ticker no leader here heartbeats and no follower here stands,
-/// and nothing else would show it. A restart puts both back within a
+/// Without a ticker no leader here heartbeats and no follower here starts a
+/// new election, and nothing else would show it. A restart puts both back within a
 /// heartbeat, where failing the runtime would stop every group for a bug
 /// that may be in one. The restarts are logged and counted for whoever
 /// watches the broker.

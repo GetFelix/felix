@@ -104,8 +104,9 @@ pub use trim::{ConditionalTrim, TrimError};
 
 pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
-    AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, ErrorCode, ErrorDetail,
-    GroupRecord, InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica,
-    InspectedSubscription, PublishRefusalReason, RecordHeaders, RetryClass, ShardInspection,
-    ShardKind, ShardOwner, StartPosition, StreamRecord, SubscriptionCursor, SubscriptionFilter,
+    AckCopies, AckDurability, AckFsync, AckMode, AckPoint, BrokerEndpoint, CacheCondition,
+    CursorErrorReason, ErrorCode, ErrorDetail, GroupRecord, InspectedAssignment, InspectedFence,
+    InspectedLease, InspectedReplica, InspectedSubscription, PublishRefusalReason, RecordHeaders,
+    RetryClass, ShardInspection, ShardKind, ShardOwner, StartPosition, StreamRecord,
+    SubscriptionCursor, SubscriptionFilter,
 };

@@ -449,29 +449,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono-tz"
-version = "0.8.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d59ae0466b83e838b81a54256c39d5d7c20b9d7daa10510a242d9b75abd5936e"
-dependencies = [
- "chrono",
- "chrono-tz-build",
- "phf",
- "serde",
-]
-
-[[package]]
-name = "chrono-tz-build"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "433e39f13c9a060046954e0592a8d0a4bcb1040125cbf91cb8ee58964cfb350f"
-dependencies = [
- "parse-zoneinfo",
- "phf",
- "phf_codegen",
-]
-
-[[package]]
 name = "clap"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -826,13 +803,9 @@ dependencies = [
 
 [[package]]
 name = "display-more"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf8aaad655bf39f0691f6f4025a8b58f1ff46fb12cb70f6d69e4f0dd2eb717a8"
-dependencies = [
- "chrono",
- "chrono-tz",
-]
+checksum = "00f2a9f14c274f4514d5f1590da31c8a74659f557df982361d036cb3432f89a1"
 
 [[package]]
 name = "displaydoc"
@@ -918,7 +891,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1137,6 +1110,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "utoipa",
  "uuid",
 ]
@@ -2548,12 +2522,11 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "openraft"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
+source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
 dependencies = [
  "anyerror",
  "backoff-series",
  "base2histogram",
- "chrono",
  "derive_more",
  "display-more",
  "futures-util",
@@ -2575,9 +2548,8 @@ dependencies = [
 [[package]]
 name = "openraft-macros"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
+source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
 dependencies = [
- "chrono",
  "proc-macro2",
  "quote",
  "semver",
@@ -2587,7 +2559,7 @@ dependencies = [
 [[package]]
 name = "openraft-multi"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
+source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
 dependencies = [
  "anyerror",
  "openraft",
@@ -2596,7 +2568,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
+source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -2608,7 +2580,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt-tokio"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
+source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
 dependencies = [
  "futures-util",
  "openraft-rt",
@@ -2730,15 +2702,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "parse-zoneinfo"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f2a05b18d44e2957b88f96ba460715e295bc1d7510468a2f3d3b44535d26c24"
-dependencies = [
- "regex",
-]
-
-[[package]]
 name = "peel-off"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2778,44 +2741,6 @@ checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset 0.4.2",
  "indexmap",
-]
-
-[[package]]
-name = "phf"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
-dependencies = [
- "phf_shared",
-]
-
-[[package]]
-name = "phf_codegen"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aef8048c789fa5e851558d709946d6d79a8ff88c0440c587967f8e94bfb1216a"
-dependencies = [
- "phf_generator",
- "phf_shared",
-]
-
-[[package]]
-name = "phf_generator"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
-dependencies = [
- "phf_shared",
- "rand 0.8.8",
-]
-
-[[package]]
-name = "phf_shared"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
-dependencies = [
- "siphasher",
 ]
 
 [[package]]
@@ -3002,7 +2927,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3035,15 +2960,6 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "rand"
-version = "0.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
-dependencies = [
- "rand_core 0.6.4",
-]
 
 [[package]]
 name = "rand"
@@ -3339,7 +3255,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3397,7 +3313,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3876,10 +3792,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4660,7 +4576,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

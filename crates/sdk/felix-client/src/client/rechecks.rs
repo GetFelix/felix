@@ -177,6 +177,7 @@ async fn read_answers(
                 shards,
                 routing,
                 request_id,
+                ..
             })) => {
                 if let Some(asked) = pending.lock().expect("pending widths").remove(&request_id) {
                     let _ = asked.send(Ok((shards, routing.unwrap_or_default())));

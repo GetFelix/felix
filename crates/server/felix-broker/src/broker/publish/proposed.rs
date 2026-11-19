@@ -277,20 +277,6 @@ impl Broker {
         }
     }
 
-    /// Whether a stream on an engine takes a new idempotent batch of
-    /// `records` records: [`BrokerError::NotOnEngineStream`] for more than
-    /// one. [`Self::propose_idempotent`] asks after its look at the log, so
-    /// a re-send of a batch the log holds whole or in part is still
-    /// answered. A caller must not refuse a batch by this before then.
-    pub fn engine_takes_idempotent(records: usize) -> Result<()> {
-        if records > 1 {
-            return Err(BrokerError::NotOnEngineStream {
-                what: SEVERAL_RECORDS,
-            });
-        }
-        Ok(())
-    }
-
     /// [`Self::propose_publish`] for an idempotent producer's batch: the
     /// sequence is checked against the stream's log first, as
     /// [`Self::claim_batch_idempotent`] checks it, and only the producer's
@@ -311,10 +297,10 @@ impl Broker {
     /// nothing handed over. Its record may not be committed yet; the
     /// caller answers once it is.
     ///
-    /// A new batch is one record. One of several is refused with
-    /// [`BrokerError::NotOnEngineStream`] before anything is written: its
-    /// records would be an entry each, and a leader change or a lapsed
-    /// lease can cut those anywhere.
+    /// A new batch of several records is handed over whole, so the engine
+    /// admits or refuses it as one write. A leader change can still leave
+    /// only its start in the next leader's log; the re-send finishes it, as
+    /// below.
     ///
     /// A batch the log holds part of (a leader stopped partway) is never
     /// written again whole. A re-send whose start differs from the records
@@ -408,9 +394,6 @@ impl Broker {
                 }
                 ProducerSequence::Unknown | ProducerSequence::Next => {}
             }
-            // After the look: a multi-record batch the log holds whole is
-            // still answered as held.
-            Self::engine_takes_idempotent(len)?;
         }
         let owed = OwedRecords {
             payloads: payloads.clone(),
@@ -451,10 +434,6 @@ pub struct Attribution {
     /// One per record when set.
     pub headers: Option<Vec<Option<Bytes>>>,
 }
-
-/// What [`Broker::propose_idempotent`] refuses, as
-/// [`BrokerError::NotOnEngineStream`] names it.
-const SEVERAL_RECORDS: &str = "idempotent batches of more than one record";
 
 /// What [`Broker::propose_publish_at`] refuses.
 const SEVERAL_CONDITIONAL: &str = "conditional publishes of more than one record";

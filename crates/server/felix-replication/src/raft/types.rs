@@ -95,9 +95,8 @@ impl fmt::Display for MemberId {
 ///
 /// Each record of a batch is an entry of its own and names the whole
 /// batch, so a member tells which records of it are in its log even when a
-/// leader change has put other entries between them. The broker still
-/// refuses a new batch of several records; only the rest of one a log
-/// already holds part of is written.
+/// leader change has put other entries between them, and a re-send writes
+/// only the records a log does not hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProducerMark {
     pub(crate) producer_id: u64,

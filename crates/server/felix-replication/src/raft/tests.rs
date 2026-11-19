@@ -34,6 +34,7 @@ mod lease;
 mod membership;
 mod propose;
 mod purge;
+mod quiet_log;
 mod read;
 mod reform;
 mod root;
@@ -830,9 +831,9 @@ async fn placement_transfers_are_bounded_per_broker() {
     cluster.stop().await;
 }
 
-/// openraft notices a timeout only in its timer check, and the ticker is
-/// the only thing that asks for one. Forming a group needs no timer: the
-/// member told to form it stands at once.
+/// openraft's own election timer stays off until the ticker sees the
+/// leader is gone, so without the ticker nobody stands. Forming a group
+/// needs no timer: the member told to form it stands at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn without_the_ticker_no_timeout_is_noticed() {
     let mut cluster = Cluster::new(false);
@@ -2969,6 +2970,8 @@ fn the_default_timers_are_the_designs() {
     assert_eq!(raft.election_timeout_min, 1000);
     assert_eq!(raft.election_timeout_max, 2000);
     assert!(!raft.enable_tick);
+    // openraft's election timer starts only once the pace releases it.
+    assert!(!raft.enable_elect);
     assert_eq!(raft.allow_log_reversion, Some(false));
 }
 

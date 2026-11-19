@@ -260,6 +260,12 @@ pub enum Message {
         /// sends it for a stream created with another mapping.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         routing: Option<crate::routing::ShardRouting>,
+        /// What an acknowledged publish to this stream means on the broker
+        /// answering. Only sent to a client that offered
+        /// `FEATURE_ACK_DURABILITY`, so every other client reads the frame it
+        /// always did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ack_durability: Option<crate::client::ack_durability::AckDurability>,
     },
     /// Ask how many shards a cache was placed with.
     ///

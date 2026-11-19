@@ -369,6 +369,7 @@ async fn a_later_void_does_not_lift_an_earlier_one() {
             leads: Some(term),
             acked: Some(Duration::ZERO),
             sole: false,
+            voter: true,
         }
     };
     assert_eq!(lease.admit(1, leading(1)), Ok(()));
@@ -505,6 +506,7 @@ async fn a_suspend_while_openraft_answers_refuses() {
             leads: Some(1),
             acked: Some(Duration::ZERO),
             sole: false,
+            voter: true,
         }
     });
     assert_eq!(answered, Err(lease::WOKE));

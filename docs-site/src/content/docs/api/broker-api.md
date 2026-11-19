@@ -1056,7 +1056,8 @@ broker is *forwarded* instead and needs nothing from the client.
 { "type": "stream_shards", "tenant_id": "acme", "namespace": "prod",
   "stream": "orders", "request_id": 1 }
 { "type": "stream_shards_view", "shards": 4, "request_id": 1,
-  "routing": "jump_hash" }
+  "routing": "jump_hash",
+  "ack_durability": { "ack_at": "write", "copies": "quorum", "fsync": "periodic" } }
 ```
 
 How many shards a stream was placed with, and how it maps routing keys onto
@@ -1068,6 +1069,14 @@ A subscription reads **one shard**, so a client consuming a whole stream needs
 this to know how many to open; nothing else on the wire says. `0` means the
 broker knows nothing of that stream. It does not mean one shard: a client that
 rounded it up would read shard 0 and call it the stream.
+
+`ack_durability` says what an acknowledged publish to the stream means on the
+broker that answered: `ack_at` (`enqueue` or `write`), `copies` (`leader` or
+`quorum`) and `fsync` (`none`, `periodic` or `on_commit`, absent for an
+in-memory stream). It is sent only to a client that offered
+`FEATURE_ACK_DURABILITY`, so every other client gets the frame it always did.
+It is that broker's configuration, not a receipt: `quorum` with `periodic`
+means a majority has the record written, not synced. `Connection::stream_ack_durability` reads it.
 
 ### Cache Shards
 

@@ -1,3 +1,4 @@
+mod ack_durability;
 mod auth_failure;
 mod batch;
 mod cache_routing;

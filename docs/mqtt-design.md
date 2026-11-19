@@ -276,9 +276,9 @@ pipelining device gets group commit for free and a one-at-a-time device pays no
 added latency. Every `PUBACK` in the batch is sent when the batch is
 acknowledged.
 
-On a broker that runs stream shards on Raft, a shard takes an idempotent batch
-of one record only, so each message in the batch gets a producer sequence of its
-own. The shard's leader proposes them together in one proposal, so the batch
+On a broker that runs stream shards on Raft, each message in the batch gets a
+producer sequence of its own, the way a Kafka producer's records are numbered,
+so each message is a whole batch and a leader change never leaves part of one. The shard's leader proposes them together in one proposal, so the batch
 still costs one commit round trip
 (`docs/per-shard-raft.md`, "Kafka produce and MQTT publish"). A broker in the
 shard's group that does not lead it sends the whole batch to the leader in one

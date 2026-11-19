@@ -84,6 +84,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     raft-reserved-carried                    ← empty; a rotation carried raft-reserved in
     raft-epoch                               ← a Raft copy's group epoch, once a re-form started one
     rotated-by                               ← only in a kept directory: why the rotation moved it aside
+    raft-stopped                             ← the group epoch a re-form stopped the copy in
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     poisoned                                 ← only after a failed fsync: the mark as of the failure
@@ -559,14 +560,19 @@ a delete. The record has no tag, so the step to the next record is still
 ```text
 u8   version (1)
 u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
-         4 discard, 5 seek, 6 delete
+         4 discard, 5 seek, 6 delete, 7 claim
 u32  group name length, then the name (UTF-8, never empty)
-creation token                                    (ops 0 to 4)
+creation token                                    (ops 0 to 4, 7)
   u64  term
   u64  index
   u8   by: 0 hydrate, 1 seek
 u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
 u8   flags: bit 0 if_new                          (op 5 only)
+claim                                             (op 7 only)
+  u64  visibility in milliseconds
+  u8   1 if a named member holds it, else 0
+  u32  principal length, principal, u32 name length, name   (if named)
+  u32  records, then per record ascending: u64 offset, u32 attempts
 ```
 
 Big-endian, like the rest of the format. A reader refuses an unknown
@@ -1468,7 +1474,8 @@ of an empty or wiped directory keeps nothing, so a re-form must not let
 an older power cut vouch for the copy after it. The vote mark is checked first, so such a copy still holds
 the newest vote it took, and a re-form may read it to learn how high the
 group's terms went. Every other reason (no copy file, another storage id,
-no marks or another copy's, a vote below its mark, a poisoned log) is
+no marks or another copy's, a vote below its mark, a poisoned log, a copy a
+re-form stopped) is
 `restore`, since the directory can hold an older vote than one the copy
 gave, or less than it reported.
 
@@ -1476,6 +1483,19 @@ It is written and synced after the rename, so a crash leaves a kept
 directory without it, never a live directory with one. A missing file
 reads as `restore`, which covers every kept directory from before the
 file existed. Any other content is an error for the re-form's reads.
+
+## `raft-stopped`: a copy a re-form stopped
+
+A re-form's `apply` writes `stopped <epoch> <last>\n` into a shard
+directory before it reads the copy's report, and syncs it. `<epoch>` is the
+copy's group epoch and `<last>` the index of its last entry, both in
+decimal, or `-` for a copy with no entry. While the copy's `raft-epoch` is still at that
+epoch, no member opens on the directory. It opens only as a new copy id,
+after a leader is heard committing past `<last>`, and the rotation moves the
+directory with the marker into `.kept/`. A marker for an older epoch is
+spent: a re-form started the copy in a later one. Any other content is an
+error, since it may stop the copy. See `docs/per-shard-raft.md`,
+"Re-forming a group".
 
 ## `raft-snapshot`: a Raft group's snapshot
 

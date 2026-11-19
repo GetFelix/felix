@@ -12,7 +12,8 @@ use std::path::Path;
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
-    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, reached_before, reclaim_kept,
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, StoppedCopy, reached_before,
+    reclaim_kept,
 };
 use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::impls::leader_id_std::LeaderId;
@@ -160,9 +161,13 @@ impl RuntimeConfig {
             election_timeout_min: millis(self.election_min),
             election_timeout_max: millis(self.election_max),
             max_payload_entries: self.append_entries,
-            // The node ticker runs the timer check. A tick task per group
-            // costs most of a core per thousand idle members.
+            // The node ticker paces each leader's heartbeats, slower once
+            // the group is idle, which openraft's fixed interval cannot.
             enable_tick: false,
+            // openraft's election timer starts only once the member's pace
+            // says its leader is gone (`Group::tick`). On from the start, it
+            // would depose an idle leader between two slow heartbeats.
+            enable_elect: false,
             // A stream shard's log is its data. Raft logs take no retention
             // (#2602): entries leave only by an openraft purge, and a
             // snapshot must not cause one. A cache
@@ -241,6 +246,11 @@ pub enum OpenError {
     Log(#[from] io::Error),
     #[error("the group did not start: {0}")]
     Raft(String),
+    /// A re-form stopped this copy in its epoch. Nothing runs on it, and the
+    /// next open after a leader of the epoch is heard rejoins it under a
+    /// new copy id. See `docs/per-shard-raft.md`, "Re-forming a group".
+    #[error("{0}")]
+    Stopped(StoppedCopy),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -473,6 +483,20 @@ struct Inner {
     placed_budget: Arc<placed::Budget>,
     /// See [`GroupRuntime::ack_incarnation`].
     acked: Arc<AtomicU64>,
+    /// Copies a re-form stopped, by shard: no member runs on them.
+    stopped: parking_lot::Mutex<BTreeMap<ShardKey, StoppedMember>>,
+}
+
+/// A copy an open found stopped, which rejoins once a leader is heard
+/// committing past its last entry.
+struct StoppedMember {
+    group: GroupId,
+    member: MemberId,
+    /// The marker's epoch, so a stop in a later epoch starts over.
+    epoch: u64,
+    /// The index of its last entry when it stopped.
+    last: Option<u64>,
+    heard: bool,
 }
 
 impl GroupRuntime {
@@ -528,6 +552,7 @@ impl GroupRuntime {
                 mark_roots: parking_lot::Mutex::default(),
                 placed_budget: Arc::new(placed::Budget::new(&config.placement)),
                 acked: Arc::default(),
+                stopped: parking_lot::Mutex::default(),
                 placement: config.placement,
             }),
         })
@@ -610,9 +635,21 @@ impl GroupRuntime {
         let reserved = self.reserve(&group)?;
         let kept_config = config.clone();
         let shard = group.shard.clone();
-        let opened = root
-            .open_copy(&mark_name(&group.shard), dir, group.to_string(), config)
-            .await?;
+        let name = mark_name(&group.shard);
+        let opened = match root
+            .open_copy(&name, dir, group.to_string(), config.clone())
+            .await
+        {
+            Err(err) if let Some(stopped) = StoppedCopy::of(&err) => {
+                if !self.heard_leader(&group, stopped) {
+                    return Err(OpenError::Stopped(stopped));
+                }
+                tracing::info!(shard = ?shard, epoch = stopped.epoch, "a stopped copy heard a leader commit past it and rejoins under a new copy id");
+                root.rejoin(&name, dir, group.to_string(), config).await?
+            }
+            opened => opened?,
+        };
+        self.inner.stopped.lock().remove(&*group.shard);
         let member = MemberId::new(self.inner.broker.clone(), opened.copy);
         let log = opened.log;
         let earlier = {
@@ -1066,6 +1103,7 @@ impl GroupRuntime {
     /// one still stopping the member waits for it too, and returns true,
     /// unless [`Self::shutdown`] has taken the member over by then.
     pub async fn close(&self, shard: &ShardKey) -> bool {
+        self.inner.stopped.lock().remove(shard);
         let registry = Arc::clone(&self.inner.registry);
         let (shard, group) = {
             let mut slots = registry.slots.write();
@@ -1186,6 +1224,57 @@ impl GroupRuntime {
         }
     }
 
+    /// Whether a leader was heard committing past the stopped copy's last
+    /// entry since the open that found it stopped. The first such open only
+    /// starts listening.
+    fn heard_leader(&self, group: &GroupId, stopped: StoppedCopy) -> bool {
+        let mut held = self.inner.stopped.lock();
+        if let Some(found) = held.get(&*group.shard)
+            && found.group == *group
+            && Some(found.member.copy) == stopped.copy
+            && (found.epoch, found.last) == (stopped.epoch, stopped.last)
+        {
+            return found.heard;
+        }
+        let Some(copy) = stopped.copy else {
+            return false;
+        };
+        held.insert(
+            (*group.shard).clone(),
+            StoppedMember {
+                group: group.clone(),
+                member: MemberId::new(self.inner.broker.clone(), copy),
+                epoch: stopped.epoch,
+                last: stopped.last,
+                heard: false,
+            },
+        );
+        false
+    }
+
+    /// A message for a copy a re-form stopped. It is answered with nothing
+    /// but the refusal. An append from a committed leader whose commit is
+    /// past the copy's last entry is what lets the next open rejoin it: a
+    /// majority without the copy committed it, so the group goes on without
+    /// it and a re-run of the re-form needs none of its votes. A leader that
+    /// only proves an election may still need the copy.
+    fn stopped_member(&self, group: &GroupId, to: &MemberId, body: &Request) -> bool {
+        let mut held = self.inner.stopped.lock();
+        let Some(found) = held.get_mut(&*group.shard) else {
+            return false;
+        };
+        if found.group != *group || found.member != *to {
+            return false;
+        }
+        if let Request::Append(append) = body
+            && append.vote.is_committed()
+            && let Some(commit) = &append.leader_commit
+        {
+            found.heard |= found.last.is_none_or(|last| commit.index > last);
+        }
+        true
+    }
+
     /// Hand a peer's message to the member it names.
     pub async fn handle(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
         let RaftRequest {
@@ -1205,6 +1294,10 @@ impl GroupRuntime {
                 let copy = member.member.copy;
                 Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
             }
+            _ if self.stopped_member(&group, &to, &body) => Err(Refused::Stopped(
+                Box::new(Addressee { group, to }),
+                "a re-form stopped this copy".to_owned(),
+            )),
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }
     }

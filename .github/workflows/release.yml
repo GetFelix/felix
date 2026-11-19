@@ -657,13 +657,14 @@ jobs:
 
       # `maturin develop` installs into an *active* virtualenv and refuses to
       # run without one; `actions/setup-python` provides an interpreter, not a
-      # venv, so it could never have worked here. `pip install` builds the
-      # binding through maturin as the PEP 517 backend and installs it into the
-      # interpreter that is actually on PATH -- which is also what a user does.
+      # venv, so it could never have worked here. Build the wheel with
+      # maturin and pip install it into the interpreter that is on PATH, as a
+      # user would.
       - name: Install the binding
         run: |
           python -m pip install --require-hashes --only-binary :all: -r scripts/ci/requirements/binding.txt
-          python -m pip install --no-deps --no-build-isolation ./crates/sdk/felix-python
+          maturin build --release --manifest-path crates/sdk/felix-python/Cargo.toml --out "$RUNNER_TEMP/wheels"
+          python -m pip install --no-deps --no-index --only-binary :all: --find-links "$RUNNER_TEMP/wheels" felix-client
           python -c "import felix; print('felix binding imported OK')"
 
       - name: Run the conformance suite

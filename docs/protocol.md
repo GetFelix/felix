@@ -511,8 +511,8 @@ With `reclaim: true`, the broker reserves for this connection every claim the
 member holds from an older connection: the claims a process that restarted left
 behind. They go to this connection ahead of everything else, records owed to
 the group included, lowest offset first, over as many polls as `max_records`
-takes; other members do not get them meanwhile. Each counts as another attempt,
-so one at the attempt bound is dead-lettered instead. A reserved claim that
+takes; other members do not get them meanwhile. Each goes back as the same
+delivery, at the `attempts` it had, so a restart never dead-letters one. A reserved claim that
 lapses before it is taken back is owed to the whole group, like any lapsed
 claim. The reservation is made once per connection: later polls on it that set
 `reclaim` again are ordinary polls, as is any `reclaim` from a connection older
@@ -521,8 +521,13 @@ processes under one name, cannot keep taking claims still being worked on. Two
 live processes under one name are still a mistake: the newer one takes what
 the older held when it first reclaimed.
 
-Claims and members live in the shard leader's memory, so after a failover there
-is nothing to reclaim: the group resumes from its durable position anyway.
+On a Raft stream shard a poll's claims (offsets, attempts, the member, the
+visibility) are a group entry in the shard's log, applied before the poll is
+answered, so the next leader holds them. It records them as held on a
+connection older than any of its own, so a member's first `reclaim` there takes
+them back. On the default engine claims and members live in the shard leader's
+memory, so after a failover there is nothing to reclaim: the group resumes from
+its durable position.
 
 Both fields are optional and left out when unused, so an older broker reads the
 request it always did. Only a broker that advertised `FEATURE_GROUP_CONSUMER`
@@ -663,8 +668,9 @@ leader would otherwise answer from state its successor has moved past.
 where it stands. In `group_info`, `committed` is left out for a group with no
 cursor, `tail` is the shard's committed tail, so `tail - committed` is how far
 behind the group is, and `owed` counts records owed again after a nack or a
-lapsed claim. `in_flight` and `owed` are the leader's memory: a snapshot that
-starts again from zero when the shard changes leader.
+lapsed claim. `owed` is the leader's memory, and so is `in_flight` on the
+default engine: a snapshot that starts again from zero when the shard changes
+leader. On a Raft shard `in_flight` starts from the claims the new leader rebuilt.
 
 ### GroupAck / GroupNack
 ```
@@ -722,14 +728,18 @@ granted. `extend_ms` of `0` is refused with `invalid_request`.
 `attempts` is the count the record was delivered with, and names that one
 delivery. The extension is refused with `stale_claim` (`fatal`: retrying cannot
 bring the claim back) once that claim no longer stands: it lapsed, the record
-was handed out again, which counted another attempt, or a seek, failover or
-eviction rebuilt the group's in-flight state. Without the check, a consumer
+was handed out again at another attempt (a reclaim by the same member keeps
+the attempt, so the delivery still stands), or a seek, eviction, or a
+failover on the default engine rebuilt the group's in-flight state. Without the check, a consumer
 that lost a record could extend the claim of whoever holds it now, and keep it
 from the group should that consumer die. A record nacked with a delay is not a
 claim and cannot be extended either.
 
-An extension is the leader's memory, like every claim. A failover redelivers the
-record from the group's durable position, sooner than the extension said. A
+On a Raft stream shard an extension is a group entry like a poll's claims, and
+the next leader holds the record for the whole extension again from when it
+takes over. On the default engine an extension is the leader's memory, like
+every claim, and a failover redelivers the record from the group's durable
+position, sooner than the extension said. A
 group's in-flight state is not evicted while a claim stands, however long.
 
 ### GroupDeadLetter
@@ -1180,7 +1190,8 @@ in exactly the way any routing answer can.
 ### StreamShardsView (server -> client)
 ```
 { "type": "stream_shards_view", "shards": <u32>, "request_id": <u64>,
-  "routing": "jump_hash" }
+  "routing": "jump_hash",
+  "ack_durability": { "ack_at": "write", "copies": "quorum", "fsync": "periodic" } }
 ```
 
 `0` means this broker knows nothing of that stream, which is **not** the same as
@@ -1193,6 +1204,35 @@ only for a `jump_hash` stream; absent means `modulo`, so a modulo stream's
 answer is byte-identical to what a broker sent before the field existed. A
 client that routes keyed publishes itself must use it, or it computes a
 different shard than the broker does.
+
+#### AckDurability
+
+`ack_durability` says what the broker has done by the time it acknowledges a
+publish to this stream. It is sent only to a client that offered
+`FEATURE_ACK_DURABILITY` and only for a stream the broker knows, so every other
+client reads the frame it always did, byte for byte. A client that offered the
+bit and gets no field is talking to a broker that does not say, which is not
+the same as "no guarantee".
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `ack_at` | `enqueue`, `write` | `enqueue`: the ack is sent before the record is written, so it says only that the broker accepted the publish. `write`: it is sent after the write. |
+| `copies` | `leader`, `quorum` | `leader`: the owning broker holds it, and replicas may still be catching up. `quorum`: a majority of the shard's replica set, the leader included, holds it. Reported only when the stream has a log and every one of its shards has a replica besides its leader in this broker's routing snapshot; otherwise `leader`. |
+| `fsync` | `none`, `periodic`, `on_commit` | The sync policy of the log, absent for a stream with no log. `none`: survives a process crash, not a machine crash. `periodic`: a machine crash can lose what was acknowledged since the last sync. `on_commit`: synced before the ack. |
+
+What it does not say:
+
+- It is the weakest across the stream's shards: one shard another broker owns, or without a replica, makes the whole view the weaker answer. It describes the broker that answered, as it is configured now. `fsync` is that
+  broker's own setting; under `quorum` each member syncs by its own, so a fleet
+  is expected to run one policy. Nothing on the wire checks it.
+- `quorum` with `fsync: periodic` means a majority has the record written, not
+  synced. Losing that majority to a machine crash inside the interval loses it.
+- It is a view of the stream's settings, not a receipt. The ack of one publish
+  can be stronger than reported (a publish this broker forwards to another
+  owner is answered after the owner's write whatever `ack_at` says), never
+  weaker.
+- It says nothing about reads. Whether a read reflects every acknowledged
+  write is a separate question this field does not answer.
 
 ### PublishWidth
 ```
@@ -1576,24 +1616,17 @@ would have, and the producer carries on. A batch whose leader stopped partway
 through it is finished by the re-send rather than written twice.
 
 A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
-contract for a batch of one record. The producer id and sequence are in the
-record's entry, so every member's log holds them and a leader elected later
-answers a re-send from its own log. The batch is written exactly once.
+contract. The producer id and sequence are in each record's entry, so every
+member's log holds them and a leader elected later answers a re-send from its
+own log. The batch is written exactly once.
 
-**A Raft shard refuses an idempotent batch of more than one record.** The
-answer is `invalid_request` with `retry` `fatal` and the message `a stream on
-Raft does not take idempotent batches of more than one record`. Nothing is
-written and the sequence is not used up, so the producer can send the same
-records as batches of one, each under its own sequence. On Raft each record is
-a log entry of its own, and a leader change or a lapsed lease partway through
-a batch could leave some of its records written and not others. A re-send
-could not then be told from a new batch, so the batch is refused whole instead
-(#2524). A re-send of a batch of several records that the log already holds is
-still answered: one held whole as a duplicate, and one a leader change cut
-short by writing only its missing records, answered from the first record's
-original offset. No client can start a multi-record batch on Raft yet: the lease-hole half
-of #2472 is done, and lifting the refusal is #2524. So no cut exists in any
-log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
+On Raft each record is a log entry of its own. A batch goes to the group as one
+write, so a lapsed lease refuses all of it or none. A leader that stops
+partway can leave only the start of a batch in the next leader's log; the
+re-send then writes just the missing records and is answered from the first
+record's original offset. Other records can lie between the two parts, so a
+reader sees the batch's records in order but not always as one run. See
+`docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
@@ -2153,6 +2186,7 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
 | `0x40` | `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` | Offered by a client with `FEATURE_PUBLISH_PIPELINE`, answered by a broker that grants it a window: plain acked publishes are answered as they complete, and only idempotent ones keep request order. See [answers on completion](#answers-on-completion) |
 | `0x80` | `FEATURE_SUBSCRIBE_END` | The broker honours `end` on `subscribe` and finishes such a subscription with `subscription_ended`. See [Subscribe](#subscribe) |
+| `0x100` | `FEATURE_ACK_DURABILITY` | Offered by a client and advertised by a broker: `stream_shards_view` says what an acknowledged publish to the stream means. See [AckDurability](#ackdurability) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2243,7 +2277,7 @@ ignores.
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
 `FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth,
 `FEATURE_LEASE_TOKEN` the sixth, `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` the
-seventh and `FEATURE_SUBSCRIBE_END` the eighth. The Rust constants are
+seventh, `FEATURE_SUBSCRIBE_END` the eighth and `FEATURE_ACK_DURABILITY` the ninth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.

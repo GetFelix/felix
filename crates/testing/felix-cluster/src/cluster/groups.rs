@@ -100,6 +100,72 @@ impl Cluster {
         .await
     }
 
+    /// Poll as a named member through a named broker, asking for its
+    /// earlier claims back when `reclaim` is set.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn group_poll_as_via(
+        &self,
+        node_id: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        consumer: &str,
+        reclaim: bool,
+        max_records: u32,
+    ) -> Result<Vec<felix_wire::GroupRecord>> {
+        let node = self
+            .node(node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
+        let member = felix_client::GroupMember {
+            consumer: consumer.to_owned(),
+            reclaim,
+        };
+        retry_settling(|| {
+            client.group_poll_as(
+                &self.tenant_id,
+                &self.namespace,
+                stream,
+                shard,
+                group,
+                Some(&member),
+                max_records,
+                Duration::ZERO,
+            )
+        })
+        .await
+    }
+
+    /// Extend the claim `record` was delivered under, through a named broker.
+    pub async fn group_extend_via(
+        &self,
+        node_id: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        record: &felix_wire::GroupRecord,
+        by: Duration,
+    ) -> Result<Duration> {
+        let node = self
+            .node(node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        let client =
+            client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
+        retry_settling(|| {
+            client.group_extend(
+                &self.tenant_id,
+                &self.namespace,
+                stream,
+                shard,
+                group,
+                record,
+                by,
+            )
+        })
+        .await
+    }
+
     /// Finish one record for a group, through a named broker.
     pub async fn group_ack_via(
         &self,

@@ -34,12 +34,9 @@ fn add(key: &str, delta: i64, sequence: u64) -> CacheCommand {
 }
 
 /// Commit `command` stamped `stamp` through the group and return its index.
+/// A leader whose lease ran out under load forwards the write, so it retries
+/// against whoever leads next until `PATIENCE` is spent.
 async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
-    let leader = cluster.elected(N).await;
-    let member = cluster
-        .runtime(&leader.broker)
-        .group(&shard(N))
-        .expect("group");
     let command = Command {
         timestamp_micros: stamp,
         payload: command.encode(),
@@ -52,8 +49,23 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         headers: None,
         written: None,
     };
-    let written = member.raft().client_write(command).await.expect("write");
-    written.log_id.index
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let leader = cluster.elected(N).await;
+        let member = cluster
+            .runtime(&leader.broker)
+            .group(&shard(N))
+            .expect("group");
+        match member.raft().client_write(command.clone()).await {
+            Ok(written) => return written.log_id.index,
+            Err(openraft::error::RaftError::APIError(
+                openraft::error::ClientWriteError::ForwardToLeader(_),
+            )) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("write: {error:?}"),
+        }
+    }
 }
 
 fn state(cluster: &Cluster, broker: &str) -> Bytes {
@@ -63,9 +75,14 @@ fn state(cluster: &Cluster, broker: &str) -> Bytes {
 
 /// Wait until every member holds the state the leader holds.
 async fn agreed(cluster: &Cluster) -> Bytes {
+    agreed_among(cluster, &BROKERS).await
+}
+
+/// Wait until `brokers` all hold the same state.
+async fn agreed_among(cluster: &Cluster, brokers: &[&str]) -> Bytes {
     eventually(|| {
-        let first = state(cluster, BROKERS[0]);
-        BROKERS
+        let first = state(cluster, brokers[0]);
+        brokers
             .iter()
             .all(|broker| state(cluster, broker) == first)
             .then_some(first)
@@ -1592,6 +1609,62 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         1,
         "the log is synced before the snapshot"
     );
+}
+
+/// MembersAgree with skewed clocks: each member's clock is a second apart
+/// from the leader's, far more than a value lives, and leadership moves to
+/// a member with a different clock. After every write the members still
+/// hold the same state, because apply, the snapshot and expiry go by the
+/// entries' stamps. A member that expired values by its own clock would
+/// lose them before the leader does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_with_skewed_clocks_agree_after_every_write() {
+    use super::super::cache::CacheState;
+    use std::sync::atomic::Ordering::Relaxed;
+    const TTL: u64 = 300;
+    let mut cluster = Cluster::new(true);
+    let clocks = clocks(&cluster, 10_000);
+    // The leader's clock is `leads`. Of the members it reaches, one runs
+    // ahead of it and, if there is another, one behind.
+    let skew = |leader: &str, leads: u64, live: &[&str]| {
+        let followers = live.iter().filter(|broker| **broker != leader);
+        for (broker, clock) in followers.zip([leads + 1_000, leads - 1_000]) {
+            clocks[broker].store(clock, Relaxed);
+        }
+        clocks[leader].store(leads, Relaxed);
+    };
+    cluster.form(N).await;
+    let mut at = 10_000;
+    let mut sequence = 0;
+    let mut live = BROKERS.to_vec();
+    let mut cut = None;
+    for step in 0..12 {
+        if step == 6 {
+            // Move leadership to a member whose clock is not the old leader's.
+            let old = cluster.elected(N).await.broker;
+            cut_off(&cluster, &old);
+            live.retain(|broker| **broker != *old);
+            cut = Some(old);
+        }
+        let (engine, leader) = leading(&cluster).await;
+        // The second leader's clock runs ahead of the first's.
+        let leads = if cut.is_some() { at + 500 } else { at };
+        skew(&leader.member.broker, leads, &live);
+        sequence += 1;
+        let put = put(&format!("k{step}"), b"v", sequence);
+        let answer = engine.cache_write(&shard(N), put, TTL, PATIENCE).await;
+        assert!(matches!(answer.expect("put"), Answer::Written { .. }));
+        sequence += 1;
+        let add = add("n", 1, sequence);
+        let answer = engine.cache_write(&shard(N), add, 0, PATIENCE).await;
+        assert!(matches!(answer.expect("add"), Answer::Sum(_)));
+        agreed_among(&cluster, &live).await;
+        at += 100;
+    }
+    joined(&cluster, &cut.expect("cut"));
+    let state = agreed(&cluster).await;
+    let restored = CacheState::restore(&state, true).expect("restore");
+    assert_eq!(restored.sum("n"), Some(12));
 }
 
 fn adding(delta: i64) -> crate::raft::CacheOp {

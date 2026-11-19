@@ -3,6 +3,7 @@
 //! taken out of [`GroupTable::apply`].
 
 use super::*;
+use crate::queue::entry::Claims;
 
 const TERM: u64 = 2;
 
@@ -348,6 +349,135 @@ fn the_same_entries_fold_to_the_same_table() {
     assert_eq!(leader.table().last_delete(), 4);
 }
 
+fn claim(cre: CreationToken, holder: Option<&str>, records: &[(u64, u32)]) -> GroupOp {
+    GroupOp::Claim {
+        cre,
+        claims: Claims {
+            holder: holder.map(|name| ClaimHolder {
+                principal: "svc".to_owned(),
+                name: name.to_owned(),
+            }),
+            visibility_ms: 30_000,
+            records: records.to_vec(),
+        },
+    }
+}
+
+/// **Claims are part of the folded state**, so a member that becomes leader
+/// holds every claim the old leader wrote: a later claim on a record
+/// replaces the earlier, and the cursor passing a record, a dead letter or a
+/// seek ends its claim.
+#[test]
+fn claims_fold_until_the_record_is_passed() {
+    let cre = hydrated(0);
+    let mut log = Log::new();
+    log.apply("g", GroupOp::Advance { cre, to: 0 });
+    log.apply(
+        "g",
+        claim(cre, Some("a"), &[(0, 1), (1, 1), (2, 1), (3, 1)]),
+    );
+    log.apply("g", claim(cre, Some("b"), &[(1, 2)]));
+    log.apply("g", GroupOp::Advance { cre, to: 1 });
+    log.apply("g", GroupOp::DeadLetter { cre, offset: 2 });
+    let state = log.table.table().group("g").expect("group").clone();
+    let held: Vec<(u64, u32, &str)> = state
+        .claims
+        .iter()
+        .map(|(o, c)| {
+            (
+                *o,
+                c.attempts,
+                c.holder.as_ref().expect("named").name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(held, [(1, 2, "b"), (3, 1, "a")]);
+
+    // A claim below the cursor is a late one for a finished record.
+    log.apply("g", claim(cre, None, &[(0, 2)]));
+    assert!(
+        !log.table
+            .table()
+            .group("g")
+            .expect("group")
+            .claims
+            .contains_key(&0)
+    );
+
+    log.apply(
+        "g",
+        GroupOp::Seek {
+            to: 0,
+            if_new: false,
+        },
+    );
+    assert!(
+        log.table
+            .table()
+            .group("g")
+            .expect("group")
+            .claims
+            .is_empty()
+    );
+}
+
+/// A claim decided for a gone incarnation is dropped like any other write,
+/// and a claim never creates a group.
+#[test]
+fn a_stale_or_orphan_claim_changes_nothing() {
+    let cre = hydrated(0);
+    let mut log = Log::new();
+    log.apply("g", claim(cre, None, &[(0, 1)]));
+    assert!(log.table.table().group("g").is_none());
+    log.apply("g", GroupOp::Advance { cre, to: 0 });
+    log.apply(
+        "g",
+        GroupOp::Seek {
+            to: 0,
+            if_new: false,
+        },
+    );
+    log.apply("g", claim(cre, None, &[(0, 1)]));
+    assert!(
+        log.table
+            .table()
+            .group("g")
+            .expect("group")
+            .claims
+            .is_empty()
+    );
+}
+
+/// A table written before claims were replicated still loads, with none.
+#[test]
+fn a_table_without_claims_loads() {
+    let mut table = busy_table();
+    table
+        .groups
+        .values_mut()
+        .for_each(|state| state.claims.clear());
+    let mut bytes = Vec::new();
+    bytes.push(1);
+    let full = table.encode();
+    let mut rest = &full[1..];
+    // Rewrite each group without its (empty) claims count.
+    let mut body = Vec::new();
+    body.extend_from_slice(&rest[..20]);
+    rest = &rest[20..];
+    for _ in 0..table.groups.len() {
+        let name = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
+        let mut len = 4 + name + 17 + 8;
+        for _ in 0..2 {
+            let count = u32::from_be_bytes(rest[len..len + 4].try_into().unwrap()) as usize;
+            len += 4 + 8 * count;
+        }
+        body.extend_from_slice(&rest[..len]);
+        rest = &rest[len + 4..];
+    }
+    bytes.extend_from_slice(&body);
+    assert_eq!(GroupTable::decode(&bytes), Some(table));
+}
+
 /// A table folded from every kind of write.
 fn busy_table() -> GroupTable {
     let cre = hydrated(0);
@@ -358,6 +488,7 @@ fn busy_table() -> GroupTable {
     log.apply("a", GroupOp::DeadLetter { cre, offset: 6 });
     log.apply("a", GroupOp::Redrive { cre, offset: 3 });
     log.apply("a", GroupOp::Advance { cre, to: 7 });
+    log.apply("a", claim(cre, Some("w"), &[(8, 1), (9, 2)]));
     log.apply("b", GroupOp::Advance { cre, to: 1 });
     log.apply("b", GroupOp::Delete);
     log.apply(
@@ -378,8 +509,9 @@ fn a_table_round_trips() {
     assert_eq!(GroupTable::decode(&table.encode()), Some(table.clone()));
     let empty = GroupTable::default();
     assert_eq!(GroupTable::decode(&empty.encode()), Some(empty));
-    assert_eq!(table.last_delete(), 8);
-    assert_eq!(table.applied(), 9);
+    assert_eq!(table.last_delete(), 9);
+    assert_eq!(table.applied(), 10);
+    assert_eq!(table.group("a").expect("a").claims.len(), 2);
 }
 
 /// Every prefix, a trailing byte, an unknown version or creation kind, and
@@ -394,7 +526,7 @@ fn a_damaged_table_is_refused() {
     long.push(0);
     assert_eq!(GroupTable::decode(&long), None);
     let mut version = bytes.to_vec();
-    version[0] = 2;
+    version[0] = 3;
     assert_eq!(GroupTable::decode(&version), None);
     // Group "a": header 21, name 4 + 1, token 17 (kind last).
     let mut by = bytes.to_vec();

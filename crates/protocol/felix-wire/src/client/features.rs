@@ -446,6 +446,16 @@ pub const FEATURE_PUBLISH_ANSWER_ON_COMPLETION: u32 = 0x0000_0040;
 /// client sees it.
 pub const FEATURE_SUBSCRIBE_END: u32 = 0x0000_0080;
 
+/// The broker says what an acknowledged publish to a stream means:
+/// `ack_durability` on `stream_shards_view`.
+///
+/// An extended bit, in both words. Offered by a *client*, which is the side
+/// that reads the field: a broker adds it to the view only for a client that
+/// offered the bit, so every other client keeps getting byte-identical
+/// frames. A broker advertises it too, so a client knows an absent field
+/// means "this broker does not say" rather than "no guarantee".
+pub const FEATURE_ACK_DURABILITY: u32 = 0x0000_0100;
+
 /// Every extended feature bit this version implements: bits that travel in
 /// `client_features_hi` / `server_features_hi` rather than the first word.
 pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
@@ -455,7 +465,8 @@ pub const KNOWN_FEATURES_HI: u32 = FEATURE_INSPECT
     | FEATURE_HEAD_TRIM
     | FEATURE_LEASE_TOKEN
     | FEATURE_PUBLISH_ANSWER_ON_COMPLETION
-    | FEATURE_SUBSCRIBE_END;
+    | FEATURE_SUBSCRIBE_END
+    | FEATURE_ACK_DURABILITY;
 
 /// The peer reads the other side's extended feature word.
 ///

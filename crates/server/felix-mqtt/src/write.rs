@@ -104,10 +104,10 @@ pub trait Writes: Send + Sync {
 
     /// Whether each record of a batch takes a producer sequence of its own,
     /// so a written batch moves the shard's next sequence on by its record
-    /// count rather than by one. A broker whose shards take an idempotent
-    /// batch of one record only (Raft) says so and writes a batch as that
-    /// many one-record batches, the way a Kafka producer's records are
-    /// numbered.
+    /// count rather than by one. A broker that runs Raft shards says so and
+    /// writes a batch as that many one-record batches, the way a Kafka
+    /// producer's records are numbered, so a leader change never leaves part
+    /// of a batch.
     fn sequence_per_record(&self) -> bool {
         false
     }
