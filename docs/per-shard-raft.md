@@ -4451,6 +4451,13 @@ How a broker reports its copy id:
   shard's copy ids when its set changes, and a restore can bring back older
   ones, so a taken report is not enough.
 
+The control plane writes a target in place, at the generation placement
+already gave the shard. A broker's shard watch drops any other change at a
+generation it holds as stale, but it takes one at the same generation and
+set whose target is newer than the one it holds
+(`ShardOwnership::apply`), so the target reaches the brokers through the
+feed and not only through a resync.
+
 The control plane takes ids for a shard that switched from the hybrid, and
 from metadata level 41 for a shard that started on Raft: a durable stream's
 shard on a cluster whose engine is Raft (`FELIX_SHARD_ENGINE=raft` on the

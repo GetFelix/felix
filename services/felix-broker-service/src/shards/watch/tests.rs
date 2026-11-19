@@ -95,6 +95,49 @@ fn a_duplicate_change_is_ignored() {
     assert_eq!(owned.len(), 1);
 }
 
+/// The control plane stores a Raft target in place, at the generation the
+/// shard already has. That change must land, or a broker never sees the
+/// target its group forms on until a resync; a late or withheld one must not.
+#[test]
+fn a_raft_target_stored_in_place_is_applied() {
+    let with = |counter: u64, withheld: bool| ShardAssignment {
+        target: (!withheld).then(|| RaftTarget {
+            version: RaftTargetVersion {
+                incarnation: 1,
+                counter,
+            },
+            members: [("broker-a".to_string(), counter)].into_iter().collect(),
+        }),
+        targets_withheld: withheld,
+        ..assignment(0, "broker-a", 3)
+    };
+    let target = |owned: &ShardOwnership| {
+        owned
+            .get(&key(0))
+            .expect("present")
+            .target
+            .as_ref()
+            .map(|target| target.version.counter)
+    };
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert!(owned.apply(&key(0), Some(with(1, false))), "the stored target");
+    assert_eq!(target(&owned), Some(1));
+    assert!(!owned.apply(&key(0), Some(with(1, false))), "a duplicate");
+    assert!(owned.apply(&key(0), Some(with(2, false))));
+    assert!(!owned.apply(&key(0), Some(with(1, false))), "a late copy");
+    assert!(!owned.apply(&key(0), Some(with(0, true))), "a withheld view");
+    assert!(!owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert_eq!(target(&owned), Some(2));
+    // Another set at the same generation is not this record's target.
+    let moved = ShardAssignment {
+        leader: "broker-b".to_string(),
+        ..with(3, false)
+    };
+    assert!(!owned.apply(&key(0), Some(moved)));
+    assert_eq!(target(&owned), Some(2));
+}
+
 /// The property that makes reordering safe: a change that would move ownership
 /// backwards is dropped, not applied.
 #[test]

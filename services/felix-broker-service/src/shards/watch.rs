@@ -296,10 +296,19 @@ impl ShardOwnership {
     pub fn apply(&mut self, key: &ShardKey, assignment: Option<ShardAssignment>) -> bool {
         match assignment {
             Some(next) => {
-                if let Some(current) = self.assignments.get(key)
+                if let Some(current) = self.assignments.get_mut(key)
                     && (next.incarnation, next.generation)
                         <= (current.incarnation, current.generation)
                 {
+                    // The control plane stores a Raft target in place, at the
+                    // generation placement wrote. Dropped as stale, it would
+                    // stay unseen until a resync, and a group forms only on it.
+                    if newer_target(current, &next) {
+                        current.target = next.target;
+                        current.targets_withheld = false;
+                        self.changed();
+                        return true;
+                    }
                     mm::record_stale_change();
                     return false;
                 }
@@ -492,6 +501,28 @@ impl ShardOwnership {
     pub fn is_empty(&self) -> bool {
         self.assignments.is_empty()
     }
+}
+
+/// Whether `next`, a change at `current`'s incarnation, generation and set,
+/// carries a target newer than the one held. A withheld or absent target
+/// says nothing, and an older one is a late copy.
+fn newer_target(current: &ShardAssignment, next: &ShardAssignment) -> bool {
+    let same_set = (next.incarnation, next.generation, &next.leader, &next.replicas)
+        == (
+            current.incarnation,
+            current.generation,
+            &current.leader,
+            &current.replicas,
+        );
+    let Some(target) = next.target.as_ref().filter(|_| !next.targets_withheld) else {
+        return false;
+    };
+    let held = current
+        .target
+        .as_ref()
+        .filter(|_| !current.targets_withheld)
+        .map(|held| held.version);
+    same_set && held.is_none_or(|held| target.version > held)
 }
 
 /// What came before `next`, when `current` is the assignment right before it:
