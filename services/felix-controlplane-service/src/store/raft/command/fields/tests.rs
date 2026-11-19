@@ -954,21 +954,48 @@ fn each_variant_is_listed_at_its_level() {
     }
 }
 
-/// The samples set every field, so each command's level is the highest of
-/// anything it can carry.
+/// Each sample needs the level of the newest field it itself carries (an op
+/// with several samples, like the auth changes, carries different parts in
+/// each), and the sample that carries the newest field in the whole table
+/// for its op must reach that level.
 #[test]
 fn a_command_needs_the_level_of_its_newest_field() {
     let table = parse(TABLE);
+    for command in commands() {
+        let op = op_of(&command);
+        let value = serde_json::to_value(&command).expect("serializes");
+        let mut own = BTreeSet::from([s(op)]);
+        for (key, child) in value.as_object().expect("object") {
+            if key == "op" {
+                continue;
+            }
+            let mut path = format!("{op}.{key}");
+            own.insert(path.clone());
+            walk(child, &mut path, &|_| false, &mut |p, _| {
+                own.insert(p.to_string());
+            });
+        }
+        let newest = own
+            .iter()
+            .map(|path| table[path.as_str()])
+            .max()
+            .unwrap_or(0);
+        assert_eq!(command.version(), newest, "{op}: {}", value);
+    }
+}
+
+/// Every path the table lists for an op is carried by some sample, so a
+/// field's level is checked against a command that really serializes it.
+#[test]
+fn every_listed_command_path_is_in_a_sample() {
     let shape = shape();
-    // Several samples may share an op, each carrying a different part of it
-    // (the auth change variants), so the op's level is the highest of them.
-    let mut needed: BTreeMap<&str, u16> = BTreeMap::new();
-    let commands = commands();
-    for command in &commands {
-        let level = needed.entry(op_of(command)).or_default();
+    let table = parse(TABLE);
+    let mut level_by_op: BTreeMap<&str, u16> = BTreeMap::new();
+    for command in commands() {
+        let level = level_by_op.entry(op_of(&command)).or_default();
         *level = (*level).max(command.version());
     }
-    for (op, level) in needed {
+    for (op, level) in level_by_op {
         let newest = shape
             .iter()
             .filter(|path| path.as_str() == op || path.starts_with(&format!("{op}.")))

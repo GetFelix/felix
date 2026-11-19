@@ -1314,21 +1314,23 @@ Notes:
   (which for an existing issuer needs `tenant.manage:cluster:*`) or a
   bootstrap's `idp_issuers`. A token whose `kid` is not in the set is refused,
   with no refresh. The set holds 1 to 16 keys, each with a distinct `kid` and
-  each an RSA or EC public key; several let a rotation overlap: add the new
+  each an RSA or EC public key for signing (`use` `sig` or absent, not `enc`); several let a rotation overlap: add the new
   key, switch the IdP over, then remove the old one. Adding a key revokes
   nobody; removing one revokes the whole tenant, like any narrowing.
 - `single_use_jti` (default `false`) makes each upstream token exchangeable
-  once. The `jti` is recorded until the token's `exp` plus the clock skew,
-  and a second exchange, or a token with no `jti`, is refused with `401`.
-  The record is **in memory in each control plane replica**: it holds at most
-  100,000 entries and refuses new tokens when full of unexpired ones, rather
-  than forgetting a `jti` that could be replayed. Two limits follow. Replicas
-  do not share it, so with several replicas behind one address a replay that
-  lands on a replica that has not seen the token succeeds, and single use
-  holds per replica. And it does not outlive the process, so a replica
-  refuses any token issued before it started instead of trusting a record it
-  no longer has; the IdP's next token works. Pair it with
-  `max_token_lifetime_seconds`, which keeps the exposure window short.
+  once. It needs `max_token_lifetime_seconds` of at most 600 (`400`
+  otherwise), and the control plane holds a token to that bound whatever the
+  stored config says. The `jti` is recorded until the token's `exp` plus the
+  clock skew, and a second exchange, or a token with no `jti`, is refused with
+  `401`. The record is **in memory in each control plane replica**, kept per
+  issuer: an issuer holds at most 10,000 unexpired entries and, when full,
+  refuses only its own new tokens (rather than forgetting a `jti` that could
+  be replayed), so one tenant's issuer cannot starve another's. Two limits
+  follow. Replicas do not share it, so with several replicas behind one
+  address a replay that lands on a replica that has not seen the token
+  succeeds, and single use holds per replica. And it does not outlive the
+  process, so a replica refuses any token issued before it started instead of
+  trusting a record it no longer has; the IdP's next token works.
 - `max_token_lifetime_seconds` (1 to 86400, default unset) refuses a token
   whose `exp - iat` is larger.
 - A cluster that runs on the Raft metadata store applies `jwks`,

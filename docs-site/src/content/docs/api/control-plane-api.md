@@ -217,7 +217,7 @@ An issuer can carry its keys inline instead:
 
 `jwks` excludes `jwks_url` and `discovery_url`. It holds 1 to 16 RSA or EC
 keys with distinct `kid`s, so a rotation can overlap two. With
-`single_use_jti` a token exchanges once; the record is kept in memory by each
+`single_use_jti` (which needs a `max_token_lifetime_seconds` of at most 600) a token exchanges once; the record is kept in memory by each
 control plane replica, so it holds per replica and does not survive a restart
 (a restarted replica refuses tokens issued before it started). See
 [Auth](https://github.com/GetFelix/felix/blob/main/docs/auth.md#admin-api-preferred)

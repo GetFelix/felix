@@ -224,7 +224,20 @@ impl UpstreamOidcValidator {
             .get("exp")
             .and_then(Value::as_i64)
             .ok_or_else(|| OidcError::InvalidClaim("exp".to_string()))?;
-        if let Some(max) = issuer_cfg.max_token_lifetime_seconds
+        // Single use also caps the lifetime, whatever the stored config says,
+        // so the record of used `jti` values stays short.
+        let max_lifetime = if issuer_cfg.single_use_jti {
+            Some(
+                issuer_cfg
+                    .max_token_lifetime_seconds
+                    .map_or(jti::MAX_SINGLE_USE_LIFETIME, |max| {
+                        max.min(jti::MAX_SINGLE_USE_LIFETIME)
+                    }),
+            )
+        } else {
+            issuer_cfg.max_token_lifetime_seconds
+        };
+        if let Some(max) = max_lifetime
             && exp.saturating_sub(iat) > max as i64
         {
             return Err(OidcError::InvalidClaim("lifetime too long".to_string()));

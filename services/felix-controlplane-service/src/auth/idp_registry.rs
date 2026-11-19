@@ -16,6 +16,10 @@ pub const MAX_INLINE_KEYS: usize = 16;
 /// large still limits a replay window to a day.
 const MAX_LIFETIME_BOUND_SECONDS: u64 = 86_400;
 
+/// The longest lifetime bound an issuer with `single_use_jti` may set. The
+/// record of used `jti` values lives as long as the tokens do.
+const MAX_SINGLE_USE_BOUND_SECONDS: u64 = 600;
+
 /// Set to `true` to allow plain-HTTP discovery and JWKS URLs on any host.
 /// For development only: a JWKS fetched over plain HTTP can be swapped in
 /// transit, and whoever swaps it can mint tokens for the tenant.
@@ -57,7 +61,7 @@ pub struct IdpIssuerConfig {
     #[schema(value_type = Option<Object>)]
     pub jwks: Option<JwkSet>,
     /// Accept each token's `jti` once, until the token's `exp`. A token with
-    /// no `jti` is refused. The record is held in memory by each control plane
+    /// no `jti` is refused. Needs `max_token_lifetime_seconds` of at most 600. The record is held in memory by each control plane
     /// replica, so single use holds per replica, and for tokens issued after
     /// the replica started.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -103,6 +107,16 @@ impl IdpIssuerConfig {
                 "max_token_lifetime_seconds must be between 1 and {MAX_LIFETIME_BOUND_SECONDS}"
             ));
         }
+        if self.single_use_jti
+            && !self
+                .max_token_lifetime_seconds
+                .is_some_and(|max| max <= MAX_SINGLE_USE_BOUND_SECONDS)
+        {
+            return Err(format!(
+                "single_use_jti needs max_token_lifetime_seconds of at most \
+                 {MAX_SINGLE_USE_BOUND_SECONDS}"
+            ));
+        }
         if let Some(jwks) = &self.jwks {
             if self.jwks_url.is_some() || self.discovery_url.is_some() {
                 return Err("jwks excludes jwks_url and discovery_url".to_string());
@@ -130,6 +144,13 @@ fn check_inline_jwks(jwks: &JwkSet) -> Result<(), String> {
         };
         if !kids.insert(kid) {
             return Err(format!("jwks kid {kid:?} appears twice"));
+        }
+        // A key meant for encryption is not one tokens are verified with.
+        if matches!(
+            key.common.public_key_use,
+            Some(jsonwebtoken::jwk::PublicKeyUse::Encryption)
+        ) {
+            return Err(format!("jwks key {kid:?} is not a signing key"));
         }
         if !matches!(
             key.algorithm,

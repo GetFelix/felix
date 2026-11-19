@@ -258,6 +258,45 @@ async fn bootstrap_rejects_invalid_token_and_validation_errors() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// A seeded issuer is held to the same rules as one posted later: a bad or
+/// oversized inline JWKS, or a JWKS next to a URL, is refused before anything
+/// is written.
+#[tokio::test]
+async fn bootstrap_refuses_a_bad_inline_jwks() {
+    let key = |kid: &str| {
+        json!({"kty": "EC", "kid": kid, "crv": "P-256",
+            "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+            "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"})
+    };
+    let many: Vec<_> = (0..17).map(|n| key(&format!("k{n}"))).collect();
+    let cases = [
+        json!({"keys": many}),
+        json!({"keys": []}),
+        json!({"keys": [key("a"), key("a")]}),
+    ];
+    for jwks in cases {
+        let (store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+        let app = build_bootstrap_router(state).into_service();
+        let request = post(
+            "/internal/bootstrap/tenants/t1/initialize",
+            "secret",
+            json!({
+                "display_name": "Tenant One",
+                "idp_issuers": [{
+                    "issuer": "https://idp.example",
+                    "audiences": ["felix"],
+                    "jwks": jwks,
+                    "claim_mappings": {"subject_claim": "sub"}
+                }],
+                "initial_admin_principals": ["p:admin"]
+            }),
+        );
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!store.tenant_exists("t1").await.expect("read"));
+    }
+}
+
 /// Rotation is two rolling deploys, and this is the state between them: the
 /// new token is `token`, the old one demoted to `previous_token`, and both
 /// must work or some caller is locked out mid-rotation.

@@ -823,6 +823,7 @@ async fn an_inline_jwks_overlaps_keys_during_a_rotation() {
 async fn single_use_jti_refuses_a_replayed_assertion() {
     let mut cfg = inline_cfg(&["k1"]);
     cfg.single_use_jti = true;
+    cfg.max_token_lifetime_seconds = Some(120);
     let validator = UpstreamOidcValidator::default();
     let token = mint_claims("k1", claims_with(json!({"jti": "a"})));
     validator
@@ -892,6 +893,32 @@ fn the_jti_record_is_bounded_and_forgets_only_expired_entries() {
         store.claim("i", "d", now, now + 60),
         Err(OidcError::ReplayStoreFull)
     ));
+}
+
+#[test]
+fn one_issuer_filling_its_record_does_not_affect_another() {
+    let store = jti::JtiStore::with_cap(2);
+    let now = chrono::Utc::now().timestamp();
+    store.claim("noisy", "a", now, now + 60).expect("a");
+    store.claim("noisy", "b", now, now + 60).expect("b");
+    assert!(matches!(
+        store.claim("noisy", "c", now, now + 60),
+        Err(OidcError::ReplayStoreFull)
+    ));
+    store.claim("quiet", "c", now, now + 60).expect("quiet");
+}
+
+#[tokio::test]
+async fn single_use_caps_the_lifetime_even_when_the_stored_config_does_not() {
+    let mut cfg = inline_cfg(&["k1"]);
+    cfg.single_use_jti = true;
+    let now = chrono::Utc::now().timestamp();
+    let token = mint_claims("k1", claims_with(json!({"jti": "z", "exp": now + 3600})));
+    let err = UpstreamOidcValidator::default()
+        .validate(&token, &[cfg])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OidcError::InvalidClaim(_)), "{err:?}");
 }
 
 #[test]

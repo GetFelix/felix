@@ -168,3 +168,27 @@ fn the_new_fields_leave_an_existing_config_unchanged() {
     let back: IdpIssuerConfig = serde_json::from_value(value).expect("round trip");
     assert!(back.jwks.is_none() && !back.single_use_jti);
 }
+
+#[test]
+fn single_use_needs_a_short_lifetime_bound() {
+    let mut cfg = config("https://idp.example", Some("https://idp.example/jwks"));
+    cfg.single_use_jti = true;
+    assert!(cfg.validate(false, false).is_err(), "no bound");
+    cfg.max_token_lifetime_seconds = Some(601);
+    assert!(cfg.validate(false, false).is_err(), "bound too long");
+    cfg.max_token_lifetime_seconds = Some(600);
+    assert!(cfg.validate(false, false).is_ok());
+}
+
+#[test]
+fn an_encryption_key_is_refused_in_an_inline_jwks() {
+    let mut cfg = config("https://idp.example", None);
+    let mut key = ec_key("a");
+    key["use"] = serde_json::json!("enc");
+    cfg.jwks = Some(jwks_with(serde_json::json!([key])));
+    assert!(cfg.validate(false, false).is_err());
+    let mut key = ec_key("a");
+    key["use"] = serde_json::json!("sig");
+    cfg.jwks = Some(jwks_with(serde_json::json!([key])));
+    assert!(cfg.validate(false, false).is_ok());
+}
