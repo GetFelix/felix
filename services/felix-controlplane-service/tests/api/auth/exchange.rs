@@ -152,6 +152,7 @@ async fn exchange_returns_tenant_scoped_token() {
                 discovery_url: None,
                 jwks_url: Some(format!("{issuer}/jwks")),
                 claim_mappings: ClaimMappings::default(),
+                ..Default::default()
             },
         )
         .await
@@ -335,6 +336,7 @@ async fn stream_trim_is_minted_only_once_head_trim_is_finalized() {
                 discovery_url: None,
                 jwks_url: Some(format!("{issuer}/jwks")),
                 claim_mappings: ClaimMappings::default(),
+                ..Default::default()
             },
         )
         .await
@@ -497,6 +499,7 @@ async fn exchange_forbidden_without_policies() {
                 discovery_url: None,
                 jwks_url: Some(format!("{issuer}/jwks")),
                 claim_mappings: ClaimMappings::default(),
+                ..Default::default()
             },
         )
         .await
@@ -600,6 +603,7 @@ async fn exchange_supports_group_claim_based_rbac() {
                     subject_claim: "sub".to_string(),
                     groups_claim: Some("groups".to_string()),
                 },
+                ..Default::default()
             },
         )
         .await
@@ -744,6 +748,7 @@ async fn exchange_group_claim_rbac_requires_groups_claim_mapping() {
                 discovery_url: None,
                 jwks_url: Some(format!("{issuer}/jwks")),
                 claim_mappings: ClaimMappings::default(),
+                ..Default::default()
             },
         )
         .await
@@ -870,6 +875,7 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
                     subject_claim: "sub".to_string(),
                     groups_claim: Some("groups".to_string()),
                 },
+                ..Default::default()
             },
         )
         .await
@@ -985,6 +991,7 @@ async fn a_bound_exchange_binds_the_resolved_principal() {
                 discovery_url: None,
                 jwks_url: Some(format!("{issuer}/jwks")),
                 claim_mappings: ClaimMappings::default(),
+                ..Default::default()
             },
         )
         .await
