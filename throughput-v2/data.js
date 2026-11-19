@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795064862461,
+  "lastUpdate": 1795066441634,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62244,6 +62244,58 @@ window.BENCHMARK_DATA = {
             "range": "76669.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1212608.86\nmean: 1176160.17\nstdev: 76669.52\ncv: 6.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2ee74bb37e2d8dd1f69c0147fca201f393de99c1",
+          "message": "sim(raft): credit a stopped copy with what it flushed; force a disk fault per run (#2810)\n\n* WIP sim(raft): credit a stopped copy with what it flushed; force a disk fault per run\n\n* sim(raft): test that a follower stopped before it learns a commit is credited with it\n\nThe credit fix had no failing seed once the forced disk fault changed the\nschedules. This test reaches the window directly: a follower that flushed\nthe leader's last committed offset without knowing it is committed is\nwiped, and its credit must hold that record. It fails with the credit taken\nfrom the read bound.",
+          "timestamp": "2026-11-18T21:25:29-08:00",
+          "tree_id": "a1ac768df411470b7ca4405ea5e7f488cb78ce9b",
+          "url": "https://github.com/GetFelix/felix/commit/2ee74bb37e2d8dd1f69c0147fca201f393de99c1"
+        },
+        "date": 1795066440597,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 357847.56,
+            "range": "7818.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357847.56\nmean: 361106.48\nstdev: 7818.29\ncv: 2.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 357847.56,
+            "range": "7818.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357847.56\nmean: 361106.48\nstdev: 7818.29\ncv: 2.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80861.56,
+            "range": "482.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80861.56\nmean: 81068.74\nstdev: 482.81\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808615.64,
+            "range": "4828.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808615.64\nmean: 810687.43\nstdev: 4828.14\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
