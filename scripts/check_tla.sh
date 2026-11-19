@@ -594,6 +594,8 @@ expectations=(
   "FelixRaftBatchReachInstall violates NeverInstalls"
   "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
   "FelixRaftBatchReachHeld violates NeverAnswersHeld"
+  "FelixRaftBatchResetCrash pass"
+  "FelixRaftBatchResetCrashDropsTable violates BatchExactlyOnce"
   "FelixRaftGroups pass"
   "FelixRaftGroupsNoCreationIndex violates NoSkip"
   "FelixRaftGroupsNoDeleteWatermark violates NoSkip"
