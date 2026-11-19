@@ -25,6 +25,27 @@
 (* "ok at i" when it is kept, "mismatch" otherwise (the code reports the   *)
 (* tail, i + 1).                                                           *)
 (*                                                                         *)
+(* A conditional batch of N records is N entries, appended in one step at  *)
+(* consecutive indexes, and lands at expected .. expected + N - 1 or not   *)
+(* at all. Each entry carries its position in the batch and the batch's    *)
+(* length, and a member keeps the piece at position p iff its index is     *)
+(* expected + p, so a batch is kept whole or blanked whole. The commit is  *)
+(* not atomic: a change of leader can commit a strict prefix of a batch    *)
+(* and put the new leader's blank where the next piece was. That prefix is *)
+(* a cut batch. It stays in the log, kept, and readers must skip it.       *)
+(*                                                                         *)
+(* What a reader on a member sees, from that member's log alone:           *)
+(*                                                                         *)
+(*   - the read bound is the commit index, except that it stops before a   *)
+(*     kept piece whose batch's last index is past the commit (the batch   *)
+(*     may still commit whole, or be cut);                                 *)
+(*   - below the bound, a kept piece at i with position p and length n is  *)
+(*     a record only if the entry at i + n - 1 - p is a kept last piece    *)
+(*     of the same length. Pieces only take consecutive indexes and a cut  *)
+(*     takes only a tail, so that entry is this batch's own last piece     *)
+(*     and the batch is whole. The check reads marks only, not the         *)
+(*     client: the code has no batch identity to compare.                  *)
+(*                                                                         *)
 (* Checked, over each member's committed prefix:                           *)
 (*                                                                         *)
 (*   CondKeptAtExpected -- every kept conditional record is at its         *)
@@ -37,8 +58,13 @@
 (*                         at i = expected on every member that committed  *)
 (*                         i; one answered "mismatch" is kept nowhere      *)
 (*                         committed.                                      *)
+(*   WholeBatchesOnly   -- every record a reader can see belongs to a      *)
+(*                         batch whose every piece the member holds        *)
+(*                         committed and kept.                             *)
+(*   ReadsStable        -- (property) a member's read bound never falls,   *)
+(*                         and what a reader sees below it never changes.  *)
 (*                                                                         *)
-(* The knob:                                                               *)
+(* The knobs:                                                              *)
 (*                                                                         *)
 (*   LeaderDecides = TRUE -- the leader decides `kept` when the publish    *)
 (*                           arrives, from its guess of the index (its log *)
@@ -47,12 +73,23 @@
 (*                           entry appended in between moves the publish   *)
 (*                           one index on, and it is kept there.           *)
 (*                                                                         *)
+(*   Hide = "whole" -- the read rule above.                                *)
+(*   Hide = "bound" -- the read bound stops before an unfinished batch,    *)
+(*                     but a kept piece below it is a record whether or    *)
+(*                     not its batch's last piece is there.                *)
+(*   Hide = "none"  -- a reader sees every committed kept piece.           *)
+(*                                                                         *)
 (* Abstracted: disks, crashes and snapshots (FelixRaft.tla has them). A    *)
 (* message is one atomic step that reads both members, and a leader counts *)
 (* a follower toward a commit by reading its log, not from a stale answer. *)
 (* Each client sends once and is not retried: a retry is a new publish.    *)
 (* Any leader that holds a client's entry committed may answer it, which   *)
-(* allows more than the code, where only the proposer answers.             *)
+(* allows more than the code, where only the proposer answers. A batch is  *)
+(* answered from its first piece: "mismatch" when that is a blank, "ok"    *)
+(* once its last piece is committed, and a cut batch is not answered (the  *)
+(* proposer lost its term, and a retry is a new publish). Every member     *)
+(* runs the read rule: an older member that would deliver a cut prefix is  *)
+(* kept out by a fleet gate, not modelled here.                            *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -64,12 +101,17 @@ CONSTANTS
     MaxPlain,      \* plain publishes
     MaxMembers,    \* membership entries
     Expected,      \* Expected[c] is the offset client c names
-    LeaderDecides
+    CondLen,       \* CondLen[c] is how many records client c's batch holds
+    LeaderDecides,
+    Hide
 
 ASSUME
     /\ MaxTerm \in Nat /\ MaxLog \in Nat /\ MaxPlain \in Nat /\ MaxMembers \in Nat
     /\ \A c \in DOMAIN Expected : Expected[c] \in Nat \ {0}
+    /\ DOMAIN CondLen = DOMAIN Expected
+    /\ \A c \in DOMAIN CondLen : CondLen[c] \in Nat \ {0}
     /\ LeaderDecides \in BOOLEAN
+    /\ Hide \in {"whole", "bound", "none"}
     /\ Nobody \notin Servers
 
 VARIABLES
@@ -92,18 +134,22 @@ Clients == DOMAIN Expected
 
 Min(a, b) == IF a <= b THEN a ELSE b
 MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
+MinOf(S) == CHOOSE x \in S : \A y \in S : x <= y
 Quorum(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 
 NoAnswer == [r |-> "none", at |-> 0]
 
-Entry(t, k, c) == [term |-> t, kind |-> k, id |-> c, kept |-> FALSE]
+Entry(t, k, c) == [term |-> t, kind |-> k, id |-> c, pos |-> 0, len |-> 1, kept |-> FALSE]
+
+\* Piece p of client c's conditional batch.
+Piece(t, c, p) == [Entry(t, "cond", c) EXCEPT !.pos = p, !.len = CondLen[c]]
 
 LastTerm(s) == IF log[s] = <<>> THEN 0 ELSE log[s][Len(log[s])].term
 
 \* The entry a member stores at index i. With the rule on, a conditional
 \* entry is decided here, from the entry and i alone.
 Store(e, i) ==
-    IF e.kind = "cond" /\ ~LeaderDecides THEN [e EXCEPT !.kept = (i = Expected[e.id])]
+    IF e.kind = "cond" /\ ~LeaderDecides THEN [e EXCEPT !.kept = (i = Expected[e.id] + e.pos)]
     ELSE e
 
 \* How far two logs agree. Equal terms at an index mean equal prefixes up to
@@ -177,31 +223,34 @@ LearnTerm(i, j) ==
     /\ StepDown(j, term[i])
     /\ UNCHANGED <<log, commit, sent, answer, used>>
 
-\* The leader takes a publish. With LeaderDecides it goes into the queue, and
-\* a conditional one is decided now, from the index the leader expects it to
-\* get: past its log and everything queued ahead of it. With the rule on,
-\* nothing can see a publish between its arrival and its append, so it is
-\* appended at once.
-Take(i, e) ==
+\* The leader takes a publish, a sequence of entries. With LeaderDecides it
+\* goes into the queue, and a conditional one is decided now, from the index
+\* the leader expects it to get: past its log and everything queued ahead
+\* of it. With the rule on, nothing can see a publish between its arrival
+\* and its append, so it is appended at once, every entry of a batch in one
+\* step at consecutive indexes (one write bound to the leader's term).
+Take(i, es) ==
     IF LeaderDecides
-    THEN /\ queue' = [queue EXCEPT ![i] = Append(@, e)]
+    THEN /\ queue' = [queue EXCEPT ![i] = @ \o es]
          /\ UNCHANGED log
-    ELSE /\ Len(log[i]) < MaxLog
-         /\ log' = [log EXCEPT ![i] = Append(@, Store(e, Len(@) + 1))]
+    ELSE /\ Len(log[i]) + Len(es) <= MaxLog
+         /\ log' = [log EXCEPT ![i] =
+                @ \o [p \in 1..Len(es) |-> Store(es[p], Len(log[i]) + p)]]
          /\ UNCHANGED queue
 
 TakeCond(i, c) ==
     /\ role[i] = "leader"
     /\ c \notin sent
     /\ LET guess == Len(log[i]) + Len(queue[i]) + 1
-       IN Take(i, [Entry(term[i], "cond", c) EXCEPT !.kept = LeaderDecides /\ guess = Expected[c]])
+       IN Take(i, [p \in 1..CondLen[c] |->
+                     [Piece(term[i], c, p - 1) EXCEPT !.kept = LeaderDecides /\ guess = Expected[c]]])
     /\ sent' = sent \cup {c}
     /\ UNCHANGED <<term, role, votedFor, granted, commit, answer, used>>
 
 TakePlain(i) ==
     /\ role[i] = "leader"
     /\ used.plain < MaxPlain
-    /\ Take(i, Entry(term[i], "plain", 0))
+    /\ Take(i, <<Entry(term[i], "plain", 0)>>)
     /\ used' = [used EXCEPT !.plain = @ + 1]
     /\ UNCHANGED <<term, role, votedFor, granted, commit, sent, answer>>
 
@@ -259,13 +308,21 @@ LearnCommit(i, j) ==
        /\ commit' = [commit EXCEPT ![j] = k]
     /\ UNCHANGED <<term, role, votedFor, granted, log, queue, sent, answer, used>>
 
-\* A leader answers a client whose entry it holds committed.
+\* A leader answers a client whose first entry it holds committed: "ok" once
+\* the last one is committed too, "mismatch" when the first is a blank.
 Answer(i, c) ==
     /\ role[i] = "leader"
     /\ answer[c] = NoAnswer
     /\ \E k \in 1..commit[i] :
           /\ log[i][k].kind = "cond"
           /\ log[i][k].id = c
+          /\ log[i][k].pos = 0
+          /\ log[i][k].kept =>
+                LET j == k + CondLen[c] - 1 IN
+                    /\ j <= commit[i]
+                    /\ log[i][j].kind = "cond"
+                    /\ log[i][j].id = c
+                    /\ log[i][j].kept
           /\ answer' = [answer EXCEPT ![c] =
                 [r |-> IF log[i][k].kept THEN "ok" ELSE "mismatch", at |-> k]]
     /\ UNCHANGED <<term, role, votedFor, granted, log, commit, queue, sent, used>>
@@ -289,8 +346,10 @@ Spec == Init /\ [][Next]_vars
 ----------------------------------------------------------------------------
 
 Entries ==
-    [term : 1..MaxTerm, kind : {"blank", "plain", "member"}, id : {0}, kept : {FALSE}]
-    \cup [term : 1..MaxTerm, kind : {"cond"}, id : Clients, kept : BOOLEAN]
+    [term : 1..MaxTerm, kind : {"blank", "plain", "member"}, id : {0},
+     pos : {0}, len : {1}, kept : {FALSE}]
+    \cup [term : 1..MaxTerm, kind : {"cond"}, id : Clients,
+           pos : 0..MaxLog, len : 1..MaxLog, kept : BOOLEAN]
 
 TypeOK ==
     /\ term \in [Servers -> 0..MaxTerm]
@@ -308,14 +367,17 @@ Committed(s, k) == k \in 1..commit[s]
 
 KeptCond(s, k) == log[s][k].kind = "cond" /\ log[s][k].kept
 
+\* The offset a conditional entry names: its batch's, plus its position.
+Target(s, k) == Expected[log[s][k].id] + log[s][k].pos
+
 CondKeptAtExpected ==
     \A s \in Servers : \A k \in 1..commit[s] :
-        KeptCond(s, k) => k = Expected[log[s][k].id]
+        KeptCond(s, k) => k = Target(s, k)
 
 OneKeptPerOffset ==
     \A s1, s2 \in Servers : \A k1 \in 1..commit[s1], k2 \in 1..commit[s2] :
         (/\ KeptCond(s1, k1) /\ KeptCond(s2, k2)
-         /\ Expected[log[s1][k1].id] = Expected[log[s2][k2].id])
+         /\ Target(s1, k1) = Target(s2, k2))
             => log[s1][k1].id = log[s2][k2].id
 
 MembersAgree ==
@@ -326,13 +388,57 @@ AnswersHold ==
     \A c \in Clients :
         /\ answer[c].r = "ok" =>
               /\ answer[c].at = Expected[c]
-              /\ \A s \in Servers : Committed(s, answer[c].at) =>
-                    /\ log[s][answer[c].at].kind = "cond"
-                    /\ log[s][answer[c].at].id = c
-                    /\ log[s][answer[c].at].kept
+              /\ \A s \in Servers, p \in 0..(CondLen[c] - 1) :
+                    Committed(s, answer[c].at + p) =>
+                        /\ log[s][answer[c].at + p].kind = "cond"
+                        /\ log[s][answer[c].at + p].id = c
+                        /\ log[s][answer[c].at + p].pos = p
+                        /\ log[s][answer[c].at + p].kept
         /\ answer[c].r = "mismatch" =>
               \A s \in Servers : \A k \in 1..commit[s] :
                   ~(KeptCond(s, k) /\ log[s][k].id = c)
+
+\* The index of the last piece of the batch whose kept piece is at k, from
+\* the piece's own mark.
+LastAt(s, k) == k + log[s][k].len - 1 - log[s][k].pos
+
+\* The entry at LastAt is committed and is a kept last piece of the same
+\* length. Marks only: no client identity.
+Finished(s, k) ==
+    LET j == LastAt(s, k) IN
+        /\ j <= commit[s]
+        /\ log[s][j].kind = "cond"
+        /\ log[s][j].kept
+        /\ log[s][j].len = log[s][k].len
+        /\ log[s][j].pos = log[s][j].len - 1
+
+\* Committed kept pieces whose batch may still commit whole or be cut.
+Unfinished(s) == {k \in 1..commit[s] : KeptCond(s, k) /\ LastAt(s, k) > commit[s]}
+
+ReadBound(s) ==
+    IF Hide = "none" \/ Unfinished(s) = {} THEN commit[s]
+    ELSE MinOf(Unfinished(s)) - 1
+
+\* A reader on s sees the entry at k (a record, when it is plain or a kept
+\* piece; anything else it skips).
+Visible(s, k) ==
+    /\ k \in 1..ReadBound(s)
+    /\ (Hide = "whole" /\ KeptCond(s, k)) => Finished(s, k)
+
+WholeBatchesOnly ==
+    \A s \in Servers : \A k \in 1..commit[s] :
+        (KeptCond(s, k) /\ Visible(s, k)) =>
+            LET c == log[s][k].id IN
+                \A p \in 0..(CondLen[c] - 1) :
+                    /\ Expected[c] + p \in 1..commit[s]
+                    /\ log[s][Expected[c] + p].kind = "cond"
+                    /\ log[s][Expected[c] + p].id = c
+                    /\ log[s][Expected[c] + p].kept
+
+ReadsStable ==
+    [][\A s \in Servers :
+          /\ ReadBound(s)' >= ReadBound(s)
+          /\ \A k \in 1..ReadBound(s) : Visible(s, k)' = Visible(s, k)]_vars
 
 ----------------------------------------------------------------------------
 \* Witness: says something never happens, and TLC must find it does.
@@ -341,8 +447,24 @@ AnswersHold ==
 NeverOkAndMismatch ==
     ~(\E c, d \in Clients : answer[c].r = "ok" /\ answer[d].r = "mismatch")
 
+\* A cut batch is committed: a kept piece whose last index is committed but
+\* holds something else.
+NeverCutCommitted ==
+    ~\E s \in Servers : \E k \in 1..commit[s] :
+        KeptCond(s, k) /\ LastAt(s, k) <= commit[s] /\ ~Finished(s, k)
+
+\* A reader sees a record of a batch of more than one.
+NeverReadsBatch ==
+    ~\E s \in Servers : \E k \in 1..commit[s] :
+        KeptCond(s, k) /\ log[s][k].len > 1 /\ Visible(s, k)
+
 \* Expected offsets for the configurations: two clients name offset 2, the
 \* first index after the first leader's blank, and one names 3.
 TwoAtTwo == <<2, 2, 3>>
+\* One record each.
+OneEach == <<1, 1, 1>>
+\* Batches: the first client's three records name offsets 2..4, a single
+\* record names 2, and two records name 3..4.
+BatchLens == <<3, 1, 2>>
 
 =============================================================================
