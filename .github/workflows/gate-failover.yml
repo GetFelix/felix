@@ -124,7 +124,7 @@ jobs:
             (
               cd "$dir"
               export CARGO_TARGET_DIR="$target"
-              cargo build --release -p felix-broker-service --bin felix-broker
+              cargo build --locked --release -p felix-broker-service --bin felix-broker
               cargo test --release -p felix-cluster --test scale --no-run --message-format=json |
                 jq -r 'select(.profile.test == true and .target.name == "scale") | .executable' |
                 tail -1 > "/tmp/felix-gate/$name.scale"

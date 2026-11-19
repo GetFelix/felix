@@ -411,7 +411,7 @@ export default function register(ctx) {
           assert.ok(item, `only ${seen.size} of ${keys.length} changes arrived`);
           if (item.change) seen.set(item.change.key, item.shard);
         }
-        assert.deepEqual([...seen.keys()].sort(), [...keys].sort());
+        assert.deepEqual([...seen.keys()].sort((a, b) => a.localeCompare(b)), [...keys].sort((a, b) => a.localeCompare(b)));
         assert.ok(
           new Set(seen.values()).size > 1,
           "every key landed on one shard, so this did not exercise the merge",
@@ -449,7 +449,7 @@ export default function register(ctx) {
           if (item.change) state.add(item.change.key);
           if (item.stateComplete) break;
         }
-        assert.deepEqual([...state].sort(), [...keys].sort());
+        assert.deepEqual([...state].sort((a, b) => a.localeCompare(b)), [...keys].sort((a, b) => a.localeCompare(b)));
       } finally {
         await watch.close();
       }

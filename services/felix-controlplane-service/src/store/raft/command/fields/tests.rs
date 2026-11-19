@@ -611,6 +611,7 @@ fn commands() -> Vec<MetaCommand> {
             node_incarnation: 1,
             copy_id: 1,
             keep_ordered: true,
+            shard_incarnation: Some(1),
         },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
