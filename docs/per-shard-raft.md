@@ -4737,6 +4737,38 @@ by the store and again by the leader that would append it. Nothing reads
 the floor yet: the re-form's refusal to run a first form for an incarnation
 that has a floor is not built.
 
+#### The control plane's record for a re-form
+
+The re-form planner (`plan_reform` in `raft_copy/vouch.rs`) takes what the
+brokers report and what the control plane holds, the `GroupRecord`.
+`ShardAssignment::reform_record` builds the second from the shard's record and
+the brokers declared dead:
+
+| `GroupRecord` field | From the shard's record |
+|---|---|
+| `incarnation` | the stream `incarnation` |
+| `placed` | `placed.brokers`, `None` when the shard has no `placed` record |
+| `ordered` | `ordered_voter_sets()`, see "Targets ordered in an epoch" |
+| `floor` | `raft_floor`'s exact log id, at this incarnation and epoch |
+| `offset_floor` | `raft_floor.offset_floor`, at this incarnation |
+| `dead` | the brokers the caller passes as declared dead |
+| `seed` | always `None` for now |
+| `bases` | empty: only a group at epoch 0 gets a record |
+
+Anything the record cannot vouch for stays unknown, and the planner reads
+unknown as a block or a mark, never as empty. A floor from another stream
+incarnation belongs to an earlier group, so it is dropped rather than read as
+this group's.
+
+Two gaps keep every plan marked or refused for now:
+
+- **The seed is not recorded.** A group's first voters are the copy ids its
+  forming broker asks its peers for, and the control plane does not store
+  them. With the seed unknown, every plan is marked, so `apply` needs the
+  operator to accept the loss.
+- **Bases are not recorded.** No re-form writes its base to the shard's record
+  yet, so a group whose record shows it past epoch 0 gets no record (`BasesNotRecorded`) and no plan.
+
 ### Shards with one replica
 
 An RF 1 shard runs a group with one voter. It elects itself and commits on

@@ -26,20 +26,20 @@ pub(crate) const FILE_NAME: &str = "raft-epoch";
 /// A log id with its group epoch: the entry at `index`, written in `term`
 /// of epoch `epoch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct EpochLogId {
-    pub(crate) index: u64,
-    pub(crate) epoch: u64,
-    pub(crate) term: u64,
+pub struct EpochLogId {
+    pub index: u64,
+    pub epoch: u64,
+    pub term: u64,
 }
 
 /// How one re-form started its epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct EpochBase {
+pub struct EpochBase {
     /// The base's last log id, `None` for an empty base.
-    pub(crate) base_last: Option<EpochLogId>,
+    pub base_last: Option<EpochLogId>,
     /// The epoch's first index. Indexes from the base's end up to it are a
     /// gap: offsets no record will ever take.
-    pub(crate) first_index: u64,
+    pub first_index: u64,
 }
 
 impl EpochBase {
