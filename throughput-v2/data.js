@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795120827958,
+  "lastUpdate": 1795124821213,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63128,6 +63128,58 @@ window.BENCHMARK_DATA = {
             "range": "12557.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798277.63\nmean: 797993.00\nstdev: 12557.40\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "408a9120ada64b3b66a83e5b45eb11d68a1a10a4",
+          "message": "formal(raft): FelixRaftPlacement extends Integers for its -1 floor (#2798)\n\n* formal(raft): FelixRaftPlacement extends Integers for its -1 floor\n\nThe floor variable added in #2760 starts at -1, which Naturals cannot\nparse, so every FelixRaftPlacement configuration failed semantic analysis.\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* formal(raft): pin TwoWipesFloor's AckedHeldSurvive violation (#2824)\n\nThe waiver lets a stale leader commit with the waived member, a code\nbug tracked in #2824; the fix lifts the pin. Set Floor and FloorWaiver in\nthe two PlacedTargetNoWrite configs, and unregister\nSameIdFiveFloorTwoWipes, which ran past the job limit in dispatch\n44442468320.\n\n* ci(tla): move FelixRaftPlacementFormFiveFloor out of the PR set; fix a stale weight\n\n* ci(tla): register the two PlacedTargetNoWrite configurations from their measured run\n\nDispatch 44463729494: PlacedTargetNoWrite passes in 1 h 48 min (weight 108);\nReachPlacedTargetNoWrite is the witness and violates NeverTransfersOffTarget.",
+          "timestamp": "2026-11-19T21:39:47Z",
+          "tree_id": "318e7d444548e5547eb556fcbc065b0869f9ef03",
+          "url": "https://github.com/GetFelix/felix/commit/408a9120ada64b3b66a83e5b45eb11d68a1a10a4"
+        },
+        "date": 1795124820403,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 509017.85,
+            "range": "19530.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 509017.85\nmean: 502020.16\nstdev: 19530.01\ncv: 3.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 509017.85,
+            "range": "19530.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 509017.85\nmean: 502020.16\nstdev: 19530.01\ncv: 3.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118752.63,
+            "range": "2652.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118752.63\nmean: 119273.20\nstdev: 2652.36\ncv: 2.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1187526.28,
+            "range": "26523.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1187526.28\nmean: 1192732.02\nstdev: 26523.56\ncv: 2.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
