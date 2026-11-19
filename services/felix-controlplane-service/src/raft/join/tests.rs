@@ -1032,7 +1032,8 @@ async fn a_waived_floor_takes_the_term_a_withheld_member_follows() {
 }
 
 /// Within the tolerance a withheld member proves nothing, but its term
-/// still raises the floor.
+/// still raises the floor. In a real group a voter reports a term at least
+/// as high, so this only checks that the term is taken.
 #[tokio::test]
 async fn a_withheld_members_term_raises_a_proven_floor() {
     let client = reqwest::Client::new();

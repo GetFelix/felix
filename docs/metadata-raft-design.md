@@ -527,7 +527,8 @@ a term it forgot either.
 A withheld member's term proves nothing, for the reason above, but it still
 raises the floor. That term belonged to a real leader, and a leader below
 it is deposed. Within the tolerance a voting member reports a term at least
-as high anyway. Past it, under a waiver, the withheld member may be the
+as high anyway: every majority holds a voter, the majority that elected
+that leader included. Past it, under a waiver, the withheld member may be the
 only one left that knows the newer leader exists. Without its term, the
 waived member would serve the deposed leader, which could then commit and
 acknowledge a record the next leader truncates
@@ -594,7 +595,9 @@ a withheld member never votes before it has caught up. So a waiver helps
 only while a member that kept its volume still leads. If the leader was
 one of the members that lost their volumes, no leader can be elected, and
 the waived member keeps reporting that it is catching up. Go straight to
-the restore path then.
+the restore path then. A leader that kept its volume but sits below the
+floor, deposed without knowing it, counts as lost here: the waived member
+does not serve it, and it cannot win a later term.
 
 A waiver is held in memory and used once. It is refused before the block
 is reported, when it misses a member the block waits on, or when it names
