@@ -84,7 +84,7 @@ async fn only_the_sealer_wins_or_gives_up_its_seal(store: &dyn ControlPlaneStore
 }
 
 /// An active shard led by broker-x with broker-y as its replica.
-async fn active(store: &dyn ControlPlaneStore, shard: u32) -> ShardAssignment {
+pub(super) async fn active(store: &dyn ControlPlaneStore, shard: u32) -> ShardAssignment {
     clear(store).await;
     let mut wanted = assignment(shard, "broker-x");
     wanted.replicas = vec!["broker-y".to_string()];

@@ -376,7 +376,7 @@ pub(super) struct StreamView {
 /// rather than the client, so a publisher can ask too.
 pub(super) async fn ask_stream_routing(
     event_node: &NodeConnections,
-    credentials: &Credentials,
+    credentials: &std::sync::Arc<Credentials>,
     request_id: u64,
     runtime_config: ClientRuntimeConfig,
     tenant_id: &str,

@@ -640,13 +640,20 @@ pub trait ControlPlaneStore: Send + Sync {
     /// changes it ([`crate::model::ShardAssignment::raft_target`]). Returns
     /// whether anything changed; the id already held is a no-op.
     ///
-    /// [`StoreError::Conflict`] when the shard has not switched to Raft,
+    /// `shard_incarnation` is the stream incarnation of the copy's group.
+    /// With it a shard that started on Raft takes ids too: a durable
+    /// stream's shard on a cluster whose engine is Raft, with no switch
+    /// record. Without it only a shard that switched from the hybrid does.
+    ///
+    /// [`StoreError::Conflict`] when the shard is not on Raft as above,
+    /// `shard_incarnation` is not the shard's incarnation,
     /// `node_id` is not in its set, or the write would move the target while
     /// some registered broker has not acknowledged the current placement
     /// incarnation, or `node_registered_at_millis` and `node_incarnation`
     /// are not `node_id`'s current registration. Both, because a node
     /// registered again after a delete restarts at incarnation 0. Decided
-    /// against the record it lands on. Level 36.
+    /// against the record it lands on. Level 36, and 41 with
+    /// `shard_incarnation`.
     async fn record_raft_copy_id(
         &self,
         key: &ShardKey,
@@ -654,6 +661,7 @@ pub trait ControlPlaneStore: Send + Sync {
         node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
+        shard_incarnation: Option<u64>,
     ) -> StoreResult<bool> {
         let _ = (
             key,
@@ -661,6 +669,7 @@ pub trait ControlPlaneStore: Send + Sync {
             node_registered_at_millis,
             node_incarnation,
             copy_id,
+            shard_incarnation,
         );
         Err(StoreError::Conflict(
             "this store keeps no Raft copy ids".to_string(),

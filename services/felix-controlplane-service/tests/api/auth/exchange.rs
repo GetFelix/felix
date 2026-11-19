@@ -7,7 +7,7 @@
 //! - Felix-issued tokens must be EdDSA and include `iss`, `aud`, and `tid`.
 //! - Exchange never widens permissions beyond RBAC policies.
 //!
-//! - IdP RSA keys here are test-only fixtures and not secret.
+//! - The IdP RSA key is generated per test binary.
 //! - Private keys and tokens must not be logged in production code.
 //!
 //! - Tests spawn a local JWKS server on a random port to avoid collisions.
@@ -39,40 +39,41 @@ use tower::ServiceExt;
 
 use crate::common::read_json;
 
-// RSA private key for the upstream IdP used in tests.
-// This is a test-only fixture and must never be used for Felix-issued tokens.
-const IDP_PRIVATE_KEY_PEM: &str = r#"-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTL
-UTv4l4sggh5/CYYi/cvI+SXVT9kPWSKXxJXBXd/4LkvcPuUakBoAkfh+eiFVMh2V
-rUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8H
-oGfG/AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBI
-Mc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi+yUod+j8MtvIj812dkS4QMiRVN/
-by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQIDAQABAoIBAHREk0I0O9DvECKd
-WUpAmF3mY7oY9PNQiu44Yaf+AoSuyRpRUGTMIgc3u3eivOE8ALX0BmYUO5JtuRNZ
-Dpvt4SAwqCnVUinIf6C+eH/wSurCpapSM0BAHp4aOA7igptyOMgMPYBHNA1e9A7j
-E0dCxKWMl3DSWNyjQTk4zeRGEAEfbNjHrq6YCtjHSZSLmWiG80hnfnYos9hOr5Jn
-LnyS7ZmFE/5P3XVrxLc/tQ5zum0R4cbrgzHiQP5RgfxGJaEi7XcgherCCOgurJSS
-bYH29Gz8u5fFbS+Yg8s+OiCss3cs1rSgJ9/eHZuzGEdUZVARH6hVMjSuwvqVTFaE
-8AgtleECgYEA+uLMn4kNqHlJS2A5uAnCkj90ZxEtNm3E8hAxUrhssktY5XSOAPBl
-xyf5RuRGIImGtUVIr4HuJSa5TX48n3Vdt9MYCprO/iYl6moNRSPt5qowIIOJmIjY
-2mqPDfDt/zw+fcDD3lmCJrFlzcnh0uea1CohxEbQnL3cypeLt+WbU6kCgYEAzSp1
-9m1ajieFkqgoB0YTpt/OroDx38vvI5unInJlEeOjQ+oIAQdN2wpxBvTrRorMU6P0
-7mFUbt1j+Co6CbNiw+X8HcCaqYLR5clbJOOWNR36PuzOpQLkfK8woupBxzW9B8gZ
-mY8rB1mbJ+/WTPrEJy6YGmIEBkWylQ2VpW8O4O0CgYEApdbvvfFBlwD9YxbrcGz7
-MeNCFbMz+MucqQntIKoKJ91ImPxvtc0y6e/Rhnv0oyNlaUOwJVu0yNgNG117w0g4
-t/+Q38mvVC5xV7/cn7x9UMFk6MkqVir3dYGEqIl/OP1grY2Tq9HtB5iyG9L8NIam
-QOLMyUqqMUILxdthHyFmiGkCgYEAn9+PjpjGMPHxL0gj8Q8VbzsFtou6b1deIRRA
-2CHmSltltR1gYVTMwXxQeUhPMmgkMqUXzs4/WijgpthY44hK1TaZEKIuoxrS70nJ
-4WQLf5a9k1065fDsFZD6yGjdGxvwEmlGMZgTwqV7t1I4X0Ilqhav5hcs5apYL7gn
-PYPeRz0CgYALHCj/Ji8XSsDoF/MhVhnGdIs2P99NNdmo3R2Pv0CuZbDKMU559LJH
-UvrKS8WkuWRDuKrz1W/EQKApFjDGpdqToZqriUFQzwy7mR3ayIiogzNtHcvbDHx8
-oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
------END RSA PRIVATE KEY-----"#;
+// The upstream IdP's RSA key is generated per test binary so no private key
+// lives in the repo. It must never be used for Felix-issued tokens.
+struct IdpKey {
+    pem: String,
+    n: String,
+    e: String,
+}
 
-// Corresponding RSA public key parameters for the above private key.
-// These are used to populate a JWKS payload for the mock IdP.
-const IDP_JWK_N: &str = "yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ";
-const IDP_JWK_E: &str = "AQAB";
+fn idp_key() -> &'static IdpKey {
+    static KEY: std::sync::OnceLock<IdpKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        use aws_lc_rs::encoding::AsDer;
+        use aws_lc_rs::rsa::{KeyPair, KeySize, PublicKeyComponents};
+        use aws_lc_rs::signature::KeyPair as _;
+        use base64::engine::general_purpose::STANDARD;
+
+        let rsa = KeyPair::generate(KeySize::Rsa2048).expect("rsa key");
+        let der = rsa.as_der().expect("pkcs8 der");
+        let body = STANDARD.encode(der.as_ref());
+        let lines: Vec<&str> = body
+            .as_bytes()
+            .chunks(64)
+            .map(|c| std::str::from_utf8(c).expect("base64 is ascii"))
+            .collect();
+        let public: PublicKeyComponents<Vec<u8>> = (&rsa.public_key().clone()).into();
+        IdpKey {
+            pem: format!(
+                "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+                lines.join("\n")
+            ),
+            n: URL_SAFE_NO_PAD.encode(&public.n),
+            e: URL_SAFE_NO_PAD.encode(&public.e),
+        }
+    })
+}
 const FELIX_PRIVATE_KEY: [u8; 32] = [9u8; 32];
 
 // Test helper to verify a Felix token using the provided tenant signing keys.
@@ -128,7 +129,7 @@ async fn exchange_returns_tenant_scoped_token() {
     let (addr, _handle) = spawn_jwks_server(jwks).await;
 
     let issuer = format!("http://{addr}");
-    let token = mint_upstream_token(IDP_PRIVATE_KEY_PEM, &issuer, "aud-1", "kid-1");
+    let token = mint_upstream_token(&idp_key().pem, &issuer, "aud-1", "kid-1");
 
     let store = InMemoryStore::new(StoreConfig {
         changes_limit: 200,
@@ -313,7 +314,7 @@ async fn stream_trim_is_minted_only_once_head_trim_is_finalized() {
 
     let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
     let issuer = format!("http://{addr}");
-    let token = mint_upstream_token(IDP_PRIVATE_KEY_PEM, &issuer, "aud-1", "kid-1");
+    let token = mint_upstream_token(&idp_key().pem, &issuer, "aud-1", "kid-1");
     let store = Arc::new(InMemoryStore::new(StoreConfig {
         changes_limit: 200,
         change_retention_max_rows: Some(200),
@@ -474,7 +475,7 @@ async fn exchange_forbidden_without_policies() {
     let (addr, _handle) = spawn_jwks_server(jwks).await;
 
     let issuer = format!("http://{addr}");
-    let token = mint_upstream_token(IDP_PRIVATE_KEY_PEM, &issuer, "aud-1", "kid-1");
+    let token = mint_upstream_token(&idp_key().pem, &issuer, "aud-1", "kid-1");
 
     let store = InMemoryStore::new(StoreConfig {
         changes_limit: 200,
@@ -568,7 +569,7 @@ async fn exchange_supports_group_claim_based_rbac() {
 
     let issuer = format!("http://{addr}");
     let token = mint_upstream_token_with_claims(
-        IDP_PRIVATE_KEY_PEM,
+        &idp_key().pem,
         &issuer,
         "aud-1",
         "kid-1",
@@ -714,7 +715,7 @@ async fn exchange_group_claim_rbac_requires_groups_claim_mapping() {
 
     let issuer = format!("http://{addr}");
     let token = mint_upstream_token_with_claims(
-        IDP_PRIVATE_KEY_PEM,
+        &idp_key().pem,
         &issuer,
         "aud-1",
         "kid-1",
@@ -839,7 +840,7 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
 
     let issuer = format!("http://{addr}");
     let token = mint_upstream_token_with_claims(
-        IDP_PRIVATE_KEY_PEM,
+        &idp_key().pem,
         &issuer,
         "aud-1",
         "kid-1",
@@ -988,8 +989,8 @@ fn jwks_for_key(kid: &str) -> serde_json::Value {
             "kid": kid,
             "alg": "RS256",
             "use": "sig",
-            "n": IDP_JWK_N,
-            "e": IDP_JWK_E
+            "n": idp_key().n,
+            "e": idp_key().e
         }]
     })
 }

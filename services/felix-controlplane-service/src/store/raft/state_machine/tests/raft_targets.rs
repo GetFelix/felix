@@ -19,6 +19,7 @@ async fn copy_id(
         node_incarnation: status.incarnation,
         copy_id,
         keep_ordered: true,
+        shard_incarnation: None,
     }
 }
 

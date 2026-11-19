@@ -75,6 +75,10 @@ pub struct ClusterConfig {
     /// seconds; a test that needs elections to run first sets a deployment's
     /// 15 seconds.
     pub node_expiry: Duration,
+    /// The shard engine the in-memory control plane runs as, its
+    /// `FELIX_SHARD_ENGINE`. `None` is its default, the hybrid. Brokers take
+    /// theirs from `broker_env`. Not used with `metadata_group`.
+    pub control_plane_engine: Option<String>,
 }
 
 impl Default for ClusterConfig {
@@ -99,6 +103,7 @@ impl Default for ClusterConfig {
             power_loss: false,
             joint_fence: false,
             node_expiry: Duration::from_secs(1),
+            control_plane_engine: None,
         }
     }
 }

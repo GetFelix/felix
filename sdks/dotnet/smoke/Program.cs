@@ -26,13 +26,13 @@ static async Task<int> NativeLoadOnly()
         return 0;
     }
 
-    Console.Error.WriteLine("connecting to a closed port succeeded");
+    await Console.Error.WriteLineAsync("connecting to a closed port succeeded");
     return 1;
 }
 
 static async Task<int> RoundTrip(string fixturePath)
 {
-    using var doc = JsonDocument.Parse(File.ReadAllText(fixturePath));
+    using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(fixturePath));
     var root = doc.RootElement;
     string Text(string name) => root.GetProperty(name).GetString()!;
     var tenant = Text("tenant_id");
@@ -52,7 +52,7 @@ static async Task<int> RoundTrip(string fixturePath)
     var received = await subscription.ReadAsync(TimeSpan.FromSeconds(30));
     if (received is null || Encoding.UTF8.GetString(received.Payload.Span) != "smoke")
     {
-        Console.Error.WriteLine("the published record did not come back");
+        await Console.Error.WriteLineAsync("the published record did not come back");
         return 1;
     }
 
