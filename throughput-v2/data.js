@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795060171856,
+  "lastUpdate": 1795064426469,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62140,6 +62140,58 @@ window.BENCHMARK_DATA = {
             "range": "3017.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1246154.54\nmean: 1245280.39\nstdev: 3017.51\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8783196a31aa0d81cd1cdc878078e13e0b8a6744",
+          "message": "feat(controlplane): build the re-form planner's group record from the shard (#2250) (#2808)\n\n* feat(controlplane): build the re-form planner's group record from the shard (#2250)\n\nShardAssignment::reform_record builds the GroupRecord plan_reform takes:\nincarnation, placed brokers, ordered voter sets, and the floor and offset\nfloor at this incarnation. A floor from another incarnation is dropped; a\ngroup past epoch 0 is refused until re-forms record their bases; the seed\nstays unknown, so every plan is marked. Nothing calls it yet.\n\nPart of #2250.\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* re-form record: drop the dead epoch filter, test the floor's epoch, reword the docs",
+          "timestamp": "2026-11-19T04:47:54Z",
+          "tree_id": "558c4aa526faf60bb8c01f33839d8f4edc859446",
+          "url": "https://github.com/GetFelix/felix/commit/8783196a31aa0d81cd1cdc878078e13e0b8a6744"
+        },
+        "date": 1795064425767,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351999.37,
+            "range": "9612.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351999.37\nmean: 346887.42\nstdev: 9612.26\ncv: 2.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351999.37,
+            "range": "9612.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351999.37\nmean: 346887.42\nstdev: 9612.26\ncv: 2.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78080.65,
+            "range": "4080.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78080.65\nmean: 76619.41\nstdev: 4080.24\ncv: 5.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 780806.46,
+            "range": "40802.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 780806.46\nmean: 766194.05\nstdev: 40802.44\ncv: 5.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
