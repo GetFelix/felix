@@ -560,14 +560,19 @@ a delete. The record has no tag, so the step to the next record is still
 ```text
 u8   version (1)
 u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
-         4 discard, 5 seek, 6 delete
+         4 discard, 5 seek, 6 delete, 7 claim
 u32  group name length, then the name (UTF-8, never empty)
-creation token                                    (ops 0 to 4)
+creation token                                    (ops 0 to 4, 7)
   u64  term
   u64  index
   u8   by: 0 hydrate, 1 seek
 u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
 u8   flags: bit 0 if_new                          (op 5 only)
+claim                                             (op 7 only)
+  u64  visibility in milliseconds
+  u8   1 if a named member holds it, else 0
+  u32  principal length, principal, u32 name length, name   (if named)
+  u32  records, then per record ascending: u64 offset, u32 attempts
 ```
 
 Big-endian, like the rest of the format. A reader refuses an unknown

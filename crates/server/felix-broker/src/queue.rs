@@ -24,8 +24,8 @@ mod tracker;
 
 pub use cursors::ConsumerGroups;
 pub use dead_letters::DeadLetters;
-pub use entry::{CreatedBy, CreationToken, GroupEntry, GroupOp};
+pub use entry::{ClaimHolder, Claims, CreatedBy, CreationToken, GroupEntry, GroupOp};
 pub use raft::{FreshGroups, GroupConsensus, Proposed, RaftGroups};
 pub use reader::{Claimed, GroupKey, GroupReader, GroupSnapshot, Seek};
-pub use table::{Folded, GroupState, GroupTable, ShardGroups};
+pub use table::{ClaimState, Folded, GroupState, GroupTable, ShardGroups};
 pub use tracker::GroupConsumer;

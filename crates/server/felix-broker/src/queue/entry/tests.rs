@@ -18,6 +18,25 @@ fn every_op() -> Vec<GroupOp> {
             GroupOp::Redrive { cre, offset: 7 },
             GroupOp::FinishRedrive { cre, offset: 7 },
             GroupOp::Discard { cre, offset: 7 },
+            GroupOp::Claim {
+                cre,
+                claims: Claims {
+                    holder: None,
+                    visibility_ms: 30_000,
+                    records: vec![(7, 1), (9, 3)],
+                },
+            },
+            GroupOp::Claim {
+                cre,
+                claims: Claims {
+                    holder: Some(ClaimHolder {
+                        principal: "svc".to_owned(),
+                        name: "wörker-1".to_owned(),
+                    }),
+                    visibility_ms: 1,
+                    records: vec![(4, 5)],
+                },
+            },
         ]);
     }
     ops.extend([
@@ -40,7 +59,7 @@ fn every_op_round_trips() {
         for group in ["g", "billing", "ünïcode"] {
             let entry = GroupEntry {
                 group: group.to_owned(),
-                op,
+                op: op.clone(),
             };
             let bytes = entry.encode();
             assert_eq!(GroupEntry::decode(&bytes).expect("decode"), entry);
@@ -91,7 +110,7 @@ fn a_short_or_long_payload_is_refused() {
     for op in every_op() {
         let bytes = GroupEntry {
             group: "g".to_owned(),
-            op,
+            op: op.clone(),
         }
         .encode();
         for len in 0..bytes.len() {
@@ -164,7 +183,7 @@ fn an_empty_group_name_is_refused() {
     for op in every_op() {
         let bytes = GroupEntry {
             group: String::new(),
-            op,
+            op: op.clone(),
         }
         .encode();
         let refused = GroupEntry::decode(&bytes).expect_err("refused");

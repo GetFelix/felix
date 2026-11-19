@@ -1,0 +1,1316 @@
+{
+ "packages": [
+  {
+   "dependencies": [],
+   "id": "felix-wire",
+   "manifest_path": "crates/protocol/felix-wire/Cargo.toml",
+   "name": "felix-wire",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/protocol/felix-wire/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/protocol/felix-wire/tests/vectors.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/protocol/felix-wire/tests/wire_fuzz.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [],
+   "id": "felix-transport",
+   "manifest_path": "crates/protocol/felix-transport/Cargo.toml",
+   "name": "felix-transport",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/protocol/felix-transport/src/lib.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [],
+   "id": "felix-mqtt-wire",
+   "manifest_path": "crates/protocol/felix-mqtt-wire/Cargo.toml",
+   "name": "felix-mqtt-wire",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/protocol/felix-mqtt-wire/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/protocol/felix-mqtt-wire/tests/generated.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/protocol/felix-mqtt-wire/tests/golden.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/protocol/felix-mqtt-wire/tests/malformed.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [],
+   "id": "felix-common",
+   "manifest_path": "crates/server/felix-common/Cargo.toml",
+   "name": "felix-common",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-common/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-common/tests/deployment_yaml.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-common/tests/sim_clock.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [],
+   "id": "felix-authz",
+   "manifest_path": "crates/server/felix-authz/Cargo.toml",
+   "name": "felix-authz",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-authz/src/lib.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    }
+   ],
+   "id": "felix-router",
+   "manifest_path": "crates/server/felix-router/Cargo.toml",
+   "name": "felix-router",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-router/src/lib.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    }
+   ],
+   "id": "felix-storage",
+   "manifest_path": "crates/server/felix-storage/Cargo.toml",
+   "name": "felix-storage",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-storage/src/lib.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "crates/server/felix-storage/src/bin/felix-log-tool/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/crash_recovery.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/format_fuzz.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/full_disk.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/group_commit_fanin.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/producer_state_open.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/raft_log_cost.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/slow_disk.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-storage/tests/stream_retire.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    }
+   ],
+   "id": "felix-broker",
+   "manifest_path": "crates/server/felix-broker/Cargo.toml",
+   "name": "felix-broker",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-broker/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/cache_recreate.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/cancelled_group_writes.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/durable_streams.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/idempotent_throughput.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/open_off_runtime.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/poisoned_reads.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/publish_concurrency.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/replica_promotion.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/sharded_streams.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/stream_reads.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-broker/tests/stream_recreate.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-authz",
+     "path": "crates/server/felix-authz"
+    },
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    },
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    }
+   ],
+   "id": "felix-kafka",
+   "manifest_path": "crates/server/felix-kafka/Cargo.toml",
+   "name": "felix-kafka",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-kafka/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-kafka/tests/decode_bounds.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-kafka/tests/decode_reserve_bytes.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-authz",
+     "path": "crates/server/felix-authz"
+    },
+    {
+     "name": "felix-mqtt-wire",
+     "path": "crates/protocol/felix-mqtt-wire"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    }
+   ],
+   "id": "felix-mqtt",
+   "manifest_path": "crates/server/felix-mqtt/Cargo.toml",
+   "name": "felix-mqtt",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-mqtt/src/lib.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-router",
+     "path": "crates/server/felix-router"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    },
+    {
+     "name": "felix-transport",
+     "path": "crates/protocol/felix-transport"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    },
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-replication",
+     "path": "crates/server/felix-replication"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    }
+   ],
+   "id": "felix-replication",
+   "manifest_path": "crates/server/felix-replication/Cargo.toml",
+   "name": "felix-replication",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/server/felix-replication/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-replication/tests/open_off_runtime.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-replication/tests/raft_append_allocs.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-replication/tests/raft_idle_cpu.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-replication/tests/raft_memory.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/server/felix-replication/tests/raft_open_files.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-transport",
+     "path": "crates/protocol/felix-transport"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    }
+   ],
+   "id": "felix-client",
+   "manifest_path": "crates/sdk/felix-client/Cargo.toml",
+   "name": "felix-client",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/sdk/felix-client/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/sdk/felix-client/tests/docs_examples.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/sdk/felix-client/tests/docs_examples_sync.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-client",
+     "path": "crates/sdk/felix-client"
+    }
+   ],
+   "id": "felix-capi",
+   "manifest_path": "crates/sdk/felix-capi/Cargo.toml",
+   "name": "felix-capi",
+   "targets": [
+    {
+     "kind": [
+      "cdylib",
+      "staticlib",
+      "rlib"
+     ],
+     "src_path": "crates/sdk/felix-capi/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/sdk/felix-capi/tests/doc_examples.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/sdk/felix-capi/tests/header.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-client",
+     "path": "crates/sdk/felix-client"
+    },
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-conformance",
+     "path": "crates/testing/felix-conformance"
+    },
+    {
+     "name": "felix-controlplane-service",
+     "path": "services/felix-controlplane-service"
+    },
+    {
+     "name": "felix-transport",
+     "path": "crates/protocol/felix-transport"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    },
+    {
+     "name": "felix-replication",
+     "path": "crates/server/felix-replication"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    }
+   ],
+   "id": "felix-cluster",
+   "manifest_path": "crates/testing/felix-cluster/Cargo.toml",
+   "name": "felix-cluster",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/testing/felix-cluster/src/lib.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "crates/testing/felix-cluster/src/bin/felix-cluster/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/backup/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/caches/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/clients/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/conformance.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/failures/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/history/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/instructions_per_message.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/listener_throughput.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/loadgen.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/publish_fanin.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/queues/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/raft_shards.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/routing/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-cluster/tests/scale/main.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-authz",
+     "path": "crates/server/felix-authz"
+    },
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-broker-service",
+     "path": "services/felix-broker-service"
+    },
+    {
+     "name": "felix-client",
+     "path": "crates/sdk/felix-client"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    },
+    {
+     "name": "felix-transport",
+     "path": "crates/protocol/felix-transport"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    }
+   ],
+   "id": "felix-conformance",
+   "manifest_path": "crates/testing/felix-conformance/Cargo.toml",
+   "name": "felix-conformance",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/testing/felix-conformance/src/lib.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "crates/testing/felix-conformance/src/main.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-authz",
+     "path": "crates/server/felix-authz"
+    },
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-client",
+     "path": "crates/sdk/felix-client"
+    },
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-kafka",
+     "path": "crates/server/felix-kafka"
+    },
+    {
+     "name": "felix-mqtt",
+     "path": "crates/server/felix-mqtt"
+    },
+    {
+     "name": "felix-replication",
+     "path": "crates/server/felix-replication"
+    },
+    {
+     "name": "felix-router",
+     "path": "crates/server/felix-router"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    },
+    {
+     "name": "felix-transport",
+     "path": "crates/protocol/felix-transport"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    },
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-broker-service",
+     "path": "services/felix-broker-service"
+    },
+    {
+     "name": "felix-controlplane-service",
+     "path": "services/felix-controlplane-service"
+    },
+    {
+     "name": "felix-loadgen",
+     "path": "crates/testing/felix-loadgen"
+    },
+    {
+     "name": "felix-mqtt-wire",
+     "path": "crates/protocol/felix-mqtt-wire"
+    },
+    {
+     "name": "felix-replication",
+     "path": "crates/server/felix-replication"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    }
+   ],
+   "id": "felix-broker-service",
+   "manifest_path": "services/felix-broker-service/Cargo.toml",
+   "name": "felix-broker-service",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "services/felix-broker-service/src/lib.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/cache_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/durable_restart_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/src/main.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/latency_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/notifications_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/orders_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/simple_pubsub_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/../../demos/broker/queue_semantics_demo.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-broker-service/src/bin/soak/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/auth_integration.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/auth_jwks_refresh.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/cache_durability.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/cache_watch.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/cluster_client.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/counters.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/credential_refresh.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/cross_broker_forwarding.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/demo_notifications.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/demo_orders.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/graceful_shutdown.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/inspect.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/inspect_segments.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/kafka_kcat.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/latency_text.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/lease_tokens.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/loadgen_ingest.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/membership_lifecycle.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/metrics_upkeep.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/mqtt_isolation.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/mqtt_publish.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/mqtt_subscribe.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/open_file_limit.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/peer_handler_runtime.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/quic_preauth.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/quic_publish.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/quic_subscribe.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/revocation.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/shard_watch_integration.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/shared_identities.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-broker-service/tests/tracing_span_guard.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-authz",
+     "path": "crates/server/felix-authz"
+    },
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-router",
+     "path": "crates/server/felix-router"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    }
+   ],
+   "id": "felix-controlplane-service",
+   "manifest_path": "services/felix-controlplane-service/Cargo.toml",
+   "name": "felix-controlplane-service",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "services/felix-controlplane-service/src/lib.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "services/felix-controlplane-service/src/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/api/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/clock_step.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/main_runtime.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/metadata_bench.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_backend_cluster.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_chaos.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_clock_step.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_core.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_hold.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_runtime.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/raft_state_machine.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "services/felix-controlplane-service/tests/signal_registration.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-client",
+     "path": "crates/sdk/felix-client"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    }
+   ],
+   "id": "felix-loadgen",
+   "manifest_path": "crates/testing/felix-loadgen/Cargo.toml",
+   "name": "felix-loadgen",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/testing/felix-loadgen/src/lib.rs"
+    },
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "crates/testing/felix-loadgen/src/main.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-broker",
+     "path": "crates/server/felix-broker"
+    },
+    {
+     "name": "felix-broker-service",
+     "path": "services/felix-broker-service"
+    },
+    {
+     "name": "felix-cluster",
+     "path": "crates/testing/felix-cluster"
+    },
+    {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
+     "name": "felix-controlplane-service",
+     "path": "services/felix-controlplane-service"
+    },
+    {
+     "name": "felix-replication",
+     "path": "crates/server/felix-replication"
+    },
+    {
+     "name": "felix-router",
+     "path": "crates/server/felix-router"
+    },
+    {
+     "name": "felix-storage",
+     "path": "crates/server/felix-storage"
+    },
+    {
+     "name": "felix-wire",
+     "path": "crates/protocol/felix-wire"
+    },
+    {
+     "name": "felix-sim",
+     "path": "crates/testing/felix-sim"
+    }
+   ],
+   "id": "felix-sim",
+   "manifest_path": "crates/testing/felix-sim/Cargo.toml",
+   "name": "felix-sim",
+   "targets": [
+    {
+     "kind": [
+      "lib"
+     ],
+     "src_path": "crates/testing/felix-sim/src/lib.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-sim/tests/raft_seeds.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/testing/felix-sim/tests/seeds.rs"
+    }
+   ]
+  },
+  {
+   "dependencies": [
+    {
+     "name": "felix-client",
+     "path": "crates/sdk/felix-client"
+    },
+    {
+     "name": "felix-loadgen",
+     "path": "crates/testing/felix-loadgen"
+    },
+    {
+     "name": "felix-cluster",
+     "path": "crates/testing/felix-cluster"
+    }
+   ],
+   "id": "felixctl",
+   "manifest_path": "crates/tools/felixctl/Cargo.toml",
+   "name": "felixctl",
+   "targets": [
+    {
+     "kind": [
+      "bin"
+     ],
+     "src_path": "crates/tools/felixctl/src/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/tools/felixctl/tests/cluster/main.rs"
+    },
+    {
+     "kind": [
+      "test"
+     ],
+     "src_path": "crates/tools/felixctl/tests/offline.rs"
+    }
+   ]
+  }
+ ],
+ "workspace_members": [
+  "felix-wire",
+  "felix-transport",
+  "felix-mqtt-wire",
+  "felix-common",
+  "felix-authz",
+  "felix-router",
+  "felix-storage",
+  "felix-broker",
+  "felix-kafka",
+  "felix-mqtt",
+  "felix-replication",
+  "felix-client",
+  "felix-capi",
+  "felix-cluster",
+  "felix-conformance",
+  "felix-broker-service",
+  "felix-controlplane-service",
+  "felix-loadgen",
+  "felix-sim",
+  "felixctl"
+ ],
+ "workspace_root": "."
+}

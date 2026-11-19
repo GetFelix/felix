@@ -69,7 +69,7 @@ jobs:
           cache-dependency-path: "scripts/ci/requirements/perf.txt"
 
       - name: Install Python dependencies
-        run: pip install --require-hashes --only-binary :all: -r scripts/ci/requirements/perf.txt
+        run: 'pip install --require-hashes --only-binary :all: -r scripts/ci/requirements/perf.txt'
 
       - name: Run comprehensive matrix
         env:

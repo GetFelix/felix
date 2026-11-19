@@ -511,8 +511,8 @@ With `reclaim: true`, the broker reserves for this connection every claim the
 member holds from an older connection: the claims a process that restarted left
 behind. They go to this connection ahead of everything else, records owed to
 the group included, lowest offset first, over as many polls as `max_records`
-takes; other members do not get them meanwhile. Each counts as another attempt,
-so one at the attempt bound is dead-lettered instead. A reserved claim that
+takes; other members do not get them meanwhile. Each goes back as the same
+delivery, at the `attempts` it had, so a restart never dead-letters one. A reserved claim that
 lapses before it is taken back is owed to the whole group, like any lapsed
 claim. The reservation is made once per connection: later polls on it that set
 `reclaim` again are ordinary polls, as is any `reclaim` from a connection older
@@ -521,8 +521,13 @@ processes under one name, cannot keep taking claims still being worked on. Two
 live processes under one name are still a mistake: the newer one takes what
 the older held when it first reclaimed.
 
-Claims and members live in the shard leader's memory, so after a failover there
-is nothing to reclaim: the group resumes from its durable position anyway.
+On a Raft stream shard a poll's claims (offsets, attempts, the member, the
+visibility) are a group entry in the shard's log, applied before the poll is
+answered, so the next leader holds them. It records them as held on a
+connection older than any of its own, so a member's first `reclaim` there takes
+them back. On the default engine claims and members live in the shard leader's
+memory, so after a failover there is nothing to reclaim: the group resumes from
+its durable position.
 
 Both fields are optional and left out when unused, so an older broker reads the
 request it always did. Only a broker that advertised `FEATURE_GROUP_CONSUMER`
@@ -663,8 +668,9 @@ leader would otherwise answer from state its successor has moved past.
 where it stands. In `group_info`, `committed` is left out for a group with no
 cursor, `tail` is the shard's committed tail, so `tail - committed` is how far
 behind the group is, and `owed` counts records owed again after a nack or a
-lapsed claim. `in_flight` and `owed` are the leader's memory: a snapshot that
-starts again from zero when the shard changes leader.
+lapsed claim. `owed` is the leader's memory, and so is `in_flight` on the
+default engine: a snapshot that starts again from zero when the shard changes
+leader. On a Raft shard `in_flight` starts from the claims the new leader rebuilt.
 
 ### GroupAck / GroupNack
 ```
@@ -722,14 +728,18 @@ granted. `extend_ms` of `0` is refused with `invalid_request`.
 `attempts` is the count the record was delivered with, and names that one
 delivery. The extension is refused with `stale_claim` (`fatal`: retrying cannot
 bring the claim back) once that claim no longer stands: it lapsed, the record
-was handed out again, which counted another attempt, or a seek, failover or
-eviction rebuilt the group's in-flight state. Without the check, a consumer
+was handed out again at another attempt (a reclaim by the same member keeps
+the attempt, so the delivery still stands), or a seek, eviction, or a
+failover on the default engine rebuilt the group's in-flight state. Without the check, a consumer
 that lost a record could extend the claim of whoever holds it now, and keep it
 from the group should that consumer die. A record nacked with a delay is not a
 claim and cannot be extended either.
 
-An extension is the leader's memory, like every claim. A failover redelivers the
-record from the group's durable position, sooner than the extension said. A
+On a Raft stream shard an extension is a group entry like a poll's claims, and
+the next leader holds the record for the whole extension again from when it
+takes over. On the default engine an extension is the leader's memory, like
+every claim, and a failover redelivers the record from the group's durable
+position, sooner than the extension said. A
 group's in-flight state is not evicted while a claim stands, however long.
 
 ### GroupDeadLetter
@@ -1576,24 +1586,17 @@ would have, and the producer carries on. A batch whose leader stopped partway
 through it is finished by the re-send rather than written twice.
 
 A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
-contract for a batch of one record. The producer id and sequence are in the
-record's entry, so every member's log holds them and a leader elected later
-answers a re-send from its own log. The batch is written exactly once.
+contract. The producer id and sequence are in each record's entry, so every
+member's log holds them and a leader elected later answers a re-send from its
+own log. The batch is written exactly once.
 
-**A Raft shard refuses an idempotent batch of more than one record.** The
-answer is `invalid_request` with `retry` `fatal` and the message `a stream on
-Raft does not take idempotent batches of more than one record`. Nothing is
-written and the sequence is not used up, so the producer can send the same
-records as batches of one, each under its own sequence. On Raft each record is
-a log entry of its own, and a leader change or a lapsed lease partway through
-a batch could leave some of its records written and not others. A re-send
-could not then be told from a new batch, so the batch is refused whole instead
-(#2524). A re-send of a batch of several records that the log already holds is
-still answered: one held whole as a duplicate, and one a leader change cut
-short by writing only its missing records, answered from the first record's
-original offset. No client can start a multi-record batch on Raft yet: the lease-hole half
-of #2472 is done, and lifting the refusal is #2524. So no cut exists in any
-log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
+On Raft each record is a log entry of its own. A batch goes to the group as one
+write, so a lapsed lease refuses all of it or none. A leader that stops
+partway can leave only the start of a batch in the next leader's log; the
+re-send then writes just the missing records and is answered from the first
+record's original offset. Other records can lie between the two parts, so a
+reader sees the batch's records in order but not always as one run. See
+`docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch

@@ -93,7 +93,7 @@ impl Fake {
             .applied
             .iter()
             .filter(|(_, folded)| *folded == Folded::Applied)
-            .map(|(entry, _)| entry.op)
+            .map(|(entry, _)| entry.op.clone())
             .collect()
     }
 }
@@ -215,6 +215,29 @@ impl Fixture {
         Ok(claimed.iter().map(|c| c.offset).collect())
     }
 
+    /// Poll at `now` as `consumer`, returning `(offset, attempts)`.
+    async fn poll_as(
+        &self,
+        max: usize,
+        now: Instant,
+        consumer: &GroupConsumer,
+    ) -> Result<Vec<(u64, u32)>> {
+        let claimed = self
+            .groups
+            .poll_below(
+                &key(G),
+                &self.log,
+                u64::MAX,
+                max,
+                now,
+                Some(consumer),
+                None,
+                later(),
+            )
+            .await?;
+        Ok(claimed.iter().map(|c| (c.offset, c.attempts)).collect())
+    }
+
     fn fake(&self) -> &Fake {
         self.groups.consensus()
     }
@@ -260,13 +283,17 @@ async fn skipped_records_propose_nothing() {
         .await
         .expect("seek");
     assert_eq!(fx.poll(G, 1).await.expect("poll"), vec![50]);
+    let written = fx.fake().written();
     assert_eq!(
-        fx.fake().written(),
-        vec![GroupOp::Seek {
+        written[0],
+        GroupOp::Seek {
             to: 0,
             if_new: false
-        }],
-        "skipping fifty generation starts proposed an entry"
+        }
+    );
+    assert!(
+        matches!(&written[1..], [GroupOp::Claim { claims, .. }] if claims.records == [(50, 1)]),
+        "skipping fifty generation starts proposed an entry: {written:?}"
     );
     fx.groups.ack(&key(G), 50, later()).await.expect("ack");
     assert_eq!(
@@ -444,9 +471,10 @@ async fn a_dead_letter_above_the_cursor_is_not_redelivered() {
     assert_eq!(fx.dead(G), vec![1]);
     assert_eq!(fx.cursor(G), Some(0));
     fx.fake().new_term();
+    // 0 is still claimed by the consumer it went to.
     assert_eq!(
         fx.poll(G, 2).await.expect("poll"),
-        vec![0],
+        Vec::<u64>::new(),
         "the dead letter was delivered again"
     );
     fx.groups.ack(&key(G), 0, later()).await.expect("ack");
@@ -583,7 +611,8 @@ async fn a_term_change_before_propose_refuses_the_write() {
         "an old term's write applied"
     );
     assert_eq!(fx.cursor(G), Some(0));
-    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    // The claims were written, so the next term's tracker holds them.
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), Vec::<u64>::new());
 }
 
 /// An entry lost to a term change after it was proposed answers an error,
@@ -597,11 +626,15 @@ async fn a_term_change_after_propose_retires_the_tracker() {
     let acked = fx.groups.ack(&key(G), 0, later()).await;
     assert!(acked.is_err(), "a truncated advance answered {acked:?}");
     assert_eq!(fx.cursor(G), Some(0));
+    // A fresh tracker: the truncated ack did not settle 0, and the claims
+    // written before it still stand.
     assert_eq!(
         fx.poll(G, 3).await.expect("poll"),
-        vec![0, 1, 2],
+        Vec::<u64>::new(),
         "the old term's tracker served the new term"
     );
+    fx.groups.ack(&key(G), 0, later()).await.expect("ack");
+    assert_eq!(fx.cursor(G), Some(1));
 }
 
 /// `ready` does not wait for an older term's entry: it is under the read
@@ -615,7 +648,9 @@ async fn an_old_terms_entry_is_not_awaited() {
     assert!(fx.groups.ack(&key(G), 0, later()).await.is_err());
     fx.fake().new_term();
     fx.set(|s| s.stalled = false);
-    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    // Served at all, so the old term's entry was not awaited; the claims
+    // from before it stand.
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), Vec::<u64>::new());
 }
 
 /// A write whose wait gave up keeps its tracker. When the entry commits
@@ -696,16 +731,17 @@ async fn slots_are_evicted() {
 
     assert_eq!(fx.poll(OTHER, 1).await.expect("poll"), vec![0]);
     fx.fake().new_term();
-    assert_eq!(fx.poll(G, 2).await.expect("poll"), vec![0, 1]);
+    assert_eq!(fx.poll(G, 2).await.expect("poll"), vec![1]);
     assert_eq!(fx.groups.tracked(), 1, "an old term's tracker was kept");
 
     fx.groups.step_down(&key(G));
     assert_eq!(fx.groups.tracked(), 0, "a former leader kept its trackers");
 
-    assert_eq!(fx.poll(OTHER, 1).await.expect("poll"), vec![0]);
+    // Its claim on 0 from the last term still stands.
+    assert_eq!(fx.poll(OTHER, 1).await.expect("poll"), vec![1]);
     let now = Instant::now();
     fx.groups
-        .extend(&key(OTHER), 0, 1, Duration::from_secs(3600), now, later())
+        .extend(&key(OTHER), 1, 1, Duration::from_secs(3600), now, later())
         .await
         .expect("extend");
     let idle = now + Duration::from_secs(11 * 60);
@@ -714,7 +750,7 @@ async fn slots_are_evicted() {
         0,
         "a standing claim was evicted"
     );
-    fx.groups.ack(&key(OTHER), 0, later()).await.expect("ack");
+    fx.groups.ack(&key(OTHER), 1, later()).await.expect("ack");
     assert_eq!(fx.groups.evict_idle(idle + Duration::from_secs(1)), 1);
     assert_eq!(fx.groups.tracked(), 0);
 }
@@ -760,4 +796,86 @@ async fn dead_letter_extend_and_discard() {
     );
     assert!(fx.dead(G).is_empty());
     assert!(!fx.groups.discard(&key(G), 0, later()).await.expect("again"));
+}
+
+/// **A claim survives a change of leader** (#2644): the new leader hands
+/// the record to nobody else, the holder can still extend and settle it,
+/// and the attempt count carries over.
+#[tokio::test]
+async fn a_claim_survives_a_change_of_leader() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    let worker = GroupConsumer::new("svc", "w", 1, false);
+    let now = Instant::now();
+    assert_eq!(
+        fx.poll_as(2, now, &worker).await.expect("poll"),
+        [(0, 1), (1, 1)]
+    );
+    fx.fake().new_term();
+    assert_eq!(
+        fx.poll(G, 3).await.expect("poll"),
+        vec![2],
+        "a standing claim went to someone else"
+    );
+    fx.groups
+        .extend(&key(G), 0, 1, VIS, Instant::now(), later())
+        .await
+        .expect("the holder extends its claim on the new leader");
+    fx.groups.ack(&key(G), 1, later()).await.expect("ack");
+    // Once they lapse they are owed again, at their next attempt.
+    let lapsed = Instant::now() + VIS * 3;
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    assert_eq!(
+        fx.poll_as(3, lapsed, &other).await.expect("poll"),
+        [(0, 2), (2, 2)]
+    );
+}
+
+/// An extension is written too, so a new leader holds the claim for as
+/// long as the extension asked, not the visibility timeout.
+#[tokio::test]
+async fn an_extension_survives_a_change_of_leader() {
+    let fx = fixture(5);
+    publish(&fx.log, 1).await;
+    let worker = GroupConsumer::new("svc", "w", 1, false);
+    let now = Instant::now();
+    assert_eq!(fx.poll_as(1, now, &worker).await.expect("poll"), [(0, 1)]);
+    fx.groups
+        .extend(&key(G), 0, 1, VIS * 10, now, later())
+        .await
+        .expect("extend");
+    fx.fake().new_term();
+    let past_visibility = Instant::now() + VIS * 2;
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    assert_eq!(
+        fx.poll_as(1, past_visibility, &other).await.expect("poll"),
+        [],
+        "the new leader forgot the extension"
+    );
+}
+
+/// A member that reconnects after a change of leader and reclaims takes its
+/// claims back from the new leader, at no attempt (#2647).
+#[tokio::test]
+async fn a_reclaim_on_the_new_leader_takes_the_claims_back() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    let now = Instant::now();
+    let before = GroupConsumer::new("svc", "w", 7, false);
+    assert_eq!(
+        fx.poll_as(2, now, &before).await.expect("poll"),
+        [(0, 1), (1, 1)]
+    );
+    fx.fake().new_term();
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    assert_eq!(
+        fx.poll_as(3, Instant::now(), &other).await.expect("poll"),
+        [(2, 1)]
+    );
+    // A connection id on the new broker says nothing about the old one's.
+    let after = GroupConsumer::new("svc", "w", 1, true);
+    assert_eq!(
+        fx.poll_as(3, Instant::now(), &after).await.expect("poll"),
+        [(0, 1), (1, 1)]
+    );
 }

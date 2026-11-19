@@ -21,18 +21,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ github.event.pull_request.draft != true && steps.code.outputs.code || 'false' }}
+      # A pull request that no workspace crate's tests can see (a chart or
+      # Node binding change, say) skips coverage; see scripts/ci/affected.py.
+      code: ${{ github.event.pull_request.draft != true && steps.code.outputs.code == 'true' && (steps.affected.outputs.full == 'false' && steps.affected.outputs.coverage || 'true') || 'false' }}
     steps:
+      # Whole tree: the job selection reads every crate's manifest.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-          sparse-checkout: .github/actions
       - id: code
         uses: ./.github/actions/code-changed
         with:
           ignore: '^docs/|^docs-site/|\.md$|(^|/)coverage\.svg$'
           # Tests read the client pages and tutorials and the felixctl reference; see ci.yml.
           keep: '^docs-site/src/content/docs/(clients/|tutorials/|reference/felixctl\.md$)'
+      - id: affected
+        if: steps.code.outputs.code == 'true'
+        uses: ./.github/actions/affected-jobs
 
   # Self-hosted for pushes to main, GitHub-hosted for PRs; see ci.yml's test
   # job.

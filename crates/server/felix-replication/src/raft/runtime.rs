@@ -160,9 +160,13 @@ impl RuntimeConfig {
             election_timeout_min: millis(self.election_min),
             election_timeout_max: millis(self.election_max),
             max_payload_entries: self.append_entries,
-            // The node ticker runs the timer check. A tick task per group
-            // costs most of a core per thousand idle members.
+            // The node ticker paces each leader's heartbeats, slower once
+            // the group is idle, which openraft's fixed interval cannot.
             enable_tick: false,
+            // openraft's election timer starts only once the member's pace
+            // says its leader is gone (`Group::tick`). On from the start, it
+            // would depose an idle leader between two slow heartbeats.
+            enable_elect: false,
             // A stream shard's log is its data. Raft logs take no retention
             // (#2602): entries leave only by an openraft purge, and a
             // snapshot must not cause one. A cache
