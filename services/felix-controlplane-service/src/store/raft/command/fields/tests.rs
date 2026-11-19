@@ -451,6 +451,10 @@ fn exported() -> ExportedState {
         placement_holder: Some(s("h")),
         refresh_tokens: vec![refresh_token()],
         fleet_enabled: BTreeSet::from([s("f")]),
+        declared_dead: vec![crate::model::DeclaredDead {
+            node_id: s("b"),
+            storage_id: s("s"),
+        }],
         replica_reports: vec![report()],
         principal_revocations: vec![crate::auth::revocation::PrincipalRevocation {
             seq: 1,
@@ -624,6 +628,7 @@ fn commands() -> Vec<MetaCommand> {
             keep_ordered: true,
             shard_incarnation: Some(1),
         },
+        MetaCommand::DeclareNodeDead { node_id: s("b") },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
             floors: vec![crate::model::RaftFloorReport {
@@ -834,6 +839,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordPlacementAck { .. } => "record_placement_ack",
         MetaCommand::RecordRaftCopyId { .. } => "record_raft_copy_id",
         MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
+        MetaCommand::DeclareNodeDead { .. } => "declare_node_dead",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",

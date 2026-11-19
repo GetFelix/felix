@@ -1,0 +1,1 @@
+`felixctl node declare-dead` (`POST /v1/nodes/{node_id}/declare-dead`) records that a stopped broker's data directory is gone for good, under its storage id, for the Raft re-form to plan without it. The broker registers again only with a new data directory. Metadata level 42.

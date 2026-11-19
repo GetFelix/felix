@@ -703,6 +703,7 @@ async fn a_delegating_gateway_gets_a_connection_only_token() {
         crate::auth::refresh::refresh_token_handler(
             Path("t1".to_string()),
             State(state.clone()),
+            None,
             Json(crate::auth::refresh::TokenRefreshRequest {
                 refresh_token: token,
                 audience: None,
