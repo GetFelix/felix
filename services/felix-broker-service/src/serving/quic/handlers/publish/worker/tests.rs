@@ -1380,12 +1380,10 @@ mod on_raft {
         Ok(())
     }
 
-    /// **An idempotent batch of several records is refused on a Raft shard
-    /// before anything is written or remembered.** Its records would be an
-    /// entry each, which a leader change can cut anywhere, and a cut batch
-    /// cannot be told from a whole one on its re-send.
+    /// **An idempotent batch of several records is written once on a Raft
+    /// shard, and its re-send is answered with the same offset.**
     #[tokio::test]
-    async fn an_idempotent_batch_of_several_records_is_refused_on_raft() -> Result<()> {
+    async fn an_idempotent_batch_of_several_records_is_written_once_on_raft() -> Result<()> {
         let root = tempfile::tempdir()?;
         let broker = fixture::broker(root.path()).await;
         let shards = fixture::shards(&broker);
@@ -1413,33 +1411,21 @@ mod on_raft {
             .await?;
 
         let (before, first) = job(&handle, &orders, term, b"before", None);
-        let (mut several, refused) = idempotent(&handle, &orders, term, 0, b"a");
+        let (mut several, taken) = idempotent(&handle, &orders, term, 0, b"a");
         several.payloads.push(Bytes::from_static(b"b"));
-        // The same sequence, as one record: taken, so the refusal left the
-        // producer no place.
-        let (single, second) = idempotent(&handle, &orders, term, 0, b"a");
-        for job in [before, several, single] {
+        let (mut resent, again) = idempotent(&handle, &orders, term, 0, b"a");
+        resent.payloads.push(Bytes::from_static(b"b"));
+        for job in [before, several, resent] {
             publish_ctx.scheduler.send(job).await;
         }
         let first = first.await?.expect("acknowledged").expect("an offset");
-        let err = refused.await?.expect_err("a batch of several was taken");
-        assert!(
-            matches!(
-                err.downcast_ref::<felix_broker::BrokerError>(),
-                Some(felix_broker::BrokerError::NotOnEngineStream { .. })
-            ),
-            "{err}"
-        );
-        assert!(err.to_string().contains("more than one record"), "{err}");
-        // Not retryable: the same batch is refused however often it is sent.
-        let client = ClientError::from_anyhow(&err);
-        assert_eq!(client.retry(), felix_wire::RetryClass::Fatal, "{err}");
-        assert_eq!(*client.code(), felix_wire::ErrorCode::InvalidRequest);
-        let second = second.await?.expect("acknowledged").expect("an offset");
-        assert_eq!(second, first + 1, "the refused batch took an offset");
+        let taken = taken.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(taken, first + 1);
+        let again = again.await?.expect("answered").expect("an offset");
+        assert_eq!(again, taken, "the re-send was written again");
         let read = broker.read_durable("t1", "ns", "orders", 0, first, 1 << 20);
         let payloads: Vec<Bytes> = read.await?.into_iter().map(|r| r.payload).collect();
-        assert_eq!(payloads, ["before", "a"]);
+        assert_eq!(payloads, ["before", "a", "b"]);
         EngineShards::shutdown(&*shards).await;
         Ok(())
     }
@@ -1447,8 +1433,7 @@ mod on_raft {
     /// **A batch of several records is checked at its producer's turn, not
     /// before.** It may be a re-send of a batch the log holds, which only
     /// the log can tell, so it waits behind the producer's batch before and
-    /// its connection's later publishes wait with it. A new one is refused
-    /// then, and takes no place in the producer's line.
+    /// its connection's later publishes wait with it.
     #[tokio::test]
     async fn a_batch_of_several_records_is_checked_at_its_producers_turn() -> Result<()> {
         let at = Leading::new().await?;
@@ -1457,33 +1442,20 @@ mod on_raft {
 
         // The producer's batch before, not yet written.
         let turn = at.broker.producer_turn(handle, 9).await;
-        let (mut several, mut refused) =
-            read_from(&conn, idempotent(handle, orders, term, 0, b"a"));
+        let (mut several, mut taken) = read_from(&conn, idempotent(handle, orders, term, 0, b"a"));
         several.payloads.push(Bytes::from_static(b"b"));
         let (behind, mut passed) = read_from(&conn, job(handle, orders, term, b"behind", None));
         for job in [several, behind] {
             at.publish_ctx.scheduler.send(job).await;
         }
-        let early = tokio::time::timeout(Duration::from_millis(300), &mut refused).await;
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut taken).await;
         assert!(early.is_err(), "answered before its producer's turn");
         assert!(passed.try_recv().is_err(), "passed its connection's batch");
 
         drop(turn);
-        let err = refused
-            .await?
-            .expect_err("a new batch of several was taken");
-        assert!(
-            matches!(
-                err.downcast_ref::<felix_broker::BrokerError>(),
-                Some(felix_broker::BrokerError::NotOnEngineStream { .. })
-            ),
-            "{err}"
-        );
+        let taken = taken.await?.expect("acknowledged").expect("an offset");
         let passed = passed.await?.expect("acknowledged").expect("an offset");
-        let (single, second) = read_from(&conn, idempotent(handle, orders, term, 0, b"a"));
-        at.publish_ctx.scheduler.send(single).await;
-        let second = second.await?.expect("acknowledged").expect("an offset");
-        assert_eq!(second, passed + 1, "the refusal took a place");
+        assert_eq!(passed, taken + 2, "the batch lost its place");
         at.stop().await;
         Ok(())
     }

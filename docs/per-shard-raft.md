@@ -3053,10 +3053,10 @@ counted in `felix_kafka_produce_refused_total`; a produce without them is
 written.
 
 An MQTT connection's messages are written as idempotent batches, as on the
-hybrid, and each is answered at its commit. A Raft shard takes an idempotent
-batch of one record only (#2524), so a broker that runs Raft shards gives
-each message of a connection's batch a producer sequence of its own, the way
-a Kafka producer's records are numbered. When this broker leads the shard,
+hybrid, and each is answered at its commit. A broker that runs Raft shards
+gives each message of a connection's batch a producer sequence of its own, the way
+a Kafka producer's records are numbered, so a leader change never leaves part
+of a message's batch. When this broker leads the shard,
 it proposes the batch's messages together, as a Kafka producer's records
 are: one proposal under the producer's turn, each message a one-record
 batch at its own sequence. A batch of queued messages costs one commit
@@ -3185,28 +3185,17 @@ read bound it already is. Above it, the leader wrote it in this term and
 the answer waits for that entry's commit, so a re-send is never
 acknowledged ahead of the batch it repeats.
 
-**A batch of more than one record is refused.** An entry's index is its
-record's offset, so a batch of several records would be several entries.
+**A batch of several records is one write.** An entry's index is its
+record's offset, so a batch of several records is several entries.
 openraft appends a drain whole or not at all, so a lapsed lease cannot
-leave a hole in a batch (#2472), but nothing commits several entries all
-or none. A leader can stop with only the start of the batch replicated.
-The re-send would write the whole batch after that start, and the start's
-records would be in the stream twice (#2516).
+leave a hole in a batch (#2472). But nothing commits several entries all
+or none: a leader can stop with only the start of the batch replicated.
+Written again whole, that start would be in the stream twice (#2516).
 
-So the leader refuses a new batch of several records before it writes
-anything: `invalid_request`, not retryable, "a stream on Raft does not take
-idempotent batches of more than one record". The sequence is not used up,
-and the producer can send the records as batches of one. The refusal comes
-at the producer's turn, after the look at the log. Only the log can tell a new batch
-from a re-send of one it holds whole or in part, and a re-send is still
-answered, as below.
-
-That case is already handled underneath the refusal, so that lifting it
-later is a small step (#2524). Every record of a batch is
-an entry that names the batch and its own position in it
-(`docs/storage-format.md`, "Producer marks"). That is enough for each
-member to know exactly which records of a batch its log holds, even with
-other entries between them.
+So every record of a batch is an entry that names the batch and its own
+position in it (`docs/storage-format.md`, "Producer marks"). That is
+enough for each member to know exactly which records of a batch its log
+holds, even with other entries between them.
 
 **A batch cut by a leader change is finished, not written again.** Say a
 leader stops with the first two of a batch's four records replicated. The
@@ -3315,10 +3304,7 @@ install that ships the records below it will take these refusals with it.
 
 A batch with a hole is refused if one is ever found, though a drain is one
 write that openraft checks once ("A batch is written only at the term it
-was admitted at"), so a lapsed lease cannot make one. Lifting the refusal
-itself is #2524, and it has to land before a stream
-that holds data can move from the hybrid to Raft, because the hybrid takes
-these batches.
+was admitted at"), so a lapsed lease cannot make one.
 
 An idempotent batch keeps its publisher and its records' headers as any
 other publish does ("Publishers and record headers", below).
@@ -3334,7 +3320,7 @@ names its producer"). The leader takes both.
 > `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
 > `a_producers_next_batch_is_checked_once_the_one_before_is_written`,
 > `a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap`,
-> `a_batch_of_several_records_is_refused_with_nothing_written`,
+> `a_batch_of_several_records_is_written_once`,
 > `a_record_of_a_batch_names_its_place_in_the_log`,
 > `a_batch_cut_by_a_leader_change_is_finished_by_its_resend` and
 > `a_batch_resent_to_the_next_leader_is_not_written_again`;
@@ -3353,7 +3339,7 @@ names its producer"). The leader takes both.
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
 > `queued_idempotent_publishes_to_a_raft_shard_are_written_once`,
 > `a_batch_waiting_for_its_producers_turn_holds_up_only_its_own_connection`,
-> `an_idempotent_batch_of_several_records_is_refused_on_raft`,
+> `an_idempotent_batch_of_several_records_is_written_once_on_raft`,
 > `a_batch_of_several_records_is_checked_at_its_producers_turn`,
 > `a_resent_cut_batch_is_finished_and_answered_from_its_start`,
 > `a_resent_batch_the_log_holds_whole_is_answered_as_a_duplicate` and
@@ -3416,7 +3402,7 @@ sequenceDiagram
 
 A conditional publish carries one record. A batch of several is refused by
 name, because each record is its own entry and only the first would be at
-the expected offset (#2524). A batch with no record is refused as on the
+the expected offset (#2751). A batch with no record is refused as on the
 hybrid. Like a plain Raft publish, a `publish_if` on Raft does not keep the
 publisher id.
 

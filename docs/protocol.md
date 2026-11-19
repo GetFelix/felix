@@ -1586,24 +1586,17 @@ would have, and the producer carries on. A batch whose leader stopped partway
 through it is finished by the re-send rather than written twice.
 
 A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
-contract for a batch of one record. The producer id and sequence are in the
-record's entry, so every member's log holds them and a leader elected later
-answers a re-send from its own log. The batch is written exactly once.
+contract. The producer id and sequence are in each record's entry, so every
+member's log holds them and a leader elected later answers a re-send from its
+own log. The batch is written exactly once.
 
-**A Raft shard refuses an idempotent batch of more than one record.** The
-answer is `invalid_request` with `retry` `fatal` and the message `a stream on
-Raft does not take idempotent batches of more than one record`. Nothing is
-written and the sequence is not used up, so the producer can send the same
-records as batches of one, each under its own sequence. On Raft each record is
-a log entry of its own, and a leader change or a lapsed lease partway through
-a batch could leave some of its records written and not others. A re-send
-could not then be told from a new batch, so the batch is refused whole instead
-(#2524). A re-send of a batch of several records that the log already holds is
-still answered: one held whole as a duplicate, and one a leader change cut
-short by writing only its missing records, answered from the first record's
-original offset. No client can start a multi-record batch on Raft yet: the lease-hole half
-of #2472 is done, and lifting the refusal is #2524. So no cut exists in any
-log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
+On Raft each record is a log entry of its own. A batch goes to the group as one
+write, so a lapsed lease refuses all of it or none. A leader that stops
+partway can leave only the start of a batch in the next leader's log; the
+re-send then writes just the missing records and is answered from the first
+record's original offset. Other records can lie between the two parts, so a
+reader sees the batch's records in order but not always as one run. See
+`docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
