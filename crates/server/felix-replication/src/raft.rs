@@ -68,8 +68,8 @@ pub use propose::{AckAt, AnswerAt, Batch, Record, Sequenced};
 pub use reform::reform_report;
 pub use root::{RootOpened, RootReport, open_root};
 pub use runtime::{
-    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
-    Role, RuntimeConfig,
+    ElectionLoad, GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError,
+    OpenedMember, Role, RuntimeConfig,
 };
 #[cfg(any(test, feature = "testing"))]
 pub use testing::UncheckedRecord;

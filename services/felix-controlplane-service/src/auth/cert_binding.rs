@@ -9,7 +9,8 @@
 //! Token exchange is the one route whose bearer is not a Felix token: it is
 //! the identity provider's, and its raw `sub` is not a Felix principal. There
 //! the binding applies to the principal the exchange resolves instead (see
-//! [`ExchangeBinding`]).
+//! [`ExchangeBinding`]). Refresh carries no bearer at all, so it is bound to
+//! the principal (or actor) its refresh token was issued for.
 use std::sync::Arc;
 
 use axum::Router;
@@ -24,13 +25,17 @@ use crate::auth::bearer::{Refusal, bearer_token, refused, unverified_claims};
 /// The token exchange route, whose bearer is an identity provider's token.
 pub(crate) const EXCHANGE_ROUTE: &str = "/v1/tenants/{tenant_id}/token/exchange";
 
+/// The token refresh route, whose credential is in the body.
+pub(crate) const REFRESH_ROUTE: &str = "/v1/tenants/{tenant_id}/token/refresh";
+
 /// The chain the client presented in the TLS handshake, leaf first. The TLS
 /// listener puts it on every request of the connection.
 #[derive(Clone)]
 pub struct PeerCertificates(pub Arc<[CertificateDer<'static>]>);
 
-/// Put on a token exchange when binding is on: the token it mints must be
-/// issued to the presented certificate, by its principal or its `may_act`.
+/// Put on a token exchange or refresh when binding is on: the token it mints
+/// must be issued to the presented certificate, by its principal or its
+/// `may_act`.
 #[derive(Clone)]
 pub struct ExchangeBinding(pub(crate) Option<PeerCertificates>);
 
@@ -52,11 +57,11 @@ pub fn bind_subjects(router: Router) -> Router {
 /// Refuse a request whose bearer token is not issued to the client's
 /// certificate. A request without a bearer token is left to its handler.
 async fn require_bound_subject(mut request: Request, next: Next) -> Response {
-    let exchange = request
+    let mints = request
         .extensions()
         .get::<MatchedPath>()
-        .is_some_and(|path| path.as_str() == EXCHANGE_ROUTE);
-    if exchange {
+        .is_some_and(|path| matches!(path.as_str(), EXCHANGE_ROUTE | REFRESH_ROUTE));
+    if mints {
         let peer = request.extensions().get::<PeerCertificates>().cloned();
         request.extensions_mut().insert(ExchangeBinding(peer));
     } else if let Err(err) = check(&request) {

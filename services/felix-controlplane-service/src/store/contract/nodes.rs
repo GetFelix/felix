@@ -51,6 +51,7 @@ pub(crate) async fn run_node_contract(store: Arc<dyn ControlPlaneStore>) {
     register_rejects_an_address_another_node_holds(store).await;
     reregistering_preserves_identity_and_bumps_incarnation(store).await;
     an_invalid_node_is_rejected(store).await;
+    the_internal_role_survives_label_edits_and_reregistration(store).await;
     patch_updates_the_spec_and_leaves_observed_status_alone(store).await;
     patch_rejects_an_unsupported_transition(store).await;
     a_heartbeat_never_moves_backwards(store).await;
@@ -341,6 +342,66 @@ async fn an_invalid_node_is_rejected(store: &dyn ControlPlaneStore) {
     let err = store.register_node(bad).await.expect_err("should reject");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
     assert!(store.list_nodes().await.expect("list").is_empty());
+}
+
+/// The role is cleared only by an explicit operator patch: not by a label
+/// edit, and not by the broker registering again without it.
+async fn the_internal_role_survives_label_edits_and_reregistration(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let mut internal = node("core-a", 7001);
+    internal.spec.labels.insert(
+        felix_common::membership::NODE_ROLE_LABEL.to_string(),
+        felix_common::membership::NODE_ROLE_INTERNAL.to_string(),
+    );
+    store
+        .register_node(internal.clone())
+        .await
+        .expect("register");
+
+    let patched = store
+        .patch_node(
+            "core-a",
+            NodePatchRequest {
+                labels: Some(BTreeMap::new()),
+                ..NodePatchRequest::default()
+            },
+        )
+        .await
+        .expect("patch");
+    assert!(patched.spec.is_internal());
+
+    let err = store
+        .register_node(node("core-a", 7001))
+        .await
+        .expect_err("a registration without the role is refused");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert!(
+        store
+            .get_node("core-a")
+            .await
+            .expect("get")
+            .spec
+            .is_internal()
+    );
+    store
+        .register_node(internal.clone())
+        .await
+        .expect("with the role");
+
+    store
+        .patch_node(
+            "core-a",
+            NodePatchRequest {
+                internal: Some(false),
+                ..NodePatchRequest::default()
+            },
+        )
+        .await
+        .expect("cleared");
+    store
+        .register_node(node("core-a", 7001))
+        .await
+        .expect("an ordinary node may register again");
 }
 
 async fn patch_updates_the_spec_and_leaves_observed_status_alone(store: &dyn ControlPlaneStore) {

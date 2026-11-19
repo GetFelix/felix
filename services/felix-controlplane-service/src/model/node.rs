@@ -52,6 +52,16 @@ pub enum NodeValidationError {
     LabelKeyTooLong(String),
     #[error("label value for {0:?} must be at most {MAX_IDENTIFIER_LEN} characters")]
     LabelValueTooLong(String),
+    #[error(
+        "the label {NODE_ROLE_LABEL} cannot be changed through labels; \
+         use the `internal` field of the patch, which needs node.manage on cluster:*"
+    )]
+    RoleViaLabels,
+    #[error(
+        "node {0} is registered as internal and this registration does not carry the role; \
+         an operator with node.manage on cluster:* must clear it first (PATCH with \"internal\": false)"
+    )]
+    RoleDropped(String),
     #[error("capacity hint max_shards must be greater than zero when set")]
     ZeroMaxShards,
     #[error("storage_id must be 32 lowercase hex digits")]
@@ -195,7 +205,19 @@ pub struct NodeSpec {
     pub capacity: NodeCapacity,
 }
 
+use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+
 impl NodeSpec {
+    /// Whether the node is marked internal: placement never gives it a tenant
+    /// stream's or cache's shard, and refuses an operator move onto it.
+    ///
+    /// Carried as a label so it travels with the registration that creates
+    /// the node, and so an older control-plane member replicates it as it
+    /// does any label. A node without the label is an ordinary node.
+    pub fn is_internal(&self) -> bool {
+        self.labels.get(NODE_ROLE_LABEL).map(String::as_str) == Some(NODE_ROLE_INTERNAL)
+    }
+
     pub fn validate(&self) -> Result<(), NodeValidationError> {
         if self.region.trim().is_empty() {
             return Err(NodeValidationError::EmptyRegion);
@@ -286,6 +308,20 @@ impl RootSequence {
     }
 }
 
+/// A broker's data directory an operator declared dead: the node and the
+/// storage id it was registered under at that moment.
+///
+/// A re-form reads nothing from a dead copy and plans without it. The node
+/// may register again only under another storage id (a wiped disk, or
+/// `rotate-storage-id`), so a copy the plan left out never comes back as
+/// itself. See `docs/per-shard-raft.md`, "Declaring a broker dead".
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclaredDead {
+    pub node_id: String,
+    /// 32 lowercase hex digits.
+    pub storage_id: String,
+}
+
 /// The placement incarnation a broker's heartbeat says it has durably
 /// acknowledged, and the process incarnation that said it.
 ///
@@ -364,6 +400,12 @@ pub struct NodePatchRequest {
     /// The only status field an operator may drive, and only between `live` and
     /// `draining` ([`NodeLifecycle::operator_can_move_to`]).
     pub lifecycle: Option<NodeLifecycle>,
+    /// Marks the node internal (`true`) or ordinary (`false`); see
+    /// `NodeSpec::is_internal`. The only way to change the role after
+    /// registration, so the API asks for cluster-wide `node.manage` and logs
+    /// it. Labels cannot carry the role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal: Option<bool>,
 }
 
 impl NodePatchRequest {
@@ -374,7 +416,33 @@ impl NodePatchRequest {
             patched.spec.region = region.clone();
         }
         if let Some(labels) = &self.labels {
+            // A label edit keeps the role: replacing the map must not clear it,
+            // and the role changes only through `internal`.
+            if labels.get(NODE_ROLE_LABEL) != node.spec.labels.get(NODE_ROLE_LABEL)
+                && labels.contains_key(NODE_ROLE_LABEL)
+            {
+                return Err(NodeValidationError::RoleViaLabels);
+            }
             patched.spec.labels = labels.clone();
+            patched.spec.labels.remove(NODE_ROLE_LABEL);
+            if let Some(role) = node.spec.labels.get(NODE_ROLE_LABEL) {
+                patched
+                    .spec
+                    .labels
+                    .insert(NODE_ROLE_LABEL.to_string(), role.clone());
+            }
+        }
+        match self.internal {
+            Some(true) => {
+                patched
+                    .spec
+                    .labels
+                    .insert(NODE_ROLE_LABEL.to_string(), NODE_ROLE_INTERNAL.to_string());
+            }
+            Some(false) => {
+                patched.spec.labels.remove(NODE_ROLE_LABEL);
+            }
+            None => {}
         }
         if let Some(capacity) = &self.capacity {
             patched.spec.capacity = capacity.clone();

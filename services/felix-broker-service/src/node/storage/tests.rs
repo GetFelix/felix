@@ -12,6 +12,7 @@ fn membership() -> MembershipConfig {
         kafka_advertise_addr: None,
         region: "us-west-2".to_string(),
         zone: None,
+        internal: false,
         region_bridges: Vec::new(),
         features: Default::default(),
     }

@@ -110,6 +110,32 @@ fn a_blank_zone_is_no_zone() {
     }
 }
 
+#[serial]
+#[test]
+fn the_node_role_is_internal_or_unset() {
+    for (role, internal) in [(None, false), (Some(" "), false), (Some("internal"), true)] {
+        clear_felix_env();
+        unsafe {
+            env::set_var("FELIX_NODE_ID", "broker-a");
+            env::set_var("FELIX_NODE_ADVERTISE_ADDR", "10.0.0.4:7000");
+            env::set_var("FELIX_CONTROLPLANE_URL", "http://localhost:8443");
+            env::set_var("FELIX_NODE_TOKEN", "a-node-token");
+            if let Some(role) = role {
+                env::set_var("FELIX_NODE_ROLE", role);
+            }
+        }
+        let membership = BrokerConfig::from_env()
+            .expect("config")
+            .membership
+            .expect("membership");
+        assert_eq!(membership.internal, internal, "{role:?}");
+    }
+    // A typo must not silently leave a core machine open to tenant shards.
+    unsafe { env::set_var("FELIX_NODE_ROLE", "interna1") };
+    let err = BrokerConfig::from_env().expect_err("unknown role");
+    assert!(err.to_string().contains("FELIX_NODE_ROLE"), "{err}");
+}
+
 /// A broker with an identity and no credential cannot register. Starting it
 /// to fail every control-plane call on a loop is worse than refusing.
 #[serial]

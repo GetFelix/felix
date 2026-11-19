@@ -280,6 +280,7 @@ fn joining_with(token: &str, refresh: bool, token_file: bool) -> BrokerConfig {
             kafka_advertise_addr: None,
             region: "us-west-2".to_string(),
             zone: None,
+            internal: false,
             region_bridges: Vec::new(),
             features: Default::default(),
         }),

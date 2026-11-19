@@ -3,7 +3,8 @@
 use std::time::Duration;
 
 use crate::config::env::{
-    RaftPrerequisites, ShardEngine, parse_shard_engine, parse_shard_raft_lease,
+    RaftPrerequisites, ShardEngine, parse_shard_engine, parse_shard_raft_elections_at_once,
+    parse_shard_raft_lease,
 };
 
 const ALL: RaftPrerequisites = RaftPrerequisites {
@@ -95,5 +96,24 @@ fn a_raft_lease_that_is_not_a_number_is_refused() {
             format!("{err}").contains("FELIX_SHARD_RAFT_LEASE_MS"),
             "{err}"
         );
+    }
+}
+
+/// Unset keeps the runtime's bound; `0` takes it off; anything that is not
+/// a whole number is refused rather than read as the default.
+#[test]
+fn the_raft_election_bound_is_the_default_unless_set() {
+    for unset in [None, Some(""), Some("  ")] {
+        let parsed = parse_shard_raft_elections_at_once(unset).expect("unset");
+        assert_eq!(parsed, None);
+    }
+    let off = parse_shard_raft_elections_at_once(Some("0")).expect("zero");
+    assert_eq!(off, Some(0));
+    let set = parse_shard_raft_elections_at_once(Some(" 16 ")).expect("set");
+    assert_eq!(set, Some(16));
+    for bad in ["off", "1.5", "-1"] {
+        let err = parse_shard_raft_elections_at_once(Some(bad)).expect_err("not a number");
+        let err = format!("{err}");
+        assert!(err.contains("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE"), "{err}");
     }
 }

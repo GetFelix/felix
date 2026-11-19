@@ -166,13 +166,17 @@ Required fields:
 - `audiences` (allowed `aud` values)
 - `subject_claim` (default `sub`)
 - optional `groups_claim`
-- either `discovery_url` or `jwks_url`
+- one key source: `discovery_url`, `jwks_url`, or `jwks` (the public keys inline,
+  as a JWKS document, so the control plane never fetches for the issuer)
+- optional `single_use_jti` (accept each token's `jti` once) and
+  `max_token_lifetime_seconds` (refuse a token whose `exp - iat` is larger)
 
 ### Admin API: IdP Issuers
 
 IdP issuer admin endpoints require `tenant.manage` on `tenant:{tenant_id}`.
 That is enough to add an issuer no other tenant trusts. Changing an existing
-issuer's keys (`jwks_url`, `discovery_url`), `audiences` or `claim_mappings`,
+issuer's keys (`jwks_url`, `discovery_url`, `jwks`), its `single_use_jti` or
+`max_token_lifetime_seconds`, `audiences` or `claim_mappings`,
 registering an issuer another tenant already trusts, and deleting an issuer
 also need `tenant.manage:cluster:*`, because those settings decide which
 principals and groups the issuer's tokens become.
@@ -199,6 +203,26 @@ Discovery and JWKS URLs must be `https` (plain `http` only on a loopback host,
 unless `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP=true`), and the issuer must
 not contain `#`.
 
+An issuer can carry its keys inline instead:
+
+```json
+{
+  "issuer": "https://ca.cluster.internal",
+  "audiences": ["felix-controlplane"],
+  "jwks": {"keys": [{"kty": "EC", "kid": "2026-11", "crv": "P-256", "x": "...", "y": "..."}]},
+  "single_use_jti": true,
+  "max_token_lifetime_seconds": 120
+}
+```
+
+`jwks` excludes `jwks_url` and `discovery_url`. It holds 1 to 16 RSA or EC
+keys with distinct `kid`s, so a rotation can overlap two. With
+`single_use_jti` (which needs a `max_token_lifetime_seconds` of at most 600) a token exchanges once; the record is kept in memory by each
+control plane replica, so it holds per replica and does not survive a restart
+(a restarted replica refuses tokens issued before it started). See
+[Auth](https://github.com/GetFelix/felix/blob/main/docs/auth.md#admin-api-preferred)
+for the details and limits.
+
 Delete an issuer:
 
 ```http
@@ -222,8 +246,8 @@ Removing a policy or a grouping also revokes the broker tokens of everyone the
 rule reached, so their open streams end and they authenticate again under the
 rules as they are now. A rule that reached an IdP group revokes the whole
 tenant, and so does deleting an IdP issuer or narrowing or replacing what it
-trusts (an audience dropped, the subject or groups claim changed, or `jwks_url`
-or `discovery_url` changed; adding an audience revokes nobody). The change and
+trusts (an audience dropped, the subject or groups claim changed, `jwks_url`
+or `discovery_url` changed, or an inline `jwks` key removed; adding an audience revokes nobody). The change and
 its revocation are one write, so a failed request changed nothing and is safe
 to retry. `refresh-tokens/revoke` with `"principal_id": "*"` revokes a whole
 tenant by hand. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
@@ -484,7 +508,10 @@ then placed only on brokers in that region or in one the control plane's
 direction only. The region is fixed at creation, an empty
 one is refused with `400`, and omitting it places the stream anywhere. An
 operator move to a broker outside the allowed regions is refused with `409`
-and code `region_not_allowed`.
+and code `region_not_allowed`. A move to a broker registered with
+`FELIX_NODE_ROLE=internal` is refused with `409` and code `internal_node`.
+`PATCH /v1/nodes/{id}` with `"internal": true|false` sets or clears that role and
+needs `node.manage` on `cluster:*`; `labels` edits never change it.
 
 A durable stream may be mounted at an MQTT topic prefix with `"mount":
 "plant/"`, so that MQTT devices can publish to it (see [MQTT](/features/mqtt/)).
@@ -704,6 +731,8 @@ The endpoints not covered above:
 | `POST /v1/nodes/{node_id}/replica-status` | a leader reports which replicas hold each shard it leads, which failover reads to pick a successor, and per shard `by_round` when it serves without its lease, which placement needs before it acts on its followers' word (kept only when the body's `incarnation` is the node's current one); 409 if any shard's report was refused | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard on Raft. Once every broker in the set has one, the control plane writes the shard's target from them. The body carries `key`, `copy_id`, the `incarnation` and `registered_at_millis` from the reporting process's registration, and `shard_incarnation`, the stream incarnation of the copy's group. The time is there because a node deleted and registered again starts at incarnation 0 again. With `shard_incarnation` (metadata version 41) a shard that started on Raft takes ids too; without it, only one that switched from the hybrid. Answers `changed`, false when the id was already held; 409 for a shard not on Raft, a `shard_incarnation` other than the shard's, a broker outside the set, a report from an earlier process of the node, a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36 | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/raft-floors` | a broker reports the committed log id of each Raft group it leads, once a second in one batch. Each entry in `floors` carries `key`, the stream `incarnation`, the reform `epoch` (left out while 0), and the commit's `index` and `term`. It sets the shard's exact last committed log id for the current epoch when higher, and raises its `offset_floor`, the highest committed index of any epoch, which never drops. An entry the control plane cannot use (a missing or hybrid shard, another incarnation or epoch, a higher index at a lower term) is skipped and the rest still apply. Answers `raised`, how many floors moved; 400 for more than 1024 entries; 409 for the whole batch when a member is below metadata version 38 | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/declare-dead` | an operator declares a broker's data directory gone for good. The control plane cannot check that the broker stopped (Down means only that heartbeats stopped), so the operator must first stop the process or fence the host and lose the disk. Records the node with its registered `storage_id`, kept for good; a registration under that storage id, or with none from that node, is refused from then on. Answers the record; 404 for an unknown node; 409 while the node is live or draining, when it reported no storage id, or when a member is below metadata version 42 | `node.manage` on `cluster:*` |
+| `GET /v1/fleet/declared-dead` | every data directory declared dead, as `node_id` and `storage_id` | `node.view` on `cluster:*` |
 | `POST /v1/nodes/{node_id}/seal-report` | a seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | a seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |

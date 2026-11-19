@@ -10,9 +10,9 @@ FelixRaftPlacementDirectTerms  runs past a CI runner's six hours
 FelixRaftPlacementMoveWipeFailover  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeFull  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeTwoMoves  runs past a CI runner's six hours
-FelixRaftPlacementPlacedTargetNoWrite  measuring by dispatch, run id in PR #2780
-FelixRaftPlacementReachPlacedTargetNoWrite  measuring by dispatch, run id in PR #2780
 FelixRaftPlacementPlacedTarget  runs past a CI runner's six hours; PlacedTargetNoWrite is its bounded twin
+FelixRaftPlacementSameIdFiveFloorTwoWipes  runs past the job limit, dispatch 44442468320
+FelixRaftPlacementFormFiveFloor  runs past a CI runner's job limit (15M distinct, 8M queued at 95 min, PR #2798 run)
 FelixRaftPlacementStaleReturnWipe  measuring in dispatch 44384289786
 FelixRaftPlacementStaleReturnWipeAnyVersion  measuring in dispatch 44384289786
 FelixRaftPlacementStaleWipeRewindNoAck  expected violation not shown yet: no result in six hours
@@ -80,3 +80,4 @@ FelixShardReplacedSetUnknown  runs past a CI runner's six hours
 FelixShardReplacedSetUnknownMark  runs past a CI runner's six hours
 FelixShardWalkElectStaleSet  replayed by FelixShardWalkElectStaleSetReplay
 FelixShardWalkSparesSeatEarly  replayed by FelixShardWalkSparesSeatEarlyReplay
+FelixRaftCondBatchThreeTerms  measuring by dispatch, run id in the lane's PR

@@ -34,6 +34,9 @@ pub struct MembershipConfig {
     /// registers no zone, which placement treats as sharing one with no
     /// other broker.
     pub zone: Option<String>,
+    /// Whether `FELIX_NODE_ROLE=internal`: registered as a label, so the
+    /// control plane never places a tenant shard here.
+    pub internal: bool,
     /// `(source, dest)` region pairs traffic may cross, from
     /// `FELIX_REGION_BRIDGES`. This broker forwards to a shard's leader only
     /// in its own region or one it has a bridge to.
@@ -121,8 +124,24 @@ pub(super) fn membership_from_env(
         ));
     }
 
+    let internal = match std::env::var("FELIX_NODE_ROLE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") => false,
+        Some(felix_common::membership::NODE_ROLE_INTERNAL) => true,
+        Some(other) => {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("FELIX_NODE_ROLE must be unset or `internal`, got `{other}`"),
+            ));
+        }
+    };
+
     Ok(Some(MembershipConfig {
         node_id,
+        internal,
         region_bridges,
         advertise_addr,
         client_advertise_addr,

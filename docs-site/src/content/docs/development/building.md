@@ -193,7 +193,9 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
 pins to update. The workflow:
 
 - creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
-  and control plane) and `SHA256SUMS`;
+  and control plane), `SHA256SUMS` and `SHA256SUMS.sigstore.json`, its keyless
+  Sigstore signature (how to check it:
+  [Verify a release download](/getting-started/installation/#verify-a-release-download));
 - attaches `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) and a
   `.sha256` for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
   `aarch64-apple-darwin`, `x86_64-apple-darwin` and `x86_64-pc-windows-msvc`.

@@ -111,6 +111,7 @@ fn refresh_refusals_are_counted() {
                 refresh_token_handler(
                     Path("t1".to_string()),
                     State(state),
+                    None,
                     Json(TokenRefreshRequest {
                         refresh_token: token,
                         audience: None,
@@ -171,6 +172,7 @@ fn issuer(url: &str) -> crate::auth::idp_registry::IdpIssuerConfig {
         discovery_url: None,
         jwks_url: None,
         claim_mappings: Default::default(),
+        ..Default::default()
     }
 }
 

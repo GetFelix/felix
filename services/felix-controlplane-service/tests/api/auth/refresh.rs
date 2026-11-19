@@ -322,6 +322,7 @@ async fn a_refresh_picks_up_group_claims_recorded_at_exchange() {
                 discovery_url: None,
                 jwks_url: None,
                 claim_mappings: Default::default(),
+                ..Default::default()
             },
         )
         .await
@@ -484,4 +485,146 @@ async fn a_refresh_keeps_the_exchanges_narrowing_and_audience() {
     .await
     .expect("refresh");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// With certificate binding on, a refresh is bound like the access token it
+/// mints: a stolen refresh token is no good from another certificate, even one
+/// the control plane's CA signed.
+#[tokio::test]
+async fn a_bound_refresh_needs_the_tokens_certificate() {
+    use felix_controlplane_service::auth::refresh_token::Narrowing;
+
+    let (state, store) = fixture().await;
+    let token = issue_into(&store, vec![]).await;
+    let other = refresh_from(
+        &state,
+        "felix:principal:someone-else".to_string(),
+        token.clone(),
+    )
+    .await;
+    assert_eq!(
+        other.status(),
+        StatusCode::UNAUTHORIZED,
+        "a refresh token minted access tokens from another principal's certificate",
+    );
+
+    // The refusal does not spend the token, so its holder is not logged out.
+    let own = refresh_from(&state, format!("felix:principal:{PRINCIPAL}"), token).await;
+    assert_eq!(own.status(), StatusCode::OK);
+
+    // A chain minted for a gateway to delegate refreshes from the gateway's
+    // certificate too.
+    store
+        .add_rbac_policy(
+            TENANT,
+            PolicyRule {
+                subject: "gateway-1".to_string(),
+                object: format!("tenant:{TENANT}"),
+                action: "token.delegate".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    let (mut record, delegated) = refresh::issue(
+        TENANT,
+        PRINCIPAL,
+        vec![],
+        None,
+        refresh::now_secs(),
+        Duration::from_secs(3600),
+    );
+    record.narrowing = Some(Narrowing {
+        requested: None,
+        resources: None,
+        permissions: None,
+        audience: "felix-broker".to_string(),
+        may_act: Some("gateway-1".to_string()),
+    });
+    store.insert_refresh_token(record).await.expect("insert");
+    let gateway = refresh_from(&state, "felix:principal:gateway-1".to_string(), delegated).await;
+    assert_eq!(gateway.status(), StatusCode::OK);
+}
+
+/// A refresh through the binding middleware, from a certificate issued to
+/// the URI SAN `san`.
+async fn refresh_from(state: &AppState, san: String, token: String) -> axum::response::Response {
+    use felix_controlplane_service::auth::cert_binding::{PeerCertificates, bind_subjects};
+
+    let key = rcgen::KeyPair::generate().expect("key");
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+    params.subject_alt_names = vec![rcgen::SanType::URI(san.as_str().try_into().expect("uri"))];
+    let cert = params.self_signed(&key).expect("cert");
+    let peer = PeerCertificates(Arc::from(vec![cert.der().clone()]));
+    let app = bind_subjects(build_router(state.clone())).layer(axum::Extension(peer));
+    let body = serde_json::json!({ "refresh_token": token }).to_string();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/tenants/{TENANT}/token/refresh"))
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .expect("request");
+    app.oneshot(request).await.expect("refresh")
+}
+
+fn own_cert() -> String {
+    format!("felix:principal:{PRINCIPAL}")
+}
+
+fn other_cert() -> String {
+    "felix:principal:someone-else".to_string()
+}
+
+async fn next_token(response: axum::response::Response) -> String {
+    assert_eq!(response.status(), StatusCode::OK);
+    read_json(response).await["refresh_token"]
+        .as_str()
+        .expect("replacement")
+        .to_string()
+}
+
+/// The binding check runs before the spent check. A spent token replayed from
+/// another certificate is refused without ending the chain, so a stranger's
+/// certificate cannot log the owner out; from the owner's certificate a
+/// replay still ends it.
+#[tokio::test]
+async fn a_replay_from_another_certificate_does_not_end_the_chain() {
+    let (state, store) = fixture().await;
+    let first = issue_into(&store, vec![]).await;
+    let second = next_token(refresh_from(&state, own_cert(), first.clone()).await).await;
+    // Spending the replacement too puts the first token past the reuse grace.
+    let third = next_token(refresh_from(&state, own_cert(), second).await).await;
+
+    let stranger = refresh_from(&state, other_cert(), first.clone()).await;
+    assert_eq!(stranger.status(), StatusCode::UNAUTHORIZED);
+    let fourth = next_token(refresh_from(&state, own_cert(), third).await).await;
+
+    assert_eq!(
+        refresh_from(&state, own_cert(), first).await.status(),
+        StatusCode::FORBIDDEN,
+    );
+    assert_eq!(
+        refresh_from(&state, own_cert(), fourth).await.status(),
+        StatusCode::FORBIDDEN,
+        "a replay from the owner's certificate left the chain usable",
+    );
+}
+
+/// The secret is checked before the certificate: a wrong secret spends the
+/// token whichever certificate presents it.
+#[tokio::test]
+async fn a_wrong_secret_from_another_certificate_still_spends_the_token() {
+    let (state, store) = fixture().await;
+    let token = issue_into(&store, vec![]).await;
+    let (token_id, _) = token.split_once('.').expect("token");
+
+    let guessed = format!("{token_id}.not-the-secret");
+    assert_eq!(
+        refresh_from(&state, other_cert(), guessed).await.status(),
+        StatusCode::FORBIDDEN,
+    );
+    assert_eq!(
+        refresh_from(&state, own_cert(), token).await.status(),
+        StatusCode::FORBIDDEN,
+        "a wrong secret left the token usable",
+    );
 }

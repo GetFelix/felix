@@ -10,6 +10,7 @@ mod departed_leader;
 mod failover;
 mod fence_timeout;
 mod halted;
+mod internal;
 mod lease;
 mod moves;
 mod operator;

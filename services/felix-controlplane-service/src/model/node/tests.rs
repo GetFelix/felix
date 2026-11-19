@@ -1,5 +1,6 @@
 //! Unit tests for the node model: validation, patching, and serialization.
 use super::*;
+use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
 
 fn node() -> Node {
     Node {
@@ -192,6 +193,75 @@ fn a_patch_updates_only_the_fields_it_names() {
     assert_eq!(after.spec.labels, before.spec.labels);
     assert_eq!(after.spec.capacity, before.spec.capacity);
     assert_eq!(after.status, before.status);
+}
+
+fn internal_node() -> Node {
+    let mut node = node();
+    node.spec
+        .labels
+        .insert(NODE_ROLE_LABEL.to_string(), NODE_ROLE_INTERNAL.to_string());
+    node
+}
+
+#[test]
+fn a_label_edit_keeps_the_internal_role() {
+    for labels in [
+        BTreeMap::new(),
+        BTreeMap::from([("rack".to_string(), "b2".to_string())]),
+    ] {
+        let patch = NodePatchRequest {
+            labels: Some(labels.clone()),
+            ..NodePatchRequest::default()
+        };
+        let after = patch.apply(&internal_node()).expect("patch");
+        assert!(after.spec.is_internal(), "{labels:?}");
+        assert_eq!(after.spec.labels.get("rack"), labels.get("rack"));
+    }
+}
+
+#[test]
+fn the_role_cannot_be_changed_through_labels() {
+    let set = NodePatchRequest {
+        labels: Some(BTreeMap::from([(
+            NODE_ROLE_LABEL.to_string(),
+            NODE_ROLE_INTERNAL.to_string(),
+        )])),
+        ..NodePatchRequest::default()
+    };
+    assert_eq!(
+        set.apply(&node()).expect_err("set"),
+        NodeValidationError::RoleViaLabels
+    );
+    let other = NodePatchRequest {
+        labels: Some(BTreeMap::from([(
+            NODE_ROLE_LABEL.to_string(),
+            "tenant".to_string(),
+        )])),
+        ..NodePatchRequest::default()
+    };
+    assert_eq!(
+        other.apply(&internal_node()).expect_err("other"),
+        NodeValidationError::RoleViaLabels
+    );
+}
+
+#[test]
+fn the_internal_field_sets_and_clears_the_role() {
+    let set = NodePatchRequest {
+        internal: Some(true),
+        ..NodePatchRequest::default()
+    };
+    assert!(set.apply(&node()).expect("set").spec.is_internal());
+    let clear = NodePatchRequest {
+        internal: Some(false),
+        ..NodePatchRequest::default()
+    };
+    let cleared = clear.apply(&internal_node()).expect("clear");
+    assert!(!cleared.spec.is_internal());
+    assert_eq!(
+        cleared.spec.labels.get("rack").map(String::as_str),
+        Some("a1")
+    );
 }
 
 #[test]

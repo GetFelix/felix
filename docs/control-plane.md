@@ -412,6 +412,7 @@ put a node in the catalog that placement would then try to use.
 | `FELIX_CONTROLPLANE_URL` | with `FELIX_NODE_ID` | Where to register. |
 | `FELIX_REGION_ID` | no | Defaults to `local`. |
 | `FELIX_NODE_ZONE` | no | The broker's failure domain within its region: an availability zone, a rack. Unset or blank registers none. See [Zones](#zones). |
+| `FELIX_NODE_ROLE` | no | `internal` marks the broker as holding no tenant shards; see [Internal nodes](#internal-nodes). Unset or blank is an ordinary broker, unless the node is already recorded as internal (then registration is refused). Any other value fails startup. |
 | `FELIX_REGION_BRIDGES` | no | Directional `source>dest` pairs, comma-separated, of regions this broker may forward to besides its own. Unset is none. Give the control plane the same value; see [Regions](#regions). |
 | `FELIX_INTERNAL_BIND` | no | Where the internal listener binds. Defaults to `0.0.0.0:5001`. Must not share a port with `FELIX_QUIC_BIND`. |
 | `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY`, `FELIX_INTERNAL_TLS_CA` | yes, or the opt-out below | Peer mTLS: this broker's certificate (its DNS name must be `FELIX_NODE_ID`), its key, and the CA every peer must chain to. All three or none. See `docs/internal-protocol.md`. |
@@ -1480,6 +1481,41 @@ A 12-shard stream on three brokers is placed 4/4/4 whatever the other streams
 already lead, and the cluster-wide count is evened out afterwards by moving
 other streams' shards (see [Moving a shard](#moving-a-shard)).
 
+##### Internal nodes
+
+A broker started with `FELIX_NODE_ROLE=internal` registers the label
+`felix.dev/node-role=internal`, in the same request that creates the node, so
+placement never sees it without the role. Placement treats the label as a hard
+constraint, ahead of every preference:
+
+- No stream or cache shard is placed on it, at creation, by balancing, or
+  when a lost copy is restored or a leader fails over after other brokers
+  fail. A cluster whose only live brokers are internal places nothing.
+- An operator move onto it is refused with `internal_node` (409).
+- A shard it already holds, from before the role was set, is moved off the
+  way a drain moves it. A Raft shard keeps its member set; only its leader
+  moves off.
+- It does not count toward the shares above or the "live brokers" warning on
+  stream creation.
+
+There is no exception for system streams: this control plane has no notion of
+one, so an internal node serves no shard at all.
+
+The role, once recorded, is not cleared by the broker or by label edits:
+
+- A broker that registers again without `FELIX_NODE_ROLE=internal` is refused
+  with 409 and does not serve. Restore the variable, or clear the role first.
+- `PATCH /v1/nodes/{id}` keeps the role whatever `labels` says, and rejects a
+  `labels` map that tries to set or change `felix.dev/node-role`.
+- `PATCH /v1/nodes/{id}` with `{"internal": false}` clears it (`true` sets it).
+  It needs `node.manage` on `cluster:*`, so a broker's own token cannot lift
+  its role, and logs a warning. Tenant-scoped tokens never carry
+  `node.manage`: a tenant scope does not reach nodes.
+
+A broker registers as internal only once every control-plane member supports
+the role (metadata level 44); until then the registration is refused with 409,
+so a leader that would ignore the label never sees an internal node. A restore (`import_state`) carrying an internal node is held to the same level and is refused with 409 below it. The restore keeps no rule against dropping the role: it replaces the records on purpose.
+
 The cluster-wide floor matters when many shards arrive at once, for example
 from an application that creates a stream per job. With only the ceiling as
 the bound, the best-scoring brokers could fill to it before the last one
@@ -2345,6 +2381,8 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
 | `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard on Raft (`{"key": ..., "copy_id": n, "incarnation": i, "registered_at_millis": t, "shard_incarnation": s}`, the `incarnation` and `registered_at_millis` from the reporting process's registration; both, because a node deleted and registered again starts at incarnation 0 again). `shard_incarnation` is the stream incarnation of the copy's group; with it (metadata version 41) a shard that started on Raft takes ids too, without it only one that switched from the hybrid. Answers `changed`, false when the id was already held; 409 for a shard not on Raft, a `shard_incarnation` other than the shard's, a shard that started on Raft whose set names fewer brokers than the stream's replica count, a broker outside the set, a report from a process other than the one the node is registered as (so a delayed retry from before a restart, or from before a delete and new registration, cannot replace the id the new process reported), a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/raft-floors` | a broker reports the committed log id of each Raft group it leads (`{"floors": [{"key": ..., "incarnation": i, "epoch": e, "index": n, "term": t}]}`, `epoch` left out while 0). Each entry sets the shard's exact last committed log id for the current epoch when higher and raises its `offset_floor`, which never drops; one for a missing or hybrid shard, another stream incarnation or reform epoch, or a higher index at a lower term is skipped and the rest still apply. Answers `raised`, how many floors moved; 400 for more than 1024 entries; 409 for the whole batch when a member is below metadata version 38. Takes `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/declare-dead` | an operator declares a broker's data directory gone for good, so a Raft re-form plans without it. The control plane cannot check that the broker stopped (Down means only that heartbeats stopped), so the operator must first stop the process or fence the host and lose the disk. Records `{"node_id": ..., "storage_id": ...}` with the storage id the node is registered under, kept for good, also through a node delete; from then on a registration under that storage id, or with none from that node, is refused. Answers the record; 404 for an unknown node; 409 while the node is live or draining, when it reported no storage id, or when a member is below metadata version 42. Takes `node.manage` on `cluster:*` |
+| `GET /v1/fleet/declared-dead` | every data directory declared dead. Takes `node.view` on `cluster:*` |
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 

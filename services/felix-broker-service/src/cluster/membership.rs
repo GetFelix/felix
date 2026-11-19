@@ -14,14 +14,14 @@
 //! answer.
 pub mod metrics;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use felix_common::fleet::FleetGate;
-use felix_common::membership::NodeLifecycle;
+use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL, NodeLifecycle};
 use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_storage::StorageId;
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,10 @@ struct RegistrationRequest<'a> {
     /// always did.
     #[serde(skip_serializing_if = "Option::is_none")]
     zone: Option<&'a str>,
+    /// The role label, sent with the registration that creates the node so
+    /// placement never sees an internal node without it. Omitted when empty.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    labels: BTreeMap<&'static str, &'static str>,
     /// Omitted when empty, so a build implementing no fleet features sends
     /// the body it always did.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -400,6 +404,11 @@ pub async fn register(
                 kafka_addr: config.kafka_advertise_addr.as_deref(),
                 region: &config.region,
                 zone: config.zone.as_deref(),
+                labels: config
+                    .internal
+                    .then_some((NODE_ROLE_LABEL, NODE_ROLE_INTERNAL))
+                    .into_iter()
+                    .collect(),
                 features: &config.features,
                 storage_id: storage_id.map(|id| id.to_hex()),
             },

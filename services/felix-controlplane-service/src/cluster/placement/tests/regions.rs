@@ -53,7 +53,7 @@ fn placed_nodes(plan: &Plan) -> BTreeSet<String> {
         .collect()
 }
 
-struct Level(BTreeSet<String>);
+pub(super) struct Level(BTreeSet<String>);
 
 impl CaughtUp for Level {
     fn is_caught_up(&self, _key: &ShardKey, node_id: &str) -> bool {
@@ -65,7 +65,7 @@ impl CaughtUp for Level {
     }
 }
 
-fn level(nodes: &[&str]) -> Level {
+pub(super) fn level(nodes: &[&str]) -> Level {
     Level(nodes.iter().map(|n| n.to_string()).collect())
 }
 

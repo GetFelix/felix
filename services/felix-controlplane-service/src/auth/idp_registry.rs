@@ -5,8 +5,25 @@
 //! are held to.
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+/// The most issuers one tenant may trust. Each can carry up to
+/// [`MAX_INLINE_KEYS`] keys and a record of used tokens, which are held in
+/// memory.
+pub const MAX_ISSUERS_PER_TENANT: usize = 16;
+
+/// The most keys one inline JWKS may carry. A rotation overlaps two or three.
+pub const MAX_INLINE_KEYS: usize = 16;
+
+/// The longest lifetime bound an issuer may set, in seconds. A bound this
+/// large still limits a replay window to a day.
+const MAX_LIFETIME_BOUND_SECONDS: u64 = 86_400;
+
+/// The longest lifetime bound an issuer with `single_use_jti` may set. The
+/// record of used `jti` values lives as long as the tokens do.
+const MAX_SINGLE_USE_BOUND_SECONDS: u64 = 600;
 
 /// Set to `true` to allow plain-HTTP discovery and JWKS URLs on any host.
 /// For development only: a JWKS fetched over plain HTTP can be swapped in
@@ -34,12 +51,29 @@ impl Default for ClaimMappings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct IdpIssuerConfig {
     pub issuer: String,
     pub audiences: Vec<String>,
     pub discovery_url: Option<String>,
     pub jwks_url: Option<String>,
+    /// The issuer's public keys as a JWKS document, held in the config
+    /// instead of fetched. Excludes `jwks_url` and `discovery_url`: the
+    /// control plane makes no request for the issuer, and the keys change
+    /// only when this config does. Several keys let a rotation overlap. Each
+    /// key needs a `kid`, and only RSA and EC keys are accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub jwks: Option<JwkSet>,
+    /// Accept each token's `jti` once, until the token's `exp`. A token with
+    /// no `jti` is refused. Needs `max_token_lifetime_seconds` of at most 600. The record is held in memory by each control plane
+    /// replica, so single use holds per replica, and for tokens issued after
+    /// the replica started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub single_use_jti: bool,
+    /// Refuse a token whose `exp - iat` is larger than this many seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_token_lifetime_seconds: Option<u64>,
     pub claim_mappings: ClaimMappings,
 }
 
@@ -71,11 +105,68 @@ impl IdpIssuerConfig {
         if issuer.contains('#') {
             return Err("issuer must not contain '#'".to_string());
         }
+        if let Some(max) = self.max_token_lifetime_seconds
+            && !(1..=MAX_LIFETIME_BOUND_SECONDS).contains(&max)
+        {
+            return Err(format!(
+                "max_token_lifetime_seconds must be between 1 and {MAX_LIFETIME_BOUND_SECONDS}"
+            ));
+        }
+        if self.single_use_jti
+            && !self
+                .max_token_lifetime_seconds
+                .is_some_and(|max| max <= MAX_SINGLE_USE_BOUND_SECONDS)
+        {
+            return Err(format!(
+                "single_use_jti needs max_token_lifetime_seconds of at most \
+                 {MAX_SINGLE_USE_BOUND_SECONDS}"
+            ));
+        }
+        if let Some(jwks) = &self.jwks {
+            if self.jwks_url.is_some() || self.discovery_url.is_some() {
+                return Err("jwks excludes jwks_url and discovery_url".to_string());
+            }
+            return check_inline_jwks(jwks);
+        }
         match &self.jwks_url {
             Some(url) => check_fetch_url(url, allow_insecure_http, allow_private),
             None => check_fetch_url(&self.discovery_url(), allow_insecure_http, allow_private),
         }
     }
+}
+
+/// An inline JWKS must hold at least one key, each with a distinct `kid` and
+/// a usable RSA or EC public key, so a bad set is refused when stored and not
+/// at the first exchange.
+fn check_inline_jwks(jwks: &JwkSet) -> Result<(), String> {
+    if jwks.keys.is_empty() || jwks.keys.len() > MAX_INLINE_KEYS {
+        return Err(format!("jwks must hold 1 to {MAX_INLINE_KEYS} keys"));
+    }
+    let mut kids = std::collections::HashSet::new();
+    for key in &jwks.keys {
+        let Some(kid) = key.common.key_id.as_deref().filter(|kid| !kid.is_empty()) else {
+            return Err("every jwks key needs a kid".to_string());
+        };
+        if !kids.insert(kid) {
+            return Err(format!("jwks kid {kid:?} appears twice"));
+        }
+        // A key meant for encryption is not one tokens are verified with.
+        if matches!(
+            key.common.public_key_use,
+            Some(jsonwebtoken::jwk::PublicKeyUse::Encryption)
+        ) {
+            return Err(format!("jwks key {kid:?} is not a signing key"));
+        }
+        if !matches!(
+            key.algorithm,
+            AlgorithmParameters::RSA(_) | AlgorithmParameters::EllipticCurve(_)
+        ) {
+            return Err(format!("jwks key {kid:?} must be an RSA or EC key"));
+        }
+        jsonwebtoken::DecodingKey::from_jwk(key)
+            .map_err(|err| format!("jwks key {kid:?} is unusable: {err}"))?;
+    }
+    Ok(())
 }
 
 /// Whether plain HTTP is allowed beyond loopback, from

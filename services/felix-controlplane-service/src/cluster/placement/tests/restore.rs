@@ -9,11 +9,11 @@ use crate::model::{HaltedCopy, MoveReason};
 use crate::store::ControlPlaneStore;
 
 const NOW: u64 = 10_000_000_000;
-const MINUTE: u64 = 60_000;
+pub(super) const MINUTE: u64 = 60_000;
 
 /// Reports as of `NOW` at generation 3, which `assigned` uses.
 #[derive(Default)]
-struct Reports {
+pub(super) struct Reports {
     level: BTreeSet<String>,
     offsets: BTreeMap<String, u64>,
     tail: Option<u64>,
@@ -88,7 +88,7 @@ impl CaughtUp for Reports {
 }
 
 /// `id`, not serving, last heard from `silent_for` before `NOW`.
-fn gone(id: &str, silent_for: u64) -> Node {
+pub(super) fn gone(id: &str, silent_for: u64) -> Node {
     let mut node = node(id, NodeLifecycle::Down, None);
     node.status.last_heartbeat_at_millis = NOW - silent_for;
     node
@@ -112,7 +112,7 @@ fn restoring(leader: &str, replicas: &[&str], joining: &str) -> ShardAssignment 
 
 /// Plan one pass. A written assignment comes back at generation 0, the
 /// store's to set; it is put at the reports' generation here, as if written.
-fn decide(
+pub(super) fn decide(
     stream: Stream,
     nodes: &[Node],
     mut existing: ShardAssignment,

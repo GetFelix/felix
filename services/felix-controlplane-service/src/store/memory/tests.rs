@@ -837,3 +837,10 @@ async fn a_placement_write_keeps_the_ordered_targets() {
         Some(held)
     );
 }
+
+/// On a store of its own: other node contracts enable fleet features.
+#[tokio::test]
+async fn satisfies_the_declared_dead_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::declared_dead::run_declared_dead_contract(store).await;
+}

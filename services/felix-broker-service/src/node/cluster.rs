@@ -137,7 +137,7 @@ pub(super) struct RaftShards {
 #[cfg(feature = "raft")]
 pub(super) fn start_raft_shards(
     config: &BrokerConfig,
-    lease: Option<Duration>,
+    settings: crate::config::RaftSettings,
     cluster: &Option<ShardState>,
     peers: &Option<Arc<PeerPool>>,
     broker: &Arc<Broker>,
@@ -157,8 +157,11 @@ pub(super) fn start_raft_shards(
         Arc::new(move |broker: &str| router.node_addr(broker)),
     );
     let mut timers = RuntimeConfig::default();
-    if let Some(lease) = lease {
+    if let Some(lease) = settings.lease {
         timers.lease = lease;
+    }
+    if let Some(elections) = settings.elections_at_once {
+        timers.max_elections_at_once = elections;
     }
     let runtime = GroupRuntime::start(membership.node_id.clone(), timers, Arc::new(transport))
         .map_err(|err| anyhow::anyhow!("start the Raft group runtime: {err}"))?;

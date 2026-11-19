@@ -108,6 +108,7 @@ impl SimControlPlane {
             labels: None,
             capacity: None,
             lifecycle: Some(NodeLifecycle::Live),
+            internal: None,
         };
         Ok(self
             .operator(

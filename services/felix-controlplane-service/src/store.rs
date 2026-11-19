@@ -194,6 +194,39 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         feature: &str,
     ) -> StoreResult<std::collections::BTreeSet<String>>;
+    /// Declare `node_id`'s data directory dead, under the storage id it is
+    /// registered with, and answer with what was recorded. Idempotent.
+    ///
+    /// The record is kept for good, through a node delete too: the node
+    /// registers again only under another storage id, and no registration
+    /// without one is taken from it. Conflicts while the node is live or
+    /// draining, when it reported no storage id, and on a Raft store below
+    /// metadata level 42. See `docs/per-shard-raft.md`, "Declaring a broker
+    /// dead".
+    async fn declare_node_dead(&self, node_id: &str) -> StoreResult<crate::model::DeclaredDead>;
+    /// Every data directory declared dead, in (node, storage id) order.
+    async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>>;
+    /// The nodes whose registered storage id was declared dead, and those
+    /// declared dead and since deleted: the dead set a re-form plans with
+    /// ([`ShardAssignment::reform_record`]). A node that registered again
+    /// under a new storage id is not in it.
+    async fn dead_nodes(&self) -> StoreResult<std::collections::BTreeSet<String>> {
+        let declared = self.declared_dead().await?;
+        let registered: std::collections::HashMap<String, Option<String>> = self
+            .list_nodes()
+            .await?
+            .into_iter()
+            .map(|node| (node.node_id, node.status.storage_id))
+            .collect();
+        Ok(declared
+            .into_iter()
+            .filter(|dead| match registered.get(&dead.node_id) {
+                None => true,
+                Some(storage_id) => storage_id.as_ref() == Some(&dead.storage_id),
+            })
+            .map(|dead| dead.node_id)
+            .collect())
+    }
     async fn get_node(&self, node_id: &str) -> StoreResult<Node>;
     async fn list_nodes(&self) -> StoreResult<Vec<Node>>;
     /// Nodes in `node_id` order, one page at a time.

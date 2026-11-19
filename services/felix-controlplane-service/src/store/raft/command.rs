@@ -56,7 +56,11 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 41;
+pub const METADATA_VERSION: u16 = 44;
+
+/// The metadata level whose members' placement acts on the internal node
+/// role ([`MetaCommand::internal_role_level`]).
+pub(crate) const INTERNAL_ROLE_LEVEL: u16 = 44;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -552,6 +556,12 @@ pub enum MetaCommand {
         node_id: String,
         floors: Vec<crate::model::RaftFloorReport>,
     },
+    /// Declare a node's data directory dead under the storage id its record
+    /// holds as this applies
+    /// ([`crate::store::ControlPlaneStore::declare_node_dead`]). Level 42.
+    DeclareNodeDead {
+        node_id: String,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -595,7 +605,28 @@ impl MetaCommand {
     /// member that reports no level already knows.
     pub fn version(&self) -> u16 {
         let value = serde_json::to_value(self).expect("commands serialize by construction");
-        self.variant_level().max(fields::level_of(&value))
+        self.variant_level()
+            .max(fields::level_of(&value))
+            .max(self.internal_role_level())
+    }
+
+    /// The internal role rides in a node's labels, which every member
+    /// already applies, so no field marks it. A leader below this level
+    /// would place tenant shards on such a node, so any command that writes
+    /// one is held to it: a registration, or an import (restore) of nodes.
+    /// An import does not keep the registration's rule against dropping the
+    /// role: a restore replaces the records on purpose.
+    fn internal_role_level(&self) -> u16 {
+        let internal = match self {
+            Self::RegisterNode { node } | Self::RegisterNodeInFleet { node } => {
+                node.spec.is_internal()
+            }
+            Self::ImportState { state, .. } => {
+                state.nodes.iter().any(|(_, node)| node.spec.is_internal())
+            }
+            _ => false,
+        };
+        if internal { INTERNAL_ROLE_LEVEL } else { 0 }
     }
 
     fn variant_level(&self) -> u16 {
@@ -675,6 +706,9 @@ impl MetaCommand {
             // A member before level 38 would refuse the command and keep no
             // floor where the others hold one.
             Self::RecordRaftFloors { .. } => 38,
+            // A member before level 42 would refuse the command, then take
+            // a registration the others refuse.
+            Self::DeclareNodeDead { .. } => 42,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -771,6 +805,10 @@ pub enum MetaResponse {
     RegisteredNode {
         node: Node,
         fleet: std::collections::BTreeSet<String>,
+    },
+    /// `DeclareNodeDead`'s answer: what was recorded.
+    DeclaredDead {
+        declared: crate::model::DeclaredDead,
     },
     /// `FinalizeFleetFeature`'s answer: the enabled set after it.
     FleetFeatures {
@@ -1013,7 +1051,9 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// level 36) is refused the same way: a member that could not apply it would
 /// later, once elected, count targets for a different member set.
 ///
-/// A floor report (`record_raft_floors`, level 38) is refused the same way.
+/// A floor report (`record_raft_floors`, level 38) is refused the same way,
+/// and so is a dead declaration (`declare_node_dead`, level 42): a member
+/// that could not apply it would take a registration the others refuse.
 ///
 /// From level 39 a copy id report and a seal report carry `keep_ordered`, so
 /// the shard keeps every target ordered in the epoch; below it they never do.
@@ -1027,6 +1067,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             "a Raft copy id report"
         } else if gated == FLOORS_OP {
             "a Raft offset floor report"
+        } else if gated == DECLARE_DEAD_OP {
+            "declaring a node dead"
         } else {
             "a shard's switch to Raft"
         };
@@ -1097,7 +1139,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
 }
 
 /// Whether `command` is an import, a node delete, a switch command, a copy
-/// id report or a floor report, read without decoding what it carries.
+/// id report, a floor report or a dead declaration, read without decoding
+/// what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
     op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || op == DELETE_NODE_OP || is_gated(&op))
 }
@@ -1117,9 +1160,12 @@ const COPY_ID_OP: &str = "record_raft_copy_id";
 /// A broker's Raft offset floor report, by op.
 const FLOORS_OP: &str = "record_raft_floors";
 
+/// An operator's dead declaration, by op.
+const DECLARE_DEAD_OP: &str = "declare_node_dead";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
-    SWITCH_OPS.contains(&op) || op == COPY_ID_OP || op == FLOORS_OP
+    SWITCH_OPS.contains(&op) || op == COPY_ID_OP || op == FLOORS_OP || op == DECLARE_DEAD_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.
