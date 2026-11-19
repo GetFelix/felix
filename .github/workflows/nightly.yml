@@ -28,6 +28,8 @@ on:
       - .github/workflows/nightly.yml
       - .github/workflows/release.yml
       - scripts/ci/nightly_smoke.sh
+      - scripts/package_libfelix.sh
+      - .cargo/config.toml
 
 concurrency:
   group: nightly-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
