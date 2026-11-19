@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795113366425,
+  "lastUpdate": 1795113788767,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -79794,6 +79794,72 @@ window.BENCHMARK_DATA = {
             "range": "44.85",
             "unit": "us",
             "extra": "trials: 5\nmedian: 376.00\nmean: 386.00\nstdev: 44.85\ncv: 11.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b75f4d873b7e475ea3391b55f0dfe8e86e02b316",
+          "message": "formal(raft): conditional batches of several records, cut prefixes hidden (#2829)\n\n* formal(raft): conditional batches of several records, cut prefixes hidden (#2751)\n\nFelixRaftCond.tla now takes a batch length per client. A batch of N\nrecords is N entries appended in one step, each carrying its position\nand the batch length, kept only at expected + position. A change of\nleader can commit a strict prefix of a batch; readers skip it from the\nmember's log alone (the entry at the last index must be a kept last\npiece of the same length), and the read bound stops before a batch\nwhose last index is not committed yet.\n\nNew: WholeBatchesOnly (no reader sees a record of a batch that is not\nwhole), ReadsStable, the Hide knob with NoHide and BoundOnly twins that\nviolate it, and two witnesses (a cut commits, a whole batch is read).\nThe single-record configurations set every length to one.\n\n* formal(raft): check the cut skip's position and length, and that readers see every piece\n\nA twin (FelixRaftCondBatchAnyLast) whose skip only asks for a kept entry\nat the last index lets a cut piece through when another publish's record\nis kept there. WholeBatchesOnly now also requires every piece visible.",
+          "timestamp": "2026-11-19T18:30:37Z",
+          "tree_id": "e8b560f6c8f7e72eff02bf69f3572ee8cb40d595",
+          "url": "https://github.com/GetFelix/felix/commit/b75f4d873b7e475ea3391b55f0dfe8e86e02b316"
+        },
+        "date": 1795113778104,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.40\nstdev: 0.89\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 121,
+            "range": "6.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 124.20\nstdev: 6.06\ncv: 4.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 151,
+            "range": "601.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 417.20\nstdev: 601.40\ncv: 144.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.60\nstdev: 0.89\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "4.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 184.20\nstdev: 4.27\ncv: 2.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 292,
+            "range": "17.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 292.00\nmean: 284.60\nstdev: 17.23\ncv: 6.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
