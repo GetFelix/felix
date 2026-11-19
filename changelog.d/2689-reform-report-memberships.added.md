@@ -1,1 +1,0 @@
-Raft re-form: a broker's survey answer for a shard (`felix_replication::raft::reform_report`) reads the voter sets of every membership of the group's epoch from each copy's log entries and its snapshot, so a membership a purge moved into the snapshot still counts. Nothing calls it yet; the re-form command does (#2250, #2689).

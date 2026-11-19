@@ -14,7 +14,8 @@ that the files agree with each other, which is what a pull request wants.
 With a tag it also checks the image tags the docs tell readers to pull. Those
 name the newest release, not the tree, because between releases `main` carries
 a version that has no images yet. Checking them when a release is tagged is
-what keeps them from going stale.
+what keeps them from going stale. A prerelease tag skips that check: the docs
+pin stable releases only.
 """
 
 from __future__ import annotations
@@ -105,7 +106,10 @@ def main() -> int:
             marker = " " if version == expected else "<-"
             print(f"     {marker} {version}  {path}")
 
-    stale = stale_doc_pins(expected) if expected is not None else []
+    # The docs recommend the newest stable release only, so a prerelease tag
+    # leaves their pins alone.
+    prerelease = expected is not None and "-" in expected
+    stale = stale_doc_pins(expected) if expected is not None and not prerelease else []
     if stale:
         print(f"FAIL the docs pin images other than {expected}:")
         for pin in stale:

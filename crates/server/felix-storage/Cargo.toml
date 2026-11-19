@@ -28,7 +28,7 @@ raft = ["dep:openraft", "dep:sha2"]
 
 [dependencies]
 bytes = { workspace = true }
-felix-common = { path = "../felix-common", version = "0.8.0-preview.0", features = ["blocking", "hasher"] }
+felix-common = { path = "../felix-common", version = "0.8.0-preview.1", features = ["blocking", "hasher"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1.89"

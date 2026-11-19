@@ -1,1 +1,0 @@
-The Raft parity harness no longer copies a client token onto the box it already sits on, which emptied it and made the MQTT tail cell connect without a token. `felix-loadgen` now refuses an empty `--token-file`.
