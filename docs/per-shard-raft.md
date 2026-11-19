@@ -1916,8 +1916,8 @@ the entry is a trim like any other.
 Followers never evaluate the bounds: their clocks and segment sizes differ,
 and two members hiding different prefixes would serve different reads. Each
 applies the floor at the trim's entry, so every member hides the same
-records. The size bound counts the hidden segments too, which stay on disk,
-so it keeps about that many bytes readable.
+records. The size bound counts the hidden segments too, until a purge
+deletes them, so it keeps about that many bytes readable.
 
 The trim only hides records. The same timer then has every member purge
 its log below the floor, which is what frees the disk, once the fleet has
@@ -1934,6 +1934,14 @@ refuses trims, so retention does not hide its records either. A Raft log
 never offloads (`FELIX_DURABLE_OFFLOAD_DIR`), since only a purge may drop its
 segments.
 
+With the purge on, a member's segment files stay near the bound: the bound
+itself, the segment the purge point falls in, and the open segment. On a
+leader that holds only once every live member has caught up, since its
+purge waits for their match. A member cut off while the others purged
+installs the leader's purge snapshot when it is back and keeps the floor it
+carries; the install starts its log at the purge point, so it holds no more
+than the others.
+
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
 > `retention_trims_a_shard_when_a_publish_lands_mid_pass`,
@@ -1941,6 +1949,10 @@ segments.
 > `retention_writes_nothing_until_raft_head_trim_is_finalized`,
 > `a_zero_retention_interval_starts_no_timer`,
 > `a_raft_member_does_not_offload`;
+> `services/felix-broker-service/src/shards/raft/tests/purge.rs`,
+> `retention_frees_every_members_disk_and_a_member_cut_off_catches_up`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `retention_frees_the_disk_of_every_raft_member`;
 > `crates/server/felix-storage/src/disk_log/tests/retention.rs`,
 > `a_retention_cut_does_not_judge_hidden_segments`
 
