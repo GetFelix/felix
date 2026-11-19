@@ -388,7 +388,7 @@ it stood.
 | Ballot, kept-set, adoption, rename, reissue, report-order and control-plane-down configs (`AdoptedMatchesOpened`, `CpLeaderServes`, `OwnBallotCaughtUp`, `NeverRename*`, `CpDown*` and the rest) | Retired. Each guards a step between the control plane and a broker that no longer exists: the control plane does not name leaders |
 | `Counters*` | Retired. A cache shard has one log and one commit index |
 | `NoStaleRead`, `NoStaleGroupCommit`, `NoLostDelivery` | Gap 1 |
-| `NoDuplicate` (idempotent failover and handoff) | Gap 2 |
+| `NoDuplicate` (idempotent failover and handoff) | `NoDuplicate` in `FelixRaftIdempotent.cfg`, with the in-memory twin `FelixRaftIdempotentMemory.cfg` (#2267). A handoff is a change of leader under Raft |
 | `EventuallyAtFactor`, the move give-up configs | Gap 3 |
 
 ### Gaps
@@ -402,10 +402,12 @@ Each has an issue and blocks what is named.
    from PR 3 Raft is the only engine and from PR 4 the code `FelixShard`
    models is gone, so nothing else would hold `NoStaleRead`,
    `NoStaleGroupCommit` or `NoLostDelivery`. Issue #2266.
-2. **Idempotent publish across a leader change has no Raft config.** The
-   hybrid proves `NoDuplicate` across failover and handoff. Under Raft the
-   dedup state is rebuilt from the log by a new leader. Blocks the bridge
-   release and PR 3, for the same reason. Issue #2267.
+2. **Idempotent publish across a leader change.** Closed by
+   `FelixRaftIdempotent.tla`: `NoDuplicate` holds across changes of Raft
+   leader, with two batches in flight and for the re-send of a batch a
+   change of leader cut short, with the table read from the leader's log.
+   It models new two-record batches ahead of the engine, which refuses
+   them until #2524. Its twin with the table in memory fails it. Issue #2267.
 3. **Placement liveness under Raft membership is unmodelled**, and two
    specs that stay still speak of fences and promotions. `EventuallyAtFactor`
    and the move give-up configs need a twin over joint consensus.

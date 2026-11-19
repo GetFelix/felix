@@ -3159,6 +3159,12 @@ replica does (`docs/storage-format.md`, "Producer marks"). A log that a
 later leader cuts back forgets the batches that were cut. Nothing about a
 producer is kept in a leader's memory alone.
 
+`FelixRaftIdempotent.tla` checks this over Raft elections, for a producer
+with two batches in flight: a re-send to any leader, after a change of
+leader and after a batch cut short by one, never commits a record twice. Its twin `FelixRaftIdempotentMemory`, where a leader
+keeps the table in memory and starts it empty when it wins a term, writes a
+re-send to the next leader a second time.
+
 ```mermaid
 sequenceDiagram
     participant P as Producer
@@ -5625,13 +5631,14 @@ broker append at an old term lands after the vote for a newer one.
 
 ## Proposal: commit on a written majority on relaxed brokers
 
-> **Partly built, not enabled.** Every broker still fsyncs a Raft log
-> before openraft hears an append is flushed, and everything else on this
-> page describes that. Reservations are taken in every fsync mode with
-> no gate. Counting a written entry is built behind a fleet feature that
-> no build reports yet, `raft_written_commit`: it waits for the re-form
-> that pads above every reservation. "What is built" below lists the
-> parts.
+> **Built, on in a new cluster.** Every build reports the fleet
+> feature `raft_written_commit` and a new cluster finalizes it, so a relaxed
+> broker's Raft logs count an entry once it is written and fsync on the
+> broker's own schedule. An upgraded cluster keeps fsyncing on commit
+> until an operator finalizes it. Reservations are taken in every fsync
+> mode with no gate. The text below was written as the proposal; "What is
+> built" lists the parts, and "Why it can be on before the re-form" says
+> why it does not wait for the re-form command.
 
 A broker whose `fsync_mode` is `periodic` or `none` (a relaxed broker)
 does not wait for the disk before it acknowledges a write. Its Raft logs
@@ -5958,11 +5965,22 @@ not a weaker flush.
 
 Not built: the re-form command and the RF 1 restore themselves (item 8
 under "Every start that must rotate first"), and with them the offset
-floor ("Re-forming a group"). The feature waits for them, since they are
-what would call the reads above. It also waits for a fix to the first
-form: a shard whose every copy rotated has blank members, and the broker
-forms it again from empty logs at index 0, which gives acknowledged
-offsets out again (#2620). Also not built: the perf measurement.
+floor ("Re-forming a group"). A shard whose every copy rotated is held,
+not formed again at index 0 (#2620). Not measured yet: the perf A/B.
+
+### Why it can be on before the re-form
+
+What written commits add is the loss the `Periodic` contract already
+names: a power cut of a majority before the periodic flush takes entries
+that committed and were acknowledged. What could make that worse is an
+offset given out again, and only a new epoch over cut copies can do that:
+the re-form or an RF 1 restore. Neither exists yet, and the re-form rule
+already built (`plan_reform`) starts above every reservation it reads.
+Until they ship, a group that lost a majority of copies stays closed,
+which is what it does with the feature off too: a relaxed run rotates its
+storage id after a machine crash whatever its Raft logs' fsync mode, so the
+cut copies no longer vote either way. The vote and the term are synced
+before `save_vote` returns in every mode.
 
 ### Code changes it would take
 

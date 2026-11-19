@@ -34,6 +34,7 @@
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
+mod floor;
 mod handle;
 mod health;
 mod hold;
@@ -112,6 +113,10 @@ pub struct RaftSettings {
     /// snapshot over it can never be installed here, so building one past
     /// half of it is logged as an error.
     pub snapshot_max_bytes: u64,
+    /// How long a member that lost its volume blocks past the group's
+    /// failure tolerance before it reports the block and accepts a waiver
+    /// ([`floor`]).
+    pub floor_report_after: Duration,
     #[cfg(test)]
     pub(crate) faults: Faults,
 }
@@ -155,6 +160,7 @@ impl RaftSettings {
             logs_kept_behind_snapshot: 100,
             write_timeout: Duration::from_secs(10),
             snapshot_max_bytes: DEFAULT_SNAPSHOT_MAX_BYTES,
+            floor_report_after: floor::DEFAULT_REPORT_AFTER,
             #[cfg(test)]
             faults: Faults::default(),
         }

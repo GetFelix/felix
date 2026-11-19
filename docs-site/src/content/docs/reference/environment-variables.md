@@ -2350,6 +2350,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_RAFT_LOGS_KEPT_BEHIND_SNAPSHOT` | `100` | Entries kept behind the snapshot so a briefly-lagging member catches up from the log rather than a snapshot install. |
 | `FELIX_RAFT_SNAPSHOT_MAX_BYTES` | `1073741824` | Largest snapshot, in bytes, this member accepts from a peer. A larger one is refused before its data is read, and a built snapshot past half of it is logged as an error. Set the same value on every member. |
 | `FELIX_RAFT_WRITE_TIMEOUT_MS` | `10000` | Overall budget for one proposal, elections and forwarding included. "No quorum" becomes an error at this bound rather than a hang, and the API answers it `503 unavailable`. |
+| `FELIX_RAFT_FLOOR_REPORT_AFTER_MS` | `60000` | How long a member that lost its volume blocks, when more members lost theirs than the group survives, before it logs an error, sets `felix_meta_raft_floor_blocked` and accepts a `waive-lost` waiver. See [Metadata Raft](/architecture/metadata-raft/). |
 | `FELIX_READINESS_TIMEOUT_MS` | `2000` | Longest a readiness check may take before it counts as a failure. Keep it below the prober's own timeout so the reason is reported rather than lost. |
 | `FELIX_READINESS_CACHE_TTL_MS` | `1000` | How long a readiness answer is reused. Bounds probe cost regardless of how many probers there are, and bounds how long recovery takes to become visible. |
 | `FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS` | `25000` | Budget for draining in-flight requests after SIGTERM before tasks are cancelled. |

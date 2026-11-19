@@ -115,6 +115,7 @@ module_of() {
     FelixRaftBatch*) echo FelixRaftBatch ;;
     FelixRaftGroups*) echo FelixRaftGroups ;;
     FelixRaftCond*) echo FelixRaftCond ;;
+    FelixRaftIdempotent*) echo FelixRaftIdempotent ;;
     FelixRaftStreamPurge*) echo FelixRaftStreamPurge ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
@@ -651,6 +652,12 @@ expectations=(
   "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
   "FelixRaftCondLeaderDecidesNoMembers pass"
   "FelixRaftCondReachAnswers violates NeverOkAndMismatch"
+  "FelixRaftIdempotent pass"
+  "FelixRaftIdempotentTwoTerms pass"
+  "FelixRaftIdempotentMemory violates NoDuplicate"
+  "FelixRaftIdempotentRewrite violates NoDuplicate"
+  "FelixRaftIdempotentReachFinish violates NeverFinishesACut"
+  "FelixRaftIdempotentReachHeld violates NeverHeldByLaterLeader"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityBatched pass"
   "FelixRaftIdentityRelaxedCrash pass"
@@ -708,6 +715,12 @@ expectations=(
   "FelixRaftPlacementStaleWipeTwoTerms pass"
   "FelixRaftPlacementSameIdCounted violates AckedSurvive"
   "FelixRaftPlacementSameIdFive violates OneLeaderPerTerm"
+  "FelixRaftPlacementSameIdFiveFloor pass"
+  "FelixRaftPlacementSameIdFiveFloorTwoWipes pass"
+  "FelixRaftPlacementFormFiveFloor pass"
+  "FelixRaftPlacementTwoWipesFloor pass"
+  "FelixRaftPlacementTwoWipesFloorBlock pass"
+  "FelixRaftPlacementFormWaiverFloor pass"
   "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
   "FelixRaftPlacementNoWithhold violates LeaderCompleteness"
   "FelixRaftPlacementAnswerAnyId violates LeaderCompleteness"
@@ -1402,6 +1415,11 @@ weights=(
   "FelixRaftPlacementStaleFull 39"
   "FelixRaftPlacementSameId 2"
   "FelixRaftPlacementSameIdFive 14"
+  "FelixRaftPlacementSameIdFiveFloor 20"
+  "FelixRaftPlacementSameIdFiveFloorTwoWipes 40"
+  "FelixRaftPlacementFormFiveFloor 40"
+  "FelixRaftPlacementTwoWipesFloor 2"
+  "FelixRaftPlacementTwoWipesFloorBlock 2"
   "FelixRaftPlacementFormAfterWipes 2"
   "FelixRaftPlacementFormEarlyWipeFirstBoot 2"
   "FelixRaftSwitchGenZero 6"
@@ -1443,6 +1461,7 @@ weights=(
   "FelixRaftCond 300"
   "FelixRaftCondTwoTerms 40"
   "FelixRaftCondLeaderDecidesNoMembers 200"
+  "FelixRaftIdempotent 20"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"

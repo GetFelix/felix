@@ -472,14 +472,130 @@ What the waiver does and does not do:
   cluster's data and returns, the group formed without it has replaced it.
   Use the waiver only under a cluster id that no volume has ever held.
 
-**Known gap (#2365).** Only the vote is withheld. The member still answers
-appends and heartbeats, and a leader counts them. It forgot the term it last
-voted in, so a leader of an older term can commit with it after a newer
-leader was elected on its vote, and that entry is then cut
-(`docs/formal/FelixRaftPlacementSameIdCounted.cfg`). A rule that no leader
-counts a member while its vote is withheld closes this for three members
-(`FelixRaftPlacementSameId.cfg`). It does not for five: the member can vote
-a second time in the term it forgot (`FelixRaftPlacementSameIdFive.cfg`).
+#### Which leaders a wiped member answers
+
+A vote is two promises: to back this candidate, and to take nothing from a
+leader of an older term. Withholding the vote keeps the first. The second
+is lost with the volume: the wiped member no longer knows which term it
+last promised, and its term starts again at 0. If it answered every
+leader, the leader of an older term could commit with it after a newer
+leader was elected on its vote, and the newer leader would cut that entry
+([#2365](https://github.com/GetFelix/felix/issues/2365)):
+
+```mermaid
+sequenceDiagram
+    participant A as a (leads term 1)
+    participant C as c (wiped)
+    participant B as b (leads term 2)
+    Note over B,C: c voted for b in term 2, then lost its volume
+    A->>C: append e1 (term 1)
+    C-->>A: ok, so e1 commits on a and c
+    B->>A: heartbeat (term 2)
+    Note over A,B: a follows b, and b's log cuts e1
+```
+
+So before a wiped member answers any leader, it learns a floor:
+
+1. It asks every other member for its term (`standing`, field `term`).
+   Only a member that holds its vote gives one. A member that withholds
+   its vote too says so instead (field `withheld`), and that counts as an
+   answer with no term. A member on a build that predates both fields
+   gives neither, and that does not count.
+2. Once every other member has answered, the floor is the highest term
+   given. Silence is never an answer. The member it promised a term to may
+   be the only one that knows that term, and that member may be the one
+   that is down.
+3. Until it votes again, the member answers append-entries, heartbeats and
+   snapshot installs only from a leader at or above the floor, and answers
+   any other with a 503, like a member that cannot be reached. A leader it
+   does not answer counts it for nothing: not toward a commit and not
+   toward the read-index round behind `catch-up-target`.
+
+Why that is enough: a term the wiped member promised was promised along
+with a majority, to a candidate or a leader, and every member of that
+majority keeps it (terms only rise) unless it lost its volume too. A member
+that lost its volume promised nothing since, and what it promised before
+went with it, so skipping its answer skips no term the asking member needs
+while some member of that majority still holds its vote. So the highest
+term given is at least every term the member forgot. A leader at or above
+it is one the member could have backed. Once it answers that leader, its
+stored term is the leader's, and Raft's own checks refuse anything older
+from then on. It votes again only after catching up, so it never votes in
+a term it forgot either.
+
+Hearing from a majority of the others is not enough with five members. A
+candidate that holds the member's forgotten vote can be the one member left
+out, and the member would then follow an older leader and grant that term's
+vote a second time. `docs/formal/FelixRaftPlacementSameIdFive.cfg` shows
+that second vote with no floor at all; asking every member is what closes
+it.
+
+The cost: a wiped member counts for nothing until every other member is up
+and on a build that reports its term. With one of three members wiped,
+writes need both of the others until it has learned its floor. Two members
+of five wiped at once do not wait for each other: each says it is
+withheld, and each takes its floor from the other three. A slot that a
+`form-without` waiver named and that never started is silent, so a member
+wiped in that group learns no floor until the slot answers.
+
+#### Past the failure tolerance
+
+The argument above needs some member of every majority that holds the
+wiped member to still report a term. Count the members that do. If the
+rest, with the asking member, could make up a majority (two of three
+wiped, three of five), the terms the asking member promised may live only
+on members that lost them too. Serving a leader then could lose an
+acknowledged write, so the member blocks instead: it learns no floor and
+answers no leader.
+
+A block ends one of two ways:
+
+1. **A withheld member finishes catching up.** A member that is still
+   catching up after an earlier wipe also says it is withheld. It already
+   learned its floor and serves the current leader, so its catch-up does
+   not need the blocked member. Once it votes again it reports a term, and
+   the blocked member, which keeps asking, learns its floor. This is the
+   common case: one wipe, then a second before the first has caught up. A
+   member that restarts part way through its catch-up holds state, so it
+   does not block on its next start: what it stored came from a leader at
+   or above the floor it learned, and its stored vote refuses older
+   leaders.
+2. **An operator waives the withheld members.** If they are gone for good,
+   nothing resolves the block on its own. After
+   `FELIX_RAFT_FLOOR_REPORT_AFTER_MS` (default 60 s) the member logs an
+   error naming the withheld members, sets the gauge
+   `felix_meta_raft_floor_blocked` to 1, and its readiness answer says it
+   is blocked. Only then does it take a waiver: a POST to the peer route
+   `waive-lost`, which needs the peer token (the cluster-admin credential),
+   names every withheld member the block waits on, and gives a reason. The
+   waiver must name each of them, even one that is healthy and only
+   catching up. The member logs the waiver and goes on with the floor from
+   the members that reported a term. Acknowledged writes only the lost
+   members held may be lost, and the
+   [restore](#restoring-beyond-quorum-loss) path is how to get them back.
+   Each blocked member takes its own waiver.
+
+A waiver only lets a member follow a leader. It does not make it vote, and
+a withheld member never votes before it has caught up. So a waiver helps
+only while a member that kept its volume still leads. If the leader was
+one of the members that lost their volumes, no leader can be elected, and
+the waived member keeps reporting that it is catching up. Go straight to
+the restore path then.
+
+A waiver is held in memory and used once. It is refused before the block
+is reported, when it misses a member the block waits on, or when it names
+this member or one that is not configured. It is dropped when another
+member becomes withheld before it is used, and a restart before the block
+lifts starts it over.
+
+The model checks the rule (`FelixRaftPlacementSameId.cfg`,
+`FelixRaftPlacementSameIdFiveFloor.cfg`; two wipes in five,
+`FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg`; late first-boot members,
+`FelixRaftPlacementFormFiveFloor.cfg`; past the tolerance, blocked,
+`FelixRaftPlacementTwoWipesFloorBlock.cfg`, and under a waiver,
+`FelixRaftPlacementTwoWipesFloor.cfg`; a waived slot that never starts,
+`FelixRaftPlacementFormWaiverFloor.cfg`) and shows a write lost without it
+(`FelixRaftPlacementSameIdCounted.cfg`).
 
 The withheld vote is written to the member's store before any of this, so a
 crash half-way through catching up restarts still withholding it, not as a
@@ -985,7 +1101,7 @@ leader's snapshot as in
 | Failure | Behaviour |
 | --- | --- |
 | One instance of three dies | Leader (if it was the leader) re-elected in one election timeout; writes pause for that long, reads keep serving; M7 signal holds |
-| Instance loses its volume | Rejoins without a vote, catches up by log or snapshot, then votes again ([above](#rejoining-after-a-lost-volume)); no operator data surgery |
+| Instance loses its volume | Rejoins without a vote. Once every other member has reported its term it follows a leader at or above the highest, catches up by log or snapshot, then votes again ([above](#which-leaders-a-wiped-member-answers)); no operator data surgery. Until then it counts toward nothing, so with one of three wiped, writes need both others |
 | A majority loses its volumes | The empty members wait rather than form a new, empty group. Under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new` they still wait until every member answers and is empty, so a member that holds the log blocks them whether it is up or down; recovery is the snapshot restore |
 | A member's volume is lost after the group formed and before its first leader wrote an entry | Its peers recorded it before it first voted, so it does not form again, even under `new`. It waits for the others to elect a leader, catches up and votes again ([above](#forming-the-group)). If a majority's volumes go in that window, nobody can lead: empty every volume and start again if the cluster held no data, or restore |
 | A first start with a member on a build without the `forming` route | Nobody forms: that member cannot record the others. The log names it. Start every member on the same release |

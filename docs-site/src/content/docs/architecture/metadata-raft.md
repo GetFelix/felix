@@ -72,7 +72,7 @@ flowchart LR
 | Event | Behaviour |
 | --- | --- |
 | One instance of three dies | Writes pause for one election timeout; reads keep serving; no broker call fails |
-| An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. Caught up by snapshot install; no data surgery |
+| An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. It also forgot which terms it promised, so it answers no leader until every other member has reported its term, and then only a leader at or above the highest: a leader the group has replaced cannot commit with it. Until then it counts toward nothing, so with one of three wiped, writes need both others. A member wiped at the same time says so and counts as answered, so two wiped members do not wait on each other. Caught up by snapshot install; no data surgery |
 | Quorum lost | Survivors fail readiness rather than serve writes that cannot commit; brokers keep serving on their catalogs and leases, as during any control-plane outage |
 
 Library: [openraft](https://github.com/databendlabs/openraft), pinned to one
@@ -157,6 +157,39 @@ The absent member stays in the group, so it runs two of three until a
 machine with an empty volume takes its place. Use this only under a cluster
 id that no volume has held: it cannot tell whether the absent machine holds
 data.
+
+A member that loses its volume catches up before it votes again, and first
+asks every other member for its term. If more members lost their volumes
+than the group survives (two of three, three of five), the members that
+still have a term cannot prove which leaders are safe to follow, and the
+wiped member blocks rather than risk losing acknowledged writes. A second
+wipe while the first member is still catching up is the usual cause, and it
+clears on its own once that member has caught up. If it does not clear in
+`FELIX_RAFT_FLOOR_REPORT_AFTER_MS` (default 60 s), the member logs an error,
+sets `felix_meta_raft_floor_blocked` to 1, and its readiness check reports
+the block and the members it waits on. If those members are lost for good
+and a member that kept its volume still leads, accept the loss on each
+blocked member, naming every member it waits on (even one that is only
+catching up):
+
+```bash
+curl --fail-with-body -X POST \
+  "https://cp-0:8444/internal/raft/v2/waive-lost" \
+  -H "Authorization: Bearer $FELIX_RAFT_PEER_TOKEN" \
+  -H "x-felix-raft-cluster-id: prod-metadata" \
+  -H "content-type: application/json" \
+  -d '{"members": [2], "reason": "cp-1 volume destroyed"}'
+```
+
+Use `http://` when the peer listener has no TLS, and with peer mTLS add
+`--cert`, `--key` and `--cacert`. The member logs the waiver with its
+reason and goes on. Writes that only the lost members held may be gone;
+[restore from an export](#restoring-beyond-quorum-loss) to get them back.
+The waiver is refused (409) before the block is reported or if it misses a
+member, and a restart of the blocked member drops it. A waiver does not
+let a member vote, so if no member that kept its volume leads (the leader
+was one of the lost ones), no waiver helps: restore from an export. The steps are in
+[the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#past-the-failure-tolerance).
 
 Upgrading an existing Raft group to a release with the peer listener is not
 a rolling change: old members send unauthenticated RPCs to the API port, and

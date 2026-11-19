@@ -2,7 +2,8 @@
 //! RPC to the local node and answering in Felix's peer format
 //! ([`super::wire`]), the shape [`super::network`] expects, plus the
 //! proposal route, the leader-only route ([`super::leader`]), and the three
-//! a member uses to enter the group ([`super::join`]).
+//! a member uses to enter the group ([`super::join`]), and the operator's
+//! `waive-lost` ([`super::floor`]).
 //!
 //! The router is the member's ([`super::member`]), which may have no Raft
 //! node yet. `standing` answers either way. Every other route answers 503
@@ -46,6 +47,7 @@ pub(super) fn router(member: RaftMember) -> Router {
         .route(&peer_route("standing"), get(standing))
         .route(&peer_route("forming"), post(forming))
         .route(&peer_route("catch-up-target"), get(catch_up_target))
+        .route(&peer_route("waive-lost"), post(waive_lost))
         // Axum's default body limit (2MB) is below openraft's default
         // snapshot chunk (3MB); a snapshot install crossing that line would
         // be refused with a 413 the sender reads as a network fault. Sized
@@ -113,10 +115,44 @@ fn stopped(err: impl std::fmt::Display) -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, format!("raft node: {err}")).into_response()
 }
 
+/// A member withholding its vote answers a leader below its floor like an
+/// unreachable member, so that leader counts it for neither a commit nor a
+/// read-index round ([`RaftHandle::serves_leader`]).
+fn below_floor() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "vote withheld: this member serves no leader below the term its peers reported",
+    )
+        .into_response()
+}
+
+/// The operator's waiver for a floor block ([`super::floor`]). Behind the
+/// peer check like every route here, so it takes the cluster-admin
+/// credential.
+#[derive(serde::Deserialize)]
+struct WaiveLost {
+    members: std::collections::BTreeSet<super::NodeId>,
+    reason: String,
+}
+
+async fn waive_lost(Node(handle): Node, Json(body): Json<WaiveLost>) -> Response {
+    let waiver = super::floor::Waiver {
+        members: body.members,
+        reason: body.reason,
+    };
+    match handle.waive_lost(waiver) {
+        Ok(()) => (StatusCode::OK, "waiver recorded").into_response(),
+        Err(why) => (StatusCode::CONFLICT, why).into_response(),
+    }
+}
+
 async fn append_entries(
     Node(handle): Node,
     Json(rpc): Json<wire::AppendEntriesRequest>,
 ) -> Response {
+    if !handle.serves_leader(rpc.vote.term) {
+        return below_floor();
+    }
     let rpc = AppendEntriesRequest {
         vote: rpc.vote.into(),
         prev_log_id: wire::lib_log_id(rpc.prev_log_id),
@@ -215,6 +251,9 @@ async fn install_snapshot(Node(handle): Node, body: axum::body::Body) -> Respons
     let Some(head) = wire::SnapshotHead::decode(&head.head) else {
         return (StatusCode::BAD_REQUEST, "not a snapshot head").into_response();
     };
+    if !handle.serves_leader(head.vote.term) {
+        return below_floor();
+    }
     let sender = Vote::from(head.vote);
     let mine = match handle.raft.with_raft_state(|state| *state.vote_ref()).await {
         Ok(vote) => vote,

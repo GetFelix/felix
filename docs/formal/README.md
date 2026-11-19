@@ -221,6 +221,11 @@ configuration that must find a violation exists to show a check is
 load-bearing, or to pin a finding the design has not acted on yet; a violation
 that quietly became a pass would be a model that stopped saying anything.
 
+A configuration too long for any CI job is listed in
+`scripts/tla_unregistered.txt` with the reason, and `task docs:evidence` runs
+`scripts/check_tla_registry.sh`, which fails on a `.cfg` that is neither
+registered, run by a workflow, nor listed there.
+
 | Configuration | Knobs | Must |
 | --- | --- | --- |
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
@@ -721,6 +726,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
 | `FelixRaftCondLeaderDecidesNoMembers.cfg` | the same with no membership entry | pass the same as `FelixRaftCond.cfg` (101,575,424 distinct states, depth 36, 23 minutes with 8 workers on a 32-core machine): the membership entry is what breaks the guess |
 | `FelixRaftCondReachAnswers.cfg` | witness, one term: one conditional publish is answered "ok" and another "mismatch" | violate `NeverOkAndMismatch` |
+| `FelixRaftIdempotent.cfg` | `FelixRaftIdempotent.tla`: three members, three terms, logs up to five entries, one producer with two batches of one or two records, the second started once the first is written, either re-sent to any leader at any time; the leader places a send by the producer table read from its whole log. New two-record batches are modelled ahead of the engine, which refuses them today | pass `NoDuplicate`, `AckedWhole`, `InOrder`, `MembersAgree` |
+| `FelixRaftIdempotentTwoTerms.cfg` | the same with two terms: one change of leader | pass the same |
+| `FelixRaftIdempotentMemory.cfg` | the table kept in the leader's memory, started empty when it wins a term | violate `NoDuplicate`: a batch committed under one leader and not yet answered is re-sent to the next, which writes it again |
+| `FelixRaftIdempotentRewrite.cfg` | the re-send of a cut batch written whole, over the pieces the next leader holds | violate `NoDuplicate`: the held piece is committed twice |
+| `FelixRaftIdempotentReachFinish.cfg` | witness: a batch of two records cut by a change of leader is finished by the re-send and acknowledged | violate `NeverFinishesACut` |
+| `FelixRaftIdempotentReachHeld.cfg` | witness: a re-send to the next leader is answered as held from the earlier leader's entries | violate `NeverHeldByLaterLeader` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityBatched.cfg` | the same faults plus the relaxed-fsync crash, with the batched log mark the broker ships; no restore, so the mark never moves | pass the same (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
@@ -757,9 +768,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered and not checked yet: unfinished after three hours on a CI runner, at 98M distinct states with 18.5M queued |
 | `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (154K distinct states) |
 | `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (6.4M distinct states, 39 minutes on a CI runner) |
-| `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
-| `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
-| `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with the rule that a withheld member is not counted: a candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: the rule is not enough for five members. Pinned finding, #2365 (1.65M distinct states, 7 min on a laptop) |
+| `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote, answers no leader until every other member has given its term and then none below the highest, and votes again once caught up | pass the same |
+| `FelixRaftPlacementSameIdCounted.cfg` | `SameId` without the floor: the wiped member answers a leader of any term | violate `AckedSurvive`: an acknowledged write is lost (#2365) |
+| `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with a rule the code does not use: a withheld member is not counted and there is no floor. A candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: not counting the member is not enough for five (1.65M distinct states, 7 min on a laptop) |
+| `FelixRaftPlacementSameIdFiveFloor.cfg` | `SameIdFive` with the floor the code has | pass: the candidate gives its term, so the member never follows the older leader |
+| `FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg` | `SameIdFiveFloor` with a write and two lost volumes; each wiped member is told the other is withheld | pass `OneLeaderPerTerm` and `AckedSurvive`: the rest of the quorum holds every term the pair promised |
+| `FelixRaftPlacementFormFiveFloor.cfg` | five members on a first start with the floor, a write and a lost volume; late members are still withheld and empty | pass `OneLeaderPerTerm` and `AckedSurvive`: withheld members skip each other's answer and take the floor from the ones that vote |
+| `FelixRaftPlacementTwoWipesFloor.cfg` | three members with the floor and two lost volumes, past what three survive, with an operator waiver | pass `AckedHeldSurvive`; `OneLeaderPerTerm` and `AckedSurvive` are not listed, since under the waiver the third alone may not hold the term the pair promised |
+| `FelixRaftPlacementTwoWipesFloorBlock.cfg` | the same group with no waiver: each wiped member blocks past the tolerance | pass `OneLeaderPerTerm`, `AckedSurvive`, `AckedHeldSurvive` |
+| `FelixRaftPlacementFormWaiverFloor.cfg` | `FormWaiver` with the floor: the waived slot never starts | pass: its silence is not an answer, so a wiped member never learns a floor |
 | `FelixRaftPlacementSkipJoint.cfg` | `change_membership` writes the target in one entry | violate `OneLeaderPerTerm` |
 | `FelixRaftPlacementNoWithhold.cfg` | a wiped member that keeps its id votes at once | violate `LeaderCompleteness` |
 | `FelixRaftPlacementAnswerAnyId.cfg` | a wiped copy answers a request that names the copy id it replaced | violate `LeaderCompleteness` |
@@ -787,6 +804,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementTransferMove.cfg` | three voters and a spare, two terms, no write: a seat moves to the spare, and when it is the leader's seat the leader grows, then transfers leadership to a voter of the target | pass the election, log and commit checks and `NeverLeadsRemoved` (8.0M distinct states, 51 minutes on a CI runner) |
 | `FelixRaftPlacementTransferMoveSelfRemove.cfg` | the same where the leader writes a target without itself | violate `NeverLeadsRemoved` |
 | `FelixRaftPlacementReachTransfer.cfg` | witness: in `FelixRaftPlacementTransferMove.cfg` a transfer hands leadership over | violate `NeverTransfers` |
+| `FelixRaftPlacementPlaced.cfg` | `FelixRaftPlacement.cfg` with leaders that follow placement (`PlacedLeaders`) and no target change: a settled leader with an entry of its term committed may hand its leadership to any caught-up voter | pass every safety invariant |
+| `FelixRaftPlacementReachPlaced.cfg` | witness: with no target change a placement hand-over still lands | violate `NeverTransfers` |
+| `FelixRaftPlacementPlacedTarget.cfg` | `Placed.cfg` with one target change, so a placed transfer may race a membership change | not registered: a CI dispatch (run 43773912279) ran past six hours |
+| `FelixRaftPlacementPlacedTargetNoWrite.cfg` | `PlacedTarget.cfg` without the client write: the target change still takes both calls (`AddLearner`, then `Change`) and a placed transfer may race it. With no write the ack invariants hold trivially; the membership invariants carry the check | expected to pass every safety invariant; registered once its dispatch finishes |
+| `FelixRaftPlacementReachPlacedTargetNoWrite.cfg` | witness at the bounds of `PlacedTargetNoWrite.cfg`: a transfer lands while the target's new member is a learner and the voters are not yet the target's, with the leader in both, so only the placed rule can have sent it (`NeverTransfersOffTarget`) | violate `NeverTransfersOffTarget`, so the bounded twin reaches the race |
 | `FelixRaftPlacementTransferMoveFull.cfg` | `FelixRaftPlacementTransferMove.cfg` with one write | not registered and not checked yet: unfinished after six hours on a CI runner (issue #2497) |
 | `FelixRaftPlacementRewindSpare.cfg` | `FelixRaftPlacementMoveWipe.cfg` with one restore of the control plane's metadata from a backup while a leader's appended joint entry names the spare broker's copy. The doom waits for every member's report, and a report names the copies in appended entries too | pass the safety checks (30.5M distinct states, 176 minutes on a CI runner); not registered, checked nightly |
 | `FelixRaftPlacementRewindSpareCommitted.cfg` | the same where the doom reads the committed history instead of the reports, and a learner entry takes the target's version | violate `AckedOnDisk`: the spare's copy is told to delete while an appended joint entry still gives it a vote (57 minutes on a CI runner) |
@@ -3209,21 +3231,31 @@ Each knob drops one rule:
 - `WaiverExcusesAnswer`: a waived member's answer is skipped like its silence.
 - `WaiverAnyNumber`: a waiver may name a majority of the slots.
 
-`WithheldCounts = TRUE` is what the metadata group does today, and it is a
-finding: `FelixRaftPlacementSameIdCounted.cfg` loses an acknowledged write
-(#2365). The wiped member forgot the term it voted in, so the leader of
-an older term commits with it after a newer leader was elected on its vote.
-The config is pinned as an expected violation until the rule is built.
+- `Floor` (FALSE drops it): a member whose vote is withheld answers no
+  leader until every other member has answered, with its term or with word
+  that it is withheld too, and then only a leader at or above the highest
+  term given. Silence blocks.
 
-Not counting a withheld member is needed, and it is enough for three members
-(`FelixRaftPlacementSameId.cfg` passes). It is not enough for five:
+A wiped member forgot the terms it promised. Counted with no floor
+(`FelixRaftPlacementSameIdCounted.cfg`), the leader of an older term
+commits with it after a newer leader was elected on its vote, and an
+acknowledged write is lost (#2365). Not counting a withheld member at all
+is enough for three members and not for five:
 `FelixRaftPlacementSameIdFive.cfg` elects two leaders in one term. A
-candidate holds the wiped member's vote and is one vote short. The member
+candidate holds the wiped member's vote and is one vote short; the member
 catches up with the older leader, votes again, and grants a second vote in
-the term it forgot. With three members the candidate already has its
-majority when the member votes, so the older leader cannot be confirmed. A
-sure fix gives the wiped member a new id through a membership change, as
-shard groups do, or has it hear from every other member before it votes.
+the term it forgot.
+
+The floor closes both. Any term the member promised is held by the majority
+it promised it with, bar members that lost their volumes too, so the
+highest term the members that vote give is at least that term while one of
+that majority keeps its volume. The member serves no leader below it, so
+it never acks an older leader and never takes a vote back in a term it
+forgot (`FelixRaftPlacementSameId.cfg`,
+`FelixRaftPlacementSameIdFiveFloor.cfg`,
+`FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg`).
+The cost is that a wiped member needs every other member up before it
+counts for anything.
 
 Deleting a removed copy needs two rules (#2385). A leader acts on no target
 older than the membership in its log, and the control plane dooms a copy only
