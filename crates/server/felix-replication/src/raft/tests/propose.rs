@@ -601,6 +601,132 @@ async fn a_token_does_not_leave_with_an_append() {
     assert_eq!(written.await, None, "something resolved the token");
 }
 
+/// A record no append can carry is refused before it takes an index: once
+/// in the log it would be sent and refused forever, and every entry after
+/// it with it (#2404). One that fits is proposed.
+#[test]
+fn a_record_no_append_can_carry_is_refused_before_the_log() {
+    use super::super::propose::{Unstamped, split, split_cache};
+    use super::super::wire::MAX_RECORD_BYTES;
+    let sized = |bytes: usize| {
+        let mut sized = batch(&[b"small"], AckAt::Flushed);
+        sized.records.push(Record {
+            timestamp_micros: 1,
+            payload: Bytes::from(vec![7u8; bytes]),
+            headers: None,
+        });
+        sized
+    };
+    assert!(split(sized(MAX_RECORD_BYTES)).is_ok());
+    let refused = split(sized(MAX_RECORD_BYTES + 1)).err();
+    assert!(
+        matches!(refused, Some(CommitError::TooLarge { bytes, max }) if bytes == MAX_RECORD_BYTES + 1 && max == MAX_RECORD_BYTES),
+        "{refused:?}"
+    );
+    // A cache write takes the same bound.
+    let expire = |bytes: usize| {
+        vec![Unstamped {
+            command: super::super::cache::CacheCommand::Expire {
+                key: "k".repeat(bytes),
+                version: 1,
+            },
+            ttl: 0,
+        }]
+    };
+    assert!(split_cache(expire(MAX_RECORD_BYTES)).is_ok());
+    assert!(matches!(
+        split_cache(expire(MAX_RECORD_BYTES + 1)).err(),
+        Some(CommitError::TooLarge { .. })
+    ));
+}
+
+/// Takes as long as a message's records take on a 1 Gbit/s link.
+#[derive(Default)]
+struct Gigabit {
+    arrived: AtomicBool,
+}
+
+#[async_trait]
+impl RaftTransport for Gigabit {
+    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        let bytes: usize = match &request.body {
+            Request::Append(rpc) => rpc
+                .entries
+                .iter()
+                .map(|entry| match &entry.payload {
+                    openraft::EntryPayload::Normal(command) => command.payload.len(),
+                    _ => 0,
+                })
+                .sum(),
+            _ => 0,
+        };
+        let on_the_link = Duration::from_micros(bytes as u64 / 125);
+        assert!(
+            request.deadline >= on_the_link,
+            "the follower is told {:?} for {on_the_link:?} of records",
+            request.deadline
+        );
+        tokio::time::sleep(on_the_link).await;
+        self.arrived.store(true, Relaxed);
+        Err(Refused::Unreachable("arrived".into()))
+    }
+}
+
+/// openraft gives an append the heartbeat as its deadline. One record that
+/// takes longer than that to cross the link would time out the same way on
+/// every retry, and the follower would never get past it (#2404).
+#[tokio::test(start_paused = true)]
+async fn a_record_past_the_heartbeat_gets_the_time_it_needs() {
+    let wire = Arc::new(Gigabit::default());
+    let transport: Arc<dyn RaftTransport> = wire.clone();
+    let lease = super::super::lease::Lease::new(timers().lease);
+    let reports = Arc::new(super::super::written::Reports::new(false));
+    let router = Router::new(
+        transport,
+        Arc::new(pace().0),
+        Arc::new(lease),
+        reports,
+        Arc::new(super::super::reach::Reach::new(
+            tokio::time::Instant::now(),
+            Duration::from_millis(200),
+        )),
+        Arc::new(super::super::reach::Refusals::new(group(0))),
+        Arc::new(timers().raft(ShardKind::Stream).expect("timers")),
+    );
+    // 240 ms on the link, past a 200 ms heartbeat.
+    let command = Command {
+        expected: None,
+        trim: None,
+        commit: false,
+        group: false,
+        timestamp_micros: 7,
+        payload: Bytes::from(vec![7u8; 30_000_000]),
+        producer: None,
+        written: None,
+        headers: None,
+        publisher: None,
+    };
+    let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
+    let rpc = AppendEntriesRequest::<ShardTypes> {
+        vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_normal(
+            LogIdOf::<ShardTypes>::new(3.into(), 0),
+            command,
+        )],
+        leader_commit: None,
+    };
+    let option = RPCOption::new(Duration::from_millis(200));
+    let sent = router
+        .append_entries(MemberId::new("b", 1), group(0), rpc, option)
+        .await;
+    assert!(sent.is_err());
+    assert!(
+        wire.arrived.load(Relaxed),
+        "the append was given up before it crossed the link"
+    );
+}
+
 /// A group that stops while a call is unanswered ends openraft's stream
 /// with one error. Every batch of the call is told, and the stream is not
 /// read past its end, which would panic the shard's publish task.

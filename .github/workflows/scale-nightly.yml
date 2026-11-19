@@ -108,7 +108,7 @@ jobs:
       # files it; a job that hits its own timeout counts as cancelled.
       - name: Build the broker the harness runs
         timeout-minutes: 25
-        run: cargo build ${{ steps.variant.outputs.profile }} -p felix-broker-service --bin felix-broker
+        run: cargo build --locked ${{ steps.variant.outputs.profile }} -p felix-broker-service --bin felix-broker
 
       - name: Run the canary
         timeout-minutes: 45

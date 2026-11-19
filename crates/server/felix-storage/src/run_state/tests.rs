@@ -19,6 +19,8 @@ thread_local! {
     pub(super) static SYNCS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// Make those syncs fail.
     pub(super) static SYNC_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Make `forget_boot`'s in-place cut fail.
+    pub(super) static CUT_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn syncs() -> u32 {
@@ -201,6 +203,40 @@ fn a_crash_after_the_boot_is_forgotten_rotates_the_id() {
     assert_eq!(second.last_run, relaxed_crash(None));
     assert!(second.rotated);
     assert_ne!(second.id, first.id);
+}
+
+/// A failed flush whose poison marker was not written either relies on the
+/// forgotten boot alone. When the new record cannot be written, as on a full
+/// disk, the record is cut instead, and a process crash still rotates.
+#[test]
+fn a_boot_forgotten_without_a_new_record_still_rotates_the_id() {
+    for relaxed in [PERIODIC, ON_COMMIT] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fresh = counter(0);
+        let first = begin_in(dir.path(), relaxed, BOOT, &mut fresh);
+        // The temporary file the rewrite needs cannot be created.
+        let blocker = dir.path().join(FILE_NAME).with_extension("tmp");
+        std::fs::create_dir(&blocker).expect("block");
+        forget_boot(dir.path()).expect("forget");
+        std::fs::remove_dir(&blocker).expect("unblock");
+        let second = begin_in(dir.path(), relaxed, BOOT, &mut fresh);
+        assert_eq!(second.last_run, relaxed_crash(None));
+        assert!(second.rotated);
+        assert_ne!(second.id, first.id);
+    }
+}
+
+/// With the cut failing too, the failure is reported.
+#[test]
+fn a_boot_that_cannot_be_forgotten_is_an_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    std::fs::create_dir(dir.path().join(FILE_NAME).with_extension("tmp")).expect("block");
+    CUT_FAILS.with(|fails| fails.set(true));
+    let forgot = forget_boot(dir.path());
+    CUT_FAILS.with(|fails| fails.set(false));
+    forgot.expect_err("neither write landed");
 }
 
 /// A poisoned log forgets the boot of every directory being watched.
