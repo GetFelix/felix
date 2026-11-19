@@ -1525,13 +1525,23 @@ miss there is what brings adoption back.
 
 ## One timer for every group
 
-Every group is built with `enable_tick: false`. Its internal ticker task
-stays parked and costs no CPU (measured: idle CPU 0 at 5,000 groups, against
-86% of a core per 1,000 members with the default tick). One task per broker,
+Every group is built with `enable_tick: false`, so openraft's heartbeat
+deadline stays unset and wakes nothing (measured on the previous pin, whose
+internal ticker it replaces: idle CPU 0 at 5,000 groups, against 86% of a
+core per 1,000 members with the default tick). One task per broker,
 the node ticker, calls `Raft::trigger().tick()` on every due group each
-interval. openraft 0.10.1 adds that call (openraft#2305). It runs the same
-check the internal ticker runs: a follower past its election timeout starts
-an election, a leader whose heartbeat is due sends one.
+interval. openraft 0.10.1 adds that call (openraft#2305). A leader whose
+heartbeat is due sends one.
+
+openraft 0.10.1 also times elections on a deadline of its own, whatever
+`enable_tick` says (openraft#2343). That deadline is the fixed election
+timeout after the leader was last heard, which an idle leader's 2 s
+heartbeats outlast, so groups are built with `enable_elect: false` too. The
+ticker turns a member's election timer on at the first tick after its wait
+runs out (below), and the member turns it off again when it takes an append
+or grants a vote. While it is on, openraft starts the election at its own
+deadline and runs the retries. A member inside its vote hold is not ticked,
+unless it promised nobody (below), so it does not stand there.
 
 ```mermaid
 flowchart LR
@@ -1561,8 +1571,10 @@ Rules for the ticker:
   when its election timeout could have run out, counted from the last
   message openraft accepted from the current leader, not from any
   heartbeat, so a stale leader's heartbeats cannot keep a follower
-  unticked. A follower that keeps hearing its leader is not ticked at all. A group with no leader is due
-  every interval. The ticker does not read every group's due time every
+  unticked. A follower that keeps hearing its leader is not ticked at all.
+  Past its wait, a follower or candidate is ticked once a heartbeat
+  interval, only so the ticker sees it become leader: openraft's own timer
+  runs its elections from there. The ticker does not read every group's due time every
   interval either: anything but a tick moves a due time at least one
   heartbeat ahead, so a group found not due is left alone for that long.
 - **Slower idle timers.** Decided (issue #2167), and built. A leader that
@@ -1570,13 +1582,14 @@ Rules for the ticker:
   its followers wait longer before they may stand. Any entry brings the
   short interval back. See "Idle groups" below.
 - **The interval adds to timeouts.** A timeout is noticed at the next tick,
-  so the tick interval is added to election and heartbeat latency. The lease
+  so the tick interval is added to heartbeat latency, and to election
+  latency only where the follower's wait ends past openraft's deadline. The lease
   margin (engine page, Decisions, 5) counts it. For the heartbeat that is
   the whole interval: openraft sends one only once 200 ms have passed since
   it handled the last, and the tick 200 ms later arrives a moment too
   early. So a busy leader heartbeats every 250 ms, not every 200.
 - **A ticker that panics is started again.** With no ticker, no leader on
-  the broker heartbeats and no follower stands, and nothing else would
+  the broker heartbeats and no follower starts a new election, and nothing else would
   show it. The runtime catches the panic, logs it at error, adds one to
   `felix_broker_raft_ticker_restarts_total` and to
   `GroupRuntime::ticker_restarts()`, waits one heartbeat and starts the
