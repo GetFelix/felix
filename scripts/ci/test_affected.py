@@ -38,9 +38,13 @@ class Selection(unittest.TestCase):
         self.assertEqual(out["test_packages"], "-p felix-replication")
         self.assertEqual(out["test_lib_packages"], "")
 
-    def test_raft_code_change_reaches_the_broker_but_not_the_sdks(self):
+    def test_raft_code_change_runs_everything_downstream(self):
         _, ran = jobs("crates/server/felix-replication/src/raft/cache.rs")
-        self.assertEqual(ran, set(affected.JOBS) - {"python", "typescript"})
+        self.assertEqual(ran, set(affected.JOBS))
+
+    def test_broker_change_runs_the_sdk_conformance_suites(self):
+        _, ran = jobs("crates/server/felix-broker/src/broker/publish.rs")
+        self.assertTrue({"python", "typescript"} <= ran, ran)
 
     def test_wire_change_runs_everything_downstream(self):
         out, ran = jobs("crates/protocol/felix-wire/src/lib.rs")
@@ -49,9 +53,16 @@ class Selection(unittest.TestCase):
         # felix-authz does not depend on the wire crate, so the list is narrowed.
         self.assertNotIn("felix-authz", out["test_packages"])
 
-    def test_docs_only_change_runs_no_gated_job(self):
-        _, ran = jobs("docs/protocol.md", "docs-site/src/content/docs/index.mdx")
-        self.assertEqual(ran, set())
+    def test_docs_pages_run_the_tests_that_read_them(self):
+        # A docs-only PR never gets here: the `code` switch skips it first.
+        out, ran = jobs("docs/protocol.md", "docs-site/src/content/docs/index.mdx")
+        self.assertEqual(ran, {"test", "coverage"})
+        self.assertEqual(out["test_packages"], "-p felix-capi -p felix-common")
+
+    def test_deployment_page_with_a_chart_change_runs_coverage(self):
+        out, ran = jobs("docs/deployment.md", "deploy/helm/felix/values.yaml")
+        self.assertEqual(ran, {"chart", "test", "coverage"})
+        self.assertEqual(out["test_packages"], "-p felix-common")
 
     def test_lockfile_change_runs_everything(self):
         self.assert_full("Cargo.lock")
@@ -69,20 +80,20 @@ class Selection(unittest.TestCase):
         self.assertEqual(ran, {"python", "coverage"})
 
     def test_unclassified_path_runs_everything(self):
-        self.assert_full("docs/protocol.md", "some-new-dir/file.txt")
+        self.assert_full("README.txt", "some-new-dir/file.txt")
         self.assert_full("crates/server/felix-storage/build.rs")
         self.assert_full("rust-toolchain.toml")
         self.assert_full("scripts/ci/affected.py")
         self.assert_full("scripts/new-helper.sh")
 
     def test_push_and_label_run_everything(self):
-        self.assert_full("docs/protocol.md", event="push")
+        self.assert_full("deploy/helm/felix/values.yaml", event="push")
         self.assert_full("deploy/helm/felix/values.yaml", labels=["ci:full"])
 
     def test_client_pages_run_the_example_tests(self):
         out, ran = jobs("docs-site/src/content/docs/clients/rust.md")
         self.assertEqual(ran, {"test", "coverage", "python", "typescript"})
-        self.assertEqual(out["test_packages"], "-p felix-capi -p felix-client")
+        self.assertEqual(out["test_packages"], "-p felix-capi -p felix-client -p felix-common")
 
     def test_demo_binary_maps_to_the_broker_service(self):
         out, _ = jobs("demos/broker/cache_demo.rs")

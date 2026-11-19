@@ -60,8 +60,13 @@ PATH_JOBS = [
     (r"^scripts/stress_test\.sh$", {"test"}),
 ]
 
-# Pages whose examples tests compile and run: test-only changes of these crates.
+# Files outside a crate that its tests read: test-only changes of these crates.
+# Every matching row applies.
 DOC_TESTS = [
+    # felix-common's deployment_yaml test checks image tags on every page, and
+    # felix-capi compiles the C examples on any docs-site page.
+    (r"^docs/|^docs-site/src/content/docs/", {"felix-common"}, set()),
+    (r"^docs-site/src/content/docs/", {"felix-capi"}, set()),
     # felix-common's deployment_yaml test reads every Dockerfile.
     (r"^docker/", {"felix-common"}, {"images", "compose"}),
     (r"^scripts/perf/cloud/remote/local-idp\.py$", {"felix-controlplane-service"}, set()),
@@ -150,14 +155,17 @@ def select(files: list[str], metadata, event: str, labels: list[str]) -> dict:
         if FULL.search(path):
             reason = path
             break
-        doc = next(((c, j) for p, c, j in DOC_TESTS if re.search(p, path)), None)
-        if doc:
-            tests |= doc[0]
-            jobs |= doc[1]
+        docs = [(c, j) for p, c, j in DOC_TESTS if re.search(p, path)]
+        for crates, doc_jobs in docs:
+            tests |= crates
+            jobs |= doc_jobs
+        if docs:
             continue
         owned = ws.owner(path)
         if owned:
             crate, inner = owned
+            if crate == "felix-capi":
+                jobs.add("python")  # which also runs the C ABI conformance harness
             if inner.startswith("fuzz/"):
                 # Some crates' own tests replay the fuzz seeds.
                 fuzz_dirs = True
@@ -195,9 +203,9 @@ def select(files: list[str], metadata, event: str, labels: list[str]) -> dict:
     out["compose"] |= out["images"]
     # check_observability_assets.py reads metric names from all non-test Rust.
     out["chart"] |= bool(code)
-    harness = bool(SDK_HARNESS & code)
-    out["python"] |= harness or bool({"felix-client", "felix-capi"} & code_affected) or (
-        "felix-capi" in tests)
+    # Broker, storage and replication behaviour is what the conformance suites check.
+    harness = bool(SDK_HARNESS & code_affected)
+    out["python"] |= harness or bool({"felix-client", "felix-capi"} & code_affected)
     out["typescript"] |= harness or "felix-client" in code_affected
     out["fuzz"] |= fuzz_dirs or bool(FUZZED & code_affected)
 

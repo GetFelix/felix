@@ -183,8 +183,9 @@ mapping shows up as a red `main`, not a silent miss.
   any non-test Rust change, since its observability check reads metric names
   from the code. Fuzzing follows the fuzzed decoder crates.
   The Python and Node conformance jobs follow their binding, `felix-client`,
-  and direct changes to the broker service, conformance kit or harness. Chart,
-  Docker, compose and script files turn on the jobs that read them.
+  and the broker service, conformance kit and harness with everything they
+  depend on. Chart, Docker, compose and script files turn on the jobs that
+  read them, and docs pages turn on the crate tests that read them.
 - The `test` job runs the affected crates' doctests. `Coverage` runs the whole
   workspace whenever any crate is affected, since its gate compares totals.
 - `Cargo.toml`, `Cargo.lock`, the toolchain, `.cargo/`, `Taskfile.yml`, any
