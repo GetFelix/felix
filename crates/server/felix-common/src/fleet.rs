@@ -86,6 +86,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_STREAM_PURGE,
     RAFT_CONSUMER_GROUPS,
     RAFT_FOLLOWER_READ,
+    RAFT_WRITTEN_COMMIT,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -296,10 +297,10 @@ pub const SHARD_RAFT: FleetFeature = FleetFeature::new("shard_raft");
 
 /// A Raft shard on a `periodic` or `none` broker commits on a written
 /// majority: its log tells openraft an append is flushed once it is written
-/// and the copy's `raft-reserved` covers it. Safe only once no broker
-/// rotates a copy without carrying `raft-reserved` or reclaims a kept copy
-/// without its hold, and once a re-form pads above the highest reservation.
-/// No build reports it until that re-form exists, and a fleet that finalized
+/// and the copy's `raft-reserved` covers it, so the log fsyncs on the
+/// broker's own schedule instead of on every commit. Every copy counts only
+/// below a synced reservation, and a rotation carries it, so a later epoch
+/// can start above every index a lost tail gave out. A fleet that finalized
 /// it must not downgrade below the build that carries the reservation
 /// (`docs/per-shard-raft.md`, "Proposal: commit on a written majority").
 pub const RAFT_WRITTEN_COMMIT: FleetFeature = FleetFeature::new("raft_written_commit");
