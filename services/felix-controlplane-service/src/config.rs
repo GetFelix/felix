@@ -170,6 +170,9 @@ impl ControlPlaneConfig {
                 "oidc_allowed_algorithms cannot be empty; include at least ES256"
             ));
         }
+        if let Some(tls) = &self.api_tls {
+            tls.validate()?;
+        }
         self.node_liveness.validate()?;
         Ok(())
     }

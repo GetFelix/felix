@@ -256,7 +256,9 @@ points at where it is explained.
 - [ ] TLS on the control plane (`FELIX_CONTROLPLANE_TLS_CERT` and `_KEY`), brokers
       pointed at an `https://` `FELIX_CONTROLPLANE_URL`, plus
       `FELIX_CONTROLPLANE_CA` for a private CA. Node credentials and token
-      exchange cross this link.
+      exchange cross this link. To refuse callers without a certificate, set
+      `FELIX_CONTROLPLANE_TLS_CLIENT_CA` on the control plane and
+      `FELIX_CONTROLPLANE_CLIENT_CERT` and `_KEY` on every broker and admin host.
 - [ ] Under the Raft backend, `FELIX_RAFT_TLS_*` and a strong
       `FELIX_RAFT_PEER_TOKEN`.
 

@@ -188,6 +188,7 @@ one.
 | `--ca-file` | `FELIX_CA_FILE` | PEM bundle broker certificates are checked against |
 | `--client-cert-file`, `--client-key-file` | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | Client certificate to present |
 | `--controlplane-ca-file` | `FELIX_CONTROLPLANE_CA` | PEM bundle an `https://` control plane is checked against |
+| `--controlplane-client-cert-file`, `--controlplane-client-key-file` | `FELIX_CONTROLPLANE_CLIENT_CERT`, `FELIX_CONTROLPLANE_CLIENT_KEY` | Client certificate to present to a control plane that requires one |
 | `--server-name` | `FELIX_SERVER_NAME` | TLS server name, by default the first broker's host name or `localhost` |
 | `--alpn` | | Offer the `felix/1` ALPN, which a broker with `FELIX_TLS_REQUIRE_ALPN` needs |
 

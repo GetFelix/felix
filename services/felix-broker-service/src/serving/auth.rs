@@ -118,7 +118,7 @@ impl BrokerAuth {
     ) -> Result<AuthContext> {
         let context = self.authenticate(tenant_id, token).await?;
         if self.bind_subject {
-            crate::serving::tls::check_subject_binding(
+            felix_common::tls::check_subject_binding(
                 peer_certs,
                 &context.subject,
                 context.actor.as_deref(),

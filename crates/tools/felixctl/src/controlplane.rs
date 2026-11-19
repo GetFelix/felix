@@ -94,6 +94,35 @@ impl Api {
                 builder = builder.add_root_certificate(cert);
             }
         }
+        match (
+            &settings.controlplane_client_cert_file,
+            &settings.controlplane_client_key_file,
+        ) {
+            (None, None) => {}
+            (Some(cert), Some(key)) => {
+                let mut pem = std::fs::read(cert).mark(
+                    Exit::Usage,
+                    read_file_message("--controlplane-client-cert-file", cert),
+                )?;
+                pem.push(b'\n');
+                pem.extend(std::fs::read(key).mark(
+                    Exit::Usage,
+                    read_file_message("--controlplane-client-key-file", key),
+                )?);
+                let identity = reqwest::Identity::from_pem(&pem).mark(
+                    Exit::Usage,
+                    format!("parse {} and {}", cert.display(), key.display()),
+                )?;
+                builder = builder.identity(identity);
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(anyhow::anyhow!(
+                    "set both --controlplane-client-cert-file and \
+                     --controlplane-client-key-file, or neither"
+                ))
+                .mark(Exit::Usage, "the control-plane client certificate");
+            }
+        }
         Ok(Self {
             http: builder
                 .build()

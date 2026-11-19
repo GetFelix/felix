@@ -455,6 +455,9 @@ impl BrokerConfig {
             start_without_controlplane,
             controlplane_startup_wait_ms,
             controlplane_ca: super::tls::controlplane_ca_from_env(),
+            controlplane_client_cert: super::tls::controlplane_client_cert_from_lookup(|name| {
+                std::env::var(name).ok()
+            })?,
             client_tls: super::ClientTlsConfig::from_env()?,
             membership,
             peer_transport,

@@ -139,6 +139,10 @@ pub(crate) struct Profile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) controlplane_ca_file: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) controlplane_client_cert_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) controlplane_client_key_file: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) server_name: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) alpn: bool,
@@ -167,6 +171,8 @@ impl Profile {
             client_cert_file: absolute(&flags.client_cert_file)?,
             client_key_file: absolute(&flags.client_key_file)?,
             controlplane_ca_file: absolute(&flags.controlplane_ca_file)?,
+            controlplane_client_cert_file: absolute(&flags.controlplane_client_cert_file)?,
+            controlplane_client_key_file: absolute(&flags.controlplane_client_key_file)?,
             server_name: flags.server_name.clone(),
             alpn: flags.alpn,
         })

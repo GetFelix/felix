@@ -1,5 +1,6 @@
-//! The client-facing certificate (`FELIX_TLS_*`) and the CA brokers trust for
-//! an `https://` control plane (`FELIX_CONTROLPLANE_CA`).
+//! The client-facing certificate (`FELIX_TLS_*`), the CA brokers trust for
+//! an `https://` control plane (`FELIX_CONTROLPLANE_CA`), and the certificate
+//! they present to it (`FELIX_CONTROLPLANE_CLIENT_CERT`).
 //!
 //! What each setting does, and the Helm wiring, is in `docs/broker-config.md`
 //! under "Client TLS".
@@ -142,6 +143,63 @@ pub(super) fn controlplane_ca_from_env() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// The certificate a broker presents to a control plane that requires one
+/// (`FELIX_CONTROLPLANE_CLIENT_CERT` and `FELIX_CONTROLPLANE_CLIENT_KEY`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ControlPlaneClientCert {
+    /// PEM certificate chain, leaf first.
+    pub cert_path: String,
+    /// PEM private key for the leaf.
+    pub key_path: String,
+}
+
+/// `FELIX_CONTROLPLANE_CLIENT_CERT` and `FELIX_CONTROLPLANE_CLIENT_KEY`, both
+/// or neither.
+pub(super) fn controlplane_client_cert_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ControlPlaneClientCert>> {
+    let get = |name: &str| {
+        lookup(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    match (
+        get("FELIX_CONTROLPLANE_CLIENT_CERT"),
+        get("FELIX_CONTROLPLANE_CLIENT_KEY"),
+    ) {
+        (None, None) => Ok(None),
+        (Some(cert_path), Some(key_path)) => Ok(Some(ControlPlaneClientCert {
+            cert_path,
+            key_path,
+        })),
+        (cert, _) => bail!(
+            "the control-plane client certificate is partly configured: {} is not set; set \
+             both FELIX_CONTROLPLANE_CLIENT_CERT and FELIX_CONTROLPLANE_CLIENT_KEY, or neither",
+            if cert.is_none() {
+                "FELIX_CONTROLPLANE_CLIENT_CERT"
+            } else {
+                "FELIX_CONTROLPLANE_CLIENT_KEY"
+            }
+        ),
+    }
+}
+
+/// A client certificate only travels in a TLS handshake.
+pub(super) fn validate_controlplane_client_cert(
+    cert: Option<&ControlPlaneClientCert>,
+    url: Option<&str>,
+) -> Result<()> {
+    if let (Some(_), Some(url)) = (cert, url)
+        && !url.trim_start().starts_with("https://")
+    {
+        bail!(
+            "FELIX_CONTROLPLANE_CLIENT_CERT is set but FELIX_CONTROLPLANE_URL ({url}) is not \
+             https://: the certificate would never be presented"
+        );
+    }
+    Ok(())
 }
 
 /// A CA for the control plane over a plain `http://` URL is a deployment that

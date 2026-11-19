@@ -115,6 +115,14 @@ pub(crate) struct ConnectionFlags {
     /// FELIX_CONTROLPLANE_CA] [default: the platform trust store]
     #[arg(long, global = true, value_name = "PATH")]
     pub(crate) controlplane_ca_file: Option<PathBuf>,
+    /// PEM client certificate chain to present to the control plane [env:
+    /// FELIX_CONTROLPLANE_CLIENT_CERT]
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) controlplane_client_cert_file: Option<PathBuf>,
+    /// PEM private key for --controlplane-client-cert-file [env:
+    /// FELIX_CONTROLPLANE_CLIENT_KEY]
+    #[arg(long, global = true, value_name = "PATH")]
+    pub(crate) controlplane_client_key_file: Option<PathBuf>,
     /// TLS server name sent to brokers [env: FELIX_SERVER_NAME] [default: the
     /// first broker's host name, or localhost for an IP address]
     #[arg(long, global = true, value_name = "NAME")]
