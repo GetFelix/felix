@@ -4744,8 +4744,10 @@ on the hybrid.
   the stream store's, so a cache named like a stream shares nothing with it.
   The claim marks the directory, and the hybrid cache store refuses to open a
   marked one, so the log never has two writers. A cache shard directory
-  that already holds hybrid segments is refused, as for a stream. Its
-  counters are in the member's log; no `counters/` directory is made for it.
+  that already holds hybrid segments is refused, as for a stream, and so is
+  a shard whose counters the hybrid already holds under `<data>/counters/`.
+  Its counters are in the member's log; no `counters/` directory is made
+  for it.
 - **One chokepoint each side.** A local operation goes through
   `apply_cache_local` and `apply_counter_op`, a forwarded one through the
   owner's `apply_cache`. On a Raft shard each goes to the group before the
@@ -4757,8 +4759,9 @@ on the hybrid.
   key's version; an applied conditional delete names none. A plain delete
   answers the value it removed: the group's delete answers only a version, so
   the broker reads the value and then deletes at that version, going round
-  again if a write landed in between. A delete of an absent key writes
-  nothing.
+  again if a write landed in between. After three rounds it deletes whatever
+  the key holds and answers the value it read last, so a key written that
+  often cannot starve the delete. A delete of an absent key writes nothing.
 - **Reads** are confirmed by a read-index round on the leader, so they need
   no lease, and never answer an expired value.
 - **A lease token** is minted after an applied conditional put, with the

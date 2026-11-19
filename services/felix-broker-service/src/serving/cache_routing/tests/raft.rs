@@ -237,3 +237,85 @@ async fn a_raft_cache_write_at_another_term_is_refused() {
     .expect("read");
     assert_eq!(found.value, None, "the refused put was written");
 }
+
+/// **A plain delete on a Raft cache shard ends while other clients keep
+/// writing its key**, instead of reading and being outrun until it times out.
+#[tokio::test]
+async fn a_plain_delete_is_not_starved_by_writes_to_its_key() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::cache_broker(root.path(), CACHE).await;
+    let shards = fixture::shards(&broker);
+    let key = cache_key(0);
+    let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&key).is_some()).await;
+    let engine = fixture::engine(&shards);
+    let raft = engine.raft(&key).expect("on raft").clone();
+
+    let put = || felix_replication::raft::CacheOp::Put {
+        key: "k".to_owned(),
+        value: Bytes::from_static(b"v"),
+        ttl: None,
+        condition: felix_replication::raft::CacheCondition::None,
+    };
+    raft.write_cache(&key, put(), None, TIMEOUT)
+        .await
+        .expect("put");
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writers: Vec<_> = (0..4)
+        .map(|_| {
+            let (raft, key, stop) = (raft.clone(), key.clone(), std::sync::Arc::clone(&stop));
+            tokio::spawn(async move {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let op = felix_replication::raft::CacheOp::Put {
+                        key: "k".to_owned(),
+                        value: Bytes::from_static(b"v"),
+                        ttl: None,
+                        condition: felix_replication::raft::CacheCondition::None,
+                    };
+                    raft.write_cache(&key, op, None, TIMEOUT)
+                        .await
+                        .expect("put");
+                    tokio::task::yield_now().await;
+                }
+            })
+        })
+        .collect();
+    let removed = crate::serving::cache_routing::raft::delete_within(
+        &raft,
+        &key,
+        "k",
+        0,
+        Duration::from_secs(2),
+    )
+    .await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for writer in writers {
+        writer.await.expect("writer");
+    }
+    assert!(removed.is_ok(), "a plain delete was starved: {removed:?}");
+}
+
+/// **A cache shard whose counters the hybrid holds is not opened on Raft**:
+/// an empty group would answer those sums as never added.
+#[tokio::test]
+async fn a_cache_shard_with_hybrid_counters_is_refused() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::cache_broker(root.path(), CACHE).await;
+    broker
+        .counters()
+        .expect("counters")
+        .add(TENANT, NAMESPACE, CACHE, 0, "hits", 3)
+        .await
+        .expect("a hybrid counter add");
+    let shards = fixture::shards(&broker);
+    let key = cache_key(0);
+    let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        shards.leading(&key).is_none() && !fixture::engine(&shards).on_raft(&key),
+        "a cache shard with hybrid counters opened on Raft"
+    );
+}

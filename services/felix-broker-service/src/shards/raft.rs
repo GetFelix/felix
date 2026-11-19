@@ -318,6 +318,24 @@ impl RaftShards {
         let broker = Arc::clone(&self.broker);
         let (shard, incarnation) = (key.clone(), assignment.incarnation);
         let written_commit = self.fleet.supports(fleet::RAFT_WRITTEN_COMMIT);
+        // Sums the hybrid kept for this shard would be lost under an empty
+        // group, so a shard with any is refused like a log with segments.
+        if key.kind == ShardKind::Cache
+            && let Some(counters) = self.broker.counters()
+        {
+            let held = counters
+                .dirs_on_disk(&key.tenant_id, &key.namespace, &key.stream)
+                .await?;
+            if held.contains(&(key.shard, incarnation)) {
+                return Err(CarriedOver {
+                    dir: format!(
+                        "counters of {}/{}/{}/{}",
+                        key.tenant_id, key.namespace, key.stream, key.shard
+                    ),
+                }
+                .into());
+            }
+        }
         // The marker write fsyncs.
         let claim = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let storage = broker

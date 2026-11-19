@@ -176,10 +176,12 @@ async fn on_group(
     })
 }
 
+/// How many times a plain delete reads and deletes on the version it read
+/// before it deletes whatever is there.
+#[cfg(feature = "raft")]
+const DELETE_ROUNDS: usize = 3;
+
 /// A plain delete, answered with the value it removed as the hybrid's is.
-/// The group's delete answers only a version, so the value is read first and
-/// the delete made on that version: a write between the two sends it round
-/// again, and the value returned is exactly the one removed.
 #[cfg(feature = "raft")]
 async fn delete(
     raft: &felix_replication::raft::RaftEngine,
@@ -187,22 +189,43 @@ async fn delete(
     key: &str,
     timeout: Duration,
 ) -> Result<Option<Bytes>, NotServed> {
+    delete_within(raft, shard, key, DELETE_ROUNDS, timeout).await
+}
+
+/// The group's delete answers only a version, so the value is read first and
+/// the delete made on that version: a write between the two sends it round
+/// again. A key written faster than it can be read and deleted would starve
+/// the delete, so after `rounds` it removes the key whatever it holds, and
+/// answers the value it last read, which a later write may have replaced.
+#[cfg(feature = "raft")]
+pub(crate) async fn delete_within(
+    raft: &felix_replication::raft::RaftEngine,
+    shard: &ShardKey,
+    key: &str,
+    rounds: usize,
+    timeout: Duration,
+) -> Result<Option<Bytes>, NotServed> {
     use felix_replication::raft::{CacheOp, CacheReply};
 
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut round = 0;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         // No live entry: a delete would change nothing, so none is written.
         let Some((value, version)) = raft.cache_read(shard, key, left).await? else {
             return Ok(None);
         };
+        let version = (round < rounds).then_some(version);
+        round += 1;
         let op = CacheOp::Delete {
             key: key.to_owned(),
-            version: Some(version),
+            version,
         };
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
         match raft.write_cache(shard, op, None, left).await? {
             CacheReply::Removed { .. } => return Ok(Some(value)),
+            // Expired or deleted since the read: nothing is left to remove.
+            CacheReply::Absent if version.is_none() => return Ok(None),
             CacheReply::Refused { .. } | CacheReply::Absent => {}
             other => return Err(NotServed::Unexpected(format!("{other:?}"))),
         }
