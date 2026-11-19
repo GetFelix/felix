@@ -414,6 +414,16 @@ impl ShardOwnership {
         first: &HashSet<ShardKey>,
         previous: &HashMap<ShardKey, ShardAssignment>,
     ) {
+        let mut items = items;
+        // A withheld item says nothing of the target, so the one held for
+        // the same set stays, marked withheld, as a withheld change leaves it.
+        for next in items.iter_mut().filter(|next| next.targets_withheld) {
+            if let Some(current) = self.assignments.get(&next.key)
+                && same_set(current, next)
+            {
+                next.target.clone_from(&current.target);
+            }
+        }
         let mut priors = HashMap::default();
         for next in &items {
             let current = self.assignments.get(&next.key);
@@ -501,14 +511,32 @@ impl ShardOwnership {
         self.assignments.is_empty()
     }
 
-    /// Whether the newest view of some stream shard had its Raft target
-    /// withheld. The control plane decides that at read time and writes no
+    /// Whether the newest view of some stream shard withheld its Raft
+    /// target while this broker holds none for it, so its group cannot form
+    /// yet. The control plane decides withholding at read time and writes no
     /// change when it stops, so only a fresh read shows the target.
-    pub(crate) fn withholds_stream_targets(&self) -> bool {
+    pub(crate) fn withholds_untargeted_streams(&self) -> bool {
         self.assignments.values().any(|assignment| {
-            assignment.targets_withheld && assignment.key.kind == crate::shards::ShardKind::Stream
+            assignment.targets_withheld
+                && assignment.target.is_none()
+                && assignment.key.kind == crate::shards::ShardKind::Stream
         })
     }
+}
+
+/// Whether `next` is at `current`'s incarnation, generation and set.
+fn same_set(current: &ShardAssignment, next: &ShardAssignment) -> bool {
+    (
+        next.incarnation,
+        next.generation,
+        &next.leader,
+        &next.replicas,
+    ) == (
+        current.incarnation,
+        current.generation,
+        &current.leader,
+        &current.replicas,
+    )
 }
 
 /// The target fields to hold after `next`, a change at `current`'s
@@ -522,18 +550,7 @@ fn target_view(
     current: &ShardAssignment,
     next: &ShardAssignment,
 ) -> Option<(Option<RaftTarget>, bool)> {
-    let same = (
-        next.incarnation,
-        next.generation,
-        &next.leader,
-        &next.replicas,
-    ) == (
-        current.incarnation,
-        current.generation,
-        &current.leader,
-        &current.replicas,
-    );
-    if !same {
+    if !same_set(current, next) {
         return None;
     }
     if next.targets_withheld {
@@ -621,8 +638,9 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// next tick.
 ///
 /// With `reread_withheld`, set on a broker that runs Raft shards, a view that
-/// withheld some stream shard's target is followed by a snapshot an
-/// `interval` later instead of a poll, until no target is withheld.
+/// withheld the target of a stream shard this broker holds none for is read
+/// again by a snapshot, an `interval` later and then backing off to
+/// [`MAX_REREAD`], until no such shard is withheld. Polls go on between them.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     link: impl ControlPlaneLink,
@@ -651,6 +669,7 @@ pub async fn run(
     // The first snapshot is taken at once: nothing is gained by starting a
     // broker's ownership view an interval late.
     let mut delay = Duration::ZERO;
+    let mut reread = Reread::new(interval);
 
     loop {
         tokio::select! {
@@ -664,8 +683,13 @@ pub async fn run(
         let wait = if urgent {
             Duration::ZERO
         } else {
-            LONG_POLL_WAIT
+            reread.cap(LONG_POLL_WAIT)
         };
+        let rereading = checkpoint.is_some() && reread.due();
+        if rereading {
+            mm::record_withheld_reread();
+            reread.taken();
+        }
 
         // Read per poll, not once: a refreshed token has to reach this loop
         // without it knowing refresh exists.
@@ -684,8 +708,10 @@ pub async fn run(
             }
             result = async {
                 match checkpoint {
-                    None => snapshot(&link, token, &ownership, floor).await,
-                    Some(since) => poll(&link, token, &ownership, since, wait).await,
+                    Some(since) if !rereading => {
+                        poll(&link, token, &ownership, since, wait).await
+                    }
+                    _ => snapshot(&link, token, &ownership, floor).await,
                 }
             } => result,
         };
@@ -706,14 +732,10 @@ pub async fn run(
                 if moved || urgent {
                     changed.notify_one();
                 }
-                if reread_withheld && ownership.read().await.withholds_stream_targets() {
-                    // A withheld target is re-read until it is not: no change
-                    // follows when the control plane stops withholding it.
-                    checkpoint = None;
-                    interval
-                } else {
-                    next_delay(interval, moved, started.elapsed())
-                }
+                reread.observe(
+                    reread_withheld && ownership.read().await.withholds_untargeted_streams(),
+                );
+                reread.cap(next_delay(interval, moved, started.elapsed()))
             }
             Ok(Progress::Behind) => {
                 failures = 0;
@@ -756,6 +778,58 @@ pub async fn run(
                 backoff(interval, failures)
             }
         };
+    }
+}
+
+/// The longest a withheld target waits between re-reads. Kept well under a
+/// minute: a group cannot form until its target is seen.
+const MAX_REREAD: Duration = Duration::from_secs(30);
+
+/// When to read withheld targets again. Each snapshot reads every
+/// assignment and wakes the routing feed, and a broker that stays down
+/// keeps targets withheld for as long as it is registered, so the reads
+/// back off from the sync interval, and start over once nothing is withheld.
+struct Reread {
+    first: Duration,
+    next: Duration,
+    at: Option<tokio::time::Instant>,
+}
+
+impl Reread {
+    fn new(interval: Duration) -> Self {
+        let first = interval.min(MAX_REREAD);
+        Self {
+            first,
+            next: first,
+            at: None,
+        }
+    }
+
+    fn due(&self) -> bool {
+        self.at.is_some_and(|at| at <= tokio::time::Instant::now())
+    }
+
+    /// `wait`, cut short so the next request goes out when a re-read is due.
+    fn cap(&self, wait: Duration) -> Duration {
+        match self.at {
+            Some(at) => wait.min(at.saturating_duration_since(tokio::time::Instant::now())),
+            None => wait,
+        }
+    }
+
+    fn taken(&mut self) {
+        self.at = None;
+        self.next = self.next.saturating_mul(2).min(MAX_REREAD);
+    }
+
+    /// After an answer: whether a target-less stream shard is withheld.
+    fn observe(&mut self, withheld: bool) {
+        if !withheld {
+            self.at = None;
+            self.next = self.first;
+        } else if self.at.is_none() {
+            self.at = Some(tokio::time::Instant::now() + self.next);
+        }
     }
 }
 

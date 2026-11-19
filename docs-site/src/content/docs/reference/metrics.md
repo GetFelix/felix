@@ -175,6 +175,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_shard_watch_snapshots_total` | counter | - | Assignment snapshots taken. Rises at start and on every forced resync. |
 | `felix_broker_shard_watch_resyncs_total` | counter | `reason` | Forced resyncs: `gap_in_history` or `sequence_reset`. |
 | `felix_broker_shard_watch_failures_total` | counter | - | Watch polls that failed outright. |
+| `felix_broker_shard_watch_withheld_rereads_total` | counter | - | Snapshots a Raft broker took to read again a target the control plane withheld from a shard it holds none for. Rising for long means a registered broker has not acknowledged the placement incarnation. |
 | `felix_broker_shard_confirmed_reads_total` | counter | `outcome` | Confirmed assignment reads for a copy with no election promise: `assigned`, `unassigned`, `not_served` or `unavailable`. `not_served` means the control plane cannot confirm a read and the routing view decides alone. A broker reads in the background, one read per shard at a time, never while a peer request waits. |
 | `felix_broker_shard_changes_applied_total` | counter | - | Assignment changes applied. |
 | `felix_broker_shard_changes_stale_total` | counter | - | Changes ignored for carrying a generation at or below the one held. Routine in small numbers; it is what makes duplicate delivery harmless. |

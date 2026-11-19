@@ -174,10 +174,10 @@ fn a_target_at_a_higher_placement_incarnation_is_newer() {
 fn a_withheld_view_marks_the_held_target_until_an_open_one() {
     let mut owned = ShardOwnership::default();
     assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
-    assert!(!owned.withholds_stream_targets());
+    assert!(!owned.withholds_untargeted_streams());
     assert!(owned.apply(&key(0), Some(targeted(1, 0, true))), "withheld");
     assert_eq!(target_of(&owned), (None, true));
-    assert!(owned.withholds_stream_targets());
+    assert!(owned.withholds_untargeted_streams());
     assert!(
         !owned.apply(&key(0), Some(targeted(1, 0, true))),
         "still withheld"
@@ -187,7 +187,7 @@ fn a_withheld_view_marks_the_held_target_until_an_open_one() {
         "the target"
     );
     assert_eq!(target_of(&owned), (Some((1, 1)), false));
-    assert!(!owned.withholds_stream_targets());
+    assert!(!owned.withholds_untargeted_streams());
 
     // Withheld again, then the same target in the open: only the mark goes.
     assert!(owned.apply(&key(0), Some(targeted(1, 0, true))));
@@ -1048,5 +1048,167 @@ async fn a_withheld_target_is_read_again_until_it_is_not() {
     assert!(
         open.load(Ordering::SeqCst),
         "the withheld change was served"
+    );
+}
+
+/// **Re-reads back off and stop once every target-less shard has a
+/// target.** A shard whose target is held but withheld (a registered broker
+/// still down after a restore) is no reason to keep snapshotting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn withheld_rereads_back_off_and_stop_once_every_untargeted_shard_has_one() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use axum::{Json, Router, routing::get};
+
+    const REREADS: usize = 3;
+    let item = |shard: u32, target: Option<u64>| {
+        let mut item = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": shard,
+            "leader": "b1", "replicas": [], "generation": 2, "state": "active"
+        });
+        match target {
+            Some(counter) => {
+                item["target"] = serde_json::json!({
+                    "version": { "incarnation": 1, "counter": counter },
+                    "members": { "b1": 7 }
+                });
+            }
+            None => item["targets_withheld"] = serde_json::json!(true),
+        }
+        item
+    };
+    let snapshots: Arc<Mutex<Vec<std::time::Instant>>> = Arc::default();
+    let withheld_once = Arc::new(AtomicBool::new(false));
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get({
+                let snapshots = Arc::clone(&snapshots);
+                move || async move {
+                    let mut open_untargeted = item(1, None);
+                    open_untargeted["targets_withheld"] = false.into();
+                    let mut at = snapshots.lock().expect("snapshots");
+                    at.push(std::time::Instant::now());
+                    let body = match at.len() {
+                        // Shard 0 has its target; shard 1 none yet.
+                        1 => serde_json::json!({
+                            "items": [item(0, Some(1)), open_untargeted.clone()],
+                            "next_seq": 10
+                        }),
+                        // Both withheld while a broker has not acked.
+                        n if n <= 1 + REREADS => serde_json::json!({
+                            "items": [item(0, None), item(1, None)],
+                            "next_seq": 11
+                        }),
+                        // Shard 1's target is out; shard 0 stays withheld.
+                        _ => serde_json::json!({
+                            "items": [item(0, None), item(1, Some(1))],
+                            "next_seq": 11
+                        }),
+                    };
+                    Json(body)
+                }
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get({
+                let withheld_once = Arc::clone(&withheld_once);
+                move |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    if query.get("since").map(String::as_str) == Some("10")
+                        && !withheld_once.swap(true, Ordering::SeqCst)
+                    {
+                        let change = |shard: u32| {
+                            serde_json::json!({
+                                "seq": 10,
+                                "op": "updated",
+                                "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": shard },
+                                "assignment": item(shard, None),
+                            })
+                        };
+                        return Json(serde_json::json!({
+                            "items": [change(0), change(1)],
+                            "next_seq": 11
+                        }));
+                    }
+                    // A long-poll that honours the wait it was given.
+                    let wait = query
+                        .get("wait_ms")
+                        .and_then(|ms| ms.parse::<u64>().ok())
+                        .unwrap_or(0)
+                        .min(3_000);
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    Json(serde_json::json!({ "items": [], "next_seq": 11 }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(100),
+        None,
+        true,
+        shutdown.clone(),
+    ));
+    let targeted = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if ownership
+                .read()
+                .await
+                .get(&key(1))
+                .is_some_and(|held| held.target.is_some())
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    // Long enough for several more re-reads at the first interval.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
+    targeted.expect("shard 1 never got its target");
+
+    let at = snapshots.lock().expect("snapshots").clone();
+    assert_eq!(
+        at.len(),
+        2 + REREADS,
+        "re-read after every target-less shard had a target"
+    );
+    let gaps: Vec<Duration> = at.windows(2).skip(1).map(|w| w[1] - w[0]).collect();
+    assert!(
+        gaps.windows(2)
+            .all(|w| w[1] > w[0] + Duration::from_millis(50)),
+        "re-reads did not back off: {gaps:?}"
+    );
+    let held = ownership.read().await;
+    assert!(
+        !held.withholds_untargeted_streams(),
+        "a shard with a held target keeps the re-reads going"
+    );
+    assert!(held.get(&key(0)).expect("shard 0").targets_withheld);
+    assert!(
+        held.get(&key(0)).expect("shard 0").target.is_some(),
+        "held target kept"
     );
 }

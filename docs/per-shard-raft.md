@@ -4460,9 +4460,16 @@ feed and not only through a resync.
 
 Withholding is decided when the feed is read, and the acknowledgement that
 ends it writes no change, so a target read while withheld would never be
-sent again. A Raft broker's watch therefore takes a snapshot every sync
-interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`) while any stream shard's
-target in its view is withheld, and polls again once none is. A copy id
+sent again. A Raft broker's watch therefore takes a snapshot while a
+stream shard it holds no target for is withheld: first after one sync
+interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), then twice as long each
+time up to 30 seconds, and from the sync interval again once none is. It
+keeps long-polling between them, so placement changes still arrive at
+once. A shard whose target it already holds keeps that target through a
+withheld view and starts no re-reads. Each re-read reads every assignment
+and runs a routing pass, so a registered broker that stays down after a
+restore costs one such pass per broker every 30 seconds
+(`felix_broker_shard_watch_withheld_rereads_total`). A copy id
 report the control plane refused while the view was withheld goes again on
 the first tick after the view stops withholding, instead of waiting out its
 backoff.

@@ -706,6 +706,7 @@ where
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
         engine_shards: raft_shards.engine_shards.clone(),
+        raft: shard_engine == crate::config::ShardEngine::Raft,
         sync_shutdown: &sync_shutdown,
     });
 

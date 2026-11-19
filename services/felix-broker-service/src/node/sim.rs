@@ -502,6 +502,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             unclean: &unclean,
             prefetch,
             engine_shards: None,
+            raft: false,
             sync_shutdown: &shutdown,
             nodes: Default::default(),
             reports_held: None,

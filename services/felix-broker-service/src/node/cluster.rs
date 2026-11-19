@@ -614,6 +614,8 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) leads_after: Option<CancellationToken>,
     /// Whoever runs the shards the hybrid does not.
     pub(super) engine_shards: Option<Arc<dyn shard_routing::EngineShards>>,
+    /// This broker runs its durable stream shards on Raft.
+    pub(super) raft: bool,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -648,6 +650,7 @@ where
         reports_held,
         leads_after,
         engine_shards,
+        raft,
         sync_shutdown,
     } = deps;
     match (cluster, link, durable_storage) {
@@ -747,8 +750,7 @@ where
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
                 ingress.fence().lease().cloned(),
-                crate::config::shard_engine()
-                    .is_ok_and(|engine| engine == crate::config::ShardEngine::Raft),
+                raft,
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(
