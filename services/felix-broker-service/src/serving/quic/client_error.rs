@@ -201,7 +201,8 @@ impl ClientError {
                         ErrorCode::LeadershipLost
                     }
                     // A known refusal, as the hybrid's is.
-                    felix_replication::quorum::QuorumError::OffsetMismatch { .. } => {
+                    felix_replication::quorum::QuorumError::OffsetMismatch { .. }
+                    | felix_replication::quorum::QuorumError::TooLarge { .. } => {
                         return Self::invalid(message).with_retry(RetryClass::Fatal);
                     }
                 };

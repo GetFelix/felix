@@ -572,7 +572,13 @@ open keeps working after the token expires. A revocation does end it; see
 every stream it opened ends when it expires (see [Lease tokens](#lease-tokens)). Forwarded publishes are also
 checked again. When a broker forwards a publish to the shard owner, the owner
 checks the token the publish stream opened with and rejects it once it has
-expired or been revoked.
+expired or been revoked. So the Rust client does not leave a long-lived stream
+on its first token: the pooled publish streams, the per-shard publish streams
+and the cache streams ask the provider at most every five seconds, when they
+have a request to send, and a stream whose provider now returns a different
+token finishes its in-flight requests and moves to a new stream authenticated
+with it. Subscriptions and cache watches only read, so they stay on the token
+they opened with.
 
 ### Many users over one client
 

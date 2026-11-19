@@ -123,6 +123,7 @@ impl Connection {
             mut recv,
             negotiated,
             lease,
+            ..
         } = self.open_event_stream_bounded().await?;
         let connection_index = lease.slot();
         let server_flags = negotiated.server_flags;

@@ -28,6 +28,7 @@ use super::group::Pace;
 use super::lead::Leadership;
 use super::machine::{Cache, Machine};
 use super::types::{Command, ProducerMark, ShardTypes};
+use super::wire;
 use crate::engine::{CommitError, Written};
 
 /// One record of a batch to write.
@@ -254,6 +255,17 @@ pub(crate) struct Unstamped {
 }
 
 impl Unstamped {
+    /// At least what the encoded entry holds of the client's bytes.
+    fn bytes(&self) -> usize {
+        match &self.command {
+            CacheCommand::Put { key, value, .. } => key.len() + value.len(),
+            CacheCommand::Delete { key, .. }
+            | CacheCommand::Expire { key, .. }
+            | CacheCommand::Add { key, .. } => key.len(),
+            CacheCommand::Retire { .. } => 0,
+        }
+    }
+
     fn encode(mut self, at: u64) -> Bytes {
         if let CacheCommand::Put { expires_at, .. } = &mut self.command
             && self.ttl > 0
@@ -507,6 +519,21 @@ fn queued(
     let count = commands.len();
     if count == 0 {
         return Err(lost(EMPTY));
+    }
+    // Every write reaches the log through here. A record no append can
+    // carry would be sent and refused forever, holding back every entry
+    // after it, so it is refused before it takes an index.
+    let largest = commands
+        .iter()
+        .map(wire::command_bytes)
+        .chain(unstamped.iter().map(Unstamped::bytes))
+        .max()
+        .unwrap_or(0);
+    if largest > wire::MAX_RECORD_BYTES {
+        return Err(CommitError::TooLarge {
+            bytes: largest,
+            max: wire::MAX_RECORD_BYTES,
+        });
     }
     let token = |command: &mut Command| {
         let (token, at) = WrittenToken::channel();
