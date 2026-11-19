@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795128052771,
+  "lastUpdate": 1795131913790,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63232,6 +63232,58 @@ window.BENCHMARK_DATA = {
             "range": "33513.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1632745.70\nmean: 1631764.70\nstdev: 33513.72\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cdb8f9cddeb2fc16e8e381fef896062afd6a721c",
+          "message": "release: v0.8.0-preview.1 (#2849)\n\n* release: v0.8.0-preview.1\n\nThe docs-pin check in the release preflight now skips prerelease tags,\nsince the docs recommend the newest stable release only. compose.yaml and\nthe felixctl README move from 0.7.0 to 0.7.2.\n\nSpec-Unaffected: version references and changelog\n\n* release: fold the openraft 0.10.1 fragment into 0.8.0-preview.1\n\nSpec-Unaffected: changelog",
+          "timestamp": "2026-11-19T23:38:57Z",
+          "tree_id": "01879027b78ee4b12ec44e0261cb56f26b80cca7",
+          "url": "https://github.com/GetFelix/felix/commit/cdb8f9cddeb2fc16e8e381fef896062afd6a721c"
+        },
+        "date": 1795131912876,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 628199.98,
+            "range": "17711.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 628199.98\nmean: 635965.45\nstdev: 17711.56\ncv: 2.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 628199.98,
+            "range": "17711.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 628199.98\nmean: 635965.45\nstdev: 17711.56\ncv: 2.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160455.64,
+            "range": "15201.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160455.64\nmean: 152757.49\nstdev: 15201.51\ncv: 9.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1604556.39,
+            "range": "152015.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1604556.39\nmean: 1527574.88\nstdev: 152015.12\ncv: 9.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
