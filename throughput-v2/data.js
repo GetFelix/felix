@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795053758201,
+  "lastUpdate": 1795060171856,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62088,6 +62088,58 @@ window.BENCHMARK_DATA = {
             "range": "48999.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 977946.53\nmean: 961246.34\nstdev: 48999.57\ncv: 5.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "723d2f183b796987655b0399daa064395dd998a4",
+          "message": "formal: register the two FelixRaftBatchResetCrash configurations (#2800)\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).",
+          "timestamp": "2026-11-19T03:32:52Z",
+          "tree_id": "2772d7f346eccbe31c683bfdc812af59a12c5e9f",
+          "url": "https://github.com/GetFelix/felix/commit/723d2f183b796987655b0399daa064395dd998a4"
+        },
+        "date": 1795060171234,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 534208.22,
+            "range": "16868.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534208.22\nmean: 537641.01\nstdev: 16868.41\ncv: 3.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 534208.22,
+            "range": "16868.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534208.22\nmean: 537641.01\nstdev: 16868.41\ncv: 3.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124615.45,
+            "range": "301.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124615.45\nmean: 124528.04\nstdev: 301.75\ncv: 0.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1246154.54,
+            "range": "3017.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1246154.54\nmean: 1245280.39\nstdev: 3017.51\ncv: 0.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
