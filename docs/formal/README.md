@@ -757,9 +757,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered and not checked yet: unfinished after three hours on a CI runner, at 98M distinct states with 18.5M queued |
 | `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (154K distinct states) |
 | `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (6.4M distinct states, 39 minutes on a CI runner) |
-| `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
-| `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
-| `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with the rule that a withheld member is not counted: a candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: the rule is not enough for five members. Pinned finding, #2365 (1.65M distinct states, 7 min on a laptop) |
+| `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote, answers no leader until every other member has given its term and then none below the highest, and votes again once caught up | pass the same |
+| `FelixRaftPlacementSameIdCounted.cfg` | `SameId` without the floor: the wiped member answers a leader of any term | violate `AckedSurvive`: an acknowledged write is lost (#2365) |
+| `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with a rule the code does not use: a withheld member is not counted and there is no floor. A candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: not counting the member is not enough for five (1.65M distinct states, 7 min on a laptop) |
+| `FelixRaftPlacementSameIdFiveFloor.cfg` | `SameIdFive` with the floor the code has | pass: the candidate gives its term, so the member never follows the older leader |
+| `FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg` | `SameIdFiveFloor` with a write and two lost volumes; each wiped member is told the other is withheld | pass `OneLeaderPerTerm` and `AckedSurvive`: the rest of the quorum holds every term the pair promised |
+| `FelixRaftPlacementFormFiveFloor.cfg` | five members on a first start with the floor, a write and a lost volume; late members are still withheld and empty | pass `OneLeaderPerTerm` and `AckedSurvive`: withheld members skip each other's answer and take the floor from the ones that vote |
+| `FelixRaftPlacementTwoWipesFloor.cfg` | three members with the floor and two lost volumes, past what three survive, with an operator waiver | pass `AckedHeldSurvive`; `OneLeaderPerTerm` and `AckedSurvive` are not listed, since under the waiver the third alone may not hold the term the pair promised |
+| `FelixRaftPlacementTwoWipesFloorBlock.cfg` | the same group with no waiver: each wiped member blocks past the tolerance | pass `OneLeaderPerTerm`, `AckedSurvive`, `AckedHeldSurvive` |
+| `FelixRaftPlacementFormWaiverFloor.cfg` | `FormWaiver` with the floor: the waived slot never starts | pass: its silence is not an answer, so a wiped member never learns a floor |
 | `FelixRaftPlacementSkipJoint.cfg` | `change_membership` writes the target in one entry | violate `OneLeaderPerTerm` |
 | `FelixRaftPlacementNoWithhold.cfg` | a wiped member that keeps its id votes at once | violate `LeaderCompleteness` |
 | `FelixRaftPlacementAnswerAnyId.cfg` | a wiped copy answers a request that names the copy id it replaced | violate `LeaderCompleteness` |
@@ -3209,21 +3215,31 @@ Each knob drops one rule:
 - `WaiverExcusesAnswer`: a waived member's answer is skipped like its silence.
 - `WaiverAnyNumber`: a waiver may name a majority of the slots.
 
-`WithheldCounts = TRUE` is what the metadata group does today, and it is a
-finding: `FelixRaftPlacementSameIdCounted.cfg` loses an acknowledged write
-(#2365). The wiped member forgot the term it voted in, so the leader of
-an older term commits with it after a newer leader was elected on its vote.
-The config is pinned as an expected violation until the rule is built.
+- `Floor` (FALSE drops it): a member whose vote is withheld answers no
+  leader until every other member has answered, with its term or with word
+  that it is withheld too, and then only a leader at or above the highest
+  term given. Silence blocks.
 
-Not counting a withheld member is needed, and it is enough for three members
-(`FelixRaftPlacementSameId.cfg` passes). It is not enough for five:
+A wiped member forgot the terms it promised. Counted with no floor
+(`FelixRaftPlacementSameIdCounted.cfg`), the leader of an older term
+commits with it after a newer leader was elected on its vote, and an
+acknowledged write is lost (#2365). Not counting a withheld member at all
+is enough for three members and not for five:
 `FelixRaftPlacementSameIdFive.cfg` elects two leaders in one term. A
-candidate holds the wiped member's vote and is one vote short. The member
+candidate holds the wiped member's vote and is one vote short; the member
 catches up with the older leader, votes again, and grants a second vote in
-the term it forgot. With three members the candidate already has its
-majority when the member votes, so the older leader cannot be confirmed. A
-sure fix gives the wiped member a new id through a membership change, as
-shard groups do, or has it hear from every other member before it votes.
+the term it forgot.
+
+The floor closes both. Any term the member promised is held by the majority
+it promised it with, bar members that lost their volumes too, so the
+highest term the members that vote give is at least that term while one of
+that majority keeps its volume. The member serves no leader below it, so
+it never acks an older leader and never takes a vote back in a term it
+forgot (`FelixRaftPlacementSameId.cfg`,
+`FelixRaftPlacementSameIdFiveFloor.cfg`,
+`FelixRaftPlacementSameIdFiveFloorTwoWipes.cfg`).
+The cost is that a wiped member needs every other member up before it
+counts for anything.
 
 Deleting a removed copy needs two rules (#2385). A leader acts on no target
 older than the membership in its log, and the control plane dooms a copy only
