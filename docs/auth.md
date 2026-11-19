@@ -664,9 +664,13 @@ forwards its publish or cache operation to the shard's owner, it sends the
 certificate chain the client presented along with the token. An owner that
 binds subjects verifies that chain against its own `FELIX_TLS_CLIENT_CA` and
 binds the token to it by the same rules, rather than trusting that the first
-broker did; a forward without a chain is refused. Brokers from before this
-check forward without a chain, so in a cluster that binds subjects, upgrade
-every broker before relying on forwarding.
+broker did; a forward without a chain is refused. That includes a client that
+logged in without a certificate, such as an MQTT client over plain TCP
+(`FELIX_MQTT_TLS=false`): with binding on it is served only on shards its own
+broker owns, because the owner cannot tell a client that had no certificate
+from a forwarder that dropped it. Brokers from before this check forward
+without a chain, so in a cluster that binds subjects, upgrade every broker
+before relying on forwarding.
 
 A user's token can only be delegated to the gateway it was minted for. When
 the gateway exchanges the user's IdP token at `/token/exchange`, it sends its

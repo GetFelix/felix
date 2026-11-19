@@ -160,8 +160,10 @@ impl BrokerAuth {
     /// When this broker binds subjects, the chain must verify against its own
     /// client CA, now, exactly as its listeners would verify it in a
     /// handshake, and then bind the token as [`Self::authenticate_peer`] does.
-    /// No chain is refused: a direct client could not have presented a token
-    /// here without one. When it does not bind, the chain is ignored.
+    /// No chain is refused, even for a client that logged in without a
+    /// certificate (plain MQTT): a forwarder saying the client had none is
+    /// what a compromised one would say. When it does not bind, the chain is
+    /// ignored.
     pub(crate) async fn authenticate_forwarded(
         &self,
         tenant_id: &str,

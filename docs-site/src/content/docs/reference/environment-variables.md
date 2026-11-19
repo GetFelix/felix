@@ -181,6 +181,10 @@ certificate to be issued to its token's subject (`sub`).
   this broker verifies it against its own `FELIX_TLS_CLIENT_CA` before binding
   the token to it. A forward without a chain is refused. A broker from before
   this check forwards without one, so upgrade every broker first.
+- A client that logs in without a certificate, such as an MQTT client over
+  plain TCP (`FELIX_MQTT_TLS=false`), is served only on shards its own broker
+  owns. Its forwarded publishes and cache operations carry no chain and are
+  refused.
 
 ### `FELIX_TLS_REQUIRE_CERT`
 

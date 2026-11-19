@@ -113,6 +113,11 @@ where
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
     let mut config = config;
+    // Only a broker that binds subjects checks a forwarded client chain, so
+    // only it asks for one.
+    if let Some(peer) = config.peer_transport.as_mut() {
+        peer.client_certs = config.client_tls.bind_subject;
+    }
     if durable_config.is_none()
         && let Some(peer) = config.peer_transport.as_mut()
     {
