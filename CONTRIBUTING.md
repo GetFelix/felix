@@ -178,8 +178,10 @@ mapping shows up as a red `main`, not a silent miss.
   `benches/`, `examples/`, a `tests.rs` or `tests/` module) affects that crate
   alone.
 - Each job runs when a crate it builds is affected. The cluster, simulator,
-  image, compose and chart jobs follow the broker and control plane binaries
-  and the `felix-cluster` harness. Fuzzing follows the fuzzed decoder crates.
+  image and compose jobs follow the broker, control plane, loadgen and
+  `felixctl` binaries and the `felix-cluster` harness. The chart job runs on
+  any non-test Rust change, since its observability check reads metric names
+  from the code. Fuzzing follows the fuzzed decoder crates.
   The Python and Node conformance jobs follow their binding, `felix-client`,
   and direct changes to the broker service, conformance kit or harness. Chart,
   Docker, compose and script files turn on the jobs that read them.

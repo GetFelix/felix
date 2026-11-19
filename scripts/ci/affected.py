@@ -51,7 +51,7 @@ PATH_JOBS = [
     (r"^crates/sdk/felix-typescript/", {"typescript"}),
     (r"^deploy/|^scripts/(check_chart|check_observability_assets)\.py$"
      r"|^scripts/ci/requirements/chart-check\.txt$", {"chart"}),
-    (r"^docker/|^\.dockerignore$", {"images", "compose"}),
+    (r"^\.dockerignore$", {"images", "compose"}),
     (r"^compose\.yaml$|^scripts/ci/compose_smoke\.sh$", {"images", "compose"}),
     (r"^scripts/ci/requirements/binding\.txt$", {"python"}),
     (r"^scripts/check_npm_packages\.py$", {"typescript"}),
@@ -62,6 +62,9 @@ PATH_JOBS = [
 
 # Pages whose examples tests compile and run: test-only changes of these crates.
 DOC_TESTS = [
+    # felix-common's deployment_yaml test reads every Dockerfile.
+    (r"^docker/", {"felix-common"}, {"images", "compose"}),
+    (r"^scripts/perf/cloud/remote/local-idp\.py$", {"felix-controlplane-service"}, set()),
     (r"^docs-site/src/content/docs/(clients/|tutorials/)",
      {"felix-client", "felix-capi"}, {"python", "typescript"}),
     (r"^docs-site/src/content/docs/reference/felixctl\.md$", {"felixctl"}, set()),
@@ -156,7 +159,9 @@ def select(files: list[str], metadata, event: str, labels: list[str]) -> dict:
         if owned:
             crate, inner = owned
             if inner.startswith("fuzz/"):
+                # Some crates' own tests replay the fuzz seeds.
                 fuzz_dirs = True
+                tests.add(crate)
             elif TEST_ONLY.search(inner):
                 tests.add(crate)
             else:
@@ -180,15 +185,16 @@ def select(files: list[str], metadata, event: str, labels: list[str]) -> dict:
     code_affected = ws.closure(code)
     affected = code_affected | tests
     out = {job: job in jobs for job in JOBS}
-    out["test"] |= bool(affected - {"felix-cluster"})
     out["coverage"] |= bool(affected)
-    out["sim"] = "felix-sim" in affected
-    out["cluster"] = "felix-cluster" in affected or bool(
-        {"felix-broker-service", "felix-loadgen"} & code_affected)
+    # The harness runs the broker, loadgen and felixctl binaries it does not link.
+    binaries = {"felix-broker-service", "felix-loadgen", "felixctl"}
+    out["sim"] = "felix-sim" in affected or "felixctl" in code_affected
+    out["cluster"] = "felix-cluster" in affected or bool(binaries & code_affected)
     out["images"] |= bool(
         {"felix-broker-service", "felix-controlplane-service", "felixctl"} & code_affected)
     out["compose"] |= out["images"]
-    out["chart"] |= bool({"felix-broker-service", "felix-controlplane-service"} & code_affected)
+    # check_observability_assets.py reads metric names from all non-test Rust.
+    out["chart"] |= bool(code)
     harness = bool(SDK_HARNESS & code)
     out["python"] |= harness or bool({"felix-client", "felix-capi"} & code_affected) or (
         "felix-capi" in tests)
@@ -199,6 +205,7 @@ def select(files: list[str], metadata, event: str, labels: list[str]) -> dict:
     every = ws.names - {"felix-cluster"}
     pkgs = sorted((affected - {"felix-cluster"}) & ws.libs)
     whole = set(pkgs) >= (every & ws.libs)
+    out["test"] |= bool(pkgs) or "felix-storage" in affected
     out.update(
         full=False,
         reason="",

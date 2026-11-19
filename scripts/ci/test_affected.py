@@ -60,6 +60,10 @@ class Selection(unittest.TestCase):
         _, ran = jobs("deploy/helm/felix/values.yaml")
         self.assertEqual(ran, {"chart"})
 
+    def test_metric_outside_the_broker_still_runs_the_chart(self):
+        _, ran = jobs("crates/sdk/felix-client/src/lib.rs")
+        self.assertIn("chart", ran)
+
     def test_python_sdk_change_runs_python_and_coverage(self):
         _, ran = jobs("crates/sdk/felix-python/src/producer.rs")
         self.assertEqual(ran, {"python", "coverage"})
@@ -84,9 +88,9 @@ class Selection(unittest.TestCase):
         out, _ = jobs("demos/broker/cache_demo.rs")
         self.assertIn("felix-broker-service", out["crates"].split())
 
-    def test_fuzz_target_runs_only_fuzz(self):
+    def test_fuzz_change_runs_fuzz_and_the_crates_seed_tests(self):
         _, ran = jobs("crates/protocol/felix-wire/fuzz/fuzz_targets/frame.rs")
-        self.assertEqual(ran, {"fuzz"})
+        self.assertEqual(ran, {"fuzz", "test", "coverage"})
 
     def test_cluster_suite_change_runs_the_cluster_jobs(self):
         out, ran = jobs("crates/testing/felix-cluster/tests/routing/main.rs")
@@ -96,6 +100,17 @@ class Selection(unittest.TestCase):
     def test_compose_needs_images(self):
         _, ran = jobs("compose.yaml")
         self.assertEqual(ran, {"images", "compose"})
+
+    def test_dockerfile_change_runs_the_test_that_reads_it(self):
+        out, ran = jobs("docker/broker.Dockerfile")
+        self.assertEqual(ran, {"images", "compose", "test", "coverage"})
+        self.assertEqual(out["test_packages"], "-p felix-common")
+
+    def test_felixctl_change_runs_the_cluster_and_sim_jobs(self):
+        out, ran = jobs("crates/tools/felixctl/src/main.rs")
+        self.assertTrue({"cluster", "sim", "images", "coverage"} <= ran, ran)
+        # Bin-only: nothing for the doctest step, so no full residual run.
+        self.assertFalse(out["test"])
 
 
 class Fixture(unittest.TestCase):
