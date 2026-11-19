@@ -128,6 +128,14 @@ spec:
               value: /etc/felix/tls/tls.crt
             - name: FELIX_CONTROLPLANE_TLS_KEY
               value: /etc/felix/tls/tls.key
+            {{- if $cp.tls.clientCaSecret }}
+            - name: FELIX_CONTROLPLANE_TLS_CLIENT_CA
+              value: /etc/felix/client-ca/ca.crt
+            {{- end }}
+            {{- if $cp.tls.bindSubject }}
+            - name: FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT
+              value: "true"
+            {{- end }}
             {{- end }}
             - name: FELIX_CONTROLPLANE_METRICS_BIND
               value: "0.0.0.0:{{ $metricsPort }}"
@@ -222,24 +230,20 @@ spec:
             {{- end }}
           # Readiness fails on a store that does not answer or is behind the
           # build's schema; liveness answers from memory, so an outage outside
-          # the process never triggers restarts that cannot fix it.
+          # the process never triggers restarts that cannot fix it. On the
+          # metrics port, the same checks as /v1/system/ready and /live, since
+          # the kubelet has no client certificate for an API that requires one.
           readinessProbe:
             httpGet:
-              path: /v1/system/ready
-              port: api
-              {{- if $cp.tls.enabled }}
-              scheme: HTTPS
-              {{- end }}
+              path: /ready
+              port: metrics
             periodSeconds: 3
             timeoutSeconds: 3
             failureThreshold: 2
           livenessProbe:
             httpGet:
-              path: /v1/system/live
-              port: api
-              {{- if $cp.tls.enabled }}
-              scheme: HTTPS
-              {{- end }}
+              path: /live
+              port: metrics
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
@@ -266,6 +270,11 @@ spec:
               mountPath: /etc/felix/tls
               readOnly: true
             {{- end }}
+            {{- if $cp.tls.clientCaSecret }}
+            - name: client-ca
+              mountPath: /etc/felix/client-ca
+              readOnly: true
+            {{- end }}
       volumes:
         # The image's working directory, writable because the root
         # filesystem is not.
@@ -275,6 +284,14 @@ spec:
         - name: tls
           secret:
             secretName: {{ $cp.tls.existingSecret }}
+        {{- end }}
+        {{- if $cp.tls.clientCaSecret }}
+        - name: client-ca
+          secret:
+            secretName: {{ $cp.tls.clientCaSecret }}
+            items:
+              - key: {{ $cp.tls.clientCaKey }}
+                path: ca.crt
         {{- end }}
         {{- if and $raft $cp.storage.raft.tls.enabled }}
         - name: raft-tls

@@ -73,7 +73,7 @@ where
         tokio::spawn(observability::serve_metrics(
             metrics_handle,
             config.metrics_bind,
-            readiness.clone(),
+            Arc::clone(&state.readiness),
             async move { metrics_shutdown.cancelled().await },
         ))
     };
@@ -112,9 +112,7 @@ where
         app = app.merge(ui);
     }
     if config.api_tls.as_ref().is_some_and(|tls| tls.bind_subject) {
-        app = app.layer(axum::middleware::from_fn(
-            crate::auth::cert_binding::require_bound_subject,
-        ));
+        app = crate::auth::cert_binding::bind_subjects(app);
     }
 
     let bootstrap_task = if config.bootstrap.enabled {

@@ -6,9 +6,9 @@
 //! Initialization is guarded by `OnceLock` to keep startup idempotent in tests.
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
-use felix_common::lifecycle::Readiness;
+use crate::api::readiness::{NotReady, Readiness};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_exporter_prometheus::PrometheusHandle;
 use opentelemetry::KeyValue;
@@ -109,7 +109,7 @@ fn resource_attributes(service_name: &str) -> Vec<KeyValue> {
 pub(crate) async fn serve_metrics<F>(
     handle: PrometheusHandle,
     addr: SocketAddr,
-    readiness: Readiness,
+    readiness: Arc<Readiness>,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -121,7 +121,7 @@ where
 async fn serve_metrics_with_shutdown<F>(
     handle: PrometheusHandle,
     addr: SocketAddr,
-    readiness: Readiness,
+    readiness: Arc<Readiness>,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -134,7 +134,7 @@ where
 async fn serve_metrics_with_listener<F>(
     handle: PrometheusHandle,
     listener: tokio::net::TcpListener,
-    readiness: Readiness,
+    readiness: Arc<Readiness>,
     shutdown: F,
 ) -> std::io::Result<()>
 where
@@ -152,9 +152,10 @@ where
 ///
 /// `/live` stays "ok" for the whole process lifetime: during a drain the process is
 /// alive and still serving, and reporting otherwise would make Kubernetes restart a
-/// pod that is shutting down correctly. `/ready` is the one that flips, which is what
-/// removes the instance from load-balancer rotation.
-fn health_router(handle: PrometheusHandle, readiness: Readiness) -> axum::Router {
+/// pod that is shutting down correctly. `/ready` runs the same check as the API's
+/// `/v1/system/ready`, so probes can use this listener, which never asks for a
+/// client certificate.
+fn health_router(handle: PrometheusHandle, readiness: Arc<Readiness>) -> axum::Router {
     axum::Router::new()
         .route(
             "/metrics",
@@ -164,10 +165,16 @@ fn health_router(handle: PrometheusHandle, readiness: Readiness) -> axum::Router
         .route(
             "/ready",
             axum::routing::get(move || async move {
-                if readiness.is_ready() {
-                    (axum::http::StatusCode::OK, "ok")
-                } else {
-                    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+                match readiness.check().await {
+                    Ok(()) => (axum::http::StatusCode::OK, "ok".to_string()),
+                    Err(NotReady::Draining) => (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        "draining".to_string(),
+                    ),
+                    Err(reason) => (
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        reason.to_string(),
+                    ),
                 }
             }),
         )

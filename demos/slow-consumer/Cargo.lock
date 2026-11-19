@@ -980,7 +980,6 @@ dependencies = [
  "rcgen",
  "reqwest",
  "rustls",
- "rustls-webpki",
  "serde",
  "serde-saphyr",
  "serde_json",
@@ -993,7 +992,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
- "x509-parser",
 ]
 
 [[package]]
@@ -1029,6 +1027,7 @@ dependencies = [
  "libc",
  "metrics",
  "rustls",
+ "rustls-webpki",
  "serde",
  "serde-saphyr",
  "thiserror 2.0.21",
@@ -1036,6 +1035,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]

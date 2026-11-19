@@ -311,6 +311,17 @@ async fn the_api_binds_a_bearer_token_to_the_client_certificate() {
     let body = stolen.text().await.expect("body");
     assert!(body.contains("not issued to the token"), "{body}");
 
+    // A delegated token: issued for bob, presented by its actor alice.
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"sub":"bob","tid":"t1","act":{"sub":"alice"}}"#);
+    let delegated = http
+        .get(&url)
+        .bearer_auth(format!("e30.{claims}.sig"))
+        .send()
+        .await
+        .expect("delegated token");
+    assert!(delegated.status().is_success(), "{}", delegated.status());
+
     let anonymous = http.get(&url).send().await.expect("no token");
     assert!(anonymous.status().is_success(), "{}", anonymous.status());
 
