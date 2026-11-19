@@ -363,11 +363,11 @@ async fn a_durable_cache_shard_shared_across_engines_is_refused() {
         assignments
     };
     check.take(&mut feed()).await;
-    for _ in 0..1000 {
+    for _ in 0..500 {
         if check.engines.lock().get("broker-b").is_some() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
     let mut assignments = feed();

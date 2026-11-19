@@ -490,12 +490,13 @@ impl RaftShards {
     async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
         let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
         if key.kind == ShardKind::Cache {
+            // A broker whose cache store has no logs leaves every cache to
+            // the hybrid, registered or not.
+            if self.broker.cache().as_log_cache().is_none() {
+                return Some(Durable::No);
+            }
             let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
-            return Some(if self.broker.cache().as_log_cache().is_some() {
-                Durable::Yes(metadata.replication_factor)
-            } else {
-                Durable::No
-            });
+            return Some(Durable::Yes(metadata.replication_factor));
         }
         let metadata = self.broker.stream_metadata(tenant, namespace, name).await?;
         Some(if metadata.durable {
