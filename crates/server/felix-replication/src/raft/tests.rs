@@ -833,6 +833,11 @@ async fn many_groups_told_at_once_all_elect() {
         .map(|status| status.term)
         .collect();
     let led = (0..GROUPS).filter(|n| cluster.leader(*n).is_some()).count();
+    println!(
+        "told at once: {led} of {GROUPS} led after {:?}, highest term {:?}",
+        started.elapsed(),
+        terms.iter().max()
+    );
     assert!(
         settled.is_ok(),
         "{led} of {GROUPS} groups led after {:?}, highest term {:?}",
