@@ -930,3 +930,54 @@ fn the_jti_record_refuses_tokens_issued_before_it_started() {
         Err(OidcError::TokenReplayed)
     ));
 }
+
+#[test]
+fn a_jti_is_held_through_the_last_second_its_token_is_accepted() {
+    let store = jti::JtiStore::with_cap(10);
+    let now = 1_000_000;
+    store.claim_for_test(now - 5, "i", "a", now).expect("first");
+    // exp + skew == now: the token still verifies, so its jti still counts.
+    assert!(matches!(
+        store.claim_for_test(now, "i", "a", now),
+        Err(OidcError::TokenReplayed)
+    ));
+    // A second later the token no longer verifies and the entry may go.
+    store
+        .claim_for_test(now + 1, "i", "a", now + 61)
+        .expect("after");
+}
+
+#[test]
+fn a_deleted_or_idle_issuer_gives_its_record_back() {
+    let store = jti::JtiStore::with_cap(10);
+    let now = 1_000_000;
+    store.claim_for_test(now, "gone", "a", now + 30).expect("a");
+    store.claim_for_test(now, "idle", "a", now + 30).expect("a");
+    assert_eq!(store.issuers_held(), 2);
+    store.forget_issuer("gone");
+    assert_eq!(store.issuers_held(), 1);
+    // Another issuer's claim, a minute on, sweeps the idle one.
+    store
+        .claim_for_test(now + 120, "busy", "b", now + 150)
+        .expect("b");
+    assert_eq!(store.issuers_held(), 1);
+}
+
+#[tokio::test]
+async fn an_overlong_jti_is_refused() {
+    let mut cfg = inline_cfg(&["k1"]);
+    cfg.single_use_jti = true;
+    cfg.max_token_lifetime_seconds = Some(120);
+    let token = mint_claims("k1", claims_with(json!({"jti": "x".repeat(129)})));
+    assert!(
+        UpstreamOidcValidator::default()
+            .validate(&token, &[cfg.clone()])
+            .await
+            .is_err()
+    );
+    let token = mint_claims("k1", claims_with(json!({"jti": "x".repeat(128)})));
+    UpstreamOidcValidator::default()
+        .validate(&token, &[cfg])
+        .await
+        .expect("128 bytes is fine");
+}

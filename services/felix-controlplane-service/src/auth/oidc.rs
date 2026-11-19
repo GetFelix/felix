@@ -133,6 +133,11 @@ impl UpstreamOidcValidator {
         }
     }
 
+    /// Drop the record of used `jti` values held for `issuer`.
+    pub fn forget_issuer_jtis(&self, issuer: &str) {
+        self.jtis.forget_issuer(issuer);
+    }
+
     /// Whether IdP URLs may name private addresses. Read once, from
     /// [`ALLOW_PRIVATE_IDP_ENV`](crate::auth::idp_registry::ALLOW_PRIVATE_IDP_ENV).
     pub fn allow_private(&self) -> bool {
@@ -246,7 +251,7 @@ impl UpstreamOidcValidator {
         // `jti`.
         if issuer_cfg.single_use_jti {
             let jti = extract_string_claim(&token.claims, "jti")
-                .filter(|jti| !jti.is_empty())
+                .filter(|jti| !jti.is_empty() && jti.len() <= jti::MAX_JTI_BYTES)
                 .ok_or_else(|| OidcError::InvalidClaim("jti".to_string()))?;
             self.jtis.claim(
                 &issuer,

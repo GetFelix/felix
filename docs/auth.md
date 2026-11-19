@@ -1323,7 +1323,9 @@ Notes:
   stored config says. The `jti` is recorded until the token's `exp` plus the
   clock skew, and a second exchange, or a token with no `jti`, is refused with
   `401`. The record is **in memory in each control plane replica**, kept per
-  issuer: an issuer holds at most 10,000 unexpired entries and, when full,
+  issuer, freed when the issuer is deleted or stops asking for single use and
+  swept once a minute for issuers gone quiet: an issuer holds at most 10,000
+  unexpired entries, a `jti` is at most 128 bytes, and, when full,
   refuses only its own new tokens (rather than forgetting a `jti` that could
   be replayed), so one tenant's issuer cannot starve another's. Two limits
   follow. Replicas do not share it, so with several replicas behind one
@@ -1331,6 +1333,7 @@ Notes:
   succeeds, and single use holds per replica. And it does not outlive the
   process, so a replica refuses any token issued before it started instead of
   trusting a record it no longer has; the IdP's next token works.
+- A tenant trusts at most 16 issuers: adding a seventeenth, or bootstrapping with more, is refused with `400`. A tenant already over the bound keeps working and can edit its issuers.
 - `max_token_lifetime_seconds` (1 to 86400, default unset) refuses a token
   whose `exp - iat` is larger.
 - A cluster that runs on the Raft metadata store applies `jwks`,

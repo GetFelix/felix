@@ -267,3 +267,32 @@ fn changing_keys_or_replay_options_is_a_change_of_trust() {
     assert!(narrows_trust(&fetched, &base));
     assert!(narrows_trust(&base, &fetched));
 }
+
+/// A tenant may trust a bounded number of issuers; one already over the
+/// bound keeps working and can edit what it has.
+#[tokio::test]
+async fn a_tenant_cannot_trust_more_than_the_cap() {
+    let (state, store) = fixture().await;
+    let headers = operator(&store).await;
+    for n in 0..crate::auth::idp_registry::MAX_ISSUERS_PER_TENANT {
+        upsert(
+            &state,
+            &headers,
+            issuer(&format!("https://idp{n}.example"), "groups"),
+        )
+        .await;
+    }
+    let err = upsert_idp_issuer(
+        Path("t1".to_string()),
+        State(state.clone()),
+        headers.clone(),
+        Json(issuer("https://one-more.example", "groups")),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.status, StatusCode::BAD_REQUEST);
+    // Editing an existing one is still fine.
+    let mut edit = issuer("https://idp0.example", "groups");
+    edit.audiences.push("another".to_string());
+    upsert(&state, &headers, edit).await;
+}

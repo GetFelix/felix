@@ -32,7 +32,7 @@ use crate::api::error::{
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{GroupingListResponse, GroupingListing, PolicyListResponse, PolicyListing};
 use crate::auth::bearer::{Refusal, refused, require_cluster_action, tenant_permissions};
-use crate::auth::idp_registry::IdpIssuerConfig;
+use crate::auth::idp_registry::{IdpIssuerConfig, MAX_ISSUERS_PER_TENANT};
 use crate::auth::rbac::authorize::{
     ACTION_RBAC_ASSIGNMENT_MANAGE, ACTION_RBAC_POLICY_MANAGE, ACTION_RBAC_VIEW,
     ACTION_TENANT_MANAGE, ParsedObject, canonical_action, object_within_scope, parse_object,
@@ -99,6 +99,13 @@ pub async fn upsert_idp_issuer(
         .await
         .map_err(|err| api_internal("failed to load issuers", &err))?;
     let current = issuers.iter().find(|item| item.issuer == body.issuer);
+    // Only a new issuer is refused, so a tenant already over the cap keeps
+    // working and can still edit what it has.
+    if current.is_none() && issuers.len() >= MAX_ISSUERS_PER_TENANT {
+        return Err(api_validation_error(&format!(
+            "a tenant may trust at most {MAX_ISSUERS_PER_TENANT} issuers"
+        )));
+    }
     let needs_cluster = match current {
         Some(current) => !same_trust(current, &body),
         None => issuer_used_elsewhere(&state, &tenant_id, &body.issuer).await?,
@@ -112,6 +119,8 @@ pub async fn upsert_idp_issuer(
     let revocation = current
         .is_some_and(|current| narrows_trust(current, &body))
         .then(|| revoking(vec![ALL_PRINCIPALS.to_string()]));
+    let forget_jtis = !body.single_use_jti;
+    let issuer_name = body.issuer.clone();
     change_auth(
         &state,
         &tenant_id,
@@ -120,6 +129,9 @@ pub async fn upsert_idp_issuer(
     )
     .await
     .map_err(|err| api_internal("failed to upsert issuer", &err))?;
+    if forget_jtis {
+        state.oidc_validator.forget_issuer_jtis(&issuer_name);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -231,11 +243,12 @@ pub async fn delete_idp_issuer(
     change_auth(
         &state,
         &tenant_id,
-        AuthChange::DeleteIssuer(issuer),
+        AuthChange::DeleteIssuer(issuer.clone()),
         Some(revoking(vec![ALL_PRINCIPALS.to_string()])),
     )
     .await
     .map_err(|err| api_internal("failed to delete issuer", &err))?;
+    state.oidc_validator.forget_issuer_jtis(&issuer);
     Ok(StatusCode::NO_CONTENT)
 }
 

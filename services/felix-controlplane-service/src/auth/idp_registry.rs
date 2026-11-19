@@ -9,6 +9,11 @@ use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+/// The most issuers one tenant may trust. Each can carry up to
+/// [`MAX_INLINE_KEYS`] keys and a record of used tokens, which are held in
+/// memory.
+pub const MAX_ISSUERS_PER_TENANT: usize = 16;
+
 /// The most keys one inline JWKS may carry. A rotation overlaps two or three.
 pub const MAX_INLINE_KEYS: usize = 16;
 

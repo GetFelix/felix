@@ -297,6 +297,55 @@ async fn bootstrap_refuses_a_bad_inline_jwks() {
     }
 }
 
+/// Single use without a short lifetime bound would keep every token's record
+/// for as long as the token lives, so it is refused. Too many issuers are too.
+#[tokio::test]
+async fn bootstrap_refuses_unbounded_single_use_and_too_many_issuers() {
+    let issuer = |name: &str, extra: serde_json::Value| {
+        let mut value = json!({
+            "issuer": name,
+            "audiences": ["felix"],
+            "jwks_url": "https://idp.example/jwks",
+            "claim_mappings": {"subject_claim": "sub"}
+        });
+        value
+            .as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        value
+    };
+    let many: Vec<_> = (0..17)
+        .map(|n| issuer(&format!("https://idp{n}.example"), json!({})))
+        .collect();
+    let cases = [
+        vec![issuer(
+            "https://idp.example",
+            json!({"single_use_jti": true}),
+        )],
+        vec![issuer(
+            "https://idp.example",
+            json!({"single_use_jti": true, "max_token_lifetime_seconds": 601}),
+        )],
+        many,
+    ];
+    for issuers in cases {
+        let (store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+        let app = build_bootstrap_router(state).into_service();
+        let request = post(
+            "/internal/bootstrap/tenants/t1/initialize",
+            "secret",
+            json!({
+                "display_name": "Tenant One",
+                "idp_issuers": issuers,
+                "initial_admin_principals": ["p:admin"]
+            }),
+        );
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!store.tenant_exists("t1").await.expect("read"));
+    }
+}
+
 /// Rotation is two rolling deploys, and this is the state between them: the
 /// new token is `token`, the old one demoted to `previous_token`, and both
 /// must work or some caller is locked out mid-rotation.
