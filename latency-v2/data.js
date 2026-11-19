@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795106507953,
+  "lastUpdate": 1795107754086,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -79662,6 +79662,72 @@ window.BENCHMARK_DATA = {
             "range": "110.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 337.00\nmean: 366.00\nstdev: 110.23\ncv: 30.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86f71636448461d546e80e3c00ebd3d49b9d2d03",
+          "message": "feat(controlplane): declare a broker's data directory dead (part of #2250) (#2830)\n\n* feat(controlplane): declare a broker's data directory dead (#2250)\n\nAn operator declares a stopped broker's data directory gone for good with\nfelixctl node declare-dead (POST /v1/nodes/{id}/declare-dead). The control\nplane records the node with its registered storage id, for good, and\nrefuses a registration under that id from then on. dead_nodes() is the set\na re-form plans with. Metadata level 42, refused below it by the store and\nthe leader.\n\nSpec-Unaffected: the dead set is an input the modelled re-form already\ntakes (DeclareDead in FelixRaftReform.tla); this records it in the control\nplane without changing the rule.\n\n* fix(controlplane): say a dead declaration does not prove the broker stopped, log it, cover Draining and Left (#2250)",
+          "timestamp": "2026-11-19T16:45:32Z",
+          "tree_id": "f865473b2abc01144792c9d2a30e4195f55fcf6d",
+          "url": "https://github.com/GetFelix/felix/commit/86f71636448461d546e80e3c00ebd3d49b9d2d03"
+        },
+        "date": 1795107739850,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 154.00\nstdev: 0.71\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "6.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 216.40\nstdev: 6.54\ncv: 3.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 383,
+            "range": "111.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 383.00\nmean: 373.00\nstdev: 111.25\ncv: 29.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 201.60\nstdev: 1.52\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 400,
+            "range": "3.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 400.00\nmean: 399.20\nstdev: 3.19\ncv: 0.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 697,
+            "range": "299.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 697.00\nmean: 782.60\nstdev: 299.49\ncv: 38.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
