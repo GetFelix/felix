@@ -376,10 +376,7 @@ pub(super) struct Elections<M: Campaigner = Group> {
     /// No member is let in while the saves queued here would take longer
     /// than this to drain (microseconds): a quarter of `election_min`.
     backlog: u64,
-    /// Where `limit` stood before its last cut was halved: it climbs fast
-    /// to here and slowly above. 0 before any cut.
-    regrow: usize,
-    /// When `limit` last grew above `regrow`.
+    /// When `limit` last grew while elections were losing.
     grown: u64,
     saves: Arc<VoteSaves>,
     lowered: Lowered,
@@ -554,7 +551,6 @@ impl<M: Campaigner> Elections<M> {
             stand: timers.election_max,
             round: timers.election_min,
             backlog: timers.election_min * 1000 / 4,
-            regrow: 0,
             grown: 0,
             saves,
             lowered: Lowered::default(),
@@ -642,15 +638,16 @@ impl<M: Campaigner> Elections<M> {
             };
             held.answered = answered;
             if over {
-                lost.push(Arc::clone(&held.member));
+                // One that never stood tells nothing about the disk.
+                lost.push((Arc::clone(&held.member), held.stood.is_some()));
             }
             !over
         });
-        self.outcomes
-            .add(now, self.stand, won as u64, lost.len() as u64);
+        let rounds = lost.iter().filter(|(_, stood)| *stood).count() as u64;
+        self.outcomes.add(now, self.stand, won as u64, rounds);
         self.totals.0 += won as u64;
-        self.totals.1 += lost.len() as u64;
-        for member in lost {
+        self.totals.1 += rounds;
+        for (member, _) in lost {
             // Its round may still be won: openraft takes the answers
             // either way. It just does not start another before its turn.
             member.disarm();
@@ -689,7 +686,6 @@ impl<M: Campaigner> Elections<M> {
                 from: self.limit,
                 took: slowest,
             };
-            self.regrow = (self.limit / 2).max(self.floor);
             self.limit = self.limit.min(fits(self.limit, slowest));
             self.saves.since.store(now, Ordering::Relaxed);
         } else if losing && before > slow {
@@ -705,21 +701,15 @@ impl<M: Campaigner> Elections<M> {
         self.totals.2 += u64::from(self.limit < was);
     }
 
-    /// Give places back: one for each election that won, up to where the
-    /// last cut stood halved, then one for each `election_min`. While
-    /// elections lose, only for the ones that won.
+    /// Give places back: one for each election that won, and at least
+    /// one a tick. While elections lose, one for each `election_min`.
     fn grow(&mut self, now: u64, won: usize, losing: bool) {
-        let won = if losing { won } else { won.max(1) };
-        if self.limit < self.regrow {
-            self.limit = (self.limit + won).min(self.regrow);
-            if self.limit == self.regrow {
-                self.grown = now;
-            }
+        if !losing {
+            self.limit = (self.limit + won.max(1)).min(self.most);
         } else if now >= self.grown + self.round {
             self.grown = now;
-            self.limit += 1;
+            self.limit = (self.limit + 1).min(self.most);
         }
-        self.limit = self.limit.min(self.most);
     }
 
     fn load(&self) -> ElectionLoad {

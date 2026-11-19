@@ -1815,11 +1815,11 @@ member back is the same as its timeout coming later.
   the mark. Slow saves while elections win cut nothing: every group still
   takes one round, so a slow disk is not one the elections overload, and
   queueing would only add to each wait. The limit never falls below 8 (or
-  the bound, if lower). After a cut it climbs back by the elections that
-  won (and by one a tick once elections stop losing) up to half of where
-  it stood, then by one each `election_min`. While elections lose, only
-  the ones that won give places back, so a limit at the floor does not
-  climb while nothing wins.
+  the bound, if lower). Once elections stop losing it climbs back by the
+  elections that won, and by at least one a tick. While they lose, it
+  climbs one place each `election_min`. A member that never stood within
+  `election_max` of getting its place gives the place back but does not
+  count as a lost election: it says nothing about the disk.
 - Places do not bound the disk's queue: a round that gave up leaves its
   saves queued, and nothing cancels them. The broker keeps a moving
   average of the time between two vote saves ending while others were

@@ -212,14 +212,13 @@ fn a_slow_vote_save_lowers_the_limit() {
     elections.settle(3600);
     assert_eq!(elections.limit, 10);
     elections.settle(3650);
-    assert_eq!(elections.limit, 10, "nothing won, so nothing comes back");
+    assert_eq!(elections.limit, 11, "one place back, losing");
 }
 
 /// The limit never falls below the floor. Once elections stop losing it
-/// climbs a place an interval to half of where the cut began, then a place
-/// every election_min.
+/// climbs back a place an interval, or as many as won.
 #[test]
-fn the_limit_recovers_fast_to_half_then_slowly() {
+fn the_limit_recovers_fast_once_elections_win() {
     let mut elections = elections(64);
     losing(&mut elections);
     saved(&elections, 1000, 10_000, false);
@@ -230,25 +229,16 @@ fn the_limit_recovers_fast_to_half_then_slowly() {
         elections.settle(1000 + n * 50);
     }
     assert_eq!(elections.limit, FLOOR + 10);
-    for n in 11..=40 {
+    for n in 11..=60 {
         elections.settle(1000 + n * 50);
     }
-    assert_eq!(elections.limit, 32, "half of 64");
-    // 1500 ms on, one election_min has gone by since it got there.
-    let mut now = 3000;
-    for n in 1..=3 {
-        for _ in 0..20 {
-            now += 50;
-            elections.settle(now);
-        }
-        assert_eq!(elections.limit, 32 + n);
-    }
+    assert_eq!(elections.limit, 64);
 }
 
-/// Elections that lose give nothing back but the places of those that
-/// won, so a limit at the floor does not climb back while nothing wins.
+/// While elections lose, a place comes back only every election_min, so a
+/// limit at the floor probes rather than saws.
 #[test]
-fn a_losing_broker_gets_places_back_only_for_wins() {
+fn a_losing_broker_regrows_a_place_every_election_min() {
     let mut elections = elections(64);
     losing(&mut elections);
     saved(&elections, 1000, 10_000, false);
@@ -257,7 +247,19 @@ fn a_losing_broker_gets_places_back_only_for_wins() {
     for n in 1..=40 {
         elections.settle(1000 + n * 50);
     }
-    assert_eq!(elections.limit, FLOOR);
+    assert_eq!(elections.limit, FLOOR + 2);
+}
+
+/// A member that never stood in its time lost nothing: it says nothing
+/// about the disk, so it does not make the broker count as losing.
+#[test]
+fn a_member_that_never_stands_is_not_a_lost_election() {
+    let mut elections = elections(1);
+    let [a, b] = [Member::new(0), Member::new(1)];
+    interval(&mut elections, &[a.clone(), b.clone()], 0);
+    interval(&mut elections, &[], 2000);
+    assert!(!a.armed() && b.armed());
+    assert!(!elections.outcomes.losing());
 }
 
 /// A bound under the floor is its own floor.
