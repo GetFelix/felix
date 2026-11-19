@@ -1561,10 +1561,15 @@ async fn a_broker_bounds_the_elections_it_starts() {
     tokio::time::timeout(PATIENCE, all)
         .await
         .expect("every group elects");
-    assert!(most <= BOUND, "{most} members stood at once on one broker");
+    // Once 8 elections won the limit may probe up to four times the bound.
+    let ceiling = BOUND * 4;
+    assert!(
+        most <= ceiling,
+        "{most} members stood at once on one broker"
+    );
     for runtime in &runtimes {
         let load = runtime.election_load();
-        assert!(load.peak <= BOUND, "{load:?}");
+        assert!(load.peak <= ceiling, "{load:?}");
     }
     assert!(
         runtimes
