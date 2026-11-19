@@ -208,7 +208,7 @@
 (* The read-index round is one step that reads every broker's term at      *)
 (* once, which is stricter than a round of answers collected over time.    *)
 (***************************************************************************)
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Brokers,
