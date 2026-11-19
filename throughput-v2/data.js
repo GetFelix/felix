@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795107758738,
+  "lastUpdate": 1795113370418,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62816,6 +62816,58 @@ window.BENCHMARK_DATA = {
             "range": "6994.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 789542.18\nmean: 793493.79\nstdev: 6994.69\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "82a3fe7a6a409bfaf7032cdaf048b01f5c41fe5a",
+          "message": "feat(controlplane): trust an IdP issuer by inline keys, with single-use jti and a lifetime bound (#2843)\n\n* feat(controlplane): trust an IdP issuer by inline keys, with optional single-use jti and a lifetime bound (#2836)\n\n* fix(controlplane): per-issuer jti record, single use needs a short lifetime bound, refuse enc keys (#2836)\n\n* fix(controlplane): cap issuers per tenant and jti length, free idle jti records, hold a jti through its last valid second (#2836)",
+          "timestamp": "2026-11-19T18:28:59Z",
+          "tree_id": "c774e3edbb27ccedf304ae909bfa0c12c18bc7c0",
+          "url": "https://github.com/GetFelix/felix/commit/82a3fe7a6a409bfaf7032cdaf048b01f5c41fe5a"
+        },
+        "date": 1795113369580,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 522363.29,
+            "range": "24348.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522363.29\nmean: 516087.17\nstdev: 24348.33\ncv: 4.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 522363.29,
+            "range": "24348.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522363.29\nmean: 516087.17\nstdev: 24348.33\ncv: 4.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122498.89,
+            "range": "1169.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122498.89\nmean: 122438.50\nstdev: 1169.90\ncv: 0.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1224988.91,
+            "range": "11699.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1224988.91\nmean: 1224385.00\nstdev: 11699.04\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
