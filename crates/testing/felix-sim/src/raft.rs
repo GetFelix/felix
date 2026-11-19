@@ -661,6 +661,7 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
             backoff_cap: at(shipped.placement.backoff_cap),
             ..shipped.placement
         },
+        elections: shipped.elections,
     }
 }
 

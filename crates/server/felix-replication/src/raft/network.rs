@@ -335,6 +335,8 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
+        let _asking =
+            matches!(body, Request::Vote(_) | Request::PreVote(_)).then(|| self.pace.asking());
         let deadline = super::wire::append_deadline(option.hard_ttl(), &body);
         let request = RaftRequest {
             group,

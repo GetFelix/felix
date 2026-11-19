@@ -102,6 +102,12 @@ pub struct RuntimeConfig {
     pub append_entries: u64,
     /// How a leader hands its leadership to the broker placement names.
     pub placement: Placement,
+    /// The most groups on this broker that may be in an election at once.
+    /// The rest wait their turn, so the vote fsyncs of one round cannot
+    /// outlast the election timeout and set off another. The runtime lowers
+    /// it while this broker's vote saves are slow. 0 takes the bound off.
+    /// See `docs/per-shard-raft.md`, "Many groups electing at once".
+    pub elections: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -125,8 +131,24 @@ impl Default for RuntimeConfig {
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
             append_entries: 1024,
             placement: Placement::default(),
+            elections: 64,
         }
     }
+}
+
+/// The elections on a broker, as its ticker last counted them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ElectionLoad {
+    /// Members let stand whose election is not over.
+    pub in_flight: usize,
+    /// Members whose wait for a leader ran out and that wait for a place.
+    pub waiting: usize,
+    /// How many may be in flight now. It moves between 1 and
+    /// [`RuntimeConfig::elections`] with how long this broker's vote saves
+    /// take.
+    pub limit: usize,
+    /// The most that were in flight at once since the ticker started.
+    pub peak: usize,
 }
 
 /// How long one piece of a snapshot may take to send and be answered. The
@@ -414,6 +436,9 @@ pub(crate) struct Registry {
     pub(crate) tail_budget: Arc<TailBudget>,
     /// The peer brokers this runtime's calls could not reach.
     pub(crate) reach: Arc<Reach>,
+    /// How long this broker's vote saves take, for the election bound.
+    pub(crate) vote_saves: Arc<ticker::VoteSaves>,
+    election_load: parking_lot::Mutex<ElectionLoad>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -430,6 +455,10 @@ struct Slots {
 impl Registry {
     pub(crate) fn ticked(&self) -> Arc<Vec<Arc<Group>>> {
         self.ticked.load_full()
+    }
+
+    pub(crate) fn set_election_load(&self, load: ElectionLoad) {
+        *self.election_load.lock() = load;
     }
 
     fn publish(&self, slots: &Slots) {
@@ -532,6 +561,7 @@ impl GroupRuntime {
                     election_min: config.election_min.as_millis() as u64,
                     election_max: config.election_max.as_millis() as u64,
                     lease: config.lease.as_millis() as u64,
+                    elections: config.elections,
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
@@ -543,6 +573,8 @@ impl GroupRuntime {
                     ticker_restarts: AtomicU64::new(0),
                     tail_budget: TailBudget::new(config.tail_cache_bytes),
                     reach: Arc::new(Reach::new(started, config.heartbeat)),
+                    vote_saves: Arc::default(),
+                    election_load: parking_lot::Mutex::default(),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -838,6 +870,7 @@ impl GroupRuntime {
             host,
             Arc::clone(&registry.tail_budget),
             Arc::clone(&registry.reach),
+            Arc::clone(&registry.vote_saves),
         )
         .await?;
         if reached_before {
@@ -1370,6 +1403,13 @@ impl GroupRuntime {
     /// group on this broker heartbeats or notices a timeout.
     pub fn ticker_restarts(&self) -> u64 {
         self.inner.registry.ticker_restarts.load(Ordering::Relaxed)
+    }
+
+    /// The elections in flight and waiting on this broker. Many waiting
+    /// for long says the groups here lost their leaders together and the
+    /// disk is slow to take the votes.
+    pub fn election_load(&self) -> ElectionLoad {
+        *self.inner.registry.election_load.lock()
     }
 
     /// Purge this broker's member of the stream shard `shard` below its

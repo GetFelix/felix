@@ -986,6 +986,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
         lease: millis(config.lease),
+        elections: config.elections,
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -1494,8 +1495,13 @@ async fn many_groups_told_at_once_all_elect() {
         .map(|status| status.term)
         .collect();
     let led = (0..GROUPS).filter(|n| cluster.leader(*n).is_some()).count();
+    let loads: Vec<_> = cluster
+        .runtimes()
+        .iter()
+        .map(|runtime| runtime.election_load())
+        .collect();
     println!(
-        "told at once: {led} of {GROUPS} led after {:?}, highest term {:?}",
+        "told at once: {led} of {GROUPS} led after {:?}, highest term {:?}, {loads:?}",
         started.elapsed(),
         terms.iter().max()
     );
@@ -1504,6 +1510,67 @@ async fn many_groups_told_at_once_all_elect() {
         "{led} of {GROUPS} groups led after {:?}, highest term {:?}",
         started.elapsed(),
         terms.iter().max()
+    );
+    cluster.stop().await;
+}
+
+/// Groups formed at once on a broker with a bound of three: no more than
+/// three of its members that do not lead have their election timer on at
+/// any moment, and every group still elects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_broker_bounds_the_elections_it_starts() {
+    const GROUPS: u32 = 30;
+    const BOUND: usize = 3;
+    let config = RuntimeConfig {
+        elections: BOUND,
+        ..timers()
+    };
+    let mut cluster = Cluster::with(config, true);
+    for n in 0..GROUPS {
+        cluster.open(n).await;
+    }
+    let told = (0..GROUPS).flat_map(|n| {
+        cluster
+            .runtimes()
+            .into_iter()
+            .map(move |runtime| async move {
+                runtime
+                    .initialize(&shard(n), members())
+                    .await
+                    .expect("initialize");
+            })
+    });
+    futures::future::join_all(told).await;
+    let runtimes = cluster.runtimes();
+    let mut most = 0;
+    let all = async {
+        loop {
+            for runtime in &runtimes {
+                let standing = (0..GROUPS)
+                    .filter_map(|n| runtime.group(&shard(n)))
+                    .filter(|group| group.elections_on() && !group.leads())
+                    .count();
+                most = most.max(standing);
+            }
+            if (0..GROUPS).all(|n| cluster.leader(n).is_some()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(PATIENCE, all)
+        .await
+        .expect("every group elects");
+    assert!(most <= BOUND, "{most} members stood at once on one broker");
+    for runtime in &runtimes {
+        let load = runtime.election_load();
+        assert!(load.peak <= BOUND, "{load:?}");
+    }
+    assert!(
+        runtimes
+            .iter()
+            .any(|runtime| runtime.election_load().peak == BOUND),
+        "the bound was never reached"
     );
     cluster.stop().await;
 }

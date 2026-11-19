@@ -6,10 +6,15 @@
 //! wait for the leader has run out. A follower that hears its leader is
 //! never asked. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
+//!
+//! Turning that timer on is the only way a member here starts an election,
+//! so the ticker also bounds how many groups on the broker are in one at
+//! once ([`Elections`]). See "Many groups electing at once" there.
 
+use std::collections::{HashSet, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use felix_common::random::HashMap;
@@ -20,11 +25,17 @@ use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
 use super::reach::{CEILING, Peer};
-use super::runtime::Registry;
+use super::runtime::{ElectionLoad, Registry};
 
 /// Times the ticker ended on a panic and was started again. Any increase
 /// is a bug: no group on the broker was ticked in between.
 const TICKER_RESTARTS_TOTAL: &str = "felix_broker_raft_ticker_restarts_total";
+
+/// Members here let stand whose election is not over.
+const ELECTIONS_IN_FLIGHT: &str = "felix_broker_raft_elections_in_flight";
+
+/// Members here whose wait for a leader ran out and that wait for a place.
+const ELECTIONS_WAITING: &str = "felix_broker_raft_elections_waiting";
 
 /// Run the ticker until `stop`, starting it again if it panics.
 ///
@@ -66,6 +77,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut looks = Looks::default();
     let mut back = Back::default();
+    let mut elections = Elections::new(&timers, Arc::clone(&registry.vote_saves));
     loop {
         tokio::select! {
             biased;
@@ -79,6 +91,14 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
         registry.tail_budget.report();
         back.retry(&registry, Duration::from_millis(timers.heartbeat));
         let due = looks.due(registry.ticked(), &timers);
+        if timers.elections > 0 {
+            let now = timers.now();
+            elections.settle(now);
+            let wanting = due.iter().filter(|group| group.wants_to_stand());
+            elections.queue(wanting.cloned(), now);
+            elections.admit(now);
+            elections.report(&registry);
+        }
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
@@ -249,3 +269,275 @@ async fn tick_all(groups: &[Arc<Group>], deadline: Instant) {
     let all = async { while waiting.next().await.is_some() {} };
     let _ = tokio::time::timeout_at(deadline, all).await;
 }
+
+/// What the election bound needs from a member. A trait so its rules can be
+/// tested without openraft.
+pub(super) trait Campaigner {
+    /// Whether it may still stand, having heard no leader and granted no
+    /// vote since `since`.
+    fn may_stand(&self, since: u64) -> bool;
+    /// Turn its election timer on, if it may still stand.
+    fn arm(&self, since: u64) -> bool;
+    /// Turn its election timer off.
+    fn disarm(&self);
+    /// Whether the election it was let into is over.
+    fn settled(&self) -> bool;
+    /// Vote and pre-vote requests sent so far, and how many are unanswered.
+    fn asks(&self) -> (u64, u64);
+    fn set_waiting(&self, waiting: bool);
+    /// Its place among the members that came due together.
+    fn order(&self) -> u64;
+}
+
+impl Campaigner for Group {
+    fn may_stand(&self, since: u64) -> bool {
+        Group::may_stand(self, since)
+    }
+    fn arm(&self, since: u64) -> bool {
+        Group::arm(self, since)
+    }
+    fn disarm(&self) {
+        self.hold_elections();
+    }
+    fn settled(&self) -> bool {
+        Group::settled(self)
+    }
+    fn asks(&self) -> (u64, u64) {
+        Group::asks(self)
+    }
+    fn set_waiting(&self, waiting: bool) {
+        Group::set_waiting(self, waiting);
+    }
+    fn order(&self) -> u64 {
+        Group::order(self)
+    }
+}
+
+/// The bound on elections at once on this broker.
+///
+/// A member whose wait for its leader ran out gets its election timer
+/// turned on only while fewer than `limit` members here have theirs on;
+/// the rest wait in the order they came due. openraft still decides when a
+/// member stands and whether it wins. A place is given back when the
+/// member leads, hears a leader or grants a vote, or lost: every request
+/// of its round answered without it leading (seen on two looks), no stand
+/// within `election_max`, or no result within `election_min` of standing.
+/// One that lost has its timer turned off and waits again at the back.
+///
+/// `limit` starts at [`super::RuntimeConfig::elections`] and follows this
+/// broker's vote saves: a slow one cuts it to what the disk would have
+/// saved in time, and each election that ends gives one place back.
+pub(super) struct Elections<M: Campaigner = Group> {
+    most: usize,
+    limit: usize,
+    queue: VecDeque<Waiting<M>>,
+    held: Vec<Held<M>>,
+    /// Queued or held, by address.
+    known: HashSet<usize>,
+    /// A vote save slower than this lowers `limit`: a quarter of
+    /// `election_min`, so a round's saves end well inside the timeout.
+    slow: u64,
+    /// The longest an armed member keeps its place before it stands.
+    stand: u64,
+    /// The longest a member that stood keeps its place.
+    round: u64,
+    saves: Arc<VoteSaves>,
+    lowered: Lowered,
+    peak: usize,
+    reported: ElectionLoad,
+}
+
+struct Waiting<M> {
+    member: Arc<M>,
+    since: u64,
+}
+
+struct Held<M> {
+    member: Arc<M>,
+    since: u64,
+    /// Its requests sent before it was let in.
+    asks: u64,
+    stood: Option<u64>,
+    /// Every request of its round was answered when last looked at.
+    answered: bool,
+}
+
+/// The last time `limit` was lowered.
+#[derive(Default)]
+struct Lowered {
+    from: usize,
+    took: u64,
+}
+
+/// How long this broker's vote saves take, waits for the disk included.
+#[derive(Default)]
+pub(crate) struct VoteSaves {
+    /// When `limit` was last lowered.
+    since: AtomicU64,
+    /// The slowest save that began after `since`, under the limit as it is.
+    slowest: AtomicU64,
+    /// The slowest that began before it, under the limit as it was.
+    slowest_before: AtomicU64,
+}
+
+impl VoteSaves {
+    /// A vote save that ended at `now` took `took`.
+    pub(crate) fn saved(&self, now: u64, took: u64) {
+        let slowest = match now.saturating_sub(took) >= self.since.load(Ordering::Relaxed) {
+            true => &self.slowest,
+            false => &self.slowest_before,
+        };
+        slowest.fetch_max(took, Ordering::Relaxed);
+    }
+}
+
+fn address<M>(member: &Arc<M>) -> usize {
+    Arc::as_ptr(member) as *const () as usize
+}
+
+impl<M: Campaigner> Elections<M> {
+    fn new(timers: &Timers, saves: Arc<VoteSaves>) -> Self {
+        Self {
+            most: timers.elections,
+            limit: timers.elections,
+            queue: VecDeque::new(),
+            held: Vec::new(),
+            known: HashSet::new(),
+            slow: timers.election_min / 4,
+            stand: timers.election_max,
+            round: timers.election_min,
+            saves,
+            lowered: Lowered::default(),
+            peak: 0,
+            reported: ElectionLoad::default(),
+        }
+    }
+
+    /// Queue the members in `wanting` that are not queued or held yet, in
+    /// their order.
+    fn queue(&mut self, wanting: impl Iterator<Item = Arc<M>>, now: u64) {
+        let mut new: Vec<Arc<M>> = wanting
+            .filter(|member| !self.known.contains(&address(member)))
+            .collect();
+        new.sort_by_key(|member| member.order());
+        for member in new {
+            self.known.insert(address(&member));
+            self.wait(member, now);
+        }
+    }
+
+    fn wait(&mut self, member: Arc<M>, since: u64) {
+        member.set_waiting(true);
+        self.queue.push_back(Waiting { member, since });
+    }
+
+    /// Let members in from the front of the queue while places are free.
+    fn admit(&mut self, now: u64) {
+        while self.held.len() < self.limit {
+            let Some(Waiting { member, since }) = self.queue.pop_front() else {
+                break;
+            };
+            member.set_waiting(false);
+            if !member.arm(since) {
+                self.known.remove(&address(&member));
+                continue;
+            }
+            let asks = member.asks().0;
+            self.held.push(Held {
+                member,
+                since: now,
+                asks,
+                stood: None,
+                answered: false,
+            });
+        }
+        self.peak = self.peak.max(self.held.len());
+    }
+
+    /// Give back the places of elections that are over, drop waiting
+    /// members that heard a leader, and move `limit`.
+    fn settle(&mut self, now: u64) {
+        let mut ended = 0;
+        let mut lost = Vec::new();
+        let (stand, round) = (self.stand, self.round);
+        let known = &mut self.known;
+        self.held.retain_mut(|held| {
+            if held.member.settled() {
+                ended += 1;
+                known.remove(&address(&held.member));
+                return false;
+            }
+            let (asks, out) = held.member.asks();
+            if held.stood.is_none() && asks > held.asks {
+                held.stood = Some(now);
+            }
+            let over = match held.stood {
+                None => now >= held.since + stand,
+                Some(stood) => (held.answered && out == 0) || now >= stood + round,
+            };
+            held.answered = held.stood.is_some() && out == 0;
+            if over {
+                lost.push(Arc::clone(&held.member));
+            }
+            !over
+        });
+        for member in lost {
+            // Its round may still be won: openraft takes the answers
+            // either way. It just does not start another before its turn.
+            member.disarm();
+            self.wait(member, now);
+        }
+        let known = &mut self.known;
+        self.queue.retain(|waiting| {
+            let keep = waiting.member.may_stand(waiting.since);
+            if !keep {
+                waiting.member.set_waiting(false);
+                known.remove(&address(&waiting.member));
+            }
+            keep
+        });
+
+        let slow = self.slow;
+        // To what the disk would have saved inside `slow`.
+        let fits = |from: usize, took: u64| ((from as u64 * slow / took) as usize).max(1);
+        let slowest = self.saves.slowest.swap(0, Ordering::Relaxed);
+        let before = self.saves.slowest_before.swap(0, Ordering::Relaxed);
+        if slowest > slow {
+            self.lowered = Lowered {
+                from: self.limit,
+                took: slowest,
+            };
+            self.limit = fits(self.limit, slowest);
+            self.saves.since.store(now, Ordering::Relaxed);
+        } else if before > slow && before > self.lowered.took {
+            // Queued under the limit as it was, and slower than the save
+            // it was lowered for: that limit was further off than it looked.
+            self.lowered.took = before;
+            self.limit = self.limit.min(fits(self.lowered.from, before));
+        } else {
+            self.limit = (self.limit + ended).min(self.most);
+        }
+    }
+
+    fn load(&self) -> ElectionLoad {
+        ElectionLoad {
+            in_flight: self.held.len(),
+            waiting: self.queue.len(),
+            limit: self.limit,
+            peak: self.peak,
+        }
+    }
+
+    fn report(&mut self, registry: &Registry) {
+        let load = self.load();
+        if load != self.reported {
+            metrics::gauge!(ELECTIONS_IN_FLIGHT).set(load.in_flight as f64);
+            metrics::gauge!(ELECTIONS_WAITING).set(load.waiting as f64);
+            registry.set_election_load(load);
+            self.reported = load;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
