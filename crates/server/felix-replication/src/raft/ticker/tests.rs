@@ -374,7 +374,7 @@ fn slow_saves_while_elections_win_cut_nothing() {
         }
         saved(&elections, now, 200, false);
         interval(&mut elections, &[], now);
-        assert_eq!(elections.limit, 64, "interval {n}");
+        assert!(elections.limit >= 64, "interval {n}");
     }
     assert_eq!(elections.load().waiting, 0);
 }
@@ -512,4 +512,45 @@ fn a_vote_save_under_way_is_counted_for_its_member() {
     assert_eq!(own.load(Ordering::Relaxed), 1);
     clock.ended(ticket, None);
     assert_eq!(own.load(Ordering::Relaxed), 0);
+}
+
+/// Rounds win, so the limit probes above the bound, and never past four
+/// times it.
+#[test]
+fn winning_rounds_with_an_open_gate_probe_above_the_bound() {
+    let mut elections = elections(8);
+    elections.outcomes.won = 1_000;
+    for n in 1..=100 {
+        elections.settle(n * 50);
+        assert!(elections.limit <= 32, "{} past 4x", elections.limit);
+    }
+    assert_eq!(elections.limit, 32);
+}
+
+/// A loss rate over one in eight brings it back to the bound.
+#[test]
+fn losses_bring_the_limit_back_to_the_bound() {
+    let mut elections = elections(8);
+    elections.outcomes.won = 1_000;
+    for n in 1..=20 {
+        elections.settle(n * 50);
+    }
+    assert!(elections.limit > 8);
+    elections.outcomes.lost = 200;
+    elections.settle(1_100);
+    assert_eq!(elections.limit, 8);
+}
+
+/// A save queue that cannot drain in time does too.
+#[test]
+fn a_backed_up_queue_brings_the_limit_back_to_the_bound() {
+    let mut elections = elections(8);
+    elections.outcomes.won = 1_000;
+    for n in 1..=20 {
+        elections.settle(n * 50);
+    }
+    assert!(elections.limit > 8);
+    backed_up(&elections, 90, 10, 1_000_000);
+    elections.settle(1_100);
+    assert_eq!(elections.limit, 8);
 }

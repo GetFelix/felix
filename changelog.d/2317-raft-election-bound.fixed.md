@@ -4,4 +4,4 @@
   The limit falls while elections are losing and vote saves are several times slower than one with the disk to itself,
   never below 8, and climbs back by the elections that won, at once while elections win and one place a second while they lose. No member is let in while the vote saves queued on the broker would take over a quarter of the election timeout to drain. Groups that took writes go first. A
   leader whose transfer is not taken stands again without waiting for a place. New gauges
-  `felix_broker_raft_elections_in_flight` and `felix_broker_raft_elections_waiting`.
+  `felix_broker_raft_elections_in_flight` and `felix_broker_raft_elections_waiting`. The limit may rise to four times the bound while elections win and the save queue drains, and returns to the bound on losses.

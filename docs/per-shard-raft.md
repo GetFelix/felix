@@ -1832,6 +1832,15 @@ member back is the same as its timeout coming later.
   saves a second this stops a queue from outgrowing the timeout, where
   rounds would otherwise lose faster than they finish.
 
+- The bound is where the limit starts and where it returns to, not a
+  ceiling. While fewer than one election in eight lost lately and the
+  queued vote saves would drain within a quarter of `election_min`, the
+  limit grows by the elections that won, up to four times the bound. A
+  higher loss rate or a backed-up queue brings it back to the bound at
+  once. So `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE` is what a broker starts a
+  storm with and falls back to when rounds fail, and the most it ever
+  allows is four times that.
+
 A group that loses its leader alone is never held back: a place is free.
 Groups that cannot win, for example because two of their three brokers are
 down, cost the others little: their requests are refused or time out, so

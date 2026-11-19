@@ -102,11 +102,13 @@ pub struct RuntimeConfig {
     pub append_entries: u64,
     /// How a leader hands its leadership to the broker placement names.
     pub placement: Placement,
-    /// The most groups on this broker that may be in an election at once.
-    /// The rest wait their turn, so the vote fsyncs of one round cannot
-    /// outlast the election timeout and set off another. The runtime lowers
-    /// it while this broker's vote saves are slow, to no less than 8. 0
-    /// takes the bound off.
+    /// How many groups on this broker may be in an election at once when
+    /// the disk or CPU is not keeping up. The rest wait their turn, so the
+    /// vote fsyncs of one round cannot outlast the election timeout and set
+    /// off another. The runtime lowers it while this broker's vote saves
+    /// are slow, to no less than 8, and raises it up to four times this
+    /// while fewer than one round in eight loses and the vote-save queue
+    /// drains in a quarter of `election_min`. 0 takes the bound off.
     /// See `docs/per-shard-raft.md`, "Many groups electing at once".
     pub max_elections_at_once: usize,
 }

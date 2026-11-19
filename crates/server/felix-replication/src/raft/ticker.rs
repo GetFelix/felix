@@ -329,6 +329,10 @@ impl Campaigner for Group {
 /// elect them all.
 const FLOOR: usize = 8;
 
+/// While elections win and the disk keeps up, the limit may go this many
+/// times above the configured bound.
+const PROBE: usize = 4;
+
 /// A vote save this many times slower than one that had the disk to itself
 /// is slow.
 const SLOWER: u64 = 4;
@@ -353,7 +357,10 @@ const SLOWER: u64 = 4;
 /// have saved in time, never below [`FLOOR`]. Slow saves while elections
 /// win are a slow disk, not one the elections overload, and cut nothing.
 /// An interval with no cut gives back a place for each election that won
-/// in it, and at least one.
+/// in it, and at least one. While fewer than one in eight rounds lose and
+/// the save queue drains within `election_min / 4`, it may go up to
+/// [`PROBE`] times the bound; a loss rate over that or a backed-up queue
+/// brings it back to the bound.
 pub(super) struct Elections<M: Campaigner = Group> {
     most: usize,
     floor: usize,
@@ -696,6 +703,10 @@ impl<M: Campaigner> Elections<M> {
         let slowest = self.saves.slowest.swap(0, Ordering::Relaxed);
         let before = self.saves.slowest_before.swap(0, Ordering::Relaxed);
         let losing = self.outcomes.losing();
+        let probing = self.probing();
+        if self.limit > self.most && !probing {
+            self.limit = self.most;
+        }
         let was = self.limit;
         if losing && slowest > slow {
             self.lowered = Lowered {
@@ -712,20 +723,35 @@ impl<M: Campaigner> Elections<M> {
                 self.limit = self.limit.min(fits(self.lowered.from, before));
             }
         } else {
-            self.grow(now, won, losing);
+            self.grow(now, won, losing, probing);
         }
         self.totals.2 += u64::from(self.limit < was);
     }
 
     /// Give places back: one for each election that won, and at least
     /// one a tick. While elections lose, one for each `election_min`.
-    fn grow(&mut self, now: u64, won: usize, losing: bool) {
+    fn grow(&mut self, now: u64, won: usize, losing: bool, probing: bool) {
         if !losing {
-            self.limit = (self.limit + won.max(1)).min(self.most);
+            let ceiling = if probing {
+                self.most * PROBE
+            } else {
+                self.most
+            };
+            self.limit = (self.limit + won.max(1)).min(ceiling);
         } else if now >= self.grown + self.round {
             self.grown = now;
             self.limit = (self.limit + 1).min(self.most);
         }
+    }
+
+    /// Whether the limit may stand above the bound: at least as many
+    /// elections won lately as the bound (and 8), fewer than one in eight
+    /// lost, and the vote-save queue drains within `election_min / 4`.
+    fn probing(&self) -> bool {
+        let Outcomes { won, lost, .. } = self.outcomes;
+        won >= self.most.max(FLOOR) as u64
+            && lost * 8 < won
+            && self.saves.drain(self.held.len() as u64) <= self.backlog
     }
 
     fn load(&self) -> ElectionLoad {
