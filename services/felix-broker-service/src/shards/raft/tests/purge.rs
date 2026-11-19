@@ -562,10 +562,11 @@ async fn retention_frees_every_members_disk_and_a_member_cut_off_catches_up() {
     let mut members = Vec::new();
     for name in BROKERS.iter().rev() {
         let member = Member::start_purging(&net, name, config()).await;
-        member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
     members.reverse();
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, replicated()).await;
     let leader = served(&members).await;
     assert_eq!(members[leader].name, "broker-a");
     let orders = key("orders", 0);
