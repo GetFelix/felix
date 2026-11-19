@@ -24,6 +24,16 @@ async fn poll(
     consumer: &GroupConsumer,
     through: u64,
 ) -> felix_broker::Result<Vec<u64>> {
+    let claimed = claim(member, consumer, through).await?;
+    Ok(claimed.iter().map(|&(offset, _)| offset).collect())
+}
+
+/// `(offset, attempts)` for what `member` hands `consumer`.
+async fn claim(
+    member: &Member,
+    consumer: &GroupConsumer,
+    through: u64,
+) -> felix_broker::Result<Vec<(u64, u32)>> {
     until("the commit covers the records", || {
         member.bound() >= through
     })
@@ -48,7 +58,12 @@ async fn poll(
             soon(),
         )
         .await?;
-    Ok(claimed.iter().map(|c| c.offset).collect())
+    Ok(claimed.iter().map(|c| (c.offset, c.attempts)).collect())
+}
+
+/// The holder `h` reconnecting with `reclaim`.
+fn reclaiming_holder() -> GroupConsumer {
+    GroupConsumer::new("p", "h", 3, true)
 }
 
 async fn move_leader(members: &[Member], to: usize) {
@@ -64,13 +79,11 @@ async fn move_leader(members: &[Member], to: usize) {
     .await;
 }
 
-/// **A leader change mid-claim loses no record and hands none out twice in
-/// one term.** Claims are the old leader's memory: the new leader hydrates
-/// from the group's cursor, so what was claimed is owed again at once, and
-/// only in the new term does a claim stand against other consumers. An ack
-/// from the old holder is taken where the new leader handed the record out
-/// and refused where it did not. The old leader serves no group operation
-/// and holds no tracker.
+/// **A leader change mid-claim loses no record and hands none out twice.**
+/// Claims are group entries in the shard's log, so the new leader holds them:
+/// another consumer gets none of them, the holder reclaiming gets all of them
+/// back at the same attempt, and its acks are taken. The old leader serves no
+/// group operation and holds no tracker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_change_mid_claim_skips_nothing_and_clears_the_old_trackers() {
     let (_net, members, leader) = trio().await;
@@ -114,27 +127,28 @@ async fn a_leader_change_mid_claim_skips_nothing_and_clears_the_old_trackers() {
         "the deposed leader served a group poll"
     );
 
-    // Nothing is skipped: the new leader owes every record again, once.
-    let again = poll(&members[2], &other, last + 1).await.expect("poll");
-    assert_eq!(again, offsets.clone());
     assert_eq!(
-        poll(&members[2], &holder, last + 1).await.expect("poll"),
+        poll(&members[2], &other, last + 1).await.expect("poll"),
         Vec::<u64>::new(),
-        "one term handed a record to two consumers"
+        "the new leader handed a claimed record to another consumer"
     );
-    // The old holder's ack reaches the new leader: taken, the record was
-    // handed out there.
-    let groups = members[2].shards.groups();
-    groups
-        .ack(&group_key(), offsets[0], soon())
+    let back = claim(&members[2], &reclaiming_holder(), last + 1)
         .await
-        .expect("ack");
-    for &offset in &offsets[1..] {
+        .expect("reclaim");
+    assert_eq!(
+        back,
+        offsets.iter().map(|&o| (o, 1)).collect::<Vec<_>>(),
+        "the holder did not get its claims back at the same attempt"
+    );
+    let groups = members[2].shards.groups();
+    for &offset in &offsets {
         groups.ack(&group_key(), offset, soon()).await.expect("ack");
     }
+    // Past the tail: claim entries take log indices too, so a low offset
+    // may be one the predecessor could have handed out.
     assert!(matches!(
-        groups.ack(&group_key(), 9, soon()).await,
-        Err(BrokerError::GroupOffsetNotHandedOut { offset: 9, .. })
+        groups.ack(&group_key(), last + 50, soon()).await,
+        Err(BrokerError::GroupOffsetNotHandedOut { .. })
     ));
     assert_eq!(
         poll(&members[2], &other, last + 1).await.expect("poll"),
@@ -144,9 +158,9 @@ async fn a_leader_change_mid_claim_skips_nothing_and_clears_the_old_trackers() {
     stop(&members).await;
 }
 
-/// **A member that leads again after losing the shard does not serve its
-/// old claims.** Its claims were its memory of a term that ended; in the new
-/// one the group's cursor says what is owed.
+/// **A member that leads again after losing the shard serves the replicated
+/// claims, not a stale tracker.** It rebuilds from the group's entries, so the
+/// claims still stand against others and the holder can reclaim them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_that_leads_again_owes_what_it_claimed_before() {
     let (_net, members, leader) = trio().await;
@@ -172,20 +186,28 @@ async fn a_member_that_leads_again_owes_what_it_claimed_before() {
     .await;
     move_leader(&members, leader).await;
 
-    let owed = poll(&members[leader], &holder, last + 1).await;
+    let other = GroupConsumer::new("p", "o", 2, false);
     assert_eq!(
-        owed.expect("poll"),
+        poll(&members[leader], &other, last + 1)
+            .await
+            .expect("poll"),
+        Vec::<u64>::new(),
+        "a claim did not survive two leader changes"
+    );
+    assert_eq!(
+        poll(&members[leader], &reclaiming_holder(), last + 1)
+            .await
+            .expect("reclaim"),
         offsets,
-        "a stale tracker served the new term"
+        "the holder could not reclaim after the shard came back"
     );
     stop(&members).await;
 }
 
-/// **A leader that dies mid-claim loses no record and hands none out twice
-/// in one term.** No placement move, no hand-over: the member stops and the
-/// others elect. The new leader owes everything the dead one had claimed, and
-/// the old holder's ack is taken for what the new leader handed out and
-/// refused for what it did not.
+/// **A leader that dies mid-claim loses no record and hands none out twice.**
+/// No placement move, no hand-over: the member stops and the others elect.
+/// The new leader holds the dead one's claims from the log: another consumer
+/// gets none, the holder reclaims them, and its acks are taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_killed_leader_mid_claim_skips_nothing_and_hands_out_once() {
     let (net, mut members, leader) = trio().await;
@@ -214,16 +236,17 @@ async fn a_killed_leader_mid_claim_skips_nothing_and_hands_out_once() {
     let next = served(&members).await;
     assert!(members[next].shards.leading(&orders).expect("term") > term);
 
-    // Claims died with the leader: everything is owed, to one consumer.
     assert_eq!(
         poll(&members[next], &other, last + 1).await.expect("poll"),
-        offsets,
-        "a record was skipped after the leader died"
+        Vec::<u64>::new(),
+        "a claim died with the leader"
     );
     assert_eq!(
-        poll(&members[next], &holder, last + 1).await.expect("poll"),
-        Vec::<u64>::new(),
-        "one term handed a record to two consumers"
+        poll(&members[next], &reclaiming_holder(), last + 1)
+            .await
+            .expect("reclaim"),
+        offsets,
+        "a record was skipped after the leader died"
     );
     let groups = members[next].shards.groups();
     for &offset in &offsets {

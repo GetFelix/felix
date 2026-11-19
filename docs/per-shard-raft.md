@@ -3719,13 +3719,13 @@ and waits for this member to apply it, so it sees every group write
 committed before it. A write is proposed at that term, refused by openraft
 if the member no longer leads it, and answered only once applied. If the
 append's outcome is unknown, the leader closes the term before answering, so
-only a later term's read index can see the entry. Claims are the leader's
-memory: when it stops leading a shard it drops the shard's trackers, and the
-next leader hands out what was in flight again at once, without waiting out
-the visibility timeout (at least once; #2644 tracks keeping claims across a
-failover). Group writes are log entries, so they
+only a later term's read index can see the entry. Claims are group entries
+too: a poll that hands records out, and an extension, writes a claim and
+answers once it applied. A leader that stops leading drops the shard's
+trackers, and the next one rebuilds them from the table, claims included,
+each held for its full visibility again from then. Group writes are log entries, so they
 take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
-its finish, a discard, a seek, a delete) are entries in the shard's own Raft
+its finish, a discard, a seek, a delete, a claim) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
@@ -3735,7 +3735,7 @@ leader decides before it proposes the seek.
 
 The group table is the shard's consumer groups as one member has applied
 them: per group, its creation token, its cursor (everything below it is
-settled, dead or redriven), its dead letters, and the dead letters redriven
+settled, dead or redriven), its standing claims, its dead letters, and the dead letters redriven
 but not yet settled. The shard also keeps the index of its latest delete.
 The state machine folds a group entry when it applies it, before the commit
 table moves, so a write that waits for its apply finds it folded. It is

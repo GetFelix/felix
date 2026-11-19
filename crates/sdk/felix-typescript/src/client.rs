@@ -1113,7 +1113,7 @@ impl Client {
     /// with how many milliseconds it now stands, which is less than asked when
     /// the broker capped it. Pass the record `groupPoll` returned: it names
     /// that delivery, and is refused once the claim has lapsed or the record
-    /// has gone out again, even to this consumer.
+    /// has gone out again at another attempt.
     #[napi]
     pub async fn group_extend(
         &self,

@@ -1938,9 +1938,9 @@ capacity. Four things go wrong, and each has a tool.
   a stable consumer name (1 to 128 bytes, unique per live process) and set
   `reclaim` after a restart, and the records that name still holds come back at
   once. Only the first poll on a connection reclaims, so leaving it set on
-  every poll is harmless. Claims are the leader's memory, so this holds while
-  the shard's leader stays put; after a failover the group resumes from its
-  durable position.
+  every poll is harmless. On a Raft shard claims survive a failover and the
+  new leader gives them back; on the default engine they are the leader's
+  memory, so this holds while the shard's leader stays put.
 - **A settle comes too late.** An ack, nack or extend for a claim that no
   longer stands is refused with `stale_claim`. Nothing was applied, and the
   record will be delivered again. The cluster client retries a stale ack or
