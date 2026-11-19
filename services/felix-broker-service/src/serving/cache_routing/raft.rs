@@ -142,7 +142,10 @@ async fn on_group(
             }
         }
         CacheRequest::Get => Answered {
-            value: raft.cache_read(shard, key, timeout).await?.map(|(value, _)| value),
+            value: raft
+                .cache_read(shard, key, timeout)
+                .await?
+                .map(|(value, _)| value),
             ..Answered::default()
         },
         CacheRequest::GetVersioned => {

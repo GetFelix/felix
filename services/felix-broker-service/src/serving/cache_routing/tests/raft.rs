@@ -97,7 +97,11 @@ async fn script(
         &mut versions,
     );
     note("get", cache(CacheRequest::Get).await, &mut versions);
-    note("versioned", cache(CacheRequest::GetVersioned).await, &mut versions);
+    note(
+        "versioned",
+        cache(CacheRequest::GetVersioned).await,
+        &mut versions,
+    );
     let first = versions.get(0);
     let second = put_if(b"two", CacheCondition::Version(first));
     note("put if v0", cache(second).await, &mut versions);
@@ -115,13 +119,23 @@ async fn script(
     note("put if absent", cache(absent).await, &mut versions);
     note("delete", cache(CacheRequest::Delete).await, &mut versions);
     note("delete", cache(CacheRequest::Delete).await, &mut versions);
-    note("versioned", cache(CacheRequest::GetVersioned).await, &mut versions);
+    note(
+        "versioned",
+        cache(CacheRequest::GetVersioned).await,
+        &mut versions,
+    );
 
     let add = |delta| CacheRequest::CounterAdd { delta };
     said.push(format!("add: {:?}", counter("hits", add(5)).await));
     said.push(format!("add: {:?}", counter("hits", add(-2)).await));
-    said.push(format!("sum: {:?}", counter("hits", CacheRequest::CounterGet).await));
-    said.push(format!("sum: {:?}", counter("misses", CacheRequest::CounterGet).await));
+    said.push(format!(
+        "sum: {:?}",
+        counter("hits", CacheRequest::CounterGet).await
+    ));
+    said.push(format!(
+        "sum: {:?}",
+        counter("misses", CacheRequest::CounterGet).await
+    ));
     said
 }
 

@@ -40,8 +40,8 @@ use felix_wire::internal::{
     ShardRef,
 };
 
-use crate::serving::auth::{AuthContext, BrokerAuth};
 use super::CacheRequest;
+use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::lease::LeaseMint;
 use crate::shards::lifecycle::fence::Fenced;
 use crate::shards::routing::{Dispatch, IngressRouter, RaftRefusal, StreamEngine};
@@ -1283,7 +1283,8 @@ fn raft_request(op: &ForwardCacheOp) -> Result<CacheRequest, String> {
             CacheRequest::DeleteIf { version }
         }
         (CacheOpKind::CounterAdd, None) => CacheRequest::CounterAdd {
-            delta: felix_storage::counter_log::decode_sum(&op.value).map_err(|err| err.to_string())?,
+            delta: felix_storage::counter_log::decode_sum(&op.value)
+                .map_err(|err| err.to_string())?,
         },
         (CacheOpKind::CounterGet, None) => CacheRequest::CounterGet,
         (kind, Some(condition)) => return Err(format!("{kind:?} cannot carry {condition:?}")),

@@ -4769,7 +4769,7 @@ on the hybrid.
   client producer id yet, so a client retry after one may apply twice, as
   on the hybrid.
 - **Not served yet:** a keyed cache watch on a Raft cache shard. It reads
-  the hybrid store, which never opens the member's directory.
+  the hybrid store, which never opens the member's directory (#2792).
 
 ## Moving a shard from the hybrid to Raft
 

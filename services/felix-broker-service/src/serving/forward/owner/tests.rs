@@ -1655,8 +1655,10 @@ mod on_raft {
             Arc::clone(&credentials.auth),
         );
         let cache = format!("cache:{TENANT}/{NAMESPACE}/{CACHE}");
-        let token =
-            credentials.token(&[&format!("cache.write:{cache}"), &format!("cache.read:{cache}")]);
+        let token = credentials.token(&[
+            &format!("cache.write:{cache}"),
+            &format!("cache.read:{cache}"),
+        ]);
         let send = |op, value: &'static [u8]| {
             let op = ForwardCacheOp {
                 value: Bytes::from_static(value),
@@ -1685,7 +1687,10 @@ mod on_raft {
             value: three.clone(),
             ..forwarded_cache_op(CacheOpKind::CounterAdd, token.clone())
         };
-        assert_eq!(value(handler.apply_cache_op(add).await), Some(three.clone()));
+        assert_eq!(
+            value(handler.apply_cache_op(add).await),
+            Some(three.clone())
+        );
         assert_eq!(value(send(CacheOpKind::CounterGet, b"").await), Some(three));
 
         assert!(

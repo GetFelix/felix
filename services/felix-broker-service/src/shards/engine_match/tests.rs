@@ -372,7 +372,10 @@ async fn a_durable_cache_shard_shared_across_engines_is_refused() {
 
     let mut assignments = feed();
     check.take(&mut assignments).await;
-    assert!(assignments.is_empty(), "the cache shard was left to an engine");
+    assert!(
+        assignments.is_empty(),
+        "the cache shard was left to an engine"
+    );
     match check.dispatch(&sessions, &|_| None) {
         Some(Dispatch::Unavailable(Reason::OwnerUnavailable(why))) => {
             assert!(why.contains("raft here, hybrid on broker-b"), "{why}");

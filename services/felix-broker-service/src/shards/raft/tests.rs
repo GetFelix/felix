@@ -156,7 +156,15 @@ pub(crate) async fn cache_broker(root: &Path, cache: &str) -> Arc<Broker> {
     let counters =
         felix_storage::CounterStore::open(root.join("counters"), config()).expect("counters");
     let broker = Broker::new(Box::new(store)).with_counters(Arc::new(counters));
-    let broker = registered(broker, root, 1, INCARNATION, ConsistencyLevel::Quorum, config()).await;
+    let broker = registered(
+        broker,
+        root,
+        1,
+        INCARNATION,
+        ConsistencyLevel::Quorum,
+        config(),
+    )
+    .await;
     let metadata = felix_broker::CacheMetadata {
         consistency: ConsistencyLevel::Quorum,
         incarnation: INCARNATION,

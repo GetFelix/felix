@@ -789,7 +789,6 @@ impl RaftShards {
     }
 }
 
-/// The brokers placement names for a shard, lowest id first.
 /// Whether a shard's stream or cache keeps a log, with the replica count it
 /// asks for, if it names one.
 enum Durable {
@@ -797,6 +796,7 @@ enum Durable {
     Yes(Option<u32>),
 }
 
+/// The brokers placement names for a shard, lowest id first.
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
         .chain(&assignment.replicas)
@@ -1433,7 +1433,12 @@ impl WriteFence for Leading {
         // A cache group has no stream to bring to the tail: its reads wait
         // for the commit index themselves.
         if key.kind == ShardKind::Cache {
-            if let Some(lead) = self.terms.lock().get_mut(key).filter(|lead| lead.term == term) {
+            if let Some(lead) = self
+                .terms
+                .lock()
+                .get_mut(key)
+                .filter(|lead| lead.term == term)
+            {
                 lead.open = true;
             }
             return;

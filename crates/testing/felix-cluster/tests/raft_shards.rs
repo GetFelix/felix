@@ -1319,5 +1319,8 @@ async fn a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies() {
 
     cache_put_acked(&cluster, &reader, "after", b"after").await;
     let (after, _) = counter_add_acked(&cluster, &reader, "hits").await;
-    assert!(after > counted, "an add after the failover answered {after}");
+    assert!(
+        after > counted,
+        "an add after the failover answered {after}"
+    );
 }

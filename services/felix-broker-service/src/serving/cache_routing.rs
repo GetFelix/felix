@@ -267,9 +267,9 @@ pub(crate) async fn apply_cache_local(
     if !counter {
         // Taken before the write, as below.
         let entry_expires_at = match &request {
-            CacheRequest::PutIf { ttl_ms, .. } if *ttl_ms > 0 => Some(
-                felix_common::clock::system_time() + std::time::Duration::from_millis(*ttl_ms),
-            ),
+            CacheRequest::PutIf { ttl_ms, .. } if *ttl_ms > 0 => {
+                Some(felix_common::clock::system_time() + std::time::Duration::from_millis(*ttl_ms))
+            }
             _ => None,
         };
         let on_raft = raft::apply(engine, &written, generation, key, &request, quorum_timeout);
@@ -510,7 +510,14 @@ pub(crate) async fn apply_counter_op(
                 kind: ShardKind::Cache,
             };
             // A Raft cache shard keeps its counters in its own log.
-            let on_raft = raft::apply(engine, &shard_key, generation, key, &request, quorum_timeout);
+            let on_raft = raft::apply(
+                engine,
+                &shard_key,
+                generation,
+                key,
+                &request,
+                quorum_timeout,
+            );
             if let Some(answered) = on_raft.await {
                 drop(fenced);
                 return Ok(answered.map_err(raft::NotServed::into_anyhow)?.sum);

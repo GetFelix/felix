@@ -202,7 +202,11 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
                 let durable = match key.kind {
                     ShardKind::Cache => {
                         self.broker.cache().as_log_cache().is_some()
-                            && self.broker.cache_metadata(tenant, namespace, name).await.is_some()
+                            && self
+                                .broker
+                                .cache_metadata(tenant, namespace, name)
+                                .await
+                                .is_some()
                     }
                     _ => self
                         .broker
