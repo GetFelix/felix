@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795113791920,
+  "lastUpdate": 1795119254137,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62920,6 +62920,58 @@ window.BENCHMARK_DATA = {
             "range": "78993.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1249630.87\nmean: 1215255.46\nstdev: 78993.25\ncv: 6.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0a50ae1d111eda563532c49de4b9404e21283f9c",
+          "message": "feat(placement): keep tenant shards off brokers marked internal (#2840) (#2841)\n\n* feat(placement): keep tenant shards off brokers marked internal (#2840)\n\nFELIX_NODE_ROLE=internal registers the label felix.dev/node-role=internal\nwith the node. Placement drops such a node from every candidate list\n(creation, balancing, failover, restore) and treats a shard already on it as\ndraining. An operator move onto it is refused with internal_node.\n\nSpec-Unaffected: the TLA models do not model node roles; placement's choice among eligible nodes is unchanged.\n\n* fix(placement): keep the internal role once recorded; gate it on control-plane level 42 (#2840)\n\nA label edit no longer drops the role, a registration without it is refused\nfor a node recorded as internal, and PATCH with internal (cluster-scoped\nnode.manage) is the one explicit way to change it. A registration with the\nrole waits until every control-plane member supports it.\n\nSpec-Unaffected: the TLA models do not model node roles.\n\n* fix(placement): the internal role's level gate covers imports and rides the command's level (#2840)\n\nA registration or an import carrying the internal role now has command\nlevel 44, so propose refuses it below that level on the level it reads\nonce. The role-change warning logs after the store applies it.\n\nSpec-Unaffected: the TLA models do not model node roles.",
+          "timestamp": "2026-11-19T20:02:58Z",
+          "tree_id": "f00b0652c8a2886a2432f1a21986fc85299d662e",
+          "url": "https://github.com/GetFelix/felix/commit/0a50ae1d111eda563532c49de4b9404e21283f9c"
+        },
+        "date": 1795119253272,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 487224.79,
+            "range": "80986.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487224.79\nmean: 480471.58\nstdev: 80986.17\ncv: 16.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 487224.79,
+            "range": "80986.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487224.79\nmean: 480471.58\nstdev: 80986.17\ncv: 16.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120788.2,
+            "range": "745.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120788.20\nmean: 120651.82\nstdev: 745.95\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1207882.03,
+            "range": "7459.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1207882.03\nmean: 1206518.18\nstdev: 7459.51\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
