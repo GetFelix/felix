@@ -181,7 +181,10 @@ async fn a_cache_shard_started_on_raft_gets_its_target(store: &dyn ControlPlaneS
     let err = try_native_report(store, &shard, "broker-x", 71, Some(shard.incarnation))
         .await
         .expect_err("two brokers for three replicas");
-    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert!(
+        matches!(&err, StoreError::Conflict(why) if why.contains("replica count")),
+        "got {err:?}"
+    );
     gone("raft-cache-short").await;
 
     let shard = placed("raft-cache", 2).await;
@@ -189,7 +192,10 @@ async fn a_cache_shard_started_on_raft_gets_its_target(store: &dyn ControlPlaneS
     let err = try_native_report(store, &shard, "broker-x", 72, Some(shard.incarnation + 1))
         .await
         .expect_err("another incarnation");
-    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert!(
+        matches!(&err, StoreError::Conflict(why) if why.contains("incarnation")),
+        "got {err:?}"
+    );
     assert!(
         try_native_report(store, &shard, "broker-x", 72, at)
             .await
