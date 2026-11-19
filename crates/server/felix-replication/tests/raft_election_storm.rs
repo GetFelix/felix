@@ -220,11 +220,17 @@ async fn storm() {
     let mut first_led: Vec<Option<Duration>> = vec![None; groups as usize];
     let mut next_load = Instant::now();
     let all_led = loop {
-        // The bound's state on each broker, every 5 s while it works.
+        // The bound's state on each broker: every second for the first 20 s,
+        // then every 5 s.
         if Instant::now() >= next_load {
             let loads: Vec<_> = survivors.iter().map(|r| r.election_load()).collect();
             println!("t={:.0?} election load {loads:?}", started.elapsed());
-            next_load = Instant::now() + Duration::from_secs(5);
+            let gap = if started.elapsed() < Duration::from_secs(20) {
+                1
+            } else {
+                5
+            };
+            next_load = Instant::now() + Duration::from_secs(gap);
         }
         let mut led = 0;
         for n in 0..groups {
