@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795120823179,
+  "lastUpdate": 1795124816974,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -80124,6 +80124,72 @@ window.BENCHMARK_DATA = {
             "range": "63.42",
             "unit": "us",
             "extra": "trials: 5\nmedian: 554.00\nmean: 584.80\nstdev: 63.42\ncv: 10.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "408a9120ada64b3b66a83e5b45eb11d68a1a10a4",
+          "message": "formal(raft): FelixRaftPlacement extends Integers for its -1 floor (#2798)\n\n* formal(raft): FelixRaftPlacement extends Integers for its -1 floor\n\nThe floor variable added in #2760 starts at -1, which Naturals cannot\nparse, so every FelixRaftPlacement configuration failed semantic analysis.\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* formal(raft): pin TwoWipesFloor's AckedHeldSurvive violation (#2824)\n\nThe waiver lets a stale leader commit with the waived member, a code\nbug tracked in #2824; the fix lifts the pin. Set Floor and FloorWaiver in\nthe two PlacedTargetNoWrite configs, and unregister\nSameIdFiveFloorTwoWipes, which ran past the job limit in dispatch\n44442468320.\n\n* ci(tla): move FelixRaftPlacementFormFiveFloor out of the PR set; fix a stale weight\n\n* ci(tla): register the two PlacedTargetNoWrite configurations from their measured run\n\nDispatch 44463729494: PlacedTargetNoWrite passes in 1 h 48 min (weight 108);\nReachPlacedTargetNoWrite is the witness and violates NeverTransfersOffTarget.",
+          "timestamp": "2026-11-19T21:39:47Z",
+          "tree_id": "318e7d444548e5547eb556fcbc065b0869f9ef03",
+          "url": "https://github.com/GetFelix/felix/commit/408a9120ada64b3b66a83e5b45eb11d68a1a10a4"
+        },
+        "date": 1795124804638,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 96.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "16.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 137.00\nstdev: 16.78\ncv: 12.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 183,
+            "range": "1132.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 683.40\nstdev: 1132.94\ncv: 165.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.40\nstdev: 1.14\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "45.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 286.60\nstdev: 45.55\ncv: 15.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 739,
+            "range": "680.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 739.00\nmean: 946.00\nstdev: 680.59\ncv: 71.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
