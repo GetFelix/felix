@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795124821213,
+  "lastUpdate": 1795128052771,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63180,6 +63180,58 @@ window.BENCHMARK_DATA = {
             "range": "26523.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1187526.28\nmean: 1192732.02\nstdev: 26523.56\ncv: 2.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f756093afec763461951c2aa31941bbcc8abfe65",
+          "message": "deps(replication): openraft 0.10.1 from crates.io (#2851)\n\nReplaces the pinned git revision of openraft main with the 0.10.1 release\nfor openraft, openraft-multi and openraft-rt-tokio, and drops the git\nsource from deny.toml.\n\nSpec-Unaffected: dependency bump; the TLA+ models are unchanged.",
+          "timestamp": "2026-11-19T14:34:37-08:00",
+          "tree_id": "2b757744133425e2586289c0e856e932d8aad184",
+          "url": "https://github.com/GetFelix/felix/commit/f756093afec763461951c2aa31941bbcc8abfe65"
+        },
+        "date": 1795128052047,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 678455.9,
+            "range": "33635.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678455.90\nmean: 678580.31\nstdev: 33635.14\ncv: 4.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 678455.9,
+            "range": "33635.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678455.90\nmean: 678580.31\nstdev: 33635.14\ncv: 4.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163274.57,
+            "range": "3351.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163274.57\nmean: 163176.47\nstdev: 3351.37\ncv: 2.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1632745.7,
+            "range": "33513.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1632745.70\nmean: 1631764.70\nstdev: 33513.72\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
