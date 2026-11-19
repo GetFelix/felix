@@ -227,6 +227,37 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
 }
 
 /// A key and one header naming `trace`.
+/// **A shard that started on Raft gets its target from its brokers' copy
+/// ids.** Each broker reports the copy its member votes under once the copy
+/// is synced, and the control plane writes the target only when every
+/// broker in the set has. The group keeps serving under it.
+#[tokio::test]
+#[serial]
+async fn a_shard_started_on_raft_gets_a_target_from_its_copies() {
+    if !opted_in() {
+        return;
+    }
+    let cluster = Cluster::start(ClusterConfig {
+        control_plane_engine: Some("raft".to_string()),
+        ..raft_cluster()
+    })
+    .await
+    .expect("start cluster");
+    let mut nodes = cluster.node_ids();
+    nodes.sort();
+    let target =
+        felix_cluster::wait::until_some(ELECTED_WITHIN, "the shard's Raft target", || async {
+            cluster.raft_target(STREAM, 0).await.ok().flatten()
+        })
+        .await
+        .expect("a target");
+    assert_eq!(target.keys().cloned().collect::<Vec<_>>(), nodes);
+    assert!(target.values().all(|copy| *copy != 0), "{target:?}");
+    let leader = leader_among(&cluster, &nodes).await;
+    publish_acked(&cluster, &leader, b"under the target").await;
+    cluster.shutdown().await;
+}
+
 fn headers(trace: &str) -> felix_client::RecordHeaders {
     felix_client::RecordHeaders {
         key: Some(bytes::Bytes::from(format!("key-{trace}"))),
