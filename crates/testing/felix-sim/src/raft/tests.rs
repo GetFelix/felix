@@ -52,3 +52,58 @@ fn a_replaced_copy_is_credited_only_with_the_record_it_held() {
     assert!(!credited(Some(&credit), 60, &held));
     assert!(!credited(None, 50, &held));
 }
+
+/// What a stopping copy of five is credited with, and whether that makes
+/// `acked` at offset 100 look held by a majority. b4 and b5 flushed it; b1
+/// and b2 are behind; b3 stopped with 100 in its log.
+fn held_with_stopped_b3(reported: Option<LogPoint>, durable: u64, acked: &Held) -> usize {
+    let log: BTreeMap<u64, Held> = (95..=100)
+        .map(|offset| {
+            (
+                offset,
+                if offset == 100 {
+                    acked.clone()
+                } else {
+                    entry(4, offset)
+                },
+            )
+        })
+        .collect();
+    let bound = flushed_bound(reported, durable);
+    let credit = Credit {
+        bound,
+        records: log.range(..bound).map(|(o, h)| (*o, h.clone())).collect(),
+    };
+    let b3 = if credited(Some(&credit), 100, acked) {
+        (flushed(0, 100), Some(acked.clone()))
+    } else {
+        (None, None)
+    };
+    let members = [
+        (flushed(4, 99), None),
+        (flushed(4, 99), None),
+        b3,
+        (flushed(4, 100), Some(acked.clone())),
+        (flushed(4, 100), Some(acked.clone())),
+    ];
+    holders(acked, 100, &members)
+}
+
+/// A follower flushes and acks before it learns the commit, so a copy
+/// stopped right after counts for 100 even with its read bound at 100.
+#[test]
+fn a_stopped_copy_is_credited_with_what_it_flushed() {
+    let acked = entry(4, 7);
+    assert_eq!(held_with_stopped_b3(flushed(4, 100), 101, &acked), 3);
+}
+
+/// Only two members ever flushed 100. b3 had it in its log but not flushed
+/// (reported 99), or had it rewritten after reporting (durable bound 100):
+/// either way the credit must leave the ack under-replicated.
+#[test]
+fn a_stopped_copy_is_not_credited_past_what_it_flushed() {
+    let acked = entry(4, 7);
+    assert_eq!(held_with_stopped_b3(flushed(4, 99), 101, &acked), 2);
+    assert_eq!(held_with_stopped_b3(flushed(4, 100), 100, &acked), 2);
+    assert_eq!(held_with_stopped_b3(None, 101, &acked), 2);
+}

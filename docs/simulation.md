@@ -655,8 +655,10 @@ a new storage id. It also tells each shard's leader a target naming the
 member every broker holds now (the leader asks the brokers), which is how a
 rotated copy becomes a voter.
 
-A fault waits until every copy of the shards it touches is a voter, so a
-seed never replaces a majority's copies of one shard. On top of the checks
+A fault waits up to 20 seconds until every copy of the shards it touches is
+a voter, so a seed never replaces a majority's copies of one shard. A fault
+that waited longer is skipped and the history says why. A run with no disk
+fault yet takes one in each round from its second. On top of the checks
 above, a seed fails when:
 
 - a wiped copy keeps its copy id;
@@ -664,11 +666,15 @@ above, a seed fails when:
   seconds before it stopped, which its log mark covers;
 - a copy the fault did not touch rotates.
 
-A stopped or replaced copy counts toward a majority for the records it held
-below its read bound when it stopped, read from its log then, until its new
-copy has flushed that far: those were committed, so it held them. A disk-mode
-seed that never wiped or restored a directory checked too little. A read bound is checked against the same
-member's earlier bounds only within one start.
+A stopped or replaced copy counts toward a majority for the records it had
+flushed when it stopped, read from its log before the fault, until its new
+copy has flushed that far. A follower flushes a record before it learns the
+record is committed, so its read bound can trail what it acknowledged. The
+credit stops at the lower of the flushed index the member reported and its
+log's durable end once stopped, so a record no majority flushed is still
+reported. A disk-mode seed that never wiped or restored a directory checked
+too little, and the failure lists the faults it skipped. A read bound is
+checked against the same member's earlier bounds only within one start.
 
 `a_majority_wipe_stalls_its_shard_and_loses_nothing` wipes one shard's
 directory on a majority at once. No copy may then vote under its old id, so
