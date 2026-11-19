@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795053295126,
+  "lastUpdate": 1795053754233,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78738,6 +78738,72 @@ window.BENCHMARK_DATA = {
             "range": "1157.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 426.00\nmean: 910.40\nstdev: 1157.38\ncv: 127.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f3d3e75f0d1e5ebe6dd0633d5fb708419b14524",
+          "message": "formal: list every unchecked TLA+ configuration and bound PlacedTarget (#2142, #2676) (#2780)\n\n* formal: list every unchecked TLA+ configuration and bound PlacedTarget (#2142, #2676)\n\nWIP: dispatch results pending.\n\nSpec-Unaffected: adds a witness invariant and configurations only; no modelled rule changes.\n\n* formal: README rows and changelog for the TLA+ registry check (#2142, #2676)\n\nSpec-Unaffected: docs and tooling only.\n\n* formal: bound PlacedTarget on the write, not the calls, and tighten its witness (#2676)\n\nWith one call the target's new member could only be added as a learner, so\nno membership change was ever proposed. The witness now requires the leader\nto stay in the target, which only the placed transfer rule allows.\n\nSpec-Unaffected: a reach invariant and configurations only.",
+          "timestamp": "2026-11-18T17:53:55-08:00",
+          "tree_id": "fe96becc1199d9b05567094db7a9f814378fba84",
+          "url": "https://github.com/GetFelix/felix/commit/8f3d3e75f0d1e5ebe6dd0633d5fb708419b14524"
+        },
+        "date": 1795053741313,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "7.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 113.40\nstdev: 7.86\ncv: 6.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 171,
+            "range": "11.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 166.60\nstdev: 11.61\ncv: 6.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 198,
+            "range": "22.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 205.80\nstdev: 22.48\ncv: 10.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 126,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 126.20\nstdev: 0.84\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 273,
+            "range": "8.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 274.00\nstdev: 8.60\ncv: 3.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 427,
+            "range": "712.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 427.00\nmean: 745.80\nstdev: 712.06\ncv: 95.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
