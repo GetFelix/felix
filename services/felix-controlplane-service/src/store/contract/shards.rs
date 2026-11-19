@@ -13,8 +13,8 @@ use crate::model::{
 };
 use crate::store::{AssignmentWrite, ControlPlaneStore, StoreError};
 
-const TENANT: &str = "shard-t";
-const NAMESPACE: &str = "shard-ns";
+pub(super) const TENANT: &str = "shard-t";
+pub(super) const NAMESPACE: &str = "shard-ns";
 const STREAM: &str = "orders";
 const SHARDS: u32 = 4;
 /// Deliberately the stream's name, and deliberately a different shard count:

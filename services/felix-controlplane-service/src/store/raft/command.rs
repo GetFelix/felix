@@ -539,9 +539,9 @@ pub enum MetaCommand {
         /// lost. Set by `settle_for_level`, so every member does the same.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_ordered: bool,
-        /// Level 41: the stream incarnation of the copy's group. Checked
-        /// against the shard's, and with it a shard that started on Raft
-        /// takes ids too. An entry without it applies as it did below 41.
+        /// Level 41: the stream or cache incarnation of the copy's group.
+        /// Checked against the shard's, and with it a shard that started on
+        /// Raft takes ids too. An entry without it applies as it did below 41.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shard_incarnation: Option<u64>,
     },
