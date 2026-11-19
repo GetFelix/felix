@@ -1077,6 +1077,13 @@ written before the file existed has none, and refusing to open those would
 trade an outage for a convenience. What is lost is the ability to repair a
 divergence automatically, never a record.
 
+The check that sends a newer leader back over records a follower holds past
+its commit offset does not depend on the file. With no history it counts every
+record past the commit offset as uncompared, so the leader resends from there.
+Records that agree cost that one resend. A divergent one is a conflict nothing
+can label as a dead leader's suffix, so replication on the shard stops for an
+operator rather than keeping it.
+
 The entries are bounded, because every open reads the whole file and a
 generation older than the oldest retained record cannot be one two brokers
 diverge within.

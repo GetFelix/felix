@@ -858,6 +858,7 @@ impl ReplicaHandler {
             Ok(tail) => unverified_from(
                 previous_generation,
                 batch.shard.generation,
+                log.physical_base(),
                 log.commit_offset(),
                 verified,
                 tail,
@@ -3105,15 +3106,24 @@ fn detail_of(reason: &RefusalReason) -> String {
 /// Past it, those written since the last recorded generation began came from
 /// that generation's leader, or were this broker's own writes as leader; a
 /// newer leader shipping only past them would never learn they disagree.
+///
+/// With no history at all (the `epochs` file was lost or unreadable) nothing
+/// says who wrote the records past the commit offset, so every one held from
+/// `base` on is uncompared. That costs one resend from the commit offset.
 fn unverified_from(
     previous: Option<felix_storage::log::Epoch>,
     generation: u64,
+    base: u64,
     commit: u64,
     verified: Option<u64>,
     tail: u64,
 ) -> Option<u64> {
-    let previous = previous.filter(|previous| generation > previous.generation)?;
-    let from = previous.start_offset.max(commit).max(verified.unwrap_or(0));
+    let start = match previous {
+        Some(previous) if generation > previous.generation => previous.start_offset,
+        Some(_) => return None,
+        None => base,
+    };
+    let from = start.max(commit).max(verified.unwrap_or(0));
     (from < tail).then_some(from)
 }
 

@@ -3534,7 +3534,8 @@ below. Accepting it would leave those records uncompared, and one of them may
 be a dead leader's unacknowledged write at an offset the new leader filled
 differently: two brokers disagreeing at a committed offset. So a batch from a newer generation that begins past them is
 answered with a `LogGap` naming the first uncompared record: the later of
-where the older generation began here and the commit offset. The leader rewinds
+where the older generation began here and the commit offset, or the commit
+offset alone when the follower has no history at all. The leader rewinds
 and the overlap is compared like any other, so a conflict is found and repaired
 as above. When that takes several batches, the follower remembers in memory how
 far it has got. The newest generation it holds stays older than the leader's
