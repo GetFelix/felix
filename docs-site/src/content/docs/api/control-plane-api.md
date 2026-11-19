@@ -166,13 +166,17 @@ Required fields:
 - `audiences` (allowed `aud` values)
 - `subject_claim` (default `sub`)
 - optional `groups_claim`
-- either `discovery_url` or `jwks_url`
+- one key source: `discovery_url`, `jwks_url`, or `jwks` (the public keys inline,
+  as a JWKS document, so the control plane never fetches for the issuer)
+- optional `single_use_jti` (accept each token's `jti` once) and
+  `max_token_lifetime_seconds` (refuse a token whose `exp - iat` is larger)
 
 ### Admin API: IdP Issuers
 
 IdP issuer admin endpoints require `tenant.manage` on `tenant:{tenant_id}`.
 That is enough to add an issuer no other tenant trusts. Changing an existing
-issuer's keys (`jwks_url`, `discovery_url`), `audiences` or `claim_mappings`,
+issuer's keys (`jwks_url`, `discovery_url`, `jwks`), its `single_use_jti` or
+`max_token_lifetime_seconds`, `audiences` or `claim_mappings`,
 registering an issuer another tenant already trusts, and deleting an issuer
 also need `tenant.manage:cluster:*`, because those settings decide which
 principals and groups the issuer's tokens become.
@@ -199,6 +203,26 @@ Discovery and JWKS URLs must be `https` (plain `http` only on a loopback host,
 unless `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP=true`), and the issuer must
 not contain `#`.
 
+An issuer can carry its keys inline instead:
+
+```json
+{
+  "issuer": "https://ca.cluster.internal",
+  "audiences": ["felix-controlplane"],
+  "jwks": {"keys": [{"kty": "EC", "kid": "2026-11", "crv": "P-256", "x": "...", "y": "..."}]},
+  "single_use_jti": true,
+  "max_token_lifetime_seconds": 120
+}
+```
+
+`jwks` excludes `jwks_url` and `discovery_url`. It holds 1 to 16 RSA or EC
+keys with distinct `kid`s, so a rotation can overlap two. With
+`single_use_jti` (which needs a `max_token_lifetime_seconds` of at most 600) a token exchanges once; the record is kept in memory by each
+control plane replica, so it holds per replica and does not survive a restart
+(a restarted replica refuses tokens issued before it started). See
+[Auth](https://github.com/GetFelix/felix/blob/main/docs/auth.md#admin-api-preferred)
+for the details and limits.
+
 Delete an issuer:
 
 ```http
@@ -222,8 +246,8 @@ Removing a policy or a grouping also revokes the broker tokens of everyone the
 rule reached, so their open streams end and they authenticate again under the
 rules as they are now. A rule that reached an IdP group revokes the whole
 tenant, and so does deleting an IdP issuer or narrowing or replacing what it
-trusts (an audience dropped, the subject or groups claim changed, or `jwks_url`
-or `discovery_url` changed; adding an audience revokes nobody). The change and
+trusts (an audience dropped, the subject or groups claim changed, `jwks_url`
+or `discovery_url` changed, or an inline `jwks` key removed; adding an audience revokes nobody). The change and
 its revocation are one write, so a failed request changed nothing and is safe
 to retry. `refresh-tokens/revoke` with `"principal_id": "*"` revokes a whole
 tenant by hand. See [Revoking a principal](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).

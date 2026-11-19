@@ -73,6 +73,12 @@ pub async fn initialize(
             "initial_admin_principals must not be empty",
         ));
     }
+    if body.idp_issuers.len() > crate::auth::idp_registry::MAX_ISSUERS_PER_TENANT {
+        return Err(api_validation_error(&format!(
+            "a tenant may trust at most {} issuers",
+            crate::auth::idp_registry::MAX_ISSUERS_PER_TENANT
+        )));
+    }
     for issuer in &body.idp_issuers {
         issuer
             .validate(
