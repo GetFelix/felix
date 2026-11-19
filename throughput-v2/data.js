@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795106511266,
+  "lastUpdate": 1795107758738,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62764,6 +62764,58 @@ window.BENCHMARK_DATA = {
             "range": "4206.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1235425.64\nmean: 1234922.61\nstdev: 4206.42\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86f71636448461d546e80e3c00ebd3d49b9d2d03",
+          "message": "feat(controlplane): declare a broker's data directory dead (part of #2250) (#2830)\n\n* feat(controlplane): declare a broker's data directory dead (#2250)\n\nAn operator declares a stopped broker's data directory gone for good with\nfelixctl node declare-dead (POST /v1/nodes/{id}/declare-dead). The control\nplane records the node with its registered storage id, for good, and\nrefuses a registration under that id from then on. dead_nodes() is the set\na re-form plans with. Metadata level 42, refused below it by the store and\nthe leader.\n\nSpec-Unaffected: the dead set is an input the modelled re-form already\ntakes (DeclareDead in FelixRaftReform.tla); this records it in the control\nplane without changing the rule.\n\n* fix(controlplane): say a dead declaration does not prove the broker stopped, log it, cover Draining and Left (#2250)",
+          "timestamp": "2026-11-19T16:45:32Z",
+          "tree_id": "f865473b2abc01144792c9d2a30e4195f55fcf6d",
+          "url": "https://github.com/GetFelix/felix/commit/86f71636448461d546e80e3c00ebd3d49b9d2d03"
+        },
+        "date": 1795107757743,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345747.55,
+            "range": "8180.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345747.55\nmean: 349359.97\nstdev: 8180.33\ncv: 2.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345747.55,
+            "range": "8180.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345747.55\nmean: 349359.97\nstdev: 8180.33\ncv: 2.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78954.22,
+            "range": "699.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78954.22\nmean: 79349.38\nstdev: 699.47\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 789542.18,
+            "range": "6994.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 789542.18\nmean: 793493.79\nstdev: 6994.69\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
