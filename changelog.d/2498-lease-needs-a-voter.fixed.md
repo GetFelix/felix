@@ -1,1 +1,0 @@
-- Per-shard Raft: a leader holds no lease while its newest membership leaves it out as a voter. openraft lets such a leader go on leading on the other voters' answers, and one of them could restart, lead a later term alone and lose writes the old leader acknowledged locally (#2498).

@@ -32,12 +32,12 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 crc32fast = { workspace = true, optional = true }
-felix-broker = { path = "../felix-broker", version = "0.8.0-preview.0" }
-felix-common = { path = "../felix-common", version = "0.8.0-preview.0", features = ["blocking", "hasher", "tls"] }
-felix-router = { path = "../felix-router", version = "0.8.0-preview.0" }
-felix-storage = { path = "../felix-storage", version = "0.8.0-preview.0" }
-felix-transport = { path = "../../protocol/felix-transport", version = "0.8.0-preview.0" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.0" }
+felix-broker = { path = "../felix-broker", version = "0.8.0-preview.1" }
+felix-common = { path = "../felix-common", version = "0.8.0-preview.1", features = ["blocking", "hasher", "tls"] }
+felix-router = { path = "../felix-router", version = "0.8.0-preview.1" }
+felix-storage = { path = "../felix-storage", version = "0.8.0-preview.1" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.8.0-preview.1" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.1" }
 futures = "0.3"
 metrics = { workspace = true }
 openraft = { workspace = true, optional = true, features = ["tokio-rt", "serde"] }
@@ -78,9 +78,9 @@ required-features = ["raft"]
 # Turns `raft` on for this crate's own tests, so `cargo test` runs the
 # runtime's without a feature flag.
 felix-replication = { path = ".", features = ["raft", "testing"] }
-felix-broker = { path = "../felix-broker", version = "0.8.0-preview.0", features = ["fault-injection"] }
+felix-broker = { path = "../felix-broker", version = "0.8.0-preview.1", features = ["fault-injection"] }
 # `DiskLog::fail_next_flush` and the simulated power cut, for the identity tests.
-felix-storage = { path = "../felix-storage", version = "0.8.0-preview.0", features = ["fault-injection", "sim"] }
+felix-storage = { path = "../felix-storage", version = "0.8.0-preview.1", features = ["fault-injection", "sim"] }
 axum = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 tempfile = { workspace = true }

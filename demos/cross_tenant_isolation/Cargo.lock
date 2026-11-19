@@ -819,7 +819,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "felix-authz"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "felix-broker"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "felix-broker-service"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "felix-client"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "felix-common"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "felix-controlplane-service"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -989,7 +989,7 @@ dependencies = [
 
 [[package]]
 name = "felix-kafka"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "felix-mqtt"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "felix-mqtt-wire"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "bytes",
  "thiserror 2.0.21",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "felix-replication"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "felix-router"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "arc-swap",
  "felix-common",
@@ -1079,7 +1079,7 @@ dependencies = [
 
 [[package]]
 name = "felix-storage"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1099,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "felix-transport"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "felix-wire"
-version = "0.8.0-preview.0"
+version = "0.8.0-preview.1"
 dependencies = [
  "base64 0.23.1",
  "bytes",

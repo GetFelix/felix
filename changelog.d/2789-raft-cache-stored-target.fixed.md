@@ -1,1 +1,0 @@
-On a Raft cluster, cache shards (and the counters they hold) get a stored target again and form their groups. Since groups form only on the target the control plane stores (#2789), the control plane took copy ids only for stream shards that started on Raft, so a cache group never formed. It now takes them for cache shards with the same incarnation and replica-count checks.
