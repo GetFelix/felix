@@ -252,15 +252,27 @@ pub async fn refresh_token_handler(
         });
     }
 
-    // Bound the way the access token it mints is bound. Checked only once the
+    // Bound the way the access token it mints is bound. Checked once the
     // secret matched, so a token id alone says nothing about whose it is, and
-    // the token is not spent: the holder of the right certificate keeps it.
+    // before liveness, so a spent token replayed from the wrong certificate
+    // neither tells the caller it was spent nor ends the owner's chain. The
+    // token is not spent either: the holder of the right certificate keeps it.
     if let Some(Extension(binding)) = &binding {
         let may_act = found
             .narrowing
             .as_ref()
             .and_then(|narrowing| narrowing.may_act.as_deref());
-        binding.check(&found.principal_id, may_act)?;
+        if let Err(err) = binding.check(&found.principal_id, may_act) {
+            // The caller holds this chain's secret, so name the chain for an
+            // operator to revoke.
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                principal_id = %found.principal_id,
+                family_id = %found.family_id,
+                "a refresh token was presented from another certificate",
+            );
+            return Err(err);
+        }
     }
 
     // The chain keeps its exchange's audience.

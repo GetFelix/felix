@@ -400,7 +400,12 @@ certificate must be issued to the chain's principal, or to the gateway named as
 its actor (`may_act`). A refresh token is a body field, not a bearer, so without
 this a stolen one would mint access tokens from any certificate the CA signed.
 Any other certificate gets a `401` (reason `certificate_mismatch`) and the token
-is not spent, so its holder keeps the chain. Refresh tokens issued before the
+is not spent, so its holder keeps the chain. The certificate is checked after
+the secret but before the token's state, so a spent token replayed from the
+wrong certificate also gets the `401` and does not end the chain: otherwise any
+certificate the CA signed could log the owner out, and the answer would say the
+token was spent. The refusal is logged with the chain's principal and family id,
+for an operator to revoke. Refresh tokens issued before the
 upgrade, or while binding was off, are checked the same way: the principal is on
 every record, so there is no grace period for them.
 
