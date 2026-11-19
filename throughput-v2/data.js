@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795066759546,
+  "lastUpdate": 1795067737115,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62348,6 +62348,58 @@ window.BENCHMARK_DATA = {
             "range": "19173.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1230385.97\nmean: 1221641.58\nstdev: 19173.25\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44a770cfa01ee25acb2d2efa31553dd948746a3f",
+          "message": "fix(serving): the owner checks client-certificate binding on forwarded requests (#2823)\n\n* feat(wire): a ClientCertified envelope for forwards (#2812)\n\nInternal kind 66 wraps a credentialed forward with the certificate chain\nits client presented to the forwarding broker: correlation id, a count\nbyte (1 to 8), each DER certificate behind a u32 length (64 KiB in all),\nthe inner kind and body. It is outermost and carries only a forward with\na credential, optionally incarnated; the decoder refuses anything else,\nnesting, a FromCopy on either side, a mismatched correlation id and any\nover-bound length. New capability CLIENT_CERTS (1 << 27). A forward\nwithout the envelope encodes byte for byte as before.\n\nThe peer pool and server treat the envelope as a forward: forward lane\nand timeout, correlation stamping, overload refusal in the inner shape.\n\nSpec-Unaffected: adds an authentication envelope around forwards; the TLA+ specs model replication, fencing, leases and ordering, and none models client credentials or certificates\n\n* fix(serving): the owner checks client-certificate binding on forwards (#2812)\n\nWith FELIX_TLS_CLIENT_CERT_BIND_SUBJECT on, only the broker a client\nconnected to bound the token to the client certificate. A forwarding\nbroker that did not bind, or a peer that skipped the check, could use a\ntoken without its certificate at the shard's owner.\n\nThe ingress now keeps the chain a client presented (AuthContext and the\nMQTT credential) and sends it in ClientCertified to an owner that offers\nCLIENT_CERTS, for publishes, cache ops, counter ops and lease claims. A\nbinding owner verifies the chain with the same WebPKI verifier its\nclient listeners use, built from its own FELIX_TLS_CLIENT_CA, then runs\nthe same subject check (BrokerAuth::authenticate_forwarded). A forward\nwithout a chain is refused Unauthorized, so a broker from an older\nrelease cannot forward to an upgraded binding owner. Without binding the\nchain is ignored.\n\nSpec-Unaffected: authentication of forwarded client requests; the TLA+ specs model replication, fencing, leases and ordering, and none models client credentials or certificates\n\n* docs: client-certificate binding across a forward (#2812)\n\nThe ClientCertified envelope and CLIENT_CERTS in the internal protocol,\nthe owner's check and its residual in the internal threat model, and the\nrolling-upgrade note wherever FELIX_TLS_CLIENT_CERT_BIND_SUBJECT is\ndescribed.\n\n* fix(serving): offer CLIENT_CERTS only when binding subjects (#2812)\n\nOnly a broker with FELIX_TLS_CLIENT_CERT_BIND_SUBJECT on checks a\nforwarded client chain, so only it offers CLIENT_CERTS. A cluster that\ndoes not bind now exchanges the same frames as before, client CA or not.\n\nThe owner keeps refusing chain-less forwards when it binds, including for\nclients that log in without a certificate (plain MQTT): \"the client had\nno certificate\" is what a compromised forwarder would say. The docs now\nsay such clients are served only on shards their own broker owns.\n\nSpec-Unaffected: capability advertising for an authentication envelope; the TLA+ specs model replication, fencing, leases and ordering, not client credentials\n\n* test(node): CLIENT_CERTS is offered exactly when the broker binds subjects (#2812)\n\nThe gate moves into offer_client_certs, and a test pins it: offered with\nbinding on, not with a client CA alone, not with binding off. Dropping\nthe gate would leave a binding owner refusing every certified forward.",
+          "timestamp": "2026-11-19T05:50:18Z",
+          "tree_id": "3eaa3a2f383b45dbbfe3395ea993c2bd8e59a3a8",
+          "url": "https://github.com/GetFelix/felix/commit/44a770cfa01ee25acb2d2efa31553dd948746a3f"
+        },
+        "date": 1795067736347,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 519411.45,
+            "range": "28237.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519411.45\nmean: 519591.19\nstdev: 28237.92\ncv: 5.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 519411.45,
+            "range": "28237.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519411.45\nmean: 519591.19\nstdev: 28237.92\ncv: 5.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123482.03,
+            "range": "1894.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123482.03\nmean: 122937.19\nstdev: 1894.08\ncv: 1.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1234820.25,
+            "range": "18940.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1234820.25\nmean: 1229371.91\nstdev: 18940.86\ncv: 1.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
