@@ -178,11 +178,14 @@ fn plan_once(
 
     // A live node may be given shards. A draining node keeps serving what it
     // has until each shard is moved off it, so its assignments go through the
-    // move path, not the failover path.
+    // move path, not the failover path. An internal node is never given one:
+    // every shard is a tenant's, and it is treated as draining so any it
+    // already holds is moved off.
     let eligible: Vec<&Node> = {
         let mut live: Vec<&Node> = nodes
             .iter()
             .filter(|node| node.status.lifecycle == NodeLifecycle::Live)
+            .filter(|node| !node.spec.is_internal())
             .collect();
         // Sorted so the tie-break below is stable regardless of input order.
         live.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -190,9 +193,11 @@ fn plan_once(
     };
     let is_live = |id: &str| eligible.iter().any(|node| node.node_id == id);
     let is_draining = |id: &str| {
-        nodes
-            .iter()
-            .any(|node| node.node_id == id && node.status.lifecycle == NodeLifecycle::Draining)
+        nodes.iter().any(|node| {
+            node.node_id == id
+                && (node.status.lifecycle == NodeLifecycle::Draining
+                    || (node.status.lifecycle == NodeLifecycle::Live && node.spec.is_internal()))
+        })
     };
     let is_serving = |id: &str| is_live(id) || is_draining(id);
     // A follower whose broker has been down or gone long enough that
@@ -547,6 +552,7 @@ fn plan_once(
                 .iter()
                 .filter(|node| {
                     node.status.lifecycle == NodeLifecycle::Draining
+                        && !node.spec.is_internal()
                         && !departed.contains(&node.node_id)
                         && allowed(&node.node_id)
                         && (!fenced || promotable_destination(previous, node, replication_factor))

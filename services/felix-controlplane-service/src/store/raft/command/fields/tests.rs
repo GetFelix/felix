@@ -157,6 +157,7 @@ fn node_patch() -> NodePatchRequest {
         labels: Some(any_map(s("v"))),
         capacity: Some(capacity()),
         lifecycle: Some(NodeLifecycle::Draining),
+        internal: Some(true),
     }
 }
 

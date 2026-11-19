@@ -644,6 +644,7 @@
 0 patch_node.patch.capacity.weight
 0 patch_node.patch.labels
 0 patch_node.patch.labels.*
+44 patch_node.patch.internal
 0 patch_node.patch.lifecycle
 0 patch_node.patch.region
 0 patch_stream

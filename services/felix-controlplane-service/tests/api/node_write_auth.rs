@@ -691,3 +691,88 @@ async fn a_broker_reports_only_its_own_raft_copy_id() {
         assert_eq!(response.status(), status, "{stream}");
     }
 }
+
+fn patch(path: &str, bearer: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri(path)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {bearer}"))
+        .body(Body::from(body.to_string()))
+        .expect("request")
+}
+
+/// A broker's own token holds node.manage on itself, so it may edit labels
+/// but must not lift the role that keeps tenant shards off it. Only a
+/// cluster-scoped operator can.
+#[tokio::test]
+async fn only_a_cluster_operator_can_clear_the_internal_role() {
+    let (app, store, keys) = setup().await;
+    let own = token(&keys, vec!["node.manage:node:core-a"]);
+    let mut body = registration("core-a", 7001);
+    body["labels"] = serde_json::json!({"felix.dev/node-role": "internal"});
+    let registered = app
+        .clone()
+        .oneshot(post("/v1/nodes", Some(&own), body))
+        .await
+        .expect("request");
+    assert_eq!(registered.status(), StatusCode::OK);
+
+    let wiped = app
+        .clone()
+        .oneshot(patch(
+            "/v1/nodes/core-a",
+            &own,
+            serde_json::json!({"labels": {}}),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(wiped.status(), StatusCode::OK);
+    assert!(
+        store
+            .get_node("core-a")
+            .await
+            .expect("get")
+            .spec
+            .is_internal()
+    );
+
+    let own_clear = app
+        .clone()
+        .oneshot(patch(
+            "/v1/nodes/core-a",
+            &own,
+            serde_json::json!({"internal": false}),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(own_clear.status(), StatusCode::FORBIDDEN);
+    assert!(
+        store
+            .get_node("core-a")
+            .await
+            .expect("get")
+            .spec
+            .is_internal()
+    );
+
+    let operator = token(&keys, vec!["node.manage:cluster:*"]);
+    let cleared = app
+        .clone()
+        .oneshot(patch(
+            "/v1/nodes/core-a",
+            &operator,
+            serde_json::json!({"internal": false}),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(cleared.status(), StatusCode::OK);
+    assert!(
+        !store
+            .get_node("core-a")
+            .await
+            .expect("get")
+            .spec
+            .is_internal()
+    );
+}

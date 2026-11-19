@@ -56,7 +56,11 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 43;
+pub const METADATA_VERSION: u16 = 44;
+
+/// The metadata level whose members' placement acts on the internal node
+/// role ([`MetaCommand::internal_role_level`]).
+pub(crate) const INTERNAL_ROLE_LEVEL: u16 = 44;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -601,7 +605,28 @@ impl MetaCommand {
     /// member that reports no level already knows.
     pub fn version(&self) -> u16 {
         let value = serde_json::to_value(self).expect("commands serialize by construction");
-        self.variant_level().max(fields::level_of(&value))
+        self.variant_level()
+            .max(fields::level_of(&value))
+            .max(self.internal_role_level())
+    }
+
+    /// The internal role rides in a node's labels, which every member
+    /// already applies, so no field marks it. A leader below this level
+    /// would place tenant shards on such a node, so any command that writes
+    /// one is held to it: a registration, or an import (restore) of nodes.
+    /// An import does not keep the registration's rule against dropping the
+    /// role: a restore replaces the records on purpose.
+    fn internal_role_level(&self) -> u16 {
+        let internal = match self {
+            Self::RegisterNode { node } | Self::RegisterNodeInFleet { node } => {
+                node.spec.is_internal()
+            }
+            Self::ImportState { state, .. } => {
+                state.nodes.iter().any(|(_, node)| node.spec.is_internal())
+            }
+            _ => false,
+        };
+        if internal { INTERNAL_ROLE_LEVEL } else { 0 }
     }
 
     fn variant_level(&self) -> u16 {

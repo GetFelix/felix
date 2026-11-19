@@ -129,6 +129,7 @@ impl SimBrokerConfig {
                 kafka_advertise_addr: None,
                 region: self.region.clone(),
                 zone: None,
+                internal: false,
                 region_bridges: Vec::new(),
                 features: self.features.clone(),
             }),

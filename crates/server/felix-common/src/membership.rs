@@ -15,6 +15,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "openapi")]
 use utoipa::ToSchema;
 
+/// The node label a broker registers its role under, from `FELIX_NODE_ROLE`.
+pub const NODE_ROLE_LABEL: &str = "felix.dev/node-role";
+
+/// The role that keeps tenant shards off a node. The only role there is.
+pub const NODE_ROLE_INTERNAL: &str = "internal";
+
 /// What the cluster currently thinks of a node.
 ///
 /// `Unknown` is not a state the control plane sends. It is what a broker reads

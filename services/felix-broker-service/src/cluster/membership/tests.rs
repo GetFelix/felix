@@ -174,6 +174,7 @@ fn config() -> MembershipConfig {
         kafka_advertise_addr: None,
         region: "us-west-2".to_string(),
         zone: None,
+        internal: false,
         region_bridges: Vec::new(),
         features: Default::default(),
     }
@@ -258,6 +259,35 @@ async fn registration_sends_the_zone_when_one_is_set() {
 
     let sent = calls.lock().expect("lock").registrations[0].clone();
     assert_eq!(sent["zone"], "us-west-2b");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// The role rides the registration that creates the node, so placement never
+/// sees an internal node without it.
+#[tokio::test]
+async fn registration_sends_the_internal_role_label() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let internal = MembershipConfig {
+        internal: true,
+        ..config()
+    };
+
+    register(&link(&client, &base_url), &internal, &credential, None)
+        .await
+        .expect("register");
+    register(&link(&client, &base_url), &config(), &credential, None)
+        .await
+        .expect("register");
+
+    let sent = calls.lock().expect("lock").registrations.clone();
+    assert_eq!(sent[0]["labels"]["felix.dev/node-role"], "internal");
+    // Omitted for an ordinary node, so its body is the one it always sent.
+    assert!(sent[1].get("labels").is_none());
 
     let _ = stop.send(());
     let _ = handle.await;

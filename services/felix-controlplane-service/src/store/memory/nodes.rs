@@ -43,6 +43,13 @@ pub(super) async fn register_node(
 
     let stored = match state.records.get(&node.node_id) {
         Some(existing) => {
+            // Re-registering without the role would quietly put a core
+            // machine back in placement; clearing it is an operator's act.
+            if existing.spec.is_internal() && !node.spec.is_internal() {
+                return Err(invalid_node(
+                    crate::model::NodeValidationError::RoleDropped(node.node_id.clone()),
+                ));
+            }
             if !existing
                 .status
                 .lifecycle

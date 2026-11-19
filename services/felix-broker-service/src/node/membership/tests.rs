@@ -48,6 +48,7 @@ fn member(base_url: &str, start_without_controlplane: bool) -> BrokerConfig {
             kafka_advertise_addr: None,
             region: "local".to_string(),
             zone: None,
+            internal: false,
             region_bridges: Vec::new(),
             features,
         }),

@@ -162,6 +162,7 @@ fn config(node_id: &str, port: u16) -> MembershipConfig {
         kafka_advertise_addr: None,
         region: "us-west-2".to_string(),
         zone: None,
+        internal: false,
         region_bridges: Vec::new(),
         features: Default::default(),
     }

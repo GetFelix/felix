@@ -4639,6 +4639,67 @@ async fn placement_acks_and_their_gate_wait_for_level_35() {
     );
 }
 
+/// A leader below the level would place tenant shards on an internal node,
+/// so the registration waits for every member.
+#[tokio::test]
+async fn an_internal_registration_waits_for_level_44() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) =
+        store_with_member_at(dir.path(), super::command::INTERNAL_ROLE_LEVEL - 1).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await != super::command::INTERNAL_ROLE_LEVEL - 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut internal = crate::store::contract::nodes::node("core-a", 7001);
+    internal.spec.labels.insert(
+        felix_common::membership::NODE_ROLE_LABEL.to_string(),
+        felix_common::membership::NODE_ROLE_INTERNAL.to_string(),
+    );
+    let refused = store.register_node(internal.clone()).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store
+        .register_node(crate::store::contract::nodes::node("broker-a", 7002))
+        .await
+        .expect("an ordinary node still registers");
+
+    // A restore carrying the role is held to the same level.
+    let mut state = store.machine.store().export_state().await;
+    state.nodes.push(("core-a".to_string(), internal.clone()));
+    let import = MetaCommand::ImportState {
+        state: Box::new(state),
+        overwrite: true,
+        mark_unplaced: true,
+        raise_incarnation: false,
+        lose_ordered: false,
+    };
+    assert_eq!(import.version(), super::command::INTERNAL_ROLE_LEVEL);
+    let refused = store.propose(import).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+
+    version.store(
+        super::command::INTERNAL_ROLE_LEVEL,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.register_node(internal.clone()).await.is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never admitted at level 44"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// The root sequence a group below its level does not keep is logged once
 /// per level, not once per heartbeat.
 #[test]
