@@ -10,6 +10,13 @@
 # Relative to the directory containing .cargo/, i.e. the repository root.
 target-dir = "target"
 
+# windows-targets 0.52 (pulled in by quinn-udp and rustls-platform-verifier)
+# otherwise links the import library windows.0.52.0.lib, which only rustc's own
+# search path knows. A C link of libfelix.lib cannot find it (LNK1181), so
+# generate the imports with raw-dylib instead.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["--cfg", "windows_raw_dylib"]
+
 [profile.profiling]
 inherits = "release"
 debug = true

@@ -1,0 +1,1 @@
+- The Windows libfelix archives link from C again (#2846). They no longer need `windows.0.52.0.lib`, which only rustc's search path could find, so `cl ... felix.lib` failed with LNK1181.
