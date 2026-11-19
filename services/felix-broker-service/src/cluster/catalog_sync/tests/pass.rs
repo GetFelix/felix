@@ -380,6 +380,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 cache: "c1".to_string(),
                                 consistency: None,
                                 incarnation: 0,
+                                replication_factor: None,
                             }),
                             seq: None,
                             deleted_through: None,

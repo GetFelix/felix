@@ -314,6 +314,8 @@ pub(crate) struct Cache {
     /// that predates cache incarnations, which reads as 0.
     #[serde(default)]
     pub(crate) incarnation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) replication_factor: Option<u32>,
 }
 
 impl Cache {
@@ -322,6 +324,7 @@ impl Cache {
         Ok(felix_broker::CacheMetadata {
             consistency: super::apply::read_consistency(self.consistency.as_deref())?,
             incarnation: self.incarnation,
+            replication_factor: self.replication_factor,
         })
     }
 
@@ -338,6 +341,7 @@ impl Cache {
             cache: cache.to_owned(),
             consistency: Some(consistency_name(metadata.consistency).to_owned()),
             incarnation: metadata.incarnation,
+            replication_factor: metadata.replication_factor,
         }
     }
 }

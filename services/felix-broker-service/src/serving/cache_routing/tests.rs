@@ -738,3 +738,6 @@ mod quorum_waits {
             .expect("counter get");
     }
 }
+
+#[cfg(feature = "raft")]
+mod raft;
