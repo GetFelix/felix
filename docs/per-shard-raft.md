@@ -3891,6 +3891,9 @@ Membership changes are not built yet
   it initializes, the broker checks, under the lock the routing pass holds,
   that the last pass still fed the same full set and the same stored target,
   and otherwise forms nothing and asks again on a later pass.
+  The check compares against this broker's own view of placement, so a
+  broker cut off from the control plane can still form the old set while
+  another forms the new one (#2794).
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
