@@ -891,7 +891,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2522,7 +2522,8 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "openraft"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d327a24b1daed791b4aaf14f6f6b5a23abf7b1952afad6f091e8fc5f71403222"
 dependencies = [
  "anyerror",
  "backoff-series",
@@ -2548,7 +2549,8 @@ dependencies = [
 [[package]]
 name = "openraft-macros"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3b10ab72e76b9be32669b7e650b67fe3db825b5bb41d9d47c4dc782355fcdd3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2559,7 +2561,8 @@ dependencies = [
 [[package]]
 name = "openraft-multi"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b37011b2a3f9b51ddf566fef1f3148fae1e4c2f1665cd8271e923acc33e3e23"
 dependencies = [
  "anyerror",
  "openraft",
@@ -2568,7 +2571,8 @@ dependencies = [
 [[package]]
 name = "openraft-rt"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f10019e3c1bfc75a6270addac570d692588c3bebcd18f60a2cbd6cbd0655fc"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -2580,7 +2584,8 @@ dependencies = [
 [[package]]
 name = "openraft-rt-tokio"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=bc3830148e5ccaf418390a2e8e0ea0695fa87159#bc3830148e5ccaf418390a2e8e0ea0695fa87159"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346d0d56c907f19682088616c286a95e479af9475618c754ba902fab3fb6756c"
 dependencies = [
  "futures-util",
  "openraft-rt",
@@ -2927,7 +2932,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3255,7 +3260,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3313,7 +3318,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3795,7 +3800,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4576,7 +4581,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

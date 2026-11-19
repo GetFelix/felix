@@ -825,10 +825,8 @@ used by every shard group and by the control plane, tested once.
 ### openraft version
 
 The adapter targets openraft 0.10, pinned to an exact version in
-`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
-`[workspace.dependencies]` pins one commit of openraft's main branch,
-`bc383014` (2026-11-18), past the 0.10.0 tag, for changes that ship
-in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
+`Cargo.toml` and `Cargo.lock`. That version is 0.10.1 (2026-11-19), which
+adds the changes below to 0.10.0. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
 "One timer for every group"). openraft#2313 (issue #2312) resets a drained
 queue to its start, so an idle member stops touching every page of its
 queues, and openraft#2314 starts those queues at 64 slots instead of
@@ -863,13 +861,12 @@ responder), `PeekableReceiver::peek()` renamed to `try_peek()`, and
 openraft no longer depending on `chrono`. The deprecated
 `millis_since_quorum_ack` metric stops growing on a leader nothing wakes;
 Felix reads `last_quorum_acked` instead.
-`openraft-multi` is pinned to the
-same commit, and `deny.toml` allows that one git source. `felix-storage` and
+`openraft-multi` and `openraft-rt-tokio` are pinned to the
+same version. `felix-storage` and
 `felix-replication` use the pin behind their `raft` features, and the
 control plane uses it too
 (`services/felix-controlplane-service/Cargo.toml:61`), so the workspace has
-one openraft. The pin goes back to a released version, `=0.10.1`, when that
-is out. A version change is a reviewed update, never a side effect of
+one openraft. A version change is a reviewed update, never a side effect of
 refreshing the lockfile.
 
 **Release rule (decided).** A Felix release ships a control plane on 0.10
