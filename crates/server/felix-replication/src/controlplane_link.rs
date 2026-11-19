@@ -120,6 +120,14 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         floors: &[RaftFloor],
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 
+    /// `POST /v1/nodes/{node_id}/raft-copy-id`.
+    fn report_raft_copy_id(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        report: &RaftCopyId,
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
+
     /// `GET /v1/shard-assignments/confirmed` for `key`, abandoned after
     /// `timeout`.
     fn confirmed_assignment(
@@ -184,6 +192,21 @@ pub struct RaftFloor {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+/// The copy id a broker's member of a Raft group votes under, as reported
+/// once the copy is synced, so the control plane can name it in the
+/// shard's target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RaftCopyId {
+    pub key: crate::ShardKey,
+    pub copy_id: u64,
+    /// The reporting process's registration incarnation.
+    pub incarnation: u64,
+    /// The same registration's `registered_at_millis`.
+    pub registered_at_millis: u64,
+    /// The stream incarnation the group runs.
+    pub shard_incarnation: u64,
 }
 
 /// The body of a raft-floors report.
@@ -350,6 +373,19 @@ impl ControlPlaneLink for HttpControlPlaneLink {
             .client
             .post(self.url(&format!("/v1/nodes/{node_id}/raft-floors")))
             .json(&raft_floors_body(floors));
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn report_raft_copy_id(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        report: &RaftCopyId,
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url(&format!("/v1/nodes/{node_id}/raft-copy-id")))
+            .json(report);
         finish(bearer_if(request, bearer)).await
     }
 

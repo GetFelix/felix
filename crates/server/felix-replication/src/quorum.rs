@@ -1026,6 +1026,12 @@ pub enum QuorumError {
     /// there is a blank, and `tail` is the shard's next offset after it.
     #[error("the shard's next offset was not the expected one; it is now {tail}")]
     OffsetMismatch { tail: u64 },
+    /// A record larger than a Raft shard's appends can carry, refused before
+    /// anything was proposed. Sending it again cannot succeed.
+    #[error(
+        "a record of {bytes} bytes is larger than a Raft shard takes ({max}); nothing was written"
+    )]
+    TooLarge { bytes: usize, max: usize },
 }
 
 /// What the quorum waits need to know about this broker's hold on a shard.

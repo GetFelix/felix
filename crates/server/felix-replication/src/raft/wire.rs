@@ -24,15 +24,16 @@ use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 
 use super::codec::invalid;
 use super::membership::TargetVersion;
-use super::network::{Addressee, Ask, RaftReply, RaftRequest, Refused, Reply, Request};
+use super::network::{Addressee, Ask, Beat, RaftReply, RaftRequest, Refused, Reply, Request};
 use super::types::{Command, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
-/// version to a membership, 5 the piece entry.
-const LAYOUT: u8 = 5;
+/// version to a membership, 5 the piece entry, 6 the send number after the
+/// gap.
+const LAYOUT: u8 = 6;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -100,6 +101,55 @@ pub(crate) fn append_budget(deadline: Duration) -> usize {
         .clamp(MIN_APPEND_BYTES, MAX_APPEND_BYTES)
 }
 
+/// The most record bytes one entry on a Raft shard may hold: the most one
+/// append carries. It keeps every entry well inside a frame and its deadline
+/// short, so the proposer refuses a larger record.
+pub(crate) const MAX_RECORD_BYTES: usize = MAX_APPEND_BYTES;
+
+/// The deadline for an append, given the one openraft set. An append always
+/// carries its first entry, so a record past the budget of `deadline` gets
+/// as long as it needs at the same rate. Otherwise it would time out the
+/// same way on every retry and the follower would never get past it.
+pub(crate) fn append_deadline(deadline: Duration, body: &Request) -> Duration {
+    let Request::Append(rpc) = body else {
+        return deadline;
+    };
+    let Some(first) = rpc.entries.first() else {
+        return deadline;
+    };
+    let bytes = entry_bytes(first);
+    if bytes <= append_budget(deadline) {
+        return deadline;
+    }
+    let millis = (bytes as u128 * WIRE_SHARE_OF_DEADLINE * 1000).div_ceil(LINK_BYTES_PER_SEC);
+    let needed = Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX));
+    needed.clamp(deadline, crate::peer::RAFT_MAX_DEADLINE.max(deadline))
+}
+
+/// What one entry costs an append's budget.
+fn entry_bytes(entry: &EntryOf<ShardTypes>) -> usize {
+    ENTRY_OVERHEAD
+        + match &entry.payload {
+            EntryPayload::Normal(command) => command_bytes(command),
+            _ => 0,
+        }
+}
+
+/// A command's record bytes: its payload, headers and publisher, and the
+/// attributed wrapper around them.
+pub(crate) fn command_bytes(command: &Command) -> usize {
+    // A tag, a flags byte, and a length for each block it holds.
+    let wrapper = match (&command.headers, &command.publisher) {
+        (None, None) => 0,
+        (Some(_), Some(_)) => ATTRIBUTED_WRAPPER + 8,
+        _ => ATTRIBUTED_WRAPPER + 4,
+    };
+    command.payload.len()
+        + command.headers.as_ref().map_or(0, |headers| headers.len())
+        + command.publisher.as_ref().map_or(0, Bytes::len)
+        + wrapper
+}
+
 /// Cut an append's entries to its [`append_budget`], keeping at least one.
 pub(crate) fn fit(request: &mut RaftRequest) {
     let budget = append_budget(request.deadline);
@@ -111,23 +161,7 @@ pub(crate) fn fit(request: &mut RaftRequest) {
         .entries
         .iter()
         .position(|entry| {
-            bytes += ENTRY_OVERHEAD
-                + match &entry.payload {
-                    EntryPayload::Normal(command) => {
-                        // The attributed wrapper: a tag, a flags byte, and a
-                        // length for each block it holds.
-                        let wrapper = match (&command.headers, &command.publisher) {
-                            (None, None) => 0,
-                            (Some(_), Some(_)) => ATTRIBUTED_WRAPPER + 8,
-                            _ => ATTRIBUTED_WRAPPER + 4,
-                        };
-                        command.payload.len()
-                            + command.headers.as_ref().map_or(0, |headers| headers.len())
-                            + command.publisher.as_ref().map_or(0, Bytes::len)
-                            + wrapper
-                    }
-                    _ => 0,
-                };
+            bytes += entry_bytes(entry);
             bytes > budget
         })
         .unwrap_or(rpc.entries.len())
@@ -152,7 +186,8 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
     put_group(&mut buf, &request.group)?;
     put_member(&mut buf, &request.to)?;
-    buf.put_u64(request.beat);
+    buf.put_u64(request.beat.gap);
+    buf.put_u64(request.beat.seq);
     // 0 and 1 read as the boolean older builds take. Only a written-commit
     // log sends 2, and that needs the fleet to finalize `raft_written_commit`,
     // which no build without this byte reports.
@@ -221,7 +256,10 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let deadline = Duration::from_millis(u64::from(take_u32(&mut buf)?));
     let group = take_group(&mut buf)?;
     let to = take_member(&mut buf)?;
-    let beat = take_u64(&mut buf)?;
+    let beat = Beat {
+        gap: take_u64(&mut buf)?,
+        seq: take_u64(&mut buf)?,
+    };
     let report = match take_u8(&mut buf)? {
         0 => Ask::Nothing,
         1 => Ask::Written,
