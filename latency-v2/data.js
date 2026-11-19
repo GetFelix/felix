@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795060167705,
+  "lastUpdate": 1795064422748,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78870,6 +78870,72 @@ window.BENCHMARK_DATA = {
             "range": "665.16",
             "unit": "us",
             "extra": "trials: 5\nmedian: 493.00\nmean: 764.80\nstdev: 665.16\ncv: 86.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8783196a31aa0d81cd1cdc878078e13e0b8a6744",
+          "message": "feat(controlplane): build the re-form planner's group record from the shard (#2250) (#2808)\n\n* feat(controlplane): build the re-form planner's group record from the shard (#2250)\n\nShardAssignment::reform_record builds the GroupRecord plan_reform takes:\nincarnation, placed brokers, ordered voter sets, and the floor and offset\nfloor at this incarnation. A floor from another incarnation is dropped; a\ngroup past epoch 0 is refused until re-forms record their bases; the seed\nstays unknown, so every plan is marked. Nothing calls it yet.\n\nPart of #2250.\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* re-form record: drop the dead epoch filter, test the floor's epoch, reword the docs",
+          "timestamp": "2026-11-19T04:47:54Z",
+          "tree_id": "558c4aa526faf60bb8c01f33839d8f4edc859446",
+          "url": "https://github.com/GetFelix/felix/commit/8783196a31aa0d81cd1cdc878078e13e0b8a6744"
+        },
+        "date": 1795064410449,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.60\nstdev: 1.14\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "13.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 218.80\nstdev: 13.12\ncv: 6.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 718,
+            "range": "570.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 718.00\nmean: 761.00\nstdev: 570.40\ncv: 74.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.20\nstdev: 0.84\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 397,
+            "range": "13.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 397.00\nmean: 398.20\nstdev: 13.75\ncv: 3.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 529,
+            "range": "591.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 529.00\nmean: 799.40\nstdev: 591.88\ncv: 74.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
