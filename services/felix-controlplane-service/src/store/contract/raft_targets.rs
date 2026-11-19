@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::shards::{clear, on_streams_of_its_own};
-use super::switch::{both, read, sealed, written};
+use super::shards::{clear, next_stream, on_streams_of_its_own, seed, seed_with_replicas};
+use super::switch::{active, both, read, sealed, written};
 use crate::model::{NodeLifecycle, PlacementAck, ShardAssignment};
 use crate::store::{ControlPlaneStore, StoreError};
 
@@ -20,8 +20,123 @@ pub(crate) async fn run_raft_target_contract(store: Arc<dyn ControlPlaneStore>) 
         a_report_from_before_a_delete_is_refused(store).await;
         each_target_is_listed_in_the_write_that_stores_it(store).await;
         the_target_waits_for_every_registered_broker(store).await;
+        a_shard_not_on_raft_takes_no_copy_id(store).await;
     })
     .await;
+}
+
+/// On a store whose cluster runs durable streams on Raft: a shard that
+/// started on Raft gets its target from the copy ids its brokers report.
+pub(crate) async fn run_raft_native_target_contract(store: Arc<dyn ControlPlaneStore>) {
+    let store: &dyn ControlPlaneStore = store.as_ref();
+    on_streams_of_its_own(store, async {
+        a_shard_started_on_raft_gets_its_target(store).await;
+        a_native_report_names_the_streams_incarnation(store).await;
+        a_native_set_short_of_the_replica_count_takes_no_copy_id(store).await;
+    })
+    .await;
+}
+
+/// A report for a shard that started on Raft, from the process `node` is
+/// registered as now.
+async fn try_native_report(
+    store: &dyn ControlPlaneStore,
+    a: &ShardAssignment,
+    node: &str,
+    id: u64,
+    shard_incarnation: Option<u64>,
+) -> Result<bool, StoreError> {
+    let process = store.get_node(node).await.expect("node").status;
+    store
+        .record_raft_copy_id(
+            &a.key,
+            node,
+            process.registered_at_millis,
+            process.incarnation,
+            id,
+            shard_incarnation,
+        )
+        .await
+}
+
+async fn a_shard_started_on_raft_gets_its_target(store: &dyn ControlPlaneStore) {
+    let shard = active(store, 0).await;
+    let at = Some(shard.incarnation);
+    assert!(
+        try_native_report(store, &shard, "broker-x", 21, at)
+            .await
+            .expect("x")
+    );
+    assert_eq!(
+        counter(&read(store, &shard.key).await),
+        None,
+        "broker-y has not reported"
+    );
+    assert!(
+        try_native_report(store, &shard, "broker-y", 22, at)
+            .await
+            .expect("y")
+    );
+    let stored = read(store, &shard.key).await;
+    assert_eq!(counter(&stored), Some(1));
+    let members = BTreeMap::from([("broker-x".to_string(), 21), ("broker-y".to_string(), 22)]);
+    assert_eq!(
+        stored.raft_target.as_ref().expect("target").members,
+        members
+    );
+    // Epoch 0's list started with the first copy id, so it holds the first target a re-form counts.
+    let voters = members.into_iter().collect();
+    assert_eq!(stored.ordered_voter_sets(), Some(vec![voters]));
+    assert_eq!(stored.generation, shard.generation, "written in place");
+    clear(store).await;
+}
+
+/// A report that does not name the stream incarnation is one from before
+/// level 41, which a shard that started on Raft never took; one naming
+/// another incarnation is for a group that is gone.
+async fn a_native_report_names_the_streams_incarnation(store: &dyn ControlPlaneStore) {
+    let shard = active(store, 0).await;
+    for at in [None, Some(shard.incarnation + 1)] {
+        let err = try_native_report(store, &shard, "broker-x", 31, at)
+            .await
+            .expect_err("refused");
+        assert!(
+            matches!(err, StoreError::Conflict(_)),
+            "{at:?}: got {err:?}"
+        );
+    }
+    assert!(read(store, &shard.key).await.raft_copy_ids.is_empty());
+    clear(store).await;
+}
+
+/// The control plane checks the set against the stream's replica count
+/// itself: a broker's view of placement may be stale.
+async fn a_native_set_short_of_the_replica_count_takes_no_copy_id(store: &dyn ControlPlaneStore) {
+    next_stream();
+    seed_with_replicas(store, 3).await;
+    let shard = active(store, 0).await;
+    let err = try_native_report(store, &shard, "broker-x", 61, Some(shard.incarnation))
+        .await
+        .expect_err("two brokers for three replicas");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    let stored = read(store, &shard.key).await;
+    assert!(stored.raft_copy_ids.is_empty());
+    assert!(stored.raft_ordered.is_none(), "no list starts either");
+    clear(store).await;
+    next_stream();
+    seed(store).await;
+}
+
+/// On a hybrid cluster a shard that never switched is not on Raft, whatever
+/// the report carries.
+async fn a_shard_not_on_raft_takes_no_copy_id(store: &dyn ControlPlaneStore) {
+    let shard = active(store, 0).await;
+    let err = try_native_report(store, &shard, "broker-x", 41, Some(shard.incarnation))
+        .await
+        .expect_err("a hybrid shard");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert!(read(store, &shard.key).await.raft_copy_ids.is_empty());
+    clear(store).await;
 }
 
 /// A shard switched to Raft, led by broker-x with broker-y as its replica.
@@ -54,6 +169,7 @@ async fn try_report(
             process.registered_at_millis,
             process.incarnation,
             id,
+            None,
         )
         .await
 }
@@ -92,7 +208,7 @@ async fn copy_ids_write_the_target_and_only_a_change_moves_it(store: &dyn Contro
 async fn only_a_broker_in_a_raft_shards_set_reports(store: &dyn ControlPlaneStore) {
     let shard = switched(store).await;
     let err = store
-        .record_raft_copy_id(&shard.key, "broker-z", 1, 1, 1)
+        .record_raft_copy_id(&shard.key, "broker-z", 1, 1, 1, None)
         .await
         .expect_err("not in the set");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
@@ -130,6 +246,7 @@ async fn a_report_from_an_earlier_process_is_refused(store: &dyn ControlPlaneSto
             before.registered_at_millis,
             before.incarnation,
             41,
+            None,
         )
         .await
         .expect_err("an earlier process");
@@ -167,6 +284,7 @@ async fn a_report_from_before_a_delete_is_refused(store: &dyn ControlPlaneStore)
             old.registered_at_millis,
             old.incarnation,
             51,
+            None,
         )
         .await
         .expect_err("a process from before the delete");

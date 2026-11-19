@@ -160,6 +160,24 @@ impl Cluster {
         }
     }
 
+    /// The Raft target the control plane holds for `stream`'s shard
+    /// `shard`, as copy id by broker. `None` while it has none.
+    pub async fn raft_target(
+        &self,
+        stream: &str,
+        shard: u32,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<String, u64>>> {
+        let key = felix_controlplane_service::model::ShardKey {
+            tenant_id: self.tenant_id.clone(),
+            namespace: self.namespace.clone(),
+            stream: stream.to_string(),
+            shard,
+            kind: felix_controlplane_service::model::ShardKind::Stream,
+        };
+        let record = self.control_plane().shard_record(&key).await?;
+        Ok(record.raft_target.map(|target| target.members))
+    }
+
     fn control_plane(&self) -> &ControlPlane {
         self.control_plane
             .as_ref()
