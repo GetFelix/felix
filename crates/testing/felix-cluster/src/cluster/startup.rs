@@ -50,7 +50,7 @@ impl Cluster {
             .as_deref()
             .or(config.raft_brokers().then_some("raft"));
         let control_plane = if config.metadata_group {
-            ControlPlane::start_group(&config.tenant_id, liveness).await?
+            ControlPlane::start_group(&config.tenant_id, liveness, engine).await?
         } else {
             ControlPlane::start_with(&config.tenant_id, liveness, engine).await?
         };

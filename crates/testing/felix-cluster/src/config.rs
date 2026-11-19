@@ -75,10 +75,10 @@ pub struct ClusterConfig {
     /// seconds; a test that needs elections to run first sets a deployment's
     /// 15 seconds.
     pub node_expiry: Duration,
-    /// The shard engine the in-memory control plane runs as, its
-    /// `FELIX_SHARD_ENGINE`. `None` is Raft when any broker runs Raft, else
-    /// the hybrid. Brokers take theirs from `broker_env`. Not used with
-    /// `metadata_group`.
+    /// The shard engine the control plane runs as, its `FELIX_SHARD_ENGINE`,
+    /// for the in-memory store and the metadata group alike. `None` is Raft
+    /// when any broker runs Raft, else the hybrid. Brokers take theirs from
+    /// `broker_env`.
     pub control_plane_engine: Option<String>,
 }
 

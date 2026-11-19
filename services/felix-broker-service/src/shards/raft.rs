@@ -117,6 +117,13 @@ pub(crate) struct RaftShards {
     /// What the last pass's feed view carried for each member open at that
     /// view's stream incarnation: its target, or `None` for no target.
     targets: parking_lot::Mutex<HashMap<ShardKey, Option<Target>>>,
+    /// The full placement set and stored target of each Raft shard in the
+    /// last pass's feed, written under `open`. A form re-checks it before
+    /// it initializes.
+    formable: parking_lot::Mutex<HashMap<ShardKey, Formable>>,
+    /// While true, a form that has its answers does not initialize.
+    #[cfg(test)]
+    stall_forms: tokio::sync::watch::Sender<bool>,
     /// Every target a member kept, with the term it was told for. `None`
     /// is a kept "no target".
     #[cfg(test)]
@@ -171,6 +178,14 @@ fn raft_fsync_mode(broker: FsyncMode, written_commit: bool, dir: &Path) -> Fsync
     } else {
         FsyncMode::OnCommit
     }
+}
+
+/// A shard's set and stored target as the feed last carried them, for a
+/// form to check it still forms what placement wants.
+#[derive(Debug, PartialEq, Eq)]
+struct Formable {
+    brokers: BTreeSet<String>,
+    target: Option<BTreeSet<MemberId>>,
 }
 
 /// One open member: the log is this module's to close, because the storage
@@ -249,6 +264,9 @@ impl RaftShards {
             held_warn: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
+            formable: parking_lot::Mutex::default(),
+            #[cfg(test)]
+            stall_forms: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             told: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
@@ -565,6 +583,11 @@ impl RaftShards {
     /// it lists every target of the epoch before a broker can read it, so a
     /// re-form counts the first voters as a voter set. A set formed from
     /// copies no record names could lose a majority unseen (#2688).
+    ///
+    /// The answers say nothing once placement moves on: the brokers of a
+    /// newer set may be asking the same blank members. So it initializes
+    /// only if the last pass still fed this set, with this broker lowest,
+    /// and this stored target, and puts the form off otherwise.
     fn form(
         &self,
         key: ShardKey,
@@ -596,21 +619,43 @@ impl RaftShards {
                     if members == target {
                         Ok(members)
                     } else {
-                        Err(Unformed::NotTarget { members, target })
+                        Err(Unformed::NotTarget {
+                            members,
+                            target: target.clone(),
+                        })
                     }
                 });
+            #[cfg(test)]
+            let _ = me
+                .stall_forms
+                .subscribe()
+                .wait_for(|stalled| !stalled)
+                .await;
             match asked {
                 Ok(members) => {
                     // Under the pass's lock, so the member formed is the one
-                    // the others were asked about.
-                    me.put_off.lock().remove(&key);
+                    // the others were asked about. Placement may have moved
+                    // while they were asked: the brokers of a newer set
+                    // could be asking the same blank members, and both sets
+                    // would win a term. Form only what the feed still names.
                     let open = me.open.lock().await;
-                    if open
-                        .get(&key)
-                        .is_some_and(|member| member.incarnation == incarnation)
-                        && let Err(err) = me.runtime.initialize(&key, members).await
-                    {
-                        tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                    let current = Formable {
+                        brokers,
+                        target: Some(target),
+                    };
+                    if me.formable.lock().get(&key) != Some(&current) {
+                        if me.put_off.lock().insert(key.clone()) {
+                            tracing::info!(shard = ?key, "not forming the shard's Raft group yet: its placement or stored target changed while its members were asked");
+                        }
+                    } else {
+                        me.put_off.lock().remove(&key);
+                        if open
+                            .get(&key)
+                            .is_some_and(|member| member.incarnation == incarnation)
+                            && let Err(err) = me.runtime.initialize(&key, members).await
+                        {
+                            tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                        }
                     }
                 }
                 Err(err) => {
@@ -713,6 +758,11 @@ impl RaftShards {
     }
 
     #[cfg(test)]
+    pub(crate) fn stall_forms(&self, stalled: bool) {
+        self.stall_forms.send_replace(stalled);
+    }
+
+    #[cfg(test)]
     pub(crate) fn stall_reads(&self, stalled: bool) {
         self.stall_reads.send_replace(stalled);
     }
@@ -796,6 +846,22 @@ impl RaftShards {
         metrics::gauge!(SHORT_PLACEMENT).set(short.len() as f64);
         logged
     }
+}
+
+/// The target the control plane stored for a shard, or `None` when it
+/// stored none or the view withholds it.
+fn stored_target(assignment: &ShardAssignment) -> Option<BTreeSet<MemberId>> {
+    let target = assignment
+        .target
+        .as_ref()
+        .filter(|_| !assignment.targets_withheld)?;
+    Some(
+        target
+            .members
+            .iter()
+            .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
+            .collect(),
+    )
 }
 
 /// The brokers placement names for a shard, lowest id first.
@@ -887,6 +953,20 @@ impl EngineShards for RaftShards {
                 fed.insert(key, (assignment, full));
             }
             *self.placed.lock() = placed;
+            *self.formable.lock() = fed
+                .iter()
+                .filter(|(_, (_, full))| *full)
+                .map(|(key, (assignment, _))| {
+                    let formable = Formable {
+                        brokers: brokers_of(assignment)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        target: stored_target(assignment),
+                    };
+                    (key.clone(), formable)
+                })
+                .collect();
             self.unclaimed.lock().retain(|key, _| fed.contains_key(key));
             self.put_off.lock().retain(|key| fed.contains_key(key));
             self.unreadable.lock().retain(|key| fed.contains_key(key));
@@ -1012,17 +1092,7 @@ impl EngineShards for RaftShards {
                 }
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    let target = assignment
-                        .target
-                        .as_ref()
-                        .filter(|_| !assignment.targets_withheld)
-                        .map(|target| {
-                            target
-                                .members
-                                .iter()
-                                .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
-                                .collect()
-                        });
+                    let target = stored_target(assignment);
                     self.form(key.clone(), brokers, assignment.incarnation, target);
                 }
             }

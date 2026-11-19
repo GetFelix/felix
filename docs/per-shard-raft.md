@@ -3884,6 +3884,13 @@ Membership changes are not built yet
   A set formed from copies no record names could lose
   its majority with no re-form source seeing that set. In a cluster this
   takes a Raft control plane: a hybrid one stores no target.
+- The answers hold only for the set they were asked for. Placement can move
+  while the broker asks: with {A,B,C} moved to {B,C,D}, B asks C and D, and
+  C answers blank to both because neither has formed yet. If both formed,
+  each could win a term and the shard would run two groups. So just before
+  it initializes, the broker checks, under the lock the routing pass holds,
+  that the last pass still fed the same full set and the same stored target,
+  and otherwise forms nothing and asks again on a later pass.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow

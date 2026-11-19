@@ -76,7 +76,7 @@ fn a_shard_is_reported_only_when_every_replica_is_caught_up_at_its_generation() 
 /// down, and its members agree again once everything is back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_metadata_group_survives_losing_its_leader_and_converges() {
-    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS, None)
         .await
         .expect("start the group");
     let group = control_plane.group().expect("a group").clone();
@@ -132,7 +132,7 @@ async fn a_metadata_group_survives_losing_its_leader_and_converges() {
 /// member 0 restarted must not leave it writing to a handle that is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn harness_writes_survive_the_first_member_restarting() {
-    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS, None)
         .await
         .expect("start the group");
     let group = control_plane.group().expect("a group").clone();
@@ -156,7 +156,7 @@ async fn harness_writes_survive_the_first_member_restarting() {
 /// A write the group acknowledged and then lost fails the convergence check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn converge_fails_when_an_acknowledged_write_is_missing() {
-    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS, None)
         .await
         .expect("start the group");
     let group = control_plane.group().expect("a group").clone();
@@ -181,7 +181,7 @@ async fn converge_fails_when_an_acknowledged_write_is_missing() {
 /// Conflict then counts as an acknowledged write because the tenant is there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acknowledge_write_counts_a_conflict_when_the_write_landed() {
-    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS, None)
         .await
         .expect("start the group");
     let group = control_plane.group().expect("a group").clone();

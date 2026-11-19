@@ -1154,6 +1154,53 @@ async fn a_group_forms_only_on_the_stored_target() {
     stop(&members).await;
 }
 
+/// **A form whose placement moved while it asked forms nothing.** With
+/// {a,b,c} moved to {b,c,d}, b asks c and d while a holds blank answers
+/// from b and c; if a formed now, both sets could win a term. The lowest
+/// broker re-checks the fed set and stored target just before it
+/// initializes, so the move lands between its ask and its initialize here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_form_whose_placement_moved_while_it_asked_forms_nothing() {
+    let net = Arc::new(Loopback::default());
+    let mut members = Vec::new();
+    for name in BROKERS {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    let lowest = &members[0];
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    let target = stored(replicated(), &all);
+
+    lowest.shards.stall_forms(true);
+    lowest.shards.take(&mut assignments([target.clone()])).await;
+    until("the form to hold its answers", || {
+        lowest.shards.stall_forms.receiver_count() > 0
+    })
+    .await;
+    let mut moved = target.clone();
+    moved.leader = "broker-b".to_string();
+    moved.replicas = ["broker-b", "broker-c", "broker-d"]
+        .map(str::to_string)
+        .to_vec();
+    lowest.shards.take(&mut assignments([moved])).await;
+    lowest.shards.stall_forms(false);
+    until("the form to end", || {
+        !lowest.shards.forming.lock().contains(&key("orders", 0))
+    })
+    .await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    assert!(
+        !members.iter().any(formed),
+        "formed a set placement had moved off"
+    );
+
+    // Put off, not given up: the set fed again forms.
+    lowest.shards.take(&mut assignments([target])).await;
+    served(&members).await;
+    stop(&members).await;
+}
+
 /// **A broker placed on a shard whose group has formed does not form it
 /// again.** It is the lowest broker of its set and its log is empty, but
 /// the members it asks hold the group's entries. It serves nothing until a

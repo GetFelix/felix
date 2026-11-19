@@ -133,6 +133,8 @@ struct Setup {
     /// Interval the placement reconciler runs at, once asked for.
     placement: Mutex<Option<Duration>>,
     placement_wakes: Arc<felix_controlplane_service::cluster::placement::PlacementWakes>,
+    /// The shard engine every member records as the group identity.
+    engine: String,
 }
 
 pub(crate) struct Group {
@@ -156,6 +158,7 @@ impl Group {
         runtime: tokio::runtime::Handle,
         liveness: NodeLivenessConfig,
         front: SocketAddr,
+        engine: String,
     ) -> Result<Self> {
         let mut members = Vec::new();
         for i in 0..MEMBERS {
@@ -225,6 +228,7 @@ impl Group {
             links,
             placement: Mutex::new(None),
             placement_wakes: Default::default(),
+            engine,
         });
         let group = Self {
             setup,
@@ -358,7 +362,7 @@ impl Group {
                 let store = Arc::new(RaftStore::new(handle.clone(), machine));
                 let stop = CancellationToken::new();
                 let mut tasks = Vec::new();
-                tasks.push(store.spawn_identity_recorder("hybrid".to_string(), stop.clone()));
+                tasks.push(store.spawn_identity_recorder(setup.engine.clone(), stop.clone()));
 
                 let peers = tokio::net::TcpListener::bind(peer)
                     .await
