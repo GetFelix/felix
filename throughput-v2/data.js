@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795067737115,
+  "lastUpdate": 1795070712821,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62400,6 +62400,58 @@ window.BENCHMARK_DATA = {
             "range": "18940.86",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1234820.25\nmean: 1229371.91\nstdev: 18940.86\ncv: 1.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "236a6b7adea29d4baeb93b41195f79c46347ca7f",
+          "message": "test(broker): pass a ForwardCredential in the Raft cache routing tests (#2826)\n\n#2795 added these tests passing an empty token string; #2823 changed the\nparameter to &ForwardCredential, so main stopped compiling its tests.",
+          "timestamp": "2026-11-18T22:36:51-08:00",
+          "tree_id": "e25827eef13b9ad0be542e39b5b4f43fc76e4f57",
+          "url": "https://github.com/GetFelix/felix/commit/236a6b7adea29d4baeb93b41195f79c46347ca7f"
+        },
+        "date": 1795070712144,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 427309.44,
+            "range": "6049.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 427309.44\nmean: 427615.01\nstdev: 6049.09\ncv: 1.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 427309.44,
+            "range": "6049.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 427309.44\nmean: 427615.01\nstdev: 6049.09\ncv: 1.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 99925.46,
+            "range": "384.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 99925.46\nmean: 99815.23\nstdev: 384.18\ncv: 0.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 999254.64,
+            "range": "3841.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 999254.64\nmean: 998152.26\nstdev: 3841.76\ncv: 0.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
