@@ -277,6 +277,16 @@ fn another_shard_engine_is_refused_whatever_the_group() {
     assert!(admit(dir.path(), &identity(None, "raft")).is_err());
 }
 
+/// A Raft broker is judged by its own engine, so a Raft cluster admits it
+/// and a hybrid one refuses it.
+#[test]
+fn a_raft_broker_is_admitted_by_a_raft_cluster_only() {
+    let dir = tempfile::tempdir().expect("dir");
+    admit_as(dir.path(), &identity(None, "raft"), "raft").expect("admitted");
+    let err = admit_as(dir.path(), &identity(None, "hybrid"), "raft").expect_err("refused");
+    assert!(err.to_string().contains("runs shard engine raft"), "{err}");
+}
+
 #[test]
 fn the_guard_takes_only_its_own_group() {
     let guard = Guard {

@@ -18,6 +18,9 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::sign::CertifiedKey;
 
+mod binding;
+pub use binding::{PRINCIPAL_URI_PREFIX, check_subject_binding};
+
 /// How often services check their certificate files for a rotation.
 pub const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
 

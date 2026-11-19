@@ -1642,7 +1642,7 @@ mod on_raft {
             ..fixture::key(CACHE, 0)
         };
         let assigned = fixture::assigned(sessions.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&sessions).is_some()).await;
         let (router, ingress) = fixture::routes(&shards);
         let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
@@ -1716,7 +1716,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key(STREAM, 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let router = Arc::new(ShardRouter::new(
             LOCAL,
@@ -1899,7 +1899,7 @@ mod on_raft {
             let shards = fixture::shards(&broker);
             let orders = fixture::key(STREAM, 0);
             let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-            shards.take(&mut fixture::assignments([assigned])).await;
+            fixture::take_formed(&shards, assigned).await;
             fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
             let (router, ingress) = fixture::routes(&shards);
             let engine = Arc::new(StreamEngine::new(None, Some(ingress)));

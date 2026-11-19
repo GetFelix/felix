@@ -43,7 +43,7 @@ async fn leader_of(
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));

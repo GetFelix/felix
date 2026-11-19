@@ -624,6 +624,11 @@ FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test raft_shards
 FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test failures -- on_a_raft_shard
 ```
 
+A cluster with any Raft broker gets a Raft control plane too, unless
+`ClusterConfig::control_plane_engine` names one: a broker refuses a control
+plane whose identity names another engine, and a Raft group forms only on a
+target the control plane stores, which a hybrid control plane never does.
+
 Build the broker without the feature again before running the other cluster
 tests. In CI the `cluster-raft` job ("Cluster tests (Raft shards)") does
 both steps on every code change. It reports and does not gate a merge yet.

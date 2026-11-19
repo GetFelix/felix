@@ -77,8 +77,11 @@ case "$cmd" in
   # The baseline side runs the baseline's own control plane, so its broker meets its own release.
   cp)
     dir=$1 side=${2:-}; in_run "$dir"; mkdir -p "$dir"; ip=$(ip_self)
-    cpbin=$BIN/felix-controlplane; [ "$side" != baseline ] || cpbin=$BASE_BIN/felix-controlplane
+    # The control plane records the engine and brokers refuse to join one that names another.
+    cpbin=$BIN/felix-controlplane; engine_env=(FELIX_SHARD_ENGINE="${side:-hybrid}")
+    if [ "$side" = baseline ]; then cpbin=$BASE_BIN/felix-controlplane; engine_env=(); fi
     start "$dir" cp env \
+      "${engine_env[@]}" \
       FELIX_CONTROLPLANE_STORAGE_BACKEND=memory \
       FELIX_CONTROLPLANE_BIND="$ip:$CP_PORT" FELIX_CONTROLPLANE_METRICS_BIND="$ip:$CP_METRICS" \
       FELIX_REGION_ID=gcp FELIX_BOOTSTRAP_ENABLED=true FELIX_BOOTSTRAP_BIND_ADDR="127.0.0.1:$CP_BOOT" \
