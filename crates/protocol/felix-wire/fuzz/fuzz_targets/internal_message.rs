@@ -114,6 +114,14 @@ fn capability_rules(kind: Kind) -> (PeerCapabilities, PeerCapabilities) {
                 .union(C::RECORD_SEQUENCED_FORWARDS)
                 .union(C::WRITER_GENERATIONS),
         ),
+        // Plus whatever the forward inside needs.
+        Kind::ClientCertified => (
+            C::CLIENT_CERTS,
+            C::RECORD_HEADERS
+                .union(C::SEQUENCED_FORWARDS)
+                .union(C::PLAIN_SEQUENCED_FORWARDS)
+                .union(C::RECORD_SEQUENCED_FORWARDS),
+        ),
         _ => (none, none),
     }
 }

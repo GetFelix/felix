@@ -213,7 +213,8 @@ impl RebuildBackoff {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum Halt {
     /// The follower holds different bytes at an offset both sides have. Records
-    /// are never rewritten, so there is no repair.
+    /// are never rewritten in place; the leader rebuilds the follower instead,
+    /// when [`Halt::rebuildable`] and its rebuild limits allow.
     #[error("the follower's log has diverged from this one")]
     Diverged,
     /// The follower knows a newer generation than this broker is shipping at.

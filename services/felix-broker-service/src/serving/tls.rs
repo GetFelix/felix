@@ -132,6 +132,17 @@ impl ClientTls {
         }
     }
 
+    /// The verifier clients' certificates are checked with, when clients must
+    /// present one. A forwarded client chain is checked with the same one.
+    pub(crate) fn client_verifier(
+        &self,
+    ) -> Result<Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>> {
+        self.client_roots
+            .as_ref()
+            .map(|roots| client_verifier(roots))
+            .transpose()
+    }
+
     fn generated(export: Option<&str>) -> Result<Self> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
             .context("generate the development certificate")?;
@@ -171,12 +182,7 @@ impl ClientTls {
             .with_protocol_versions(versions)?;
         Ok(match &self.client_roots {
             Some(roots) => {
-                let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-                    Arc::clone(roots),
-                    provider(),
-                )
-                .build()
-                .context("build the client certificate verifier")?;
+                let verifier = client_verifier(roots)?;
                 let mut config = builder
                     .with_client_cert_verifier(verifier)
                     .with_cert_resolver(Arc::clone(&self.resolver));
@@ -192,6 +198,14 @@ impl ClientTls {
                 .with_cert_resolver(Arc::clone(&self.resolver)),
         })
     }
+}
+
+fn client_verifier(
+    roots: &Arc<rustls::RootCertStore>,
+) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>> {
+    rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::clone(roots), provider())
+        .build()
+        .context("build the client certificate verifier")
 }
 
 /// The URI subject alternative name that binds a certificate to a principal:

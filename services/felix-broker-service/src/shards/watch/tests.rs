@@ -174,10 +174,10 @@ fn a_target_at_a_higher_placement_incarnation_is_newer() {
 fn a_withheld_view_marks_the_held_target_until_an_open_one() {
     let mut owned = ShardOwnership::default();
     assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
-    assert!(!owned.withholds_untargeted_streams());
+    assert!(!owned.withholds_untargeted_groups());
     assert!(owned.apply(&key(0), Some(targeted(1, 0, true))), "withheld");
     assert_eq!(target_of(&owned), (None, true));
-    assert!(owned.withholds_untargeted_streams());
+    assert!(owned.withholds_untargeted_groups());
     assert!(
         !owned.apply(&key(0), Some(targeted(1, 0, true))),
         "still withheld"
@@ -187,7 +187,7 @@ fn a_withheld_view_marks_the_held_target_until_an_open_one() {
         "the target"
     );
     assert_eq!(target_of(&owned), (Some((1, 1)), false));
-    assert!(!owned.withholds_untargeted_streams());
+    assert!(!owned.withholds_untargeted_groups());
 
     // Withheld again, then the same target in the open: only the mark goes.
     assert!(owned.apply(&key(0), Some(targeted(1, 0, true))));
@@ -200,6 +200,17 @@ fn a_withheld_view_marks_the_held_target_until_an_open_one() {
     assert!(owned.apply(&key(0), Some(targeted(1, 0, true))));
     assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
     assert_eq!(target_of(&owned), (None, false));
+}
+
+/// A cache shard forms its Raft group only on the stored target too, so a
+/// withheld cache view with none held keeps the re-reads going.
+#[test]
+fn a_withheld_cache_shard_without_a_target_is_read_again() {
+    let mut cache = targeted(1, 0, true);
+    cache.key.kind = ShardKind::Cache;
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&cache.key.clone(), Some(cache)));
+    assert!(owned.withholds_untargeted_groups());
 }
 
 /// The property that makes reordering safe: a change that would move ownership
@@ -1203,7 +1214,7 @@ async fn withheld_rereads_back_off_and_stop_once_every_untargeted_shard_has_one(
     );
     let held = ownership.read().await;
     assert!(
-        !held.withholds_untargeted_streams(),
+        !held.withholds_untargeted_groups(),
         "a shard with a held target keeps the re-reads going"
     );
     assert!(held.get(&key(0)).expect("shard 0").targets_withheld);

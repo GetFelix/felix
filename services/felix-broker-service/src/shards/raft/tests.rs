@@ -212,6 +212,44 @@ pub(crate) async fn registered(
     Arc::new(broker)
 }
 
+/// [`broker`] on a durable cache store with counters, with `cache`
+/// registered at [`INCARNATION`] on one broker a shard.
+pub(crate) async fn cache_broker(root: &Path, cache: &str) -> Arc<Broker> {
+    cache_broker_of(root, cache, 1).await
+}
+
+/// [`cache_broker`], with `cache` asking for `replicas` brokers a shard.
+pub(crate) async fn cache_broker_of(root: &Path, cache: &str, replicas: u32) -> Arc<Broker> {
+    let config = || LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let store = felix_storage::LogCache::open(root.join("caches"), config()).expect("cache");
+    let counters =
+        felix_storage::CounterStore::open(root.join("counters"), config()).expect("counters");
+    let broker = Broker::new(Box::new(store)).with_counters(Arc::new(counters));
+    let broker = registered(
+        broker,
+        root,
+        1,
+        INCARNATION,
+        ConsistencyLevel::Quorum,
+        config(),
+    )
+    .await;
+    let metadata = felix_broker::CacheMetadata {
+        consistency: ConsistencyLevel::Quorum,
+        incarnation: INCARNATION,
+        replication_factor: Some(replicas),
+    };
+    broker
+        .register_cache("t1", "ns", cache, metadata)
+        .await
+        .expect("cache registered");
+    broker
+}
+
 /// Take the hard open-file limit, as a broker's start does. These tests run
 /// many brokers in one process at once, together past a soft limit of 1,024
 /// (256 on macOS), and a member that cannot open a file never serves.
@@ -1283,6 +1321,31 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
     stop(&members).await;
 }
 
+/// **A cache group on three brokers serves its placed leader's term**, as
+/// a stream's does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replicated_cache_group_serves_its_leaders_term() {
+    let net = Arc::new(Loopback::default());
+    let sessions = ShardKey {
+        kind: ShardKind::Cache,
+        ..key("sessions", 0)
+    };
+    let mut placed = assigned(sessions.clone(), INCARNATION);
+    placed.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
+    placed.leader = "broker-b".to_string();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start_cache(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, placed).await;
+    until("placement's leader serves its term", || {
+        members[1].shards.leading(&sessions).is_some()
+    })
+    .await;
+    stop(&members).await;
+}
+
 /// **A shard whose every copy rotated is not formed again.** Each copy
 /// comes back with a new copy id, no vote and an empty log, as after
 /// `rotate-storage-id` on every broker or a fleet-wide restore. Formed from
@@ -1924,6 +1987,14 @@ impl Member {
             no_fleet()
         };
         Self::assemble(net, name, root, broker, fleet)
+    }
+
+    /// A broker on `net` holding `sessions`, a `Quorum` cache on three
+    /// brokers.
+    async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = cache_broker_of(root.path(), "sessions", 3).await;
+        Self::assemble(net, name, root, broker, no_fleet())
     }
 
     /// A member of a quorum `orders` whose fleet finalized

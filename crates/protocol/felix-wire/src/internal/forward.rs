@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use super::{ErrorCode, ShardRef};
+use super::{ErrorCode, InternalMessage, ShardRef};
 use crate::error::{Error, Result};
 
 /// A publish handed to the broker that owns the shard.
@@ -288,4 +288,22 @@ pub struct ForwardCacheError {
     pub code: ErrorCode,
     /// Operator-facing detail. Never parsed for control flow.
     pub detail: String,
+}
+
+/// A forwarded publish or cache operation with the certificate chain its
+/// client presented to the forwarding broker, leaf first.
+///
+/// An owner that binds token subjects to client certificates verifies the
+/// chain against its own client CA and checks the binding itself, rather than
+/// trusting that the forwarder did. Travels as an envelope around the request,
+/// outermost, and only around a request that carries a credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCertified {
+    /// DER certificates, leaf first: at most [`MAX_CLIENT_CERTS`] of them,
+    /// none empty, together at most [`MAX_CLIENT_CHAIN_BYTES`].
+    ///
+    /// [`MAX_CLIENT_CERTS`]: super::MAX_CLIENT_CERTS
+    /// [`MAX_CLIENT_CHAIN_BYTES`]: super::MAX_CLIENT_CHAIN_BYTES
+    pub client_chain: Vec<Bytes>,
+    pub message: Box<InternalMessage>,
 }

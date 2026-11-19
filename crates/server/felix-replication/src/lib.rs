@@ -28,8 +28,11 @@
 //! `LogConflict` and `FencedEpoch` stop this shard's replication to that
 //! follower. Neither converges by trying again: the first means the two logs
 //! disagree about bytes already stored, and the second means this broker is no
-//! longer the leader, so it has no business shipping anything. Everything else
-//! is transient and retried.
+//! longer the leader, so it has no business shipping anything. After a
+//! `LogConflict` the leader asks the follower to rebuild, which drops what it
+//! holds past its commit offset, when it is not backing off from a refused
+//! rebuild, its own base is not above the commit offset, and a rebuild slot is
+//! free. Everything else is transient and retried.
 //!
 //! # What bounds it
 //!

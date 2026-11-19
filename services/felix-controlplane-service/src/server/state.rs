@@ -159,6 +159,8 @@ async fn serve_peers(
         addr = %listener.local_addr().unwrap_or(raft_cfg.peer_bind_addr),
         mtls = raft_cfg.security.tls.is_some(),
         authenticated = raft_cfg.security.token.is_some(),
+        accepts_previous_token = raft_cfg.security.previous_token.is_some(),
+        accepts_next_token = raft_cfg.security.next_token.is_some(),
         "raft peer listener listening"
     );
     if raft_cfg.security.token.is_none() {

@@ -28,8 +28,8 @@ pub use node::{
 };
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftFloor, RaftFloorError,
-    RaftFloorReport, RaftOrdered, RaftTarget, RaftTargetError, Readmitted, ReplicaReport,
-    SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    RaftFloorReport, RaftOrdered, RaftTarget, RaftTargetError, Readmitted, ReformRecordError,
+    ReplicaReport, SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
     ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
     ShardValidationError,
 };

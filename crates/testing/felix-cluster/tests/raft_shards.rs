@@ -814,24 +814,32 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
         "an acknowledged record was handed out again: {rest:?}"
     );
     // The stream may hold records written while the cluster started, so check
-    // that ours each came out once rather than counting the whole stream.
-    let mut payloads: Vec<&[u8]> = first
+    // that ours each came out once rather than counting the whole stream. A
+    // record is its offset: the startup probe retries after an unanswered
+    // publish, so the stream can hold its payload twice.
+    let mut offsets: Vec<u64> = first
         .iter()
         .chain(rest.iter())
-        .map(|record| record.payload.as_ref())
+        .map(|record| record.offset)
         .collect();
-    let handed_out = payloads.len();
-    payloads.sort_unstable();
-    payloads.dedup();
+    let handed_out = offsets.len();
+    offsets.sort_unstable();
+    offsets.dedup();
     assert_eq!(
-        payloads.len(),
+        offsets.len(),
         handed_out,
         "a record came out twice: {first:?} {rest:?}"
     );
     for payload in [b"one".as_slice(), b"two", b"three"] {
-        assert!(
-            payloads.contains(&payload),
-            "{} was not handed out: {first:?} {rest:?}",
+        let times = first
+            .iter()
+            .chain(rest.iter())
+            .filter(|record| record.payload.as_ref() == payload)
+            .count();
+        assert_eq!(
+            times,
+            1,
+            "{} was handed out {times} times: {first:?} {rest:?}",
             String::from_utf8_lossy(payload)
         );
     }
@@ -1333,6 +1341,109 @@ async fn raft_shard_leaders_return_to_placement_after_a_restart() {
     .await
     .expect("leadership returns to the restarted broker");
     cluster.shutdown().await;
+}
+
+const CACHE: &str = "sessions";
+
+/// Put `key` through `node` until a broker acknowledges it.
+async fn cache_put_acked(cluster: &Cluster, node: &str, key: &str, value: &[u8]) {
+    felix_cluster::wait::until_some(ELECTED_WITHIN, "a cache put to be acknowledged", || async {
+        cluster.cache_put_via(node, CACHE, key, value).await.ok()
+    })
+    .await
+    .unwrap_or_else(|err| panic!("cache put through {node}: {err:#}"));
+}
+
+/// Add one to `key` through `node` until acknowledged, returning the sum and
+/// how many adds failed first: each of those may have counted anyway.
+async fn counter_add_acked(cluster: &Cluster, node: &str, key: &str) -> (i64, i64) {
+    let mut failed = 0;
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN;
+    loop {
+        match cluster.counter_add_via(node, CACHE, key, 1).await {
+            Ok(sum) => return (sum, failed),
+            Err(err) if tokio::time::Instant::now() > deadline => {
+                panic!("counter add through {node}: {err:#}")
+            }
+            Err(_) => {
+                failed += 1;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+}
+
+/// **A `Quorum` cache on Raft keeps every acknowledged value and counter add
+/// when its leader dies.** Writes go through a broker that is not the
+/// leader, so the forward is covered, and the survivors elect a leader that
+/// serves them and takes new writes.
+#[tokio::test]
+#[serial]
+async fn a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies() {
+    if !opted_in() {
+        return;
+    }
+    // No stream: the default one is a group of one on some broker, which
+    // would count as a second leader in `leader_among`.
+    let config = ClusterConfig {
+        nodes: 3,
+        streams: Vec::new(),
+        caches: vec![felix_cluster::CacheSpec::quorum(CACHE, 1, 3)],
+        broker_env: vec![engine("raft")],
+        ..Default::default()
+    };
+    let mut cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let other = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("a follower")
+        .clone();
+    let mut sum = 0;
+    let mut unknown = 0;
+    for i in 0..10 {
+        let key = format!("k{i}");
+        cache_put_acked(&cluster, &other, &key, key.as_bytes()).await;
+        let (acked, failed) = counter_add_acked(&cluster, &other, "hits").await;
+        (sum, unknown) = (acked, unknown + failed);
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+    let reader = survivors
+        .iter()
+        .find(|node| **node != elected)
+        .expect("the other survivor")
+        .clone();
+
+    for i in 0..10 {
+        let key = format!("k{i}");
+        let found = felix_cluster::wait::until_some(ELECTED_WITHIN, "a cache read", || async {
+            cluster.cache_get_via(&reader, CACHE, &key).await.ok()
+        })
+        .await
+        .expect("read");
+        assert_eq!(found.as_deref(), Some(key.as_bytes()), "{key} was lost");
+    }
+    let counted = felix_cluster::wait::until_some(ELECTED_WITHIN, "a counter read", || async {
+        cluster.counter_get_via(&reader, CACHE, "hits").await.ok()
+    })
+    .await
+    .expect("read")
+    .expect("the counter exists");
+    assert!(
+        (sum..=sum + unknown).contains(&counted),
+        "the counter reads {counted}, acknowledged {sum} with {unknown} unknown adds"
+    );
+
+    cache_put_acked(&cluster, &reader, "after", b"after").await;
+    let (after, _) = counter_add_acked(&cluster, &reader, "hits").await;
+    assert!(
+        after > counted,
+        "an add after the failover answered {after}"
+    );
 }
 
 /// Bytes of segment files under `node`'s storage: what its logs hold on disk.

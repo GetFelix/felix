@@ -511,15 +511,19 @@ impl ShardOwnership {
         self.assignments.is_empty()
     }
 
-    /// Whether the newest view of some stream shard withheld its Raft
-    /// target while this broker holds none for it, so its group cannot form
+    /// Whether the newest view of some stream or cache shard withheld its
+    /// Raft target while this broker holds none for it, so its group cannot form
     /// yet. The control plane decides withholding at read time and writes no
     /// change when it stops, so only a fresh read shows the target.
-    pub(crate) fn withholds_untargeted_streams(&self) -> bool {
+    pub(crate) fn withholds_untargeted_groups(&self) -> bool {
         self.assignments.values().any(|assignment| {
             assignment.targets_withheld
                 && assignment.target.is_none()
-                && assignment.key.kind == crate::shards::ShardKind::Stream
+                // Both kinds form a group only on the stored target.
+                && matches!(
+                    assignment.key.kind,
+                    crate::shards::ShardKind::Stream | crate::shards::ShardKind::Cache
+                )
         })
     }
 }
@@ -733,7 +737,7 @@ pub async fn run(
                     changed.notify_one();
                 }
                 reread.observe(
-                    reread_withheld && ownership.read().await.withholds_untargeted_streams(),
+                    reread_withheld && ownership.read().await.withholds_untargeted_groups(),
                 );
                 reread.cap(next_delay(interval, moved, started.elapsed()))
             }

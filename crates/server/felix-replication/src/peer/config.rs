@@ -173,6 +173,11 @@ pub struct PeerTransportConfig {
     /// Only takes effect with `fence`, and the broker turns it off without a
     /// durable directory, which has nothing to attest.
     pub unified_fence: bool,
+    /// `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`: whether this broker offers
+    /// `CLIENT_CERTS`. A broker offers it only when it binds token subjects
+    /// to client certificates, since only then does it check a forwarded
+    /// chain; any other owner is sent forwards exactly as before.
+    pub client_certs: bool,
 }
 
 /// Where a broker's peer identity comes from. All three or none: a listener
@@ -211,6 +216,7 @@ impl Default for PeerTransportConfig {
             fence: true,
             election: false,
             unified_fence: true,
+            client_certs: false,
         }
     }
 }
@@ -286,7 +292,12 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::SEQUENCED_FORWARDS)
             .union(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS)
             .union(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
-            .union(PeerCapabilities::WRITER_GENERATIONS);
+            .union(PeerCapabilities::WRITER_GENERATIONS)
+            .union(if self.client_certs {
+                PeerCapabilities::CLIENT_CERTS
+            } else {
+                PeerCapabilities::NONE
+            });
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)

@@ -1,6 +1,6 @@
 //! One engine per shard across the brokers that hold it.
 //!
-//! A durable stream shard is replicated by the hybrid engine or by a Raft
+//! A durable stream or cache shard is replicated by the hybrid engine or by a Raft
 //! group, and its replicas must agree which: a broker on the other engine
 //! keeps a log of its own that no quorum covers. [`EngineMatch`] sits in
 //! front of this broker's engine in the routing feed and refuses every such
@@ -33,7 +33,7 @@ const ASK_WITHIN: Duration = Duration::from_secs(5);
 
 type Addresses = Arc<dyn Fn(&str) -> Option<SocketAddr> + Send + Sync>;
 
-/// Refuses the durable stream shards this broker shares with a peer on the
+/// Refuses the durable stream and cache shards this broker shares with a peer on the
 /// other engine, and leaves the rest to `inner`.
 pub(crate) struct EngineMatch<R> {
     broker: Arc<Broker>,
@@ -167,7 +167,7 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
             let shared: Vec<&ShardAssignment> = assignments
                 .values()
                 .filter(|assignment| {
-                    assignment.key.kind == ShardKind::Stream
+                    matches!(assignment.key.kind, ShardKind::Stream | ShardKind::Cache)
                         && members(assignment).any(|member| *member == self.local)
                 })
                 .collect();
@@ -196,12 +196,24 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
                 let Some(peer) = assignments.get(&key).and_then(|a| self.other_engine(a)) else {
                     continue;
                 };
-                // A stream in memory runs on the hybrid on every broker.
-                let durable = self
-                    .broker
-                    .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
-                    .await
-                    .is_some_and(|metadata| metadata.durable);
+                // A stream or cache in memory runs on the hybrid on every
+                // broker.
+                let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
+                let durable = match key.kind {
+                    ShardKind::Cache => {
+                        self.broker.cache().as_log_cache().is_some()
+                            && self
+                                .broker
+                                .cache_metadata(tenant, namespace, name)
+                                .await
+                                .is_some()
+                    }
+                    _ => self
+                        .broker
+                        .stream_metadata(tenant, namespace, name)
+                        .await
+                        .is_some_and(|metadata| metadata.durable),
+                };
                 if !durable {
                     continue;
                 }

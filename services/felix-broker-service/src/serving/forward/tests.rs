@@ -19,6 +19,8 @@ struct ScriptedOwner {
     kinds: Mutex<Vec<felix_wire::internal::Kind>>,
     /// The incarnation each request named.
     incarnations: Mutex<Vec<Option<u64>>>,
+    /// The client chain each request carried.
+    chains: Mutex<Vec<Option<Vec<Bytes>>>>,
     /// What the owner offered in its handshake.
     offered: Option<PeerCapabilities>,
     /// Whether a handshake to learn its capabilities fails.
@@ -34,6 +36,7 @@ impl ScriptedOwner {
             asked: Mutex::new(Vec::new()),
             kinds: Mutex::new(Vec::new()),
             incarnations: Mutex::new(Vec::new()),
+            chains: Mutex::new(Vec::new()),
             offered: Some(PeerCapabilities::FORWARD_OFFSETS),
             unreachable: false,
         }
@@ -43,6 +46,21 @@ impl ScriptedOwner {
     fn predating_offsets(mut self) -> Self {
         self.offered = Some(PeerCapabilities::GENERATION_LABELS);
         self
+    }
+
+    /// The same owner, offering `offered` too.
+    fn offering(mut self, offered: PeerCapabilities) -> Self {
+        self.offered = Some(
+            self.offered
+                .unwrap_or(PeerCapabilities::NONE)
+                .union(offered),
+        );
+        self
+    }
+
+    /// The client chain each request carried, in order.
+    fn chains(&self) -> Vec<Option<Vec<Bytes>>> {
+        self.chains.lock().expect("lock").clone()
     }
 
     /// The frame kind of each request, in order.
@@ -67,6 +85,20 @@ impl PeerRequester for ScriptedOwner {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
+        self.kinds.lock().expect("lock").push(message.kind());
+        let message = match message {
+            InternalMessage::ClientCertified(certified) => {
+                self.chains
+                    .lock()
+                    .expect("lock")
+                    .push(Some(certified.client_chain));
+                *certified.message
+            }
+            message => {
+                self.chains.lock().expect("lock").push(None);
+                message
+            }
+        };
         let (generation, incarnation) = match &message {
             InternalMessage::ForwardPublish(publish) => {
                 (publish.shard.generation, publish.shard.incarnation)
@@ -81,7 +113,6 @@ impl PeerRequester for ScriptedOwner {
             .lock()
             .expect("lock")
             .push((node_id.to_string(), generation));
-        self.kinds.lock().expect("lock").push(message.kind());
         self.answers
             .lock()
             .expect("lock")
@@ -810,4 +841,70 @@ async fn a_redirect_to_an_owner_without_the_capability_is_refused_as_unsupported
         ),
         "{err:?}"
     );
+}
+
+async fn publish_as(
+    owner: &ScriptedOwner,
+    credential: &ForwardCredential,
+) -> std::result::Result<Option<(u64, u64)>, ForwardError> {
+    forward_publish(
+        owner,
+        &target(),
+        &key(),
+        AckMode::OnCommit,
+        credential,
+        vec![Bytes::from_static(b"an order")],
+        None,
+        None,
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+/// **A client's certificate chain reaches only an owner that reads it.** It
+/// travels around the request to an owner that offered `CLIENT_CERTS`, and
+/// any other owner gets the request exactly as before.
+#[tokio::test]
+async fn the_client_chain_goes_only_to_an_owner_that_offered_to_read_it() {
+    let chain: Arc<[Bytes]> = vec![Bytes::from_static(b"leaf"), Bytes::from_static(b"ca")].into();
+    let certified = ForwardCredential {
+        token: "token".to_string(),
+        client_chain: Some(Arc::clone(&chain)),
+    };
+    use felix_wire::internal::Kind;
+
+    let reads = ScriptedOwner::new([Ok(accepted(0, 0))]).offering(PeerCapabilities::CLIENT_CERTS);
+    publish_as(&reads, &certified).await.expect("forwarded");
+    assert_eq!(reads.kinds(), vec![Kind::ClientCertified]);
+    assert_eq!(reads.chains(), vec![Some(chain.to_vec())]);
+
+    let older = ScriptedOwner::new([Ok(accepted(0, 0))]);
+    publish_as(&older, &certified).await.expect("forwarded");
+    assert_eq!(older.kinds(), vec![Kind::AuthorizedForwardPublish]);
+    assert_eq!(older.chains(), vec![None]);
+
+    // No chain, nothing to carry.
+    let bare = ScriptedOwner::new([Ok(accepted(0, 0))]).offering(PeerCapabilities::CLIENT_CERTS);
+    publish_as(&bare, &"token".into()).await.expect("forwarded");
+    assert_eq!(bare.kinds(), vec![Kind::AuthorizedForwardPublish]);
+
+    // A cache op carries it the same way.
+    let cache = ScriptedOwner::new([Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+        correlation_id: 0,
+        value: None,
+        outcome: None,
+    }))])
+    .offering(PeerCapabilities::CLIENT_CERTS);
+    forward_cache_op(
+        &cache,
+        &target(),
+        &key(),
+        "k",
+        &certified,
+        &CacheRequest::Get,
+    )
+    .await
+    .expect("forwarded");
+    assert_eq!(cache.kinds(), vec![Kind::ClientCertified]);
+    assert_eq!(cache.chains(), vec![Some(chain.to_vec())]);
 }

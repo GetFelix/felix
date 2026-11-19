@@ -30,9 +30,9 @@ pub use election::{
 pub use error_code::ErrorCode;
 pub use fence::{Fence, FenceAttestation, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch};
 pub use forward::{
-    AckMode, CacheOpKind, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
-    ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish, ForwardPublishError,
-    ForwardPublishOk, LeaseForwardCacheOk, NotLeader,
+    AckMode, CacheOpKind, ClientCertified, ForwardCacheCondition, ForwardCacheError,
+    ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer,
+    ForwardPublish, ForwardPublishError, ForwardPublishOk, LeaseForwardCacheOk, NotLeader,
 };
 pub use handshake::{Hello, HelloOk};
 pub use header::{
@@ -53,6 +53,12 @@ pub const MAX_IDENT_BYTES: usize = 512;
 /// whose size is its permission list; this leaves room for a long one without
 /// letting a peer spend the body limit on it.
 pub const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
+
+/// Most certificates a forwarded client chain may hold: a leaf and its
+/// intermediates. Real chains are two or three deep.
+pub const MAX_CLIENT_CERTS: usize = 8;
+/// Most bytes a forwarded client chain may hold, all certificates together.
+pub const MAX_CLIENT_CHAIN_BYTES: usize = 64 * 1024;
 
 /// Most payloads one forwarded batch may carry.
 pub const MAX_BATCH_PAYLOADS: usize = 65_536;
