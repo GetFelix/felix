@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795048484489,
+  "lastUpdate": 1795050518223,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78474,6 +78474,72 @@ window.BENCHMARK_DATA = {
             "range": "284.14",
             "unit": "us",
             "extra": "trials: 5\nmedian: 364.00\nmean: 483.20\nstdev: 284.14\ncv: 58.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3398ae132bb3276f279f58aed160e417cbc7a31b",
+          "message": "ci: run only the PR jobs a change can affect (#2791)\n\n* ci: run only the PR jobs a change can affect\n\nThe changes job now runs scripts/ci/affected.py over the PR's files and the\nworkspace crate graph (cargo metadata) and switches each heavy job on only\nwhen a crate it builds, or a file it reads, changed. Test-only changes stay\ninside their crate. The test job narrows its doctests to the affected\ncrates, and coverage skips a PR no workspace crate's tests can see.\n\nPushes to main, manual runs, the ci:full label, unknown paths and the files\nthat change every build (Cargo.toml, Cargo.lock, the toolchain, Taskfile,\nbuild scripts, the CI workflow and the selector) still run everything.\n\nSpec-Unaffected: CI job selection only\n\n* ci: felixctl, Dockerfile and fuzz-seed changes select the tests that use them\n\nSpec-Unaffected: CI job selection only\n\n* ci: broker-side and docs changes select the conformance jobs and tests that use them\n\nSpec-Unaffected: CI job selection only",
+          "timestamp": "2026-11-18T16:43:04-08:00",
+          "tree_id": "e238a58181fe88787e093c9ce6ad056fdedde380",
+          "url": "https://github.com/GetFelix/felix/commit/3398ae132bb3276f279f58aed160e417cbc7a31b"
+        },
+        "date": 1795050508198,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 67.60\nstdev: 0.55\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 117,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 117.00\nmean: 117.20\nstdev: 1.64\ncv: 1.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 145,
+            "range": "13.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 145.00\nmean: 149.80\nstdev: 13.95\ncv: 9.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "8.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 88.40\nstdev: 8.17\ncv: 9.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 186,
+            "range": "718.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 186.00\nmean: 505.60\nstdev: 718.01\ncv: 142.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 307,
+            "range": "1084.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 307.00\nmean: 844.80\nstdev: 1084.45\ncv: 128.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
