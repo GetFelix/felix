@@ -221,6 +221,11 @@ configuration that must find a violation exists to show a check is
 load-bearing, or to pin a finding the design has not acted on yet; a violation
 that quietly became a pass would be a model that stopped saying anything.
 
+A configuration too long for any CI job is listed in
+`scripts/tla_unregistered.txt` with the reason, and `task docs:evidence` runs
+`scripts/check_tla_registry.sh`, which fails on a `.cfg` that is neither
+registered, run by a workflow, nor listed there.
+
 | Configuration | Knobs | Must |
 | --- | --- | --- |
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
@@ -799,6 +804,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementTransferMove.cfg` | three voters and a spare, two terms, no write: a seat moves to the spare, and when it is the leader's seat the leader grows, then transfers leadership to a voter of the target | pass the election, log and commit checks and `NeverLeadsRemoved` (8.0M distinct states, 51 minutes on a CI runner) |
 | `FelixRaftPlacementTransferMoveSelfRemove.cfg` | the same where the leader writes a target without itself | violate `NeverLeadsRemoved` |
 | `FelixRaftPlacementReachTransfer.cfg` | witness: in `FelixRaftPlacementTransferMove.cfg` a transfer hands leadership over | violate `NeverTransfers` |
+| `FelixRaftPlacementPlaced.cfg` | `FelixRaftPlacement.cfg` with leaders that follow placement (`PlacedLeaders`) and no target change: a settled leader with an entry of its term committed may hand its leadership to any caught-up voter | pass every safety invariant |
+| `FelixRaftPlacementReachPlaced.cfg` | witness: with no target change a placement hand-over still lands | violate `NeverTransfers` |
+| `FelixRaftPlacementPlacedTarget.cfg` | `Placed.cfg` with one target change, so a placed transfer may race a membership change | not registered: a CI dispatch (run 43773912279) ran past six hours |
+| `FelixRaftPlacementPlacedTargetNoWrite.cfg` | `PlacedTarget.cfg` without the client write: the target change still takes both calls (`AddLearner`, then `Change`) and a placed transfer may race it. With no write the ack invariants hold trivially; the membership invariants carry the check | expected to pass every safety invariant; registered once its dispatch finishes |
+| `FelixRaftPlacementReachPlacedTargetNoWrite.cfg` | witness at the bounds of `PlacedTargetNoWrite.cfg`: a transfer lands while the target's new member is a learner and the voters are not yet the target's, with the leader in both, so only the placed rule can have sent it (`NeverTransfersOffTarget`) | violate `NeverTransfersOffTarget`, so the bounded twin reaches the race |
 | `FelixRaftPlacementTransferMoveFull.cfg` | `FelixRaftPlacementTransferMove.cfg` with one write | not registered and not checked yet: unfinished after six hours on a CI runner (issue #2497) |
 | `FelixRaftPlacementRewindSpare.cfg` | `FelixRaftPlacementMoveWipe.cfg` with one restore of the control plane's metadata from a backup while a leader's appended joint entry names the spare broker's copy. The doom waits for every member's report, and a report names the copies in appended entries too | pass the safety checks (30.5M distinct states, 176 minutes on a CI runner); not registered, checked nightly |
 | `FelixRaftPlacementRewindSpareCommitted.cfg` | the same where the doom reads the committed history instead of the reports, and a learner entry takes the target's version | violate `AckedOnDisk`: the spare's copy is told to delete while an appended joint entry still gives it a vote (57 minutes on a CI runner) |
