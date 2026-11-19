@@ -37,6 +37,7 @@ fn caller(perms: &[&str]) -> AuthContext {
             None,
             1_000,
         ),
+        client_chain: None,
     }
 }
 

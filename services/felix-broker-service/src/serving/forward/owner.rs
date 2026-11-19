@@ -26,6 +26,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use felix_authz::{
     Action, CacheKeys, CacheScope, Namespace, PermissionMatcher, StreamName, TenantId,
     cache_resource, stream_resource,
@@ -34,12 +35,13 @@ use felix_broker::{Broker, SequenceReuse};
 use felix_replication::engine::{CommitError, Engine};
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
-    CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
-    ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, InternalMessage, LeaseForwardCacheOk, NotLeader,
-    ShardRef,
+    CacheOpKind, ClientCertified, ErrorCode, ForwardCacheCondition, ForwardCacheError,
+    ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer,
+    ForwardPublish, ForwardPublishError, ForwardPublishOk, InternalMessage, LeaseForwardCacheOk,
+    NotLeader, ShardRef,
 };
 
+use super::CacheRequest;
 use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::lease::LeaseMint;
 use crate::shards::lifecycle::fence::Fenced;
@@ -100,7 +102,33 @@ impl ForwardingHandler {
         &self.engine
     }
 
+    /// A forward that came without its client's certificate chain.
     pub(crate) async fn apply(&self, publish: ForwardPublish) -> InternalMessage {
+        self.apply_publish(publish, None).await
+    }
+
+    /// A forward with the certificate chain its client presented to the
+    /// forwarding broker, checked here when this broker binds subjects.
+    pub(crate) async fn apply_certified(&self, certified: ClientCertified) -> InternalMessage {
+        let chain = Some(certified.client_chain.as_slice());
+        match *certified.message {
+            InternalMessage::ForwardPublish(publish) => self.apply_publish(publish, chain).await,
+            InternalMessage::ForwardCacheOp(op) => self.apply_cache(op, false, chain).await,
+            InternalMessage::LeaseForwardCacheOp(op) => self.apply_cache(op, true, chain).await,
+            // The decoder admits nothing else inside the envelope.
+            other => error(
+                other.correlation_id(),
+                ErrorCode::Malformed,
+                format!("{:?} carries no client certificate", other.kind()),
+            ),
+        }
+    }
+
+    async fn apply_publish(
+        &self,
+        publish: ForwardPublish,
+        client_chain: Option<&[Bytes]>,
+    ) -> InternalMessage {
         let correlation_id = publish.correlation_id;
         let key = ShardKey {
             tenant_id: publish.shard.tenant_id.clone(),
@@ -134,6 +162,7 @@ impl ForwardingHandler {
         let publisher = match self
             .authorize(
                 &publish.credential,
+                client_chain,
                 &key.tenant_id,
                 Action::StreamPublish,
                 &resource,
@@ -436,16 +465,21 @@ impl ForwardingHandler {
     /// broker that served a cache key it no longer owns is the divergence this
     /// whole path exists to prevent.
     pub(crate) async fn apply_cache_op(&self, op: ForwardCacheOp) -> InternalMessage {
-        self.apply_cache(op, false).await
+        self.apply_cache(op, false, None).await
     }
 
     /// A conditional put that also mints a lease token if it applies, the way
     /// a client connected here would get one.
     pub(crate) async fn apply_lease_cache_op(&self, op: ForwardCacheOp) -> InternalMessage {
-        self.apply_cache(op, true).await
+        self.apply_cache(op, true, None).await
     }
 
-    async fn apply_cache(&self, op: ForwardCacheOp, lease: bool) -> InternalMessage {
+    async fn apply_cache(
+        &self,
+        op: ForwardCacheOp,
+        lease: bool,
+        client_chain: Option<&[Bytes]>,
+    ) -> InternalMessage {
         let correlation_id = op.correlation_id;
         let key = ShardKey {
             tenant_id: op.shard.tenant_id.clone(),
@@ -455,10 +489,14 @@ impl ForwardingHandler {
             kind: ShardKind::Cache,
         };
 
-        // The same wait a forwarded publish makes, for the same reason.
-        self.ingress
-            .settle(&key, op.shard.generation, op.shard.incarnation)
-            .await;
+        // The same wait a forwarded publish makes, for the same reason, and
+        // as there, none for a Raft shard.
+        let on_raft = self.engine.on_raft(&key);
+        if !on_raft {
+            self.ingress
+                .settle(&key, op.shard.generation, op.shard.incarnation)
+                .await;
+        }
         if let Some(denial) = self.check_ownership(correlation_id, &key, &op.shard) {
             return denial.into_cache_answer(correlation_id);
         }
@@ -482,6 +520,7 @@ impl ForwardingHandler {
         let caller = match self
             .authorize(
                 &op.credential,
+                client_chain,
                 &key.tenant_id,
                 action,
                 &resource,
@@ -528,6 +567,11 @@ impl ForwardingHandler {
         let entry_expires_at = (op.ttl_ms > 0).then(|| {
             felix_common::clock::system_time() + std::time::Duration::from_millis(op.ttl_ms)
         });
+        if on_raft {
+            return self
+                .apply_cache_on_raft(op, &key, mint, entry_expires_at)
+                .await;
+        }
 
         // A read follows the lease as a write does: another broker may be
         // leading the shard by now, with writes this one never saw. A fleet
@@ -745,6 +789,89 @@ impl ForwardingHandler {
         })
     }
 
+    /// A forwarded cache or counter op on a shard a Raft group runs here,
+    /// proposed at the term led now, as a forwarded publish is.
+    async fn apply_cache_on_raft(
+        &self,
+        op: ForwardCacheOp,
+        key: &ShardKey,
+        mint: Option<LeaseMint>,
+        entry_expires_at: Option<std::time::SystemTime>,
+    ) -> InternalMessage {
+        use crate::serving::cache_routing::raft::{self, NotServed};
+        let correlation_id = op.correlation_id;
+        let request = match raft_request(&op) {
+            Ok(request) => request,
+            Err(detail) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                return error(correlation_id, ErrorCode::Malformed, detail);
+            }
+        };
+        let writes = !matches!(
+            request,
+            CacheRequest::Get | CacheRequest::GetVersioned | CacheRequest::CounterGet
+        );
+        let Some(term) = self.engine.raft_term(key) else {
+            metrics::record_served(metrics::OUTCOME_REFUSED);
+            let detail = "this broker stopped leading the shard's Raft group";
+            return error(correlation_id, ErrorCode::Unavailable, detail.to_string());
+        };
+        let applied = raft::apply(
+            &self.engine,
+            key,
+            term,
+            &op.key,
+            &request,
+            self.quorum_timeout,
+        )
+        .await
+        .unwrap_or(Err(NotServed::Refused(RaftRefusal::NotLeading { term })));
+        let answered = match applied {
+            Ok(answered) => answered,
+            Err(NotServed::Refused(refused)) => {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                return error(correlation_id, ErrorCode::Unavailable, refused.to_string());
+            }
+            // A write may still commit, so this is not a refusal; a read
+            // changed nothing and is only not available here.
+            Err(err) => {
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                let code = if writes {
+                    ErrorCode::StorageFailed
+                } else {
+                    ErrorCode::Unavailable
+                };
+                return error(correlation_id, code, err.to_string());
+            }
+        };
+        metrics::record_served(metrics::OUTCOME_OK);
+        if let (Some(mint), Some(outcome)) = (mint, answered.outcome) {
+            let lease = match outcome {
+                ForwardCacheOutcome {
+                    applied: true,
+                    version: Some(version),
+                } => mint.mint(version, entry_expires_at),
+                _ => ForwardLease::NotMinted,
+            };
+            return InternalMessage::LeaseForwardCacheOk(LeaseForwardCacheOk {
+                correlation_id,
+                outcome,
+                lease,
+            });
+        }
+        let value = match request {
+            CacheRequest::CounterAdd { .. } | CacheRequest::CounterGet => {
+                answered.sum.map(felix_storage::counter_log::encode_sum)
+            }
+            _ => answered.value,
+        };
+        InternalMessage::ForwardCacheOk(ForwardCacheOk {
+            correlation_id,
+            value,
+            outcome: answered.outcome,
+        })
+    }
+
     /// What a lease token would grant the caller of `op`, or the refusal.
     fn lease_mint(
         &self,
@@ -782,9 +909,14 @@ impl ForwardingHandler {
     /// owner cannot tell an honest forwarder from anything else that can reach
     /// its port. `Err` is the detail for an `Unauthorized` refusal. The token
     /// never appears in it.
+    ///
+    /// `client_chain` is the certificate chain the client presented to the
+    /// forwarder. A broker that binds token subjects checks it here as its
+    /// own listeners would, and refuses a forward without one.
     async fn authorize(
         &self,
         credential: &str,
+        client_chain: Option<&[Bytes]>,
         tenant_id: &str,
         action: Action,
         resource: &str,
@@ -799,7 +931,7 @@ impl ForwardingHandler {
         }
         let ctx = self
             .auth
-            .authenticate(tenant_id, credential)
+            .authenticate_forwarded(tenant_id, credential, client_chain)
             .await
             .map_err(|err| Denied {
                 // Anything but a verdict on the token itself, such as the
@@ -1093,6 +1225,7 @@ impl PeerRequestHandler for ForwardingHandler {
             InternalMessage::ForwardPublish(publish) => self.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.apply_cache_op(op).await,
             InternalMessage::LeaseForwardCacheOp(op) => self.apply_lease_cache_op(op).await,
+            InternalMessage::ClientCertified(certified) => self.apply_certified(certified).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => error(
@@ -1163,6 +1296,38 @@ fn error(correlation_id: u64, code: ErrorCode, detail: String) -> InternalMessag
         correlation_id,
         code,
         detail,
+    })
+}
+
+/// A forwarded op as the request the requester built it from.
+fn raft_request(op: &ForwardCacheOp) -> Result<CacheRequest, String> {
+    let (value, ttl_ms) = (op.value.clone(), op.ttl_ms);
+    Ok(match (op.op, op.condition) {
+        (CacheOpKind::Put, None) => CacheRequest::Put { value, ttl_ms },
+        (CacheOpKind::Put, Some(ForwardCacheCondition::Absent)) => CacheRequest::PutIf {
+            value,
+            ttl_ms,
+            condition: felix_storage::CacheCondition::Absent,
+        },
+        (CacheOpKind::Put, Some(ForwardCacheCondition::Version(version))) => CacheRequest::PutIf {
+            value,
+            ttl_ms,
+            condition: felix_storage::CacheCondition::Version(version),
+        },
+        (CacheOpKind::Get, None) => CacheRequest::Get,
+        (CacheOpKind::Get, Some(ForwardCacheCondition::Unconditional)) => {
+            CacheRequest::GetVersioned
+        }
+        (CacheOpKind::Delete, None) => CacheRequest::Delete,
+        (CacheOpKind::Delete, Some(ForwardCacheCondition::Version(version))) => {
+            CacheRequest::DeleteIf { version }
+        }
+        (CacheOpKind::CounterAdd, None) => CacheRequest::CounterAdd {
+            delta: felix_storage::counter_log::decode_sum(&op.value)
+                .map_err(|err| err.to_string())?,
+        },
+        (CacheOpKind::CounterGet, None) => CacheRequest::CounterGet,
+        (kind, Some(condition)) => return Err(format!("{kind:?} cannot carry {condition:?}")),
     })
 }
 

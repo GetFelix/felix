@@ -156,6 +156,18 @@ spec:
                 secretKeyRef:
                   name: {{ $cp.storage.raft.peerToken.existingSecret }}
                   key: {{ $cp.storage.raft.peerToken.tokenKey }}
+            - name: FELIX_RAFT_PEER_TOKEN_NEXT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $cp.storage.raft.peerToken.existingSecret }}
+                  key: {{ $cp.storage.raft.peerToken.nextKey }}
+                  optional: true
+            - name: FELIX_RAFT_PEER_TOKEN_PREVIOUS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $cp.storage.raft.peerToken.existingSecret }}
+                  key: {{ $cp.storage.raft.peerToken.previousKey }}
+                  optional: true
             {{- end }}
             {{- if $cp.storage.raft.insecurePeers }}
             - name: FELIX_RAFT_INSECURE_PEERS

@@ -30,7 +30,10 @@ TLS is on by default and uses the broker's client certificate
 logs that tokens cross the network in clear text. With `FELIX_TLS_CLIENT_CA`
 set, a client must also present a certificate, and with
 `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` the token's subject must be the one
-the certificate was issued to, as on the other listeners.
+the certificate was issued to, as on the other listeners. With binding on, a
+client over plain TCP has no certificate, so its publishes are served only on
+shards its own broker owns; a publish another broker would have to take is
+refused.
 
 The settings are listed in the
 [environment variable reference](https://docs.getfelix.dev/reference/environment-variables/).

@@ -59,6 +59,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `controlplane.storage.backend` | `raft` | `raft` or `memory`. |
 | `controlplane.storage.raft.volume` | `1Gi` | The volume each Raft member keeps its log and snapshots on. |
 | `controlplane.storage.raft.peerToken.existingSecret` | — | Secret holding the Raft peer token (32+ characters) under `tokenKey` (`token`). Required for `raft`: whoever holds the token can replace the metadata store. |
+| `controlplane.storage.raft.peerToken.nextKey` / `previousKey` | `next` / `previous` | Optional keys in the same Secret, read only during a peer token rotation. Members accept both and send only `tokenKey`. |
 | `controlplane.storage.raft.peerPort` | `8444` | The members' Raft peer listener, on the headless Service only. Must differ from the API port. |
 | `controlplane.storage.raft.clusterId` | full name | Names the group; each member's volume records it and refuses another. |
 | `controlplane.storage.raft.initialClusterState` | — | `new` lets empty members form a group, `existing` never does. Empty means `new` until the group has formed once, then `existing`: a post-install hook Job waits for the API to be ready and creates the `<fullname>-controlplane-raft-formed` ConfigMap, which members read at every start. Lost volumes then never start an empty control plane, even before the first upgrade. |

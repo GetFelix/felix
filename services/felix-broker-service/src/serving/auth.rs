@@ -48,6 +48,9 @@ pub struct BrokerAuth {
     /// Require a token's subject to match the client certificate, when the
     /// client presented one (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`).
     bind_subject: bool,
+    /// Checks a forwarded client chain against `FELIX_TLS_CLIENT_CA`, as the
+    /// client listeners do in the handshake.
+    client_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
     /// Without it this broker neither mints nor accepts lease tokens.
     lease: Option<Arc<LeaseTokens>>,
 }
@@ -69,6 +72,7 @@ impl BrokerAuth {
             verifier,
             key_store,
             bind_subject: false,
+            client_verifier: None,
             lease: None,
         }
     }
@@ -84,6 +88,7 @@ impl BrokerAuth {
             verifier,
             key_store,
             bind_subject: false,
+            client_verifier: None,
             lease: None,
         }
     }
@@ -93,6 +98,17 @@ impl BrokerAuth {
     /// its actor (`act`) on a token the control plane minted by delegation.
     pub fn with_subject_binding(mut self, bind_subject: bool) -> Self {
         self.bind_subject = bind_subject;
+        self
+    }
+
+    /// Verify the client chain a forwarded request carries with this, the
+    /// verifier the client listeners use. Without one, a binding broker
+    /// refuses every forwarded request.
+    pub(crate) fn with_client_verifier(
+        mut self,
+        verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
+    ) -> Self {
+        self.client_verifier = verifier;
         self
     }
 
@@ -116,7 +132,7 @@ impl BrokerAuth {
         token: &str,
         peer_certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     ) -> Result<AuthContext> {
-        let context = self.authenticate(tenant_id, token).await?;
+        let mut context = self.authenticate(tenant_id, token).await?;
         if self.bind_subject {
             felix_common::tls::check_subject_binding(
                 peer_certs,
@@ -127,6 +143,64 @@ impl BrokerAuth {
                 anyhow::Error::new(CredentialRefused(format!("token refused: {reason}")))
             })?;
         }
+        // Kept whatever this broker binds: the owner of a shard this client
+        // reaches through a forward may bind, and checks the chain itself.
+        context.client_chain = peer_certs.filter(|certs| !certs.is_empty()).map(|certs| {
+            certs
+                .iter()
+                .map(|cert| bytes::Bytes::copy_from_slice(cert))
+                .collect()
+        });
+        Ok(context)
+    }
+
+    /// [`Self::authenticate`] for a client behind a forward, with the
+    /// certificate chain the forwarding broker says the client presented.
+    ///
+    /// When this broker binds subjects, the chain must verify against its own
+    /// client CA, now, exactly as its listeners would verify it in a
+    /// handshake, and then bind the token as [`Self::authenticate_peer`] does.
+    /// No chain is refused, even for a client that logged in without a
+    /// certificate (plain MQTT): a forwarder saying the client had none is
+    /// what a compromised one would say. When it does not bind, the chain is
+    /// ignored.
+    pub(crate) async fn authenticate_forwarded(
+        &self,
+        tenant_id: &str,
+        token: &str,
+        client_chain: Option<&[bytes::Bytes]>,
+    ) -> Result<AuthContext> {
+        let context = self.authenticate(tenant_id, token).await?;
+        if !self.bind_subject {
+            return Ok(context);
+        }
+        let refused = |reason: &str| {
+            anyhow::Error::new(CredentialRefused(format!("token refused: {reason}")))
+        };
+        let Some((leaf, intermediates)) = client_chain.and_then(<[bytes::Bytes]>::split_first)
+        else {
+            return Err(refused(
+                "this broker binds tokens to client certificates and the forwarding broker sent \
+                 no client certificate",
+            ));
+        };
+        let verifier = self.client_verifier.as_ref().ok_or_else(|| {
+            refused("this broker binds tokens to client certificates but has no client CA")
+        })?;
+        let leaf = rustls::pki_types::CertificateDer::from(leaf.as_ref());
+        let intermediates: Vec<_> = intermediates
+            .iter()
+            .map(|cert| rustls::pki_types::CertificateDer::from(cert.as_ref()))
+            .collect();
+        verifier
+            .verify_client_cert(&leaf, &intermediates, rustls::pki_types::UnixTime::now())
+            .map_err(|err| refused(&format!("the forwarded client certificate: {err}")))?;
+        felix_common::tls::check_subject_binding(
+            Some(std::slice::from_ref(&leaf)),
+            &context.subject,
+            context.actor.as_deref(),
+        )
+        .map_err(|reason| refused(&reason))?;
         Ok(context)
     }
 
@@ -198,6 +272,7 @@ impl BrokerAuth {
             expires_at: claims.exp,
             lease_token,
             revocable,
+            client_chain: None,
         })
     }
 }
@@ -225,14 +300,25 @@ pub struct AuthContext {
     pub lease_token: bool,
     /// What ends this session when its principal is revoked.
     pub revocable: Revocable,
+    /// The certificate chain the client presented, leaf first, so a request
+    /// this broker forwards carries it for the owner to check.
+    pub client_chain: Option<Arc<[bytes::Bytes]>>,
 }
 
 impl AuthContext {
     /// This connection as a publisher.
     pub(crate) fn publishing_as(&self) -> crate::serving::quic::handlers::publish::PublishAs {
         crate::serving::quic::handlers::publish::PublishAs {
-            credential: self.token.clone(),
+            credential: self.forward_credential(),
             publisher: self.publisher.clone(),
+        }
+    }
+
+    /// What a request this broker forwards carries for the owner to check.
+    pub(crate) fn forward_credential(&self) -> crate::serving::forward::ForwardCredential {
+        crate::serving::forward::ForwardCredential {
+            token: self.token.clone(),
+            client_chain: self.client_chain.clone(),
         }
     }
 }

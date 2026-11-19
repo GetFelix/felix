@@ -4018,9 +4018,9 @@ connection to it, and the broker keeps asking it on every routing pass.
 
 The fix is to set `FELIX_SHARD_ENGINE` the same on every broker and restart
 the odd one. The refusal ends on its own at the first routing pass after
-the restarted broker answers with the matching engine. Streams in
-memory, caches and counters are not checked: they run on the hybrid engine
-everywhere.
+the restarted broker answers with the matching engine. Durable cache
+shards are checked the same way. Streams and caches in memory are not: they
+run on the hybrid engine everywhere.
 
 A broker asks without waiting for the answer, and asks again on every
 routing pass until the peer answers, and after that only while the peer's
@@ -4737,6 +4737,38 @@ by the store and again by the leader that would append it. Nothing reads
 the floor yet: the re-form's refusal to run a first form for an incarnation
 that has a floor is not built.
 
+#### The control plane's record for a re-form
+
+The re-form planner (`plan_reform` in `raft_copy/vouch.rs`) takes what the
+brokers report and what the control plane holds, the `GroupRecord`.
+`ShardAssignment::reform_record` builds the second from the shard's record and
+the brokers declared dead:
+
+| `GroupRecord` field | From the shard's record |
+|---|---|
+| `incarnation` | the stream `incarnation` |
+| `placed` | `placed.brokers`, `None` when the shard has no `placed` record |
+| `ordered` | `ordered_voter_sets()`, see "Targets ordered in an epoch" |
+| `floor` | `raft_floor`'s exact log id, at this incarnation and epoch |
+| `offset_floor` | `raft_floor.offset_floor`, at this incarnation |
+| `dead` | the brokers the caller passes as declared dead |
+| `seed` | always `None` for now |
+| `bases` | empty: only a group at epoch 0 gets a record |
+
+Anything the record cannot vouch for stays unknown, and the planner reads
+unknown as a block or a mark, never as empty. A floor from another stream
+incarnation belongs to an earlier group, so it is dropped rather than read as
+this group's.
+
+Two gaps keep every plan marked or refused for now:
+
+- **The seed is not recorded.** A group's first voters are the copy ids its
+  forming broker asks its peers for, and the control plane does not store
+  them. With the seed unknown, every plan is marked, so `apply` needs the
+  operator to accept the loss.
+- **Bases are not recorded.** No re-form writes its base to the shard's record
+  yet, so a group whose record shows it past epoch 0 gets no record (`BasesNotRecorded`) and no plan.
+
 ### Shards with one replica
 
 An RF 1 shard runs a group with one voter. It elects itself and commits on
@@ -4820,6 +4852,50 @@ no more of them than are in flight. A write that fails or whose caller gives
 up stops holding the floor. Such a write has no retry guarantee: a client that
 sends it again after an unknown outcome may apply it twice, as on the
 hybrid.
+
+### Serving a cache shard from its group
+
+A broker that runs Raft shards (`FELIX_SHARD_ENGINE=raft`) also runs every
+cache shard it is placed on as a Raft group, when it has durable storage
+and the cache is registered here. The group's replica count is the cache's
+`replication_factor` from the control plane; a cache whose control plane
+does not send one is never formed, like a stream. An in-memory cache stays
+on the hybrid.
+
+- **Where the log lives.** The member's directory is the hybrid cache shard's
+  own, under the cache store's root (`<data>/caches/<incarnation dir>`), never
+  the stream store's, so a cache named like a stream shares nothing with it.
+  The claim marks the directory, and the hybrid cache store refuses to open a
+  marked one, so the log never has two writers. A cache shard directory
+  that already holds hybrid segments is refused, as for a stream, and so is
+  a shard whose counters the hybrid already holds under `<data>/counters/`.
+  Its counters are in the member's log; no `counters/` directory is made
+  for it.
+- **One chokepoint each side.** A local operation goes through
+  `apply_cache_local` and `apply_counter_op`, a forwarded one through the
+  owner's `apply_cache`. On a Raft shard each goes to the group before the
+  hybrid's fence, store or quorum wait is touched. A local operation must
+  have been routed at the term the broker serves now, or it is refused as
+  not ready and the client retries; a forwarded one is proposed at the term
+  led now, as a forwarded publish is.
+- **Answers match the hybrid's.** A refused conditional write names the
+  key's version; an applied conditional delete names none. A plain delete
+  answers the value it removed: the group's delete answers only a version, so
+  the broker reads the value and then deletes at that version, going round
+  again if a write landed in between. After three rounds it deletes whatever
+  the key holds and answers the value it read last, so a key written that
+  often cannot starve the delete. A delete of an absent key writes nothing.
+- **Reads** are confirmed by a read-index round on the leader, so they need
+  no lease, and never answer an expired value.
+- **A lease token** is minted after an applied conditional put, with the
+  entry's expiry taken from the broker's clock before the write, as on the
+  hybrid: the leader stamps the entry later, so the token never outlives it.
+- **An unknown outcome** (a timeout, a lost leadership) is answered as the
+  stream Raft paths answer it: a write may still commit. Writes carry no
+  client producer id yet, so a client retry after one may apply twice, as
+  on the hybrid.
+- **Not served yet:** a keyed cache watch on a Raft cache shard. It reads
+  the hybrid store, which never opens the member's directory (#2792).
 
 ## Moving a shard from the hybrid to Raft
 

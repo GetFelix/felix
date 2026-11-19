@@ -4,6 +4,7 @@
 //! correct: every one of these must be an error, and none may panic.
 
 mod byte_identity;
+mod client_certified;
 mod codec;
 mod election;
 mod error_code;

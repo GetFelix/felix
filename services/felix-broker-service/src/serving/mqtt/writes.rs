@@ -32,7 +32,9 @@ use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer, PeerCapabilities
 
 use crate::cluster::client_endpoints::ClientEndpoints;
 use crate::observability::tenants;
-use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
+use crate::serving::forward::{
+    ForwardCredential, ForwardError, ForwardKey, ForwardTarget, forward_publish,
+};
 use crate::serving::limits::TenantRates;
 use crate::shards::lifecycle::fence;
 use crate::shards::routing::{
@@ -616,7 +618,10 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             target,
             &key,
             ack,
-            credential.expose(),
+            ForwardCredential {
+                token: credential.expose().to_string(),
+                client_chain: credential.client_chain().cloned(),
+            },
             payloads.to_vec(),
             Some(headers.to_vec()),
             Some(ForwardProducer {

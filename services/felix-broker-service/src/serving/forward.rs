@@ -30,13 +30,15 @@ pub mod owner;
 pub use owner::ForwardingHandler;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
 use bytes::Bytes;
 use felix_wire::internal::{
-    AckMode, CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheOk, ForwardCacheOp,
-    ForwardLease, ForwardProducer, ForwardPublish, InternalMessage, PeerCapabilities, ShardRef,
+    AckMode, CacheOpKind, ClientCertified, ErrorCode, ForwardCacheCondition, ForwardCacheOk,
+    ForwardCacheOp, ForwardLease, ForwardProducer, ForwardPublish, InternalMessage,
+    PeerCapabilities, ShardRef,
 };
 
 use felix_replication::peer::PeerRequester;
@@ -60,6 +62,37 @@ pub struct ForwardTarget {
     /// The stream or cache incarnation the route was for, 0 for one from
     /// before incarnations.
     pub incarnation: u64,
+}
+
+/// The client behind a forward, for the owner to check again: its token, and
+/// the certificate chain it presented to this broker, if it presented one.
+#[derive(Debug, Clone, Default)]
+pub struct ForwardCredential {
+    pub token: String,
+    /// Leaf first. Sent only to an owner that offers `CLIENT_CERTS`; an owner
+    /// that binds token subjects to certificates refuses a forward without it.
+    pub client_chain: Option<Arc<[Bytes]>>,
+}
+
+impl From<&str> for ForwardCredential {
+    fn from(token: &str) -> Self {
+        Self {
+            token: token.to_string(),
+            client_chain: None,
+        }
+    }
+}
+
+impl From<&String> for ForwardCredential {
+    fn from(token: &String) -> Self {
+        Self::from(token.as_str())
+    }
+}
+
+impl From<&ForwardCredential> for ForwardCredential {
+    fn from(credential: &ForwardCredential) -> Self {
+        credential.clone()
+    }
 }
 
 /// Which shard the batch belongs to.
@@ -118,12 +151,13 @@ pub async fn forward_publish(
     target: &ForwardTarget,
     key: &ForwardKey,
     ack: AckMode,
-    credential: &str,
+    credential: impl Into<ForwardCredential>,
     payloads: Vec<Bytes>,
     headers: Option<Vec<Option<Bytes>>>,
     producer: Option<ForwardProducer>,
     budget: Duration,
 ) -> Result<Option<(u64, u64)>, ForwardError> {
+    let credential = credential.into();
     let deadline = Instant::now() + budget;
     let mut target = target.clone();
     let mut last = String::new();
@@ -173,15 +207,6 @@ pub async fn forward_publish(
                     continue;
                 }
             };
-        // The lookup may have dialled the owner; the request gets what is left.
-        let Some(remaining) = self::remaining(deadline) else {
-            metrics::record_forward(metrics::OUTCOME_EXHAUSTED);
-            return Err(ForwardError::Refused {
-                stream: key.stream.clone(),
-                code: last_code,
-                detail: budget_spent(&target.node_id, budget, attempt, &last),
-            });
-        };
         let request = InternalMessage::ForwardPublish(ForwardPublish {
             // The pool assigns the real id; it owns the connection this lands on.
             correlation_id: 0,
@@ -198,11 +223,42 @@ pub async fn forward_publish(
             credential: if legacy {
                 String::new()
             } else {
-                credential.to_string()
+                credential.token.clone()
             },
             headers: headers.clone(),
             producer,
         });
+        // Bounded like the incarnation lookup: it may dial an owner this
+        // broker has not met.
+        let certifying = deadline.saturating_duration_since(Instant::now());
+        let request = match tokio::time::timeout(
+            certifying,
+            certified(pool, &target, &credential, legacy, request),
+        )
+        .await
+        {
+            Ok(Ok(request)) => request,
+            Ok(Err(err)) => {
+                last = err.to_string();
+                last_code = None;
+                sleep_within(retry_delay(attempt), deadline).await;
+                continue;
+            }
+            Err(_) => {
+                last = format!("no handshake with {} within the budget", target.node_id);
+                last_code = None;
+                continue;
+            }
+        };
+        // The lookup may have dialled the owner; the request gets what is left.
+        let Some(remaining) = self::remaining(deadline) else {
+            metrics::record_forward(metrics::OUTCOME_EXHAUSTED);
+            return Err(ForwardError::Refused {
+                stream: key.stream.clone(),
+                code: last_code,
+                detail: budget_spent(&target.node_id, budget, attempt, &last),
+            });
+        };
 
         let answer = tokio::time::timeout(
             remaining,
@@ -381,20 +437,56 @@ async fn named_incarnation(
     if target.incarnation == 0 {
         return Ok(None);
     }
-    let offered = match pool.recorded_capabilities(&target.node_id) {
-        Some(offered) => offered,
-        // No handshake with it yet. The request would dial it anyway, and
-        // reuses the connection this makes.
+    Ok(offered(pool, target)
+        .await?
+        .contains(PeerCapabilities::FORWARD_INCARNATION)
+        .then_some(target.incarnation))
+}
+
+/// `request` with the client's certificate chain around it, when the client
+/// presented one and `target` reads it. Otherwise `request` as it is, which an
+/// owner that binds token subjects refuses: it cannot tell a client that had
+/// no certificate from a forwarder that dropped it.
+///
+/// Like [`named_incarnation`], an owner whose capabilities cannot be learned
+/// is an error rather than a guess, and nothing has been sent when it fails.
+async fn certified(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+    credential: &ForwardCredential,
+    legacy: bool,
+    request: InternalMessage,
+) -> Result<InternalMessage, PeerError> {
+    let Some(chain) = credential.client_chain.as_deref().filter(|_| !legacy) else {
+        return Ok(request);
+    };
+    if !offered(pool, target)
+        .await?
+        .contains(PeerCapabilities::CLIENT_CERTS)
+    {
+        return Ok(request);
+    }
+    Ok(InternalMessage::ClientCertified(ClientCertified {
+        client_chain: chain.to_vec(),
+        message: Box::new(request),
+    }))
+}
+
+/// What `target` offered in its handshake, dialling it if this broker has
+/// not met it yet. The request reuses the connection this makes.
+async fn offered(
+    pool: &impl PeerRequester,
+    target: &ForwardTarget,
+) -> Result<PeerCapabilities, PeerError> {
+    match pool.recorded_capabilities(&target.node_id) {
+        Some(offered) => Ok(offered),
         None => PeerRequester::capabilities(pool, &target.node_id, target.advertise_addr)
             .await
             .map_err(|err| PeerError::Unavailable {
                 node_id: target.node_id.clone(),
                 detail: format!("could not learn what it reads: {err}"),
-            })?,
-    };
-    Ok(offered
-        .contains(PeerCapabilities::FORWARD_INCARNATION)
-        .then_some(target.incarnation))
+            }),
+    }
 }
 
 /// What a cache operation asks the owner to do.
@@ -488,7 +580,7 @@ pub async fn forward_cache_op(
     target: &ForwardTarget,
     key: &ForwardKey,
     cache_key: &str,
-    credential: &str,
+    credential: impl Into<ForwardCredential>,
     request: &CacheRequest,
 ) -> Result<Option<Bytes>, ForwardError> {
     forward_cache_request(pool, target, key, cache_key, credential, request)
@@ -507,12 +599,20 @@ pub async fn forward_cache_request(
     target: &ForwardTarget,
     key: &ForwardKey,
     cache_key: &str,
-    credential: &str,
+    credential: impl Into<ForwardCredential>,
     request: &CacheRequest,
 ) -> Result<ForwardCacheOk, ForwardError> {
-    forward_cache(pool, target, key, cache_key, credential, request, false)
-        .await
-        .map(|(ok, _)| ok)
+    forward_cache(
+        pool,
+        target,
+        key,
+        cache_key,
+        &credential.into(),
+        request,
+        false,
+    )
+    .await
+    .map(|(ok, _)| ok)
 }
 
 /// [`forward_cache_request`] for a conditional put that asks the owner to
@@ -523,12 +623,20 @@ pub(crate) async fn forward_lease_put_if(
     target: &ForwardTarget,
     key: &ForwardKey,
     cache_key: &str,
-    credential: &str,
+    credential: impl Into<ForwardCredential>,
     request: &CacheRequest,
 ) -> Result<(ForwardCacheOk, ForwardLease), ForwardError> {
-    forward_cache(pool, target, key, cache_key, credential, request, true)
-        .await
-        .map(|(ok, lease)| (ok, lease.unwrap_or(ForwardLease::NotMinted)))
+    forward_cache(
+        pool,
+        target,
+        key,
+        cache_key,
+        &credential.into(),
+        request,
+        true,
+    )
+    .await
+    .map(|(ok, lease)| (ok, lease.unwrap_or(ForwardLease::NotMinted)))
 }
 
 async fn forward_cache(
@@ -536,7 +644,7 @@ async fn forward_cache(
     target: &ForwardTarget,
     key: &ForwardKey,
     cache_key: &str,
-    credential: &str,
+    credential: &ForwardCredential,
     request: &CacheRequest,
     lease: bool,
 ) -> Result<(ForwardCacheOk, Option<ForwardLease>), ForwardError> {
@@ -586,7 +694,7 @@ async fn forward_cache(
             credential: if legacy {
                 String::new()
             } else {
-                credential.to_string()
+                credential.token.clone()
             },
             condition,
         };
@@ -594,6 +702,16 @@ async fn forward_cache(
             InternalMessage::LeaseForwardCacheOp(op)
         } else {
             InternalMessage::ForwardCacheOp(op)
+        };
+        let message = match certified(pool, &target, credential, legacy, message).await {
+            Ok(message) => message,
+            // Nothing was sent: retried like any other pre-write failure.
+            Err(err) => {
+                last = err.to_string();
+                last_code = None;
+                tokio::time::sleep(retry_delay(attempt)).await;
+                continue;
+            }
         };
 
         match PeerRequester::request(pool, &target.node_id, target.advertise_addr, message).await {
