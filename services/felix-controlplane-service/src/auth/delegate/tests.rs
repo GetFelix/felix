@@ -377,6 +377,7 @@ async fn an_exchange_with_an_actor_token_mints_a_token_only_that_actor_can_deleg
     let Json(refreshed) = refresh_token_handler(
         Path("t1".to_string()),
         State(fixture.state.clone()),
+        None,
         Json(TokenRefreshRequest {
             refresh_token: exchanged.refresh_token,
             audience: None,
@@ -714,6 +715,7 @@ async fn a_gateway_whose_grant_is_gone_cannot_bind_or_delegate() {
     let err = refresh_token_handler(
         Path("t1".to_string()),
         State(fixture.state.clone()),
+        None,
         Json(TokenRefreshRequest {
             refresh_token: bound.refresh_token,
             audience: None,
@@ -776,6 +778,7 @@ fn refresh(
     refresh_token_handler(
         Path("t1".to_string()),
         State(fixture.state.clone()),
+        None,
         Json(TokenRefreshRequest {
             refresh_token,
             audience: None,
@@ -875,6 +878,7 @@ async fn a_gateways_connection_only_chain_still_refreshes() {
     let Json(_) = refresh_token_handler(
         Path("t1".to_string()),
         State(fixture.state.clone()),
+        None,
         Json(TokenRefreshRequest {
             refresh_token: minted.refresh_token,
             audience: None,
