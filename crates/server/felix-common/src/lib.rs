@@ -37,6 +37,7 @@ mod error;
 pub mod fleet;
 pub mod ids;
 pub mod jitter;
+pub mod log_filter;
 // Feature-gated so that library consumers which never run a process
 // (felix-router) do not pull in tokio.
 #[cfg(feature = "lifecycle")]

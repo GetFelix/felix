@@ -23,6 +23,8 @@ ahash = { workspace = true, optional = true }
 # crate do not inherit an async runtime.
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+# Only needed by `log_filter::env_filter`.
+tracing-subscriber = { workspace = true, optional = true }
 metrics = { version = "0.24", optional = true }
 # Only needed to publish the membership shapes in the control plane's OpenAPI.
 # Optional so the broker, which sends them, takes no utoipa dependency.
@@ -53,6 +55,8 @@ blocking = ["dep:tokio"]
 hasher = ["dep:ahash"]
 # Signal handling, readiness gating, and bounded drain for service binaries.
 lifecycle = ["dep:tokio", "dep:tracing", "dep:metrics"]
+# `log_filter::env_filter`, the services' shared `RUST_LOG` handling.
+logging = ["dep:tracing-subscriber"]
 # `ToSchema` on the membership shapes, for the control plane's OpenAPI.
 openapi = ["dep:utoipa"]
 # Certificate files re-read on rotation, for the services' TLS listeners.
