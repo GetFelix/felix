@@ -169,7 +169,7 @@ fn a_slow_vote_save_lowers_the_limit() {
     elections.settle(3600);
     assert_eq!(elections.limit, 8);
     let member = Member::new(0);
-    interval(&mut elections, &[member.clone()], 3650);
+    interval(&mut elections, std::slice::from_ref(&member), 3650);
     member.settled.store(true, Ordering::Relaxed);
     elections.settle(3700);
     assert_eq!(elections.limit, 9);
