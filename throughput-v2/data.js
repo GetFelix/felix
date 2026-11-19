@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795071742853,
+  "lastUpdate": 1795072150730,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62504,6 +62504,58 @@ window.BENCHMARK_DATA = {
             "range": "18986.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1170575.29\nmean: 1171323.88\nstdev: 18986.56\ncv: 1.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd1527c539049da5bd061181021f472c5b06cbb0",
+          "message": "fix(raft): form a group only on the stored target; brokers check the control plane's engine against their own (#2688) (#2789)\n\n* wip(raft): form a group only on the target the control plane stored (#2688)\n\nBroker tests that form groups still feed no target and fail; see the\nlane notes for the test helper plan.\n\nSpec-Unaffected: WIP, not for merge.\n\n* wip(raft): broker tests form on a stored target; test and docs (#2688)\n\nBroker tests that form a group now feed the target the control plane\nwould store (stored/form_on/take_formed in shards/raft/tests.rs). A new\ntest checks that the lowest broker forms nothing with no target, a\nwithheld one or one naming another copy, and forms the stored one.\n\nNot for merge yet: no broker reports its copy id to the control plane,\nand the control plane takes copy ids only for shards switched from the\nhybrid, so in a real cluster no target is ever stored and no group forms.\n\nSpec-Unaffected: WIP, not for merge.\n\n* fix(broker): check the control plane's engine against the broker's own; Raft cluster tests run a Raft control plane (#2688)\n\n* fix(raft): a form re-checks its set and target before it initializes (#2688)\n\nA form task asks the other members off the pass and initializes later. If\nplacement moved meanwhile, the brokers of the newer set could ask the same\nblank members and both sets could win a term. Under `open`, the task now\ninitializes only if the last pass still fed the same full set and stored\ntarget, and puts the form off otherwise.\n\nThe raft-parity control plane now gets FELIX_SHARD_ENGINE for its side,\nso Raft brokers meet a Raft identity, and the harness metadata group\nrecords the derived engine instead of always the hybrid.\n\n* docs(raft): the form re-check does not cover a broker with a stale control-plane feed (#2794)\n\nSpec-Unaffected: docs wording only\n\n* test(raft): form the retention test's group through its stored target\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* fix(broker): take a Raft target stored in place at the held generation\n\nThe control plane writes a shard's target without raising its generation,\nand the shard watch dropped every change at a held generation as stale. A\nbroker never saw the target until a resync, so with forming gated on the\nstored target no group ever formed on a fresh cluster.\n\n* style: rustfmt the watch target check\n\n* fix(broker): re-read a withheld Raft target and resend refused copy ids when it opens\n\nThe control plane decides withholding at read time and writes no change\nwhen the last acknowledgement opens the gate, so a target read while\nwithheld was never sent again. A Raft broker's shard watch now marks a\nwithheld view at the held generation and takes a snapshot every sync\ninterval until no stream shard's target is withheld. A copy id report\nrefused while the view was withheld goes again once it is not, instead of\nwaiting out up to a minute of backoff.\n\n* fix(broker): back off withheld-target re-reads and keep long-polling\n\nRe-read only while a stream shard with no held target is withheld; a\nwithheld snapshot keeps the held target of the same set. Re-reads start at\nthe sync interval and double to 30 s, reset once nothing is withheld, and\nthe long-poll goes on between them, capped to the next re-read. Counted in\nfelix_broker_shard_watch_withheld_rereads_total. The watch takes the\nengine node.rs parsed instead of reading FELIX_SHARD_ENGINE again.\n\n* test(broker): pass a ForwardCredential in the Raft cache routing tests\n\n#2795 added these tests passing an empty token string; #2823 changed the\nparameter to &ForwardCredential, so main stopped compiling its tests.\n\n* test(broker): form the Raft cache routing tests' groups through their stored target\n\nA group forms only on the target the control plane stored, so the cache\ntests #2795 added feed it with take_formed, as the stream tests do.",
+          "timestamp": "2026-11-18T22:54:48-08:00",
+          "tree_id": "b9afa61f931a827b68d7f4121c3a1e3a4850aa10",
+          "url": "https://github.com/GetFelix/felix/commit/cd1527c539049da5bd061181021f472c5b06cbb0"
+        },
+        "date": 1795072150077,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 625905.79,
+            "range": "57219.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 625905.79\nmean: 624911.87\nstdev: 57219.28\ncv: 9.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 625905.79,
+            "range": "57219.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 625905.79\nmean: 624911.87\nstdev: 57219.28\ncv: 9.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156149.89,
+            "range": "2398.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156149.89\nmean: 155262.16\nstdev: 2398.07\ncv: 1.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1561498.89,
+            "range": "23980.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1561498.89\nmean: 1552621.61\nstdev: 23980.67\ncv: 1.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
