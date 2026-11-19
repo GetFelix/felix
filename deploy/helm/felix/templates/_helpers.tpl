@@ -187,6 +187,15 @@ applies.
 {{- if and $cp.tls.enabled (not $cp.tls.existingSecret) -}}
 {{- fail "controlplane.tls.enabled needs controlplane.tls.existingSecret: a kubernetes.io/tls Secret with the API certificate" -}}
 {{- end -}}
+{{- if and $cp.tls.clientCaSecret (not $cp.tls.enabled) -}}
+{{- fail "controlplane.tls.clientCaSecret needs controlplane.tls.enabled: client certificates are asked for in the TLS handshake" -}}
+{{- end -}}
+{{- if and $cp.tls.bindSubject (not $cp.tls.clientCaSecret) -}}
+{{- fail "controlplane.tls.bindSubject needs controlplane.tls.clientCaSecret: there is no certificate to bind a token to without one" -}}
+{{- end -}}
+{{- if and $b.enabled $cp.tls.clientCaSecret (not $b.controlplaneClientCert.existingSecret) -}}
+{{- fail "controlplane.tls.clientCaSecret needs broker.controlplaneClientCert.existingSecret: the control plane refuses a broker without a client certificate" -}}
+{{- end -}}
 {{- if and $cp.bootstrap.enabled (not $cp.bootstrap.existingSecret) -}}
 {{- fail "controlplane.bootstrap.enabled needs controlplane.bootstrap.existingSecret: a Secret holding the bootstrap token" -}}
 {{- end -}}
@@ -200,6 +209,9 @@ applies.
 {{- end -}}
 {{- if eq (int $b.ports.client) (int $b.ports.internal) -}}
 {{- fail "broker.ports.client and broker.ports.internal share a port; the broker refuses that at startup" -}}
+{{- end -}}
+{{- if and $b.controlplaneClientCert.existingSecret (not (hasPrefix "https://" (include "felix.controlplane.url" $))) -}}
+{{- fail "broker.controlplaneClientCert needs an https control plane: a client certificate is only presented over TLS, and the broker refuses it otherwise" -}}
 {{- end -}}
 {{- if and (not $cp.enabled) (not $b.controlplaneUrl) -}}
 {{- fail "controlplane.enabled=false needs broker.controlplaneUrl: brokers cannot advertise a control plane they have to guess" -}}

@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serial_test::serial;
@@ -120,19 +121,28 @@ async fn spawn_metrics_server(
     tokio::task::JoinHandle<std::io::Result<()>>,
 ) {
     let (addr, shutdown_tx, server_handle, _readiness) =
-        spawn_metrics_server_with_readiness(handle, Readiness::ready()).await;
+        spawn_metrics_server_with_readiness(handle, Arc::new(crate::api::readiness::AlwaysReady))
+            .await;
     (addr, shutdown_tx, server_handle)
 }
 
+/// The metrics server over `store`; the lifecycle flag it returns drains it.
 async fn spawn_metrics_server_with_readiness(
     handle: PrometheusHandle,
-    readiness: Readiness,
+    store: Arc<dyn crate::api::readiness::HealthProbe>,
 ) -> (
     SocketAddr,
     oneshot::Sender<()>,
     tokio::task::JoinHandle<std::io::Result<()>>,
-    Readiness,
+    felix_common::lifecycle::Readiness,
 ) {
+    let lifecycle = felix_common::lifecycle::Readiness::ready();
+    let readiness = Arc::new(Readiness::with_lifecycle(
+        lifecycle.clone(),
+        store,
+        Duration::from_secs(1),
+        Duration::ZERO,
+    ));
     let addr: SocketAddr = "127.0.0.1:0".parse().expect("parse addr");
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -146,7 +156,7 @@ async fn spawn_metrics_server_with_readiness(
         })
         .await
     });
-    (bound_addr, shutdown_tx, server_handle, readiness)
+    (bound_addr, shutdown_tx, server_handle, lifecycle)
 }
 
 #[test]
@@ -194,7 +204,8 @@ async fn serve_metrics_responds() {
 async fn ready_reports_draining_after_readiness_flips() {
     let handle = init_observability("controlplane-readiness-test");
     let (addr, shutdown_tx, server_handle, readiness) =
-        spawn_metrics_server_with_readiness(handle, Readiness::ready()).await;
+        spawn_metrics_server_with_readiness(handle, Arc::new(crate::api::readiness::AlwaysReady))
+            .await;
     wait_for_listen(addr).await.expect("server ready");
 
     let client = build_test_client();
@@ -218,6 +229,48 @@ async fn ready_reports_draining_after_readiness_flips() {
     // Liveness must stay healthy: the process is draining correctly, and failing
     // /live would make Kubernetes restart it mid-drain.
     let response = client.get(&live_url).send().await.expect("GET /live");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let _ = shutdown_tx.send(());
+    let _ = tokio::time::timeout(Duration::from_secs(1), server_handle)
+        .await
+        .expect("server shutdown");
+}
+
+struct Unhealthy;
+
+#[async_trait::async_trait]
+impl crate::api::readiness::HealthProbe for Unhealthy {
+    async fn health_check(&self) -> crate::store::StoreResult<()> {
+        Err(crate::store::StoreError::Unexpected(anyhow::anyhow!(
+            "down"
+        )))
+    }
+}
+
+// Probes point at this listener's `/ready` (it never asks for a client
+// certificate), so it has to fail on a store that does not answer, exactly
+// like the API's `/v1/system/ready`.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn ready_fails_when_the_store_does_not_answer() {
+    let handle = init_observability("controlplane-readiness-store-test");
+    let (addr, shutdown_tx, server_handle, _readiness) =
+        spawn_metrics_server_with_readiness(handle, Arc::new(Unhealthy)).await;
+    wait_for_listen(addr).await.expect("server ready");
+
+    let client = build_test_client();
+    let response = client
+        .get(format!("http://{addr}/ready"))
+        .send()
+        .await
+        .expect("GET /ready");
+    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let response = client
+        .get(format!("http://{addr}/live"))
+        .send()
+        .await
+        .expect("GET /live");
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 
     let _ = shutdown_tx.send(());

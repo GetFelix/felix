@@ -30,7 +30,7 @@ pub use membership::MembershipConfig;
 pub(crate) use membership::cluster_features;
 pub use mqtt::{MqttListenerConfig, MqttWsConfig};
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
-pub use tls::{ClientTlsConfig, ClientTlsFiles};
+pub use tls::{ClientTlsConfig, ClientTlsFiles, ControlPlaneClientCert};
 
 use std::net::SocketAddr;
 
@@ -104,6 +104,8 @@ pub struct BrokerConfig {
     pub controlplane_startup_wait_ms: u64,
     /// Extra CA bundle trusted for an `https://` control plane.
     pub controlplane_ca: Option<String>,
+    /// The certificate presented to a control plane that requires one.
+    pub controlplane_client_cert: Option<ControlPlaneClientCert>,
     /// The certificate the client-facing listeners present.
     pub client_tls: ClientTlsConfig,
     /// Where this broker's refresh token lives, when it has one.
@@ -518,6 +520,7 @@ impl Default for BrokerConfig {
             start_without_controlplane: false,
             controlplane_startup_wait_ms: DEFAULT_CONTROLPLANE_STARTUP_WAIT_MS,
             controlplane_ca: None,
+            controlplane_client_cert: None,
             client_tls: ClientTlsConfig::default(),
             membership: None,
             peer_transport: None,

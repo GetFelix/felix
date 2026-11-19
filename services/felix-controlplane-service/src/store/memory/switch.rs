@@ -7,7 +7,7 @@
 //! wins a generation, never both, and never two reports.
 use super::InMemoryStore;
 use super::shards::{SwitchWrite, get_shard_assignment, write_shard_assignment};
-use crate::model::{SealReport, ShardAssignmentChangeOp, ShardKey};
+use crate::model::{SealReport, ShardAssignmentChangeOp, ShardKey, ShardKind};
 use crate::store::{AssignmentWrite, StoreError, StoreResult};
 
 /// [`crate::store::ControlPlaneStore::seal_shard`].
@@ -118,8 +118,9 @@ pub(super) async fn accept_seal_report(
     Ok(AssignmentWrite::Written(stored))
 }
 
-/// What a copy id report carries from level 41: the stream incarnation of
-/// the copy's group, and whether the cluster runs durable streams on Raft.
+/// What a copy id report carries from level 41: the stream or cache
+/// incarnation of the copy's group, and whether the cluster runs durable
+/// shards on Raft.
 /// Only such a report is taken for a shard that started on Raft.
 pub(super) struct NativeShard {
     shard_incarnation: u64,
@@ -140,24 +141,40 @@ pub(super) async fn record_raft_copy_id(
     keep_ordered: bool,
     native: Option<NativeShard>,
 ) -> StoreResult<bool> {
-    // Read before the locks below, which no stream write takes. A stream's
-    // durability never changes, and a recreated one has another incarnation.
-    let durable_stream = store
-        .streams
-        .read()
-        .await
-        .get(&crate::model::StreamKey {
-            tenant_id: key.tenant_id.clone(),
-            namespace: key.namespace.clone(),
-            stream: key.stream.clone(),
-        })
-        .map(|stream| {
-            (
-                stream.incarnation,
-                stream.durable,
-                stream.replication_factor,
-            )
-        });
+    // The stream or cache the shard belongs to, read before the locks below,
+    // which no stream or cache write takes. A stream's durability never
+    // changes, and a recreated stream or cache has another incarnation.
+    let owner = match key.kind {
+        ShardKind::Stream => store
+            .streams
+            .read()
+            .await
+            .get(&crate::model::StreamKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                stream: key.stream.clone(),
+            })
+            .map(|stream| {
+                (
+                    stream.incarnation,
+                    stream.durable,
+                    stream.replication_factor,
+                )
+            }),
+        // The control plane keeps no durability for a cache. A broker runs
+        // one on Raft only when its cache is a log, and only then has a
+        // copy id to report.
+        ShardKind::Cache => store
+            .caches
+            .read()
+            .await
+            .get(&crate::model::CacheKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                cache: key.stream.clone(),
+            })
+            .map(|cache| (cache.incarnation, true, cache.replication_factor)),
+    };
     // Nodes, then shards, then acknowledgements, the order a node delete
     // takes them in. Held to the write, so no registration or ack lands
     // between the gate and the target.
@@ -180,20 +197,19 @@ pub(super) async fn record_raft_copy_id(
     let started_on_raft = native.as_ref().is_some_and(|native| {
         native.raft_streams
             && existing.switch.is_none()
-            && existing.key.kind == crate::model::ShardKind::Stream
-            && durable_stream.is_some_and(|(incarnation, durable, _)| {
+            && owner.is_some_and(|(incarnation, durable, _)| {
                 durable && incarnation == existing.incarnation
             })
     });
     // A target names only the set it was written from, so one from a set
     // placement has not filled yet would form a group short of the
-    // stream's replica count. Decided here, not by the reporting broker.
+    // replica count. Decided here, not by the reporting broker.
     if started_on_raft {
-        let wanted = durable_stream.map_or(0, |(_, _, factor)| factor as usize);
+        let wanted = owner.map_or(0, |(_, _, factor)| factor as usize);
         let placed = 1 + existing.replicas.len();
         if placed < wanted {
             return Err(StoreError::Conflict(format!(
-                "placement names {placed} brokers, the stream's replica count is {wanted}"
+                "placement names {placed} brokers, the replica count is {wanted}"
             )));
         }
     }

@@ -93,6 +93,8 @@ fn api_pki(dir: &std::path::Path) -> (crate::config::ApiTlsConfig, reqwest::Cert
         crate::config::ApiTlsConfig {
             cert_path: cert_path.display().to_string(),
             key_path: key_path.display().to_string(),
+            client_ca_path: None,
+            bind_subject: false,
         },
         reqwest::Certificate::from_pem(ca_cert.pem().as_bytes()).expect("ca"),
     )
@@ -155,6 +157,178 @@ async fn the_api_serves_the_configured_certificate() {
     server.await.expect("join").expect("run");
 }
 
+/// A CA, written to `dir/<name>-ca.pem`, that issues client certificates.
+struct ClientCa {
+    path: String,
+    issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
+}
+
+impl ClientCa {
+    fn new(dir: &std::path::Path, name: &str) -> Self {
+        let key = rcgen::KeyPair::generate().expect("ca key");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let cert = params.self_signed(&key).expect("ca");
+        let path = dir.join(format!("{name}-ca.pem"));
+        std::fs::write(&path, cert.pem()).expect("write ca");
+        Self {
+            path: path.display().to_string(),
+            issuer: rcgen::Issuer::new(params, key),
+        }
+    }
+
+    /// A client certificate with `san` as a URI SAN, as a reqwest identity.
+    fn issue(&self, san: &str) -> reqwest::Identity {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.subject_alt_names = vec![rcgen::SanType::URI(san.try_into().expect("uri"))];
+        let cert = params.signed_by(&key, &self.issuer).expect("sign");
+        reqwest::Identity::from_pem(format!("{}\n{}", cert.pem(), key.serialize_pem()).as_bytes())
+            .expect("identity")
+    }
+}
+
+/// Start `run` with `api_tls` on a free port; returns its port and a stop.
+async fn start_api(
+    api_tls: crate::config::ApiTlsConfig,
+) -> (
+    u16,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("probe")
+        .local_addr()
+        .expect("addr")
+        .port();
+    let config = ControlPlaneConfig {
+        bind_addr: format!("127.0.0.1:{port}").parse().expect("bind"),
+        api_tls: Some(api_tls),
+        ..config()
+    };
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(run(config, async move {
+        let _ = stopped.await;
+    }));
+    // Wait for the listener to accept connections.
+    for _ in 0..100 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    (port, stop, server)
+}
+
+fn client(ca: &reqwest::Certificate, identity: Option<reqwest::Identity>) -> reqwest::Client {
+    let builder = reqwest::Client::builder().tls_certs_only([ca.clone()]);
+    match identity {
+        Some(identity) => builder.identity(identity),
+        None => builder,
+    }
+    .build()
+    .expect("client")
+}
+
+/// With a client CA, the API refuses the handshake to a client with no
+/// certificate or one from another CA, and serves one the CA issued.
+#[tokio::test]
+#[serial]
+async fn the_api_requires_a_client_certificate_from_the_configured_ca() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut api_tls, server_ca) = api_pki(dir.path());
+    let clients = ClientCa::new(dir.path(), "clients");
+    let other = ClientCa::new(dir.path(), "other");
+    api_tls.client_ca_path = Some(clients.path.clone());
+    let (port, stop, server) = start_api(api_tls).await;
+    let url = format!("https://localhost:{port}/v1/system/live");
+
+    let issued = client(&server_ca, Some(clients.issue("felix:principal:broker-1")))
+        .get(&url)
+        .send()
+        .await
+        .expect("a certificate from the client CA is served");
+    assert!(issued.status().is_success(), "{}", issued.status());
+
+    assert!(
+        client(&server_ca, None).get(&url).send().await.is_err(),
+        "served a client without a certificate"
+    );
+    assert!(
+        client(&server_ca, Some(other.issue("felix:principal:broker-1")))
+            .get(&url)
+            .send()
+            .await
+            .is_err(),
+        "served a certificate from another CA"
+    );
+
+    let _ = stop.send(());
+    server.await.expect("join").expect("run");
+}
+
+/// With subject binding, a bearer token must name the principal the client
+/// certificate was issued to.
+#[tokio::test]
+#[serial]
+async fn the_api_binds_a_bearer_token_to_the_client_certificate() {
+    use base64::Engine as _;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut api_tls, server_ca) = api_pki(dir.path());
+    let clients = ClientCa::new(dir.path(), "clients");
+    api_tls.client_ca_path = Some(clients.path.clone());
+    api_tls.bind_subject = true;
+    let (port, stop, server) = start_api(api_tls).await;
+    let url = format!("https://localhost:{port}/v1/system/live");
+    let http = client(&server_ca, Some(clients.issue("felix:principal:alice")));
+    // Only the claims matter to the binding; the signature is the handler's
+    // to check.
+    let token = |sub: &str| {
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(format!(r#"{{"sub":"{sub}","tid":"t1"}}"#));
+        format!("e30.{claims}.sig")
+    };
+
+    let own = http
+        .get(&url)
+        .bearer_auth(token("alice"))
+        .send()
+        .await
+        .expect("own token");
+    assert!(own.status().is_success(), "{}", own.status());
+
+    let stolen = http
+        .get(&url)
+        .bearer_auth(token("mallory"))
+        .send()
+        .await
+        .expect("another principal's token");
+    assert_eq!(stolen.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let body = stolen.text().await.expect("body");
+    assert!(body.contains("not issued to the token"), "{body}");
+
+    // A delegated token: issued for bob, presented by its actor alice.
+    let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"sub":"bob","tid":"t1","act":{"sub":"alice"}}"#);
+    let delegated = http
+        .get(&url)
+        .bearer_auth(format!("e30.{claims}.sig"))
+        .send()
+        .await
+        .expect("delegated token");
+    assert!(delegated.status().is_success(), "{}", delegated.status());
+
+    let anonymous = http.get(&url).send().await.expect("no token");
+    assert!(anonymous.status().is_success(), "{}", anonymous.status());
+
+    let _ = stop.send(());
+    server.await.expect("join").expect("run");
+}
+
 /// The page is mounted by `run` only when configured: 404 when off, the
 /// pinned page at the configured path when on.
 #[tokio::test]
@@ -207,6 +381,8 @@ async fn unreadable_api_key_material_fails_startup() {
         api_tls: Some(crate::config::ApiTlsConfig {
             cert_path: "/nonexistent/api.pem".to_string(),
             key_path: "/nonexistent/api.key.pem".to_string(),
+            client_ca_path: None,
+            bind_subject: false,
         }),
         ..config()
     };

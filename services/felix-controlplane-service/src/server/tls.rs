@@ -1,7 +1,8 @@
 //! TLS termination for the control plane's HTTP listeners.
 //!
 //! The API listener serves TLS when [`crate::config::ApiTlsConfig`] is set,
-//! with a certificate re-read on rotation. The bootstrap listener hands out
+//! with a certificate re-read on rotation, and with a client CA set it
+//! refuses the handshake to a client without a certificate from that CA. The bootstrap listener hands out
 //! admin-equivalent power, and a shared token is one factor, so when
 //! [`crate::config::BootstrapTlsConfig`] is set it refuses the TLS handshake
 //! itself to any client that does not present a certificate signed by the
@@ -18,19 +19,51 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::pki_types::pem::PemObject;
 use tokio_util::sync::CancellationToken;
 
+use crate::auth::cert_binding::PeerCertificates;
 use crate::config::{ApiTlsConfig, BootstrapTlsConfig};
 
 /// The API listener's rustls config over `identity`, which the caller keeps
-/// to reload.
+/// to reload. With `client_roots`, the handshake requires a client
+/// certificate chaining to them.
 pub fn api_server_config(
     identity: Arc<felix_common::tls::ReloadingIdentity>,
+    client_roots: Option<Arc<rustls::RootCertStore>>,
 ) -> Result<Arc<rustls::ServerConfig>> {
-    let config = rustls::ServerConfig::builder_with_provider(provider())
+    let builder = rustls::ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
-        .context("API TLS protocol versions")?
-        .with_no_client_auth()
-        .with_cert_resolver(identity);
+        .context("API TLS protocol versions")?;
+    let config = match client_roots {
+        Some(roots) => {
+            let verifier =
+                rustls::server::WebPkiClientVerifier::builder_with_provider(roots, provider())
+                    .build()
+                    .context("build the API client certificate verifier")?;
+            let mut config = builder
+                .with_client_cert_verifier(verifier)
+                .with_cert_resolver(identity);
+            // A resumed session carries the client identity it resumes, so a
+            // rotated or revoked client certificate would go on being
+            // accepted. Same choice as the broker's client listeners.
+            config.send_tls13_tickets = 0;
+            config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
+            config
+        }
+        None => builder.with_no_client_auth().with_cert_resolver(identity),
+    };
     Ok(Arc::new(config))
+}
+
+/// Read `FELIX_CONTROLPLANE_TLS_CLIENT_CA`, when set. Fails startup on an
+/// unreadable or empty bundle.
+pub fn load_api_client_roots(tls: &ApiTlsConfig) -> Result<Option<Arc<rustls::RootCertStore>>> {
+    tls.client_ca_path
+        .as_deref()
+        .map(|path| {
+            felix_common::tls::load_roots("FELIX_CONTROLPLANE_TLS_CLIENT_CA", path)
+                .map(Arc::new)
+                .map_err(anyhow::Error::from)
+        })
+        .transpose()
 }
 
 /// Read the API certificate and key. Fails startup on unreadable material.
@@ -135,6 +168,15 @@ pub async fn serve_tls(
                             tracing::debug!(%peer, error = %err, listener = name, "TLS handshake refused");
                             return;
                         }
+                    };
+                    // The chain verified in the handshake, for the routes
+                    // that bind a token to it.
+                    let peer_certs = tls_stream.get_ref().1.peer_certificates().map(|certs| {
+                        PeerCertificates(certs.iter().map(|cert| cert.clone().into_owned()).collect())
+                    });
+                    let app = match peer_certs {
+                        Some(certs) => app.layer(axum::Extension(certs)),
+                        None => app,
                     };
                     let service = hyper_util::service::TowerToHyperService::new(app);
                     let builder =

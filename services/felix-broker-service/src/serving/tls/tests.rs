@@ -11,6 +11,7 @@ use rustls::pki_types::pem::PemObject;
 
 use super::*;
 use crate::config::ClientTlsFiles;
+use felix_common::tls::{PRINCIPAL_URI_PREFIX, check_subject_binding};
 
 /// A CA on disk, and the certificates it issued.
 struct Pki {

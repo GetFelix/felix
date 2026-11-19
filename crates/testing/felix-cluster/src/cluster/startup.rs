@@ -43,15 +43,16 @@ impl Cluster {
             expiry_timeout_ms: config.node_expiry.as_millis() as u64,
             ..crate::controlplane::LIVENESS
         };
+        // A broker refuses a control plane that names another engine, so
+        // Raft brokers get a Raft control plane unless the test picks one.
+        let engine = config
+            .control_plane_engine
+            .as_deref()
+            .or(config.raft_brokers().then_some("raft"));
         let control_plane = if config.metadata_group {
-            ControlPlane::start_group(&config.tenant_id, liveness).await?
+            ControlPlane::start_group(&config.tenant_id, liveness, engine).await?
         } else {
-            ControlPlane::start_with(
-                &config.tenant_id,
-                liveness,
-                config.control_plane_engine.as_deref(),
-            )
-            .await?
+            ControlPlane::start_with(&config.tenant_id, liveness, engine).await?
         };
         let credentials = control_plane.credentials(&config.tenant_id);
 
@@ -360,11 +361,7 @@ impl Cluster {
         // The probe above only proves shard 0 serves.
         // A Raft shard's group elects its own leader: nothing is reported
         // for placement to promote from.
-        let raft = std::iter::once(&config.broker_env)
-            .chain(&config.node_env)
-            .flatten()
-            .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft");
-        if raft {
+        if config.raft_brokers() {
             return Ok(());
         }
         wait::until(

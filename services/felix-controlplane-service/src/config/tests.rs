@@ -723,6 +723,30 @@ mod yaml_overrides {
         (ControlPlaneConfig::from_env().expect("config"), restore)
     }
 
+    /// A file `tls` block naming only the certificate keeps the client CA
+    /// and binding the environment set.
+    #[serial]
+    #[test]
+    fn a_file_tls_block_keeps_the_environment_client_ca() {
+        let _restore = clear_felix_env();
+        unsafe {
+            env::set_var("FELIX_CONTROLPLANE_TLS_CERT", "/env/tls.crt");
+            env::set_var("FELIX_CONTROLPLANE_TLS_KEY", "/env/tls.key");
+            env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CA", "/env/clients.pem");
+            env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT", "true");
+        }
+        let mut config = ControlPlaneConfig::from_env().expect("config");
+        config
+            .apply(parse(
+                "tls:\n  cert_path: /file/tls.crt\n  key_path: /file/tls.key\n",
+            ))
+            .expect("apply");
+        let tls = config.api_tls.expect("api tls");
+        assert_eq!(tls.cert_path, "/file/tls.crt");
+        assert_eq!(tls.client_ca_path.as_deref(), Some("/env/clients.pem"));
+        assert!(tls.bind_subject);
+    }
+
     /// **Every key in the file has to reach the config**, nested ones
     /// included — the liveness and bootstrap blocks are the settings an
     /// operator is most likely to tune, and a dropped assignment there

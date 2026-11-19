@@ -253,6 +253,11 @@ With an `https://` `FELIX_CONTROLPLANE_URL`, the broker verifies the control
 plane against the system trust store plus `FELIX_CONTROLPLANE_CA` when set. Setting
 the CA with an `http://` URL fails startup.
 
+When the control plane requires client certificates
+(`FELIX_CONTROLPLANE_TLS_CLIENT_CA`), set `FELIX_CONTROLPLANE_CLIENT_CERT` and
+`FELIX_CONTROLPLANE_CLIENT_KEY` to the PEM certificate and key the broker presents.
+Both or neither, and only with an `https://` URL. They are read once at startup.
+
 ## Connection Limits and Tenant Quotas
 
 These are environment-only (no YAML keys), and every one is per broker. The

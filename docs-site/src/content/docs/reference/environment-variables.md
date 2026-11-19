@@ -288,6 +288,25 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 - Startup fails if the bundle cannot be read or is empty, and if it is set
   while `FELIX_CONTROLPLANE_URL` is `http://`.
 
+### `FELIX_CONTROLPLANE_CLIENT_CERT` / `FELIX_CONTROLPLANE_CLIENT_KEY`
+
+**Description**: PEM certificate chain and private key a broker presents to a
+control plane that requires client certificates
+(`FELIX_CONTROLPLANE_TLS_CLIENT_CA`). Read by brokers and by `felixctl`
+(`--controlplane-client-cert-file`, `--controlplane-client-key-file`).
+
+**Type**: File paths
+
+**Default**: unset (no client certificate)
+
+**Notes**:
+- Set both or neither; one alone fails startup. Setting them with an `http://`
+  `FELIX_CONTROLPLANE_URL` also fails startup.
+- Read once at startup. A renewed certificate takes effect at the next restart.
+- When the control plane binds tokens to certificates, issue the broker's
+  certificate with the URI SAN `felix:principal:<id>` for the principal its
+  node credential names.
+
 ### `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
 
 **Description**: Control plane polling interval in milliseconds. Paces the
@@ -2324,6 +2343,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_BIND` | `0.0.0.0:8443` | Address the control-plane API listens on. |
 | `FELIX_CONTROLPLANE_TLS_CERT` | unset | PEM certificate chain the API listener serves. Set with the key below, or neither. Without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
 | `FELIX_CONTROLPLANE_TLS_KEY` | unset | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
+| `FELIX_CONTROLPLANE_TLS_CLIENT_CA` | unset | PEM CA bundle. When set, the API listener refuses the TLS handshake to any client that does not present a certificate chaining to it, so a stolen token is no use from a host without such a certificate. Needs `FELIX_CONTROLPLANE_TLS_CERT` and `_KEY`. Read once at startup. Certificates are checked against the CA only: no CRL or OCSP, so revoke by rotating the CA. The API's `/v1/system/ready` and `/live` then need a certificate too, so point probes at `/ready` and `/live` on `FELIX_CONTROLPLANE_METRICS_BIND`, which run the same checks and never ask for one. Brokers present one with `FELIX_CONTROLPLANE_CLIENT_CERT` and `_KEY`. Config file key: `tls.client_ca_path`; a file `tls` block without it keeps this one. |
+| `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT` | `false` | `true` also requires a bearer token's subject, or its actor, to be the principal the client certificate was issued to: a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN the subject matches. Same rules as the broker's `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`. Requests without a bearer token are not affected. Token exchange carries the identity provider's token, so there the check applies to the principal the exchange resolves, or to the gateway named by `actor_token`. Needs `FELIX_CONTROLPLANE_TLS_CLIENT_CA`. Config file key: `tls.bind_subject`; a file `tls` block keeps this one when it is `true`, so the environment's `true` wins over a file's `false`. |
 | `FELIX_CONTROLPLANE_API_UI` | `off` | `off` or `scalar`. `scalar` serves an API reference page at the path below, loading its script from a CDN, so the browser needs internet access. An unrecognised value stops startup. Config file key: `api_ui`. |
 | `FELIX_CONTROLPLANE_API_UI_PATH` | `/api` | Where the reference page is served. A plain path that is not under `/v1`. Read only when the page is on. Config file key: `api_ui_path`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | `0.0.0.0:8080` | Separate address for the metrics endpoint. |
@@ -2525,5 +2546,7 @@ variable, and the variable overrides the context. See
 | `FELIX_CA_FILE` | platform trust store | PEM bundle broker certificates are checked against. |
 | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
 | `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
+| `FELIX_CONTROLPLANE_CLIENT_CERT` | unset | PEM client certificate presented to a control plane that requires one. Set with `FELIX_CONTROLPLANE_CLIENT_KEY`. |
+| `FELIX_CONTROLPLANE_CLIENT_KEY` | unset | PEM private key for `FELIX_CONTROLPLANE_CLIENT_CERT`. |
 | `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |
 | `FELIX_BROKER_BIN` | `felix-broker` on `PATH` | The `felix-broker` binary that `felixctl data inspect` and `felixctl data restore-point` run. `--broker-bin` overrides it. |

@@ -3936,7 +3936,10 @@ publishers are delivered as two batches, as the leader delivers them.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
-every broker: a shard that already holds data cannot change engines yet.
+every broker and on the control plane: a shard that already holds data
+cannot change engines yet, a broker refuses to start under a control plane
+whose identity names the other engine, and only a Raft control plane stores
+the target a group forms on.
 Publishes, routes, subscribes and a leader stopping are tested across three
 brokers in one process and across three broker processes. Both failover
 tests read every acknowledged payload back from the new leader, and the one
@@ -3985,6 +3988,26 @@ Membership changes are not built yet
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
+- The set formed is the target the control plane stored, copy ids
+  included (#2688). The broker compares the members it asked with the
+  feed's `target` and forms only when they are equal. With no target, a
+  withheld one, or one naming another copy, it forms nothing and asks again
+  on a later pass. A re-form reads the voter sets of the epoch from the
+  control plane ("Targets ordered in an epoch"), and the stored target is
+  on that list before any broker can read it, or the list reads as lost.
+  A set formed from copies no record names could lose
+  its majority with no re-form source seeing that set. In a cluster this
+  takes a Raft control plane: a hybrid one stores no target.
+- The answers hold only for the set they were asked for. Placement can move
+  while the broker asks: with {A,B,C} moved to {B,C,D}, B asks C and D, and
+  C answers blank to both because neither has formed yet. If both formed,
+  each could win a term and the shard would run two groups. So just before
+  it initializes, the broker checks, under the lock the routing pass holds,
+  that the last pass still fed the same full set and the same stored target,
+  and otherwise forms nothing and asks again on a later pass.
+  The check compares against this broker's own view of placement, so a
+  broker cut off from the control plane can still form the old set while
+  another forms the new one (#2794).
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4105,9 +4128,16 @@ refuses to open it under the other one.
 > `a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker`,
 > `a_raft_broker_refuses_a_shard_shared_with_a_hybrid_broker`,
 > `a_peer_reached_late_closes_the_shard_it_shares`,
-> `a_refusal_ends_once_the_engines_match`;
+> `a_refusal_ends_once_the_engines_match`.
+
+Under a control plane, a broker on the other engine does not get that far:
+the control plane's identity names the cluster's engine, and a broker that
+runs another refuses to start and says so.
+
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
-> `brokers_on_different_engines_refuse_their_shared_shard`.
+> `a_broker_on_another_engine_is_refused_at_start`;
+> `services/felix-broker-service/src/cluster/controlplane_group/tests.rs`,
+> `a_raft_broker_is_admitted_by_a_raft_cluster_only`.
 
 A member's log directory is locked while the member is open, so a second
 broker process started on the same data directory cannot open that log
@@ -4462,7 +4492,7 @@ How a broker reports its copy id:
   member it has open, and a member opens only after its copy file is synced,
   so no target names a copy a crash could take back. A broker reports
   only for a placement that names it and names as many brokers as the
-  stream's replica count: a short set forms no group, so it gets no target
+  stream's or cache's replica count: a short set forms no group, so it gets no target
   either. The control plane checks the replica count itself and refuses a
   report for a shorter set, whatever the broker saw.
 - **With its registration and the stream incarnation.**
@@ -4482,11 +4512,40 @@ How a broker reports its copy id:
   shard's copy ids when its set changes, and a restore can bring back older
   ones, so a taken report is not enough.
 
+The control plane writes a target in place, at the generation placement
+already gave the shard. A broker's shard watch drops any other change at a
+generation it holds as stale, but it takes one at the same generation and
+set whose target is newer than the one it holds
+(`ShardOwnership::apply`), so the target reaches the brokers through the
+feed and not only through a resync.
+
+Withholding is decided when the feed is read, and the acknowledgement that
+ends it writes no change, so a target read while withheld would never be
+sent again. A Raft broker's watch therefore takes a snapshot while a
+stream or cache shard it holds no target for is withheld: first after one sync
+interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), then twice as long each
+time up to 30 seconds, and from the sync interval again once none is. It
+keeps long-polling between them, so placement changes still arrive at
+once. A shard whose target it already holds keeps that target through a
+withheld view and starts no re-reads. Each re-read reads every assignment
+and runs a routing pass, so a registered broker that stays down after a
+restore costs one such pass per broker every 30 seconds
+(`felix_broker_shard_watch_withheld_rereads_total`). A copy id
+report the control plane refused while the view was withheld goes again on
+the first tick after the view stops withholding, instead of waiting out its
+backoff.
+
 The control plane takes ids for a shard that switched from the hybrid, and
 from metadata level 41 for a shard that started on Raft: a durable stream's
-shard on a cluster whose engine is Raft (`FELIX_SHARD_ENGINE=raft` on the
-control plane, or the group identity it recorded), with no switch record.
-Only a report that carries `shard_incarnation` counts for such a shard.
+shard or a cache's shard on a cluster whose engine is Raft
+(`FELIX_SHARD_ENGINE=raft` on the control plane, or the group identity it
+recorded), with no switch record. Cache groups, which hold the cache's
+counters too, form only on a stored target like stream groups, so they take
+the same reports and checks. The control plane keeps no durability for a
+cache: a broker runs a cache on Raft only when its cache is a log, and only
+then has a copy id to report. Only a report that carries `shard_incarnation`
+counts for such a shard, and it must name the stream's or cache's current
+incarnation.
 A shard that started on Raft starts epoch 0's list of ordered targets
 ("Targets ordered in an epoch") in the write that stores its first copy id,
 and only while its record of placed brokers is complete, so a restored

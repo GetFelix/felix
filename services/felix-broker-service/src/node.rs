@@ -81,6 +81,7 @@ where
     let config = config::BrokerConfig::from_env_or_yaml()?;
     // Before any control-plane client exists: they are all built trusting it.
     controlplane_http::trust_ca(config.controlplane_ca.as_deref())?;
+    controlplane_http::present_cert(config.controlplane_client_cert.as_ref())?;
     // Size the QUIC I/O runtime pool before ANY endpoint is built: the pool is
     // created on the first one and a tokio runtime cannot be resized after.
     // This has to sit above the peer pool below, which binds a client endpoint
@@ -702,6 +703,7 @@ where
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
         engine_shards: raft_shards.engine_shards.clone(),
+        raft: shard_engine == crate::config::ShardEngine::Raft,
         sync_shutdown: &sync_shutdown,
     });
 
