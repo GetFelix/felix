@@ -5,9 +5,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::shards::{clear, next_stream, on_streams_of_its_own, seed, seed_with_replicas};
+use super::shards::{
+    NAMESPACE, TENANT, clear, next_stream, on_streams_of_its_own, seed, seed_with_replicas,
+};
 use super::switch::{active, both, read, sealed, written};
-use crate::model::{NodeLifecycle, PlacementAck, ShardAssignment};
+use crate::model::{
+    Cache, CacheKey, ConsistencyLevel, NodeLifecycle, PlacementAck, ShardAssignment, ShardKind,
+    ShardState,
+};
 use crate::store::{ControlPlaneStore, StoreError};
 
 pub(crate) async fn run_raft_target_contract(store: Arc<dyn ControlPlaneStore>) {
@@ -33,6 +38,7 @@ pub(crate) async fn run_raft_native_target_contract(store: Arc<dyn ControlPlaneS
         a_shard_started_on_raft_gets_its_target(store).await;
         a_native_report_names_the_streams_incarnation(store).await;
         a_native_set_short_of_the_replica_count_takes_no_copy_id(store).await;
+        a_cache_shard_started_on_raft_gets_its_target(store).await;
     })
     .await;
 }
@@ -125,6 +131,84 @@ async fn a_native_set_short_of_the_replica_count_takes_no_copy_id(store: &dyn Co
     clear(store).await;
     next_stream();
     seed(store).await;
+}
+
+/// A cache shard goes through the same copy ids and target as a stream
+/// shard: its group forms only on a stored target, so without one it never
+/// forms. The control plane checks the cache's incarnation and replica
+/// count as it does a stream's.
+async fn a_cache_shard_started_on_raft_gets_its_target(store: &dyn ControlPlaneStore) {
+    // Two names: a deleted cache name is not created again before the
+    // fleet finalizes `cache_incarnations`.
+    let placed = async |name: &str, replication_factor| {
+        store
+            .create_cache(Cache {
+                tenant_id: TENANT.to_string(),
+                namespace: NAMESPACE.to_string(),
+                cache: name.to_string(),
+                display_name: name.to_string(),
+                shards: 1,
+                replication_factor,
+                consistency: ConsistencyLevel::Quorum,
+                incarnation: 0,
+            })
+            .await
+            .expect("create");
+        let mut wanted = super::shards::assignment(0, "broker-x");
+        wanted.key.kind = ShardKind::Cache;
+        wanted.key.stream = name.to_string();
+        wanted.replicas = vec!["broker-y".to_string()];
+        store
+            .put_shard_assignment(wanted.clone())
+            .await
+            .expect("assign");
+        wanted.state = ShardState::Active;
+        store.put_shard_assignment(wanted).await.expect("activate")
+    };
+    let gone = async |name: &str| {
+        clear(store).await;
+        store
+            .delete_cache(&CacheKey {
+                tenant_id: TENANT.to_string(),
+                namespace: NAMESPACE.to_string(),
+                cache: name.to_string(),
+            })
+            .await
+            .expect("delete");
+    };
+
+    let shard = placed("raft-cache-short", 3).await;
+    let err = try_native_report(store, &shard, "broker-x", 71, Some(shard.incarnation))
+        .await
+        .expect_err("two brokers for three replicas");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    gone("raft-cache-short").await;
+
+    let shard = placed("raft-cache", 2).await;
+    let at = Some(shard.incarnation);
+    let err = try_native_report(store, &shard, "broker-x", 72, Some(shard.incarnation + 1))
+        .await
+        .expect_err("another incarnation");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert!(
+        try_native_report(store, &shard, "broker-x", 72, at)
+            .await
+            .expect("x")
+    );
+    assert!(
+        try_native_report(store, &shard, "broker-y", 73, at)
+            .await
+            .expect("y")
+    );
+    let stored = read(store, &shard.key).await;
+    assert_eq!(counter(&stored), Some(1));
+    let members = BTreeMap::from([("broker-x".to_string(), 72), ("broker-y".to_string(), 73)]);
+    assert_eq!(
+        stored.raft_target.as_ref().expect("target").members,
+        members
+    );
+    assert_eq!(stored.generation, shard.generation, "written in place");
+    gone("raft-cache").await;
 }
 
 /// On a hybrid cluster a shard that never switched is not on Raft, whatever
