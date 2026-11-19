@@ -383,6 +383,14 @@ impl InMemoryStore {
         nodes::register_node(self, node, rule).await
     }
 
+    /// `DeclareNodeDead`, decided against this member's node record.
+    pub(crate) async fn apply_declare_node_dead(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<crate::model::DeclaredDead> {
+        nodes::declare_node_dead(self, node_id).await
+    }
+
     /// `RecordClusterIdentity`: the first identity recorded stays, and every
     /// later one is answered with it.
     pub(crate) async fn apply_record_identity(
@@ -443,6 +451,7 @@ impl InMemoryStore {
                 records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
                 fleet_enabled: Default::default(),
+                dead: Default::default(),
             })),
             shards: Arc::new(RwLock::new(ShardState {
                 records: HashMap::default(),
@@ -691,6 +700,14 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
         Ok(self.nodes.read().await.fleet_enabled.clone())
+    }
+
+    async fn declare_node_dead(&self, node_id: &str) -> StoreResult<crate::model::DeclaredDead> {
+        nodes::declare_node_dead(self, node_id).await
+    }
+
+    async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>> {
+        Ok(self.nodes.read().await.dead.iter().cloned().collect())
     }
 
     async fn finalize_fleet_feature(
@@ -1421,6 +1438,9 @@ struct NodeState {
     /// Enabled fleet features. Under the node lock so a finalize and a
     /// registration cannot interleave.
     fleet_enabled: std::collections::BTreeSet<String>,
+    /// Data directories declared dead. Never shrinks: a node delete keeps
+    /// them, so the node cannot come back under the same storage id.
+    dead: std::collections::BTreeSet<crate::model::DeclaredDead>,
 }
 
 impl NodeState {

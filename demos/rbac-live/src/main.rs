@@ -455,6 +455,7 @@ async fn bootstrap_tenant(
             subject_claim: "sub".to_string(),
             groups_claim: Some("groups".to_string()),
         },
+        ..Default::default()
     };
 
     let policies = vec![

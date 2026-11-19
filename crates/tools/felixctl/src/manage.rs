@@ -233,6 +233,38 @@ pub(crate) async fn node_lifecycle(
     out.text(&format!("node {node}: {lifecycle}"))
 }
 
+/// `node declare-dead`.
+pub(crate) async fn declare_dead(
+    api: &Api,
+    node: &str,
+    confirm: Confirm,
+    out: &Output,
+) -> anyhow::Result<()> {
+    ask(
+        &format!(
+            "Declare node {node}'s data directory dead? A re-form plans without its copies, \
+             and it cannot be undone. Confirm the broker process is stopped or its host \
+             fenced, and its disk gone: the control plane cannot check."
+        ),
+        confirm,
+    )?;
+    let answer = api
+        .post(
+            &format!("/v1/nodes/{}/declare-dead", segment(node)),
+            &[],
+            None,
+        )
+        .await?;
+    let body = answer.body.unwrap_or(Value::Null);
+    if out.json {
+        return out.json_value(&body);
+    }
+    let storage_id = body.pointer("/storage_id").map(cell).unwrap_or_default();
+    out.text(&format!(
+        "node {node}: storage id {storage_id} declared dead"
+    ))
+}
+
 pub(crate) async fn shard_move(
     api: &Api,
     settings: &Settings,

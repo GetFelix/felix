@@ -280,12 +280,23 @@ fn report() -> ReplicaReport {
     }
 }
 
+fn jwks() -> jsonwebtoken::jwk::JwkSet {
+    serde_json::from_value(serde_json::json!({"keys": [
+        {"kty": "EC", "kid": "e", "alg": "ES256", "use": "sig", "crv": "P-256", "x": "AA", "y": "AA"},
+        {"kty": "RSA", "kid": "r", "alg": "RS256", "use": "sig", "n": "AA", "e": "AQ"},
+    ]}))
+    .expect("sample jwks")
+}
+
 fn issuer() -> IdpIssuerConfig {
     IdpIssuerConfig {
         issuer: s("https://idp"),
         audiences: vec![s("a")],
         discovery_url: Some(s("https://idp/d")),
         jwks_url: Some(s("https://idp/j")),
+        jwks: Some(jwks()),
+        single_use_jti: true,
+        max_token_lifetime_seconds: Some(120),
         claim_mappings: ClaimMappings {
             subject_claim: s("sub"),
             groups_claim: Some(s("groups")),
@@ -440,6 +451,10 @@ fn exported() -> ExportedState {
         placement_holder: Some(s("h")),
         refresh_tokens: vec![refresh_token()],
         fleet_enabled: BTreeSet::from([s("f")]),
+        declared_dead: vec![crate::model::DeclaredDead {
+            node_id: s("b"),
+            storage_id: s("s"),
+        }],
         replica_reports: vec![report()],
         principal_revocations: vec![crate::auth::revocation::PrincipalRevocation {
             seq: 1,
@@ -613,6 +628,7 @@ fn commands() -> Vec<MetaCommand> {
             keep_ordered: true,
             shard_incarnation: Some(1),
         },
+        MetaCommand::DeclareNodeDead { node_id: s("b") },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
             floors: vec![crate::model::RaftFloorReport {
@@ -823,6 +839,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordPlacementAck { .. } => "record_placement_ack",
         MetaCommand::RecordRaftCopyId { .. } => "record_raft_copy_id",
         MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
+        MetaCommand::DeclareNodeDead { .. } => "declare_node_dead",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",
@@ -937,21 +954,55 @@ fn each_variant_is_listed_at_its_level() {
     }
 }
 
-/// The samples set every field, so each command's level is the highest of
-/// anything it can carry.
+/// Each sample needs the level of the newest field it itself carries (an op
+/// with several samples, like the auth changes, carries different parts in
+/// each), and the sample that carries the newest field in the whole table
+/// for its op must reach that level.
 #[test]
 fn a_command_needs_the_level_of_its_newest_field() {
     let table = parse(TABLE);
-    let shape = shape();
     for command in commands() {
         let op = op_of(&command);
+        let value = serde_json::to_value(&command).expect("serializes");
+        let mut own = BTreeSet::from([s(op)]);
+        for (key, child) in value.as_object().expect("object") {
+            if key == "op" {
+                continue;
+            }
+            let mut path = format!("{op}.{key}");
+            own.insert(path.clone());
+            walk(child, &mut path, &|_| false, &mut |p, _| {
+                own.insert(p.to_string());
+            });
+        }
+        let newest = own
+            .iter()
+            .map(|path| table[path.as_str()])
+            .max()
+            .unwrap_or(0);
+        assert_eq!(command.version(), newest, "{op}: {}", value);
+    }
+}
+
+/// Every path the table lists for an op is carried by some sample, so a
+/// field's level is checked against a command that really serializes it.
+#[test]
+fn every_listed_command_path_is_in_a_sample() {
+    let shape = shape();
+    let table = parse(TABLE);
+    let mut level_by_op: BTreeMap<&str, u16> = BTreeMap::new();
+    for command in commands() {
+        let level = level_by_op.entry(op_of(&command)).or_default();
+        *level = (*level).max(command.version());
+    }
+    for (op, level) in level_by_op {
         let newest = shape
             .iter()
             .filter(|path| path.as_str() == op || path.starts_with(&format!("{op}.")))
             .map(|path| table[path.as_str()])
             .max()
             .unwrap_or(0);
-        assert_eq!(command.version(), newest, "{op}");
+        assert_eq!(level, newest, "{op}");
     }
 }
 

@@ -298,6 +298,7 @@ fn script() -> Vec<MetaCommand> {
                 subject_claim: "sub".to_string(),
                 groups_claim: None,
             },
+            ..Default::default()
         },
     });
     commands.push(MetaCommand::AddRbacPolicy {

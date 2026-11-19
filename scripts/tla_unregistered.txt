@@ -80,3 +80,4 @@ FelixShardReplacedSetUnknown  runs past a CI runner's six hours
 FelixShardReplacedSetUnknownMark  runs past a CI runner's six hours
 FelixShardWalkElectStaleSet  replayed by FelixShardWalkElectStaleSetReplay
 FelixShardWalkSparesSeatEarly  replayed by FelixShardWalkSparesSeatEarlyReplay
+FelixRaftCondBatchThreeTerms  measuring by dispatch, run id in the lane's PR

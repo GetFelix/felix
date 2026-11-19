@@ -52,12 +52,13 @@ impl InMemoryStore {
             ))
         });
 
-        let (nodes, node_changes, fleet_enabled) = {
+        let (nodes, node_changes, fleet_enabled, declared_dead) = {
             let state = self.nodes.read().await;
             (
                 sorted_by_string_key(&state.records),
                 ExportedLog::from_log(&state.changes),
                 state.fleet_enabled.clone(),
+                state.dead.iter().cloned().collect(),
             )
         };
 
@@ -119,6 +120,7 @@ impl InMemoryStore {
             auth_bootstrapped: sorted_by_string_key(&*self.auth_bootstrapped.read().await),
             moves_paused: *self.moves_paused.read().await,
             fleet_enabled,
+            declared_dead,
             replica_reports: super::shards::sorted_replica_reports(self).await,
             placement_token,
             placement_holder,
@@ -203,6 +205,7 @@ impl InMemoryStore {
             records: state.nodes.into_iter().collect(),
             changes: state.node_changes.into_log(capacity),
             fleet_enabled: state.fleet_enabled,
+            dead: state.declared_dead.into_iter().collect(),
         };
         let mut shards = self.shards.write().await;
         *shards = ShardState {

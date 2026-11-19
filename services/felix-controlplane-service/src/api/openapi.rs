@@ -37,7 +37,7 @@ use crate::auth::jwks::{self, JwksResponse};
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use crate::auth::signing_keys::{self, SigningKeysResponse};
 use crate::model::{
-    Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest, ConsistencyLevel,
+    Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest, ConsistencyLevel, DeclaredDead,
     DeliveryGuarantee, MoveReason, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey,
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
     NodeStatus, PlacedInEpoch, Readmitted, RetentionPolicy, SealReport, SealedSideLog,
@@ -114,6 +114,8 @@ use crate::model::{
         nodes::listing::get_node,
         nodes::fleet::fleet_features,
         nodes::fleet::finalize_fleet_feature,
+        nodes::dead::declare_dead,
+        nodes::dead::list_dead,
         nodes::patch_node,
         nodes::delete_node,
         shard_assignments::list_shard_assignments,
@@ -131,6 +133,7 @@ use crate::model::{
         shard_moves::resume_placement
     ),
     components(schemas(
+        DeclaredDead,
         FeatureFlags,
         SystemInfo,
         HealthStatus,
