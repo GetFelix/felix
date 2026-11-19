@@ -20,7 +20,9 @@ mod validate;
 
 pub use durable::DurableStorageConfig;
 pub(crate) use env::quorum_reads_by_lease;
-pub(crate) use env::{RaftPrerequisites, ShardEngine, shard_engine, shard_raft_lease};
+pub(crate) use env::{
+    RaftPrerequisites, RaftSettings, ShardEngine, shard_engine, shard_raft_settings,
+};
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;

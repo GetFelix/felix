@@ -207,6 +207,20 @@ struct Shared<K> {
     trim_marked: std::sync::atomic::AtomicBool,
     /// The root's record-headers marker is known to be on disk.
     headers_marked: std::sync::atomic::AtomicBool,
+    /// Told when each vote save begins and ends, once
+    /// [`RaftLog::time_vote_saves`] set it.
+    vote_timer: std::sync::OnceLock<Arc<dyn VoteTimer>>,
+}
+
+/// Told when each vote save begins and how long it took, its wait for the
+/// disk included.
+pub trait VoteTimer: Send + Sync {
+    /// A vote save begins. What this returns is handed back to
+    /// [`Self::ended`].
+    fn began(&self) -> u64;
+    /// The save `began` returned `ticket` for is over: it took `took`, or
+    /// it failed (`None`).
+    fn ended(&self, ticket: u64, took: Option<std::time::Duration>);
 }
 
 /// How this log keeps its marks at the data root.
@@ -357,6 +371,7 @@ where
                 reserved: tokio::sync::Mutex::new(reserved),
                 trim_marked: std::sync::atomic::AtomicBool::new(false),
                 headers_marked: std::sync::atomic::AtomicBool::new(false),
+                vote_timer: std::sync::OnceLock::new(),
             }),
             types: std::marker::PhantomData,
         })
@@ -411,6 +426,12 @@ where
     /// so Raft counts this copy's written entries toward the commit.
     pub fn written_commit(&self) -> bool {
         self.shared.written_commit
+    }
+
+    /// Tell `timer` about every vote save. The first call sets it; a later
+    /// one is ignored.
+    pub fn time_vote_saves(&self, timer: Arc<dyn VoteTimer>) {
+        let _ = self.shared.vote_timer.set(timer);
     }
 
     /// The log's written and flushed positions, as they change.

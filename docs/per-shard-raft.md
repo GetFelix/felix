@@ -1565,8 +1565,9 @@ openraft 0.10.1 also times elections on a deadline of its own, whatever
 timeout after the leader was last heard, which an idle leader's 2 s
 heartbeats outlast, so groups are built with `enable_elect: false` too. The
 ticker turns a member's election timer on at the first tick after its wait
-runs out (below), and the member turns it off again when it takes an append
-or grants a vote. While it is on, openraft starts the election at its own
+runs out (below), as long as the broker has a place for one more election
+("Many groups electing at once"), and the member turns it off again when it
+takes an append or grants a vote. While it is on, openraft starts the election at its own
 deadline and runs the retries. A member inside its vote hold is not ticked,
 unless it promised nobody (below), so it does not stand there.
 
@@ -1638,10 +1639,9 @@ runs on it. See Questions, 15.
 Timer values are in Questions, 4. The hybrid suspects a leader after 5
 seconds, so Raft does not need 50 ms heartbeats to match its failover time.
 
-The first election of a group needs no tick. A member told its group's
-first members stands at once. If several members are told at the same
-moment their votes can split, and the next election waits for a timeout
-like any other.
+A member told its group's first members may stand at the first tick, once
+it has a place. If several members are told at the same moment their votes
+can split, and the next election waits for a timeout like any other.
 
 ### Idle groups
 
@@ -1773,17 +1773,104 @@ A vote is a small file per shard, written whole and renamed into place,
 and a vote at a new term also writes the shard's replica state. That is
 two to four fsyncs per vote, and each group does its own.
 
-On Linux that is fast enough. The runtime's test forms 40 groups at once on
-three brokers and has each take a write: every group is led within 2 s, at
-the first term that can elect. Sharing one flush of the device between the
-groups that vote in the same moment was tried and dropped. It was slower
-(2 to 6 s) and took more election rounds.
+When every group on a broker loses its leader in the same moment, or many
+groups are formed together, every member reaches its election timeout in
+the same second. If the disk cannot take that round of vote saves within
+the timeout, the timeouts fire again, each adding more saves, and no group
+settles. On a 4-vCPU machine 2,000 groups formed at once never elect this
+way, and on a disk held to a few hundred fsyncs a second neither do 2,000
+groups that lose their leader together (issue #2317).
 
-On macOS the same test does not settle in 30 s, so it is skipped there
-(issue #2317). The time goes to creating and renaming the vote files, which
-wait behind the `F_FULLFSYNC` calls in flight, and sharing flushes did not
-help. Brokers run on Linux, so this affects development on a Mac only: form
-groups a few at a time there.
+So each broker bounds how many of its members are in an election at once
+(`RuntimeConfig::max_elections_at_once`, 64 by default, 0 for no bound;
+`FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE` on a broker). That is where a storm
+starts and where the limit falls back to; it rises to four times that while
+elections win and vote saves keep up (below). The bound only decides
+when a member's election timer is turned on. openraft still picks the
+moment it stands, and the vote and commit rules are unchanged: holding a
+member back is the same as its timeout coming later.
+
+- A member whose wait for its leader ran out joins a queue. The ticker
+  turns its timer on only while a place is free. Members of groups whose
+  leader was at the short heartbeat gap when last heard, that is, groups
+  that took writes, queue ahead of idle ones. Within each class, members
+  that come due in the same interval are ordered by a hash of group and
+  member, so two brokers go through their groups in different orders, and
+  one member of a group usually wins before the others get a place.
+- A member keeps its place until it leads, hears a leader, or grants a
+  vote. It also gives it back if it lost: every vote or pre-vote request
+  it sent is answered and it does not lead (seen on two ticks), it has not
+  stood within `election_max` of getting the place, or it has no result
+  within `election_min` of standing. A candidate whose pre-vote round is
+  answered and that is still saving its own vote, counted from the save's
+  start, before openraft calls it a candidate, has not lost: its vote
+  requests go out once the save ends. One that lost has its timer turned
+  off and waits again at the back of the queue, behind idle groups too.
+  Its last round can still win.
+- The limit follows the disk while elections here are losing, that is,
+  while at least as many lost as won lately (counts halved every
+  `election_max`). The broker keeps a moving average of the vote saves
+  that had the disk to themselves, with no other vote save under way. A
+  save more than four times slower than that (and over a twentieth of
+  `election_min`) cuts the limit to what the disk would have saved in
+  that time. Before any save was alone, a quarter of `election_min` is
+  the mark. Slow saves while elections win cut nothing: every group still
+  takes one round, so a slow disk is not one the elections overload, and
+  queueing would only add to each wait. The limit never falls below 8 (or
+  the bound, if lower). Once elections stop losing it climbs back by the
+  elections that won, and by at least one a tick. While they lose, it
+  climbs one place each `election_min`. A member that never stood within
+  `election_max` of getting its place gives the place back but does not
+  count as a lost election: it says nothing about the disk.
+- Places do not bound the disk's queue: a round that gave up leaves its
+  saves queued, and nothing cancels them. The broker keeps a moving
+  average of the time between two vote saves ending while others were
+  still under way, which is what the disk gets through whatever its width.
+  The first save to end after an idle spell is not timed, and the average
+  fades while no save is under way, so a disk that recovered is not held
+  to its slow past. No member is let in while the pending saves, counting
+  each member in flight as at least one, times that gap, would take over a
+  quarter of `election_min` to drain. One member is always let in when none is. On a disk held to 100
+  saves a second this stops a queue from outgrowing the timeout, where
+  rounds would otherwise lose faster than they finish.
+
+- The bound is where the limit starts and where it returns to, not a
+  ceiling. While fewer than one election in eight lost lately and the
+  queued vote saves would drain within a quarter of `election_min`, the
+  limit grows by the elections that won, up to four times the bound. A
+  higher loss rate or a backed-up queue brings it back to the bound at
+  once. So `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE` is what a broker starts a
+  storm with and falls back to when rounds fail, and the most it ever
+  allows is four times that.
+
+A group that loses its leader alone is never held back: a place is free.
+Groups that cannot win, for example because two of their three brokers are
+down, cost the others little: their requests are refused or time out, so
+each gives up its place after a round.
+
+How long a member can wait: with `p` members queued ahead of it and the
+limit at `l`, about `p / l` rounds, each one ending at most `election_min`
+after the member stands, or `election_max` if it never stands. That is the
+worst case, with the limit pinned at the floor of 8 and every round lost:
+about 90 rounds for 700 groups whose leader's broker crashed. Usually the
+first member of a group to stand wins, and the limit climbs back by the
+elections that won once it is not cut.
+
+`GroupRuntime::election_load` and the gauges
+`felix_broker_raft_elections_in_flight` and
+`felix_broker_raft_elections_waiting` show the bound at work.
+
+Not bounded: a leadership transfer's target stands at once, without its
+timer, and a leader's timer is on as it was without the bound. openraft
+starts a leader's election only when its transfer is not taken in time,
+and the old leader must not wait for a place to lead again (the queue
+only takes followers and candidates).
+
+The runtime's test forms 40 groups at once on three brokers and has each
+take a write: on Linux every group is led within 2 s. On macOS it still
+does not settle in 30 s, so it is skipped there. The time goes to creating
+and renaming the vote files, which wait behind the `F_FULLFSYNC` calls in
+flight.
 
 ## Group runtime
 

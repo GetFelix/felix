@@ -703,7 +703,7 @@ pub(crate) fn parse_shard_engine(value: Option<&str>) -> Result<ShardEngine> {
 /// a Raft shard's leader still acknowledges a `Leader` stream's publish on
 /// its own log. `None` keeps the group runtime's default. `0` turns that
 /// acknowledgement off, and every publish waits for its commit.
-pub(crate) fn shard_raft_lease() -> Result<Option<Duration>> {
+fn shard_raft_lease() -> Result<Option<Duration>> {
     parse_shard_raft_lease(std::env::var("FELIX_SHARD_RAFT_LEASE_MS").ok().as_deref())
 }
 
@@ -716,6 +716,47 @@ pub(crate) fn parse_shard_raft_lease(value: Option<&str>) -> Result<Option<Durat
             Ok(millis) => Ok(Some(Duration::from_millis(millis))),
             Err(_) => anyhow::bail!(
                 "FELIX_SHARD_RAFT_LEASE_MS must be a whole number of milliseconds, not {millis:?}"
+            ),
+        },
+    }
+}
+
+/// What the environment changes of the Raft group runtime's defaults.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RaftSettings {
+    pub(crate) lease: Option<Duration>,
+    pub(crate) elections_at_once: Option<usize>,
+}
+
+pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
+    Ok(RaftSettings {
+        lease: shard_raft_lease()?,
+        elections_at_once: shard_raft_elections_at_once()?,
+    })
+}
+
+/// `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE`: how many Raft groups on this
+/// broker may be in an election at once when a storm starts, and where the
+/// limit falls back to. It may rise to four times this while elections win
+/// and vote saves keep up. `None` keeps the group runtime's default, and
+/// `0` takes the bound off.
+fn shard_raft_elections_at_once() -> Result<Option<usize>> {
+    parse_shard_raft_elections_at_once(
+        std::env::var("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// A value that does not parse is refused, never read as the default: an
+/// operator who meant `0` would keep the bound.
+pub(crate) fn parse_shard_raft_elections_at_once(value: Option<&str>) -> Result<Option<usize>> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(count) => match count.parse() {
+            Ok(count) => Ok(Some(count)),
+            Err(_) => anyhow::bail!(
+                "FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE must be a whole number, not {count:?}"
             ),
         },
     }

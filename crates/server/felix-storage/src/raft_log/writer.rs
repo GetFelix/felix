@@ -17,8 +17,8 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 use super::codec::record_from_entry;
 use super::purged::Purged;
 use super::{
-    EntryCodec, LogPoint, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
-    term_of_generation,
+    EntryCodec, LogPoint, LogReader, LogTypes, RaftLog, VoteTimer, generation_of, invalid, log_id,
+    term_at, term_of_generation,
 };
 #[cfg(doc)]
 use crate::DiskLog;
@@ -55,6 +55,12 @@ where
         let generation = generation_of(leader_id.term())?;
         let leader = self.shared.codec.encode_node_id(leader_id.node_id());
         let committed = vote.is_committed();
+        let mut timing = self.shared.vote_timer.get().map(|timer| Timing {
+            ticket: timer.began(),
+            timer: Arc::clone(timer),
+            began: std::time::Instant::now(),
+            done: false,
+        });
         self.shared
             .log
             .save_vote(generation, &leader, committed)
@@ -69,6 +75,12 @@ where
                     committed,
                 })
                 .await?;
+        }
+        if let Some(timing) = &mut timing {
+            timing.done = true;
+            timing
+                .timer
+                .ended(timing.ticket, Some(timing.began.elapsed()));
         }
         Ok(())
     }
@@ -522,6 +534,23 @@ where
         Ok(matches!(log.accepted_vote(), (0, None, _))
             && self.shared.bounds.lock().on_disk.is_none()
             && tail == log.base_offset())
+    }
+}
+
+/// One vote save, told to the [`VoteTimer`]. One that ends early on an
+/// error is told as failed.
+struct Timing {
+    timer: Arc<dyn VoteTimer>,
+    ticket: u64,
+    began: std::time::Instant,
+    done: bool,
+}
+
+impl Drop for Timing {
+    fn drop(&mut self) {
+        if !self.done {
+            self.timer.ended(self.ticket, None);
+        }
     }
 }
 

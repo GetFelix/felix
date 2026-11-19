@@ -123,7 +123,7 @@ where
     // Before anything opens: a broker asked for Raft shards that came up as
     // a hybrid one would write a shard its peers run under Raft.
     let shard_engine = crate::config::shard_engine()?;
-    let shard_raft_lease = crate::config::shard_raft_lease()?;
+    let shard_raft = crate::config::shard_raft_settings()?;
     if shard_engine == crate::config::ShardEngine::Raft {
         let missing = crate::config::RaftPrerequisites {
             compiled: cfg!(feature = "raft"),
@@ -369,20 +369,14 @@ where
     #[cfg(feature = "raft")]
     let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
         cluster::start_raft_shards(
-            &config,
-            shard_raft_lease,
-            &cluster,
-            &peers,
-            &broker,
-            &engine,
-            &fleet,
+            &config, shard_raft, &cluster, &peers, &broker, &engine, &fleet,
         )?
     } else {
         cluster::RaftShards::default()
     };
     #[cfg(not(feature = "raft"))]
     let raft_shards = {
-        let _ = shard_raft_lease;
+        let _ = shard_raft;
         cluster::RaftShards::default()
     };
     let raft_shards = cluster::match_engines(

@@ -40,6 +40,7 @@ use super::propose::{
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
 use super::runtime::{GroupStatus, OpenError, Role};
+use super::ticker::{VoteClock, VoteSaves};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
@@ -155,6 +156,9 @@ pub(crate) struct Group {
     /// pace says its leader is gone. The lock orders the switch with
     /// [`Self::hold_elections`].
     elections: parking_lot::Mutex<bool>,
+    /// Waiting in the ticker's queue for a place to stand
+    /// (`ticker::Elections`).
+    waiting: AtomicBool,
     /// The term this member was first seen leading, and when, on the
     /// runtime's clock. It ages a term no majority has answered yet.
     leads_since: parking_lot::Mutex<Option<(u64, u64)>>,
@@ -189,6 +193,8 @@ pub(crate) struct Timers {
     pub(crate) election_min: u64,
     pub(crate) election_max: u64,
     pub(crate) lease: u64,
+    /// [`super::RuntimeConfig::max_elections_at_once`].
+    pub(crate) max_elections_at_once: usize,
 }
 
 impl Timers {
@@ -253,6 +259,25 @@ pub(crate) struct Pace {
     /// Spreads the members of a group over the idle wait, so they do not
     /// all stand in the same tick.
     jitter: u64,
+    /// Vote and pre-vote requests this member sent, and how many of them
+    /// are not answered yet. The election bound reads them to see a round
+    /// end.
+    asks: AtomicU64,
+    asks_out: AtomicU64,
+    /// The highest term this member sent a real vote request at.
+    asked_term: AtomicU64,
+    /// Vote saves of this member under way.
+    saving: Arc<AtomicU64>,
+}
+
+/// A vote or pre-vote request on its way, counted in [`Pace`] until it is
+/// answered or given up.
+pub(crate) struct Asking<'a>(&'a Pace);
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.0.asks_out.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 struct Peer {
@@ -290,6 +315,10 @@ impl Pace {
             sends: AtomicU64::new(wall_clock_nanos()),
             stored: parking_lot::Mutex::new((0, 0)),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
+            asks: AtomicU64::new(0),
+            asks_out: AtomicU64::new(0),
+            asked_term: AtomicU64::new(0),
+            saving: Arc::default(),
         }
     }
 
@@ -502,6 +531,18 @@ impl Pace {
         (acked.as_millis() as u64) < wait
     }
 
+    /// This member is sending a vote or pre-vote request.
+    pub(crate) fn asking(&self) -> Asking<'_> {
+        self.asks.fetch_add(1, Ordering::Relaxed);
+        self.asks_out.fetch_add(1, Ordering::Relaxed);
+        Asking(self)
+    }
+
+    /// This member is sending a real vote request at `term`.
+    pub(crate) fn asking_at(&self, term: u64) {
+        self.asked_term.fetch_max(term, Ordering::Relaxed);
+    }
+
     /// This member granted a vote. Whoever wins starts at the short gap.
     pub(super) fn voted(&self) {
         self.promised
@@ -673,6 +714,7 @@ impl Group {
         host: Host,
         tail_budget: Arc<TailBudget>,
         reach: Arc<Reach>,
+        vote_saves: Arc<VoteSaves>,
     ) -> Result<Self, OpenError> {
         let Host {
             engine: host,
@@ -684,6 +726,12 @@ impl Group {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
             RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
+        let own_saves = Arc::new(AtomicU64::new(0));
+        log.time_vote_saves(Arc::new(VoteClock {
+            saves: vote_saves,
+            timers,
+            own: Arc::clone(&own_saves),
+        }));
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the
@@ -728,7 +776,9 @@ impl Group {
         let purge_at = machine.purging(log.reader());
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
-        let pace = Arc::new(Pace::new(timers, &id, &member));
+        let mut pace = Pace::new(timers, &id, &member);
+        pace.saving = own_saves;
+        let pace = Arc::new(pace);
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new(log.written_commit()));
         let refusals = Arc::new(Refusals::new(id.clone()));
@@ -826,6 +876,7 @@ impl Group {
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             elections: parking_lot::Mutex::new(false),
+            waiting: AtomicBool::new(false),
             leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             proposals: OnceLock::new(),
@@ -953,7 +1004,13 @@ impl Group {
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
-        self.allow_elections();
+        // Under the election bound the ticker turns a voter's timer on
+        // instead. A leader's only election is the one openraft starts when
+        // its transfer is not taken, and that one must not wait for a place
+        // (`ticker::Elections` only queues followers and candidates).
+        if self.pace.timers.max_elections_at_once == 0 || self.leads() {
+            self.allow_elections();
+        }
         let mut dropped = Dropped(Some(&self.dropped_ticks));
         let ticked = self.raft.trigger().tick().await;
         dropped.0 = None;
@@ -977,10 +1034,108 @@ impl Group {
         }
     }
 
+    /// Whether this member's wait for its leader ran out and it would stand
+    /// if the election bound let it: a voter that does not lead, whose
+    /// election timer is off.
+    pub(crate) fn wants_to_stand(&self) -> bool {
+        self.pace.timers.now() >= self.due_at() && self.may_stand(u64::MAX)
+    }
+
+    /// Whether this member may still stand, having heard no leader and
+    /// granted no vote since `since`.
+    pub(crate) fn may_stand(&self, since: u64) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        if self.stopped.load(Ordering::Relaxed)
+            || *self.elections.lock()
+            || self.pace.heard.load(Ordering::Relaxed) >= since
+            || (self.holds_votes() && !self.hold.campaigns)
+        {
+            return false;
+        }
+        let state = self.raft.metrics().borrow_watched().state;
+        matches!(state, ServerState::Follower | ServerState::Candidate)
+    }
+
+    /// A candidate whose real vote requests for its term have not gone out
+    /// yet: openraft sends them once its own vote is saved.
+    pub(crate) fn saving_its_vote(&self) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let watched = self.raft.metrics();
+        let metrics = watched.borrow_watched();
+        // A save of its own vote begins before openraft reports it a
+        // candidate, so the counter covers that gap too.
+        self.pace.saving.load(Ordering::Relaxed) > 0
+            || (metrics.state == ServerState::Candidate
+                && metrics.current_term > self.pace.asked_term.load(Ordering::Relaxed))
+    }
+
+    /// Its group took writes when this member last heard its leader: the
+    /// leader was at the short gap. A member that never had a leader is
+    /// not urgent.
+    pub(crate) fn urgent(&self) -> bool {
+        let pace = &self.pace;
+        pace.led.load(Ordering::Relaxed) != NEVER
+            && pace.promised.load(Ordering::Relaxed) <= pace.timers.heartbeat
+    }
+
+    /// Mark this member as waiting for a place, or as not.
+    pub(crate) fn set_waiting(&self, waiting: bool) {
+        self.waiting.store(waiting, Ordering::Relaxed);
+    }
+
+    /// Let openraft run this member's elections, if it heard no leader and
+    /// granted no vote since `since`. Returns whether it did.
+    pub(crate) fn arm(&self, since: u64) -> bool {
+        if !self.may_stand(since) {
+            return false;
+        }
+        // Read again under the lock that orders it with
+        // `hold_elections`, so an append taken meanwhile wins.
+        let mut on = self.elections.lock();
+        if self.pace.heard.load(Ordering::Relaxed) >= since {
+            return false;
+        }
+        if !*on {
+            self.raft.runtime_config().elect(true);
+            *on = true;
+        }
+        true
+    }
+
+    /// Whether the election this member was let into is over: it leads,
+    /// heard a leader or granted a vote (which turned the timer off), or
+    /// stopped.
+    pub(crate) fn settled(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed) || !*self.elections.lock() || self.leads()
+    }
+
+    /// Whether openraft's election timer is on.
+    #[cfg(test)]
+    pub(crate) fn elections_on(&self) -> bool {
+        *self.elections.lock()
+    }
+
+    /// Vote and pre-vote requests sent so far, and how many are unanswered.
+    pub(crate) fn asks(&self) -> (u64, u64) {
+        let pace = &self.pace;
+        (
+            pace.asks.load(Ordering::Relaxed),
+            pace.asks_out.load(Ordering::Relaxed),
+        )
+    }
+
+    /// A stable order for this member among the ones that came due
+    /// together, different on each broker.
+    pub(crate) fn order(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (&self.id, &self.member).hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Turn openraft's election timer off: this member hears a leader, or
     /// voted for one, and its pace times that leader out from now on.
     /// Called after [`Pace::took`] or [`Pace::voted`] has moved the due time.
-    fn hold_elections(&self) {
+    pub(crate) fn hold_elections(&self) {
         let mut on = self.elections.lock();
         if *on {
             self.raft.runtime_config().elect(false);
@@ -1201,7 +1356,9 @@ impl Group {
             ServerState::Follower | ServerState::Candidate => {
                 let heard = pace.heard.load(Ordering::Relaxed);
                 let wait = heard.saturating_add(pace.follower_wait());
-                match *self.elections.lock() {
+                // A member waiting for a place to stand is looked at once a
+                // heartbeat, like one whose timer is on.
+                match *self.elections.lock() || self.waiting.load(Ordering::Relaxed) {
                     true => wait.max(now + pace.timers.heartbeat),
                     false => wait.max(now + tick),
                 }
