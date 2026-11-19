@@ -568,7 +568,9 @@ With TLS on (`FELIX_MQTT_TLS`, default true) the listener serves the broker's
 client-facing certificate, and `FELIX_TLS_CLIENT_CA` requires a client
 certificate here as on the QUIC and Kafka listeners. With
 `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`, a token whose subject the certificate
-was not issued to is refused. Today a certificate binds a token and is not an
+was not issued to is refused. A client without a certificate (plain TCP) can
+then publish only to shards its own broker owns, since the owner refuses a
+forward that carries no client chain. Today a certificate binds a token and is not an
 identity on its own. Certificate-only device identity is later work
 ([D11](#d11-device-identity)).
 

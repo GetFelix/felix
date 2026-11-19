@@ -25,6 +25,8 @@ use tempfile::TempDir;
 use super::*;
 use felix_replication::quorum::QuorumMarks;
 
+mod client_certs;
+
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
 const STREAM: &str = "orders";
