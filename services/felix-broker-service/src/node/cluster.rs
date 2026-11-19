@@ -747,6 +747,8 @@ where
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
                 ingress.fence().lease().cloned(),
+                crate::config::shard_engine()
+                    .is_ok_and(|engine| engine == crate::config::ShardEngine::Raft),
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(

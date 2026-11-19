@@ -1184,6 +1184,7 @@ impl EngineShards for RaftShards {
                             .cloned()
                             .collect(),
                         in_target,
+                        withheld: assignment.targets_withheld,
                     })
                 })
                 .collect();

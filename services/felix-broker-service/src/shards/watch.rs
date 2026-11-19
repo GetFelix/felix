@@ -287,7 +287,9 @@ impl ShardOwnership {
     ///
     /// Returns whether anything changed. A duplicate delivery is therefore
     /// harmless, and a stale generation — from a retry, a reordered poll, or a
-    /// control plane that was behind — cannot roll ownership back.
+    /// control plane that was behind — cannot roll ownership back. A change at
+    /// the held generation and set updates only the Raft target view
+    /// ([`target_view`]): the control plane stores targets in place.
     ///
     /// Assignments are ordered by incarnation first, as the lifecycle orders
     /// them: a recreated stream's or cache's shard is a new one, and its first
@@ -300,12 +302,9 @@ impl ShardOwnership {
                     && (next.incarnation, next.generation)
                         <= (current.incarnation, current.generation)
                 {
-                    // The control plane stores a Raft target in place, at the
-                    // generation placement wrote. Dropped as stale, it would
-                    // stay unseen until a resync, and a group forms only on it.
-                    if newer_target(current, &next) {
-                        current.target = next.target;
-                        current.targets_withheld = false;
+                    if let Some((target, withheld)) = target_view(current, &next) {
+                        current.target = target;
+                        current.targets_withheld = withheld;
                         self.changed();
                         return true;
                     }
@@ -501,13 +500,29 @@ impl ShardOwnership {
     pub fn is_empty(&self) -> bool {
         self.assignments.is_empty()
     }
+
+    /// Whether the newest view of some stream shard had its Raft target
+    /// withheld. The control plane decides that at read time and writes no
+    /// change when it stops, so only a fresh read shows the target.
+    pub(crate) fn withholds_stream_targets(&self) -> bool {
+        self.assignments.values().any(|assignment| {
+            assignment.targets_withheld && assignment.key.kind == crate::shards::ShardKind::Stream
+        })
+    }
 }
 
-/// Whether `next`, a change at `current`'s incarnation, generation and set,
-/// carries a target newer than the one held. A withheld or absent target
-/// says nothing, and an older one is a late copy.
-fn newer_target(current: &ShardAssignment, next: &ShardAssignment) -> bool {
-    let same_set = (
+/// The target fields to hold after `next`, a change at `current`'s
+/// incarnation and generation, or `None` to drop it. The control plane
+/// stores a Raft target in place, at the generation placement wrote, so
+/// such a change is how a target reaches the broker. Only the same set's
+/// target counts. A withheld view marks the held one unknown; an open view
+/// takes a newer target or confirms the one held; an older one is a late
+/// copy.
+fn target_view(
+    current: &ShardAssignment,
+    next: &ShardAssignment,
+) -> Option<(Option<RaftTarget>, bool)> {
+    let same = (
         next.incarnation,
         next.generation,
         &next.leader,
@@ -518,15 +533,23 @@ fn newer_target(current: &ShardAssignment, next: &ShardAssignment) -> bool {
         &current.leader,
         &current.replicas,
     );
-    let Some(target) = next.target.as_ref().filter(|_| !next.targets_withheld) else {
-        return false;
-    };
-    let held = current
-        .target
-        .as_ref()
-        .filter(|_| !current.targets_withheld)
-        .map(|held| held.version);
-    same_set && held.is_none_or(|held| target.version > held)
+    if !same {
+        return None;
+    }
+    if next.targets_withheld {
+        return (!current.targets_withheld).then(|| (current.target.clone(), true));
+    }
+    let held = current.target.as_ref().map(|held| held.version);
+    match &next.target {
+        Some(target) if held.is_none_or(|held| target.version > held) => {
+            Some((Some(target.clone()), false))
+        }
+        Some(target) if held == Some(target.version) && current.targets_withheld => {
+            Some((current.target.clone(), false))
+        }
+        None if held.is_none() && current.targets_withheld => Some((None, false)),
+        _ => None,
+    }
 }
 
 /// What came before `next`, when `current` is the assignment right before it:
@@ -596,6 +619,10 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// `changed` is notified after every snapshot and every batch of changes that
 /// moved something, so the routing feed acts on it now rather than at its
 /// next tick.
+///
+/// With `reread_withheld`, set on a broker that runs Raft shards, a view that
+/// withheld some stream shard's target is followed by a snapshot an
+/// `interval` later instead of a poll, until no target is withheld.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     link: impl ControlPlaneLink,
@@ -607,6 +634,7 @@ pub async fn run(
     changed: Arc<Notify>,
     interval: Duration,
     lease: Option<Arc<crate::cluster::lease::LeaseState>>,
+    reread_withheld: bool,
     shutdown: CancellationToken,
 ) {
     if let Some(lease) = &lease {
@@ -678,7 +706,14 @@ pub async fn run(
                 if moved || urgent {
                     changed.notify_one();
                 }
-                next_delay(interval, moved, started.elapsed())
+                if reread_withheld && ownership.read().await.withholds_stream_targets() {
+                    // A withheld target is re-read until it is not: no change
+                    // follows when the control plane stops withholding it.
+                    checkpoint = None;
+                    interval
+                } else {
+                    next_delay(interval, moved, started.elapsed())
+                }
             }
             Ok(Progress::Behind) => {
                 failures = 0;

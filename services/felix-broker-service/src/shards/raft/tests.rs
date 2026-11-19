@@ -326,14 +326,15 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
     assert!(shards.held_copies().is_empty());
     lead_orders(&shards).await;
     let copy = shards.runtime.status(&orders).expect("status").member.copy;
-    let held = |in_target| copy_id::Held {
+    let held = |in_target, withheld| copy_id::Held {
         key: orders.clone(),
         incarnation: INCARNATION,
         copy,
         set: ["broker-a".to_string()].into(),
         in_target,
+        withheld,
     };
-    assert_eq!(shards.held_copies(), vec![held(None)]);
+    assert_eq!(shards.held_copies(), vec![held(None, false)]);
 
     let mut named = assigned(orders.clone(), INCARNATION);
     named.target = Some(crate::shards::watch::RaftTarget {
@@ -344,12 +345,12 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
         members: [("broker-a".to_string(), copy)].into(),
     });
     shards.take(&mut assignments([named.clone()])).await;
-    assert_eq!(shards.held_copies(), vec![held(Some(copy))]);
+    assert_eq!(shards.held_copies(), vec![held(Some(copy), false)]);
 
     // A withheld view says nothing of the target.
     named.targets_withheld = true;
     shards.take(&mut assignments([named])).await;
-    assert_eq!(shards.held_copies(), vec![held(None)]);
+    assert_eq!(shards.held_copies(), vec![held(None, true)]);
     shards.shutdown().await;
 }
 

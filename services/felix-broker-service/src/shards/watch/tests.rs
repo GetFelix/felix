@@ -95,53 +95,111 @@ fn a_duplicate_change_is_ignored() {
     assert_eq!(owned.len(), 1);
 }
 
-/// The control plane stores a Raft target in place, at the generation the
-/// shard already has. That change must land, or a broker never sees the
-/// target its group forms on until a resync; a late or withheld one must not.
-#[test]
-fn a_raft_target_stored_in_place_is_applied() {
-    let with = |counter: u64, withheld: bool| ShardAssignment {
+/// A view of `assignment(0, "broker-a", 3)` with a target at
+/// (`incarnation`, `counter`), or withheld.
+fn targeted(incarnation: u64, counter: u64, withheld: bool) -> ShardAssignment {
+    ShardAssignment {
         target: (!withheld).then(|| RaftTarget {
             version: RaftTargetVersion {
-                incarnation: 1,
+                incarnation,
                 counter,
             },
             members: [("broker-a".to_string(), counter)].into_iter().collect(),
         }),
         targets_withheld: withheld,
         ..assignment(0, "broker-a", 3)
-    };
-    let target = |owned: &ShardOwnership| {
-        owned
-            .get(&key(0))
-            .expect("present")
-            .target
-            .as_ref()
-            .map(|target| target.version.counter)
-    };
+    }
+}
+
+/// The held target's version and whether the view withheld it.
+fn target_of(owned: &ShardOwnership) -> (Option<(u64, u64)>, bool) {
+    let held = owned.get(&key(0)).expect("present");
+    let version = held
+        .target
+        .as_ref()
+        .map(|target| (target.version.incarnation, target.version.counter));
+    (version, held.targets_withheld)
+}
+
+/// The control plane stores a Raft target in place, at the generation the
+/// shard already has. That change must land, or a broker never sees the
+/// target its group forms on until a resync; a late one must not.
+#[test]
+fn a_raft_target_stored_in_place_is_applied() {
     let mut owned = ShardOwnership::default();
     assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
     assert!(
-        owned.apply(&key(0), Some(with(1, false))),
+        owned.apply(&key(0), Some(targeted(1, 1, false))),
         "the stored target"
     );
-    assert_eq!(target(&owned), Some(1));
-    assert!(!owned.apply(&key(0), Some(with(1, false))), "a duplicate");
-    assert!(owned.apply(&key(0), Some(with(2, false))));
-    assert!(!owned.apply(&key(0), Some(with(1, false))), "a late copy");
+    assert_eq!(target_of(&owned), (Some((1, 1)), false));
     assert!(
-        !owned.apply(&key(0), Some(with(0, true))),
-        "a withheld view"
+        !owned.apply(&key(0), Some(targeted(1, 1, false))),
+        "a duplicate"
+    );
+    assert!(owned.apply(&key(0), Some(targeted(1, 2, false))));
+    assert!(
+        !owned.apply(&key(0), Some(targeted(1, 1, false))),
+        "a late copy"
     );
     assert!(!owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
-    assert_eq!(target(&owned), Some(2));
+    assert_eq!(target_of(&owned), (Some((1, 2)), false));
     // Another set at the same generation is not this record's target.
     let moved = ShardAssignment {
         leader: "broker-b".to_string(),
-        ..with(3, false)
+        ..targeted(1, 3, false)
     };
     assert!(!owned.apply(&key(0), Some(moved)));
-    assert_eq!(target(&owned), Some(2));
+    assert_eq!(target_of(&owned), (Some((1, 2)), false));
+}
+
+/// Versions order by placement incarnation before counter: a restore
+/// raises the incarnation and may bring back a lower counter.
+#[test]
+fn a_target_at_a_higher_placement_incarnation_is_newer() {
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(targeted(2, 5, false))));
+    assert!(owned.apply(&key(0), Some(targeted(3, 2, false))));
+    assert_eq!(target_of(&owned), (Some((3, 2)), false));
+    assert!(
+        !owned.apply(&key(0), Some(targeted(2, 6, false))),
+        "older incarnation"
+    );
+    assert_eq!(target_of(&owned), (Some((3, 2)), false));
+}
+
+/// A withheld view at the held generation marks the held target unknown,
+/// so the watch reads it again; the next open view settles it.
+#[test]
+fn a_withheld_view_marks_the_held_target_until_an_open_one() {
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert!(!owned.withholds_stream_targets());
+    assert!(owned.apply(&key(0), Some(targeted(1, 0, true))), "withheld");
+    assert_eq!(target_of(&owned), (None, true));
+    assert!(owned.withholds_stream_targets());
+    assert!(
+        !owned.apply(&key(0), Some(targeted(1, 0, true))),
+        "still withheld"
+    );
+    assert!(
+        owned.apply(&key(0), Some(targeted(1, 1, false))),
+        "the target"
+    );
+    assert_eq!(target_of(&owned), (Some((1, 1)), false));
+    assert!(!owned.withholds_stream_targets());
+
+    // Withheld again, then the same target in the open: only the mark goes.
+    assert!(owned.apply(&key(0), Some(targeted(1, 0, true))));
+    assert_eq!(target_of(&owned), (Some((1, 1)), true));
+    assert!(owned.apply(&key(0), Some(targeted(1, 1, false))));
+    assert_eq!(target_of(&owned), (Some((1, 1)), false));
+
+    // An open view with no target clears the mark on a shard without one.
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(targeted(1, 0, true))));
+    assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert_eq!(target_of(&owned), (None, false));
 }
 
 /// The property that makes reordering safe: a change that would move ownership
@@ -484,6 +542,7 @@ async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
         Arc::new(Notify::new()),
         Duration::from_millis(10),
         None,
+        false,
         shutdown.clone(),
     ));
 
@@ -726,6 +785,7 @@ async fn a_fake_link_drives_the_watch() {
         Arc::new(Notify::new()),
         Duration::from_millis(10),
         None,
+        false,
         shutdown.clone(),
     ));
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -816,6 +876,7 @@ async fn a_renewal_after_a_surrender_waits_for_the_feed_head_it_was_accepted_at(
         Arc::new(Notify::new()),
         Duration::from_millis(10),
         Some(Arc::clone(&lease)),
+        false,
         shutdown.clone(),
     ));
     let seeded = async {
@@ -873,4 +934,119 @@ async fn a_renewal_after_a_surrender_waits_for_the_feed_head_it_was_accepted_at(
     shutdown.cancel();
     watch.await.expect("watch");
     server.abort();
+}
+
+/// **A target withheld when read is read again.** The control plane decides
+/// withholding at read time and writes no change when the gate opens, so a
+/// withheld change, once past the checkpoint, is never sent again. The
+/// watch of a Raft broker takes a snapshot until no target is withheld.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_withheld_target_is_read_again_until_it_is_not() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use axum::{Json, Router, routing::get};
+
+    let shard = |extra: serde_json::Value| {
+        let mut item = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "leader": "b1", "replicas": [], "generation": 2, "state": "active"
+        });
+        item.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        item
+    };
+    // The gate opens once the withheld change has been served.
+    let open = Arc::new(AtomicBool::new(false));
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get({
+                let open = Arc::clone(&open);
+                move || async move {
+                    let opened = open.load(Ordering::SeqCst);
+                    let item = if opened {
+                        shard(serde_json::json!({ "target": {
+                            "version": { "incarnation": 1, "counter": 1 },
+                            "members": { "b1": 7 }
+                        }}))
+                    } else {
+                        shard(serde_json::json!({}))
+                    };
+                    let next_seq = if opened { 11 } else { 10 };
+                    Json(serde_json::json!({ "items": [item], "next_seq": next_seq }))
+                }
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get({
+                let open = Arc::clone(&open);
+                move |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    // The target's write, read while a broker had not acked.
+                    if query.get("since").map(String::as_str) == Some("10") {
+                        open.store(true, Ordering::SeqCst);
+                        return Json(serde_json::json!({
+                            "items": [{
+                                "seq": 10,
+                                "op": "updated",
+                                "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0 },
+                                "assignment": shard(serde_json::json!({ "targets_withheld": true })),
+                            }],
+                            "next_seq": 11
+                        }));
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Json(serde_json::json!({ "items": [], "next_seq": 11 }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(10),
+        None,
+        true,
+        shutdown.clone(),
+    ));
+    let got = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(target) = ownership
+                .read()
+                .await
+                .get(&key(0))
+                .and_then(|held| held.target.clone())
+            {
+                return target;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
+    let target = got.expect("the target withheld at read time never reached the broker");
+    assert_eq!(target.members.get("b1"), Some(&7));
+    assert!(
+        open.load(Ordering::SeqCst),
+        "the withheld change was served"
+    );
 }

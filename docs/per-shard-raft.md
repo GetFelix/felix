@@ -4458,6 +4458,15 @@ set whose target is newer than the one it holds
 (`ShardOwnership::apply`), so the target reaches the brokers through the
 feed and not only through a resync.
 
+Withholding is decided when the feed is read, and the acknowledgement that
+ends it writes no change, so a target read while withheld would never be
+sent again. A Raft broker's watch therefore takes a snapshot every sync
+interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`) while any stream shard's
+target in its view is withheld, and polls again once none is. A copy id
+report the control plane refused while the view was withheld goes again on
+the first tick after the view stops withholding, instead of waiting out its
+backoff.
+
 The control plane takes ids for a shard that switched from the hybrid, and
 from metadata level 41 for a shard that started on Raft: a durable stream's
 shard on a cluster whose engine is Raft (`FELIX_SHARD_ENGINE=raft` on the
