@@ -401,29 +401,90 @@ fn the_limit_grows_by_the_elections_that_won() {
     assert_eq!(elections.limit, let_in * 2);
 }
 
+/// `count` saves begin and the first `ended` end, one every 10 ms from
+/// `from` microseconds on, as a disk doing 100 a second would. The rest
+/// stay under way. Returns their tickets.
+fn backed_up(elections: &Elections<Member>, count: u64, ended: usize, from: u64) -> Vec<u64> {
+    let tickets: Vec<_> = (0..count).map(|_| elections.saves.began()).collect();
+    for (n, ticket) in tickets.iter().take(ended).enumerate() {
+        let at = from + n as u64 * 10_000;
+        elections.saves.ended(*ticket, at / 1000, at, Some(10_000));
+    }
+    tickets
+}
+
 /// The disk's queue is the bound, not the places held: while the saves
 /// queued here would take over a quarter of election_min to drain, only
 /// one member is let in, and more as the queue empties.
 #[test]
 fn no_one_is_let_in_while_the_disk_is_backed_up() {
     let mut elections = elections(64);
-    // 30 saves begin; 10 end 10 ms apart, so the disk does 100 a second.
-    let tickets: Vec<_> = (0..30).map(|_| elections.saves.began()).collect();
-    for (n, ticket) in tickets.iter().take(10).enumerate() {
-        let at = 1_000_000 + n as u64 * 10_000;
-        elections.saves.ended(*ticket, at / 1000, at, Some(10_000));
-    }
+    let tickets = backed_up(&elections, 90, 10, 1_000_000);
     let members: Vec<_> = (0..100).map(Member::new).collect();
     interval(&mut elections, &members, 0);
-    let first = elections.load().in_flight;
-    assert!((1..=6).contains(&first), "{first} let in");
-    for (n, ticket) in tickets.iter().skip(10).enumerate() {
+    assert_eq!(elections.load().in_flight, 1);
+    for (n, ticket) in tickets.iter().skip(10).take(70).enumerate() {
         let at = 1_100_000 + n as u64 * 10_000;
         elections.saves.ended(*ticket, at / 1000, at, Some(10_000));
     }
     interval(&mut elections, &[], 50);
     let then = elections.load().in_flight;
-    assert!(then > first && then < 64, "{then} let in");
+    assert!(then > 10 && then < 64, "{then} let in");
+}
+
+/// A save under way and the member that is making it are one pending save,
+/// not two.
+#[test]
+fn a_pending_save_is_counted_once() {
+    let mut elections = elections(64);
+    // 20 saves under way at 10 ms each: 200 ms to drain.
+    backed_up(&elections, 30, 10, 1_000_000);
+    let members: Vec<_> = (0..100).map(Member::new).collect();
+    interval(&mut elections, &members, 0);
+    // Members and saves overlap: room for 25 pending, so 26 get in.
+    assert_eq!(elections.load().in_flight, 26);
+}
+
+/// After a quiet spell the first save to end is not a gap of seconds: the
+/// disk's pace is still what it was, and a storm gets its places at once.
+#[test]
+fn a_storm_after_a_quiet_spell_is_not_serialized() {
+    let mut elections = elections(64);
+    backed_up(&elections, 11, 11, 1_000_000);
+    // Five seconds on, a burst begins: the first ends with others under way.
+    let tickets: Vec<_> = (0..4).map(|_| elections.saves.began()).collect();
+    for (n, ticket) in tickets.iter().enumerate() {
+        let at = 6_000_000 + n as u64 * 10_000;
+        elections.saves.ended(*ticket, at / 1000, at, Some(10_000));
+    }
+    assert!(
+        elections.saves.gap.load(Ordering::Relaxed) < 50_000,
+        "gap {}",
+        elections.saves.gap.load(Ordering::Relaxed)
+    );
+    let members: Vec<_> = (0..100).map(Member::new).collect();
+    interval(&mut elections, &members, 6_000);
+    assert!(elections.load().in_flight > 1);
+}
+
+/// A disk that was slow and is not any more has its gap fade while nothing
+/// is queued, so admission reopens.
+#[test]
+fn the_gap_fades_once_the_queue_is_empty() {
+    let mut elections = elections(64);
+    // Overlapped saves a second apart: a very slow disk.
+    let tickets: Vec<_> = (0..4).map(|_| elections.saves.began()).collect();
+    for (n, ticket) in tickets.iter().enumerate() {
+        let at = 1_000_000 + n as u64 * 1_000_000;
+        elections
+            .saves
+            .ended(*ticket, at / 1000, at, Some(1_000_000));
+    }
+    assert!(elections.saves.gap.load(Ordering::Relaxed) > 500_000);
+    for n in 0..30 {
+        elections.settle(50 + n * 50);
+    }
+    assert!(elections.saves.gap.load(Ordering::Relaxed) < 1_000);
 }
 
 /// A member whose own vote is being saved has not lost, even before

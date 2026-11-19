@@ -468,19 +468,34 @@ impl VoteSaves {
         if others == 0 { id } else { NOT_ALONE }
     }
 
-    /// How long the saves under way and `more` yet to come take to drain,
-    /// in microseconds. 0 before the disk's pace is known.
-    fn drain(&self, more: u64) -> u64 {
-        let pending = self.saving.load(Ordering::Relaxed) + more;
+    /// How long the saves queued take to drain, in microseconds, counting
+    /// at least `members` of them: a member let in is about to save, or
+    /// already is and is in `saving`. 0 before the disk's pace is known.
+    fn drain(&self, members: u64) -> u64 {
+        let pending = self.saving.load(Ordering::Relaxed).max(members);
         pending.saturating_mul(self.gap.load(Ordering::Relaxed))
+    }
+
+    /// With no save under way the queue is empty and the last gap says
+    /// nothing about the disk now: let it fade, so a disk that recovered is
+    /// not held to its slow past.
+    fn fade(&self) {
+        if self.saving.load(Ordering::Relaxed) == 0 {
+            let gap = self.gap.load(Ordering::Relaxed);
+            self.gap.store(gap / 2, Ordering::Relaxed);
+        }
     }
 
     /// The save with `ticket` ended at `now` ms, `at` microseconds on the
     /// runtime's clock; it took `took` microseconds.
     fn ended(&self, ticket: u64, now: u64, at: u64, took: Option<u64>) {
         let others = self.saving.fetch_sub(1, Ordering::Relaxed) - 1;
-        let last = self.last_end.swap(at, Ordering::Relaxed);
-        if others > 0 && last > 0 {
+        // Only a save that ended with another under way is followed by a
+        // gap worth timing: after idle time the first end would sample it.
+        let last = self
+            .last_end
+            .swap(if others > 0 { at } else { 0 }, Ordering::Relaxed);
+        if last > 0 {
             let gap = at.saturating_sub(last).max(1);
             let average = match self.gap.load(Ordering::Relaxed) {
                 0 => gap,
@@ -664,6 +679,7 @@ impl<M: Campaigner> Elections<M> {
                 keep
             });
         }
+        self.saves.fade();
         self.follow_the_disk(now, won);
     }
 

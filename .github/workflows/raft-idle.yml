@@ -203,6 +203,7 @@ jobs:
             for groups in 1 100 300 1000 2000 5000; do run RAFT_STORM_GROUPS=$groups; done
             for groups in 300 2000; do run RAFT_STORM_GROUPS=$groups; done
           fi
+          run RAFT_STORM_GROUPS=2000 RAFT_STORM_QUIET_SECS=8
           run RAFT_STORM_GROUPS=2000 RAFT_STORM_MODE=form
           [ "$STORM_ROWS" = pr ] || run RAFT_STORM_GROUPS=1000 RAFT_STORM_IDLE=1
           run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=20

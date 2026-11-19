@@ -1824,9 +1824,11 @@ member back is the same as its timeout coming later.
   saves queued, and nothing cancels them. The broker keeps a moving
   average of the time between two vote saves ending while others were
   still under way, which is what the disk gets through whatever its width.
-  No member is let in while the saves queued plus the members already in
-  flight, times that gap, would take over a quarter of `election_min` to
-  drain. One member is always let in when none is. On a disk held to 100
+  The first save to end after an idle spell is not timed, and the average
+  fades while no save is under way, so a disk that recovered is not held
+  to its slow past. No member is let in while the pending saves, counting
+  each member in flight as at least one, times that gap, would take over a
+  quarter of `election_min` to drain. One member is always let in when none is. On a disk held to 100
   saves a second this stops a queue from outgrowing the timeout, where
   rounds would otherwise lose faster than they finish.
 

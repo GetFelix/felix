@@ -22,6 +22,8 @@
 //!   delay it sets what the disk gets through: 4 at 10 ms is 400 a second.
 //! - `RAFT_STORM_IDLE=1`: wait for every group to go idle before the leader
 //!   is lost. Idle followers wait longer and by a fixed spread.
+//! - `RAFT_STORM_QUIET_SECS`: how long the groups sit idle, with no vote saves, before
+//!   the leader is lost (0).
 //! - `RAFT_STORM_SETTLE_SECS`: how long the groups get (300).
 //!
 //! There is no network in it: a message is a call into the other runtime.
@@ -205,6 +207,10 @@ async fn storm() {
         } else {
             tokio::time::sleep(2 * timers.heartbeat).await;
         }
+        tokio::time::sleep(Duration::from_secs(
+            env("RAFT_STORM_QUIET_SECS").unwrap_or(0),
+        ))
+        .await;
         let base = highest_term(&runtimes, groups);
         felix_storage::fault::set_fsync_delay(fsync);
         net.brokers.lock().remove(BROKERS[0]);
