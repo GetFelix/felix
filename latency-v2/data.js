@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795051503339,
+  "lastUpdate": 1795052067801,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78606,6 +78606,72 @@ window.BENCHMARK_DATA = {
             "range": "655.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 642.00\nmean: 888.40\nstdev: 655.78\ncv: 73.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03e18a3b40500af1e224df4a16c04f1c20116bc4",
+          "message": "fix(storage): a reset or truncation cut short is finished at the next open (#2579) (#2749)\n\n* fix(storage): a reset empties the generation history before it drops the records (#2579)\n\nA non-Raft reset that crashed after the drop reopened without redoing\nthe reset, but with the old epochs file, whose entries claimed offsets\nbelow the new base that the copy never held. The history is now emptied\nbefore the drop, so a crash in between leaves old records with no\nhistory, which only refuses a truncation point.\n\nSpec-Unaffected: disk_log.rs is not a modelled path; the reset's crash\npoint only changes which of two allowed states (no history, or old\nrecords with none) a crash leaves.\n\n* fix(storage): a reset or truncation cut short is finished at the next open (#2579)\n\nEmptying the generation history before a reset's drop left old records\npast commit with no history after a crash before the drop, which turns\noff the uncompared-suffix check. Instead both rewinds store a\nrewind-pending marker before their first step and remove it after\ntheir last, and an open that finds it redoes the rewind before anything\nreads the log. Every crash point now reopens as before the rewind or\nafter it. The truncation case (#2746) is the same mechanism.\n\nFelixRaftBatch models the install's reset as save, crash, finish (#2574).\n\n* fix(storage): every failed rewind step poisons the log; review fixes\n\nThe marker store and the offload forget ran outside the poisoned\nsection, so a reset that failed there left a marker on a writable log\nand a later open could drop records appended after it. Adds crash steps\nafter the offload forget and the history store, guards the model's\nCrash with the crash budget, and tightens the docs.\n\n* docs(formal): cite the batch reset crash tests by name\n\n* ci(tla): fetch the TLA+ jar over HTTPS only\n\ncurl followed redirects to any protocol; pin https and TLS 1.2 so a\nredirect cannot downgrade the download (shell:S6506).\n\nSpec-Unaffected: download script only, no spec change",
+          "timestamp": "2026-11-18T17:17:59-08:00",
+          "tree_id": "15962a8a8cca31d5fdb46fc343af1145715b48ea",
+          "url": "https://github.com/GetFelix/felix/commit/03e18a3b40500af1e224df4a16c04f1c20116bc4"
+        },
+        "date": 1795052056959,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.80\nstdev: 0.45\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 128.80\nstdev: 1.92\ncv: 1.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 174,
+            "range": "4.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 173.20\nstdev: 4.21\ncv: 2.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.20\nstdev: 0.45\ncv: 0.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 265,
+            "range": "12.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 265.00\nmean: 269.60\nstdev: 12.16\ncv: 4.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 932,
+            "range": "1052.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 932.00\nmean: 1253.80\nstdev: 1052.00\ncv: 83.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
