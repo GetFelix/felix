@@ -89,6 +89,19 @@ async fn satisfies_the_raft_target_contract() {
     crate::store::contract::raft_targets::run_raft_target_contract(store).await;
 }
 
+/// The engine is read from the recorded identity, never the config.
+#[tokio::test]
+async fn satisfies_the_raft_native_target_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    store
+        .local()
+        .expect("caught up")
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("raft"))
+        .await;
+    crate::store::contract::raft_targets::run_raft_native_target_contract(store).await;
+}
+
 #[tokio::test]
 async fn satisfies_the_raft_floor_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -4782,6 +4795,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
                 process.registered_at_millis,
                 process.incarnation,
                 2,
+                None,
             )
             .await;
         assert!(
@@ -4797,6 +4811,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
             node_incarnation: process.incarnation,
             copy_id: 2,
             keep_ordered: false,
+            shard_incarnation: None,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
@@ -4823,6 +4838,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
                     process.registered_at_millis,
                     process.incarnation,
                     2,
+                    None,
                 )
                 .await
             {

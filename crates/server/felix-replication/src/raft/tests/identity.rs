@@ -465,7 +465,7 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     let request = RaftRequest {
         group: group(0),
         to: old.clone(),
-        beat: 0,
+        beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: {
@@ -1319,7 +1319,7 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     let request = RaftRequest {
         group: group(0),
         to: old.clone(),
-        beat: 0,
+        beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: {

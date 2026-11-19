@@ -679,6 +679,8 @@ fn committed(result: Result<Option<(u64, u64)>, CommitError>) -> Sent {
     match result {
         Ok(_) => Sent::Written,
         Err(CommitError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),
+        // Refused before it was proposed.
+        Err(CommitError::TooLarge { .. }) => Sent::Refused(Refusal::TooLarge),
         // As on the hybrid: whoever leads now answers a re-send from the
         // log.
         Err(_) => Sent::Unanswered("leadership_lost"),

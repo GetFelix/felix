@@ -3,6 +3,7 @@ import argparse
 import csv
 import datetime as dt
 import json
+import math
 import textwrap
 from pathlib import Path
 
@@ -183,7 +184,7 @@ def chart_group(
             else:
                 values.append(value / scale if scale else value)
                 clipped.append(False)
-        all_values.extend(v for v in values if v == v)  # drop NaN
+        all_values.extend(v for v in values if not math.isnan(v))
         positions = [p + offsets[idx] for p in payload_positions]
         bars = ax.bar(positions, values, width=bar_width * 0.95, label=preset)
 
@@ -205,7 +206,7 @@ def chart_group(
         # Absent configurations get a visible marker at the baseline, so a gap
         # cannot be mistaken for a bar too small to see.
         for position, value in zip(positions, values):
-            if value != value:  # NaN
+            if math.isnan(value):
                 ax.annotate(
                     "no data",
                     (position, 0),

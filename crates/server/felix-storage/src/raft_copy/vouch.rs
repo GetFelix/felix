@@ -51,10 +51,11 @@ pub(crate) struct GroupRecord<B> {
 
 /// One broker's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BrokerReport<B> {
+pub struct BrokerReport<B> {
     /// Whether it leads the current epoch.
     pub(crate) leads: bool,
-    /// The voters its newest membership names.
+    /// The brokers of the newest membership of the record's epoch in its
+    /// copies, both halves of a joint one.
     pub(crate) names: BTreeSet<B>,
     /// Both halves of every membership entry of the record's epoch in every
     /// copy read, uncommitted ones included. `None` when not read.
@@ -115,7 +116,9 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) voters: Vec<Voter<B>>,
     /// Every other broker read.
     pub(crate) learners: Vec<B>,
-    /// Above the base, the floor and every reservation read.
+    /// Above the base, the offset floor, every reservation read, every
+    /// earlier epoch's first index, every record a copy of the incarnation
+    /// holds, and every floor a copy carries.
     pub(crate) first_index: u64,
     /// The highest key of any vote or entry read, and of the floor.
     pub(crate) top: Key,

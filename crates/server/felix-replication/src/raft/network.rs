@@ -36,9 +36,8 @@ use crate::ShardKind;
 pub struct RaftRequest {
     pub(crate) group: GroupId,
     pub(crate) to: MemberId,
-    /// On a leader's append: the longest the leader may now stay silent,
-    /// in milliseconds. Zero on every other message.
-    pub(crate) beat: u64,
+    /// On a leader's append: the gap it names. Zero on every other message.
+    pub(crate) beat: Beat,
     /// On a leader's append that carries entries: what the leader asks of
     /// the follower about telling it, once they are written and before their
     /// fsync. See [`Ask`] for the three values.
@@ -47,6 +46,15 @@ pub struct RaftRequest {
     /// answer it cannot give in time, so a stuck member holds nothing.
     pub(crate) deadline: Duration,
     pub(crate) body: Request,
+}
+
+/// The gap a leader's append names: the longest the leader may now stay
+/// silent, in milliseconds, and the append's send number, which orders it
+/// against the leader's other appends to the same follower.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Beat {
+    pub(crate) gap: u64,
+    pub(crate) seq: u64,
 }
 
 /// What a leader's append asks a follower for: a written report
@@ -327,23 +335,27 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
+        let deadline = super::wire::append_deadline(option.hard_ttl(), &body);
         let request = RaftRequest {
             group,
             to: to.clone(),
-            beat: sent.sent.as_ref().map_or(0, |sent| sent.gap),
+            beat: sent.sent.as_ref().map_or(Beat::default(), |sent| Beat {
+                gap: sent.gap,
+                seq: sent.seq,
+            }),
             report: match &body {
                 Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
                 _ => Ask::Nothing,
             },
-            deadline: option.hard_ttl(),
+            deadline,
             body,
         };
         let sent_at = self.reach.now();
-        let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
+        let answer = tokio::time::timeout(deadline, self.transport.send(request)).await;
         if let Some(sent) = sent.sent.take() {
             match &answer {
                 Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, &sent),
-                _ => self.pace.unanswered(&to, &sent),
+                _ => self.pace.unanswered(&to),
             }
         }
         // Before openraft sees the answer: it adopts the vote and may grant
@@ -383,8 +395,7 @@ impl Router {
 }
 
 /// An append's [`Sent`] until its answer is in. A send dropped before then
-/// counts as unanswered, so it cannot keep its peer's leader at the short
-/// gap for good.
+/// counts as unanswered: the peer may not have taken it.
 struct Pending<'a> {
     pace: &'a Pace,
     to: &'a MemberId,
@@ -393,8 +404,8 @@ struct Pending<'a> {
 
 impl Drop for Pending<'_> {
     fn drop(&mut self) {
-        if let Some(sent) = self.sent.take() {
-            self.pace.unanswered(self.to, &sent);
+        if self.sent.take().is_some() {
+            self.pace.unanswered(self.to);
         }
     }
 }

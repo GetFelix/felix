@@ -371,7 +371,6 @@ impl Connection {
 
         let worker_settings = WorkerSettings {
             publish_queue_depth: client_config.publish_queue_depth.max(1),
-            publish_chunk_bytes: client_config.publish_chunk_bytes,
             publish_inflight_bytes: client_config.publish_inflight_bytes,
             publish_shard_streams: client_config.publish_shard_streams,
         };
@@ -585,7 +584,6 @@ enum Layout {
 #[derive(Clone, Copy)]
 pub(super) struct WorkerSettings {
     pub(super) publish_queue_depth: usize,
-    pub(super) publish_chunk_bytes: usize,
     pub(super) publish_inflight_bytes: usize,
     pub(super) publish_shard_streams: usize,
 }
@@ -695,14 +693,16 @@ pub(super) fn stream_widths(
 /// Open one cache stream as `credentials` and start the worker that owns it.
 pub(super) async fn open_cache_worker(
     node: &NodeConnections,
-    credentials: &Credentials,
+    credentials: &Arc<Credentials>,
     counts: &Arc<Vec<AtomicUsize>>,
     worker_connections: &mut Vec<QuicConnection>,
     max_frame_bytes: usize,
 ) -> Result<CacheWorker> {
+    let opened = node.open_as(credentials).await?;
+    let renewal = opened.renewal(max_frame_bytes);
     let OpenedStream {
         send, recv, lease, ..
-    } = node.open_as(credentials).await?;
+    } = opened;
     let conn_index = lease.slot();
     debug!(conn_index, "client cache stream authenticated");
     note_connection(worker_connections, lease.connection());
@@ -710,7 +710,16 @@ pub(super) async fn open_cache_worker(
     let counts = Arc::clone(counts);
     tokio::spawn(async move {
         let _lease = lease;
-        run_cache_worker_with_limit(conn_index, send, recv, rx, counts, max_frame_bytes).await
+        run_cache_worker_with_limit(
+            conn_index,
+            send,
+            recv,
+            rx,
+            counts,
+            max_frame_bytes,
+            Some(renewal),
+        )
+        .await
     });
     Ok(CacheWorker { tx, conn_index })
 }
@@ -724,14 +733,15 @@ pub(super) fn spawn_publish_worker(
 ) -> PublishWorker {
     let WorkerSettings {
         publish_queue_depth,
-        publish_chunk_bytes,
         ..
     } = settings;
+    let renewal = opened.renewal(runtime_config.max_frame_bytes);
     let OpenedStream {
         send,
         recv,
         negotiated,
         lease,
+        ..
     } = opened;
     let (tx, rx) = mpsc::channel(publish_queue_depth);
     let max_frame_bytes = runtime_config.max_frame_bytes;
@@ -751,10 +761,10 @@ pub(super) fn spawn_publish_worker(
             send,
             recv,
             rx,
-            publish_chunk_bytes,
             max_frame_bytes,
             window,
             answers_on_completion,
+            Some(renewal),
         )
         .await
     });

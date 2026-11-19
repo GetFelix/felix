@@ -60,6 +60,9 @@ pub enum Refusal {
     /// The shard's owner checked the connection's token again on a forwarded
     /// publish and refused it: revoked, expired, or no `stream.publish` there.
     NotAuthorized,
+    /// A record is larger than the shard's replication can carry. Sending
+    /// it again cannot succeed.
+    TooLarge,
 }
 
 /// Why a batch has no acknowledgement.

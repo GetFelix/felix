@@ -123,26 +123,13 @@ async fn a_kept_commit_inside_the_log_stands() {
     assert_eq!((kept.last, kept.committed), (Some(5), Some(3)));
 }
 
-/// The pad reads the kept copies too: a kept reservation above the current
-/// copy's still moves the first free index past it.
+/// A kept copy's log is listed with its copy id, last index and commit.
 #[tokio::test]
-async fn the_first_free_index_is_above_every_reservation_current_or_kept() {
+async fn kept_logs_lists_each_kept_copy() {
     let root = Root::new();
     let dir = root.shard_dir();
     let (_copies, old, new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
-    reserved::store(&kept, 100).expect("reserve");
-    reserved::store(&dir, 40).expect("reserve");
-
-    assert_eq!(first_free_index(&dir, Some(2), None).expect("pad"), 101);
-    assert_eq!(
-        first_free_index(&dir, Some(2), Some(500)).expect("pad"),
-        501
-    );
-    assert_eq!(
-        first_free_index(&dir, Some(200), Some(5)).expect("pad"),
-        201
-    );
 
     let logs = kept_logs(&dir, SPACING).expect("kept");
     assert_eq!(
@@ -155,16 +142,6 @@ async fn the_first_free_index_is_above_every_reservation_current_or_kept() {
         }]
     );
     new.log.close().await.expect("close");
-}
-
-/// A copy that never reserved and an empty base pad from the floor alone.
-#[tokio::test]
-async fn with_no_reservation_the_floor_and_base_decide() {
-    let root = Root::new();
-    let dir = root.shard_dir();
-    std::fs::create_dir_all(&dir).expect("dir");
-    assert_eq!(first_free_index(&dir, None, None).expect("pad"), 0);
-    assert_eq!(first_free_index(&dir, None, Some(7)).expect("pad"), 8);
 }
 
 /// A purge only reaches committed entries, so a kept copy that purged
@@ -228,19 +205,6 @@ async fn an_unreadable_kept_directory_fails_kept_logs() {
 
     assert!(kept_logs(&dir, SPACING).is_err());
     new.log.close().await.expect("close");
-}
-
-/// A reservation that does not decode cannot be padded around, so the
-/// first free index is an error, never a guess.
-#[tokio::test]
-async fn a_damaged_reservation_fails_the_first_free_index() {
-    let root = Root::new();
-    let dir = root.shard_dir();
-    std::fs::create_dir_all(&dir).expect("dir");
-    reserved::store(&dir, 10).expect("reserve");
-    std::fs::write(dir.join("raft-reserved"), b"garbage").expect("damage");
-
-    assert!(first_free_index(&dir, Some(2), None).is_err());
 }
 
 /// A rotation writes why into the kept directory, and the survey reads the
