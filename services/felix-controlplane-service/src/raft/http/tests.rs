@@ -70,6 +70,8 @@ async fn every_peer_route_is_served_under_this_stores_prefix_only() {
         PeerSecurity {
             cluster_id: "test-cluster".to_string(),
             token: Some(TOKEN.to_string()),
+            previous_token: None,
+            next_token: None,
             tls: None,
         },
     );
@@ -98,6 +100,8 @@ async fn a_request_for_another_member_reaches_no_route() {
     let security = PeerSecurity {
         cluster_id: "test-cluster".to_string(),
         token: Some(TOKEN.to_string()),
+        previous_token: None,
+        next_token: None,
         tls: None,
     };
     let handle = RaftHandle::start(

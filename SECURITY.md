@@ -201,7 +201,9 @@ Until the gaps above close, these are the deployment-side controls that matter m
   RBAC policy. Under the Raft backend the members' volumes are that database,
   and `FELIX_RAFT_PEER_TOKEN` can replace it wholesale: keep the token in a
   Secret, and the Raft peer port (`FELIX_RAFT_BIND_ADDR`) reachable from the
-  other members only.
+  other members only. Rotate it with `FELIX_RAFT_PEER_TOKEN_NEXT` and
+  `FELIX_RAFT_PEER_TOKEN_PREVIOUS`, following the runbook on the security
+  page, with no outage.
 
 ## Non-security bugs
 

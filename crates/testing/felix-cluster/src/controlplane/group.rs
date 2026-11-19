@@ -220,6 +220,8 @@ impl Group {
             security: PeerSecurity {
                 cluster_id: "felix-cluster-metadata".to_string(),
                 token: Some("0123456789abcdef0123456789abcdef".to_string()),
+                previous_token: None,
+                next_token: None,
                 tls: None,
             },
             links,

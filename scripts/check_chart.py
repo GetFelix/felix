@@ -233,6 +233,10 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
         token = env.get("FELIX_RAFT_PEER_TOKEN", {})
         if "secretKeyRef" not in token.get("valueFrom", {}):
             fail(f"{label}: the Raft peer token is not a Secret reference")
+        for name in ("FELIX_RAFT_PEER_TOKEN_NEXT", "FELIX_RAFT_PEER_TOKEN_PREVIOUS"):
+            ref = env.get(name, {}).get("valueFrom", {}).get("secretKeyRef", {})
+            if not ref.get("optional") or ref.get("name") != token["valueFrom"]["secretKeyRef"]["name"]:
+                fail(f"{label}: {name} is not an optional key of the peer token Secret")
         if not env.get("FELIX_RAFT_CLUSTER_ID", {}).get("value"):
             fail(f"{label}: no Raft cluster id")
         # Empty members may form a group only until the bootstrap hook has
