@@ -60,7 +60,7 @@
 (*                         committed.                                      *)
 (*   WholeBatchesOnly   -- every record a reader can see belongs to a      *)
 (*                         batch whose every piece the member holds        *)
-(*                         committed and kept.                             *)
+(*                         committed and kept, and a reader sees them all. *)
 (*   ReadsStable        -- (property) a member's read bound never falls,   *)
 (*                         and what a reader sees below it never changes.  *)
 (*                                                                         *)
@@ -71,9 +71,13 @@
 (*                           length plus the queue ahead, plus one), and   *)
 (*                           followers copy the decision. A membership     *)
 (*                           entry appended in between moves the publish   *)
-(*                           one index on, and it is kept there.           *)
+(*                           one index on, and it is kept there. It is     *)
+(*                           checked with one-record publishes only: it    *)
+(*                           decides a batch from its first piece's guess. *)
 (*                                                                         *)
 (*   Hide = "whole" -- the read rule above.                                *)
+(*   Hide = "kept"  -- the rule, but the entry at the last index need only *)
+(*                     be a kept piece, of any position and length.        *)
 (*   Hide = "bound" -- the read bound stops before an unfinished batch,    *)
 (*                     but a kept piece below it is a record whether or    *)
 (*                     not its batch's last piece is there.                *)
@@ -111,7 +115,7 @@ ASSUME
     /\ DOMAIN CondLen = DOMAIN Expected
     /\ \A c \in DOMAIN CondLen : CondLen[c] \in Nat \ {0}
     /\ LeaderDecides \in BOOLEAN
-    /\ Hide \in {"whole", "bound", "none"}
+    /\ Hide \in {"whole", "kept", "bound", "none"}
     /\ Nobody \notin Servers
 
 VARIABLES
@@ -409,8 +413,9 @@ Finished(s, k) ==
         /\ j <= commit[s]
         /\ log[s][j].kind = "cond"
         /\ log[s][j].kept
-        /\ log[s][j].len = log[s][k].len
-        /\ log[s][j].pos = log[s][j].len - 1
+        /\ \/ Hide = "kept"
+           \/ /\ log[s][j].len = log[s][k].len
+              /\ log[s][j].pos = log[s][j].len - 1
 
 \* Committed kept pieces whose batch may still commit whole or be cut.
 Unfinished(s) == {k \in 1..commit[s] : KeptCond(s, k) /\ LastAt(s, k) > commit[s]}
@@ -423,7 +428,7 @@ ReadBound(s) ==
 \* piece; anything else it skips).
 Visible(s, k) ==
     /\ k \in 1..ReadBound(s)
-    /\ (Hide = "whole" /\ KeptCond(s, k)) => Finished(s, k)
+    /\ (Hide \in {"whole", "kept"} /\ KeptCond(s, k)) => Finished(s, k)
 
 WholeBatchesOnly ==
     \A s \in Servers : \A k \in 1..commit[s] :
@@ -434,6 +439,7 @@ WholeBatchesOnly ==
                     /\ log[s][Expected[c] + p].kind = "cond"
                     /\ log[s][Expected[c] + p].id = c
                     /\ log[s][Expected[c] + p].kept
+                    /\ Visible(s, Expected[c] + p)
 
 ReadsStable ==
     [][\A s \in Servers :
@@ -466,5 +472,9 @@ OneEach == <<1, 1, 1>>
 \* Batches: the first client's three records name offsets 2..4, a single
 \* record names 2, and two records name 3..4.
 BatchLens == <<3, 1, 2>>
+\* A batch of three naming 2..4 and one record naming 4: a cut of the batch
+\* leaves a kept record at the batch's last index.
+CutThenRecord == <<2, 4>>
+CutThenRecordLens == <<3, 1>>
 
 =============================================================================

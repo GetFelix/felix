@@ -657,6 +657,7 @@ expectations=(
   "FelixRaftCondBatch pass"
   "FelixRaftCondBatchNoHide violates WholeBatchesOnly"
   "FelixRaftCondBatchBoundOnly violates WholeBatchesOnly"
+  "FelixRaftCondBatchAnyLast violates WholeBatchesOnly"
   "FelixRaftCondBatchReachCut violates NeverCutCommitted"
   "FelixRaftCondBatchReachRead violates NeverReadsBatch"
   "FelixRaftIdempotent pass"

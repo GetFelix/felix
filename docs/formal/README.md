@@ -726,10 +726,11 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
 | `FelixRaftCondLeaderDecidesNoMembers.cfg` | the same with no membership entry | pass the same as `FelixRaftCond.cfg` (101,575,424 distinct states, depth 36, 23 minutes with 8 workers on a 32-core machine): the membership entry is what breaks the guess |
 | `FelixRaftCondReachAnswers.cfg` | witness, one term: one conditional publish is answered "ok" and another "mismatch" | violate `NeverOkAndMismatch` |
-| `FelixRaftCondBatch.cfg` | conditional batches: two terms, one membership entry, a batch of three naming offsets 2..4, one record naming 2, a batch of two naming 3..4; readers skip a cut batch and the read bound stops before an unfinished one | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold`, `WholeBatchesOnly`, `ReadsStable` (first measured by dispatch) |
+| `FelixRaftCondBatch.cfg` | conditional batches: two terms, one membership entry, a batch of three naming offsets 2..4, one record naming 2, a batch of two naming 3..4; readers skip a cut batch and the read bound stops before an unfinished one | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold`, `WholeBatchesOnly`, `ReadsStable` (weight a guess until the first dispatch measures it) |
 | `FelixRaftCondBatchThreeTerms.cfg` | the same with three terms | pass the same. Not registered, run by dispatch |
 | `FelixRaftCondBatchNoHide.cfg` | readers see every committed kept piece | violate `WholeBatchesOnly`: a reader sees the first piece of a batch whose last piece is not committed |
 | `FelixRaftCondBatchBoundOnly.cfg` | the read bound stops before an unfinished batch, but nothing skips a cut one | violate `WholeBatchesOnly`: a change of leader commits a cut batch and its blank, the bound passes it, and readers see the cut |
+| `FelixRaftCondBatchAnyLast.cfg` | the skip checks only that the entry at a cut piece's last index is kept, not that it is a last piece of the same length; a batch of three naming 2..4 and one record naming 4 | violate `WholeBatchesOnly`: the batch is cut after its first piece, the record is kept at 4, and readers see the cut piece |
 | `FelixRaftCondBatchReachCut.cfg` | witness: a change of leader commits a strict prefix of a batch | violate `NeverCutCommitted` |
 | `FelixRaftCondBatchReachRead.cfg` | witness: a reader sees a record of a batch of more than one | violate `NeverReadsBatch` |
 | `FelixRaftIdempotent.cfg` | `FelixRaftIdempotent.tla`: three members, three terms, logs up to five entries, one producer with two batches of one or two records, the second started once the first is written, either re-sent to any leader at any time; the leader places a send by the producer table read from its whole log. New two-record batches are modelled ahead of the engine, which refuses them today | pass `NoDuplicate`, `AckedWhole`, `InOrder`, `MembersAgree` |
@@ -4774,7 +4775,8 @@ A reader on a member decides from that member's log alone:
 What it adds:
 
 - `WholeBatchesOnly`: every record a reader can see belongs to a batch whose
-  every piece the member holds committed and kept.
+  every piece the member holds committed and kept, and the reader sees every
+  piece.
 - `ReadsStable` (a property): a member's read bound never falls, and what a
   reader sees below it never changes.
 - `AnswersHold` now covers every piece: a batch answered "ok" is kept at
@@ -4786,13 +4788,17 @@ What it adds:
 piece and violates `WholeBatchesOnly` (`FelixRaftCondBatchNoHide.cfg`).
 `"bound"` keeps the bound but drops the skip, and violates it too
 (`FelixRaftCondBatchBoundOnly.cfg`): once the cut and the blank after it
-commit, the bound passes the cut. Two witnesses show the pass is not vacuous:
+commit, the bound passes the cut. `"kept"` checks only that the entry at the
+last index is a kept piece and violates it as well
+(`FelixRaftCondBatchAnyLast.cfg`): a record of another publish can be kept
+there, which is why the check compares position and length. Two witnesses show the pass is not vacuous:
 a cut batch does commit (`FelixRaftCondBatchReachCut.cfg`), and a whole batch
 is read (`FelixRaftCondBatchReachRead.cfg`).
 
 The single-record configurations set every batch length to one, which is the
 model as it was. Not modelled: a member that predates the rule and would
-deliver a cut prefix. The code keeps such a member out with a fleet gate.
+deliver a cut prefix. The design keeps such a member out with a fleet gate.
+`LeaderDecides` is checked with one-record publishes only.
 
 ## How CI checks the models
 
