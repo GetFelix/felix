@@ -1804,15 +1804,18 @@ member back is the same as its timeout coming later.
   requests go out once the save ends. One that lost has its timer turned
   off and waits again at the back of the queue, behind idle groups too.
   Its last round can still win.
-- The limit follows the disk. The broker keeps a moving average of the
-  vote saves that had the disk to themselves, with no other vote save
-  under way. A save more than four times slower than that (and over a
-  twentieth of `election_min`) cuts the limit to what the disk would have
-  saved in that time. Before any save was alone, a quarter of
-  `election_min` is the mark. A disk that is slow for every save, queued
-  or not, does not cut the limit, since waiting would not help. The limit
-  never falls below 8 (or the bound, if lower), and every tick without a
-  slow save gives one place back, elections ending or not.
+- The limit follows the disk while elections here are losing, that is,
+  while at least as many lost as won lately (counts halved every
+  `election_max`). The broker keeps a moving average of the vote saves
+  that had the disk to themselves, with no other vote save under way. A
+  save more than four times slower than that (and over a twentieth of
+  `election_min`) cuts the limit to what the disk would have saved in
+  that time. Before any save was alone, a quarter of `election_min` is
+  the mark. Slow saves while elections win cut nothing: every group still
+  takes one round, so a slow disk is not one the elections overload, and
+  queueing would only add to each wait. The limit never falls below 8 (or
+  the bound, if lower). A tick that does not cut it gives back one place
+  for each election that won in it, and at least one.
 
 A group that loses its leader alone is never held back: a place is free.
 Groups that cannot win, for example because two of their three brokers are
@@ -1825,14 +1828,17 @@ after the member stands, or `election_max` if it never stands. That is the
 worst case, with the limit pinned at the floor of 8 and every round lost:
 about 90 rounds for 700 groups whose leader's broker crashed. Usually the
 first member of a group to stand wins, and the limit climbs back by one a
-tick while vote saves are fast.
+tick, or by the elections that won, once it is not cut.
 
 `GroupRuntime::election_load` and the gauges
 `felix_broker_raft_elections_in_flight` and
 `felix_broker_raft_elections_waiting` show the bound at work.
 
-Not bounded: a leadership transfer's target stands at once, and a former
-leader keeps the timer it had.
+Not bounded: a leadership transfer's target stands at once, without its
+timer, and a leader's timer is on as it was without the bound. openraft
+starts a leader's election only when its transfer is not taken in time,
+and the old leader must not wait for a place to lead again (the queue
+only takes followers and candidates).
 
 The runtime's test forms 40 groups at once on three brokers and has each
 take a write: on Linux every group is led within 2 s. On macOS it still

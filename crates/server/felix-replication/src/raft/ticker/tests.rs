@@ -172,6 +172,11 @@ fn a_member_that_never_stands_gives_its_place_back() {
     assert!(!a.armed() && b.armed());
 }
 
+/// Elections here have been losing lately, so slow saves count.
+fn losing(elections: &mut Elections<Member>) {
+    elections.outcomes.lost = 1_000;
+}
+
 /// A vote save of `took` ms ended at `now`, alone on the disk or not.
 fn saved(elections: &Elections<Member>, now: u64, took: u64, alone: bool) {
     let ticket = elections.saves.began();
@@ -186,6 +191,7 @@ fn saved(elections: &Elections<Member>, now: u64, took: u64, alone: bool) {
 #[test]
 fn a_slow_vote_save_lowers_the_limit() {
     let mut elections = elections(64);
+    losing(&mut elections);
     saved(&elections, 1000, 10, false);
     elections.settle(1000);
     assert_eq!(elections.limit, 64);
@@ -212,6 +218,7 @@ fn a_slow_vote_save_lowers_the_limit() {
 #[test]
 fn the_limit_recovers_without_elections() {
     let mut elections = elections(64);
+    losing(&mut elections);
     saved(&elections, 1000, 10_000, false);
     elections.settle(1000);
     assert_eq!(elections.limit, FLOOR);
@@ -229,6 +236,7 @@ fn the_limit_recovers_without_elections() {
 #[test]
 fn a_bound_under_the_floor_is_not_lowered() {
     let mut small = elections(3);
+    losing(&mut small);
     saved(&small, 1000, 10_000, false);
     small.settle(1000);
     assert_eq!(small.limit, 3);
@@ -240,6 +248,7 @@ fn a_bound_under_the_floor_is_not_lowered() {
 #[test]
 fn a_uniformly_slow_disk_does_not_pin_the_limit() {
     let mut elections = elections(64);
+    losing(&mut elections);
     saved(&elections, 1000, 100, true);
     elections.settle(1000);
     for n in 1..=40 {
@@ -258,6 +267,7 @@ fn a_uniformly_slow_disk_does_not_pin_the_limit() {
 #[test]
 fn a_burst_of_slow_saves_lowers_the_limit_and_it_comes_back() {
     let mut elections = elections(64);
+    losing(&mut elections);
     saved(&elections, 1000, 5, true);
     elections.settle(1000);
     saved(&elections, 1050, 200, false);
@@ -313,4 +323,49 @@ fn members_of_busy_groups_go_first() {
     first.settled.store(true, Ordering::Relaxed);
     interval(&mut elections, &[], 100);
     assert!(busy.armed() && !idle.armed() && !other.armed());
+}
+
+/// Saves two hundred times slower than the disk alone, while every
+/// election let in wins its first round: a slow disk, not one the
+/// elections overload. The limit stays at the bound and the queue drains
+/// at its pace.
+#[test]
+fn slow_saves_while_elections_win_cut_nothing() {
+    let mut elections = elections(64);
+    saved(&elections, 0, 1, true);
+    let members: Vec<_> = (0..200).map(Member::new).collect();
+    interval(&mut elections, &members, 0);
+    for n in 1..=4 {
+        let now = n * 50;
+        for member in members.iter().filter(|member| member.armed()) {
+            member.stand(2);
+            member.settled.store(true, Ordering::Relaxed);
+        }
+        saved(&elections, now, 200, false);
+        interval(&mut elections, &[], now);
+        assert_eq!(elections.limit, 64, "interval {n}");
+    }
+    assert_eq!(elections.load().waiting, 0);
+}
+
+/// Once elections win again, each one that won gives a place back, so a
+/// limit cut during a storm comes back within a few intervals.
+#[test]
+fn the_limit_grows_by_the_elections_that_won() {
+    let mut elections = elections(64);
+    losing(&mut elections);
+    saved(&elections, 0, 1, true);
+    saved(&elections, 50, 1000, false);
+    elections.settle(50);
+    assert_eq!(elections.limit, FLOOR);
+    elections.outcomes = Outcomes::default();
+    let members: Vec<_> = (0..20).map(Member::new).collect();
+    interval(&mut elections, &members, 100);
+    let let_in = elections.limit;
+    assert_eq!(let_in, FLOOR + 1, "one place back with nothing won");
+    for member in members.iter().filter(|member| member.armed()) {
+        member.settled.store(true, Ordering::Relaxed);
+    }
+    interval(&mut elections, &[], 150);
+    assert_eq!(elections.limit, let_in * 2);
 }

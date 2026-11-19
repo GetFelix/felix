@@ -347,10 +347,13 @@ const SLOWER: u64 = 4;
 /// One that lost has its timer turned off and waits again at the back.
 ///
 /// `limit` starts at [`super::RuntimeConfig::max_elections_at_once`] and
-/// follows this broker's vote saves. A save over [`SLOWER`] times what one
-/// takes with the disk to itself cuts it to what the disk would have saved
-/// in time, never below [`FLOOR`]. Every interval without a slow save gives
-/// one place back.
+/// follows this broker's vote saves while its elections are losing (at
+/// least as many lost as won lately). Then a save over [`SLOWER`] times
+/// what one takes with the disk to itself cuts it to what the disk would
+/// have saved in time, never below [`FLOOR`]. Slow saves while elections
+/// win are a slow disk, not one the elections overload, and cut nothing.
+/// An interval with no cut gives back a place for each election that won
+/// in it, and at least one.
 pub(super) struct Elections<M: Campaigner = Group> {
     most: usize,
     floor: usize,
@@ -372,6 +375,7 @@ pub(super) struct Elections<M: Campaigner = Group> {
     round: u64,
     saves: Arc<VoteSaves>,
     lowered: Lowered,
+    outcomes: Outcomes,
     peak: usize,
     reported: ElectionLoad,
 }
@@ -389,6 +393,30 @@ struct Held<M> {
     stood: Option<u64>,
     /// Every request of its round was answered when last looked at.
     answered: bool,
+}
+
+/// Elections here that won and lost lately, halved every `election_max`.
+#[derive(Default)]
+struct Outcomes {
+    won: u64,
+    lost: u64,
+    since: u64,
+}
+
+impl Outcomes {
+    fn add(&mut self, now: u64, window: u64, won: u64, lost: u64) {
+        if now >= self.since + window {
+            self.won /= 2;
+            self.lost /= 2;
+            self.since = now;
+        }
+        self.won += won;
+        self.lost += lost;
+    }
+
+    fn losing(&self) -> bool {
+        self.lost > 0 && self.lost >= self.won
+    }
 }
 
 /// The last time `limit` was lowered.
@@ -489,6 +517,7 @@ impl<M: Campaigner> Elections<M> {
             round: timers.election_min,
             saves,
             lowered: Lowered::default(),
+            outcomes: Outcomes::default(),
             peak: 0,
             reported: ElectionLoad::default(),
         }
@@ -542,11 +571,13 @@ impl<M: Campaigner> Elections<M> {
     /// members that heard a leader, and move `limit`.
     fn settle(&mut self, now: u64) {
         let mut lost = Vec::new();
+        let mut won = 0;
         let (stand, round) = (self.stand, self.round);
         let known = &mut self.known;
         self.held.retain_mut(|held| {
             if held.member.settled() {
                 known.remove(&address(&held.member));
+                won += 1;
                 return false;
             }
             let (asks, out) = held.member.asks();
@@ -566,6 +597,8 @@ impl<M: Campaigner> Elections<M> {
             }
             !over
         });
+        self.outcomes
+            .add(now, self.stand, won as u64, lost.len() as u64);
         for member in lost {
             // Its round may still be won: openraft takes the answers
             // either way. It just does not start another before its turn.
@@ -583,11 +616,12 @@ impl<M: Campaigner> Elections<M> {
                 keep
             });
         }
-        self.follow_the_disk(now);
+        self.follow_the_disk(now, won);
     }
 
-    /// Cut `limit` on a slow vote save, or give a place back.
-    fn follow_the_disk(&mut self, now: u64) {
+    /// Cut `limit` on a slow vote save while elections lose, or give
+    /// places back.
+    fn follow_the_disk(&mut self, now: u64, won: usize) {
         let slow = match self.saves.alone.load(Ordering::Relaxed) {
             0 => self.slow_at_first,
             alone => (alone * SLOWER).max(self.never_slow),
@@ -597,14 +631,15 @@ impl<M: Campaigner> Elections<M> {
         let fits = |from: usize, took: u64| ((from as u64 * slow / took) as usize).max(floor);
         let slowest = self.saves.slowest.swap(0, Ordering::Relaxed);
         let before = self.saves.slowest_before.swap(0, Ordering::Relaxed);
-        if slowest > slow {
+        let losing = self.outcomes.losing();
+        if losing && slowest > slow {
             self.lowered = Lowered {
                 from: self.limit,
                 took: slowest,
             };
             self.limit = self.limit.min(fits(self.limit, slowest));
             self.saves.since.store(now, Ordering::Relaxed);
-        } else if before > slow {
+        } else if losing && before > slow {
             // Queued under the limit as it was. Slower than the save it was
             // lowered for, that limit was further off than it looked.
             if before > self.lowered.took {
@@ -612,7 +647,7 @@ impl<M: Campaigner> Elections<M> {
                 self.limit = self.limit.min(fits(self.lowered.from, before));
             }
         } else {
-            self.limit = (self.limit + 1).min(self.most);
+            self.limit = (self.limit + won.max(1)).min(self.most);
         }
     }
 

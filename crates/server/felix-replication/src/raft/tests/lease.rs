@@ -480,6 +480,33 @@ async fn a_transfer_that_expires_leaves_the_old_term_void() {
     led.cluster.stop().await;
 }
 
+/// **The election after a transfer nobody takes does not wait for a place
+/// under the election bound.** openraft starts it only with the leader's
+/// election timer on, and the bound only queues followers and candidates.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_whose_transfer_expires_stands_outside_the_bound() {
+    let mut led = Led::leased().await;
+    assert!(timers().max_elections_at_once > 0);
+    led.cluster.net.lose_transfers.store(true, Relaxed);
+    led.cluster.net.muted.lock().extend(led.followers());
+    let target = MemberId::new(led.followers().next().expect("a follower"), 1);
+    assert_eq!(led.engine.transfer(&shard(0), target).await, Some(led.term));
+    let member = led.member();
+    soon("a leader's election timer stayed off", || {
+        member.leads() && member.elections_on()
+    })
+    .await;
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    assert_eq!(runtime.election_load().in_flight, 0, "it took a place");
+    soon("it did not stand again", || {
+        let status = led.status();
+        status.role == Role::Leader && status.term > led.term
+    })
+    .await;
+    led.heal();
+    led.cluster.stop().await;
+}
+
 /// **A jump of boottime over the monotonic clock refuses for one lease.**
 /// A smaller one is added to the lease's age.
 #[test]

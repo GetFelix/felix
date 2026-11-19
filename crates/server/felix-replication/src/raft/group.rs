@@ -997,8 +997,11 @@ impl Group {
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
-        // Under the election bound the ticker turns the timer on instead.
-        if self.pace.timers.max_elections_at_once == 0 {
+        // Under the election bound the ticker turns a voter's timer on
+        // instead. A leader's only election is the one openraft starts when
+        // its transfer is not taken, and that one must not wait for a place
+        // (`ticker::Elections` only queues followers and candidates).
+        if self.pace.timers.max_elections_at_once == 0 || self.leads() {
             self.allow_elections();
         }
         let mut dropped = Dropped(Some(&self.dropped_ticks));
