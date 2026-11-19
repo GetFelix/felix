@@ -228,26 +228,36 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
 
 /// A key and one header naming `trace`.
 /// **A shard that started on Raft gets its target from its brokers' copy
-/// ids.** Each broker reports the copy its member votes under once the copy
-/// is synced, and the control plane writes the target only when every
-/// broker in the set has. The group keeps serving under it.
+/// ids, and its group forms only on that target.** Each broker reports the
+/// copy its member votes under once the copy is synced, and the control
+/// plane writes the target only when every broker in the set has. No broker
+/// leads the group before the target is stored, and the group serves under
+/// it.
 #[tokio::test]
 #[serial]
-async fn a_shard_started_on_raft_gets_a_target_from_its_copies() {
+async fn a_shard_started_on_raft_forms_its_group_on_the_target_from_its_copies() {
     if !opted_in() {
         return;
     }
-    let cluster = Cluster::start(ClusterConfig {
-        control_plane_engine: Some("raft".to_string()),
-        ..raft_cluster()
-    })
-    .await
-    .expect("start cluster");
+    let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
     let mut nodes = cluster.node_ids();
     nodes.sort();
     let target =
         felix_cluster::wait::until_some(ELECTED_WITHIN, "the shard's Raft target", || async {
-            cluster.raft_target(STREAM, 0).await.ok().flatten()
+            // Leaders read before the target: a leader seen while the target
+            // still reads as absent led a group formed without one.
+            let mut leading = Vec::new();
+            for node in &nodes {
+                if metric(&cluster, node, "felix_broker_raft_shards_led").await >= 1.0 {
+                    leading.push(node.clone());
+                }
+            }
+            let target = cluster.raft_target(STREAM, 0).await.ok().flatten();
+            assert!(
+                target.is_some() || leading.is_empty(),
+                "{leading:?} led the shard's group before the control plane stored a target"
+            );
+            target
         })
         .await
         .expect("a target");
@@ -719,6 +729,14 @@ async fn a_short_placement_acknowledges_nothing() {
         acked, 0,
         "one broker of three acknowledged records on its own"
     );
+    // The control plane stores no target for a short set, so the broker
+    // forms no group to lead.
+    assert_eq!(cluster.raft_target(STREAM, 0).await.expect("record"), None);
+    assert_eq!(
+        metric(&cluster, &only, "felix_broker_raft_shards_led").await,
+        0.0,
+        "a group formed with no stored target"
+    );
 }
 
 /// **Until the fleet finalizes `raft_consumer_groups`, a group on a Raft
@@ -1047,17 +1065,16 @@ async fn metric(cluster: &Cluster, node: &str, series: &str) -> f64 {
         .sum()
 }
 
-/// **Brokers on different engines refuse the shard they share, on both
-/// sides.** One of three Raft brokers comes back on the hybrid engine with
-/// an empty disk, as a replaced broker would. (On its old disk it would not
-/// start: the Raft member's log there refuses the hybrid.) The two Raft
-/// brokers stop serving the shard instead of running the group without it,
-/// and the hybrid broker never appends to a log of its own, whatever is
-/// published through it while the brokers find out. Every broker says why,
-/// and counts the refusal.
+/// **A broker on another engine is refused at start.** One of three Raft
+/// brokers comes back on the hybrid engine with an empty disk, as a
+/// replaced broker would. The control plane's identity names Raft, so the
+/// broker exits before it opens anything and says why, and the Raft pair
+/// keeps serving the shard. (Brokers that got past that check, under a
+/// control plane with no identity route, refuse each other instead:
+/// `shards/engine_match.rs`.)
 #[tokio::test]
 #[serial]
-async fn brokers_on_different_engines_refuse_their_shared_shard() {
+async fn a_broker_on_another_engine_is_refused_at_start() {
     if !opted_in() {
         return;
     }
@@ -1074,46 +1091,26 @@ async fn brokers_on_different_engines_refuse_their_shared_shard() {
         .wait_for_exit(&hybrid, ELECTED_WITHIN)
         .await
         .expect("exit");
-    let storage = cluster.node(&hybrid).expect("node").storage_dir();
-    std::fs::remove_dir_all(&storage).expect("empty the disk");
-    cluster.restart_node(&hybrid).await.expect("restart");
-
-    for node in &nodes {
-        // Asked for while the brokers still learn each other's engine. An
-        // acknowledgement here is the Raft pair's, reached by forwarding.
-        let _ = cluster
-            .publish_via_at(&hybrid, STREAM, b"meanwhile".to_vec())
-            .await;
-        let node = node.clone();
-        let cluster = &cluster;
-        felix_cluster::wait::until(
-            ELECTED_WITHIN,
-            &format!("{node} to refuse the shard"),
-            || {
-                let node = node.clone();
-                async move {
-                    metric(cluster, &node, "felix_broker_shard_engine_refused_total{").await >= 1.0
-                }
-            },
-        )
+    let node = cluster.node(&hybrid).expect("node");
+    std::fs::remove_dir_all(node.storage_dir()).expect("empty the disk");
+    let log = node.data_dir.join("broker.log");
+    cluster
+        .restart_node(&hybrid)
         .await
-        .expect("refused");
-    }
-    for node in &nodes {
-        let err = cluster
-            .publish_via_at(node, STREAM, b"disagreed".to_vec())
-            .await
-            .expect_err("a publish to a shard on two engines was acknowledged");
-        assert!(
-            format!("{err:#}").contains("different shard engines"),
-            "{node} does not say why: {err:#}"
-        );
-    }
-    assert_eq!(
-        metric(&cluster, &hybrid, "felix_storage_append_records_total").await,
-        0.0,
-        "the hybrid broker appended to a log of its own"
+        .expect_err("a hybrid broker started under a Raft control plane");
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        said.contains("runs shard engine hybrid but the cluster was formed with raft"),
+        "the refused broker does not say why: {said}"
     );
+
+    let pair: Vec<String> = nodes.into_iter().filter(|node| *node != hybrid).collect();
+    publish_acked(
+        &cluster,
+        &leader_among(&cluster, &pair).await,
+        b"still served",
+    )
+    .await;
 }
 
 /// Publish latency on three brokers, one publisher, one record at a time:

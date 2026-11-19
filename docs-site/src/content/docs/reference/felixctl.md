@@ -65,6 +65,8 @@ These flags apply to every command. Each connection flag overrides the environme
 | `--client-cert-file` | `<PATH>` | - | PEM client certificate chain to present to brokers [env: FELIX_CLIENT_CERT_FILE] |
 | `--client-key-file` | `<PATH>` | - | PEM private key for --client-cert-file [env: FELIX_CLIENT_KEY_FILE] |
 | `--controlplane-ca-file` | `<PATH>` | - | PEM bundle an https control plane is checked against [env: FELIX_CONTROLPLANE_CA] [default: the platform trust store] |
+| `--controlplane-client-cert-file` | `<PATH>` | - | PEM client certificate chain to present to the control plane [env: FELIX_CONTROLPLANE_CLIENT_CERT] |
+| `--controlplane-client-key-file` | `<PATH>` | - | PEM private key for --controlplane-client-cert-file [env: FELIX_CONTROLPLANE_CLIENT_KEY] |
 | `--server-name` | `<NAME>` | - | TLS server name sent to brokers [env: FELIX_SERVER_NAME] [default: the first broker's host name, or localhost for an IP address] |
 | `--alpn` | - | - | Offer the felix/1 ALPN, which a broker with FELIX_TLS_REQUIRE_ALPN needs. Brokers from before ALPN support refuse it |
 

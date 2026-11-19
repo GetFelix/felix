@@ -76,7 +76,7 @@ async fn a_publish_if_to_a_raft_shard_is_written_only_at_its_offset() -> Result<
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));
@@ -164,7 +164,7 @@ async fn a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));
@@ -290,7 +290,7 @@ async fn a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<()> {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let gate = Arc::new(FleetGate::new([
         ATOMIC_COMMIT.name(),
@@ -387,7 +387,7 @@ async fn a_state_read_on_raft_waits_for_the_view_to_reach_the_read_index() -> Re
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let gate = Arc::new(FleetGate::new([
         ATOMIC_COMMIT.name(),

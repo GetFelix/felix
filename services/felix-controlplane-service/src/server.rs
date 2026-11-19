@@ -48,7 +48,9 @@ where
     // It is created before the state so the state can hold it. The *tokens*
     // below stay separate because the metrics endpoint has to outlive the API
     // drain — that is how an operator watches the drain happen.
-    let readiness = Readiness::ready();
+    // Starts not ready: the metrics endpoint is up before the API listener,
+    // and must not report ready until the API can take requests.
+    let readiness = Readiness::starting();
     let api_shutdown = CancellationToken::new();
     // Under Raft the peer listener is already serving: it is bound before
     // the member's node starts, so a bad address fails startup here.
@@ -73,7 +75,7 @@ where
         tokio::spawn(observability::serve_metrics(
             metrics_handle,
             config.metrics_bind,
-            readiness.clone(),
+            Arc::clone(&state.readiness),
             async move { metrics_shutdown.cancelled().await },
         ))
     };
@@ -110,6 +112,9 @@ where
     let mut app = build_router(state.clone());
     if let Some(ui) = api_ui_router(config.api_ui, &config.api_ui_path) {
         app = app.merge(ui);
+    }
+    if config.api_tls.as_ref().is_some_and(|tls| tls.bind_subject) {
+        app = crate::auth::cert_binding::bind_subjects(app);
     }
 
     let bootstrap_task = if config.bootstrap.enabled {
@@ -172,7 +177,8 @@ where
     let api_tls = match &config.api_tls {
         Some(paths) => {
             let identity = tls::load_api_identity(paths)?;
-            let server_config = tls::api_server_config(Arc::clone(&identity))?;
+            let client_roots = tls::load_api_client_roots(paths)?;
+            let server_config = tls::api_server_config(Arc::clone(&identity), client_roots)?;
             let reload_shutdown = api_shutdown.clone();
             drop(tokio::spawn(async move {
                 tokio::select! {
@@ -187,7 +193,17 @@ where
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let addr = listener.local_addr().unwrap_or(config.bind_addr);
-    tracing::info!(%addr, tls = api_tls.is_some(), "control plane listening");
+    readiness.mark_ready();
+    tracing::info!(
+        %addr,
+        tls = api_tls.is_some(),
+        client_ca = config
+            .api_tls
+            .as_ref()
+            .and_then(|tls| tls.client_ca_path.as_deref())
+            .unwrap_or("none"),
+        "control plane listening"
+    );
     if api_tls.is_none() {
         tracing::warn!(
             "the control-plane API is plain HTTP: node credentials, token exchange and tenant \
