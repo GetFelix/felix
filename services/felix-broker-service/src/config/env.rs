@@ -735,9 +735,11 @@ pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
     })
 }
 
-/// `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE`: the most Raft groups on this
-/// broker in an election at once. `None` keeps the group runtime's default,
-/// and `0` takes the bound off.
+/// `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE`: how many Raft groups on this
+/// broker may be in an election at once when a storm starts, and where the
+/// limit falls back to. It may rise to four times this while elections win
+/// and vote saves keep up. `None` keeps the group runtime's default, and
+/// `0` takes the bound off.
 fn shard_raft_elections_at_once() -> Result<Option<usize>> {
     parse_shard_raft_elections_at_once(
         std::env::var("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE")

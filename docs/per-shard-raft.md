@@ -1783,7 +1783,9 @@ groups that lose their leader together (issue #2317).
 
 So each broker bounds how many of its members are in an election at once
 (`RuntimeConfig::max_elections_at_once`, 64 by default, 0 for no bound;
-`FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE` on a broker). The bound only decides
+`FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE` on a broker). That is where a storm
+starts and where the limit falls back to; it rises to four times that while
+elections win and vote saves keep up (below). The bound only decides
 when a member's election timer is turned on. openraft still picks the
 moment it stands, and the vote and commit rules are unchanged: holding a
 member back is the same as its timeout coming later.

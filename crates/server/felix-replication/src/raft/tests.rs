@@ -1542,7 +1542,7 @@ async fn a_broker_bounds_the_elections_it_starts() {
     });
     futures::future::join_all(told).await;
     let runtimes = cluster.runtimes();
-    let mut most = 0;
+    let (mut most, mut first) = (0, 0);
     let all = async {
         loop {
             for runtime in &runtimes {
@@ -1550,6 +1550,12 @@ async fn a_broker_bounds_the_elections_it_starts() {
                     .filter_map(|n| runtime.group(&shard(n)))
                     .filter(|group| group.elections_on() && !group.leads())
                     .count();
+                // The limit stays at the bound until 8 elections have won;
+                // won only grows, so a count still under 8 after the
+                // sample was taken wholly under the bound.
+                if runtime.election_load().won < 8 {
+                    first = first.max(standing);
+                }
                 most = most.max(standing);
             }
             if (0..GROUPS).all(|n| cluster.leader(n).is_some()) {
@@ -1561,7 +1567,11 @@ async fn a_broker_bounds_the_elections_it_starts() {
     tokio::time::timeout(PATIENCE, all)
         .await
         .expect("every group elects");
-    // Once 8 elections won the limit may probe up to four times the bound.
+    assert!(
+        first <= BOUND,
+        "{first} members stood at once before 8 elections won"
+    );
+    // After that the limit may probe up to four times the bound.
     let ceiling = BOUND * 4;
     assert!(
         most <= ceiling,
@@ -1574,7 +1584,7 @@ async fn a_broker_bounds_the_elections_it_starts() {
     assert!(
         runtimes
             .iter()
-            .any(|runtime| runtime.election_load().peak == BOUND),
+            .any(|runtime| runtime.election_load().peak >= BOUND),
         "the bound was never reached"
     );
     cluster.stop().await;
