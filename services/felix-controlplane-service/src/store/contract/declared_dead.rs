@@ -59,6 +59,16 @@ pub(crate) async fn run_declared_dead_contract(store: Arc<dyn ControlPlaneStore>
         Err(StoreError::Conflict(_))
     ));
 
+    // Draining still serves.
+    store
+        .set_node_lifecycle("dead-a", NodeLifecycle::Draining)
+        .await
+        .expect("draining");
+    assert!(matches!(
+        store.declare_node_dead("dead-a").await,
+        Err(StoreError::Conflict(_))
+    ));
+
     down(&store, "dead-a").await;
     assert_eq!(
         store.declare_node_dead("dead-a").await.expect("declare"),
@@ -107,5 +117,19 @@ pub(crate) async fn run_declared_dead_contract(store: Arc<dyn ControlPlaneStore>
     assert_eq!(
         store.declared_dead().await.expect("list"),
         vec![dead("dead-a", 'a'), dead("dead-a", 'b')]
+    );
+
+    // A node that left can be declared dead too.
+    store
+        .register_node(on_disk("dead-c", 7103, 'c'))
+        .await
+        .expect("register c");
+    store
+        .set_node_lifecycle("dead-c", NodeLifecycle::Left)
+        .await
+        .expect("left");
+    assert_eq!(
+        store.declare_node_dead("dead-c").await.expect("declare c"),
+        dead("dead-c", 'c')
     );
 }

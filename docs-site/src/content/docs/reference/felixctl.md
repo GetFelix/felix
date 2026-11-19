@@ -1325,7 +1325,7 @@ felixctl node deregister broker-2 --yes
 
 ### `felixctl node declare-dead`
 
-Declare a broker's data directory gone for good, under the storage id it is registered with. A Raft re-form then plans without its copies, and the broker registers again only with a new data directory. It cannot be undone. Only a broker that is down or left can be declared dead. Asks first on a terminal; elsewhere it needs --yes.
+Declare a broker's data directory gone for good, under the storage id it is registered with. A Raft re-form then plans without its copies, and the broker registers again only with a new data directory. It cannot be undone. Only a broker that is down or left can be declared dead, but the control plane cannot tell that it has stopped: a Down broker may still be voting. First make sure the broker process is stopped or its host fenced, and that its disk is gone. Asks first on a terminal; elsewhere it needs --yes.
 
 ```text
 felixctl node declare-dead [OPTIONS] <NODE>

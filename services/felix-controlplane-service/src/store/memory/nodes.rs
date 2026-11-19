@@ -139,8 +139,6 @@ pub(super) async fn patch_node(
     Ok(patched)
 }
 
-/// `forget_reports` also drops the node's incarnation from every held
-/// replica report. Under Raft it is set only once every member does the same.
 /// Refuses a registration under a storage id declared dead, or under no
 /// storage id once any of the node's directories was: the second cannot be
 /// told apart from the dead copy coming back.
@@ -203,6 +201,8 @@ pub(super) async fn declare_node_dead(
     Ok(declared)
 }
 
+/// `forget_reports` also drops the node's incarnation from every held
+/// replica report. Under Raft it is set only once every member does the same.
 pub(super) async fn delete_node(
     store: &InMemoryStore,
     node_id: &str,

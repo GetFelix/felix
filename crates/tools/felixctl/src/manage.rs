@@ -243,7 +243,8 @@ pub(crate) async fn declare_dead(
     ask(
         &format!(
             "Declare node {node}'s data directory dead? A re-form plans without its copies, \
-             and it cannot be undone."
+             and it cannot be undone. Confirm the broker process is stopped or its host \
+             fenced, and its disk gone: the control plane cannot check."
         ),
         confirm,
     )?;

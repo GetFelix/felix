@@ -8,7 +8,7 @@ use axum::http::HeaderMap;
 use super::require_cluster_node_view;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
-use crate::auth::bearer::require_cluster_action;
+use crate::auth::bearer::{require_cluster_action, verified_claims};
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
 use crate::model::DeclaredDead;
 use crate::store::StoreError;
@@ -41,16 +41,23 @@ pub(crate) async fn declare_dead(
     Path(node_id): Path<String>,
 ) -> Result<Json<DeclaredDead>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
-    state
+    let (_, claims) = verified_claims(&state, &headers).await?;
+    let declared = state
         .store
         .declare_node_dead(&node_id)
         .await
-        .map(Json)
         .map_err(|err| match err {
             StoreError::NotFound(_) => api_not_found("node is not registered"),
             StoreError::Conflict(ref message) => api_conflict("conflict", message),
             ref other => api_internal("declare node dead", other),
-        })
+        })?;
+    tracing::warn!(
+        principal = %claims.sub,
+        node_id = %declared.node_id,
+        storage_id = %declared.storage_id,
+        "a broker's data directory was declared dead by an operator"
+    );
+    Ok(Json(declared))
 }
 
 #[utoipa::path(

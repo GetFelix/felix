@@ -4746,8 +4746,13 @@ node with the storage id it is registered under at that moment
 (`DeclaredDead`), and the record is never removed, not by a node delete
 either:
 
-- Only a node that is down or left can be declared dead. A live one could
-  still vote and commit beside the group the re-form starts without it.
+- Only a node that is down or left can be declared dead. This guard is a
+  sanity check, not proof. Down means only that its heartbeats stopped, and a
+  Raft shard does not serve on a control-plane lease, so a Down broker that
+  can still reach a majority of its group keeps voting and acking. The
+  control plane cannot see that. Before declaring, the operator must make
+  sure the broker process is stopped or its host fenced, and that its disk is
+  gone for good.
 - A registration under a dead storage id is refused, and so is one with no
   storage id from a node that has any directory declared dead. The broker
   comes back only with a new data directory (a wiped disk, or
@@ -4762,7 +4767,9 @@ The declaration is metadata level 42. Below it the store and the leader
 both refuse it: a member that could not apply it would take a
 registration the others refuse. `GET /v1/fleet/declared-dead` lists the
 records. Nothing reads the dead set yet; the plan and apply that will are
-not built.
+not built. When they are, they must require survey proof that the broker
+is gone (or a minimum time in Down plus an unanswered survey) before they
+use a dead node, and not rely on the declaration alone.
 
 #### The control plane's record for a re-form
 
