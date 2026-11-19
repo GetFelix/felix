@@ -205,3 +205,35 @@ fn match_token_names_the_slot_that_matched() {
     );
     assert_eq!(member.match_token(""), None);
 }
+
+#[test]
+fn an_empty_slot_never_matches_an_empty_bearer() {
+    let member = PeerSecurity {
+        previous_token: Some(String::new()),
+        next_token: Some(String::new()),
+        ..security(Some(""))
+    };
+    assert_eq!(member.match_token(""), None);
+}
+
+#[test]
+fn accepted_requests_are_counted_by_the_token_they_carried() {
+    let recorder = crate::test_support::CountingRecorder::default();
+    let router = guarded(rotating(NEW, Some(OLD), None));
+    recorder.run(async {
+        for bearer in [NEW, OLD, OLD] {
+            assert_eq!(
+                call(router.clone(), Some("cluster-a"), Some(bearer)).await,
+                StatusCode::OK
+            );
+        }
+    });
+    let count = |slot: &str| {
+        recorder.count(&format!(
+            "felix_meta_raft_peer_token_accepted_total{{token={slot}}}"
+        ))
+    };
+    assert_eq!(count("current"), 1);
+    assert_eq!(count("previous"), 2);
+    assert_eq!(count("next"), 0);
+}

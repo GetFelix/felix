@@ -122,17 +122,21 @@ impl PeerSecurity {
 
     /// Which configured token `offered` is, as the metric label, or `None`.
     ///
-    /// Every slot is compared, so the time taken does not say which one
-    /// matched.
+    /// Every slot is compared, and on SHA-256 digests, so the time taken
+    /// says neither which slot matched nor how long any token is.
     pub(super) fn match_token(&self, offered: &str) -> Option<&'static str> {
+        use sha2::{Digest, Sha256};
+        let offered = Sha256::digest(offered.as_bytes());
         let mut matched = None;
         for (label, token) in [
             ("current", &self.token),
             ("next", &self.next_token),
             ("previous", &self.previous_token),
         ] {
+            // An empty slot is unset, so an empty bearer can never match it.
             let hit = token.as_ref().is_some_and(|token| {
-                crate::api::bootstrap::constant_time_eq(offered.as_bytes(), token.as_bytes())
+                let expected = Sha256::digest(token.as_bytes());
+                !token.is_empty() & crate::api::bootstrap::constant_time_eq(&offered, &expected)
             });
             if hit && matched.is_none() {
                 matched = Some(label);

@@ -74,6 +74,11 @@ the roll, the token each member sends is one that every other member accepts.
 5. On every member, unset `FELIX_RAFT_PEER_TOKEN_PREVIOUS` and restart, one at
    a time. The old token is now refused everywhere.
 
+Finish each roll before starting the next step: every member restarted and
+back in the group. Starting step 3 while a member is still on the old
+configuration leaves a member sending the new token to one that only accepts
+the old one.
+
 | Step | Sends | Accepts |
 | --- | --- | --- |
 | Before | old | old |
@@ -95,8 +100,19 @@ Both rotation variables must be at least 32 characters, and a member refuses to
 start if either is set without `FELIX_RAFT_PEER_TOKEN`. With the Helm chart,
 put the new token under the `next` key of the peer token Secret for step 2,
 then `token` (new) and `previous` (old) for step 3, then remove `previous`.
-Run `kubectl rollout restart statefulset <release>-controlplane` after each
-Secret change; the StatefulSet restarts members one at a time.
+After each Secret change, restart the members and wait for the roll to finish
+before the next change:
+
+```bash
+kubectl rollout restart statefulset <release>-controlplane
+kubectl rollout status statefulset <release>-controlplane
+kubectl get pods -l app.kubernetes.io/component=controlplane
+```
+
+`rollout restart` returns at once; `rollout status` waits until every member
+has restarted. Check that every pod is Ready before you edit the Secret again.
+A pod that restarts on its own reads the Secret as it is then, so changing it
+mid-roll can put that pod a step ahead of the others.
 
 Client-side, certificate verification is Quinn's:
 
