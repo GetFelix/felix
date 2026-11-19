@@ -298,6 +298,14 @@ pub enum Kind {
     ///
     /// [`PeerCapabilities::RECORD_SEQUENCED_FORWARDS`]: super::PeerCapabilities::RECORD_SEQUENCED_FORWARDS
     RecordSequencedForwardPublish = 65,
+    /// A forwarded publish or cache operation with the certificate chain its
+    /// client presented to the forwarding broker: the correlation id, a
+    /// count byte, each certificate as a u32 length and its DER, the inner
+    /// kind and the inner body. Outermost, never nested. Sent only to a peer
+    /// that offered [`PeerCapabilities::CLIENT_CERTS`].
+    ///
+    /// [`PeerCapabilities::CLIENT_CERTS`]: super::PeerCapabilities::CLIENT_CERTS
+    ClientCertified = 66,
 }
 
 impl Kind {
@@ -370,6 +378,7 @@ impl Kind {
             63 => Ok(Kind::FromCopy),
             64 => Ok(Kind::PlainSequencedForwardPublish),
             65 => Ok(Kind::RecordSequencedForwardPublish),
+            66 => Ok(Kind::ClientCertified),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

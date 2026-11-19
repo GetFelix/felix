@@ -172,6 +172,10 @@ impl PeerCapabilities {
     /// on Raft proposes them back to back and answers once all commit. A
     /// sender sends each record on its own to an owner without it.
     pub const RECORD_SEQUENCED_FORWARDS: Self = Self(1 << 26);
+    /// Reads a forward wrapped in [`ClientCertified`](super::ClientCertified),
+    /// and checks the client's chain against its own client CA when it binds
+    /// token subjects to client certificates.
+    pub const CLIENT_CERTS: Self = Self(1 << 27);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

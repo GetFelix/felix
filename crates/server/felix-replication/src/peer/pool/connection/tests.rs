@@ -42,6 +42,7 @@ mod correlation {
             InternalMessage::SealAck(m) => m.correlation_id,
             InternalMessage::SealAckOk(m) => m.correlation_id,
             InternalMessage::FromCopy(m) => correlation_of(&m.message),
+            InternalMessage::ClientCertified(m) => correlation_of(&m.message),
             InternalMessage::ReplicateFetch(m) => m.correlation_id,
             InternalMessage::Ping(m) => m.correlation_id,
             InternalMessage::Pong(m) => m.correlation_id,
@@ -227,6 +228,18 @@ mod correlation {
                 headers: None,
                 set_generation: None,
             }),
+            InternalMessage::ClientCertified(ClientCertified {
+                client_chain: vec![Bytes::from_static(b"leaf")],
+                message: Box::new(InternalMessage::ForwardPublish(ForwardPublish {
+                    correlation_id: 7,
+                    shard: shard(),
+                    ack: AckMode::OnCommit,
+                    payloads: vec![Bytes::from_static(b"hello")],
+                    credential: "token".to_string(),
+                    headers: None,
+                    producer: None,
+                })),
+            }),
         ]
     }
 
@@ -278,7 +291,8 @@ mod correlation {
             match message {
                 InternalMessage::ForwardPublish(_)
                 | InternalMessage::ForwardCacheOp(_)
-                | InternalMessage::LeaseForwardCacheOp(_) => {
+                | InternalMessage::LeaseForwardCacheOp(_)
+                | InternalMessage::ClientCertified(_) => {
                     assert_eq!(class, LaneClass::Forward, "{:?}", message.kind())
                 }
                 InternalMessage::Hello(_)
