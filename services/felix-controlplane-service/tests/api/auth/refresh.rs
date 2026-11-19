@@ -485,3 +485,80 @@ async fn a_refresh_keeps_the_exchanges_narrowing_and_audience() {
     .expect("refresh");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+/// With certificate binding on, a refresh is bound like the access token it
+/// mints: a stolen refresh token is no good from another certificate, even one
+/// the control plane's CA signed.
+#[tokio::test]
+async fn a_bound_refresh_needs_the_tokens_certificate() {
+    use felix_controlplane_service::auth::cert_binding::{PeerCertificates, bind_subjects};
+    use felix_controlplane_service::auth::refresh_token::Narrowing;
+
+    let (state, store) = fixture().await;
+    let token = issue_into(&store, vec![]).await;
+    let refresh_as = |san: String, token: String| {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.subject_alt_names = vec![rcgen::SanType::URI(san.as_str().try_into().expect("uri"))];
+        let cert = params.self_signed(&key).expect("cert");
+        let peer = PeerCertificates(Arc::from(vec![cert.der().clone()]));
+        let app = bind_subjects(build_router(state.clone())).layer(axum::Extension(peer));
+        let body = serde_json::json!({ "refresh_token": token }).to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/tenants/{TENANT}/token/refresh"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .expect("request");
+        app.oneshot(request)
+    };
+
+    let other = refresh_as("felix:principal:someone-else".to_string(), token.clone())
+        .await
+        .expect("refresh");
+    assert_eq!(
+        other.status(),
+        StatusCode::UNAUTHORIZED,
+        "a refresh token minted access tokens from another principal's certificate",
+    );
+
+    // The refusal does not spend the token, so its holder is not logged out.
+    let own = refresh_as(format!("felix:principal:{PRINCIPAL}"), token)
+        .await
+        .expect("refresh");
+    assert_eq!(own.status(), StatusCode::OK);
+
+    // A chain minted for a gateway to delegate refreshes from the gateway's
+    // certificate too.
+    store
+        .add_rbac_policy(
+            TENANT,
+            PolicyRule {
+                subject: "gateway-1".to_string(),
+                object: format!("tenant:{TENANT}"),
+                action: "token.delegate".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    let (mut record, delegated) = refresh::issue(
+        TENANT,
+        PRINCIPAL,
+        vec![],
+        None,
+        refresh::now_secs(),
+        Duration::from_secs(3600),
+    );
+    record.narrowing = Some(Narrowing {
+        requested: None,
+        resources: None,
+        permissions: None,
+        audience: "felix-broker".to_string(),
+        may_act: Some("gateway-1".to_string()),
+    });
+    store.insert_refresh_token(record).await.expect("insert");
+    let gateway = refresh_as("felix:principal:gateway-1".to_string(), delegated)
+        .await
+        .expect("refresh");
+    assert_eq!(gateway.status(), StatusCode::OK);
+}

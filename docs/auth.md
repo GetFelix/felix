@@ -394,6 +394,16 @@ a `400`; exchange again for the other one. A refresh token issued before the
 narrowing was recorded refreshes to the principal's full RBAC rights, as it
 always did.
 
+With `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT=true`, a refresh is bound
+to the client certificate the same way the access token it mints is: the
+certificate must be issued to the chain's principal, or to the gateway named as
+its actor (`may_act`). A refresh token is a body field, not a bearer, so without
+this a stolen one would mint access tokens from any certificate the CA signed.
+Any other certificate gets a `401` (reason `certificate_mismatch`) and the token
+is not spent, so its holder keeps the chain. Refresh tokens issued before the
+upgrade, or while binding was off, are checked the same way: the principal is on
+every record, so there is no grace period for them.
+
 `FELIX_REFRESH_TOKEN_TTL_SECONDS` (default 30 days) bounds a refresh token that
 is stolen and *never used*; one that is used produces a replay, which ends the
 chain immediately.
