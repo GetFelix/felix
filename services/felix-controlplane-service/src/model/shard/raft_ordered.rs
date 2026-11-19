@@ -141,7 +141,7 @@ impl ShardAssignment {
         }
     }
 
-    fn group_epoch(&self) -> u64 {
+    pub(super) fn group_epoch(&self) -> u64 {
         self.placed.as_ref().map_or(0, |placed| placed.epoch)
     }
 }

@@ -287,7 +287,7 @@ mod fence {
             ),
             Some(&leader.ingress),
             None,
-            "",
+            &Default::default(),
             leader::TENANT,
             leader::NAMESPACE,
             leader::CACHE,
@@ -310,7 +310,7 @@ mod fence {
             ),
             Some(&leader.ingress),
             None,
-            "",
+            &Default::default(),
             leader::TENANT,
             leader::NAMESPACE,
             leader::CACHE,
@@ -498,7 +498,7 @@ mod store_failure {
             ),
             None,
             None,
-            "",
+            &Default::default(),
             TENANT,
             NAMESPACE,
             CACHE,
@@ -556,7 +556,7 @@ mod quorum_waits {
             (engine, TIMEOUT),
             Some(&leader.ingress),
             None,
-            "",
+            &Default::default(),
             leader::TENANT,
             leader::NAMESPACE,
             leader::QUORUM_CACHE,
@@ -577,7 +577,7 @@ mod quorum_waits {
             (engine, TIMEOUT),
             Some(&leader.ingress),
             None,
-            "",
+            &Default::default(),
             leader::TENANT,
             leader::NAMESPACE,
             leader::QUORUM_CACHE,
@@ -738,3 +738,6 @@ mod quorum_waits {
             .expect("counter get");
     }
 }
+
+#[cfg(feature = "raft")]
+mod raft;

@@ -1382,6 +1382,8 @@ mod raft_floor;
 pub use raft_floor::{RaftFloor, RaftFloorError, RaftFloorReport};
 mod raft_ordered;
 pub use raft_ordered::RaftOrdered;
+mod raft_reform;
+pub use raft_reform::ReformRecordError;
 mod raft_target;
 pub use raft_target::{RaftTarget, RaftTargetError};
 mod switch;

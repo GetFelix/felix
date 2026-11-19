@@ -27,7 +27,7 @@ use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
 use felix_replication::raft::{
-    GroupId, GroupRuntime, MemberId, OpenError, RaftEngine, Target, TargetVersion,
+    GroupId, GroupRuntime, MemberId, NotBlank, OpenError, RaftEngine, Target, TargetVersion,
 };
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
@@ -117,6 +117,13 @@ pub(crate) struct RaftShards {
     /// What the last pass's feed view carried for each member open at that
     /// view's stream incarnation: its target, or `None` for no target.
     targets: parking_lot::Mutex<HashMap<ShardKey, Option<Target>>>,
+    /// The full placement set and stored target of each Raft shard in the
+    /// last pass's feed, written under `open`. A form re-checks it before
+    /// it initializes.
+    formable: parking_lot::Mutex<HashMap<ShardKey, Formable>>,
+    /// While true, a form that has its answers does not initialize.
+    #[cfg(test)]
+    stall_forms: tokio::sync::watch::Sender<bool>,
     /// Every target a member kept, with the term it was told for. `None`
     /// is a kept "no target".
     #[cfg(test)]
@@ -180,6 +187,14 @@ fn raft_fsync_mode(broker: FsyncMode, written_commit: bool, dir: &Path) -> Fsync
     } else {
         FsyncMode::OnCommit
     }
+}
+
+/// A shard's set and stored target as the feed last carried them, for a
+/// form to check it still forms what placement wants.
+#[derive(Debug, PartialEq, Eq)]
+struct Formable {
+    brokers: BTreeSet<String>,
+    target: Option<BTreeSet<MemberId>>,
 }
 
 /// How often a `none` broker's written-commit Raft logs flush.
@@ -261,6 +276,9 @@ impl RaftShards {
             held_warn: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
+            formable: parking_lot::Mutex::default(),
+            #[cfg(test)]
+            stall_forms: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             told: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
@@ -345,18 +363,51 @@ impl RaftShards {
         let broker = Arc::clone(&self.broker);
         let (shard, incarnation) = (key.clone(), assignment.incarnation);
         let written_commit = self.fleet.supports(fleet::RAFT_WRITTEN_COMMIT);
+        // Sums the hybrid kept for this shard would be lost under an empty
+        // group, so a shard with any is refused like a log with segments.
+        if key.kind == ShardKind::Cache
+            && let Some(counters) = self.broker.counters()
+        {
+            let held = counters
+                .dirs_on_disk(&key.tenant_id, &key.namespace, &key.stream)
+                .await?;
+            if held.contains(&(key.shard, incarnation)) {
+                return Err(CarriedOver {
+                    dir: format!(
+                        "counters of {}/{}/{}/{}",
+                        key.tenant_id, key.namespace, key.stream, key.shard
+                    ),
+                }
+                .into());
+            }
+        }
         // The marker write fsyncs.
         let claim = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let storage = broker
                 .durable_storage()
                 .context("a Raft shard needs durable storage")?;
-            let (dir, _) = storage.claim_for_raft(
-                &shard.tenant_id,
-                &shard.namespace,
-                &shard.stream,
-                shard.shard,
-                incarnation,
-            )?;
+            // A cache shard's member lives under the cache store's root, so
+            // it never shares a directory with a stream of the same name.
+            let (dir, _) = match shard.kind {
+                ShardKind::Cache => broker
+                    .cache()
+                    .as_log_cache()
+                    .context("a Raft cache shard needs durable storage")?
+                    .claim_for_raft(
+                        &shard.tenant_id,
+                        &shard.namespace,
+                        &shard.stream,
+                        shard.shard,
+                        incarnation,
+                    )?,
+                _ => storage.claim_for_raft(
+                    &shard.tenant_id,
+                    &shard.namespace,
+                    &shard.stream,
+                    shard.shard,
+                    incarnation,
+                )?,
+            };
             if holds_log_without_copy(&dir)? {
                 return Err(CarriedOver {
                     dir: dir.display().to_string(),
@@ -411,6 +462,11 @@ impl RaftShards {
             follow: None,
             retention: None,
         };
+        // A cache group keeps its entries and counters in its own state, and
+        // its leader expires them: there is no stream to open on the log.
+        if key.kind == ShardKind::Cache {
+            return Ok(member);
+        }
         let handle = self
             .broker
             .open_stream_on_engine_log(
@@ -464,7 +520,7 @@ impl RaftShards {
             assignments
                 .iter()
                 .filter(|(key, assignment)| {
-                    key.kind == ShardKind::Stream
+                    matches!(key.kind, ShardKind::Stream | ShardKind::Cache)
                         && !brokers_of(assignment).contains(self.local.as_str())
                         && unclaimed.get(*key) != Some(&assignment.incarnation)
                         && held.get(*key) != Some(&assignment.incarnation)
@@ -476,11 +532,7 @@ impl RaftShards {
         // would be thrown away, and made again on every pass.
         let mut wanted = Vec::with_capacity(candidates.len());
         for (key, incarnation) in candidates {
-            let metadata = self
-                .broker
-                .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
-                .await;
-            if metadata.is_some_and(|metadata| metadata.durable) {
+            if matches!(self.durable_rf(&key).await, Some(Durable::Yes(_))) {
                 wanted.push((key, incarnation));
             }
         }
@@ -497,12 +549,45 @@ impl RaftShards {
         Reads { claims, read }
     }
 
+    /// Whether `key`'s stream or cache keeps a log, and how many brokers it
+    /// asks for. `None` when it is not registered here yet.
+    async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
+        let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
+        if key.kind == ShardKind::Cache {
+            // A broker whose cache store has no logs leaves every cache to
+            // the hybrid, registered or not.
+            if self.broker.cache().as_log_cache().is_none() {
+                return Some(Durable::No);
+            }
+            let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
+            return Some(Durable::Yes(metadata.replication_factor));
+        }
+        let metadata = self.broker.stream_metadata(tenant, namespace, name).await?;
+        Some(if metadata.durable {
+            Durable::Yes(metadata.replication_factor)
+        } else {
+            Durable::No
+        })
+    }
+
     async fn read_marker(&self, key: &ShardKey, incarnation: u64) -> anyhow::Result<Option<bool>> {
         let (broker, shard) = (Arc::clone(&self.broker), key.clone());
         let read = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<bool>> {
             let Some(storage) = broker.durable_storage() else {
                 return Ok(Some(false));
             };
+            if shard.kind == ShardKind::Cache {
+                let Some(cache) = broker.cache().as_log_cache() else {
+                    return Ok(Some(false));
+                };
+                return Ok(cache.claimed_for_raft(
+                    &shard.tenant_id,
+                    &shard.namespace,
+                    &shard.stream,
+                    shard.shard,
+                    incarnation,
+                )?);
+            }
             Ok(storage.claimed_for_raft(
                 &shard.tenant_id,
                 &shard.namespace,
@@ -572,8 +657,34 @@ impl RaftShards {
     /// the set gets here, so a set is formed by one broker or by none, and
     /// only once every other broker has named its copy and said no group
     /// reached it. The rest join when the leader's first append arrives.
-    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
+    ///
+    /// The set formed is exactly `target`, the one the control plane stored:
+    /// it lists every target of the epoch before a broker can read it, so a
+    /// re-form counts the first voters as a voter set. A set formed from
+    /// copies no record names could lose a majority unseen (#2688).
+    ///
+    /// The answers say nothing once placement moves on: the brokers of a
+    /// newer set may be asking the same blank members. So it initializes
+    /// only if the last pass still fed this set, with this broker lowest,
+    /// and this stored target, and puts the form off otherwise.
+    /// That is this broker's own view, so one with a stale control-plane
+    /// feed can still form the old set (#2794).
+    fn form(
+        &self,
+        key: ShardKey,
+        brokers: BTreeSet<String>,
+        incarnation: u64,
+        target: Option<BTreeSet<MemberId>>,
+    ) {
         let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        // Nothing to ask the others for yet: the control plane stores a
+        // target once every broker in the set has named its copy.
+        let Some(target) = target else {
+            if self.put_off.lock().insert(key.clone()) {
+                tracing::info!(shard = ?key, "not forming the shard's Raft group yet: the control plane has stored no target for it");
+            }
             return;
         };
         if !self.forming.lock().insert(key.clone()) {
@@ -583,24 +694,55 @@ impl RaftShards {
             let asked = me
                 .runtime
                 .first_members(&key, brokers.iter().map(String::as_str), ASK_WITHIN)
+                .await
+                .map_err(Unformed::Asked)
+                .and_then(|members| {
+                    if members == target {
+                        Ok(members)
+                    } else {
+                        Err(Unformed::NotTarget {
+                            members,
+                            target: target.clone(),
+                        })
+                    }
+                });
+            #[cfg(test)]
+            let _ = me
+                .stall_forms
+                .subscribe()
+                .wait_for(|stalled| !stalled)
                 .await;
             match asked {
                 Ok(members) => {
                     // Under the pass's lock, so the member formed is the one
-                    // the others were asked about.
-                    me.put_off.lock().remove(&key);
+                    // the others were asked about. Placement may have moved
+                    // while they were asked: the brokers of a newer set
+                    // could be asking the same blank members, and both sets
+                    // would win a term. Form only what the feed still names.
                     let open = me.open.lock().await;
-                    if open
-                        .get(&key)
-                        .is_some_and(|member| member.incarnation == incarnation)
-                        && let Err(err) = me.runtime.initialize(&key, members).await
-                    {
-                        tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                    let current = Formable {
+                        brokers,
+                        target: Some(target),
+                    };
+                    if me.formable.lock().get(&key) != Some(&current) {
+                        if me.put_off.lock().insert(key.clone()) {
+                            tracing::info!(shard = ?key, "not forming the shard's Raft group yet: its placement or stored target changed while its members were asked");
+                        }
+                    } else {
+                        me.put_off.lock().remove(&key);
+                        if open
+                            .get(&key)
+                            .is_some_and(|member| member.incarnation == incarnation)
+                            && let Err(err) = me.runtime.initialize(&key, members).await
+                        {
+                            tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                        }
                     }
                 }
                 Err(err) => {
                     let first = me.put_off.lock().insert(key.clone());
-                    match (first, err.held_records()) {
+                    let held = matches!(&err, Unformed::Asked(err) if err.held_records());
+                    match (first, held) {
                         (true, true) => {
                             tracing::warn!(shard = ?key, reason = %err, "not forming the shard's Raft group: it is held until an operator re-forms it (docs/per-shard-raft.md, \"Re-forming a group\")")
                         }
@@ -697,6 +839,11 @@ impl RaftShards {
     }
 
     #[cfg(test)]
+    pub(crate) fn stall_forms(&self, stalled: bool) {
+        self.stall_forms.send_replace(stalled);
+    }
+
+    #[cfg(test)]
     pub(crate) fn stall_reads(&self, stalled: bool) {
         self.stall_reads.send_replace(stalled);
     }
@@ -709,6 +856,20 @@ impl RaftShards {
             .get(shard)
             .map(|member| member.log.clone())
     }
+}
+
+/// Why a broker did not form a group it would form.
+#[derive(Debug, thiserror::Error)]
+enum Unformed {
+    #[error(transparent)]
+    Asked(NotBlank),
+    #[error(
+        "the members asked ({members:?}) are not the target the control plane stored ({target:?})"
+    )]
+    NotTarget {
+        members: BTreeSet<MemberId>,
+        target: BTreeSet<MemberId>,
+    },
 }
 
 /// The engine markers a pass read before it took `open`.
@@ -768,6 +929,29 @@ impl RaftShards {
     }
 }
 
+/// The target the control plane stored for a shard, or `None` when it
+/// stored none or the view withholds it.
+fn stored_target(assignment: &ShardAssignment) -> Option<BTreeSet<MemberId>> {
+    let target = assignment
+        .target
+        .as_ref()
+        .filter(|_| !assignment.targets_withheld)?;
+    Some(
+        target
+            .members
+            .iter()
+            .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
+            .collect(),
+    )
+}
+
+/// Whether a shard's stream or cache keeps a log, with the replica count it
+/// asks for, if it names one.
+enum Durable {
+    No,
+    Yes(Option<u32>),
+}
+
 /// The brokers placement names for a shard, lowest id first.
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
@@ -804,7 +988,7 @@ impl EngineShards for RaftShards {
                     .runtime
                     .status(key)
                     .is_some_and(|status| status.leader.is_none());
-                if leaderless {
+                if leaderless && key.kind == ShardKind::Stream {
                     self.broker
                         .end_subscriptions(
                             &key.tenant_id,
@@ -818,7 +1002,7 @@ impl EngineShards for RaftShards {
             }
             let streams: Vec<ShardKey> = assignments
                 .keys()
-                .filter(|key| key.kind == ShardKind::Stream)
+                .filter(|key| matches!(key.kind, ShardKind::Stream | ShardKind::Cache))
                 .cloned()
                 .collect();
             // Every Raft shard in the feed, and whether its placement names
@@ -827,14 +1011,11 @@ impl EngineShards for RaftShards {
             let mut wanted_rf: HashMap<ShardKey, u32> = HashMap::default();
             let mut placed = HashMap::default();
             for key in streams {
-                let metadata = self
-                    .broker
-                    .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
-                    .await;
-                let wanted = match metadata {
-                    // A stream in memory has no log for a group to run on.
-                    Some(metadata) if !metadata.durable => continue,
-                    Some(metadata) => metadata.replication_factor,
+                let wanted = match self.durable_rf(&key).await {
+                    // A stream or cache in memory has no log for a group to
+                    // run on.
+                    Some(Durable::No) => continue,
+                    Some(Durable::Yes(wanted)) => wanted,
                     // Not registered here yet, so not known to be durable.
                     // Neither engine opens it this pass: a log the hybrid
                     // opened now would sit beside the member's later.
@@ -857,6 +1038,20 @@ impl EngineShards for RaftShards {
                 fed.insert(key, (assignment, full));
             }
             *self.placed.lock() = placed;
+            *self.formable.lock() = fed
+                .iter()
+                .filter(|(_, (_, full))| *full)
+                .map(|(key, (assignment, _))| {
+                    let formable = Formable {
+                        brokers: brokers_of(assignment)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                        target: stored_target(assignment),
+                    };
+                    (key.clone(), formable)
+                })
+                .collect();
             self.unclaimed.lock().retain(|key, _| fed.contains_key(key));
             self.put_off.lock().retain(|key| fed.contains_key(key));
             self.unreadable.lock().retain(|key| fed.contains_key(key));
@@ -880,6 +1075,9 @@ impl EngineShards for RaftShards {
                     continue;
                 };
                 self.close_member(&key, member).await;
+                if key.kind == ShardKind::Cache {
+                    continue;
+                }
                 // Ends the readers; a later open starts from the log again.
                 if let Err(err) = self
                     .broker
@@ -998,7 +1196,8 @@ impl EngineShards for RaftShards {
                 }
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    self.form(key.clone(), brokers, assignment.incarnation);
+                    let target = stored_target(assignment);
+                    self.form(key.clone(), brokers, assignment.incarnation, target);
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
@@ -1059,6 +1258,7 @@ impl EngineShards for RaftShards {
                             .cloned()
                             .collect(),
                         in_target,
+                        withheld: assignment.targets_withheld,
                     })
                 })
                 .collect();
@@ -1448,6 +1648,19 @@ impl WriteFence for Leading {
         if let Some(wake) = self.wake.get() {
             wake.notify_one();
         }
+        // A cache group has no stream to bring to the tail: its reads wait
+        // for the commit index themselves.
+        if key.kind == ShardKind::Cache {
+            if let Some(lead) = self
+                .terms
+                .lock()
+                .get_mut(key)
+                .filter(|lead| lead.term == term)
+            {
+                lead.open = true;
+            }
+            return;
+        }
         let (broker, terms, ending, key) = (
             Arc::clone(&self.broker),
             Arc::clone(&self.terms),
@@ -1501,6 +1714,9 @@ impl WriteFence for Leading {
                 return;
             }
             terms.remove(key);
+            if key.kind == ShardKind::Cache {
+                return;
+            }
             // Counted before a later term can be reported, so that term
             // waits for this one's subscribers to be ended.
             *self.ending.lock().entry(key.clone()).or_default() += 1;

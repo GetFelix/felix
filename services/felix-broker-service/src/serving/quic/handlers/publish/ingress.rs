@@ -54,8 +54,9 @@ pub(crate) enum PublishTarget {
         target: crate::serving::forward::ForwardTarget,
         key: crate::serving::forward::ForwardKey,
         ack: felix_wire::internal::AckMode,
-        /// The publisher's token, for the owner to verify again.
-        credential: String,
+        /// The publisher's token and certificate chain, for the owner to
+        /// verify again.
+        credential: crate::serving::forward::ForwardCredential,
     },
     #[cfg(test)]
     Named {

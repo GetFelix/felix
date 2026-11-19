@@ -176,6 +176,15 @@ certificate to be issued to its token's subject (`sub`).
   serves TLS: SASL/PLAIN checks the token against the certificate the client
   presented in the TLS handshake. Over `SASL_PLAINTEXT` there is no certificate
   to bind to.
+- A publish or cache operation another broker forwards here is checked too:
+  the forwarding broker sends the certificate chain its client presented, and
+  this broker verifies it against its own `FELIX_TLS_CLIENT_CA` before binding
+  the token to it. A forward without a chain is refused. A broker from before
+  this check forwards without one, so upgrade every broker first.
+- A client that logs in without a certificate, such as an MQTT client over
+  plain TCP (`FELIX_MQTT_TLS=false`), is served only on shards its own broker
+  owns. Its forwarded publishes and cache operations carry no chain and are
+  refused.
 
 ### `FELIX_TLS_REQUIRE_CERT`
 
@@ -2359,6 +2368,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_RAFT_BIND_ADDR` | unset | Required under raft. Where this member serves the Raft RPCs. A listener of its own, never the API port: the `propose` route can replace the whole metadata store. Keep it reachable from the other members only. |
 | `FELIX_RAFT_CLUSTER_ID` | unset | Required under raft. Names the group, like etcd's cluster token. Recorded in the data dir on first start. A member refuses to start on a data dir recorded under another id, and peers refuse requests carrying another id. |
 | `FELIX_RAFT_PEER_TOKEN` | unset | Required under raft, at least 32 characters, identical on every member. Every Raft request must carry it, and it is compared in constant time. It is the cluster-admin credential: whoever holds it can replace the store, so keep it in a Secret and give it to nothing but the members and the `migrate import` tool. |
+| `FELIX_RAFT_PEER_TOKEN_NEXT` | unset | The token being rolled in during a [peer token rotation](/features/security/#rotating-the-raft-peer-token). Accepted on inbound Raft requests, never sent. At least 32 characters, and only valid beside `FELIX_RAFT_PEER_TOKEN`. |
+| `FELIX_RAFT_PEER_TOKEN_PREVIOUS` | unset | The token being retired during a [peer token rotation](/features/security/#rotating-the-raft-peer-token). Accepted on inbound Raft requests, never sent. At least 32 characters, and only valid beside `FELIX_RAFT_PEER_TOKEN`. Remove it once `felix_meta_raft_peer_token_accepted_total{token="previous"}` stops growing. |
 | `FELIX_RAFT_INSECURE_PEERS` | `false` | `true` lets a raft member start without `FELIX_RAFT_PEER_TOKEN`. For a throwaway local group only. Anyone who reaches the peer listener can then replace the store. |
 | `FELIX_RAFT_INITIAL_CLUSTER_STATE` | `existing` | `new` lets an empty member form a brand-new group once every configured member answers, is empty and has recorded that this member is forming; a member that does not answer, or that runs a release without the record, blocks it. `existing` never forms one, so members that lost their volumes wait instead of starting an empty control plane. Set `new` for the first start of a cluster only. |
 | `FELIX_RAFT_TLS_CERT` | unset | PEM certificate this member presents on the peer listener and to its peers. Set with `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` to turn on peer mTLS. A partial set fails startup. The certificate must name the host each member reaches it by in `FELIX_RAFT_PEERS`. |

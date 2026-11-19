@@ -58,7 +58,8 @@ pub use copy_file::CopyFile;
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
-pub(crate) use epoch_file::{EpochAt, EpochBase, EpochFile, EpochLogId};
+pub(crate) use epoch_file::{EpochAt, EpochFile};
+pub use epoch_file::{EpochBase, EpochLogId};
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
@@ -90,14 +91,13 @@ pub(crate) use rotated_by::RotatedBy;
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
 pub use stop_file::{StoppedCopy, stop, stopped};
-pub use vouch::BrokerReport;
+pub use vouch::{BrokerReport, GroupRecord, VoterId};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use vouch::{
-    GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterId, VoterSource,
-    plan_reform, probes,
+    Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, plan_reform, probes,
 };
 
 use std::path::Path;

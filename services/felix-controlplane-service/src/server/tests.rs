@@ -416,6 +416,8 @@ async fn a_failed_group_entry_stops_the_member() {
     let security = PeerSecurity {
         cluster_id: "test-cluster".to_string(),
         token: Some("0123456789abcdef0123456789abcdef".to_string()),
+        previous_token: None,
+        next_token: None,
         tls: None,
     };
     let settings = RaftSettings::new(1, dir.path().into(), security);
@@ -454,6 +456,8 @@ async fn a_member_is_attached_only_after_it_enters_the_group() {
     let security = PeerSecurity {
         cluster_id: "test-cluster".to_string(),
         token: Some("0123456789abcdef0123456789abcdef".to_string()),
+        previous_token: None,
+        next_token: None,
         tls: None,
     };
     let raft_cfg = RaftBackendConfig {

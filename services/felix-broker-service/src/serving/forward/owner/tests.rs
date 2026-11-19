@@ -25,6 +25,8 @@ use tempfile::TempDir;
 use super::*;
 use felix_replication::quorum::QuorumMarks;
 
+mod client_certs;
+
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
 const STREAM: &str = "orders";
@@ -1627,6 +1629,82 @@ mod on_raft {
     use crate::shards::raft::tests as fixture;
     use crate::shards::routing::EngineShards;
 
+    /// **A forwarded cache or counter op on a Raft cache shard is answered by
+    /// its group**, as the hybrid's store would answer it, with nothing
+    /// written to the hybrid's stores.
+    #[tokio::test]
+    async fn a_forwarded_cache_op_on_a_raft_shard_is_served_by_its_group() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = fixture::cache_broker(root.path(), CACHE).await;
+        let shards = fixture::shards(&broker);
+        let sessions = crate::shards::ShardKey {
+            kind: crate::shards::ShardKind::Cache,
+            ..fixture::key(CACHE, 0)
+        };
+        let assigned = fixture::assigned(sessions.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&sessions).is_some()).await;
+        let (router, ingress) = fixture::routes(&shards);
+        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        engine.set_raft(Arc::clone(&shards));
+        let credentials = Credentials::new();
+        let handler = ForwardingHandler::new(
+            Arc::clone(&broker),
+            engine,
+            router,
+            "10.0.0.1:7001".to_string(),
+            Duration::from_secs(10),
+            Arc::clone(&credentials.auth),
+        );
+        let cache = format!("cache:{TENANT}/{NAMESPACE}/{CACHE}");
+        let token = credentials.token(&[
+            &format!("cache.write:{cache}"),
+            &format!("cache.read:{cache}"),
+        ]);
+        let send = |op, value: &'static [u8]| {
+            let op = ForwardCacheOp {
+                value: Bytes::from_static(value),
+                ..forwarded_cache_op(op, token.clone())
+            };
+            handler.apply_cache_op(op)
+        };
+        let value = |answer| match answer {
+            InternalMessage::ForwardCacheOk(ok) => ok.value,
+            other => panic!("expected an answer, got {other:?}"),
+        };
+
+        assert_eq!(value(send(CacheOpKind::Put, b"v").await), None);
+        assert_eq!(
+            value(send(CacheOpKind::Get, b"").await),
+            Some(Bytes::from_static(b"v"))
+        );
+        assert_eq!(
+            value(send(CacheOpKind::Delete, b"").await),
+            Some(Bytes::from_static(b"v")),
+            "a plain delete answers the value it removed"
+        );
+        assert_eq!(value(send(CacheOpKind::Get, b"").await), None);
+        let three = felix_storage::counter_log::encode_sum(3);
+        let add = ForwardCacheOp {
+            value: three.clone(),
+            ..forwarded_cache_op(CacheOpKind::CounterAdd, token.clone())
+        };
+        assert_eq!(
+            value(handler.apply_cache_op(add).await),
+            Some(three.clone())
+        );
+        assert_eq!(value(send(CacheOpKind::CounterGet, b"").await), Some(three));
+
+        assert!(
+            broker
+                .cache()
+                .get(TENANT, NAMESPACE, CACHE, 0, "session:abc")
+                .await
+                .is_err(),
+            "the hybrid store opened a Raft member's directory"
+        );
+    }
+
     /// **A forward to a Raft shard's leader is proposed to its group and
     /// answered with its offsets at the commit**, whatever generation the
     /// requester saw. The hybrid here has no route for the shard and its
@@ -1638,7 +1716,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key(STREAM, 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let router = Arc::new(ShardRouter::new(
             LOCAL,
@@ -1821,7 +1899,7 @@ mod on_raft {
             let shards = fixture::shards(&broker);
             let orders = fixture::key(STREAM, 0);
             let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-            shards.take(&mut fixture::assignments([assigned])).await;
+            fixture::take_formed(&shards, assigned).await;
             fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
             let (router, ingress) = fixture::routes(&shards);
             let engine = Arc::new(StreamEngine::new(None, Some(ingress)));

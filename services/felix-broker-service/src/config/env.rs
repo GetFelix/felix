@@ -672,6 +672,16 @@ pub(crate) enum ShardEngine {
     Raft,
 }
 
+impl ShardEngine {
+    /// The name `FELIX_SHARD_ENGINE` and the control plane's identity use.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hybrid => "hybrid",
+            Self::Raft => "raft",
+        }
+    }
+}
+
 /// `FELIX_SHARD_ENGINE`: `hybrid` (the default) or `raft`. Every broker of a
 /// cluster must say the same; see `docs/per-shard-raft.md`.
 pub(crate) fn shard_engine() -> Result<ShardEngine> {

@@ -287,7 +287,9 @@ impl ShardOwnership {
     ///
     /// Returns whether anything changed. A duplicate delivery is therefore
     /// harmless, and a stale generation — from a retry, a reordered poll, or a
-    /// control plane that was behind — cannot roll ownership back.
+    /// control plane that was behind — cannot roll ownership back. A change at
+    /// the held generation and set updates only the Raft target view
+    /// ([`target_view`]): the control plane stores targets in place.
     ///
     /// Assignments are ordered by incarnation first, as the lifecycle orders
     /// them: a recreated stream's or cache's shard is a new one, and its first
@@ -296,10 +298,16 @@ impl ShardOwnership {
     pub fn apply(&mut self, key: &ShardKey, assignment: Option<ShardAssignment>) -> bool {
         match assignment {
             Some(next) => {
-                if let Some(current) = self.assignments.get(key)
+                if let Some(current) = self.assignments.get_mut(key)
                     && (next.incarnation, next.generation)
                         <= (current.incarnation, current.generation)
                 {
+                    if let Some((target, withheld)) = target_view(current, &next) {
+                        current.target = target;
+                        current.targets_withheld = withheld;
+                        self.changed();
+                        return true;
+                    }
                     mm::record_stale_change();
                     return false;
                 }
@@ -406,6 +414,16 @@ impl ShardOwnership {
         first: &HashSet<ShardKey>,
         previous: &HashMap<ShardKey, ShardAssignment>,
     ) {
+        let mut items = items;
+        // A withheld item says nothing of the target, so the one held for
+        // the same set stays, marked withheld, as a withheld change leaves it.
+        for next in items.iter_mut().filter(|next| next.targets_withheld) {
+            if let Some(current) = self.assignments.get(&next.key)
+                && same_set(current, next)
+            {
+                next.target.clone_from(&current.target);
+            }
+        }
         let mut priors = HashMap::default();
         for next in &items {
             let current = self.assignments.get(&next.key);
@@ -492,6 +510,67 @@ impl ShardOwnership {
     pub fn is_empty(&self) -> bool {
         self.assignments.is_empty()
     }
+
+    /// Whether the newest view of some stream or cache shard withheld its
+    /// Raft target while this broker holds none for it, so its group cannot form
+    /// yet. The control plane decides withholding at read time and writes no
+    /// change when it stops, so only a fresh read shows the target.
+    pub(crate) fn withholds_untargeted_groups(&self) -> bool {
+        self.assignments.values().any(|assignment| {
+            assignment.targets_withheld
+                && assignment.target.is_none()
+                // Both kinds form a group only on the stored target.
+                && matches!(
+                    assignment.key.kind,
+                    crate::shards::ShardKind::Stream | crate::shards::ShardKind::Cache
+                )
+        })
+    }
+}
+
+/// Whether `next` is at `current`'s incarnation, generation and set.
+fn same_set(current: &ShardAssignment, next: &ShardAssignment) -> bool {
+    (
+        next.incarnation,
+        next.generation,
+        &next.leader,
+        &next.replicas,
+    ) == (
+        current.incarnation,
+        current.generation,
+        &current.leader,
+        &current.replicas,
+    )
+}
+
+/// The target fields to hold after `next`, a change at `current`'s
+/// incarnation and generation, or `None` to drop it. The control plane
+/// stores a Raft target in place, at the generation placement wrote, so
+/// such a change is how a target reaches the broker. Only the same set's
+/// target counts. A withheld view marks the held one unknown; an open view
+/// takes a newer target or confirms the one held; an older one is a late
+/// copy.
+fn target_view(
+    current: &ShardAssignment,
+    next: &ShardAssignment,
+) -> Option<(Option<RaftTarget>, bool)> {
+    if !same_set(current, next) {
+        return None;
+    }
+    if next.targets_withheld {
+        return (!current.targets_withheld).then(|| (current.target.clone(), true));
+    }
+    let held = current.target.as_ref().map(|held| held.version);
+    match &next.target {
+        Some(target) if held.is_none_or(|held| target.version > held) => {
+            Some((Some(target.clone()), false))
+        }
+        Some(target) if held == Some(target.version) && current.targets_withheld => {
+            Some((current.target.clone(), false))
+        }
+        None if held.is_none() && current.targets_withheld => Some((None, false)),
+        _ => None,
+    }
 }
 
 /// What came before `next`, when `current` is the assignment right before it:
@@ -561,6 +640,11 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// `changed` is notified after every snapshot and every batch of changes that
 /// moved something, so the routing feed acts on it now rather than at its
 /// next tick.
+///
+/// With `reread_withheld`, set on a broker that runs Raft shards, a view that
+/// withheld the target of a stream shard this broker holds none for is read
+/// again by a snapshot, an `interval` later and then backing off to
+/// [`MAX_REREAD`], until no such shard is withheld. Polls go on between them.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     link: impl ControlPlaneLink,
@@ -572,6 +656,7 @@ pub async fn run(
     changed: Arc<Notify>,
     interval: Duration,
     lease: Option<Arc<crate::cluster::lease::LeaseState>>,
+    reread_withheld: bool,
     shutdown: CancellationToken,
 ) {
     if let Some(lease) = &lease {
@@ -588,6 +673,7 @@ pub async fn run(
     // The first snapshot is taken at once: nothing is gained by starting a
     // broker's ownership view an interval late.
     let mut delay = Duration::ZERO;
+    let mut reread = Reread::new(interval);
 
     loop {
         tokio::select! {
@@ -601,8 +687,13 @@ pub async fn run(
         let wait = if urgent {
             Duration::ZERO
         } else {
-            LONG_POLL_WAIT
+            reread.cap(LONG_POLL_WAIT)
         };
+        let rereading = checkpoint.is_some() && reread.due();
+        if rereading {
+            mm::record_withheld_reread();
+            reread.taken();
+        }
 
         // Read per poll, not once: a refreshed token has to reach this loop
         // without it knowing refresh exists.
@@ -621,8 +712,10 @@ pub async fn run(
             }
             result = async {
                 match checkpoint {
-                    None => snapshot(&link, token, &ownership, floor).await,
-                    Some(since) => poll(&link, token, &ownership, since, wait).await,
+                    Some(since) if !rereading => {
+                        poll(&link, token, &ownership, since, wait).await
+                    }
+                    _ => snapshot(&link, token, &ownership, floor).await,
                 }
             } => result,
         };
@@ -643,7 +736,10 @@ pub async fn run(
                 if moved || urgent {
                     changed.notify_one();
                 }
-                next_delay(interval, moved, started.elapsed())
+                reread.observe(
+                    reread_withheld && ownership.read().await.withholds_untargeted_groups(),
+                );
+                reread.cap(next_delay(interval, moved, started.elapsed()))
             }
             Ok(Progress::Behind) => {
                 failures = 0;
@@ -686,6 +782,58 @@ pub async fn run(
                 backoff(interval, failures)
             }
         };
+    }
+}
+
+/// The longest a withheld target waits between re-reads. Kept well under a
+/// minute: a group cannot form until its target is seen.
+const MAX_REREAD: Duration = Duration::from_secs(30);
+
+/// When to read withheld targets again. Each snapshot reads every
+/// assignment and wakes the routing feed, and a broker that stays down
+/// keeps targets withheld for as long as it is registered, so the reads
+/// back off from the sync interval, and start over once nothing is withheld.
+struct Reread {
+    first: Duration,
+    next: Duration,
+    at: Option<tokio::time::Instant>,
+}
+
+impl Reread {
+    fn new(interval: Duration) -> Self {
+        let first = interval.min(MAX_REREAD);
+        Self {
+            first,
+            next: first,
+            at: None,
+        }
+    }
+
+    fn due(&self) -> bool {
+        self.at.is_some_and(|at| at <= tokio::time::Instant::now())
+    }
+
+    /// `wait`, cut short so the next request goes out when a re-read is due.
+    fn cap(&self, wait: Duration) -> Duration {
+        match self.at {
+            Some(at) => wait.min(at.saturating_duration_since(tokio::time::Instant::now())),
+            None => wait,
+        }
+    }
+
+    fn taken(&mut self) {
+        self.at = None;
+        self.next = self.next.saturating_mul(2).min(MAX_REREAD);
+    }
+
+    /// After an answer: whether a target-less stream shard is withheld.
+    fn observe(&mut self, withheld: bool) {
+        if !withheld {
+            self.at = None;
+            self.next = self.first;
+        } else if self.at.is_none() {
+            self.at = Some(tokio::time::Instant::now() + self.next);
+        }
     }
 }
 

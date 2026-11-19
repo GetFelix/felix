@@ -8,7 +8,7 @@ use bytes::Bytes;
 use felix_replication::engine::Engine;
 use felix_wire::internal::{ForwardCacheOutcome, ForwardLease};
 
-use crate::serving::forward::{CacheRequest, ForwardKey, ForwardTarget};
+use crate::serving::forward::{CacheRequest, ForwardCredential, ForwardKey, ForwardTarget};
 use crate::serving::lease::LeaseMint;
 use crate::serving::quic::client_error::ClientError;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
@@ -118,8 +118,9 @@ pub(crate) async fn apply_cache_op(
     quorum: (&StreamEngine, std::time::Duration),
     ingress: Option<&IngressRouter>,
     peers: Option<&felix_replication::peer::PeerPool>,
-    // The caller's token, carried on a forward for the owner to verify.
-    credential: &str,
+    // The caller's token and certificate chain, carried on a forward for the
+    // owner to verify.
+    credential: &ForwardCredential,
     tenant_id: &str,
     namespace: &str,
     cache: &str,
@@ -156,7 +157,7 @@ pub(crate) async fn apply_cache_request(
     quorum: (&StreamEngine, std::time::Duration),
     ingress: Option<&IngressRouter>,
     peers: Option<&felix_replication::peer::PeerPool>,
-    credential: &str,
+    credential: &ForwardCredential,
     tenant_id: &str,
     namespace: &str,
     cache: &str,
@@ -260,6 +261,36 @@ pub(crate) async fn apply_cache_local(
         kind: ShardKind::Cache,
     };
     let (engine, quorum_timeout) = quorum;
+    let counter = matches!(
+        request,
+        CacheRequest::CounterAdd { .. } | CacheRequest::CounterGet
+    );
+    if !counter {
+        // Taken before the write, as below.
+        let entry_expires_at = match &request {
+            CacheRequest::PutIf { ttl_ms, .. } if *ttl_ms > 0 => {
+                Some(felix_common::clock::system_time() + std::time::Duration::from_millis(*ttl_ms))
+            }
+            _ => None,
+        };
+        let on_raft = raft::apply(engine, &written, generation, key, &request, quorum_timeout);
+        if let Some(answered) = on_raft.await {
+            drop(fenced);
+            let answered = answered.map_err(raft::NotServed::into_anyhow)?;
+            let lease = lease.map(|mint| match answered.outcome {
+                Some(ForwardCacheOutcome {
+                    applied: true,
+                    version: Some(version),
+                }) => mint.mint(version, entry_expires_at),
+                _ => ForwardLease::NotMinted,
+            });
+            return Ok(CacheAnswer {
+                value: answered.value,
+                outcome: answered.outcome,
+                lease,
+            });
+        }
+    }
     let write = |fenced: &mut Option<FenceGuard>| {
         fence::enter_or_keep(fenced, ingress, Some(&written), generation).map_err(ClientError::from)
     };
@@ -457,7 +488,7 @@ pub(crate) async fn apply_counter_op(
     quorum: (&StreamEngine, std::time::Duration),
     ingress: Option<&IngressRouter>,
     peers: Option<&felix_replication::peer::PeerPool>,
-    credential: &str,
+    credential: &ForwardCredential,
     tenant_id: &str,
     namespace: &str,
     cache: &str,
@@ -470,13 +501,6 @@ pub(crate) async fn apply_counter_op(
             generation,
             mut fenced,
         } => {
-            let Some(counters) = broker.counters() else {
-                return Err(ClientError::internal(
-                    "this broker has no durable storage for counters",
-                )
-                .with_retry(felix_wire::RetryClass::Fatal)
-                .into());
-            };
             let (engine, quorum_timeout) = quorum;
             // A counter lives on its cache's shard, so it is fenced by it.
             let shard_key = ShardKey {
@@ -485,6 +509,26 @@ pub(crate) async fn apply_counter_op(
                 stream: cache.to_string(),
                 shard,
                 kind: ShardKind::Cache,
+            };
+            // A Raft cache shard keeps its counters in its own log.
+            let on_raft = raft::apply(
+                engine,
+                &shard_key,
+                generation,
+                key,
+                &request,
+                quorum_timeout,
+            );
+            if let Some(answered) = on_raft.await {
+                drop(fenced);
+                return Ok(answered.map_err(raft::NotServed::into_anyhow)?.sum);
+            }
+            let Some(counters) = broker.counters() else {
+                return Err(ClientError::internal(
+                    "this broker has no durable storage for counters",
+                )
+                .with_retry(felix_wire::RetryClass::Fatal)
+                .into());
             };
             match request {
                 CacheRequest::CounterAdd { delta } => {
@@ -576,6 +620,7 @@ pub(crate) fn put_request(value: Bytes, ttl: Option<std::time::Duration>) -> Cac
     }
 }
 
+pub(crate) mod raft;
 #[cfg(test)]
 mod tests;
 

@@ -345,7 +345,7 @@ mod fence {
                 stream,
                 0,
                 felix_wire::internal::AckMode::OnCommit,
-                "",
+                &Default::default(),
             )
             .expect("admitted"),
             (
@@ -448,7 +448,7 @@ mod fence {
             DURABLE,
             0,
             felix_wire::internal::AckMode::OnCommit,
-            "",
+            &Default::default(),
         )
         .expect("admitted");
         let (response_tx, response_rx) = oneshot::channel();
@@ -855,7 +855,7 @@ fn forward_job(headers: Option<Vec<Option<Bytes>>>) -> PublishJob {
                 shard: 0,
             },
             ack: felix_wire::internal::AckMode::OnCommit,
-            credential: "token".to_string(),
+            credential: "token".into(),
         },
         payloads: vec![Bytes::from_static(b"a")],
         response: None,
@@ -1084,7 +1084,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key("orders", 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
@@ -1154,7 +1154,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key("orders", 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
@@ -1234,7 +1234,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key("orders", 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
@@ -1318,7 +1318,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key("orders", 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
@@ -1389,7 +1389,7 @@ mod on_raft {
         let shards = fixture::shards(&broker);
         let orders = fixture::key("orders", 0);
         let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
@@ -1479,7 +1479,7 @@ mod on_raft {
             let shards = fixture::shards(&broker);
             let orders = fixture::key("orders", 0);
             let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-            shards.take(&mut fixture::assignments([assigned])).await;
+            fixture::take_formed(&shards, assigned).await;
             fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
             let term = shards.leading(&orders).expect("term");
             let engine = Arc::new(fixture::engine(&shards));

@@ -93,6 +93,22 @@ What it does not do: a compromised forwarder that holds a *client's* valid
 token can still forward what that client could have published. That is the
 client's authority, correctly applied; the token's lifetime and scope bound it.
 
+With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` the owner also checks the
+token's binding to a client certificate (#2812). The forward carries the chain
+the client presented in a `ClientCertified` envelope, and the owner verifies
+it against its own client CA, at its own clock, before the same subject check
+a direct client gets (`BrokerAuth::authenticate_forwarded`). A forward without
+a chain, or with one the CA did not issue or that names someone else, is
+refused `Unauthorized`. So a forwarding broker that does not bind, a peer that
+asserts a subject without a certificate, and a token used without its
+certificate are all refused by the owner.
+
+Residual: a certificate is public, so a compromised broker that was shown a
+client's token was also shown its chain, and can replay both until the token
+or the certificate expires. Closing that needs proof of possession from the
+client, such as a statement the client signs with its certificate key that the
+owner can verify, which needs client changes.
+
 ### 2. Write arbitrary bytes into a shard's log, through replication: **partly mitigated**
 
 The replication path checks more than the forwarding path does:
@@ -186,7 +202,7 @@ the connection. Neither leaves the reader mid-frame.
 
 | # | Abuse case | Status | Owner |
 |---|---|---|---|
-| 1 | Publish to any tenant via forwarding | Mitigated: the owner verifies the client's credential (#503), and mTLS proves which broker forwarded it (#125) | None |
+| 1 | Publish to any tenant via forwarding | Mitigated: the owner verifies the client's credential (#503) and, when it binds subjects, the client's certificate chain (#2812); mTLS proves which broker forwarded it (#125). A compromised broker can replay a token and chain it was shown until either expires | None |
 | 2 | Inject records via replication | Mitigated under mTLS (peer identity) plus role + generation | None |
 | 3 | Truncate a follower via bootstrap | Mitigated | None |
 | 4 | Memory exhaustion via lengths | Mitigated | None |

@@ -240,6 +240,9 @@ means no leader or no quorum. `felix_meta_raft_peer_rejected_total{reason}`
 counts peer requests refused for the wrong cluster id or token, or because
 they were meant for another member (`reason="target"`), which means two
 addresses in `FELIX_RAFT_PEERS` reach the same member.
+`felix_meta_raft_peer_token_accepted_total{token}` says which token accepted
+requests carried, which tells you when a [peer token
+rotation](/features/security/#rotating-the-raft-peer-token) can drop the old one.
 `felix_meta_raft_deduplicated_proposals_total` counts retried writes answered
 from the first attempt's result. `felix_meta_raft_unsupported_commands_total`
 counts committed commands this build could not apply, which in a mixed-version

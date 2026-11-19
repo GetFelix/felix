@@ -90,6 +90,30 @@ impl RaftBackendConfig {
             }
             _ => {}
         }
+        // A rotation token beside no current one means the rotation removed the
+        // wrong variable; refusing beats running on the token being retired.
+        for (name, extra) in [
+            (
+                "FELIX_RAFT_PEER_TOKEN_PREVIOUS",
+                &self.security.previous_token,
+            ),
+            ("FELIX_RAFT_PEER_TOKEN_NEXT", &self.security.next_token),
+        ] {
+            match extra {
+                Some(_) if self.security.token.is_none() => {
+                    return Err(anyhow!(
+                        "{name} is set without FELIX_RAFT_PEER_TOKEN: it is only accepted \
+                         beside a current token"
+                    ));
+                }
+                Some(token) if token.len() < MIN_PEER_TOKEN_LEN => {
+                    return Err(anyhow!(
+                        "{name} must be at least {MIN_PEER_TOKEN_LEN} characters"
+                    ));
+                }
+                _ => {}
+            }
+        }
         let heartbeat = self.heartbeat_ms.unwrap_or(150);
         let min = self.election_timeout_min_ms.unwrap_or(600);
         let max = self.election_timeout_max_ms.unwrap_or(1200);
@@ -135,11 +159,16 @@ fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
     };
     Ok(crate::raft::PeerSecurity {
         cluster_id: std::env::var("FELIX_RAFT_CLUSTER_ID").unwrap_or_default(),
-        token: std::env::var("FELIX_RAFT_PEER_TOKEN")
-            .ok()
-            .filter(|token| !token.is_empty()),
+        token: non_empty_env("FELIX_RAFT_PEER_TOKEN"),
+        previous_token: non_empty_env("FELIX_RAFT_PEER_TOKEN_PREVIOUS"),
+        next_token: non_empty_env("FELIX_RAFT_PEER_TOKEN_NEXT"),
         tls,
     })
+}
+
+/// An empty value counts as unset, so a templated `VAR=` stays harmless.
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 /// `FELIX_RAFT_INSECURE_PEERS`: the explicit opt-out from a peer token.

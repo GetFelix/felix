@@ -1086,6 +1086,42 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
     }
 }
 
+/// **A broker offers `CLIENT_CERTS` only when it binds token subjects to
+/// client certificates**, so a forwarder wraps a forward in the client's
+/// chain only for an owner that checks it, and every other owner gets frames
+/// as before.
+#[test]
+fn client_certs_are_offered_only_by_a_broker_that_binds_subjects() {
+    for fence in [true, false] {
+        for client_certs in [true, false] {
+            let config = PeerTransportConfig {
+                fence,
+                client_certs,
+                ..PeerTransportConfig::default()
+            };
+            assert_eq!(
+                config
+                    .capabilities()
+                    .contains(PeerCapabilities::CLIENT_CERTS),
+                client_certs,
+                "fence {fence}"
+            );
+            assert_eq!(
+                config
+                    .outgoing_capabilities()
+                    .contains(PeerCapabilities::CLIENT_CERTS),
+                client_certs,
+                "fence {fence}"
+            );
+        }
+    }
+    assert!(
+        !PeerTransportConfig::default()
+            .capabilities()
+            .contains(PeerCapabilities::CLIENT_CERTS)
+    );
+}
+
 /// **A dialler offers `UNIFIED_FENCE` when the fence is on and
 /// `FELIX_UNIFIED_FENCE` is not `0`.** A listener never offers it, and the
 /// kill switch or no fence turns the dialler's offer off.

@@ -43,7 +43,9 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
     let faults = history
         .faults
         .iter()
-        .filter(|f| f.what != "heal" && !f.what.starts_with("save "))
+        .filter(|f| {
+            f.what != "heal" && !f.what.starts_with("save ") && !f.what.starts_with("skip ")
+        })
         .count();
     // A disk fault waits for its shards to heal, so a group that never
     // heals would otherwise pass on link faults alone.
@@ -66,7 +68,20 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
     } else if faults < MIN_FAULTS {
         Some(format!("{faults} faults"))
     } else if disks != Disks::Off && replaced == 0 {
-        Some("no directory wiped or put back".into())
+        let skipped: Vec<&str> = history
+            .faults
+            .iter()
+            .filter(|f| f.what.starts_with("skip "))
+            .map(|f| f.what.as_str())
+            .collect();
+        Some(format!(
+            "no directory wiped or put back ({})",
+            if skipped.is_empty() {
+                "none tried".into()
+            } else {
+                skipped.join("; ")
+            }
+        ))
     } else {
         None
     }

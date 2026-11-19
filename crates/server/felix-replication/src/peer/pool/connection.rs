@@ -504,7 +504,8 @@ impl LaneClass {
             InternalMessage::Raft(_) => Self::Control,
             InternalMessage::ForwardPublish(_)
             | InternalMessage::ForwardCacheOp(_)
-            | InternalMessage::LeaseForwardCacheOp(_) => Self::Forward,
+            | InternalMessage::LeaseForwardCacheOp(_)
+            | InternalMessage::ClientCertified(_) => Self::Forward,
             _ => Self::Replication,
         }
     }
@@ -539,6 +540,13 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
                 message: Box::new(with_correlation(*message, correlation_id)),
             })
         }
+        InternalMessage::ClientCertified(ClientCertified {
+            client_chain,
+            message,
+        }) => InternalMessage::ClientCertified(ClientCertified {
+            client_chain,
+            message: Box::new(with_correlation(*message, correlation_id)),
+        }),
         InternalMessage::ForwardPublish(m) => InternalMessage::ForwardPublish(ForwardPublish {
             correlation_id,
             ..m

@@ -20,33 +20,36 @@ pub(crate) type Key = (u64, u64);
 
 /// A Raft voter: a broker under one copy id. A broker whose disk was
 /// replaced runs a new copy, which never stands for the old one's votes.
-pub(crate) type VoterId<B> = (B, u64);
+pub type VoterId<B> = (B, u64);
 
 /// What the control plane holds for the group.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GroupRecord<B> {
-    pub(crate) incarnation: u64,
+pub struct GroupRecord<B> {
+    /// The stream incarnation the group runs.
+    pub incarnation: u64,
     /// How each re-form so far started its epoch; the group is at epoch
     /// `bases.len()`.
-    pub(crate) bases: Vec<EpochBase>,
+    pub bases: Vec<EpochBase>,
     /// The highest commit a leader reported, if any.
-    pub(crate) floor: Option<EpochLogId>,
+    pub floor: Option<EpochLogId>,
     /// The highest committed index a leader of any epoch of this
     /// incarnation reported (`offset_floor` on the shard's record). The
     /// next epoch gives out no offset at or below it.
-    pub(crate) offset_floor: Option<u64>,
+    pub offset_floor: Option<u64>,
     /// Every broker placed in the current epoch, removed ones included.
     /// `None` when the shard has no such record.
-    pub(crate) placed: Option<BTreeSet<B>>,
+    pub placed: Option<BTreeSet<B>>,
     /// Brokers declared dead. Their copies are not read.
-    pub(crate) dead: BTreeSet<B>,
+    pub dead: BTreeSet<B>,
     /// The voters the epoch started with: the plan that formed it, or the
-    /// group's first voters at epoch 0. `None` when not recorded.
-    pub(crate) seed: Option<BTreeSet<VoterId<B>>>,
+    /// group's first voters at epoch 0. A broker forms a group only on the
+    /// target the control plane stored, so those are also on `ordered`.
+    /// `None` when not recorded.
+    pub seed: Option<BTreeSet<VoterId<B>>>,
     /// Every voter target the control plane ordered in the epoch, recorded
     /// before the leader was asked: the control plane's
     /// `ShardAssignment::ordered_voter_sets`. `None` when not recorded.
-    pub(crate) ordered: Option<Vec<BTreeSet<VoterId<B>>>>,
+    pub ordered: Option<Vec<BTreeSet<VoterId<B>>>>,
 }
 
 /// One broker's answer.

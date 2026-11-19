@@ -50,6 +50,74 @@ pub(crate) fn assignments(
     map
 }
 
+/// `assignment` with the target the control plane stores once each broker
+/// in `all` has reported the copy id its member opened with. A group forms
+/// only on a stored target, so every test that forms one feeds this.
+pub(crate) fn stored(mut assignment: ShardAssignment, all: &[&Arc<RaftShards>]) -> ShardAssignment {
+    let members = all
+        .iter()
+        .map(|shards| {
+            let member = shards
+                .runtime
+                .status(&assignment.key)
+                .expect("an open member")
+                .member;
+            (member.broker.to_string(), member.copy)
+        })
+        .collect();
+    // The oldest version, so every target a test feeds later is newer.
+    assignment.target = Some(crate::shards::watch::RaftTarget {
+        version: crate::shards::watch::RaftTargetVersion {
+            incarnation: 0,
+            counter: 0,
+        },
+        members,
+    });
+    assignment
+}
+
+/// Feed `assignment` to every broker in `all`, so each opens its member and
+/// mints its copy id, then feed it with the target those ids make, as the
+/// control plane would, until the group forms. The lowest broker forms it
+/// off the pass and asks again only on a later pass, as the feed does.
+pub(crate) async fn form_on(all: &[&Arc<RaftShards>], assignment: ShardAssignment) {
+    for shards in all {
+        shards.take(&mut assignments([assignment.clone()])).await;
+    }
+    let key = assignment.key.clone();
+    let stored = stored(assignment.clone(), all);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        for shards in all {
+            shards.take(&mut assignments([stored.clone()])).await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let formed = all.iter().any(|shards| {
+            shards
+                .runtime
+                .status(&key)
+                .is_some_and(|status| status.term > 0 || status.last_index.is_some())
+        });
+        if formed {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out: the group to form"
+        );
+    }
+    // Back to the view with no target the tests that follow are written
+    // against: a held target waits for a fresh enough view to be told.
+    for shards in all {
+        shards.take(&mut assignments([assignment.clone()])).await;
+    }
+}
+
+/// [`form_on`] for a group of one.
+pub(crate) async fn take_formed(shards: &Arc<RaftShards>, assignment: ShardAssignment) {
+    form_on(&[shards], assignment).await;
+}
+
 /// A broker that leaves durable streams to their engines, with the durable
 /// stream `orders` at [`INCARNATION`] and the in-memory stream `scratch`.
 pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
@@ -142,6 +210,44 @@ pub(crate) async fn registered(
         .await
         .expect("scratch");
     Arc::new(broker)
+}
+
+/// [`broker`] on a durable cache store with counters, with `cache`
+/// registered at [`INCARNATION`] on one broker a shard.
+pub(crate) async fn cache_broker(root: &Path, cache: &str) -> Arc<Broker> {
+    cache_broker_of(root, cache, 1).await
+}
+
+/// [`cache_broker`], with `cache` asking for `replicas` brokers a shard.
+pub(crate) async fn cache_broker_of(root: &Path, cache: &str, replicas: u32) -> Arc<Broker> {
+    let config = || LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let store = felix_storage::LogCache::open(root.join("caches"), config()).expect("cache");
+    let counters =
+        felix_storage::CounterStore::open(root.join("counters"), config()).expect("counters");
+    let broker = Broker::new(Box::new(store)).with_counters(Arc::new(counters));
+    let broker = registered(
+        broker,
+        root,
+        1,
+        INCARNATION,
+        ConsistencyLevel::Quorum,
+        config(),
+    )
+    .await;
+    let metadata = felix_broker::CacheMetadata {
+        consistency: ConsistencyLevel::Quorum,
+        incarnation: INCARNATION,
+        replication_factor: Some(replicas),
+    };
+    broker
+        .register_cache("t1", "ns", cache, metadata)
+        .await
+        .expect("cache registered");
+    broker
 }
 
 /// Take the hard open-file limit, as a broker's start does. These tests run
@@ -238,9 +344,7 @@ fn orders_dir(broker: &Arc<Broker>) -> std::path::PathBuf {
 /// Take `orders` and wait until its group of one is led and served.
 async fn lead_orders(shards: &Arc<RaftShards>) {
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(shards, assigned(orders.clone(), INCARNATION)).await;
     until("the led term to be served", || {
         shards.leading(&orders).is_some()
     })
@@ -260,14 +364,15 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
     assert!(shards.held_copies().is_empty());
     lead_orders(&shards).await;
     let copy = shards.runtime.status(&orders).expect("status").member.copy;
-    let held = |in_target| copy_id::Held {
+    let held = |in_target, withheld| copy_id::Held {
         key: orders.clone(),
         incarnation: INCARNATION,
         copy,
         set: ["broker-a".to_string()].into(),
         in_target,
+        withheld,
     };
-    assert_eq!(shards.held_copies(), vec![held(None)]);
+    assert_eq!(shards.held_copies(), vec![held(None, false)]);
 
     let mut named = assigned(orders.clone(), INCARNATION);
     named.target = Some(crate::shards::watch::RaftTarget {
@@ -278,12 +383,12 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
         members: [("broker-a".to_string(), copy)].into(),
     });
     shards.take(&mut assignments([named.clone()])).await;
-    assert_eq!(shards.held_copies(), vec![held(Some(copy))]);
+    assert_eq!(shards.held_copies(), vec![held(Some(copy), false)]);
 
     // A withheld view says nothing of the target.
     named.targets_withheld = true;
     shards.take(&mut assignments([named])).await;
-    assert_eq!(shards.held_copies(), vec![held(None)]);
+    assert_eq!(shards.held_copies(), vec![held(None, true)]);
     shards.shutdown().await;
 }
 
@@ -487,6 +592,7 @@ async fn a_durable_stream_shard_opens_as_a_raft_member() {
     ]);
 
     shards.take(&mut left).await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
 
     // The in-memory stream and the cache are the hybrid's. The stream not
     // registered yet is nobody's this pass.
@@ -554,6 +660,7 @@ async fn broker_wide_retention_does_not_stop_a_shard_opening() {
     let mut left = assignments([assigned(orders.clone(), INCARNATION)]);
 
     shards.take(&mut left).await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
 
     until("the member to lead its group of one", || {
         shards
@@ -611,9 +718,7 @@ async fn a_member_placement_drops_keeps_serving() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     let log = shards.log_of(&orders).await.expect("open member");
     until("the led term to be served", || {
         shards.leading(&orders).is_some()
@@ -662,9 +767,7 @@ async fn a_dropped_member_reopens_after_a_restart() {
         // Never held here: nothing opens.
         shards.take(&mut assignments([elsewhere.clone()])).await;
         assert!(shards.runtime.status(&orders).is_none());
-        shards
-            .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-            .await;
+        take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
         until("the led term to be served", || {
             shards.leading(&orders).is_some()
         })
@@ -694,9 +797,7 @@ async fn a_dropped_member_reopens_after_a_failed_read() {
     {
         let broker = broker(root.path()).await;
         let shards = shards(&broker);
-        shards
-            .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-            .await;
+        take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
         until("the led term to be served", || {
             shards.leading(&orders).is_some()
         })
@@ -936,9 +1037,7 @@ async fn a_term_is_not_served_while_nothing_says_what_committed() {
     let broker = broker(root.path()).await;
     let shards = unbound_shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member to lead its group of one", || {
         shards.engine.open_term(&orders).is_some()
     })
@@ -982,14 +1081,10 @@ async fn a_short_placement_forms_no_group() {
 
     let mut members = vec![first];
     for name in ["broker-b", "broker-c"] {
-        let member = Member::start(&net, name).await;
-        member.shards.take(&mut assignments([replicated()])).await;
-        members.push(member);
+        members.push(Member::start(&net, name).await);
     }
-    members[0]
-        .shards
-        .take(&mut assignments([replicated()]))
-        .await;
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, replicated()).await;
     let leader = served(&members).await;
     let term = members[leader].shards.leading(&orders).expect("term");
     members[leader].publish(term, b"after the set filled").await;
@@ -1017,6 +1112,13 @@ async fn a_group_forms_only_when_every_member_answers_the_lowest() {
         member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
+    let full = stored(
+        replicated(),
+        &[&lowest.shards, &members[0].shards, &members[1].shards],
+    );
+    for member in &members {
+        member.shards.take(&mut assignments([full.clone()])).await;
+    }
     tokio::time::sleep(NOT_FORMED_FOR).await;
     assert!(
         !members.iter().any(formed) && !formed(&lowest),
@@ -1025,14 +1127,115 @@ async fn a_group_forms_only_when_every_member_answers_the_lowest() {
 
     // The lowest broker with one member silent forms nothing either.
     let silent = net.runtimes.lock().remove("broker-c").expect("runtime");
-    lowest.shards.take(&mut assignments([replicated()])).await;
+    lowest.shards.take(&mut assignments([full.clone()])).await;
     tokio::time::sleep(NOT_FORMED_FOR).await;
     assert!(!formed(&lowest), "formed with a member that never answered");
     assert!(!members.iter().any(formed));
 
     net.runtimes.lock().insert("broker-c".to_string(), silent);
-    lowest.shards.take(&mut assignments([replicated()])).await;
+    lowest.shards.take(&mut assignments([full])).await;
     members.insert(0, lowest);
+    served(&members).await;
+    stop(&members).await;
+}
+
+/// **A group forms only on the target the control plane stored.** A
+/// re-form counts the voter sets the control plane ordered in the epoch, so
+/// a first set no record holds could lose a majority with no re-form
+/// source seeing it. The lowest broker forms nothing while no target is
+/// stored, while the view withholds it, or while it names a copy the
+/// members asked are not; it forms the stored one once that matches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_forms_only_on_the_stored_target() {
+    let net = Arc::new(Loopback::default());
+    let orders = key("orders", 0);
+    let mut members = Vec::new();
+    for name in BROKERS {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    let lowest = &members[0];
+    let held = |what: &str| {
+        assert!(!members.iter().any(formed), "formed with {what}");
+    };
+
+    lowest.shards.take(&mut assignments([replicated()])).await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    held("no stored target");
+
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    let target = stored(replicated(), &all);
+    let mut withheld = target.clone();
+    withheld.targets_withheld = true;
+    lowest.shards.take(&mut assignments([withheld])).await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    held("a withheld target");
+
+    let mut other = target.clone();
+    let copies = &mut other.target.as_mut().expect("target").members;
+    *copies.get_mut("broker-c").expect("broker-c") ^= 1;
+    lowest.shards.take(&mut assignments([other])).await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    held("a target naming another copy");
+
+    lowest.shards.take(&mut assignments([target.clone()])).await;
+    served(&members).await;
+    let voters = lowest.shards.runtime.voters(&orders).expect("voters");
+    let stored: BTreeSet<_> = target
+        .target
+        .expect("target")
+        .members
+        .into_iter()
+        .map(|(node, copy)| MemberId::new(node, copy))
+        .collect();
+    assert_eq!(voters, stored);
+    stop(&members).await;
+}
+
+/// **A form whose placement moved while it asked forms nothing.** With
+/// {a,b,c} moved to {b,c,d}, b asks c and d while a holds blank answers
+/// from b and c; if a formed now, both sets could win a term. The lowest
+/// broker re-checks the fed set and stored target just before it
+/// initializes, so the move lands between its ask and its initialize here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_form_whose_placement_moved_while_it_asked_forms_nothing() {
+    let net = Arc::new(Loopback::default());
+    let mut members = Vec::new();
+    for name in BROKERS {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    let lowest = &members[0];
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    let target = stored(replicated(), &all);
+
+    lowest.shards.stall_forms(true);
+    lowest.shards.take(&mut assignments([target.clone()])).await;
+    until("the form to hold its answers", || {
+        lowest.shards.stall_forms.receiver_count() > 0
+    })
+    .await;
+    let mut moved = target.clone();
+    moved.leader = "broker-b".to_string();
+    moved.replicas = ["broker-b", "broker-c", "broker-d"]
+        .map(str::to_string)
+        .to_vec();
+    lowest.shards.take(&mut assignments([moved])).await;
+    lowest.shards.stall_forms(false);
+    until("the form to end", || {
+        !lowest.shards.forming.lock().contains(&key("orders", 0))
+    })
+    .await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    assert!(
+        !members.iter().any(formed),
+        "formed a set placement had moved off"
+    );
+
+    // Put off, not given up: the set fed again forms.
+    lowest.shards.take(&mut assignments([target])).await;
     served(&members).await;
     stop(&members).await;
 }
@@ -1057,6 +1260,13 @@ async fn a_broker_placed_on_a_formed_group_does_not_form_it_again() {
         "broker-c".to_string(),
     ];
     let late = Member::start(&net, "broker-0").await;
+    late.shards.take(&mut assignments([replaced.clone()])).await;
+    // Stored, so the late broker is refused for the entries it is told of
+    // and not for a missing target.
+    let replaced = stored(
+        replaced,
+        &[&late.shards, &members[1].shards, &members[2].shards],
+    );
     late.shards.take(&mut assignments([replaced.clone()])).await;
     for member in &members {
         member
@@ -1095,13 +1305,12 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
     let mut placed = replicated();
     placed.leader = "broker-b".to_string();
     let mut members = Vec::new();
-    // The broker that forms the group last, so every member it asks is up.
-    for name in BROKERS.iter().rev() {
+    for name in BROKERS {
         let member = Member::start(&net, name).await;
-        member.shards.take(&mut assignments([placed.clone()])).await;
         members.push(member);
     }
-    members.reverse();
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, placed.clone()).await;
     until("placement's leader serves its term", || {
         members[1].shards.leading(&orders).is_some()
     })
@@ -1109,6 +1318,31 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
     let term = members[1].shards.leading(&orders).expect("term");
     assert_eq!(members[0].shards.leading(&orders), None);
     members[1].publish(term, b"on the placed leader").await;
+    stop(&members).await;
+}
+
+/// **A cache group on three brokers serves its placed leader's term**, as
+/// a stream's does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replicated_cache_group_serves_its_leaders_term() {
+    let net = Arc::new(Loopback::default());
+    let sessions = ShardKey {
+        kind: ShardKind::Cache,
+        ..key("sessions", 0)
+    };
+    let mut placed = assigned(sessions.clone(), INCARNATION);
+    placed.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
+    placed.leader = "broker-b".to_string();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start_cache(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, placed).await;
+    until("placement's leader serves its term", || {
+        members[1].shards.leading(&sessions).is_some()
+    })
+    .await;
     stop(&members).await;
 }
 
@@ -1348,6 +1582,7 @@ async fn a_led_term_is_served_only_after_the_stream_is_at_the_committed_tail() {
     shards.stall_leading(true);
     let mut all = assignments([assigned(orders.clone(), INCARNATION)]);
     shards.take(&mut all).await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the member leads", || {
         shards
             .runtime
@@ -1409,6 +1644,7 @@ async fn a_publish_on_a_raft_shard_commits_through_its_group() {
     let orders = key("orders", 0);
     let mut all = assignments([assigned(orders.clone(), INCARNATION)]);
     shards.take(&mut all).await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the term is served", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("term");
     let handle = broker
@@ -1753,6 +1989,14 @@ impl Member {
         Self::assemble(net, name, root, broker, fleet)
     }
 
+    /// A broker on `net` holding `sessions`, a `Quorum` cache on three
+    /// brokers.
+    async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = cache_broker_of(root.path(), "sessions", 3).await;
+        Self::assemble(net, name, root, broker, no_fleet())
+    }
+
     /// A member of a quorum `orders` whose fleet finalized
     /// `raft_stream_purge`, so its retention timer trims and then purges,
     /// with the storage opened on `config`.
@@ -1917,14 +2161,13 @@ async fn trio_with(
 ) -> (Arc<Loopback>, Vec<Member>, usize) {
     let net = Arc::new(Loopback::default());
     let mut members = Vec::new();
-    // The broker that forms the group last, so every member it asks is up.
-    for name in BROKERS.iter().rev() {
+    for name in BROKERS {
         let member =
             Member::start_with(&net, name, INCARNATION, consistency, fsync, written_commit).await;
-        member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
-    members.reverse();
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, replicated()).await;
     let leader = served(&members).await;
     (net, members, leader)
 }
@@ -2295,9 +2538,7 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
     let shards = shards(&broker);
     let ingress = ingress(&shards);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the term is served", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("term");
     let (mut receiver, _guard) = {
@@ -2341,9 +2582,7 @@ async fn a_term_led_again_keeps_its_subscribers() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the term is served", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("term");
     let (mut old, _old_guard) = {
@@ -2388,9 +2627,7 @@ async fn a_tail_subscriber_after_the_deposal_cleared_its_term_is_dropped() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
-        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
     until("the term is served", || shards.leading(&orders).is_some()).await;
     let term = shards.leading(&orders).expect("term");
     let let_through = shards

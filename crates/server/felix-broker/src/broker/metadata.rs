@@ -91,4 +91,7 @@ pub struct CacheMetadata {
     /// before cache incarnations, whose logs keep the directory names they
     /// always had.
     pub incarnation: u64,
+    /// How many brokers each shard is placed on. `None` from a control plane
+    /// that does not say, and a Raft group is never formed without it.
+    pub replication_factor: Option<u32>,
 }
