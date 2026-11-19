@@ -951,6 +951,35 @@ async fn a_resumed_catch_up_does_not_block_past_the_tolerance() {
     }
 }
 
+/// A withheld member reports the term of the leader it has served, so a
+/// waived floor can rise to it (#2824).
+#[tokio::test]
+async fn a_withheld_member_reports_the_term_of_the_leader_it_served() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let member = Served::start(member_settings(1, dir.path()), None).await;
+    let handle = member.handle.clone();
+    handle.may_vote.store(false, Ordering::SeqCst);
+    let before = handle.standing().await.expect("standing");
+    assert_eq!(before.withheld_term, Some(0), "{before:?}");
+    let rpc = openraft::raft::AppendEntriesRequest {
+        vote: crate::raft::types::Vote {
+            leader_id: crate::raft::types::LeaderId {
+                term: 7,
+                voted_for: 2,
+            },
+            committed: true,
+        },
+        prev_log_id: None,
+        entries: vec![],
+        leader_commit: None,
+    };
+    handle.raft.append_entries(rpc).await.expect("append").ok();
+    let after = handle.standing().await.expect("standing");
+    assert!(after.withheld && after.term.is_none(), "{after:?}");
+    assert_eq!(after.withheld_term, Some(7), "{after:?}");
+    member.stop().await;
+}
+
 /// Post a floor waiver for `members` to `member` with the cluster-admin
 /// credential.
 async fn waive_on(member: &Served, members: &str) -> reqwest::StatusCode {

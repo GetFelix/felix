@@ -585,7 +585,7 @@ A block ends one of two ways:
    every term given, the withheld members' included. Past the tolerance a
    withheld member on a build that does not give `withheld_term` is waited
    on like a silent one, so the block is not reported and no waiver is
-   taken until it upgrades or finishes catching up. Acknowledged writes only the lost
+   taken until it upgrades or finishes catching up. A member resumed from an interrupted catch-up skips that wait, because its stored vote already refuses older leaders. Acknowledged writes only the lost
    members held may be lost, and the
    [restore](#restoring-beyond-quorum-loss) path is how to get them back.
    Each blocked member takes its own waiver.
