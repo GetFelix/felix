@@ -186,14 +186,8 @@ jobs:
               --features raft --test raft_election_storm -- --ignored --nocapture 2>&1 \
               | grep -E 'groups,|no leader|panicked' | tee -a storm.log || true
           }
-          for groups in 1 100 300 1000 2000 5000; do run RAFT_STORM_GROUPS=$groups; done
-          for groups in 300 2000; do run RAFT_STORM_GROUPS=$groups; done
-          run RAFT_STORM_GROUPS=2000 RAFT_STORM_MODE=form
-          run RAFT_STORM_GROUPS=1000 RAFT_STORM_IDLE=1
-          run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=20
-          run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=5 RAFT_STORM_DISK_WIDTH=16
-          run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=5 RAFT_STORM_DISK_WIDTH=4
-          run RAFT_STORM_GROUPS=200 RAFT_STORM_FSYNC_MS=10 RAFT_STORM_DISK_WIDTH=1
+          # A/B for the formed-at-once regression: that row only, three times.
+          for i in 1 2 3; do run RAFT_STORM_GROUPS=2000 RAFT_STORM_MODE=form; done
       - name: Summary
         if: always()
         run: |
@@ -201,7 +195,7 @@ jobs:
 
   told-at-once:
     name: Groups told at once
-    if: github.event_name == 'workflow_dispatch' && inputs.report == 'storm'
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
