@@ -4431,7 +4431,7 @@ How a broker reports its copy id:
   member it has open, and a member opens only after its copy file is synced,
   so no target names a copy a crash could take back. A broker reports
   only for a placement that names it and names as many brokers as the
-  stream's replica count: a short set forms no group, so it gets no target
+  stream's or cache's replica count: a short set forms no group, so it gets no target
   either. The control plane checks the replica count itself and refuses a
   report for a shorter set, whatever the broker saw.
 - **With its registration and the stream incarnation.**
@@ -4476,9 +4476,15 @@ backoff.
 
 The control plane takes ids for a shard that switched from the hybrid, and
 from metadata level 41 for a shard that started on Raft: a durable stream's
-shard on a cluster whose engine is Raft (`FELIX_SHARD_ENGINE=raft` on the
-control plane, or the group identity it recorded), with no switch record.
-Only a report that carries `shard_incarnation` counts for such a shard.
+shard or a cache's shard on a cluster whose engine is Raft
+(`FELIX_SHARD_ENGINE=raft` on the control plane, or the group identity it
+recorded), with no switch record. Cache groups, which hold the cache's
+counters too, form only on a stored target like stream groups, so they take
+the same reports and checks. The control plane keeps no durability for a
+cache: a broker runs a cache on Raft only when its cache is a log, and only
+then has a copy id to report. Only a report that carries `shard_incarnation`
+counts for such a shard, and it must name the stream's or cache's current
+incarnation.
 A shard that started on Raft starts epoch 0's list of ordered targets
 ("Targets ordered in an epoch") in the write that stores its first copy id,
 and only while its record of placed brokers is complete, so a restored
