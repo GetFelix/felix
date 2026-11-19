@@ -150,6 +150,12 @@ pub(crate) async fn patch_node(
     Json(patch): Json<NodePatchRequest>,
 ) -> Result<Json<Node>, ApiError> {
     require_node_manage(&state, &headers, &node_id).await?;
+    if let Some(internal) = patch.internal {
+        // A broker's own token holds node.manage on itself, so it must not
+        // be able to lift the role that keeps tenant shards off it.
+        require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+        tracing::warn!(node_id = %node_id, internal, "an operator changed a node's internal role");
+    }
     state
         .store
         .patch_node(&node_id, patch)

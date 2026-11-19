@@ -486,6 +486,8 @@ one is refused with `400`, and omitting it places the stream anywhere. An
 operator move to a broker outside the allowed regions is refused with `409`
 and code `region_not_allowed`. A move to a broker registered with
 `FELIX_NODE_ROLE=internal` is refused with `409` and code `internal_node`.
+`PATCH /v1/nodes/{id}` with `"internal": true|false` sets or clears that role and
+needs `node.manage` on `cluster:*`; `labels` edits never change it.
 
 A durable stream may be mounted at an MQTT topic prefix with `"mount":
 "plant/"`, so that MQTT devices can publish to it (see [MQTT](/features/mqtt/)).

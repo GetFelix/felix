@@ -412,7 +412,7 @@ put a node in the catalog that placement would then try to use.
 | `FELIX_CONTROLPLANE_URL` | with `FELIX_NODE_ID` | Where to register. |
 | `FELIX_REGION_ID` | no | Defaults to `local`. |
 | `FELIX_NODE_ZONE` | no | The broker's failure domain within its region: an availability zone, a rack. Unset or blank registers none. See [Zones](#zones). |
-| `FELIX_NODE_ROLE` | no | `internal` marks the broker as holding no tenant shards; see [Internal nodes](#internal-nodes). Unset or blank is an ordinary broker. Any other value fails startup. |
+| `FELIX_NODE_ROLE` | no | `internal` marks the broker as holding no tenant shards; see [Internal nodes](#internal-nodes). Unset or blank is an ordinary broker, unless the node is already recorded as internal (then registration is refused). Any other value fails startup. |
 | `FELIX_REGION_BRIDGES` | no | Directional `source>dest` pairs, comma-separated, of regions this broker may forward to besides its own. Unset is none. Give the control plane the same value; see [Regions](#regions). |
 | `FELIX_INTERNAL_BIND` | no | Where the internal listener binds. Defaults to `0.0.0.0:5001`. Must not share a port with `FELIX_QUIC_BIND`. |
 | `FELIX_INTERNAL_TLS_CERT`, `FELIX_INTERNAL_TLS_KEY`, `FELIX_INTERNAL_TLS_CA` | yes, or the opt-out below | Peer mTLS: this broker's certificate (its DNS name must be `FELIX_NODE_ID`), its key, and the CA every peer must chain to. All three or none. See `docs/internal-protocol.md`. |
@@ -1499,11 +1499,22 @@ constraint, ahead of every preference:
   stream creation.
 
 There is no exception for system streams: this control plane has no notion of
-one, so an internal node serves no shard at all. The role comes from the
-broker's config on every registration, so removing the variable and
-restarting makes it an ordinary node. A control-plane member older than this
-change replicates the label but does not act on it, so finish upgrading the
-control plane before marking brokers internal.
+one, so an internal node serves no shard at all.
+
+The role, once recorded, is not cleared by the broker or by label edits:
+
+- A broker that registers again without `FELIX_NODE_ROLE=internal` is refused
+  with 409 and does not serve. Restore the variable, or clear the role first.
+- `PATCH /v1/nodes/{id}` keeps the role whatever `labels` says, and rejects a
+  `labels` map that tries to set or change `felix.dev/node-role`.
+- `PATCH /v1/nodes/{id}` with `{"internal": false}` clears it (`true` sets it).
+  It needs `node.manage` on `cluster:*`, so a broker's own token cannot lift
+  its role, and logs a warning. Tenant-scoped tokens never carry
+  `node.manage`: a tenant scope does not reach nodes.
+
+A broker registers as internal only once every control-plane member supports
+the role (metadata level 42); until then the registration is refused with 409,
+so a leader that would ignore the label never sees an internal node.
 
 The cluster-wide floor matters when many shards arrive at once, for example
 from an application that creates a stream per job. With only the ceiling as
