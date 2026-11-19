@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795066437055,
+  "lastUpdate": 1795066755945,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -79068,6 +79068,72 @@ window.BENCHMARK_DATA = {
             "range": "952.00",
             "unit": "us",
             "extra": "trials: 5\nmedian: 531.00\nmean: 928.80\nstdev: 952.00\ncv: 102.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e4c5388f1b55f224fa854b5e69f7a4051a3fbaca",
+          "message": "feat(controlplane): rotate the Raft peer token without an outage (#2820)\n\n* feat(controlplane): rotate the Raft peer token without an outage (#2813)\n\nMembers accept FELIX_RAFT_PEER_TOKEN_NEXT and FELIX_RAFT_PEER_TOKEN_PREVIOUS\non inbound peer requests beside the current token and send only the current\none, so a rotation is three rolling restarts with no step at which two members\ncannot talk. Every slot is compared in constant time, and\nfelix_meta_raft_peer_token_accepted_total{token} shows when the old token is\nunused. The Helm chart reads both from optional keys of the peer token Secret.\n\nSpec-Unaffected: peer authentication on the control-plane metadata Raft listener; no lease, fence, replication or placement step changes, and no modelled path is touched.\n\n* docs(controlplane): peer token rotation prerequisites and back-out\n\nSpec-Unaffected: docs and a test fixture only.\n\n* fix(controlplane): peer token review round: digest compare, empty slots, roll waits\n\nSpec-Unaffected: peer authentication on the control-plane metadata Raft listener only.",
+          "timestamp": "2026-11-19T05:31:21Z",
+          "tree_id": "12d0ebd6e8f107924a11826e8a523e3d13c7154b",
+          "url": "https://github.com/GetFelix/felix/commit/e4c5388f1b55f224fa854b5e69f7a4051a3fbaca"
+        },
+        "date": 1795066742418,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 99,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 99.40\nstdev: 2.07\ncv: 2.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 138,
+            "range": "111.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 183.80\nstdev: 111.45\ncv: 60.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 340,
+            "range": "224.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 340.00\nmean: 379.00\nstdev: 224.45\ncv: 59.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.40\nstdev: 1.14\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "9.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 265.60\nstdev: 9.79\ncv: 3.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 383,
+            "range": "147.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 383.00\nmean: 483.00\nstdev: 147.30\ncv: 30.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
