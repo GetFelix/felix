@@ -34,12 +34,9 @@ fn add(key: &str, delta: i64, sequence: u64) -> CacheCommand {
 }
 
 /// Commit `command` stamped `stamp` through the group and return its index.
+/// A leader whose lease ran out under load forwards the write, so it retries
+/// against whoever leads next until `PATIENCE` is spent.
 async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
-    let leader = cluster.elected(N).await;
-    let member = cluster
-        .runtime(&leader.broker)
-        .group(&shard(N))
-        .expect("group");
     let command = Command {
         timestamp_micros: stamp,
         payload: command.encode(),
@@ -52,8 +49,23 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         headers: None,
         written: None,
     };
-    let written = member.raft().client_write(command).await.expect("write");
-    written.log_id.index
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let leader = cluster.elected(N).await;
+        let member = cluster
+            .runtime(&leader.broker)
+            .group(&shard(N))
+            .expect("group");
+        match member.raft().client_write(command.clone()).await {
+            Ok(written) => return written.log_id.index,
+            Err(openraft::error::RaftError::APIError(
+                openraft::error::ClientWriteError::ForwardToLeader(_),
+            )) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("write: {error:?}"),
+        }
+    }
 }
 
 fn state(cluster: &Cluster, broker: &str) -> Bytes {
