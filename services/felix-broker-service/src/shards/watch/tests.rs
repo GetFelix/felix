@@ -121,12 +121,18 @@ fn a_raft_target_stored_in_place_is_applied() {
     };
     let mut owned = ShardOwnership::default();
     assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
-    assert!(owned.apply(&key(0), Some(with(1, false))), "the stored target");
+    assert!(
+        owned.apply(&key(0), Some(with(1, false))),
+        "the stored target"
+    );
     assert_eq!(target(&owned), Some(1));
     assert!(!owned.apply(&key(0), Some(with(1, false))), "a duplicate");
     assert!(owned.apply(&key(0), Some(with(2, false))));
     assert!(!owned.apply(&key(0), Some(with(1, false))), "a late copy");
-    assert!(!owned.apply(&key(0), Some(with(0, true))), "a withheld view");
+    assert!(
+        !owned.apply(&key(0), Some(with(0, true))),
+        "a withheld view"
+    );
     assert!(!owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
     assert_eq!(target(&owned), Some(2));
     // Another set at the same generation is not this record's target.

@@ -507,13 +507,17 @@ impl ShardOwnership {
 /// carries a target newer than the one held. A withheld or absent target
 /// says nothing, and an older one is a late copy.
 fn newer_target(current: &ShardAssignment, next: &ShardAssignment) -> bool {
-    let same_set = (next.incarnation, next.generation, &next.leader, &next.replicas)
-        == (
-            current.incarnation,
-            current.generation,
-            &current.leader,
-            &current.replicas,
-        );
+    let same_set = (
+        next.incarnation,
+        next.generation,
+        &next.leader,
+        &next.replicas,
+    ) == (
+        current.incarnation,
+        current.generation,
+        &current.leader,
+        &current.replicas,
+    );
     let Some(target) = next.target.as_ref().filter(|_| !next.targets_withheld) else {
         return false;
     };
