@@ -109,15 +109,11 @@ where
             .as_ref()
             .and_then(|durable| durable.log.sealed_cache.as_ref()),
     );
+    let mut config = config;
+    offer_client_certs(&mut config);
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
-    let mut config = config;
-    // Only a broker that binds subjects checks a forwarded client chain, so
-    // only it asks for one.
-    if let Some(peer) = config.peer_transport.as_mut() {
-        peer.client_certs = config.client_tls.bind_subject;
-    }
     if durable_config.is_none()
         && let Some(peer) = config.peer_transport.as_mut()
     {
@@ -796,6 +792,17 @@ fn gate_record_generations(
         broker.record_generations_when(move || {
             fleet.supports(felix_common::fleet::RECORD_GENERATIONS)
         });
+    }
+}
+
+/// Offer `CLIENT_CERTS` to peers only when this broker binds token subjects
+/// to client certificates: only then does it check a forwarded client chain.
+/// A client CA alone is not enough, and a binding broker that did not offer
+/// it would be sent no chains and refuse every forward from a certified
+/// client.
+fn offer_client_certs(config: &mut crate::config::BrokerConfig) {
+    if let Some(peer) = config.peer_transport.as_mut() {
+        peer.client_certs = config.client_tls.bind_subject;
     }
 }
 
