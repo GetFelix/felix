@@ -14,6 +14,7 @@
 //! outright. Reads require
 //! `node.view:cluster:*`, since the listing exposes the cluster's network
 //! layout.
+pub(crate) mod dead;
 pub(crate) mod fleet;
 pub(crate) mod listing;
 pub(crate) mod reports;

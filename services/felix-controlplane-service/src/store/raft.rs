@@ -49,7 +49,7 @@ const STORAGE_IDENTITY_LEVEL: u16 = 12;
 /// The metadata level whose members' placement acts on the internal node
 /// role. A node registered as internal earlier would be given tenant shards
 /// by a leader below it, so such a registration waits for every member.
-const INTERNAL_ROLE_LEVEL: u16 = 42;
+const INTERNAL_ROLE_LEVEL: u16 = 44;
 
 /// The metadata level whose members store which node made a replica report
 /// and the incarnations it was taken at.
@@ -162,6 +162,10 @@ const FORGET_REPORTS_LEVEL: u16 = 37;
 /// The metadata level whose members keep each Raft shard's offset floor
 /// (`ShardAssignment::raft_floor`).
 const RAFT_FLOOR_LEVEL: u16 = 38;
+
+/// The metadata level whose members record data directories declared dead
+/// and refuse their registrations (`MetaCommand::DeclareNodeDead`).
+const DECLARE_DEAD_LEVEL: u16 = 42;
 
 /// The metadata level whose members keep every Raft target ordered in a
 /// shard's epoch (`ShardAssignment::raft_ordered`).
@@ -869,6 +873,32 @@ impl ControlPlaneStore for RaftStore {
 
     async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
         self.local()?.enabled_fleet_features().await
+    }
+
+    async fn declare_node_dead(&self, node_id: &str) -> StoreResult<crate::model::DeclaredDead> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < DECLARE_DEAD_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {DECLARE_DEAD_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::DeclareNodeDead {
+                node_id: node_id.to_string(),
+            })
+            .await?
+        {
+            MetaResponse::DeclaredDead { declared } => Ok(declared),
+            _ => Err(unexpected_shape("declared dead")),
+        }
+    }
+
+    async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>> {
+        self.local()?.declared_dead().await
     }
 
     async fn finalize_fleet_feature(

@@ -23,8 +23,8 @@ pub(crate) use incarnation::{next_incarnation, proposed_incarnation};
 pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey};
 pub(crate) use node::validate_storage_id;
 pub use node::{
-    Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
-    NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
+    DeclaredDead, Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest,
+    NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
 };
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftFloor, RaftFloorError,

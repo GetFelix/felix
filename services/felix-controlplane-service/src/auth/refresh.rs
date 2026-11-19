@@ -13,14 +13,15 @@
 //! for authorization purposes, which is most of what the short TTL was for.
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::{Path, State};
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal, api_internal_message};
 use crate::auth::bearer::{Refusal, refused};
+use crate::auth::cert_binding::ExchangeBinding;
 use crate::auth::felix_token::mint_token_may_act;
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
@@ -183,12 +184,14 @@ pub(crate) fn refreshable_groups(
     request_body = TokenRefreshRequest,
     responses(
         (status = 200, description = "A new access token and its replacement refresh token", body = TokenRefreshResponse),
+        (status = 401, description = "Code `certificate_mismatch`: certificate binding is on and the client certificate is not issued to the token's principal or actor"),
         (status = 403, description = "The refresh token is not usable"),
     )
 )]
 pub async fn refresh_token_handler(
     Path(tenant_id): Path<String>,
     State(state): State<AppState>,
+    binding: Option<Extension<ExchangeBinding>>,
     Json(request): Json<TokenRefreshRequest>,
 ) -> Result<Json<TokenRefreshResponse>, ApiError> {
     // One refusal for every way a token can be unusable — unparseable, unknown,
@@ -247,6 +250,29 @@ pub async fn refresh_token_handler(
             }
             RefreshTokenTake::Unusable => unusable(),
         });
+    }
+
+    // Bound the way the access token it mints is bound. Checked once the
+    // secret matched, so a token id alone says nothing about whose it is, and
+    // before liveness, so a spent token replayed from the wrong certificate
+    // neither tells the caller it was spent nor ends the owner's chain. The
+    // token is not spent either: the holder of the right certificate keeps it.
+    if let Some(Extension(binding)) = &binding {
+        let may_act = found
+            .narrowing
+            .as_ref()
+            .and_then(|narrowing| narrowing.may_act.as_deref());
+        if let Err(err) = binding.check(&found.principal_id, may_act) {
+            // The caller holds this chain's secret, so name the chain for an
+            // operator to revoke.
+            tracing::warn!(
+                tenant_id = %tenant_id,
+                principal_id = %found.principal_id,
+                family_id = %found.family_id,
+                "a refresh token was presented from another certificate",
+            );
+            return Err(err);
+        }
     }
 
     // The chain keeps its exchange's audience.

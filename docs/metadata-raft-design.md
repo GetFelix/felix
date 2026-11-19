@@ -1078,7 +1078,8 @@ the field itself, on every member alike, or refuses the command:
 | `accept_seal_report` and `record_raft_copy_id` `keep_ordered`, assignment `raft_ordered`, and in the snapshot | 39 | the commands are settled without the flag, so no member starts a shard's list of ordered targets, and a target written without it marks a started list lost. The re-form then reads the epoch's ordered targets as unknown and stays marked |
 | `import_state` `lose_ordered` | 40 | the import is settled without the flag, so a restored list of ordered targets keeps `lost` as the backup had it and can be read as complete for its epoch. No member marks it, so members still agree |
 | `record_raft_copy_id` `shard_incarnation` | 41 | the report is refused with 409 before it reaches the log, so no member takes a copy id for a shard that started on Raft, and such a shard gets no target. An entry without the field applies as it did at 36, on every member alike |
-| `patch_node` `internal`, and a node registering with the internal role | 42 | a registration with the role is refused with 409 until every member can apply it, so no leader below the level places tenant shards on an internal node; the patch is refused with 409 before it reaches the log |
+| `declare_node_dead`, snapshot `declared_dead` | 42 | the declaration is refused with 409 by the store and by the leader before it reaches the log, so no member records a dead directory or refuses a registration for one |
+| `patch_node` `internal`, and a node registering with the internal role | 44 | a registration with the role is refused with 409 until every member can apply it, so no leader below the level places tenant shards on an internal node; the patch is refused with 409 before it reaches the log |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

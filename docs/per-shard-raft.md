@@ -4796,6 +4796,40 @@ by the store and again by the leader that would append it. Nothing reads
 the floor yet: the re-form's refusal to run a first form for an incarnation
 that has a floor is not built.
 
+#### Declaring a broker dead
+
+A re-form waits for every broker placed in the epoch until it answers or
+an operator declares it dead (`felixctl node declare-dead <id>`,
+`POST /v1/nodes/{node_id}/declare-dead`). The control plane records the
+node with the storage id it is registered under at that moment
+(`DeclaredDead`), and the record is never removed, not by a node delete
+either:
+
+- Only a node that is down or left can be declared dead. This guard is a
+  sanity check, not proof. Down means only that its heartbeats stopped, and a
+  Raft shard does not serve on a control-plane lease, so a Down broker that
+  can still reach a majority of its group keeps voting and acking. The
+  control plane cannot see that. Before declaring, the operator must make
+  sure the broker process is stopped or its host fenced, and that its disk is
+  gone for good.
+- A registration under a dead storage id is refused, and so is one with no
+  storage id from a node that has any directory declared dead. The broker
+  comes back only with a new data directory (a wiped disk, or
+  `rotate-storage-id`), so a copy the plan left out never votes as itself.
+- The dead set a plan takes (`ControlPlaneStore::dead_nodes`) is the nodes
+  whose registered storage id was declared dead, plus those declared and
+  since deleted. A broker that registered again under a new storage id is
+  live again and must answer like any placed broker. Returning never
+  unmarks an epoch.
+
+The declaration is metadata level 42. Below it the store and the leader
+both refuse it: a member that could not apply it would take a
+registration the others refuse. `GET /v1/fleet/declared-dead` lists the
+records. Nothing reads the dead set yet; the plan and apply that will are
+not built. When they are, they must require survey proof that the broker
+is gone (or a minimum time in Down plus an unanswered survey) before they
+use a dead node, and not rely on the declaration alone.
+
 #### The control plane's record for a re-form
 
 The re-form planner (`plan_reform` in `raft_copy/vouch.rs`) takes what the
@@ -4810,7 +4844,7 @@ the brokers declared dead:
 | `ordered` | `ordered_voter_sets()`, see "Targets ordered in an epoch" |
 | `floor` | `raft_floor`'s exact log id, at this incarnation and epoch |
 | `offset_floor` | `raft_floor.offset_floor`, at this incarnation |
-| `dead` | the brokers the caller passes as declared dead |
+| `dead` | the brokers the caller passes as declared dead (`dead_nodes`, see "Declaring a broker dead") |
 | `seed` | always `None` for now |
 | `bases` | empty: only a group at epoch 0 gets a record |
 

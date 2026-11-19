@@ -244,12 +244,19 @@ fn destructive_commands_take_yes() {
         &["cache", "rm", "sessions", "--yes"],
         &["node", "drain", "broker-2", "--yes"],
         &["node", "deregister", "broker-2", "--yes"],
+        &["node", "declare-dead", "broker-2", "--yes"],
         &["placement", "abandon", "orders", "2", "--yes"],
     ] {
         parse(args);
     }
     let Command::Node(NodeCommand::Drain { confirm, .. }) = parse(&["node", "drain", "b"]) else {
         panic!("not node drain");
+    };
+    assert!(!confirm.yes);
+    let Command::Node(NodeCommand::DeclareDead { confirm, .. }) =
+        parse(&["node", "declare-dead", "b"])
+    else {
+        panic!("not node declare-dead");
     };
     assert!(!confirm.yes);
 }

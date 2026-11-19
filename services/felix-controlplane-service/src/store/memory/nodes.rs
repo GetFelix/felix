@@ -1,6 +1,6 @@
 //! The node catalog: registration, heartbeats, expiry and lifecycle moves.
 use super::InMemoryStore;
-use crate::model::{Node, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest};
+use crate::model::{DeclaredDead, Node, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest};
 use crate::store::{ChangeSet, Snapshot, StoreError, StoreResult};
 
 /// Whether a registration is held to the enabled fleet features.
@@ -26,6 +26,10 @@ pub(super) async fn register_node(
         // and the insert.
         FleetRule::Enforce => crate::cluster::fleet::admit(&state.fleet_enabled, &node)?,
         FleetRule::Ignore => node.status.features.clear(),
+    }
+
+    if let Some(refused) = dead_registration(&state.dead, &node) {
+        return Err(refused);
     }
 
     if let Some((holder, _)) = state.records.iter().find(|(id, existing)| {
@@ -140,6 +144,68 @@ pub(super) async fn patch_node(
     state.record(NodeChangeOp::Updated, node_id, Some(patched.clone()));
     metrics::counter!("felix_node_changes_total", "op" => "updated").increment(1);
     Ok(patched)
+}
+
+/// Refuses a registration under a storage id declared dead, or under no
+/// storage id once any of the node's directories was: the second cannot be
+/// told apart from the dead copy coming back.
+fn dead_registration(
+    dead: &std::collections::BTreeSet<DeclaredDead>,
+    node: &Node,
+) -> Option<StoreError> {
+    let mut declared = dead.iter().filter(|dead| dead.node_id == node.node_id);
+    let refused = match &node.status.storage_id {
+        Some(storage_id) => declared.any(|dead| &dead.storage_id == storage_id),
+        None => declared.next().is_some(),
+    };
+    refused.then(|| {
+        StoreError::Conflict(format!(
+            "node {} was declared dead under storage id {}; it registers again only \
+             with a new data directory",
+            node.node_id,
+            node.status
+                .storage_id
+                .as_deref()
+                .unwrap_or("(none reported)")
+        ))
+    })
+}
+
+/// Declare `node_id`'s data directory dead, under the storage id it is
+/// registered with. Idempotent.
+///
+/// Only a node that is not serving (down or left) can be declared dead:
+/// a live one could still vote and commit beside a group the re-form
+/// starts without it.
+pub(super) async fn declare_node_dead(
+    store: &InMemoryStore,
+    node_id: &str,
+) -> StoreResult<DeclaredDead> {
+    let mut state = store.nodes.write().await;
+    let node = state
+        .records
+        .get(node_id)
+        .ok_or_else(|| StoreError::NotFound("node".into()))?;
+    if matches!(
+        node.status.lifecycle,
+        NodeLifecycle::Live | NodeLifecycle::Draining
+    ) {
+        return Err(StoreError::Conflict(format!(
+            "node {node_id} is {:?}; only a node that is down or left can be declared dead",
+            node.status.lifecycle
+        )));
+    }
+    let Some(storage_id) = node.status.storage_id.clone() else {
+        return Err(StoreError::Conflict(format!(
+            "node {node_id} reported no storage id, so its data directory cannot be named"
+        )));
+    };
+    let declared = DeclaredDead {
+        node_id: node_id.to_owned(),
+        storage_id,
+    };
+    state.dead.insert(declared.clone());
+    Ok(declared)
 }
 
 /// `forget_reports` also drops the node's incarnation from every held

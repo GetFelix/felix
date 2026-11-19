@@ -308,6 +308,20 @@ impl RootSequence {
     }
 }
 
+/// A broker's data directory an operator declared dead: the node and the
+/// storage id it was registered under at that moment.
+///
+/// A re-form reads nothing from a dead copy and plans without it. The node
+/// may register again only under another storage id (a wiped disk, or
+/// `rotate-storage-id`), so a copy the plan left out never comes back as
+/// itself. See `docs/per-shard-raft.md`, "Declaring a broker dead".
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeclaredDead {
+    pub node_id: String,
+    /// 32 lowercase hex digits.
+    pub storage_id: String,
+}
+
 /// The placement incarnation a broker's heartbeat says it has durably
 /// acknowledged, and the process incarnation that said it.
 ///

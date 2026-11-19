@@ -605,7 +605,7 @@
 0 patch_node.patch.capacity.weight
 0 patch_node.patch.labels
 0 patch_node.patch.labels.*
-42 patch_node.patch.internal
+44 patch_node.patch.internal
 0 patch_node.patch.lifecycle
 0 patch_node.patch.region
 0 patch_stream
@@ -1651,3 +1651,11 @@
 39 accept_seal_report.keep_ordered
 39 record_raft_copy_id.keep_ordered
 41 record_raft_copy_id.shard_incarnation
+42 declare_node_dead
+42 declare_node_dead.node_id
+42 import_state.state.declared_dead
+42 import_state.state.declared_dead[].node_id
+42 import_state.state.declared_dead[].storage_id
+42 snapshot.state.declared_dead
+42 snapshot.state.declared_dead[].node_id
+42 snapshot.state.declared_dead[].storage_id
