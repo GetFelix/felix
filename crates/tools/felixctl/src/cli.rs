@@ -1227,6 +1227,24 @@ pub(crate) enum NodeCommand {
         #[command(flatten)]
         confirm: Confirm,
     },
+    /// Declare a stopped broker's data directory gone for good
+    #[command(
+        name = "declare-dead",
+        long_about = "Declare a broker's data directory gone for good, under the storage id \
+                      it is registered with. A Raft re-form then plans without its copies, \
+                      and the broker registers again only with a new data directory. It \
+                      cannot be undone. Only a broker that is down or left can be declared \
+                      dead. Asks first on a terminal; elsewhere it needs --yes.",
+        after_long_help = "Examples:
+  felixctl node declare-dead broker-2
+  felixctl node declare-dead broker-2 --yes"
+    )]
+    DeclareDead {
+        /// Node id
+        node: String,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
 }
 
 #[derive(Debug, Subcommand)]

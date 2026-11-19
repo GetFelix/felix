@@ -5031,3 +5031,108 @@ async fn raft_floors_wait_for_every_member_known_at_level_38() {
     })
     .await;
 }
+
+/// On a store of its own: other node contracts enable fleet features.
+#[tokio::test]
+async fn satisfies_the_declared_dead_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::declared_dead::run_declared_dead_contract(store).await;
+}
+
+/// Refused while any member is below level 42, through the store and raw
+/// peer bytes alike; at 42 the operator route records it, the record travels
+/// in a snapshot, and every member refuses the dead directory's registration.
+#[tokio::test]
+async fn a_dead_declaration_waits_for_level_42_and_travels_in_snapshots() {
+    use crate::store::AuthStore;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), DECLARE_DEAD_LEVEL - 1).await;
+    let keys = crate::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let mut gone = crate::store::contract::nodes::node("gone", 7201);
+    gone.status.storage_id = Some("a".repeat(32));
+    store.register_node(gone.clone()).await.expect("register");
+    store
+        .set_node_lifecycle("gone", crate::model::NodeLifecycle::Down)
+        .await
+        .expect("down");
+
+    let refused = store.declare_node_dead("gone").await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(_))),
+        "proposed below level 42: {refused:?}"
+    );
+    let raw = crate::store::raft::command::encode_command(&MetaCommand::DeclareNodeDead {
+        node_id: "gone".to_string(),
+    });
+    let answer = store.handle.write(raw).await.expect("answered");
+    let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+    assert!(
+        matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 42")),
+        "{result:?}"
+    );
+    assert!(store.declared_dead().await.expect("list").is_empty());
+
+    version.store(DECLARE_DEAD_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    let post = || async {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/nodes/gone/declare-dead")
+            .header(
+                "authorization",
+                format!(
+                    "Bearer {}",
+                    crate::test_support::token(&keys, &["node.manage:cluster:*"])
+                ),
+            )
+            .body(Body::empty())
+            .expect("request");
+        let state = crate::test_support::app_state_ready(Arc::clone(&store) as _);
+        crate::api::build_router(state)
+            .oneshot(request)
+            .await
+            .expect("response")
+            .status()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while post().await != StatusCode::OK {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still refused at level 42"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let declared = crate::model::DeclaredDead {
+        node_id: "gone".to_string(),
+        storage_id: "a".repeat(32),
+    };
+    assert!(matches!(
+        store.register_node(gone.clone()).await,
+        Err(StoreError::Conflict(_))
+    ));
+
+    let restored = InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    });
+    restored
+        .import_state(store.machine.store().export_state().await)
+        .await
+        .expect("import");
+    assert_eq!(
+        restored.declared_dead().await.expect("list"),
+        vec![declared]
+    );
+    assert!(matches!(
+        restored.register_node(gone).await,
+        Err(StoreError::Conflict(_))
+    ));
+}

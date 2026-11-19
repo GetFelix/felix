@@ -158,6 +158,14 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(api::nodes::fleet::fleet_features),
         )
         .route(
+            "/v1/fleet/declared-dead",
+            axum::routing::get(api::nodes::dead::list_dead),
+        )
+        .route(
+            "/v1/nodes/{node_id}/declare-dead",
+            axum::routing::post(api::nodes::dead::declare_dead),
+        )
+        .route(
             "/v1/fleet/features/{feature}/finalize",
             axum::routing::post(api::nodes::fleet::finalize_fleet_feature),
         )

@@ -360,6 +360,9 @@ pub(crate) async fn node(
         NodeCommand::Deregister { node, confirm } => {
             manage::node_lifecycle(&api, node, "deregister", *confirm, out).await
         }
+        NodeCommand::DeclareDead { node, confirm } => {
+            manage::declare_dead(&api, node, *confirm, out).await
+        }
     }
 }
 

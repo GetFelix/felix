@@ -4737,6 +4737,33 @@ by the store and again by the leader that would append it. Nothing reads
 the floor yet: the re-form's refusal to run a first form for an incarnation
 that has a floor is not built.
 
+#### Declaring a broker dead
+
+A re-form waits for every broker placed in the epoch until it answers or
+an operator declares it dead (`felixctl node declare-dead <id>`,
+`POST /v1/nodes/{node_id}/declare-dead`). The control plane records the
+node with the storage id it is registered under at that moment
+(`DeclaredDead`), and the record is never removed, not by a node delete
+either:
+
+- Only a node that is down or left can be declared dead. A live one could
+  still vote and commit beside the group the re-form starts without it.
+- A registration under a dead storage id is refused, and so is one with no
+  storage id from a node that has any directory declared dead. The broker
+  comes back only with a new data directory (a wiped disk, or
+  `rotate-storage-id`), so a copy the plan left out never votes as itself.
+- The dead set a plan takes (`ControlPlaneStore::dead_nodes`) is the nodes
+  whose registered storage id was declared dead, plus those declared and
+  since deleted. A broker that registered again under a new storage id is
+  live again and must answer like any placed broker. Returning never
+  unmarks an epoch.
+
+The declaration is metadata level 42. Below it the store and the leader
+both refuse it: a member that could not apply it would take a
+registration the others refuse. `GET /v1/fleet/declared-dead` lists the
+records. Nothing reads the dead set yet; the plan and apply that will are
+not built.
+
 #### The control plane's record for a re-form
 
 The re-form planner (`plan_reform` in `raft_copy/vouch.rs`) takes what the
@@ -4751,7 +4778,7 @@ the brokers declared dead:
 | `ordered` | `ordered_voter_sets()`, see "Targets ordered in an epoch" |
 | `floor` | `raft_floor`'s exact log id, at this incarnation and epoch |
 | `offset_floor` | `raft_floor.offset_floor`, at this incarnation |
-| `dead` | the brokers the caller passes as declared dead |
+| `dead` | the brokers the caller passes as declared dead (`dead_nodes`, see "Declaring a broker dead") |
 | `seed` | always `None` for now |
 | `bases` | empty: only a group at epoch 0 gets a record |
 

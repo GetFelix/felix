@@ -500,6 +500,11 @@ impl MetadataStateMachine {
                 .await
                 .map(|_| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::DeclareNodeDead { node_id } => store
+                .apply_declare_node_dead(&node_id)
+                .await
+                .map(|declared| MetaResponse::DeclaredDead { declared })
+                .map_err(Into::into),
             MetaCommand::RecordRaftFloors { node_id, floors } => Ok(MetaResponse::Count {
                 count: u64::from(store.apply_record_raft_floors(&node_id, &floors).await),
             }),

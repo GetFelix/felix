@@ -1103,6 +1103,19 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn declare_node_dead(
+        &self,
+        _node_id: &str,
+    ) -> StoreResult<felix_controlplane_service::model::DeclaredDead> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn declared_dead(
+        &self,
+    ) -> StoreResult<Vec<felix_controlplane_service::model::DeclaredDead>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
         // A stream create reads the fleet gate first; let it through so the
         // create's own failure is the one that surfaces.

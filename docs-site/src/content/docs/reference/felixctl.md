@@ -1323,6 +1323,29 @@ felixctl node deregister broker-2
 felixctl node deregister broker-2 --yes
 ```
 
+### `felixctl node declare-dead`
+
+Declare a broker's data directory gone for good, under the storage id it is registered with. A Raft re-form then plans without its copies, and the broker registers again only with a new data directory. It cannot be undone. Only a broker that is down or left can be declared dead. Asks first on a terminal; elsewhere it needs --yes.
+
+```text
+felixctl node declare-dead [OPTIONS] <NODE>
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `NODE` | yes | Node id |
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `-y, --yes` | - | - | Do not ask for confirmation. Needed when stdin is not a terminal |
+
+Examples:
+
+```bash
+felixctl node declare-dead broker-2
+felixctl node declare-dead broker-2 --yes
+```
+
 ## `felixctl shard`
 
 List which broker leads each shard of every stream and cache, as the control plane assigned them, list the moves in progress, and move a shard's leadership or cancel a move.
