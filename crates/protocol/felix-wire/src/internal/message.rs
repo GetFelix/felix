@@ -1,10 +1,11 @@
 //! The decoded internal message, and the shard reference most of them carry.
 
 use super::{
-    Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, LeaseForwardCacheOk, NotLeader,
-    PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer, RaftAnswer, RaftCall, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ClientCertified, Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
+    ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind,
+    LeaseForwardCacheOk, NotLeader, PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer,
+    RaftAnswer, RaftCall, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
+    ReplicateRebuild, ReplicateRecords,
 };
 use super::{FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk};
 
@@ -76,6 +77,7 @@ pub enum InternalMessage {
     SealAck(SealAck),
     SealAckOk(SealAckOk),
     FromCopy(FromCopy),
+    ClientCertified(ClientCertified),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -211,6 +213,7 @@ impl InternalMessage {
             Self::SealAck(_) => Kind::SealAck,
             Self::SealAckOk(_) => Kind::SealAckOk,
             Self::FromCopy(_) => Kind::FromCopy,
+            Self::ClientCertified(_) => Kind::ClientCertified,
         }
     }
 
@@ -225,6 +228,15 @@ impl InternalMessage {
                         .required_capability()
                         .map_or(PeerCapabilities::SWITCH_SEAL, |inner| {
                             inner.union(PeerCapabilities::SWITCH_SEAL)
+                        }),
+                );
+            }
+            Self::ClientCertified(m) => {
+                return Some(
+                    m.message
+                        .required_capability()
+                        .map_or(PeerCapabilities::CLIENT_CERTS, |inner| {
+                            inner.union(PeerCapabilities::CLIENT_CERTS)
                         }),
                 );
             }
@@ -292,6 +304,18 @@ impl InternalMessage {
             | Self::ReplicateCounterRecords(m)
             | Self::ReplicateMarkedRecords(m) => Some(&mut m.set_generation),
             _ => None,
+        }
+    }
+
+    /// Whether this is a forwarded publish or cache operation, bare or inside
+    /// a [`ClientCertified`] envelope.
+    pub fn is_forward_request(&self) -> bool {
+        match self {
+            Self::ForwardPublish(_) | Self::ForwardCacheOp(_) | Self::LeaseForwardCacheOp(_) => {
+                true
+            }
+            Self::ClientCertified(m) => m.message.is_forward_request(),
+            _ => false,
         }
     }
 
@@ -393,6 +417,7 @@ impl InternalMessage {
             Self::SealAck(m) => m.correlation_id,
             Self::SealAckOk(m) => m.correlation_id,
             Self::FromCopy(m) => m.message.correlation_id(),
+            Self::ClientCertified(m) => m.message.correlation_id(),
         }
     }
 }

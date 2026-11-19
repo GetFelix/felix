@@ -362,6 +362,7 @@ async fn an_exchange_with_an_actor_token_mints_a_token_only_that_actor_can_deleg
             ..TokenExchangeRequest::default()
         },
         BROKER_AUDIENCE,
+        None,
     )
     .await
     .expect("exchanged");
@@ -442,6 +443,7 @@ fn a_refused_actor_token_has_its_own_code() {
                         ..TokenExchangeRequest::default()
                     },
                     audience,
+                    None,
                 )
                 .await
                 .map(|_| ())
@@ -626,6 +628,7 @@ async fn exchange_for_alice(
             ..TokenExchangeRequest::default()
         },
         BROKER_AUDIENCE,
+        None,
     )
     .await
 }
@@ -865,6 +868,7 @@ async fn a_gateways_connection_only_chain_still_refreshes() {
             ..TokenExchangeRequest::default()
         },
         BROKER_AUDIENCE,
+        None,
     )
     .await
     .expect("connection-only token");
@@ -1068,4 +1072,71 @@ async fn a_delegated_token_never_carries_lease_templates() {
     .expect("delegated");
     let claims = verify_token(&fixture.keys, "t1", &response.access_token, 0).expect("verify");
     assert_eq!(claims.perms, vec![ALICE_FEED.to_string()]);
+}
+
+/// A binding to a certificate with the URI SAN `felix:principal:<principal>`.
+fn bound_to(principal: &str) -> crate::auth::cert_binding::ExchangeBinding {
+    let key = rcgen::KeyPair::generate().expect("key");
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+    let san = format!("felix:principal:{principal}");
+    params.subject_alt_names = vec![rcgen::SanType::URI(san.as_str().try_into().expect("uri"))];
+    let cert = params.self_signed(&key).expect("cert");
+    crate::auth::cert_binding::ExchangeBinding(Some(crate::auth::cert_binding::PeerCertificates(
+        std::sync::Arc::from(vec![cert.der().clone()]),
+    )))
+}
+
+/// Under certificate binding, an exchange mints a token only for the
+/// certificate's principal, or for a user whose token names the
+/// certificate's principal as the actor that may delegate it.
+#[tokio::test]
+async fn a_bound_exchange_mints_only_for_the_certificate_or_its_actor() {
+    let fixture = fixture().await;
+    fixture
+        .state
+        .store
+        .add_rbac_policy(
+            "t1",
+            PolicyRule {
+                subject: "p:alice".to_string(),
+                object: "stream:t1/ns/alice-feed".to_string(),
+                action: "stream.publish".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let exchange = |actor_token: Option<String>, binding| {
+        let state = fixture.state.clone();
+        async move {
+            mint_for_principal(
+                &state,
+                "t1",
+                "p:alice",
+                &[],
+                &TokenExchangeRequest {
+                    actor_token,
+                    ..TokenExchangeRequest::default()
+                },
+                BROKER_AUDIENCE,
+                Some(&binding),
+            )
+            .await
+        }
+    };
+
+    exchange(None, bound_to("p:alice"))
+        .await
+        .expect("alice's own certificate");
+    exchange(Some(gateway.clone()), bound_to("p:test"))
+        .await
+        .expect("the certificate of the actor alice's token names");
+    let err = exchange(None, bound_to("p:test"))
+        .await
+        .expect_err("the gateway's certificate without naming it as actor");
+    assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+    let err = exchange(Some(gateway), bound_to("p:mallory"))
+        .await
+        .expect_err("a certificate issued to neither");
+    assert_eq!(err.status, StatusCode::UNAUTHORIZED);
 }

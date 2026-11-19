@@ -144,7 +144,7 @@ async fn a_forwarded_publish_is_stamped_with_the_shard_it_was_routed_for() {
         "stream",
         3,
         felix_wire::internal::AckMode::OnCommit,
-        "test-token",
+        &"test-token".into(),
     )
     .expect("a forwardable route with a peer pool must produce a target");
 

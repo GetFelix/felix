@@ -26,6 +26,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use felix_authz::{
     Action, CacheKeys, CacheScope, Namespace, PermissionMatcher, StreamName, TenantId,
     cache_resource, stream_resource,
@@ -34,10 +35,10 @@ use felix_broker::{Broker, SequenceReuse};
 use felix_replication::engine::{CommitError, Engine};
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
-    CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
-    ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish,
-    ForwardPublishError, ForwardPublishOk, InternalMessage, LeaseForwardCacheOk, NotLeader,
-    ShardRef,
+    CacheOpKind, ClientCertified, ErrorCode, ForwardCacheCondition, ForwardCacheError,
+    ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer,
+    ForwardPublish, ForwardPublishError, ForwardPublishOk, InternalMessage, LeaseForwardCacheOk,
+    NotLeader, ShardRef,
 };
 
 use super::CacheRequest;
@@ -101,7 +102,33 @@ impl ForwardingHandler {
         &self.engine
     }
 
+    /// A forward that came without its client's certificate chain.
     pub(crate) async fn apply(&self, publish: ForwardPublish) -> InternalMessage {
+        self.apply_publish(publish, None).await
+    }
+
+    /// A forward with the certificate chain its client presented to the
+    /// forwarding broker, checked here when this broker binds subjects.
+    pub(crate) async fn apply_certified(&self, certified: ClientCertified) -> InternalMessage {
+        let chain = Some(certified.client_chain.as_slice());
+        match *certified.message {
+            InternalMessage::ForwardPublish(publish) => self.apply_publish(publish, chain).await,
+            InternalMessage::ForwardCacheOp(op) => self.apply_cache(op, false, chain).await,
+            InternalMessage::LeaseForwardCacheOp(op) => self.apply_cache(op, true, chain).await,
+            // The decoder admits nothing else inside the envelope.
+            other => error(
+                other.correlation_id(),
+                ErrorCode::Malformed,
+                format!("{:?} carries no client certificate", other.kind()),
+            ),
+        }
+    }
+
+    async fn apply_publish(
+        &self,
+        publish: ForwardPublish,
+        client_chain: Option<&[Bytes]>,
+    ) -> InternalMessage {
         let correlation_id = publish.correlation_id;
         let key = ShardKey {
             tenant_id: publish.shard.tenant_id.clone(),
@@ -135,6 +162,7 @@ impl ForwardingHandler {
         let publisher = match self
             .authorize(
                 &publish.credential,
+                client_chain,
                 &key.tenant_id,
                 Action::StreamPublish,
                 &resource,
@@ -437,16 +465,21 @@ impl ForwardingHandler {
     /// broker that served a cache key it no longer owns is the divergence this
     /// whole path exists to prevent.
     pub(crate) async fn apply_cache_op(&self, op: ForwardCacheOp) -> InternalMessage {
-        self.apply_cache(op, false).await
+        self.apply_cache(op, false, None).await
     }
 
     /// A conditional put that also mints a lease token if it applies, the way
     /// a client connected here would get one.
     pub(crate) async fn apply_lease_cache_op(&self, op: ForwardCacheOp) -> InternalMessage {
-        self.apply_cache(op, true).await
+        self.apply_cache(op, true, None).await
     }
 
-    async fn apply_cache(&self, op: ForwardCacheOp, lease: bool) -> InternalMessage {
+    async fn apply_cache(
+        &self,
+        op: ForwardCacheOp,
+        lease: bool,
+        client_chain: Option<&[Bytes]>,
+    ) -> InternalMessage {
         let correlation_id = op.correlation_id;
         let key = ShardKey {
             tenant_id: op.shard.tenant_id.clone(),
@@ -487,6 +520,7 @@ impl ForwardingHandler {
         let caller = match self
             .authorize(
                 &op.credential,
+                client_chain,
                 &key.tenant_id,
                 action,
                 &resource,
@@ -875,9 +909,14 @@ impl ForwardingHandler {
     /// owner cannot tell an honest forwarder from anything else that can reach
     /// its port. `Err` is the detail for an `Unauthorized` refusal. The token
     /// never appears in it.
+    ///
+    /// `client_chain` is the certificate chain the client presented to the
+    /// forwarder. A broker that binds token subjects checks it here as its
+    /// own listeners would, and refuses a forward without one.
     async fn authorize(
         &self,
         credential: &str,
+        client_chain: Option<&[Bytes]>,
         tenant_id: &str,
         action: Action,
         resource: &str,
@@ -892,7 +931,7 @@ impl ForwardingHandler {
         }
         let ctx = self
             .auth
-            .authenticate(tenant_id, credential)
+            .authenticate_forwarded(tenant_id, credential, client_chain)
             .await
             .map_err(|err| Denied {
                 // Anything but a verdict on the token itself, such as the
@@ -1186,6 +1225,7 @@ impl PeerRequestHandler for ForwardingHandler {
             InternalMessage::ForwardPublish(publish) => self.apply(publish).await,
             InternalMessage::ForwardCacheOp(op) => self.apply_cache_op(op).await,
             InternalMessage::LeaseForwardCacheOp(op) => self.apply_lease_cache_op(op).await,
+            InternalMessage::ClientCertified(certified) => self.apply_certified(certified).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => error(

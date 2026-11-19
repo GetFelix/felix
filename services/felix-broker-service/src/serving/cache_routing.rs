@@ -8,7 +8,7 @@ use bytes::Bytes;
 use felix_replication::engine::Engine;
 use felix_wire::internal::{ForwardCacheOutcome, ForwardLease};
 
-use crate::serving::forward::{CacheRequest, ForwardKey, ForwardTarget};
+use crate::serving::forward::{CacheRequest, ForwardCredential, ForwardKey, ForwardTarget};
 use crate::serving::lease::LeaseMint;
 use crate::serving::quic::client_error::ClientError;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
@@ -118,8 +118,9 @@ pub(crate) async fn apply_cache_op(
     quorum: (&StreamEngine, std::time::Duration),
     ingress: Option<&IngressRouter>,
     peers: Option<&felix_replication::peer::PeerPool>,
-    // The caller's token, carried on a forward for the owner to verify.
-    credential: &str,
+    // The caller's token and certificate chain, carried on a forward for the
+    // owner to verify.
+    credential: &ForwardCredential,
     tenant_id: &str,
     namespace: &str,
     cache: &str,
@@ -156,7 +157,7 @@ pub(crate) async fn apply_cache_request(
     quorum: (&StreamEngine, std::time::Duration),
     ingress: Option<&IngressRouter>,
     peers: Option<&felix_replication::peer::PeerPool>,
-    credential: &str,
+    credential: &ForwardCredential,
     tenant_id: &str,
     namespace: &str,
     cache: &str,
@@ -487,7 +488,7 @@ pub(crate) async fn apply_counter_op(
     quorum: (&StreamEngine, std::time::Duration),
     ingress: Option<&IngressRouter>,
     peers: Option<&felix_replication::peer::PeerPool>,
-    credential: &str,
+    credential: &ForwardCredential,
     tenant_id: &str,
     namespace: &str,
     cache: &str,

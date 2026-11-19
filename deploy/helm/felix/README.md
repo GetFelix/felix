@@ -59,6 +59,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `controlplane.storage.backend` | `raft` | `raft` or `memory`. |
 | `controlplane.storage.raft.volume` | `1Gi` | The volume each Raft member keeps its log and snapshots on. |
 | `controlplane.storage.raft.peerToken.existingSecret` | — | Secret holding the Raft peer token (32+ characters) under `tokenKey` (`token`). Required for `raft`: whoever holds the token can replace the metadata store. |
+| `controlplane.storage.raft.peerToken.nextKey` / `previousKey` | `next` / `previous` | Optional keys in the same Secret, read only during a peer token rotation. Members accept both and send only `tokenKey`. |
 | `controlplane.storage.raft.peerPort` | `8444` | The members' Raft peer listener, on the headless Service only. Must differ from the API port. |
 | `controlplane.storage.raft.clusterId` | full name | Names the group; each member's volume records it and refuses another. |
 | `controlplane.storage.raft.initialClusterState` | — | `new` lets empty members form a group, `existing` never does. Empty means `new` until the group has formed once, then `existing`: a post-install hook Job waits for the API to be ready and creates the `<fullname>-controlplane-raft-formed` ConfigMap, which members read at every start. Lost volumes then never start an empty control plane, even before the first upgrade. |
@@ -87,6 +88,9 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `broker.clientTls.enabled` / `existingSecret` | `false` / — | The certificate clients verify brokers with, from a `kubernetes.io/tls` Secret. Off, each broker generates a self-signed certificate at every start. |
 | `broker.clientTls.clientCaKey` | — | A key in that Secret holding the CA every client must present a certificate from. |
 | `controlplane.tls.enabled` / `existingSecret` / `caKey` | `false` / — / `ca.crt` | TLS on the control-plane API, from a `kubernetes.io/tls` Secret. Brokers then use `https://` and trust `caKey` from the same Secret. |
+| `controlplane.tls.clientCaSecret` / `clientCaKey` | — / `ca.crt` | Require a client certificate from this CA on the API (`FELIX_CONTROLPLANE_TLS_CLIENT_CA`). Probes and the Raft bootstrap hook use the metrics port, so they need none. |
+| `controlplane.tls.bindSubject` | `false` | Bind each bearer token to the client certificate it arrives with. Needs `clientCaSecret`. |
+| `broker.controlplaneClientCert.existingSecret` | — | The `kubernetes.io/tls` Secret brokers present to the control plane. Required with `controlplane.tls.clientCaSecret`. |
 | `broker.shutdown.preStopSeconds` / `handoffTimeoutMs` / `drainTimeoutMs` | `15` / `30000` / `40000` | The endpoints controller's head start, then the shard handoff, then the drain. The grace period is derived; an explicit one that is too short is refused. |
 | `broker.podDisruptionBudget.maxUnavailable` | `1` | Must be below `replicas`, and at most one once there are three or more. |
 | `broker.antiAffinity` / `topologySpread` | `soft` / zone, `ScheduleAnyway` | `hard` refuses to co-locate; `DoNotSchedule` refuses to skew. |
@@ -106,6 +110,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
 - brokers are enabled with neither `peerTls.enabled` nor `peerTls.allowUnauthenticated`.
 - `clientTls` or `controlplane.tls` is on without a Secret.
+- `controlplane.tls.clientCaSecret` is set without `controlplane.tls.enabled` or, with brokers on, without `broker.controlplaneClientCert`; `bindSubject` is on without `clientCaSecret`; or a broker client certificate is set for a plain-HTTP control plane.
 - the client and internal ports are the same.
 - a budget would let every broker, or two replicas of one shard, go at once; or would never let a control-plane instance go.
 - an explicit grace period is shorter than the preStop sleep plus the drain.

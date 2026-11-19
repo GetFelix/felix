@@ -1166,6 +1166,7 @@ async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
             None,
             100,
         ),
+        client_chain: None,
     };
 
     let (server_config, cert) = make_server_config()?;

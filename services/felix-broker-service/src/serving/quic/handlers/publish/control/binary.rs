@@ -126,7 +126,7 @@ pub(crate) async fn handle_binary_publish_batch_control(
         // Fire-and-forget: the owner is told no acknowledgement is expected, the
         // same contract the client gave this broker.
         felix_wire::internal::AckMode::None,
-        &auth_ctx.token,
+        &auth_ctx.forward_credential(),
     ) else {
         count_publish("error");
         return Ok(());

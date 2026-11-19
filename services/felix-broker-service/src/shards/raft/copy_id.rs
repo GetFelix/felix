@@ -59,6 +59,10 @@ pub(crate) struct Held {
     /// The copy id the control plane's target names for this broker, if
     /// the view carried a target that names it.
     pub(crate) in_target: Option<u64>,
+    /// The view withheld the shard's target: some broker has not
+    /// acknowledged the placement incarnation, which the control plane also
+    /// refuses a target-moving report for.
+    pub(crate) withheld: bool,
 }
 
 /// What was last sent for one member, and when.
@@ -72,6 +76,10 @@ struct Sent {
     refused: u32,
     /// The last report got no answer.
     unanswered: bool,
+    /// A view since the last report withheld the target. Once one does
+    /// not, a refused report is sent again at once: the gate that refused
+    /// it has opened, and nothing else says so.
+    seen_withheld: bool,
 }
 
 /// The reports owed to the control plane, by shard and stream incarnation.
@@ -89,6 +97,11 @@ impl CopyIds {
             .map(|held| (held.key.clone(), held.incarnation))
             .collect();
         self.sent.retain(|key, _| keys.contains(key));
+        for held in held.iter().filter(|held| held.withheld) {
+            if let Some(sent) = self.sent.get_mut(&(held.key.clone(), held.incarnation)) {
+                sent.seen_withheld = true;
+            }
+        }
         let mut owed: Vec<(Option<Instant>, &Held)> = held
             .iter()
             .filter(|held| held.in_target != Some(held.copy))
@@ -100,6 +113,7 @@ impl CopyIds {
                 let wait = match last {
                     None => return Some((None, held)),
                     Some(sent) if sent.taken => RESEND,
+                    Some(sent) if sent.seen_withheld && !held.withheld => Duration::ZERO,
                     Some(sent) if sent.unanswered => RETRY,
                     Some(sent) => retry_after(sent.refused),
                 };
@@ -137,6 +151,7 @@ impl CopyIds {
                 taken: outcome == Outcome::Taken,
                 refused,
                 unanswered: outcome == Outcome::Unanswered,
+                seen_withheld: held.withheld,
             },
         );
         refused

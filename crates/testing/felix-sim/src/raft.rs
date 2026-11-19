@@ -104,6 +104,8 @@ pub const RESTORE_AGE: Duration = Duration::from_secs(8);
 /// batch writes marks each second, later while its fsync is backed up
 /// (`docs/per-shard-raft.md`, "What this does not catch").
 const MARK_TRAIL: Duration = Duration::from_secs(7);
+/// How long a disk fault waits for its shards to heal before it is skipped.
+const HEAL_WAIT: Duration = Duration::from_secs(20);
 
 impl Default for RaftSimConfig {
     fn default() -> Self {
@@ -495,6 +497,13 @@ struct Credit {
 /// the record it held there, not whatever another member holds.
 fn credited(credit: Option<&Credit>, offset: u64, record: &Held) -> bool {
     credit.is_some_and(|credit| credit.records.get(&offset) == Some(record))
+}
+
+/// The end of what a stopping copy had flushed: below both the flushed
+/// index it reported while running and its log's durable bound once
+/// stopped. A record rewritten in between is past the second.
+fn flushed_bound(reported: Option<LogPoint>, durable: u64) -> u64 {
+    reported.map_or(0, |point| (point.index + 1).min(durable))
 }
 
 /// When a copy's flushed index was sampled, and what it was.
@@ -1108,14 +1117,19 @@ impl Sim {
             self.replace(&majority, Scope::Shard(0), Replace::Wipe, &mut disk)
                 .await;
         }
+        let (mut round, mut replaced) = (0, false);
         while Instant::now() < end {
+            round += 1;
             tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
             let pick = rng.below(count as u64) as usize;
             if self.disks == Disks::Restore {
                 self.save(&mut disk);
             }
-            if matches!(self.disks, Disks::Wipe | Disks::Restore) && disk.percent(40) {
-                self.disk_fault(&mut disk).await;
+            // From the second round on, a run with no disk fault yet takes
+            // one, or a seed could pass on link faults alone.
+            let due = !replaced && round >= 2;
+            if matches!(self.disks, Disks::Wipe | Disks::Restore) && (disk.percent(40) || due) {
+                replaced |= self.disk_fault(&mut disk).await;
             } else {
                 self.link_fault(&mut rng, pick).await;
             }
@@ -1372,7 +1386,8 @@ impl Sim {
     }
 
     /// One wipe or restore, on a member whose shards in scope are healed.
-    async fn disk_fault(&self, rng: &mut Rng) {
+    /// Whether it happened; when it did not, the history says why.
+    async fn disk_fault(&self, rng: &mut Rng) -> bool {
         let count = self.members.len() as u64;
         match self.disks {
             Disks::Wipe => {
@@ -1382,9 +1397,11 @@ impl Sim {
                 } else {
                     Scope::Shard(rng.below(u64::from(self.shards)) as u32)
                 };
-                if self.may_replace(scope) {
-                    self.replace(&[member], scope, Replace::Wipe, rng).await;
+                if !self.wait_healed(scope, member).await {
+                    return false;
                 }
+                self.replace(&[member], scope, Replace::Wipe, rng).await;
+                true
             }
             Disks::Restore => {
                 let now = Instant::now();
@@ -1404,25 +1421,51 @@ impl Sim {
                         .collect()
                 };
                 if eligible.is_empty() {
-                    return;
+                    self.fault(format!("skip restore: no save {RESTORE_AGE:?} old yet"));
+                    return false;
                 }
                 let pick = eligible[rng.below(eligible.len() as u64) as usize];
-                let scope = self.saves.lock()[pick].scope;
-                if self.may_replace(scope) {
-                    let save = self.saves.lock().remove(pick);
-                    let replace = Replace::Restore(save.saved);
-                    self.replace(&[save.member], scope, replace, rng).await;
+                let (scope, member) = {
+                    let saves = self.saves.lock();
+                    (saves[pick].scope, saves[pick].member)
+                };
+                if !self.wait_healed(scope, member).await {
+                    return false;
                 }
+                let save = self.saves.lock().remove(pick);
+                let replace = Replace::Restore(save.saved);
+                self.replace(&[save.member], scope, replace, rng).await;
+                true
             }
-            Disks::Off | Disks::WipeMajority => {}
+            Disks::Off | Disks::WipeMajority => false,
         }
     }
 
-    fn may_replace(&self, scope: Scope) -> bool {
-        scope
-            .shards(self.shards)
-            .into_iter()
-            .all(|shard| self.healed(shard))
+    /// Wait up to [`HEAL_WAIT`] for every shard in `scope` to heal, so a disk
+    /// fault never replaces a copy the group still needs. Says in the
+    /// history when it gives up.
+    async fn wait_healed(&self, scope: Scope, member: usize) -> bool {
+        let deadline = Instant::now() + HEAL_WAIT;
+        loop {
+            let unhealed: Vec<u32> = scope
+                .shards(self.shards)
+                .into_iter()
+                .filter(|shard| !self.healed(*shard))
+                .collect();
+            if unhealed.is_empty() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                let lists: Vec<_> = unhealed.into_iter().map(list).collect();
+                self.fault(format!(
+                    "skip {}: {} not healed after {HEAL_WAIT:?}",
+                    scope.describe(member),
+                    lists.join(", ")
+                ));
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     /// Stop `members`, wipe or restore `scope` on each, and start them again
@@ -1436,18 +1479,24 @@ impl Sim {
                     .map(|shard| self.covered(member, shard))
                     .collect(),
             );
+            // A follower can flush and ack a record before it learns that
+            // record is committed, so the credit follows what it flushed,
+            // not its read bound. Sampled before the runtime stops, read after.
+            let reported: Vec<Option<LogPoint>> = (0..self.shards)
+                .map(|shard| at.runtime.status(&key(shard)).and_then(|s| s.flushed))
+                .collect();
+            self.links.set_down(member, true);
+            at.down.cancel();
+            at.runtime.shutdown().await;
             for shard in 0..self.shards {
-                // A stopped copy still holds what it committed.
-                let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
+                let log = &at.logs[shard as usize];
+                let bound = flushed_bound(reported[shard as usize], log.durable_offset());
                 let records = records_below(&at, shard, bound).await;
                 let mut credit = self.credit.lock();
                 let held = credit.entry((member, shard)).or_default();
                 held.bound = held.bound.max(bound);
                 held.records.extend(records);
             }
-            self.links.set_down(member, true);
-            at.down.cancel();
-            at.runtime.shutdown().await;
             for log in &at.logs {
                 let _ = log.close().await;
             }

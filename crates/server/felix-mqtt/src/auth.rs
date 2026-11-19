@@ -44,18 +44,35 @@ pub struct Principal {
     credential: Option<Credential>,
 }
 
-/// The token a connection authenticated with, kept so the shard's owner can
-/// check it again when a publish is forwarded there. Never printed.
+/// The token a connection authenticated with, and the certificate chain it
+/// presented, kept so the shard's owner can check them again when a publish
+/// is forwarded there. Never printed.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Credential(Arc<str>);
+pub struct Credential {
+    token: Arc<str>,
+    client_chain: Option<Arc<[bytes::Bytes]>>,
+}
 
 impl Credential {
     pub fn new(token: &str) -> Self {
-        Self(token.into())
+        Self {
+            token: token.into(),
+            client_chain: None,
+        }
+    }
+
+    /// The DER certificates the client presented, leaf first.
+    pub fn with_client_chain(mut self, client_chain: Option<Arc<[bytes::Bytes]>>) -> Self {
+        self.client_chain = client_chain;
+        self
     }
 
     pub fn expose(&self) -> &str {
-        &self.0
+        &self.token
+    }
+
+    pub fn client_chain(&self) -> Option<&Arc<[bytes::Bytes]>> {
+        self.client_chain.as_ref()
     }
 }
 

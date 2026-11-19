@@ -24,6 +24,8 @@ const ENV_CA_FILE: &str = "FELIX_CA_FILE";
 const ENV_CLIENT_CERT_FILE: &str = "FELIX_CLIENT_CERT_FILE";
 const ENV_CLIENT_KEY_FILE: &str = "FELIX_CLIENT_KEY_FILE";
 const ENV_CONTROLPLANE_CA: &str = "FELIX_CONTROLPLANE_CA";
+const ENV_CONTROLPLANE_CLIENT_CERT: &str = "FELIX_CONTROLPLANE_CLIENT_CERT";
+const ENV_CONTROLPLANE_CLIENT_KEY: &str = "FELIX_CONTROLPLANE_CLIENT_KEY";
 const ENV_SERVER_NAME: &str = "FELIX_SERVER_NAME";
 
 const DEFAULT_NAMESPACE: &str = "default";
@@ -43,6 +45,8 @@ pub(crate) struct Settings {
     pub(crate) client_cert_file: Option<PathBuf>,
     pub(crate) client_key_file: Option<PathBuf>,
     pub(crate) controlplane_ca_file: Option<PathBuf>,
+    pub(crate) controlplane_client_cert_file: Option<PathBuf>,
+    pub(crate) controlplane_client_key_file: Option<PathBuf>,
     pub(crate) server_name: Option<String>,
     pub(crate) alpn: bool,
 }
@@ -233,6 +237,16 @@ pub(crate) fn resolve(
             .clone()
             .or_else(|| path(ENV_CONTROLPLANE_CA))
             .or(profile.controlplane_ca_file),
+        controlplane_client_cert_file: flags
+            .controlplane_client_cert_file
+            .clone()
+            .or_else(|| path(ENV_CONTROLPLANE_CLIENT_CERT))
+            .or(profile.controlplane_client_cert_file),
+        controlplane_client_key_file: flags
+            .controlplane_client_key_file
+            .clone()
+            .or_else(|| path(ENV_CONTROLPLANE_CLIENT_KEY))
+            .or(profile.controlplane_client_key_file),
         server_name: flags
             .server_name
             .clone()

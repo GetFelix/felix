@@ -1,7 +1,7 @@
 # Peer mTLS on the internal port, issued per pod by cert-manager's CSI
 # driver, with clients arriving through a UDP load balancer and told an
 # external name, verifying a real certificate and presenting their own, and
-# brokers reaching the control plane over TLS.
+# brokers reaching the control plane over mutual TLS.
 controlplane:
   replicas: 3
   storage:
@@ -12,6 +12,8 @@ controlplane:
   tls:
     enabled: true
     existingSecret: felix-controlplane-tls
+    clientCaSecret: felix-controlplane-clients
+    bindSubject: true
   bootstrap:
     enabled: true
     existingSecret: felix-bootstrap
@@ -20,6 +22,8 @@ broker:
   replicas: 5
   credential:
     existingSecret: felix-broker-credential
+  controlplaneClientCert:
+    existingSecret: felix-broker-controlplane-client
   peerTls:
     enabled: true
     issuerName: felix-peer-ca

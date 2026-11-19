@@ -35,6 +35,7 @@ use tokio::time::Instant;
 #[derive(Clone, Debug)]
 pub struct Readiness {
     ready: Arc<AtomicBool>,
+    draining: Arc<AtomicBool>,
 }
 
 impl Readiness {
@@ -42,6 +43,7 @@ impl Readiness {
     pub fn ready() -> Self {
         Self {
             ready: Arc::new(AtomicBool::new(true)),
+            draining: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -54,6 +56,7 @@ impl Readiness {
     pub fn starting() -> Self {
         Self {
             ready: Arc::new(AtomicBool::new(false)),
+            draining: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -80,6 +83,11 @@ impl Readiness {
         self.ready.load(Ordering::Acquire)
     }
 
+    /// Whether a drain has begun, as opposed to startup not having finished.
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+
     /// Flip to not-ready.
     ///
     /// Call this *before* the listener stops, so traffic is steered away while the
@@ -87,6 +95,7 @@ impl Readiness {
     /// first shutdown from a repeated signal.
     pub fn begin_draining(&self) -> bool {
         metrics::gauge!(Self::READY_STATE).set(0.0);
+        self.draining.store(true, Ordering::Release);
         self.ready.swap(false, Ordering::Release)
     }
 }

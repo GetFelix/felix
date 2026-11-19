@@ -127,6 +127,7 @@ never have dialled the one that shipped to it.
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
 | `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 | `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | reads `RecordSequencedForwardPublish`, a sequenced forward whose records each take their own sequence from the one named (see "A forward that names its producer"). A Raft leader proposes them together in one proposal and answers once all commit. An MQTT listener on a member of the shard's group sends a batch that way only to a leader that offered it, and record by record otherwise |
+| `1 << 27` | `CLIENT_CERTS` | reads a forward wrapped in `ClientCertified` and checks the client's certificate chain against its own client CA (see "Client certificates across a forward"). Offered only by a broker with `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`; a forward goes in the envelope only to a peer that offered it |
 
 #### Storage identity
 
@@ -351,6 +352,61 @@ described under "Replication" below. It goes only to an owner that offered
 broker answers the client that headers cannot be forwarded to that owner. A
 forward is never sent without blocks it was given, and the legacy fallback
 above never applies to it.
+
+### Client certificates across a forward
+
+With `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true` a broker accepts a token only
+from a client whose certificate was issued to the token's subject (or its
+actor). The broker a client is connected to checks that at login, but the
+owner of a forwarded request cannot trust that it did, for the same reason
+it verifies the token itself. So the forward carries the client's certificate
+chain and the owner checks the binding with its own configuration.
+
+The chain travels in **`ClientCertified`** (kind 66), an envelope around the
+forward:
+
+| Field | Encoding |
+|---|---|
+| correlation id | u64, the inner request's |
+| certificate count | u8, 1 to 8 |
+| each certificate | u32 length, then the DER bytes, leaf first; none empty, at most 64 KiB together |
+| inner kind | u16 |
+| inner body | the forward's own body, to the end of the frame |
+
+The inner request is a credentialed forward: `AuthorizedForwardPublish`,
+`HeaderedForwardPublish`, any sequenced publish kind,
+`AuthorizedForwardCacheOp`, `ConditionalForwardCacheOp` or
+`LeaseForwardCacheOp`, or `Incarnated` around one of them. It is always
+outermost: an owner refuses a nested `ClientCertified`, a `FromCopy` inside it
+or around it, a forward with no credential, a correlation id that differs from
+the inner request's, and any length over its bound. The envelope's bytes count
+toward the frame limit.
+
+A broker offers `CLIENT_CERTS` only when it binds subjects
+(`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`), since only then does it check a
+chain. The forwarding broker sends the envelope when the client presented a
+certificate to it and the owner offered `CLIENT_CERTS`, whether or not the
+forwarding broker binds subjects itself. Otherwise the forward is sent exactly
+as before, so a cluster that does not bind exchanges the same frames it always
+did, client CA or not.
+
+An owner that binds subjects verifies the chain against its own
+`FELIX_TLS_CLIENT_CA`, at its own clock, with the same verifier its client
+listeners use in a handshake, and then checks that the leaf is issued to the
+token's subject or actor, as it would for a client connected to it. A chain
+the client CA did not issue, an expired one, one issued to another principal,
+or a forward with no envelope at all is refused `Unauthorized` before anything
+is written. A forward with no envelope is refused even though some clients
+log in without a certificate, such as an MQTT client over plain TCP
+(`FELIX_MQTT_TLS=false`): "this client had no certificate" is exactly what a
+compromised broker would say, and the owner cannot tell it from the truth. So
+with binding on, a client without a certificate is served only on shards its
+own broker owns, and its forwarded publishes and cache operations are refused.
+An owner that does not bind ignores the chain.
+
+During a rolling upgrade, a forward from a broker that predates the envelope
+reaches an upgraded binding owner without a chain and is refused. Upgrade every
+broker of a cluster that binds subjects before relying on forwarding.
 
 ### A forward that names its producer
 
@@ -1481,8 +1537,8 @@ back to the detail whenever the fields are absent.
 `FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
 `ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
 `SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62, `FromCopy` 63 and
-`PlainSequencedForwardPublish` 64 and
-`RecordSequencedForwardPublish` 65. A peer
+`PlainSequencedForwardPublish` 64,
+`RecordSequencedForwardPublish` 65 and `ClientCertified` 66. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

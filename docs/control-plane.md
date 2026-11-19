@@ -2905,6 +2905,7 @@ Broker side:
 | `felix_broker_shard_changes_stale_total` | changes dropped for a stale generation or incarnation; small numbers are routine, and are what makes duplicate delivery harmless |
 | `felix_broker_shard_watch_resyncs_total{reason}` | forced resnapshots: `gap_in_history` or `sequence_reset` |
 | `felix_broker_shard_watch_failures_total` | polls that failed outright |
+| `felix_broker_shard_watch_withheld_rereads_total` | snapshots taken to read again a Raft target withheld from a shard with none held |
 | `felix_broker_shard_confirmed_reads_total{outcome}` | confirmed assignment reads for a copy with no promise: `assigned`, `unassigned`, `not_served` (the routing view decides alone) or `unavailable` |
 | `felix_broker_shard_move_seconds` | histogram: a move toward this broker, from being named its destination to serving the shard |
 | `felix_broker_shard_switchover_seconds` | histogram: a move toward this broker, from the fence to serving the shard |
@@ -3092,6 +3093,11 @@ Two endpoints, because they drive different actions.
 | `/v1/system/ready` | Should this instance get traffic? | The store not answering or answering an error. `503` with a reason. | readiness probe |
 | `/v1/system/health` | n/a | The same check as `/v1/system/ready`. Kept because deployments already point at it. | nothing new |
 
+The metrics listener (`FELIX_CONTROLPLANE_METRICS_BIND`) answers `/live` and
+`/ready` with the same checks, over plain HTTP. Probe those when the API
+requires client certificates (`FELIX_CONTROLPLANE_TLS_CLIENT_CA`): the kubelet
+has none to present. The Helm chart always does.
+
 **Liveness must not check the store.** A liveness probe drives restarts, and
 a store fault that fails one restarts every instance, repeatedly,
 for a fault no restart can fix. That is the single most
@@ -3139,8 +3145,8 @@ Draining is answered before the store is consulted and before the cache is read:
   answer would otherwise keep taking traffic for a whole cache window after it
   began shutting down.
 
-Both `/v1/system/ready` and the metrics endpoint's `/ready` read **one flag**, so
-they cannot disagree about whether this instance is in rotation. The two
+Both `/v1/system/ready` and the metrics endpoint's `/ready` run **one check**
+over one flag, so they cannot disagree about whether this instance is in rotation. The two
 *listeners* are shut down separately and deliberately: the metrics endpoint
 outlives the API drain, which is how an operator watches the drain happen.
 

@@ -6,7 +6,7 @@ use std::time::Duration;
 use felix_storage::CacheCondition;
 
 use super::*;
-use crate::serving::forward::CacheRequest;
+use crate::serving::forward::{CacheRequest, ForwardCredential};
 use crate::shards::raft::tests as fixture;
 use crate::shards::routing::EngineShards;
 
@@ -51,7 +51,7 @@ async fn script(
             (engine, TIMEOUT),
             ingress,
             None,
-            "",
+            &ForwardCredential::from(""),
             TENANT,
             NAMESPACE,
             CACHE,
@@ -68,7 +68,7 @@ async fn script(
             (engine, TIMEOUT),
             ingress,
             None,
-            "",
+            &ForwardCredential::from(""),
             TENANT,
             NAMESPACE,
             CACHE,
@@ -153,7 +153,7 @@ async fn a_raft_cache_shard_answers_as_the_hybrid_does() {
     let shards = fixture::shards(&broker);
     let key = cache_key(0);
     let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&key).is_some()).await;
     let engine = fixture::engine(&shards);
     let ingress = fixture::ingress(&shards);
@@ -195,7 +195,7 @@ async fn a_raft_cache_write_at_another_term_is_refused() {
     let shards = fixture::shards(&broker);
     let key = cache_key(0);
     let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&key).is_some()).await;
     let engine = fixture::engine(&shards);
     let term = shards.leading(&key).expect("led");
@@ -225,7 +225,7 @@ async fn a_raft_cache_write_at_another_term_is_refused() {
         (&engine, TIMEOUT),
         Some(&ingress),
         None,
-        "",
+        &ForwardCredential::from(""),
         TENANT,
         NAMESPACE,
         CACHE,
@@ -247,7 +247,7 @@ async fn a_plain_delete_is_not_starved_by_writes_to_its_key() {
     let shards = fixture::shards(&broker);
     let key = cache_key(0);
     let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&key).is_some()).await;
     let engine = fixture::engine(&shards);
     let raft = engine.raft(&key).expect("on raft").clone();

@@ -71,6 +71,10 @@ impl BrokerConfig {
             self.controlplane_ca.as_deref(),
             self.controlplane_url.as_deref(),
         )?;
+        super::tls::validate_controlplane_client_cert(
+            self.controlplane_client_cert.as_ref(),
+            self.controlplane_url.as_deref(),
+        )?;
         Ok(())
     }
 

@@ -53,7 +53,9 @@
                   "additionalProperties": false,
                   "properties": {
                     "existingSecret": { "type": "string" },
-                    "tokenKey": { "type": "string", "minLength": 1 }
+                    "tokenKey": { "type": "string", "minLength": 1 },
+                    "nextKey": { "type": "string", "minLength": 1 },
+                    "previousKey": { "type": "string", "minLength": 1 }
                   }
                 },
                 "insecurePeers": { "type": "boolean" },
@@ -98,7 +100,10 @@
           "properties": {
             "enabled": { "type": "boolean" },
             "existingSecret": { "type": "string" },
-            "caKey": { "type": "string" }
+            "caKey": { "type": "string" },
+            "clientCaSecret": { "type": "string" },
+            "clientCaKey": { "type": "string", "minLength": 1 },
+            "bindSubject": { "type": "boolean" }
           }
         },
         "metrics": {
@@ -176,6 +181,13 @@
           }
         },
         "controlplaneUrl": { "type": "string" },
+        "controlplaneClientCert": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": { "type": "string" }
+          }
+        },
         "storage": { "$ref": "#/definitions/volume" },
         "peerTls": {
           "type": "object",

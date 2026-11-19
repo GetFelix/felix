@@ -192,7 +192,7 @@ async fn exchange_token_rejects_missing_bearer() {
     let store = Arc::new(InMemoryStore::new(store_config()));
     let state = test_state(store);
     let headers = HeaderMap::new();
-    let err = exchange_token(Path("t1".to_string()), State(state), headers, None)
+    let err = exchange_token(Path("t1".to_string()), State(state), headers, None, None)
         .await
         .expect_err("missing bearer");
     assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
@@ -204,7 +204,7 @@ async fn exchange_token_rejects_unknown_tenant() {
     let state = test_state(store);
     let token = unsigned_es256_token("https://issuer.example", "kid1");
     let headers = bearer_header(&token);
-    let err = exchange_token(Path("t1".to_string()), State(state), headers, None)
+    let err = exchange_token(Path("t1".to_string()), State(state), headers, None, None)
         .await
         .expect_err("unknown tenant");
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
@@ -223,7 +223,7 @@ async fn exchange_token_rejects_when_no_issuers_configured() -> Result<()> {
     let state = test_state(store);
     let token = unsigned_es256_token("https://issuer.example", "kid1");
     let headers = bearer_header(&token);
-    let err = exchange_token(Path("t1".to_string()), State(state), headers, None)
+    let err = exchange_token(Path("t1".to_string()), State(state), headers, None, None)
         .await
         .expect_err("no issuers");
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
@@ -255,7 +255,7 @@ async fn exchange_token_rejects_issuer_not_allowed() -> Result<()> {
     let state = test_state(store);
     let token = unsigned_es256_token("https://issuer.denied", "kid1");
     let headers = bearer_header(&token);
-    let err = exchange_token(Path("t1".to_string()), State(state), headers, None)
+    let err = exchange_token(Path("t1".to_string()), State(state), headers, None, None)
         .await
         .expect_err("issuer not allowed");
     assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
@@ -276,6 +276,7 @@ fn exchange_refusals_are_counted() {
             State(state.clone()),
             HeaderMap::new(),
             None,
+            None,
         )
         .await;
         let token = unsigned_es256_token("https://issuer.example", "kid1");
@@ -283,6 +284,7 @@ fn exchange_refusals_are_counted() {
             Path("t1".to_string()),
             State(state.clone()),
             bearer_header(&token),
+            None,
             None,
         )
         .await;
@@ -311,6 +313,7 @@ fn exchange_refusals_are_counted() {
             Path("t1".to_string()),
             State(state),
             bearer_header("not-a-jwt"),
+            None,
             None,
         )
         .await
@@ -685,6 +688,7 @@ async fn a_delegating_gateway_gets_a_connection_only_token() {
         &[],
         &connection_only(),
         BROKER_AUDIENCE,
+        None,
     )
     .await
     .expect("connection-only token");
@@ -750,7 +754,7 @@ async fn only_a_delegating_gateway_gets_an_empty_token_and_only_when_it_asks() {
         ),
         ("p:gateway", connection_only(), CONTROLPLANE_AUDIENCE),
     ] {
-        let err = mint_for_principal(&state, "t1", principal, &[], &request, audience)
+        let err = mint_for_principal(&state, "t1", principal, &[], &request, audience, None)
             .await
             .err()
             .unwrap_or_else(|| panic!("{principal} {audience} minted an empty token"));

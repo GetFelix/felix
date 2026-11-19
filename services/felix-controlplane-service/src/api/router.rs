@@ -250,7 +250,7 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(api::shard_moves::resume_placement),
         )
         .route(
-            "/v1/tenants/{tenant_id}/token/exchange",
+            auth::cert_binding::EXCHANGE_ROUTE,
             axum::routing::post(auth::exchange::exchange_token),
         )
         .route(

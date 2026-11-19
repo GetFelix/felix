@@ -18,6 +18,10 @@ pub const APPLIED_TOTAL: &str = "felix_broker_shard_changes_applied_total";
 pub const STALE_TOTAL: &str = "felix_broker_shard_changes_stale_total";
 /// Forced resyncs, by `reason`: `gap_in_history` or `sequence_reset`.
 pub const RESYNCS_TOTAL: &str = "felix_broker_shard_watch_resyncs_total";
+/// Snapshots taken to read again a Raft target the control plane withheld
+/// from a shard with none held. Rising for long means a registered broker
+/// has not acknowledged the placement incarnation.
+pub const WITHHELD_REREADS_TOTAL: &str = "felix_broker_shard_watch_withheld_rereads_total";
 /// Polls that failed outright.
 pub const FAILURES_TOTAL: &str = "felix_broker_shard_watch_failures_total";
 /// Confirmed assignment reads for a copy with no promise, by `outcome`:
@@ -52,6 +56,10 @@ pub fn record_applied(count: usize) {
 
 pub fn record_stale_change() {
     metrics::counter!(STALE_TOTAL).increment(1);
+}
+
+pub fn record_withheld_reread() {
+    metrics::counter!(WITHHELD_REREADS_TOTAL).increment(1);
 }
 
 pub fn record_failure() {

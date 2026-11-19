@@ -136,7 +136,7 @@ async fn a_raft_shard_is_read_up_to_its_commit_index() {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
@@ -211,7 +211,7 @@ async fn a_raft_shard_withholds_a_record_until_it_is_committed() {
     broker.set_read_bounds(Arc::clone(&bound) as Arc<dyn felix_broker::ReadBounds>);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let writes = BrokerWrites::new(
         Arc::clone(&broker),

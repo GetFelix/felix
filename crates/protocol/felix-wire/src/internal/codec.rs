@@ -18,6 +18,7 @@ use super::{
     ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
     ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
+use super::{ClientCertified, MAX_CLIENT_CERTS, MAX_CLIENT_CHAIN_BYTES};
 use super::{FROM_COPY_BYTES, FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts};
 use crate::error::{Error, Result};
 
@@ -46,6 +47,9 @@ impl InternalMessage {
     pub fn encode(&self) -> Result<Bytes> {
         if let Self::FromCopy(m) = self {
             return encode_from_copy(m);
+        }
+        if let Self::ClientCertified(m) = self {
+            return encode_client_certified(m);
         }
         // Room for the header and both envelopes goes in front, so wrapping a
         // batch writes a few bytes instead of copying its body. The unused
@@ -281,7 +285,9 @@ impl InternalMessage {
                 body.put_u64(m.correlation_id);
                 body.put_slice(&m.copy);
             }
-            Self::FromCopy(_) => unreachable!("encoded before the body"),
+            Self::FromCopy(_) | Self::ClientCertified(_) => {
+                unreachable!("encoded before the body")
+            }
             Self::Raft(RaftCall {
                 correlation_id,
                 body: raft,
@@ -1003,7 +1009,7 @@ impl InternalMessage {
                 let copy = take_identity(&mut body)?;
                 let kind = Kind::from_u16(take_u16(&mut body)?)?;
                 // Outermost and once.
-                if kind == Kind::FromCopy {
+                if kind == Kind::FromCopy || kind == Kind::ClientCertified {
                     return Err(Error::Incomplete);
                 }
                 let message = Self::decode_body(kind, body)?;
@@ -1012,6 +1018,48 @@ impl InternalMessage {
                 }
                 Ok(Self::FromCopy(FromCopy {
                     copy,
+                    message: Box::new(message),
+                }))
+            }
+            Kind::ClientCertified => {
+                let correlation_id = take_u64(&mut body)?;
+                let count = usize::from(take_u8(&mut body)?);
+                if count == 0 || count > MAX_CLIENT_CERTS {
+                    return Err(Error::Incomplete);
+                }
+                let mut client_chain = Vec::with_capacity(count);
+                let mut total = 0;
+                for _ in 0..count {
+                    let len = take_u32(&mut body)? as usize;
+                    total += len;
+                    if len == 0 || total > MAX_CLIENT_CHAIN_BYTES || len > body.remaining() {
+                        return Err(Error::Incomplete);
+                    }
+                    client_chain.push(body.split_to(len));
+                }
+                let kind = Kind::from_u16(take_u16(&mut body)?)?;
+                // Outermost and once, around a forward and nothing else. An
+                // incarnation envelope is fine: it unwraps to the forward.
+                if !matches!(
+                    kind,
+                    Kind::Incarnated
+                        | Kind::AuthorizedForwardPublish
+                        | Kind::HeaderedForwardPublish
+                        | Kind::SequencedForwardPublish
+                        | Kind::PlainSequencedForwardPublish
+                        | Kind::RecordSequencedForwardPublish
+                        | Kind::AuthorizedForwardCacheOp
+                        | Kind::ConditionalForwardCacheOp
+                        | Kind::LeaseForwardCacheOp
+                ) {
+                    return Err(Error::Incomplete);
+                }
+                let message = Self::decode_body(kind, body)?;
+                if !certifiable(&message) || message.correlation_id() != correlation_id {
+                    return Err(Error::Incomplete);
+                }
+                Ok(Self::ClientCertified(ClientCertified {
+                    client_chain,
                     message: Box::new(message),
                 }))
             }
@@ -1628,7 +1676,10 @@ fn take_u64(buf: &mut Bytes) -> Result<u64> {
 /// A request from a named copy: the inner frame's body behind the copy id.
 /// Copies the inner body once, which only a seal leader's batches pay.
 fn encode_from_copy(m: &FromCopy) -> Result<Bytes> {
-    if matches!(*m.message, InternalMessage::FromCopy(_)) {
+    if matches!(
+        *m.message,
+        InternalMessage::FromCopy(_) | InternalMessage::ClientCertified(_)
+    ) {
         return Err(Error::Incomplete);
     }
     let inner = m.message.encode()?;
@@ -1652,6 +1703,61 @@ fn encode_from_copy(m: &FromCopy) -> Result<Bytes> {
     .encode(&mut frame);
     frame.extend_from_slice(&body);
     Ok(frame.freeze())
+}
+
+/// A forward with its client's chain in front of the inner frame's body.
+/// Copies the inner body once, which only a forward from a client that
+/// presented a certificate pays.
+fn encode_client_certified(m: &ClientCertified) -> Result<Bytes> {
+    if !certifiable(&m.message) {
+        return Err(Error::Incomplete);
+    }
+    if m.client_chain.is_empty()
+        || m.client_chain.len() > MAX_CLIENT_CERTS
+        || m.client_chain.iter().any(Bytes::is_empty)
+    {
+        return Err(Error::Incomplete);
+    }
+    let chain_bytes: usize = m.client_chain.iter().map(Bytes::len).sum();
+    if chain_bytes > MAX_CLIENT_CHAIN_BYTES {
+        return Err(Error::FrameTooLarge);
+    }
+    let inner = m.message.encode()?;
+    let header = InternalHeader::decode(&inner)?;
+    let inner_body = &inner[InternalHeader::LEN..];
+    // Correlation id, count, a length per certificate, inner kind.
+    let envelope = 8 + 1 + LEN_PREFIX * m.client_chain.len() + chain_bytes + 2;
+    // The envelope's bytes count toward the frame limit, as `FromCopy`'s do.
+    if envelope + inner_body.len() > MAX_BODY_BYTES as usize {
+        return Err(Error::FrameTooLarge);
+    }
+    let mut frame = BytesMut::with_capacity(InternalHeader::LEN + envelope + inner_body.len());
+    InternalHeader {
+        kind: Kind::ClientCertified,
+        length: (envelope + inner_body.len()) as u32,
+    }
+    .encode(&mut frame);
+    frame.put_u64(m.message.correlation_id());
+    frame.put_u8(m.client_chain.len() as u8);
+    for cert in &m.client_chain {
+        frame.put_u32(cert.len() as u32);
+        frame.extend_from_slice(cert);
+    }
+    frame.put_u16(header.kind as u16);
+    frame.extend_from_slice(inner_body);
+    Ok(frame.freeze())
+}
+
+/// What a [`ClientCertified`] envelope may carry: a forward with the client's
+/// credential, since the chain is only read to bind that credential.
+fn certifiable(message: &InternalMessage) -> bool {
+    match message {
+        InternalMessage::ForwardPublish(m) => !m.credential.is_empty(),
+        InternalMessage::ForwardCacheOp(m) | InternalMessage::LeaseForwardCacheOp(m) => {
+            !m.credential.is_empty()
+        }
+        _ => false,
+    }
 }
 
 fn take_identity(buf: &mut Bytes) -> Result<[u8; 16]> {

@@ -451,9 +451,10 @@ pub(crate) fn publish_target(
     // which shard the key belongs to.
     shard: u32,
     ack: felix_wire::internal::AckMode,
-    // The publisher's own token. It travels with a forward so the owner can
-    // check it rather than trust that this broker did.
-    credential: &str,
+    // The publisher's own token and certificate chain. They travel with a
+    // forward so the owner can check them rather than trust that this broker
+    // did.
+    credential: &crate::serving::forward::ForwardCredential,
 ) -> Result<PublishTarget, ClientError> {
     match route {
         PublishRoute::Local {
@@ -492,7 +493,7 @@ pub(crate) fn publish_target(
                     shard,
                 },
                 ack,
-                credential: credential.to_string(),
+                credential: credential.clone(),
             })
         }
         PublishRoute::Refused(refusal) => Err(refusal),

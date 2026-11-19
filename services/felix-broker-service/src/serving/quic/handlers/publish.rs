@@ -327,14 +327,14 @@ impl From<oneshot::Sender<PublishResult>> for PublishReply {
 /// and the principal a publish written here records.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PublishAs {
-    pub(crate) credential: String,
+    pub(crate) credential: crate::serving::forward::ForwardCredential,
     pub(crate) publisher: Option<Bytes>,
 }
 
 impl From<String> for PublishAs {
     fn from(credential: String) -> Self {
         Self {
-            credential,
+            credential: credential.as_str().into(),
             publisher: None,
         }
     }
