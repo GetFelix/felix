@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795102590956,
+  "lastUpdate": 1795106511266,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62712,6 +62712,58 @@ window.BENCHMARK_DATA = {
             "range": "3209.30",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820963.46\nmean: 822031.65\nstdev: 3209.30\ncv: 0.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0440e0c65d2a11c617f006fa2441bb09151d7552",
+          "message": "fix(controlplane): bind token refresh to the client certificate (#2827)\n\n* feat(controlplane): require client certificates on the API\n\nFELIX_CONTROLPLANE_TLS_CLIENT_CA makes the API listener refuse the TLS\nhandshake to a caller without a certificate from that CA, and\nFELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT ties each bearer token to\nthe certificate's principal with the broker's rules, now shared from\nfelix_common::tls. Brokers present a certificate with\nFELIX_CONTROLPLANE_CLIENT_CERT/_KEY, felixctl with\n--controlplane-client-cert-file/--controlplane-client-key-file.\n\nCloses #2811\n\n* fix(controlplane): bind exchange to its principal, probe on the metrics port\n\nSubject binding compared the IdP token's raw sub on token exchange with\nthe certificate, so every exchange failed under binding. The middleware\nnow leaves the exchange route to the handler, which binds the principal it\nresolves, or the actor_token's gateway.\n\nThe metrics listener's /ready runs the same check as /v1/system/ready, and\nthe Helm probes and the Raft bootstrap Job use it, since nothing there has\na client certificate. New chart values for the client CA, binding and the\nbrokers' control-plane client certificate.\n\nA config file tls block keeps the client CA and binding from the\nenvironment instead of dropping them.\n\n* fix(controlplane): report not ready until the API listener is bound\n\n* chore: mark the client-certificate change as outside the model\n\nSpec-Unaffected: serving/auth.rs and serving/tls.rs only move the broker's\nclient-certificate subject check into felix_common::tls unchanged; client\nauthentication is not the lease, quorum mark, reports, promotion or handoff.\n\n* fix(controlplane): bind token refresh to the client certificate\n\nWith certificate binding on, a refresh now needs a certificate issued to\nthe refresh token's principal or its may_act gateway, the same rule the\naccess token it mints is held to. A mismatch is a 401 certificate_mismatch\nand does not spend the token.\n\nCloses #2822\n\n* docs: note the refresh exception to the bearer-only binding\n\n* fix(controlplane): log a refresh certificate mismatch and pin the check order\n\nThe binding check stays before liveness so a stranger's certificate cannot\nend the owner's chain; tests pin that and secret-first ordering.",
+          "timestamp": "2026-11-19T16:31:37Z",
+          "tree_id": "4b5deae056b267a87ae46e7d9a6ecb65e5fc4786",
+          "url": "https://github.com/GetFelix/felix/commit/0440e0c65d2a11c617f006fa2441bb09151d7552"
+        },
+        "date": 1795106510344,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 516178.67,
+            "range": "23769.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516178.67\nmean: 516469.60\nstdev: 23769.91\ncv: 4.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 516178.67,
+            "range": "23769.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516178.67\nmean: 516469.60\nstdev: 23769.91\ncv: 4.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123542.56,
+            "range": "420.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123542.56\nmean: 123492.26\nstdev: 420.64\ncv: 0.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1235425.64,
+            "range": "4206.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1235425.64\nmean: 1234922.61\nstdev: 4206.42\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
