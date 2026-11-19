@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795053297947,
+  "lastUpdate": 1795053758201,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62036,6 +62036,58 @@ window.BENCHMARK_DATA = {
             "range": "53895.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1668132.01\nmean: 1676205.64\nstdev: 53895.65\ncv: 3.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f3d3e75f0d1e5ebe6dd0633d5fb708419b14524",
+          "message": "formal: list every unchecked TLA+ configuration and bound PlacedTarget (#2142, #2676) (#2780)\n\n* formal: list every unchecked TLA+ configuration and bound PlacedTarget (#2142, #2676)\n\nWIP: dispatch results pending.\n\nSpec-Unaffected: adds a witness invariant and configurations only; no modelled rule changes.\n\n* formal: README rows and changelog for the TLA+ registry check (#2142, #2676)\n\nSpec-Unaffected: docs and tooling only.\n\n* formal: bound PlacedTarget on the write, not the calls, and tighten its witness (#2676)\n\nWith one call the target's new member could only be added as a learner, so\nno membership change was ever proposed. The witness now requires the leader\nto stay in the target, which only the placed transfer rule allows.\n\nSpec-Unaffected: a reach invariant and configurations only.",
+          "timestamp": "2026-11-18T17:53:55-08:00",
+          "tree_id": "fe96becc1199d9b05567094db7a9f814378fba84",
+          "url": "https://github.com/GetFelix/felix/commit/8f3d3e75f0d1e5ebe6dd0633d5fb708419b14524"
+        },
+        "date": 1795053757516,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 418787.45,
+            "range": "7475.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 418787.45\nmean: 418786.17\nstdev: 7475.05\ncv: 1.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 418787.45,
+            "range": "7475.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 418787.45\nmean: 418786.17\nstdev: 7475.05\ncv: 1.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97794.65,
+            "range": "4899.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97794.65\nmean: 96124.63\nstdev: 4899.96\ncv: 5.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 977946.53,
+            "range": "48999.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 977946.53\nmean: 961246.34\nstdev: 48999.57\ncv: 5.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
