@@ -34,6 +34,8 @@ fn full_profile() -> Profile {
         client_cert_file: Some(PathBuf::from("/profile/cert.pem")),
         client_key_file: Some(PathBuf::from("/profile/key.pem")),
         controlplane_ca_file: Some(PathBuf::from("/profile/cp-ca.pem")),
+        controlplane_client_cert_file: None,
+        controlplane_client_key_file: None,
         server_name: Some("profile.example".to_string()),
         alpn: false,
     }

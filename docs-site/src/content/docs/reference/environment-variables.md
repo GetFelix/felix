@@ -176,6 +176,15 @@ certificate to be issued to its token's subject (`sub`).
   serves TLS: SASL/PLAIN checks the token against the certificate the client
   presented in the TLS handshake. Over `SASL_PLAINTEXT` there is no certificate
   to bind to.
+- A publish or cache operation another broker forwards here is checked too:
+  the forwarding broker sends the certificate chain its client presented, and
+  this broker verifies it against its own `FELIX_TLS_CLIENT_CA` before binding
+  the token to it. A forward without a chain is refused. A broker from before
+  this check forwards without one, so upgrade every broker first.
+- A client that logs in without a certificate, such as an MQTT client over
+  plain TCP (`FELIX_MQTT_TLS=false`), is served only on shards its own broker
+  owns. Its forwarded publishes and cache operations carry no chain and are
+  refused.
 
 ### `FELIX_TLS_REQUIRE_CERT`
 
@@ -278,6 +287,25 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
   (cert-manager, an internal PKI).
 - Startup fails if the bundle cannot be read or is empty, and if it is set
   while `FELIX_CONTROLPLANE_URL` is `http://`.
+
+### `FELIX_CONTROLPLANE_CLIENT_CERT` / `FELIX_CONTROLPLANE_CLIENT_KEY`
+
+**Description**: PEM certificate chain and private key a broker presents to a
+control plane that requires client certificates
+(`FELIX_CONTROLPLANE_TLS_CLIENT_CA`). Read by brokers and by `felixctl`
+(`--controlplane-client-cert-file`, `--controlplane-client-key-file`).
+
+**Type**: File paths
+
+**Default**: unset (no client certificate)
+
+**Notes**:
+- Set both or neither; one alone fails startup. Setting them with an `http://`
+  `FELIX_CONTROLPLANE_URL` also fails startup.
+- Read once at startup. A renewed certificate takes effect at the next restart.
+- When the control plane binds tokens to certificates, issue the broker's
+  certificate with the URI SAN `felix:principal:<id>` for the principal its
+  node credential names.
 
 ### `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`
 
@@ -2315,6 +2343,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_BIND` | `0.0.0.0:8443` | Address the control-plane API listens on. |
 | `FELIX_CONTROLPLANE_TLS_CERT` | unset | PEM certificate chain the API listener serves. Set with the key below, or neither. Without them the API is plain HTTP and startup warns. Re-read every 30s, so a renewal on disk reaches the next handshake. The Raft peer listener is separate and has its own `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`. |
 | `FELIX_CONTROLPLANE_TLS_KEY` | unset | PEM private key for `FELIX_CONTROLPLANE_TLS_CERT`. |
+| `FELIX_CONTROLPLANE_TLS_CLIENT_CA` | unset | PEM CA bundle. When set, the API listener refuses the TLS handshake to any client that does not present a certificate chaining to it, so a stolen token is no use from a host without such a certificate. Needs `FELIX_CONTROLPLANE_TLS_CERT` and `_KEY`. Read once at startup. Certificates are checked against the CA only: no CRL or OCSP, so revoke by rotating the CA. The API's `/v1/system/ready` and `/live` then need a certificate too, so point probes at `/ready` and `/live` on `FELIX_CONTROLPLANE_METRICS_BIND`, which run the same checks and never ask for one. Brokers present one with `FELIX_CONTROLPLANE_CLIENT_CERT` and `_KEY`. Config file key: `tls.client_ca_path`; a file `tls` block without it keeps this one. |
+| `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT` | `false` | `true` also requires a bearer token's subject, or its actor, to be the principal the client certificate was issued to: a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN the subject matches. Same rules as the broker's `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`. Requests without a bearer token are not affected. Token exchange carries the identity provider's token, so there the check applies to the principal the exchange resolves, or to the gateway named by `actor_token`. Needs `FELIX_CONTROLPLANE_TLS_CLIENT_CA`. Config file key: `tls.bind_subject`; a file `tls` block keeps this one when it is `true`, so the environment's `true` wins over a file's `false`. |
 | `FELIX_CONTROLPLANE_API_UI` | `off` | `off` or `scalar`. `scalar` serves an API reference page at the path below, loading its script from a CDN, so the browser needs internet access. An unrecognised value stops startup. Config file key: `api_ui`. |
 | `FELIX_CONTROLPLANE_API_UI_PATH` | `/api` | Where the reference page is served. A plain path that is not under `/v1`. Read only when the page is on. Config file key: `api_ui_path`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | `0.0.0.0:8080` | Separate address for the metrics endpoint. |
@@ -2338,6 +2368,8 @@ absent. They are listed in that script rather than here.
 | `FELIX_RAFT_BIND_ADDR` | unset | Required under raft. Where this member serves the Raft RPCs. A listener of its own, never the API port: the `propose` route can replace the whole metadata store. Keep it reachable from the other members only. |
 | `FELIX_RAFT_CLUSTER_ID` | unset | Required under raft. Names the group, like etcd's cluster token. Recorded in the data dir on first start. A member refuses to start on a data dir recorded under another id, and peers refuse requests carrying another id. |
 | `FELIX_RAFT_PEER_TOKEN` | unset | Required under raft, at least 32 characters, identical on every member. Every Raft request must carry it, and it is compared in constant time. It is the cluster-admin credential: whoever holds it can replace the store, so keep it in a Secret and give it to nothing but the members and the `migrate import` tool. |
+| `FELIX_RAFT_PEER_TOKEN_NEXT` | unset | The token being rolled in during a [peer token rotation](/features/security/#rotating-the-raft-peer-token). Accepted on inbound Raft requests, never sent. At least 32 characters, and only valid beside `FELIX_RAFT_PEER_TOKEN`. |
+| `FELIX_RAFT_PEER_TOKEN_PREVIOUS` | unset | The token being retired during a [peer token rotation](/features/security/#rotating-the-raft-peer-token). Accepted on inbound Raft requests, never sent. At least 32 characters, and only valid beside `FELIX_RAFT_PEER_TOKEN`. Remove it once `felix_meta_raft_peer_token_accepted_total{token="previous"}` stops growing. |
 | `FELIX_RAFT_INSECURE_PEERS` | `false` | `true` lets a raft member start without `FELIX_RAFT_PEER_TOKEN`. For a throwaway local group only. Anyone who reaches the peer listener can then replace the store. |
 | `FELIX_RAFT_INITIAL_CLUSTER_STATE` | `existing` | `new` lets an empty member form a brand-new group once every configured member answers, is empty and has recorded that this member is forming; a member that does not answer, or that runs a release without the record, blocks it. `existing` never forms one, so members that lost their volumes wait instead of starting an empty control plane. Set `new` for the first start of a cluster only. |
 | `FELIX_RAFT_TLS_CERT` | unset | PEM certificate this member presents on the peer listener and to its peers. Set with `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` to turn on peer mTLS. A partial set fails startup. The certificate must name the host each member reaches it by in `FELIX_RAFT_PEERS`. |
@@ -2513,5 +2545,7 @@ variable, and the variable overrides the context. See
 | `FELIX_CA_FILE` | platform trust store | PEM bundle broker certificates are checked against. |
 | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
 | `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
+| `FELIX_CONTROLPLANE_CLIENT_CERT` | unset | PEM client certificate presented to a control plane that requires one. Set with `FELIX_CONTROLPLANE_CLIENT_KEY`. |
+| `FELIX_CONTROLPLANE_CLIENT_KEY` | unset | PEM private key for `FELIX_CONTROLPLANE_CLIENT_CERT`. |
 | `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |
 | `FELIX_BROKER_BIN` | `felix-broker` on `PATH` | The `felix-broker` binary that `felixctl data inspect` and `felixctl data restore-point` run. `--broker-bin` overrides it. |

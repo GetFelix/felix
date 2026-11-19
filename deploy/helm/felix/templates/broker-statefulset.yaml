@@ -175,6 +175,12 @@ spec:
             - name: FELIX_CONTROLPLANE_CA
               value: /etc/felix/controlplane-ca/ca.crt
             {{- end }}
+            {{- if $b.controlplaneClientCert.existingSecret }}
+            - name: FELIX_CONTROLPLANE_CLIENT_CERT
+              value: /etc/felix/controlplane-client/tls.crt
+            - name: FELIX_CONTROLPLANE_CLIENT_KEY
+              value: /etc/felix/controlplane-client/tls.key
+            {{- end }}
             {{- if not $b.peerTls.enabled }}
             - name: FELIX_INTERNAL_ALLOW_UNAUTHENTICATED
               value: "true"
@@ -255,6 +261,11 @@ spec:
               mountPath: /etc/felix/controlplane-ca
               readOnly: true
             {{- end }}
+            {{- if $b.controlplaneClientCert.existingSecret }}
+            - name: controlplane-client
+              mountPath: /etc/felix/controlplane-client
+              readOnly: true
+            {{- end }}
             {{- if $b.config }}
             - name: config
               mountPath: /etc/felix/config
@@ -294,6 +305,11 @@ spec:
             items:
               - key: {{ $.Values.controlplane.tls.caKey }}
                 path: ca.crt
+        {{- end }}
+        {{- if $b.controlplaneClientCert.existingSecret }}
+        - name: controlplane-client
+          secret:
+            secretName: {{ $b.controlplaneClientCert.existingSecret }}
         {{- end }}
         {{- if $b.config }}
         - name: config

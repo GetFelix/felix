@@ -289,3 +289,38 @@ async fn live_answers_while_startup_waits_for_the_control_plane() -> Result<()> 
     tokio::time::timeout(Duration::from_secs(5), handle).await???;
     Ok(())
 }
+
+/// **A broker offers `CLIENT_CERTS` exactly when it binds subjects.** A
+/// binding broker that did not offer it would refuse every forward from a
+/// certified client; one that offered it on a client CA alone would be sent
+/// envelopes it never checks.
+#[test]
+fn client_certs_are_offered_exactly_when_the_broker_binds_subjects() {
+    use felix_wire::internal::PeerCapabilities;
+    let offered = |client_ca: bool, bind_subject: bool| {
+        let mut config = crate::config::BrokerConfig {
+            peer_transport: Some(felix_replication::peer::PeerTransportConfig::default()),
+            ..crate::config::BrokerConfig::default()
+        };
+        config.client_tls.files = Some(crate::config::ClientTlsFiles {
+            cert_path: "cert.pem".to_string(),
+            key_path: "key.pem".to_string(),
+            client_ca_path: client_ca.then(|| "ca.pem".to_string()),
+        });
+        config.client_tls.bind_subject = bind_subject;
+        offer_client_certs(&mut config);
+        let peer = config.peer_transport.expect("peer transport");
+        let listener = peer.capabilities().contains(PeerCapabilities::CLIENT_CERTS);
+        let dialler = peer
+            .outgoing_capabilities()
+            .contains(PeerCapabilities::CLIENT_CERTS);
+        assert_eq!(listener, dialler);
+        listener
+    };
+    assert!(offered(true, true), "a binding broker must offer it");
+    assert!(!offered(true, false), "a client CA alone must not offer it");
+    assert!(
+        !offered(false, false),
+        "a broker without binding must not offer it"
+    );
+}

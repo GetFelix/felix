@@ -825,7 +825,8 @@ async fn serve_connection(
                     // holds a shard's next forward until this one is answered.
                     request @ (InternalMessage::ForwardPublish(_)
                     | InternalMessage::ForwardCacheOp(_)
-                    | InternalMessage::LeaseForwardCacheOp(_)) => {
+                    | InternalMessage::LeaseForwardCacheOp(_)
+                    | InternalMessage::ClientCertified(_)) => {
                         // Refused rather than queued: waiting would stall the
                         // stream, and an older requester puts replication on
                         // it too. Nothing was applied, so the forwarder may
@@ -1065,6 +1066,10 @@ fn handler_bound(renews: &std::sync::atomic::AtomicBool, offered: &Offered) -> s
 fn overloaded(request: &InternalMessage) -> InternalMessage {
     let correlation_id = request.correlation_id();
     let detail = "this broker is serving as many forwards as it allows".to_string();
+    let request = match request {
+        InternalMessage::ClientCertified(certified) => &*certified.message,
+        request => request,
+    };
     match request {
         InternalMessage::ForwardCacheOp(_) | InternalMessage::LeaseForwardCacheOp(_) => {
             InternalMessage::ForwardCacheError(ForwardCacheError {

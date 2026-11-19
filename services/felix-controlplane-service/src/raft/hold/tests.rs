@@ -581,6 +581,8 @@ async fn node(dir: &std::path::Path) -> crate::raft::RaftHandle {
         crate::raft::PeerSecurity {
             cluster_id: "test-cluster".to_string(),
             token: Some("0123456789abcdef0123456789abcdef".to_string()),
+            previous_token: None,
+            next_token: None,
             tls: None,
         },
     );

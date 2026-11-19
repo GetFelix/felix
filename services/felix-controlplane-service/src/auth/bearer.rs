@@ -58,6 +58,8 @@ pub(crate) enum Refusal {
     /// verify for the tenant or does not hold `token.delegate`. Its own code so
     /// a gateway can tell its token was refused, not the user.
     ActorRefused,
+    /// The client certificate is not issued to the token's subject or actor.
+    CertificateMismatch,
 }
 
 impl Refusal {
@@ -70,6 +72,7 @@ impl Refusal {
             Self::Forbidden => "forbidden",
             Self::RefreshRefused => "refresh_refused",
             Self::ActorRefused => "actor_refused",
+            Self::CertificateMismatch => "certificate_mismatch",
         }
     }
 }
@@ -86,9 +89,10 @@ pub(crate) fn refused(reason: Refusal, message: &str) -> ApiError {
         "refused a control-plane credential"
     );
     match reason {
-        Refusal::MissingToken | Refusal::MalformedToken | Refusal::InvalidToken => {
-            api_unauthorized(message)
-        }
+        Refusal::MissingToken
+        | Refusal::MalformedToken
+        | Refusal::InvalidToken
+        | Refusal::CertificateMismatch => api_unauthorized(message),
         Refusal::TenantMismatch | Refusal::Forbidden | Refusal::RefreshRefused => {
             api_forbidden(message)
         }
@@ -97,13 +101,17 @@ pub(crate) fn refused(reason: Refusal, message: &str) -> ApiError {
 }
 
 pub(crate) fn extract_bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
+    bearer_token(headers).ok_or_else(|| refused(Refusal::MissingToken, "missing bearer token"))
+}
+
+/// The `Authorization: Bearer` token, if the request carries one.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| refused(Refusal::MissingToken, "missing bearer token"))
 }
 
 /// Verify a token against the keys of the tenant it names, and return both.
@@ -289,8 +297,8 @@ fn api_audiences() -> Vec<&'static str> {
     }
 }
 
-/// Read `tid` from an unverified token, only to choose a verification key.
-fn unverified_tenant(token: &str) -> Result<String, ApiError> {
+/// The claims of a token whose signature has not been checked yet.
+pub(crate) fn unverified_claims(token: &str) -> Result<serde_json::Value, ApiError> {
     use base64::Engine as _;
 
     let payload = token
@@ -300,10 +308,13 @@ fn unverified_tenant(token: &str) -> Result<String, ApiError> {
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|_| refused(Refusal::MalformedToken, "malformed token"))?;
-    let claims: serde_json::Value = serde_json::from_slice(&decoded)
-        .map_err(|_| refused(Refusal::MalformedToken, "malformed token"))?;
+    serde_json::from_slice(&decoded)
+        .map_err(|_| refused(Refusal::MalformedToken, "malformed token"))
+}
 
-    claims
+/// Read `tid` from an unverified token, only to choose a verification key.
+fn unverified_tenant(token: &str) -> Result<String, ApiError> {
+    unverified_claims(token)?
         .get("tid")
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())

@@ -698,6 +698,11 @@ Every peer request must carry:
 - `Authorization: Bearer <FELIX_RAFT_PEER_TOKEN>`, compared in constant
   time (401 otherwise).
 
+During a rotation a member also accepts `FELIX_RAFT_PEER_TOKEN_NEXT` and
+`FELIX_RAFT_PEER_TOKEN_PREVIOUS`, but sends only the current token, so the
+roll has no step at which two members cannot talk. The runbook is in
+`docs-site/src/content/docs/features/security.md`.
+
 The token is the cluster-admin credential. Members hold it, and so does the
 operator holding it; brokers and API clients never see it.
 `propose` needs nothing more because holding the token already is

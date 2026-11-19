@@ -77,6 +77,8 @@ pub enum NotReady {
     /// up to a cache window would keep receiving traffic it is about to stop
     /// serving.
     Draining,
+    /// Startup has not finished: the API listener is not bound yet.
+    Starting,
     /// The check did not finish in time.
     Timeout { after_ms: u64 },
     /// The store answered, and the answer was no.
@@ -90,6 +92,7 @@ impl std::fmt::Display for NotReady {
                 write!(f, "the store did not answer within {after_ms}ms")
             }
             Self::Draining => write!(f, "this instance is shutting down"),
+            Self::Starting => write!(f, "this instance is still starting"),
             Self::Store { detail } => write!(f, "{detail}"),
         }
     }
@@ -166,7 +169,11 @@ impl Readiness {
         // out of rotation on the very next probe, not after the cache window,
         // and asking a database whether we are shutting down is pointless.
         if !self.lifecycle.is_ready() {
-            return Err(NotReady::Draining);
+            return Err(if self.lifecycle.is_draining() {
+                NotReady::Draining
+            } else {
+                NotReady::Starting
+            });
         }
         let mut cached = self.cached.lock().await;
         if let Some(held) = cached.as_ref()

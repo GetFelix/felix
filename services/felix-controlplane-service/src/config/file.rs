@@ -168,7 +168,14 @@ impl ControlPlaneConfig {
         if let Some(value) = override_cfg.api_ui_path {
             config.api_ui_path = value.trim().to_string();
         }
-        if let Some(tls) = override_cfg.tls {
+        if let Some(mut tls) = override_cfg.tls {
+            // Per field: a client CA or binding set in the environment must
+            // not vanish because the file names the certificate, or the API
+            // would quietly serve without client certificates.
+            if let Some(env) = config.api_tls.take() {
+                tls.client_ca_path = tls.client_ca_path.or(env.client_ca_path);
+                tls.bind_subject |= env.bind_subject;
+            }
             config.api_tls = Some(tls);
         }
         if let Some(bootstrap_override) = override_cfg.bootstrap {

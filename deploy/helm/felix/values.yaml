@@ -57,9 +57,14 @@ controlplane:
       #     --from-literal=token="$(openssl rand -hex 32)"
       # Every Raft request carries it, and whoever holds it can replace the
       # metadata store: give it to the members and the migration tool only.
+      # During a rotation the Secret may also hold the incoming token under
+      # `nextKey` and the outgoing one under `previousKey`: both are accepted,
+      # neither is sent. See the rotation runbook on the security page.
       peerToken:
         existingSecret: ""
         tokenKey: token
+        nextKey: next
+        previousKey: previous
       # Run without a peer token. For a throwaway cluster only.
       insecurePeers: false
       # `new` lets empty members form a brand-new group; `existing` never
@@ -126,6 +131,17 @@ controlplane:
     # Key in that Secret brokers trust the certificate through. Empty means
     # the public roots only.
     caKey: ca.crt
+    # Require a client certificate on the API
+    # (FELIX_CONTROLPLANE_TLS_CLIENT_CA): a Secret holding the CA bundle
+    # under `clientCaKey`. The handshake is refused to a caller without a
+    # certificate from it, so brokers need broker.controlplaneClientCert.
+    # Probes and the Raft bootstrap hook use the metrics port, which never
+    # asks for one. Empty leaves the API open to any TLS client. Read at start.
+    clientCaSecret: ""
+    clientCaKey: ca.crt
+    # Bind each bearer token to the certificate it arrives with
+    # (FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT). Needs clientCaSecret.
+    bindSubject: false
   metrics:
     port: 8080
   # How long a broker heartbeat may go unanswered before the control plane
@@ -229,6 +245,13 @@ broker:
   # Where the control plane is. Empty means this release's own control plane,
   # over https when controlplane.tls is enabled.
   controlplaneUrl: ""
+  # The client certificate brokers present to the control plane
+  # (FELIX_CONTROLPLANE_CLIENT_CERT and _KEY): a kubernetes.io/tls Secret.
+  # Required when controlplane.tls.clientCaSecret is set; needs an https
+  # control plane. Read at start, so a renewal reaches a broker at its next
+  # restart.
+  controlplaneClientCert:
+    existingSecret: ""
   storage:
     size: 50Gi
     storageClassName: ""

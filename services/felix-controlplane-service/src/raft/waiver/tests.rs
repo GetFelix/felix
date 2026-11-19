@@ -64,6 +64,8 @@ async fn a_store_of_another_cluster_takes_no_waiver() {
         crate::raft::PeerSecurity {
             cluster_id: "staging".to_string(),
             token: Some("0123456789abcdef0123456789abcdef".to_string()),
+            previous_token: None,
+            next_token: None,
             tls: None,
         },
     );

@@ -164,8 +164,13 @@ impl ControlPlane {
 
     /// Start the control plane as a real three-member metadata Raft group,
     /// each member on its own data directory, behind one address. Members
-    /// are killed, partitioned and restarted through [`Self::group`].
-    pub(crate) async fn start_group(tenant_id: &str, liveness: NodeLivenessConfig) -> Result<Self> {
+    /// are killed, partitioned and restarted through [`Self::group`]. The
+    /// group records `engine` as its shard engine, the hybrid when `None`.
+    pub(crate) async fn start_group(
+        tenant_id: &str,
+        liveness: NodeLivenessConfig,
+        engine: Option<&str>,
+    ) -> Result<Self> {
         crate::cluster::capture_control_plane();
         let keys = felix_controlplane_service::auth::keys::generate_signing_keys()
             .context("generate tenant signing keys")?;
@@ -177,6 +182,7 @@ impl ControlPlane {
                 runtime.handle().clone(),
                 liveness.clone(),
                 front,
+                engine.unwrap_or("hybrid").to_string(),
             ))
             .await
             .context("start metadata group")??;

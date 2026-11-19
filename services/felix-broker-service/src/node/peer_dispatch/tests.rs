@@ -9,8 +9,8 @@ use felix_replication::ReplicaHandler;
 use felix_router::{RegionRouter, ShardRouter};
 use felix_storage::EphemeralCache;
 use felix_wire::internal::{
-    AckMode, CacheOpKind, Fence, ForwardCacheOp, ForwardPublish, PreVote, ReplicaLog,
-    ReplicateBootstrap, ReplicateFetch, ReplicateRebuild, ReplicateRecords, ShardRef,
+    AckMode, CacheOpKind, ClientCertified, Fence, ForwardCacheOp, ForwardPublish, PreVote,
+    ReplicaLog, ReplicateBootstrap, ReplicateFetch, ReplicateRebuild, ReplicateRecords, ShardRef,
 };
 
 use super::*;
@@ -85,6 +85,13 @@ fn cache_op() -> ForwardCacheOp {
     }
 }
 
+fn certified(message: InternalMessage) -> InternalMessage {
+    InternalMessage::ClientCertified(ClientCertified {
+        client_chain: vec![bytes::Bytes::from_static(b"leaf")],
+        message: Box::new(message),
+    })
+}
+
 fn refused_before_registration(answer: &InternalMessage) -> bool {
     match answer {
         InternalMessage::ForwardPublishError(error) => {
@@ -105,9 +112,23 @@ async fn forwarded_client_requests_wait_for_registration() {
         publish(),
         InternalMessage::ForwardCacheOp(cache_op()),
         InternalMessage::LeaseForwardCacheOp(cache_op()),
+        certified(publish()),
+        certified(InternalMessage::ForwardCacheOp(cache_op())),
     ] {
+        // Refused in the shape of the request inside any envelope.
+        let cache = matches!(&request, InternalMessage::ClientCertified(c)
+            if matches!(*c.message, InternalMessage::ForwardCacheOp(_)))
+            || matches!(
+                &request,
+                InternalMessage::ForwardCacheOp(_) | InternalMessage::LeaseForwardCacheOp(_)
+            );
         let answer = handler.handle(request).await;
         assert!(refused_before_registration(&answer), "{answer:?}");
+        assert_eq!(
+            matches!(answer, InternalMessage::ForwardCacheError(_)),
+            cache,
+            "{answer:?}"
+        );
         assert!(
             ErrorCode::Unavailable.is_retryable(),
             "the forwarder must try again"
@@ -119,6 +140,15 @@ async fn forwarded_client_requests_wait_for_registration() {
     clients.cancel();
     let answer = handler.handle(publish()).await;
     assert!(!refused_before_registration(&answer), "{answer:?}");
+    // An envelope is unwrapped for the forwarding half, not refused as a
+    // kind that is not a request.
+    let answer = handler.handle(certified(publish())).await;
+    assert!(
+        !refused_before_registration(&answer)
+            && !matches!(&answer, InternalMessage::ForwardPublishError(err)
+                if err.code == ErrorCode::Malformed),
+        "{answer:?}"
+    );
 }
 
 /// Without the gate, as on every broker that did not start from its view,

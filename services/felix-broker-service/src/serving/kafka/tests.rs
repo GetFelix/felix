@@ -222,7 +222,7 @@ async fn a_produce_to_a_raft_shard_lands_once() {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let cluster = BrokerCluster::new(
         Arc::new(BrokerAuth::new("http://127.0.0.1:1".to_string())),
@@ -321,7 +321,7 @@ async fn keys_and_headers_for_a_raft_shard_wait_for_the_fleet() {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let cluster = BrokerCluster::new(
         Arc::new(BrokerAuth::new("http://127.0.0.1:1".to_string())),
@@ -394,14 +394,13 @@ impl OnRaft {
 
     async fn start() -> Self {
         use crate::shards::raft::tests as fixture;
-        use crate::shards::routing::EngineShards;
 
         let root = tempfile::tempdir().expect("tempdir");
         let broker = fixture::broker(root.path()).await;
         let shards = fixture::shards(&broker);
         let key = fixture::key("orders", 0);
         let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
-        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&key).is_some()).await;
         let cluster = BrokerCluster::new(
             Arc::new(BrokerAuth::new("http://127.0.0.1:1".to_string())),

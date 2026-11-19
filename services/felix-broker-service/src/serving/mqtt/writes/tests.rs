@@ -214,7 +214,7 @@ async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
@@ -276,7 +276,7 @@ async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
@@ -377,6 +377,10 @@ async fn a_message_for_a_raft_shard_between_leaders_waits_for_the_next() {
     message.target.stream = "orders".into();
 
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards
+        .take(&mut fixture::assignments([assigned.clone()]))
+        .await;
+    let assigned = fixture::stored(assigned, &[&shards]);
     shards.take(&mut fixture::assignments([assigned])).await;
     let led_at_once = shards.leading(&orders).is_some();
     let written = writes.write(message).await;

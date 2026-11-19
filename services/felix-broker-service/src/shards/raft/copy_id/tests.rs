@@ -21,6 +21,7 @@ fn held(stream: &str, copy: u64, in_target: Option<u64>) -> Held {
         copy,
         set: ["n1", "n2"].map(String::from).into(),
         in_target,
+        withheld: false,
     }
 }
 
@@ -117,6 +118,34 @@ async fn a_refused_report_is_retried() {
     tokio::time::advance(RETRY).await;
     tick(&mut ids, &waiting, (1, 1), &link, "n1", None).await;
     assert_eq!(sent(&link).len(), 2);
+}
+
+/// A report refused while some broker had not acknowledged the placement
+/// incarnation goes again as soon as the view stops withholding the target,
+/// not after its backoff: no change says the gate opened.
+#[tokio::test(start_paused = true)]
+async fn a_refused_report_goes_again_once_the_view_stops_withholding() {
+    let link = accepting().status("report_raft_copy_id", StatusCode::CONFLICT);
+    let mut ids = CopyIds::default();
+    let withheld = [Held {
+        withheld: true,
+        ..held("a", 7, None)
+    }];
+    tick(&mut ids, &withheld, (1, 1), &link, "n1", None).await;
+    tokio::time::advance(RETRY).await;
+    tick(&mut ids, &withheld, (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 2);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tick(&mut ids, &withheld, (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 2, "still withheld, so it backs off");
+    tick(&mut ids, &[held("a", 7, None)], (1, 1), &link, "n1", None).await;
+    assert_eq!(sent(&link).len(), 3, "the gate opened");
+    tick(&mut ids, &[held("a", 7, None)], (1, 1), &link, "n1", None).await;
+    assert_eq!(
+        sent(&link).len(),
+        3,
+        "refused again in the open, so it backs off"
+    );
 }
 
 /// Each refused report is an entry in the control plane's log, so a
