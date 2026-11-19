@@ -621,7 +621,10 @@ Four properties:
    written the record, before it is synced (`await_quorum_ack`), as the
    hybrid does. So the cut could remove a record that was acknowledged. Such a
    record is lost only if a majority of copies each lose their unsynced tail,
-   by a power cut or a failed flush. An open refuses a poisoned directory that
+   by a power cut or a failed flush. Once the fleet finalizes
+   `raft_written_commit`, as a new cluster does, the Raft log itself fsyncs on
+   the broker's schedule too, so the same cut can also take a record that
+   committed and reached subscribers. An open refuses a poisoned directory that
    holds a copy file (`raft-copy`) and leaves the marker. The copy root
    rotates the copy instead: it moves the directory aside as it is and
    starts an empty one under a new copy id. See `docs/per-shard-raft.md`,
@@ -765,7 +768,11 @@ segment boundary. The records past the cut are the ones the truncation was
 discarding, and replication cuts them again, as it would after a crash before
 the truncation began. It never leaves a gap. A reset deletes every
 old segment before it creates the new one, so after a crash the directory
-holds either a prefix of the old log or the new empty one. Retention and
+holds either a prefix of the old log or the new empty one. The state that
+describes the records, such as the generation history, is rewritten after
+them, so both rewinds keep a `rewind-pending` marker on disk while they run,
+and an open that finds it finishes the rewind before it hands the log out
+(`docs/storage-format.md`). Retention and
 compaction delete from the head, so they go oldest first under the same
 rule.
 

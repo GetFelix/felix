@@ -2,7 +2,7 @@
 //! and stopping it.
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -44,6 +44,12 @@ pub struct RaftHandle {
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
+    /// While the vote is withheld: the lowest term a leader must be in for
+    /// this member to answer it ([`RaftHandle::serves_leader`]).
+    pub(super) floor: Arc<AtomicU64>,
+    /// Blocks the floor past the group's failure tolerance ([`super::floor`]).
+    pub(super) floor_gate: Arc<super::floor::FloorGate>,
+    pub(super) floor_report_after: Duration,
     /// Answers `ask_leader` on this member; set once by the application.
     pub(super) leader_service: Arc<std::sync::OnceLock<Arc<dyn super::LeaderService>>>,
     /// What each member last reported it can apply ([`super::version`]).
@@ -232,6 +238,9 @@ impl RaftHandle {
             data_dir: Arc::new(settings.data_dir),
             configured: Arc::default(),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
+            floor: Arc::new(AtomicU64::new(super::join::NO_FLOOR)),
+            floor_gate: Arc::default(),
+            floor_report_after: settings.floor_report_after,
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,
             hold,

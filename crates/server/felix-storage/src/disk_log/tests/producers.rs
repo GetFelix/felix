@@ -1176,10 +1176,11 @@ async fn a_reset_cut_short_is_finished_at_open(rounds: usize, interrupted: Inter
     }
     crate::raft_log::store_purged(sender_dir.path(), tail, sender.accepted_generation())
         .expect("store purged");
+    // The pending-rewind marker's store and the offload step come first.
     let stop = match interrupted {
         Interrupted::BeforeReset => None,
-        Interrupted::InReset => Some(0),
-        Interrupted::AfterDrop => Some(1),
+        Interrupted::InReset => Some(5),
+        Interrupted::AfterDrop => Some(6),
     };
     if let Some(stop) = stop {
         crash_point::watch(sender_dir.path(), Some(stop));

@@ -37,3 +37,18 @@ fn a_member_holds_a_record_once_it_has_the_same_one_flushed() {
     ];
     assert_eq!(holders(&record, 100, &members), 2);
 }
+
+/// A wiped copy held offset 50 as term 1's value 3. If two members later
+/// disagree at 50, the credit backs only the record the copy held.
+#[test]
+fn a_replaced_copy_is_credited_only_with_the_record_it_held() {
+    let held = entry(1, 3);
+    let credit = Credit {
+        bound: 100,
+        records: BTreeMap::from([(50, held.clone())]),
+    };
+    assert!(credited(Some(&credit), 50, &held));
+    assert!(!credited(Some(&credit), 50, &entry(2, 9)));
+    assert!(!credited(Some(&credit), 60, &held));
+    assert!(!credited(None, 50, &held));
+}

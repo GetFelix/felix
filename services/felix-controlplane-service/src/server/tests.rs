@@ -294,6 +294,7 @@ async fn a_member_is_attached_only_after_it_enters_the_group() {
         snapshot_logs_since_last: None,
         logs_kept_behind_snapshot: None,
         snapshot_max_bytes: None,
+        floor_report_after_ms: None,
         write_timeout_ms: None,
     };
     let member = RaftMember::open(

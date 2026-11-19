@@ -30,6 +30,13 @@ impl RaftHandle {
     /// readiness probe must never cost a consensus round trip.
     pub fn readiness(&self) -> Result<(), String> {
         if !self.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(blocked) = self.floor_gate.reported() {
+                return Err(format!(
+                    "blocked past the failure tolerance: members {:?} lost their raft state too \
+                     and only {} of {} members report a term; waive the lost members to go on",
+                    blocked.withheld, blocked.with_terms, blocked.members
+                ));
+            }
             return Err("started without raft state; catching up before serving".to_string());
         }
         self.caught_up()?;

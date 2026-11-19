@@ -14,7 +14,9 @@
 # on brokers that do not sync), `majority-cut` and `majority-cut-relaxed`
 # (several brokers lose power at once) or `wipe` (shard directories and data
 # directories emptied). `raft` and `raft-clocks` run Raft groups
-# (docs/simulation.md, "Raft groups"), the second with skewed timers.
+# (docs/simulation.md, "Raft groups"), the second with skewed timers;
+# `raft-wipe` and `raft-restore` run them with members stopped and a shard
+# directory or data root wiped or put back from an older copy.
 #
 # A failing seed is sorted by what its log says:
 #
@@ -67,7 +69,9 @@ case "$mode" in
   wipe) mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
   raft) test=raft_seeds; mode_env=(); mode_prefix="" ;;
   raft-clocks) test=raft_seeds; mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
-  *) echo "FELIX_SIM_MODE must be off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft or raft-clocks, got $mode" >&2; exit 2 ;;
+  raft-wipe) test=raft_seeds; mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
+  raft-restore) test=raft_seeds; mode_env=(FELIX_SIM_RESTORE=1); mode_prefix="FELIX_SIM_RESTORE=1 " ;;
+  *) echo "FELIX_SIM_MODE must be off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe or raft-restore, got $mode" >&2; exit 2 ;;
 esac
 # The test one seed runs: `replay` takes FELIX_SIM_SEED, the Raft batch a
 # range of one.

@@ -244,5 +244,8 @@ fn raft_settings(raft_cfg: &RaftBackendConfig) -> RaftSettings {
     if let Some(bytes) = raft_cfg.snapshot_max_bytes {
         settings.snapshot_max_bytes = bytes;
     }
+    if let Some(ms) = raft_cfg.floor_report_after_ms {
+        settings.floor_report_after = Duration::from_millis(ms);
+    }
     settings
 }

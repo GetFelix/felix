@@ -169,12 +169,21 @@ pub(crate) struct CarriedOver {
 /// root whose run rotates after a machine crash, and only once every broker
 /// carries the copy's reservation (`raft_written_commit`). Otherwise
 /// `OnCommit`. See `docs/per-shard-raft.md`, "Proposal: commit on a written majority".
+///
+/// A `none` broker's Raft logs still flush every [`NONE_RAFT_FLUSH`]: under
+/// written commit nothing else moves a log's flushed position, and reclaiming
+/// a kept copy waits on it.
 fn raft_fsync_mode(broker: FsyncMode, written_commit: bool, dir: &Path) -> FsyncMode {
     if written_commit
         && felix_storage::run_state::relaxed(&broker)
         && felix_storage::run_state::rotates_on_crash(dir)
     {
-        broker
+        match broker {
+            FsyncMode::None => FsyncMode::Periodic {
+                interval: NONE_RAFT_FLUSH,
+            },
+            relaxed => relaxed,
+        }
     } else {
         FsyncMode::OnCommit
     }
@@ -187,6 +196,9 @@ struct Formable {
     brokers: BTreeSet<String>,
     target: Option<BTreeSet<MemberId>>,
 }
+
+/// How often a `none` broker's written-commit Raft logs flush.
+const NONE_RAFT_FLUSH: Duration = Duration::from_secs(1);
 
 /// One open member: the log is this module's to close, because the storage
 /// provider never opened it.

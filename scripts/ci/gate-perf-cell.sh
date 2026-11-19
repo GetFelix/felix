@@ -7,6 +7,13 @@
 # <bin dir> holds felix-cluster, felix-loadgen and the side's felix-broker, which
 # the cluster finds next to its own executable. Both sides run the same
 # harness and load generator, so only the broker differs.
+#
+# Optional environment, for the Raft against hybrid comparison
+# (.github/workflows/perf-raft-rf3.yml):
+#   ENGINE=raft|hybrid     sets FELIX_SHARD_ENGINE for the brokers, then checks the shard
+#                          directories: Raft leaves an engine marker, the hybrid leaves none.
+#                          A cell that ran the other engine fails instead of reporting.
+#   FELIX_DURABLE_FSYNC_MODE is passed through to the brokers as it is.
 set -euo pipefail
 
 bin=${1:?bin dir}; side=${2:?side}; cell=${3:?cell}; rf=${4:?replication factor}
@@ -18,6 +25,9 @@ export TMPDIR=$work
 # Brokers would otherwise reserve full segments up front.
 export FELIX_DURABLE_PREALLOCATE=false
 cluster_pid=
+engine=${ENGINE:-}
+case "$engine" in ''|raft|hybrid) ;; *) echo "ENGINE must be raft or hybrid" >&2; exit 2 ;; esac
+[ -z "$engine" ] || export FELIX_SHARD_ENGINE=$engine
 cleanup() {
   if [ -n "$cluster_pid" ]; then
     kill "$cluster_pid" 2>/dev/null || true
@@ -51,9 +61,19 @@ sleep 5
   --environment "gate-$side-$cell" >"$work/loadgen.out" 2>"$work/loadgen.err" \
   || { tail -20 "$work/loadgen.err"; echo "loadgen failed" >&2; exit 1; }
 
+if [ -n "$engine" ]; then
+  markers=$(find "$work" -type f -name engine -exec grep -lx raft {} + 2>/dev/null | wc -l | tr -d ' ')
+  echo "engine check: $side $cell round $round asked for $engine, $markers shard directories carry the raft marker"
+  case "$engine:$markers" in
+    raft:0) echo "asked for raft but no shard directory carries the raft marker" >&2; exit 1 ;;
+    hybrid:0|raft:*) ;;
+    *) echo "asked for hybrid but $markers shard directories carry the raft marker" >&2; exit 1 ;;
+  esac
+fi
+
 line=$(grep '^LOADGEN_JSON ' "$work/loadgen.out" | head -1 | cut -d' ' -f2-)
 [ -n "$line" ] || { echo "no LOADGEN_JSON line" >&2; exit 1; }
-jq -c --arg side "$side" --arg cell "$cell" --argjson round "$round" \
-  '{side: $side, cell: $cell, round: $round,
+jq -c --arg side "$side" --arg cell "$cell" --argjson round "$round" --arg engine "$engine" \
+  '{side: $side, cell: $cell, round: $round, engine: $engine,
     msg_s: (.acked_throughput_msg_s // .throughput_msg_s),
     p50_us: .batch_ack_latency_us.p50, p99_us: .batch_ack_latency_us.p99, failed_sends: .failed_sends}' <<<"$line" >>"$results"
