@@ -218,7 +218,14 @@ async fn storm() {
     }
     // When each group was first led, and when all were led at once.
     let mut first_led: Vec<Option<Duration>> = vec![None; groups as usize];
+    let mut next_load = Instant::now();
     let all_led = loop {
+        // The bound's state on each broker, every 5 s while it works.
+        if Instant::now() >= next_load {
+            let loads: Vec<_> = survivors.iter().map(|r| r.election_load()).collect();
+            println!("t={:.0?} election load {loads:?}", started.elapsed());
+            next_load = Instant::now() + Duration::from_secs(5);
+        }
         let mut led = 0;
         for n in 0..groups {
             if leader(&survivors, n).is_some() {
@@ -238,6 +245,13 @@ async fn storm() {
     tokio::time::sleep(Duration::from_secs(5)).await;
     let highest = highest_term(&survivors, groups);
     let rounds = rounds(&survivors, groups, base);
+    println!(
+        "election load at the end: {:?}",
+        survivors
+            .iter()
+            .map(|r| r.election_load())
+            .collect::<Vec<_>>()
+    );
     let still_led = (0..groups)
         .filter(|n| leader(&survivors, *n).is_some())
         .count();

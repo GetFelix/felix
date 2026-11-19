@@ -150,6 +150,14 @@ pub struct ElectionLoad {
     pub limit: usize,
     /// The most that were in flight at once since the ticker started.
     pub peak: usize,
+    /// Elections that ended in a lead, a heard leader or a granted vote,
+    /// and that were given up as lost, since the ticker started.
+    pub won: u64,
+    pub lost: u64,
+    /// Times the limit was cut below where it stood.
+    pub cuts: u64,
+    /// Vote saves under way on this broker when the ticker last looked.
+    pub saving: u64,
 }
 
 /// How long one piece of a snapshot may take to send and be answered. The

@@ -377,6 +377,8 @@ pub(super) struct Elections<M: Campaigner = Group> {
     lowered: Lowered,
     outcomes: Outcomes,
     peak: usize,
+    /// Totals since the ticker started, for `ElectionLoad`.
+    totals: (u64, u64, u64),
     reported: ElectionLoad,
 }
 
@@ -519,6 +521,7 @@ impl<M: Campaigner> Elections<M> {
             lowered: Lowered::default(),
             outcomes: Outcomes::default(),
             peak: 0,
+            totals: (0, 0, 0),
             reported: ElectionLoad::default(),
         }
     }
@@ -599,6 +602,8 @@ impl<M: Campaigner> Elections<M> {
         });
         self.outcomes
             .add(now, self.stand, won as u64, lost.len() as u64);
+        self.totals.0 += won as u64;
+        self.totals.1 += lost.len() as u64;
         for member in lost {
             // Its round may still be won: openraft takes the answers
             // either way. It just does not start another before its turn.
@@ -632,6 +637,7 @@ impl<M: Campaigner> Elections<M> {
         let slowest = self.saves.slowest.swap(0, Ordering::Relaxed);
         let before = self.saves.slowest_before.swap(0, Ordering::Relaxed);
         let losing = self.outcomes.losing();
+        let was = self.limit;
         if losing && slowest > slow {
             self.lowered = Lowered {
                 from: self.limit,
@@ -649,6 +655,7 @@ impl<M: Campaigner> Elections<M> {
         } else {
             self.limit = (self.limit + won.max(1)).min(self.most);
         }
+        self.totals.2 += u64::from(self.limit < was);
     }
 
     fn load(&self) -> ElectionLoad {
@@ -657,6 +664,10 @@ impl<M: Campaigner> Elections<M> {
             waiting: self.urgent.len() + self.queue.len(),
             limit: self.limit,
             peak: self.peak,
+            won: self.totals.0,
+            lost: self.totals.1,
+            cuts: self.totals.2,
+            saving: self.saves.saving.load(Ordering::Relaxed),
         }
     }
 

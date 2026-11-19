@@ -38,7 +38,7 @@ on:
         required: false
         default: "300"
       storm_rows:
-        description: "Storm report rows: all, or pr (2000 leader lost, formed at once, +20 ms and the slow disks)"
+        description: "Storm report rows: all, pr (2000 leader lost, formed at once, +20 ms and the slow disks), or slow (the 2000 +20 ms row and the 200 x1 row)"
         required: false
         default: "all"
 
@@ -190,8 +190,13 @@ jobs:
           run() {
             env RAFT_STORM_SETTLE_SECS=180 "$@" cargo test --locked --release -p felix-replication \
               --features raft --test raft_election_storm -- --ignored --nocapture 2>&1 \
-              | grep -E 'groups,|no leader|panicked' | tee -a storm.log || true
+              | grep -E 'groups,|no leader|panicked|election load' | tee -a storm.log || true
           }
+          if [ "$STORM_ROWS" = slow ]; then
+            run RAFT_STORM_GROUPS=2000 RAFT_STORM_FSYNC_MS=20
+            run RAFT_STORM_GROUPS=200 RAFT_STORM_FSYNC_MS=10 RAFT_STORM_DISK_WIDTH=1
+            exit 0
+          fi
           if [ "$STORM_ROWS" = pr ]; then
             run RAFT_STORM_GROUPS=2000
           else
