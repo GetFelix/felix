@@ -6,7 +6,7 @@ use std::time::Duration;
 use felix_storage::CacheCondition;
 
 use super::*;
-use crate::serving::forward::CacheRequest;
+use crate::serving::forward::{CacheRequest, ForwardCredential};
 use crate::shards::raft::tests as fixture;
 use crate::shards::routing::EngineShards;
 
@@ -51,7 +51,7 @@ async fn script(
             (engine, TIMEOUT),
             ingress,
             None,
-            "",
+            &ForwardCredential::from(""),
             TENANT,
             NAMESPACE,
             CACHE,
@@ -68,7 +68,7 @@ async fn script(
             (engine, TIMEOUT),
             ingress,
             None,
-            "",
+            &ForwardCredential::from(""),
             TENANT,
             NAMESPACE,
             CACHE,
@@ -225,7 +225,7 @@ async fn a_raft_cache_write_at_another_term_is_refused() {
         (&engine, TIMEOUT),
         Some(&ingress),
         None,
-        "",
+        &ForwardCredential::from(""),
         TENANT,
         NAMESPACE,
         CACHE,
