@@ -34,6 +34,8 @@ async fn member(dir: &std::path::Path, cap: u64, app: Arc<Restored>) -> RaftHand
         PeerSecurity {
             cluster_id: "test-cluster".to_string(),
             token: Some(TOKEN.to_string()),
+            previous_token: None,
+            next_token: None,
             tls: None,
         },
     );

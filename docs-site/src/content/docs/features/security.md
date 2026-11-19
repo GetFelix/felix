@@ -45,6 +45,56 @@ takes them, so a renewal written over the same paths (cert-manager, a
 Kubernetes Secret volume) is used by the next handshake without a restart.
 CA bundles are read at startup.
 
+### Rotating the Raft peer token
+
+Control-plane members on the Raft metadata backend authenticate each other with
+`FELIX_RAFT_PEER_TOKEN`. Rotate it after a member machine is compromised, or on
+a schedule. The rotation is three rolling restarts, one member at a time, and
+the group keeps its quorum throughout.
+
+Two optional variables make that possible. `FELIX_RAFT_PEER_TOKEN_NEXT` is the
+token being rolled in and `FELIX_RAFT_PEER_TOKEN_PREVIOUS` the one being
+retired. A member accepts requests carrying either of them as well as its
+current token, but only ever sends `FELIX_RAFT_PEER_TOKEN`. So at every point in
+the roll, the token each member sends is one that every other member accepts.
+
+1. Generate the new token: `openssl rand -hex 32`.
+2. On every member, set `FELIX_RAFT_PEER_TOKEN_NEXT` to the new token and
+   restart, one member at a time. Wait for each member to rejoin before the
+   next. Members still send the old token.
+3. On every member, set `FELIX_RAFT_PEER_TOKEN` to the new token,
+   `FELIX_RAFT_PEER_TOKEN_PREVIOUS` to the old one, unset
+   `FELIX_RAFT_PEER_TOKEN_NEXT`, and restart, one at a time. Members now send
+   the new token.
+4. Watch `felix_meta_raft_peer_token_accepted_total{token="previous"}` on every
+   member. Once it stops growing, nothing sends the old token. Anything still
+   using it, such as a script that calls `waive-lost`, needs the new token.
+5. On every member, unset `FELIX_RAFT_PEER_TOKEN_PREVIOUS` and restart, one at
+   a time. The old token is now refused everywhere.
+
+| Step | Sends | Accepts |
+| --- | --- | --- |
+| Before | old | old |
+| After step 2 | old | old, new |
+| After step 3 | new | new, old |
+| After step 5 | new | new |
+
+A member that is restarted out of order still talks to the rest: during step 2
+it sends the old token, which everyone accepts, and during step 3 it sends the
+new one, which every member that finished step 2 accepts. Skipping step 2 is the
+mistake to avoid. A member that sends the new token to one that only knows the
+old one is refused with `401`, counted in
+`felix_meta_raft_peer_rejected_total{reason="token"}`, and logged as
+"raft peer request with a missing or wrong peer token refused". Tokens are
+never logged.
+
+Both rotation variables must be at least 32 characters, and a member refuses to
+start if either is set without `FELIX_RAFT_PEER_TOKEN`. With the Helm chart,
+put the new token under the `next` key of the peer token Secret for step 2,
+then `token` (new) and `previous` (old) for step 3, then remove `previous`.
+Run `kubectl rollout restart statefulset <release>-controlplane` after each
+Secret change; the StatefulSet restarts members one at a time.
+
 Client-side, certificate verification is Quinn's:
 
 ```rust

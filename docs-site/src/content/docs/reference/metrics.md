@@ -400,6 +400,7 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |
 | `felix_meta_raft_write_timeouts_total` | counter | - | Proposals that ran out their whole budget, which means no leader or no quorum. Alert on this. |
 | `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`: `cluster_id`, `token`, or `target` for a request meant for another member. |
+| `felix_meta_raft_peer_token_accepted_total` | counter | `token` | Raft peer requests accepted, by which configured token they carried: `current`, `next` or `previous`. When `previous` stops growing during a rotation, nothing sends the old token. |
 | `felix_meta_raft_unsupported_commands_total` | counter | - | Commands this member's build does not understand. In a mixed-version group the member's state now differs from a newer leader's. |
 
 ## Clients

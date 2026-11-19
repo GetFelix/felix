@@ -370,6 +370,45 @@ fn raft_refuses_to_start_without_a_peer_token() {
     );
 }
 
+const NEXT_PEER_TOKEN: &str = "fedcba9876543210fedcba9876543210";
+
+#[serial]
+#[test]
+fn raft_rotation_tokens_are_read_checked_and_redacted() {
+    let _env = clear_felix_env();
+    set_raft_basics();
+    unsafe {
+        env::set_var("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN);
+        env::set_var("FELIX_RAFT_PEER_TOKEN_NEXT", NEXT_PEER_TOKEN);
+    }
+    let raft = ControlPlaneConfig::from_env()
+        .expect("next token")
+        .raft
+        .expect("raft config");
+    assert_eq!(raft.security.next_token.as_deref(), Some(NEXT_PEER_TOKEN));
+    assert!(
+        !format!("{:?}", raft.security).contains(NEXT_PEER_TOKEN),
+        "a rotation token must not reach Debug output"
+    );
+
+    unsafe { env::set_var("FELIX_RAFT_PEER_TOKEN_PREVIOUS", "short") };
+    let err = ControlPlaneConfig::from_env().expect_err("short previous token");
+    assert!(
+        err.to_string().contains("FELIX_RAFT_PEER_TOKEN_PREVIOUS"),
+        "{err}"
+    );
+
+    unsafe {
+        env::remove_var("FELIX_RAFT_PEER_TOKEN");
+        env::set_var("FELIX_RAFT_INSECURE_PEERS", "true");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("rotation token without a current one");
+    assert!(
+        err.to_string().contains("without FELIX_RAFT_PEER_TOKEN"),
+        "{err}"
+    );
+}
+
 #[serial]
 #[test]
 fn raft_runs_without_a_peer_token_only_when_told_to() {

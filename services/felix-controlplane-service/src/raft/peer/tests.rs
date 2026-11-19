@@ -14,6 +14,8 @@ fn security(token: Option<&str>) -> PeerSecurity {
     PeerSecurity {
         cluster_id: "cluster-a".to_string(),
         token: token.map(str::to_string),
+        previous_token: None,
+        next_token: None,
         tls: None,
     }
 }
@@ -129,4 +131,77 @@ fn the_token_stays_out_of_debug_output() {
     let rendered = format!("{:?}", security(Some(TOKEN)));
     assert!(!rendered.contains(TOKEN), "{rendered}");
     assert!(rendered.contains("cluster-a"), "{rendered}");
+}
+
+const OLD: &str = "0123456789abcdef0123456789abcdef";
+const NEW: &str = "fedcba9876543210fedcba9876543210";
+
+fn rotating(token: &str, previous: Option<&str>, next: Option<&str>) -> PeerSecurity {
+    PeerSecurity {
+        previous_token: previous.map(str::to_string),
+        next_token: next.map(str::to_string),
+        ..security(Some(token))
+    }
+}
+
+/// The bearer a member sends: always and only the current token.
+fn sent_bearer(security: &PeerSecurity) -> Option<String> {
+    security
+        .peer_headers()
+        .expect("headers")
+        .get("authorization")
+        .map(|value| value.to_str().expect("text").to_string())
+}
+
+#[tokio::test]
+async fn a_member_mid_rotation_accepts_both_tokens() {
+    // Step 1 of a rotation: still sending the old token, also accepting the new one.
+    let adding = guarded(rotating(OLD, None, Some(NEW)));
+    // Step 2: sending the new token, still accepting the old one.
+    let switched = guarded(rotating(NEW, Some(OLD), None));
+    for router in [adding, switched] {
+        for bearer in [OLD, NEW] {
+            assert_eq!(
+                call(router.clone(), Some("cluster-a"), Some(bearer)).await,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(
+            call(router, Some("cluster-a"), Some(&"x".repeat(32))).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+#[tokio::test]
+async fn rotation_tokens_are_accepted_but_never_sent() {
+    let member = rotating(NEW, Some(OLD), Some(OLD));
+    assert_eq!(sent_bearer(&member), Some(format!("Bearer {NEW}")));
+    // A member that switched to the new token reaches one still on step 1.
+    let step_one = guarded(rotating(OLD, None, Some(NEW)));
+    assert_eq!(
+        call(step_one, Some("cluster-a"), Some(NEW)).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_member_that_only_knows_the_old_token_refuses_the_new_one() {
+    let router = guarded(security(Some(OLD)));
+    assert_eq!(
+        call(router, Some("cluster-a"), Some(NEW)).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[test]
+fn match_token_names_the_slot_that_matched() {
+    let member = rotating(NEW, Some(OLD), None);
+    assert_eq!(member.match_token(NEW), Some("current"));
+    assert_eq!(member.match_token(OLD), Some("previous"));
+    assert_eq!(
+        rotating(OLD, None, Some(NEW)).match_token(NEW),
+        Some("next")
+    );
+    assert_eq!(member.match_token(""), None);
 }
