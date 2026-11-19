@@ -322,6 +322,7 @@ async fn a_refresh_picks_up_group_claims_recorded_at_exchange() {
                 discovery_url: None,
                 jwks_url: None,
                 claim_mappings: Default::default(),
+                ..Default::default()
             },
         )
         .await

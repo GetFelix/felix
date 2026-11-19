@@ -16,8 +16,13 @@
 //! is fetched at most once every 30 seconds, because an unknown `kid`
 //! forces a refresh before any signature has been checked.
 //!
+//! An issuer may carry its keys inline, in which case nothing is fetched for
+//! it, and may ask for single-use tokens (`jti`) and a bound on their
+//! lifetime; see [`jti`].
+//!
 //! Construct an [`UpstreamOidcValidator`] and call
 //! [`UpstreamOidcValidator::validate`].
+mod jti;
 mod keys;
 
 use std::sync::Arc;
@@ -31,6 +36,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde_json::Value;
 
 use crate::auth::idp_registry::IdpIssuerConfig;
+use jti::JtiStore;
 use keys::{
     CachedDiscovery, CachedJwks, JWKS_REFRESH_FLOOR, JwksFetchGate, ensure_jwk_matches_algorithm,
     find_jwk,
@@ -55,6 +61,7 @@ pub struct UpstreamOidcValidator {
     allowed_algorithms: Arc<Vec<Algorithm>>,
     allow_insecure_http: bool,
     allow_private: bool,
+    jtis: Arc<JtiStore>,
 }
 
 /// The upstream algorithms accepted when none are configured.
@@ -122,6 +129,7 @@ impl UpstreamOidcValidator {
             allowed_algorithms: Arc::new(allowed_algorithms),
             allow_insecure_http: crate::auth::idp_registry::allow_insecure_http_from_env(),
             allow_private,
+            jtis: Arc::new(JtiStore::new()),
         }
     }
 
@@ -167,21 +175,30 @@ impl UpstreamOidcValidator {
             .find(|cfg| cfg.issuer == issuer)
             .ok_or(OidcError::IssuerNotAllowed)?;
 
-        // On a `kid` miss, refresh once and retry — the miss usually means the
-        // IdP rotated keys since our cached fetch. The refresh is rate-limited
-        // per URL, since nothing about this token has been verified yet.
-        let jwks_url = self.resolve_jwks_url(&issuer, issuer_cfg).await?;
-        let jwks = self.get_jwks(&jwks_url).await?;
-        let decoding_key = match find_jwk(&jwks, kid) {
-            Some(key) => {
-                ensure_jwk_matches_algorithm(key, header.alg)?;
-                DecodingKey::from_jwk(key)?
-            }
-            None => {
-                let refreshed = self.refresh_jwks(&jwks_url).await?;
-                let key = find_jwk(&refreshed, kid).ok_or(OidcError::JwksKeyNotFound)?;
-                ensure_jwk_matches_algorithm(key, header.alg)?;
-                DecodingKey::from_jwk(key)?
+        let decoding_key = if let Some(inline) = &issuer_cfg.jwks {
+            // Held in the config: nothing is fetched, and an unknown `kid`
+            // is a refusal, since only a config change brings in a key.
+            let key = find_jwk(inline, kid).ok_or(OidcError::JwksKeyNotFound)?;
+            ensure_jwk_matches_algorithm(key, header.alg)?;
+            DecodingKey::from_jwk(key)?
+        } else {
+            // On a `kid` miss, refresh once and retry — the miss usually means
+            // the IdP rotated keys since our cached fetch. The refresh is
+            // rate-limited per URL, since nothing about this token has been
+            // verified yet.
+            let jwks_url = self.resolve_jwks_url(&issuer, issuer_cfg).await?;
+            let jwks = self.get_jwks(&jwks_url).await?;
+            match find_jwk(&jwks, kid) {
+                Some(key) => {
+                    ensure_jwk_matches_algorithm(key, header.alg)?;
+                    DecodingKey::from_jwk(key)?
+                }
+                None => {
+                    let refreshed = self.refresh_jwks(&jwks_url).await?;
+                    let key = find_jwk(&refreshed, kid).ok_or(OidcError::JwksKeyNotFound)?;
+                    ensure_jwk_matches_algorithm(key, header.alg)?;
+                    DecodingKey::from_jwk(key)?
+                }
             }
         };
         let mut validation = Validation::new(header.alg);
@@ -193,13 +210,38 @@ impl UpstreamOidcValidator {
         validation.leeway = self.clock_skew_seconds;
 
         let token = decode::<Value>(token, &decoding_key, &validation)?;
-        validate_iat(&token.claims, self.clock_skew_seconds)?;
+        let iat = validate_iat(&token.claims, self.clock_skew_seconds)?;
         let subject = extract_string_claim(&token.claims, &issuer_cfg.claim_mappings.subject_claim)
             .ok_or(OidcError::MissingSubject)?;
         let groups = extract_groups_claim(
             &token.claims,
             issuer_cfg.claim_mappings.groups_claim.as_deref(),
         );
+        // `exp` is a required claim, so decoding has already refused a token
+        // without one.
+        let exp = token
+            .claims
+            .get("exp")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| OidcError::InvalidClaim("exp".to_string()))?;
+        if let Some(max) = issuer_cfg.max_token_lifetime_seconds
+            && exp.saturating_sub(iat) > max as i64
+        {
+            return Err(OidcError::InvalidClaim("lifetime too long".to_string()));
+        }
+        // Last, so a token refused for any other reason does not use up its
+        // `jti`.
+        if issuer_cfg.single_use_jti {
+            let jti = extract_string_claim(&token.claims, "jti")
+                .filter(|jti| !jti.is_empty())
+                .ok_or_else(|| OidcError::InvalidClaim("jti".to_string()))?;
+            self.jtis.claim(
+                &issuer,
+                &jti,
+                iat,
+                exp.saturating_add(self.clock_skew_seconds as i64),
+            )?;
+        }
 
         Ok(ValidatedToken {
             issuer,
@@ -257,6 +299,10 @@ pub enum OidcError {
     Jwt(#[from] jsonwebtoken::errors::Error),
     #[error("invalid claim: {0}")]
     InvalidClaim(String),
+    #[error("token already used")]
+    TokenReplayed,
+    #[error("too many single-use tokens in flight")]
+    ReplayStoreFull,
 }
 
 /// Resolves IdP hostnames, refusing any that lead to a private address.
@@ -306,7 +352,7 @@ fn extract_string_claim(claims: &Value, name: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-fn validate_iat(claims: &Value, leeway_seconds: u64) -> Result<(), OidcError> {
+fn validate_iat(claims: &Value, leeway_seconds: u64) -> Result<i64, OidcError> {
     let iat = claims
         .get("iat")
         .and_then(|value| value.as_i64())
@@ -316,7 +362,7 @@ fn validate_iat(claims: &Value, leeway_seconds: u64) -> Result<(), OidcError> {
     if iat > now + leeway {
         return Err(OidcError::InvalidClaim("iat in future".to_string()));
     }
-    Ok(())
+    Ok(iat)
 }
 
 // IdPs encode groups as either a string or an array of strings.

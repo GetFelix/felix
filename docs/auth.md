@@ -435,7 +435,8 @@ actor is. These record one:
 - Deleting an IdP issuer, or narrowing or replacing what it trusts, for every
   principal of the tenant. Narrowing means dropping an audience or changing
   the subject or groups claim; replacing means changing `jwks_url` or
-  `discovery_url`, since the old key source is no longer trusted. Adding an
+  `discovery_url`, or taking a key out of an inline `jwks`, since the old key
+  source is no longer trusted. Adding an
   audience, or anything else that only widens, revokes nobody.
 
 When the subjects a removal reaches include an IdP group (`group:...`), the
@@ -1246,7 +1247,8 @@ A tenant admin can register a new issuer that no other tenant trusts. Three
 things additionally require `tenant.manage:cluster:*`:
 
 - changing anything that decides which tokens an existing issuer accepts or
-  who they identify: `jwks_url`, `discovery_url`, `audiences`,
+  who they identify: `jwks_url`, `discovery_url`, `jwks`, `single_use_jti`,
+  `max_token_lifetime_seconds`, `audiences`,
   `claim_mappings.subject_claim` or `claim_mappings.groups_claim`. Re-posting
   the same settings needs nothing more;
 - registering an issuer that another tenant already trusts, such as a shared
@@ -1287,6 +1289,37 @@ DELETE /v1/tenants/{tenant_id}/idp-issuers/{issuer}
 Notes:
 - If `discovery_url` is `null`, the control plane uses `{iss}/.well-known/openid-configuration`.
 - `jwks_url` can be set directly if your IdP doesn’t support discovery.
+- `jwks` holds the issuer's public keys inline, as a JWKS document, for an
+  issuer that has no endpoint to fetch from or that must not be fetched, such
+  as a cluster's own certificate issuer acting as the IdP for machines. It
+  excludes `jwks_url` and `discovery_url` (`400` if both are set), and the
+  control plane then makes no request for the issuer at all, so the URL rules
+  below do not apply to it and nothing about the issuer's keys depends on the
+  network. The keys change only when the config does, through this endpoint
+  (which for an existing issuer needs `tenant.manage:cluster:*`) or a
+  bootstrap's `idp_issuers`. A token whose `kid` is not in the set is refused,
+  with no refresh. The set holds 1 to 16 keys, each with a distinct `kid` and
+  each an RSA or EC public key; several let a rotation overlap: add the new
+  key, switch the IdP over, then remove the old one. Adding a key revokes
+  nobody; removing one revokes the whole tenant, like any narrowing.
+- `single_use_jti` (default `false`) makes each upstream token exchangeable
+  once. The `jti` is recorded until the token's `exp` plus the clock skew,
+  and a second exchange, or a token with no `jti`, is refused with `401`.
+  The record is **in memory in each control plane replica**: it holds at most
+  100,000 entries and refuses new tokens when full of unexpired ones, rather
+  than forgetting a `jti` that could be replayed. Two limits follow. Replicas
+  do not share it, so with several replicas behind one address a replay that
+  lands on a replica that has not seen the token succeeds, and single use
+  holds per replica. And it does not outlive the process, so a replica
+  refuses any token issued before it started instead of trusting a record it
+  no longer has; the IdP's next token works. Pair it with
+  `max_token_lifetime_seconds`, which keeps the exposure window short.
+- `max_token_lifetime_seconds` (1 to 86400, default unset) refuses a token
+  whose `exp - iat` is larger.
+- A cluster that runs on the Raft metadata store applies `jwks`,
+  `single_use_jti` and `max_token_lifetime_seconds` from metadata level 42, so
+  an older member cannot drop them; a write that sets one waits until every
+  member runs a build that knows them.
 - `subject_claim` defaults to `sub`. `groups_claim` is optional.
 - Discovery and JWKS URLs must be `https`. Plain `http` is accepted only for a
   loopback host (a local IdP in development), or anywhere when

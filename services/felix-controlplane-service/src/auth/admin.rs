@@ -133,8 +133,20 @@ fn narrows_trust(current: &IdpIssuerConfig, next: &IdpIssuerConfig) -> bool {
         .any(|audience| !next.audiences.contains(audience))
         || current.jwks_url != next.jwks_url
         || current.discovery_url() != next.discovery_url()
+        || inline_keys_narrowed(current, next)
         || current.claim_mappings.subject_claim != next.claim_mappings.subject_claim
         || current.claim_mappings.groups_claim != next.claim_mappings.groups_claim
+}
+
+/// Whether the keys held inline stop covering what they did: switched to or
+/// from a fetched set, or a key taken out. Adding a key, as a rotation does
+/// first, narrows nothing.
+fn inline_keys_narrowed(current: &IdpIssuerConfig, next: &IdpIssuerConfig) -> bool {
+    match (&current.jwks, &next.jwks) {
+        (None, None) => false,
+        (Some(current), Some(next)) => current.keys.iter().any(|key| !next.keys.contains(key)),
+        _ => true,
+    }
 }
 
 /// Whether `next` would accept exactly the tokens `current` does and read the
@@ -145,6 +157,9 @@ fn same_trust(current: &IdpIssuerConfig, next: &IdpIssuerConfig) -> bool {
     }
     current.jwks_url == next.jwks_url
         && current.discovery_url() == next.discovery_url()
+        && current.jwks == next.jwks
+        && current.single_use_jti == next.single_use_jti
+        && current.max_token_lifetime_seconds == next.max_token_lifetime_seconds
         && audiences(current) == audiences(next)
         && current.claim_mappings.subject_claim == next.claim_mappings.subject_claim
         && current.claim_mappings.groups_claim == next.claim_mappings.groups_claim

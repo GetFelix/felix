@@ -280,12 +280,23 @@ fn report() -> ReplicaReport {
     }
 }
 
+fn jwks() -> jsonwebtoken::jwk::JwkSet {
+    serde_json::from_value(serde_json::json!({"keys": [
+        {"kty": "EC", "kid": "e", "alg": "ES256", "use": "sig", "crv": "P-256", "x": "AA", "y": "AA"},
+        {"kty": "RSA", "kid": "r", "alg": "RS256", "use": "sig", "n": "AA", "e": "AQ"},
+    ]}))
+    .expect("sample jwks")
+}
+
 fn issuer() -> IdpIssuerConfig {
     IdpIssuerConfig {
         issuer: s("https://idp"),
         audiences: vec![s("a")],
         discovery_url: Some(s("https://idp/d")),
         jwks_url: Some(s("https://idp/j")),
+        jwks: Some(jwks()),
+        single_use_jti: true,
+        max_token_lifetime_seconds: Some(120),
         claim_mappings: ClaimMappings {
             subject_claim: s("sub"),
             groups_claim: Some(s("groups")),
@@ -943,15 +954,22 @@ fn each_variant_is_listed_at_its_level() {
 fn a_command_needs_the_level_of_its_newest_field() {
     let table = parse(TABLE);
     let shape = shape();
-    for command in commands() {
-        let op = op_of(&command);
+    // Several samples may share an op, each carrying a different part of it
+    // (the auth change variants), so the op's level is the highest of them.
+    let mut needed: BTreeMap<&str, u16> = BTreeMap::new();
+    let commands = commands();
+    for command in &commands {
+        let level = needed.entry(op_of(command)).or_default();
+        *level = (*level).max(command.version());
+    }
+    for (op, level) in needed {
         let newest = shape
             .iter()
             .filter(|path| path.as_str() == op || path.starts_with(&format!("{op}.")))
             .map(|path| table[path.as_str()])
             .max()
             .unwrap_or(0);
-        assert_eq!(command.version(), newest, "{op}");
+        assert_eq!(level, newest, "{op}");
     }
 }
 

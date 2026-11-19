@@ -546,6 +546,7 @@ fn issuer_cfg(issuer: &str, audience: &str) -> IdpIssuerConfig {
             subject_claim: "sub".to_string(),
             groups_claim: None,
         },
+        ..Default::default()
     }
 }
 
@@ -725,4 +726,180 @@ async fn the_resolver_refuses_private_addresses() {
     assert!(resolve("169.254.169.254").await.is_err());
     assert!(resolve("fd00::1").await.is_err());
     assert!(resolve("127.0.0.1").await.is_ok(), "loopback stays allowed");
+}
+
+/// An issuer holding its keys inline, at a host that cannot be reached: any
+/// fetch would fail the exchange.
+fn inline_cfg(kids: &[&str]) -> IdpIssuerConfig {
+    let keys: Vec<Value> = kids
+        .iter()
+        .map(|kid| es256_jwks(kid)["keys"][0].clone())
+        .collect();
+    IdpIssuerConfig {
+        issuer: "https://idp.invalid".to_string(),
+        audiences: vec!["aud1".to_string()],
+        jwks: Some(serde_json::from_value(json!({ "keys": keys })).expect("jwks")),
+        ..Default::default()
+    }
+}
+
+fn mint_claims(kid: &str, claims: Value) -> String {
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some(kid.to_string());
+    jsonwebtoken::encode(
+        &header,
+        &claims,
+        &EncodingKey::from_ec_der(&test_keys().ec_pkcs8),
+    )
+    .expect("token")
+}
+
+fn claims_with(extra: Value) -> Value {
+    let now = chrono::Utc::now().timestamp();
+    let mut claims = json!({
+        "iss": "https://idp.invalid",
+        "sub": "machine-1",
+        "aud": "aud1",
+        "iat": now,
+        "exp": now + 60,
+    });
+    claims
+        .as_object_mut()
+        .expect("object")
+        .extend(extra.as_object().expect("object").clone());
+    claims
+}
+
+#[tokio::test]
+async fn an_inline_jwks_issuer_validates_without_any_fetch() {
+    let token = mint_claims("k1", claims_with(json!({})));
+    let validated = UpstreamOidcValidator::default()
+        .validate(&token, &[inline_cfg(&["k1"])])
+        .await
+        .expect("validates from the inline keys");
+    assert_eq!(validated.subject, "machine-1");
+}
+
+#[tokio::test]
+async fn an_inline_jwks_issuer_refuses_a_key_outside_its_set() {
+    let token = mint_claims("rotated-away", claims_with(json!({})));
+    let err = UpstreamOidcValidator::default()
+        .validate(&token, &[inline_cfg(&["k1"])])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OidcError::JwksKeyNotFound), "{err:?}");
+
+    // Same kid, different key: the signature does not verify.
+    let mut other = inline_cfg(&["k1"]);
+    if let Some(jwks) = other.jwks.as_mut()
+        && let jsonwebtoken::jwk::AlgorithmParameters::EllipticCurve(params) =
+            &mut jwks.keys[0].algorithm
+    {
+        params.x = test_keys().ec_y.clone();
+    }
+    let token = mint_claims("k1", claims_with(json!({})));
+    assert!(
+        UpstreamOidcValidator::default()
+            .validate(&token, &[other])
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn an_inline_jwks_overlaps_keys_during_a_rotation() {
+    let cfg = inline_cfg(&["old", "new"]);
+    let validator = UpstreamOidcValidator::default();
+    for kid in ["old", "new"] {
+        let token = mint_claims(kid, claims_with(json!({})));
+        validator
+            .validate(&token, std::slice::from_ref(&cfg))
+            .await
+            .expect(kid);
+    }
+}
+
+#[tokio::test]
+async fn single_use_jti_refuses_a_replayed_assertion() {
+    let mut cfg = inline_cfg(&["k1"]);
+    cfg.single_use_jti = true;
+    let validator = UpstreamOidcValidator::default();
+    let token = mint_claims("k1", claims_with(json!({"jti": "a"})));
+    validator
+        .validate(&token, std::slice::from_ref(&cfg))
+        .await
+        .expect("first use");
+    let err = validator
+        .validate(&token, std::slice::from_ref(&cfg))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, OidcError::TokenReplayed), "{err:?}");
+
+    let other = mint_claims("k1", claims_with(json!({"jti": "b"})));
+    validator
+        .validate(&other, std::slice::from_ref(&cfg))
+        .await
+        .expect("a different jti");
+
+    let missing = mint_claims("k1", claims_with(json!({})));
+    assert!(validator.validate(&missing, &[cfg]).await.is_err());
+}
+
+#[tokio::test]
+async fn without_the_option_a_token_may_be_exchanged_again() {
+    let cfg = inline_cfg(&["k1"]);
+    let validator = UpstreamOidcValidator::default();
+    let token = mint_claims("k1", claims_with(json!({"jti": "a"})));
+    for _ in 0..2 {
+        validator
+            .validate(&token, std::slice::from_ref(&cfg))
+            .await
+            .expect("ok");
+    }
+}
+
+#[tokio::test]
+async fn a_token_lifetime_over_the_bound_is_refused() {
+    let mut cfg = inline_cfg(&["k1"]);
+    cfg.max_token_lifetime_seconds = Some(120);
+    let validator = UpstreamOidcValidator::default();
+    let ok = mint_claims("k1", claims_with(json!({})));
+    validator
+        .validate(&ok, std::slice::from_ref(&cfg))
+        .await
+        .expect("60s");
+    let now = chrono::Utc::now().timestamp();
+    let long = mint_claims("k1", claims_with(json!({"exp": now + 3600})));
+    let err = validator.validate(&long, &[cfg]).await.unwrap_err();
+    assert!(matches!(err, OidcError::InvalidClaim(_)), "{err:?}");
+}
+
+#[test]
+fn the_jti_record_is_bounded_and_forgets_only_expired_entries() {
+    let store = jti::JtiStore::with_cap(2);
+    let now = chrono::Utc::now().timestamp();
+    store.claim("i", "a", now, now + 60).expect("a");
+    store
+        .claim("i", "b", now, now - 1)
+        .expect("b, already expired");
+    // Full, but b has expired, so c replaces it and a stays.
+    store.claim("i", "c", now, now + 60).expect("c");
+    assert!(matches!(
+        store.claim("i", "a", now, now + 60),
+        Err(OidcError::TokenReplayed)
+    ));
+    assert!(matches!(
+        store.claim("i", "d", now, now + 60),
+        Err(OidcError::ReplayStoreFull)
+    ));
+}
+
+#[test]
+fn the_jti_record_refuses_tokens_issued_before_it_started() {
+    let store = jti::JtiStore::with_cap(10);
+    let now = chrono::Utc::now().timestamp();
+    assert!(matches!(
+        store.claim("i", "a", now - 10, now + 60),
+        Err(OidcError::TokenReplayed)
+    ));
 }

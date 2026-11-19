@@ -507,6 +507,7 @@ async fn bootstrap_tenant_t1(
             subject_claim: "sub".to_string(),
             groups_claim: Some("groups".to_string()),
         },
+        ..Default::default()
     };
 
     let mut policies = vec![
@@ -586,6 +587,7 @@ async fn bootstrap_tenant_t2(
             subject_claim: "sub".to_string(),
             groups_claim: Some("groups".to_string()),
         },
+        ..Default::default()
     };
 
     let body = BootstrapInitializeRequest {

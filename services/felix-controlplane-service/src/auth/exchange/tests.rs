@@ -249,6 +249,7 @@ async fn exchange_token_rejects_issuer_not_allowed() -> Result<()> {
                 discovery_url: None,
                 jwks_url: None,
                 claim_mappings: crate::auth::idp_registry::ClaimMappings::default(),
+                ..Default::default()
             },
         )
         .await?;
@@ -305,6 +306,7 @@ fn exchange_refusals_are_counted() {
                     discovery_url: None,
                     jwks_url: None,
                     claim_mappings: crate::auth::idp_registry::ClaimMappings::default(),
+                    ..Default::default()
                 },
             )
             .await

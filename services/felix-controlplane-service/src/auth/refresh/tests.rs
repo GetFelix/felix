@@ -171,6 +171,7 @@ fn issuer(url: &str) -> crate::auth::idp_registry::IdpIssuerConfig {
         discovery_url: None,
         jwks_url: None,
         claim_mappings: Default::default(),
+        ..Default::default()
     }
 }
 

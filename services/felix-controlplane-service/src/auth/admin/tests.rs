@@ -203,3 +203,67 @@ async fn deleting_an_unknown_issuer_revokes_nobody() {
         None
     );
 }
+
+fn inline_issuer(kids: &[&str]) -> IdpIssuerConfig {
+    let keys: Vec<_> = kids
+        .iter()
+        .map(|kid| {
+            serde_json::json!({
+                "kty": "EC", "kid": kid, "crv": "P-256",
+                "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+                "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU",
+            })
+        })
+        .collect();
+    IdpIssuerConfig {
+        issuer: "https://idp.example".to_string(),
+        audiences: vec!["felix".to_string()],
+        jwks: Some(serde_json::from_value(serde_json::json!({ "keys": keys })).expect("jwks")),
+        ..Default::default()
+    }
+}
+
+/// Adding a key (the start of a rotation) takes nothing back; dropping one
+/// does, and any change to the keys or the replay options is a change of
+/// trust that needs the cluster.
+#[tokio::test]
+async fn rotating_inline_keys_revokes_only_when_a_key_goes() {
+    let (state, store) = fixture().await;
+    let headers = operator(&store).await;
+    store
+        .upsert_idp_issuer("t1", inline_issuer(&["old"]))
+        .await
+        .expect("issuer");
+    upsert(&state, &headers, inline_issuer(&["old", "new"])).await;
+    assert_eq!(
+        store
+            .principal_revoked_at("t1", "anyone")
+            .await
+            .expect("read"),
+        None
+    );
+    upsert(&state, &headers, inline_issuer(&["new"])).await;
+    assert!(
+        store
+            .principal_revoked_at("t1", "anyone")
+            .await
+            .expect("read")
+            .is_some()
+    );
+}
+
+#[test]
+fn changing_keys_or_replay_options_is_a_change_of_trust() {
+    let base = inline_issuer(&["a"]);
+    assert!(same_trust(&base, &base.clone()));
+    assert!(!same_trust(&base, &inline_issuer(&["a", "b"])));
+    let mut next = base.clone();
+    next.single_use_jti = true;
+    assert!(!same_trust(&base, &next));
+    let mut next = base.clone();
+    next.max_token_lifetime_seconds = Some(120);
+    assert!(!same_trust(&base, &next));
+    let fetched = issuer("https://idp.example", "groups");
+    assert!(narrows_trust(&fetched, &base));
+    assert!(narrows_trust(&base, &fetched));
+}
