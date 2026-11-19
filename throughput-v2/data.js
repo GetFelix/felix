@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795120333990,
+  "lastUpdate": 1795120827958,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63076,6 +63076,58 @@ window.BENCHMARK_DATA = {
             "range": "22467.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1071599.61\nmean: 1067666.72\nstdev: 22467.21\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1014b4fb0b4536525c06dc800e5f66587f5b0f79",
+          "message": "fix(replication): a broker bounds the elections it starts at once (#2317) (#2831)\n\n* test(raft): measure election storms on Actions (#2317, #2598)\n\nPorts the election storm measurement to main and adds a storm report to\nthe Raft idle workflow: the storm matrix, and the told-at-once test run\n40 times alone and six times inside the raft suite.\n\nSpec-Unaffected: tests and a workflow only.\n\n* fix(replication): a broker bounds the elections it starts at once (#2317)\n\nWhen every group on a broker loses its leader together, or many groups\nare formed together, every member reaches its election timeout in the\nsame second. If the disk cannot take that round of vote saves within the\ntimeout, the rounds repeat and no group settles.\n\nThe ticker now turns a member's election timer on only while fewer than\nRuntimeConfig::elections (default 64) members here have theirs on. The\nrest wait in an order hashed from group and member. A place is given\nback when the member leads, hears a leader or grants a vote, or lost its\nround. The limit falls when this broker's vote saves are slow.\n\nThis only changes when openraft's election timer is turned on. Vote,\npre-vote and commit rules are unchanged.\n\nSpec-Unaffected: FelixRaft.tla's Campaign is unconstrained and the tick is not modelled; holding a timer back is a Campaign step not taken.\n\n* test(raft): borrow the member as a slice in the limit test\n\nSpec-Unaffected: test only.\n\n* fix(replication): the election limit follows the disk and recovers (#2317)\n\nThe limit had a floor of 1, judged a save slow against a fixed quarter of\nelection_min, and only climbed when a held election ended, so on a disk\nwith ~100 ms fsyncs it sat at 1 and a crashed broker's groups took\nminutes to elect.\n\n- Floor of 8 (or the bound, if lower).\n- A save is slow at 4x the moving average of saves that had the disk to\n  themselves (no other vote save under way), and never under a\n  twentieth of election_min. The storage hook is now a VoteTimer told\n  when each save begins and ends.\n- One place back every tick without a slow save.\n- A candidate saving its own vote after its pre-vote round is answered\n  has not lost its place.\n- Members of groups that took writes queue ahead of idle ones.\n- RuntimeConfig::elections is max_elections_at_once, set on a broker\n  with FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE (0 = off).\n- The storm job takes storm_rows=pr for the PR's rows only.\n\nSpec-Unaffected: only when the election timer is turned on changes; the\nvote, term and commit rules are untouched.\n\n* fix(replication): a leader's transfer election and winning slow disks skip the bound (#2317)\n\nA leader whose transfer is not taken never stood again under the bound:\nopenraft starts that election only with the leader's election timer on,\nand the ticker only queues followers and candidates, so Group::tick no\nlonger turned it on for a leader. A leader's timer is on again as it was\nwithout the bound.\n\nSlow vote saves cut the limit only while elections here are losing (at\nleast as many lost as won lately). A disk that is slow for every save\nwhile each election wins its first round is not one the elections\noverload, and cutting there only queued the +20 ms storm row to 3x. A\ntick that does not cut gives back a place per election that won.\n\nSpec-Unaffected: no vote, term, commit or lease rule changes; the bound only decides when a member's election timer is turned on.\n\n* test(replication): the storm report prints each broker's election load and has a slow-rows selector (#2317)\n\nSpec-Unaffected: reporting only.\n\n* test(replication): sample the election load every second at the start of a storm (#2317)\n\nSpec-Unaffected: reporting only.\n\n* fix(replication): the election bound follows the vote-save queue and stops sawing (#2317)\n\nA round is not lost while its member's own vote save is under way, the limit regrows fast to half and then slowly, nothing is let in while the saves queued would take over a quarter of election_min to drain, and a losing broker grows only by wins. Spec-Unaffected: the tick is not modelled and no vote, lease or commit rule changes.\n\n* fix(replication): the election bound regrows at once while elections win and ignores members that never stood (#2317)\n\nSpec-Unaffected: the tick is not modelled and no vote, lease or commit rule changes.\n\n* fix(replication): the election bound's save gap ignores idle time, fades when the queue is empty and counts each pending save once (#2317)\n\nSpec-Unaffected: the tick is not modelled and no vote, lease or commit rule changes.\n\n* fix(replication): the election limit probes up to four times the bound while rounds win and the disk keeps up (#2317)\n\nSpec-Unaffected: the tick is not modelled and no vote, lease or commit rule changes.\n\n* test(replication): the bound test allows the probe band (#2317)\n\nSpec-Unaffected: test only.\n\n* docs(replication): the election bound is where a storm starts and falls back to, and its test pins that (#2317)\n\nSpec-Unaffected: docs and test only.",
+          "timestamp": "2026-11-19T12:33:56-08:00",
+          "tree_id": "fca9ea5429a6bd0da8a25f3a495372eb0b6b2443",
+          "url": "https://github.com/GetFelix/felix/commit/1014b4fb0b4536525c06dc800e5f66587f5b0f79"
+        },
+        "date": 1795120826948,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355335.97,
+            "range": "18397.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355335.97\nmean: 346178.03\nstdev: 18397.59\ncv: 5.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355335.97,
+            "range": "18397.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355335.97\nmean: 346178.03\nstdev: 18397.59\ncv: 5.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79827.76,
+            "range": "1255.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79827.76\nmean: 79799.30\nstdev: 1255.74\ncv: 1.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798277.63,
+            "range": "12557.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798277.63\nmean: 797993.00\nstdev: 12557.40\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
