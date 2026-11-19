@@ -69,6 +69,7 @@ mod provider;
 mod recovery;
 pub(crate) mod replica_state;
 mod retention;
+mod rewind;
 mod sealed;
 mod segments;
 mod set;
@@ -1541,6 +1542,17 @@ impl DiskLog {
             flusher: LogThread::new("felix-flush"),
         });
 
+        // Before anything reads the log, and before the install check below,
+        // which reads the base a reset left.
+        if let Some(pending) = rewind::load(&inner.dir).map_err(StorageError::Io)? {
+            tracing::warn!(
+                shard = %inner.label,
+                ?pending,
+                "finishing a reset or truncation that a crash interrupted"
+            );
+            inner.finish_rewind(pending)?;
+        }
+
         // An install's purge past the tail stores the purged id and then
         // resets. After a crash in between, the records below the id stay,
         // and nothing later is sure to redo it: an append at the id's next
@@ -2540,7 +2552,9 @@ impl LogInner {
     /// holding the flush lock and the `segments` write lock.
     fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
         let cuts_records = offset < segments.tail_offset();
+        rewind::begin(&self.dir, rewind::Rewind::Cut(offset)).map_err(StorageError::Io)?;
         segments.truncate(offset)?;
+        crash_point::reached(&self.dir).map_err(StorageError::Io)?;
         segments.active_mut().sync()?;
         self.note_rewound(segments)?;
         self.durability.reset_after_truncate(segments.tail_offset());
@@ -2553,8 +2567,11 @@ impl LogInner {
             epochs.truncate_from(offset);
         }
         epochs::store(&self.dir, &epochs)?;
+        drop(epochs);
+        crash_point::reached(&self.dir).map_err(StorageError::Io)?;
         self.discard_snapshots()?;
-        self.reset_producers(segments)
+        self.reset_producers(segments)?;
+        rewind::finish(&self.dir).map_err(StorageError::Io)
     }
 
     /// Whether `producer_id`'s batch `sequence` is open with its next record
@@ -2649,6 +2666,28 @@ impl LogInner {
 }
 
 impl LogInner {
+    /// Redo the rewind a crash interrupted, at open. A redo that would cut
+    /// below the persisted commit offset fails the open: a reset or
+    /// truncation checked that bound, and a restore lowered the commit
+    /// durably before its marker, so getting here means the state files
+    /// disagree.
+    fn finish_rewind(&self, pending: rewind::Rewind) -> Result<()> {
+        match pending {
+            rewind::Rewind::Reset(base) => self.reset_holding(base),
+            rewind::Rewind::Cut(offset) => {
+                let _manifest = self.manifest.lock();
+                let _appends = self.append_lock.lock();
+                let mut segments = self.segments.write();
+                let commit = self.commit_offset.load(Ordering::Acquire);
+                if offset < commit.min(segments.tail_offset()) {
+                    return Err(StorageError::BelowCommit { offset, commit });
+                }
+                let rewound = self.cut_suffix(&mut segments, offset);
+                self.poison_after_rewind(rewound)
+            }
+        }
+    }
+
     /// [`DiskLog::reset_to`] once no roll or flush can run: taken under its
     /// fence and flush lock, or at open before anything else has the log.
     fn reset_holding(&self, base_offset: Offset) -> Result<()> {
@@ -2664,8 +2703,13 @@ impl LogInner {
             });
         }
         segments.check_open()?;
-        self.forget_all_offloaded(&mut manifest)?;
+        // Inside the closure: a marker left by a failed step must poison the
+        // log, or records appended later would be dropped at the next open.
         let rewound = (|| {
+            rewind::begin(&self.dir, rewind::Rewind::Reset(base_offset))
+                .map_err(StorageError::Io)?;
+            self.forget_all_offloaded(&mut manifest)?;
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
             // Saved before the records go. A batch the log held part of
             // below the new base stays refused.
             {
@@ -2690,10 +2734,14 @@ impl LogInner {
             }
             self.note_rewound(&segments)?;
             self.durability.reset_after_truncate(base_offset);
-            let mut epochs = self.epochs.lock();
-            *epochs = epochs::EpochMap::default();
-            epochs::store(&self.dir, &epochs)?;
-            self.reset_producers(&segments)
+            {
+                let mut epochs = self.epochs.lock();
+                *epochs = epochs::EpochMap::default();
+                epochs::store(&self.dir, &epochs)?;
+            }
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
+            self.reset_producers(&segments)?;
+            rewind::finish(&self.dir).map_err(StorageError::Io)
         })();
         self.poison_after_rewind(rewound)
     }
