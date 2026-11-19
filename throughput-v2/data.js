@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795051507643,
+  "lastUpdate": 1795052072202,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61932,6 +61932,58 @@ window.BENCHMARK_DATA = {
             "range": "5977.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810562.60\nmean: 813136.81\nstdev: 5977.47\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "03e18a3b40500af1e224df4a16c04f1c20116bc4",
+          "message": "fix(storage): a reset or truncation cut short is finished at the next open (#2579) (#2749)\n\n* fix(storage): a reset empties the generation history before it drops the records (#2579)\n\nA non-Raft reset that crashed after the drop reopened without redoing\nthe reset, but with the old epochs file, whose entries claimed offsets\nbelow the new base that the copy never held. The history is now emptied\nbefore the drop, so a crash in between leaves old records with no\nhistory, which only refuses a truncation point.\n\nSpec-Unaffected: disk_log.rs is not a modelled path; the reset's crash\npoint only changes which of two allowed states (no history, or old\nrecords with none) a crash leaves.\n\n* fix(storage): a reset or truncation cut short is finished at the next open (#2579)\n\nEmptying the generation history before a reset's drop left old records\npast commit with no history after a crash before the drop, which turns\noff the uncompared-suffix check. Instead both rewinds store a\nrewind-pending marker before their first step and remove it after\ntheir last, and an open that finds it redoes the rewind before anything\nreads the log. Every crash point now reopens as before the rewind or\nafter it. The truncation case (#2746) is the same mechanism.\n\nFelixRaftBatch models the install's reset as save, crash, finish (#2574).\n\n* fix(storage): every failed rewind step poisons the log; review fixes\n\nThe marker store and the offload forget ran outside the poisoned\nsection, so a reset that failed there left a marker on a writable log\nand a later open could drop records appended after it. Adds crash steps\nafter the offload forget and the history store, guards the model's\nCrash with the crash budget, and tightens the docs.\n\n* docs(formal): cite the batch reset crash tests by name\n\n* ci(tla): fetch the TLA+ jar over HTTPS only\n\ncurl followed redirects to any protocol; pin https and TLS 1.2 so a\nredirect cannot downgrade the download (shell:S6506).\n\nSpec-Unaffected: download script only, no spec change",
+          "timestamp": "2026-11-18T17:17:59-08:00",
+          "tree_id": "15962a8a8cca31d5fdb46fc343af1145715b48ea",
+          "url": "https://github.com/GetFelix/felix/commit/03e18a3b40500af1e224df4a16c04f1c20116bc4"
+        },
+        "date": 1795052071374,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 535914.4,
+            "range": "34546.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 535914.40\nmean: 521102.80\nstdev: 34546.77\ncv: 6.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 535914.4,
+            "range": "34546.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 535914.40\nmean: 521102.80\nstdev: 34546.77\ncv: 6.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119375.45,
+            "range": "1263.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119375.45\nmean: 119374.97\nstdev: 1263.81\ncv: 1.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1193754.47,
+            "range": "12638.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1193754.47\nmean: 1193749.76\nstdev: 12638.07\ncv: 1.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
