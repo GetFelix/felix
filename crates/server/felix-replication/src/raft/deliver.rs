@@ -467,9 +467,9 @@ impl RaftEngine {
     /// the broker stopped leading the term would be missed by the check of
     /// its own re-send.
     ///
-    /// A batch is one record. A new one of several is refused with nothing
-    /// written ([`Broker::engine_takes_idempotent`]). One the log already
-    /// holds the start of, which only a leader that stopped partway
+    /// A new batch goes to the group as one write, so a lapsed lease
+    /// refuses all of it or none. One the log already holds the start of,
+    /// which only a leader that stopped partway
     /// leaves, is finished: the records the log does not hold are written
     /// as pieces of it, and the answer runs from the start's first offset.
     /// It is answered at its commit, on a `Leader` stream too: never on

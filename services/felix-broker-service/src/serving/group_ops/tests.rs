@@ -607,7 +607,8 @@ async fn a_poll_at_the_cap_is_woken_by_an_ack() {
 /// **A member that restarts under its name gets its records back at once.**
 /// The first process claimed a record and died; the next, polling as the
 /// same member with `reclaim`, is handed that record rather than the newer one
-/// behind it, without waiting out the visibility timeout.
+/// behind it, without waiting out the visibility timeout, and at the same
+/// attempt: the first process may never have seen it.
 #[tokio::test]
 async fn a_restarted_member_reclaims_what_it_held() {
     let leader = Leader::start().await;
@@ -654,7 +655,7 @@ async fn a_restarted_member_reclaims_what_it_held() {
 
     let back = poll_one(as_member(2, true)).await;
     assert_eq!(back[0].offset, held[0].offset);
-    assert_eq!(back[0].attempts, 2);
+    assert_eq!(back[0].attempts, 1, "reclaiming spent an attempt");
 }
 
 async fn seek_to(

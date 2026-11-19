@@ -103,6 +103,30 @@ the batch to shard 0. The binary publish frames have no room for a shard, so
 these batches are sent as JSON. Caches take no shard: a cache value is found
 by hashing its key on every read.
 
+### What an ack means
+
+The broker can say what an acknowledged publish to a stream has done by the
+time you hear back. Ask before you rely on it:
+
+```rust
+let said = client
+    .stream_ack_durability("acme", "prod", "orders")
+    .await?;
+let survives_a_machine_crash = said.is_some_and(|said| {
+    said.ack_at == AckPoint::Write
+        && said.copies == AckCopies::Quorum
+        && said.fsync == Some(AckFsync::OnCommit)
+});
+```
+
+`ack_at` says whether the ack comes before or after the write, `copies` whether
+the leader alone or a majority holds the record, and `fsync` how the log is
+synced. `None` means the broker did not say, which is not the same as no
+guarantee. The answer describes the broker you asked, as it is configured now:
+`quorum` with `periodic` means a majority has the record written but not yet
+synced, and the sync policy is each broker's own, so a cluster is expected to
+run one. It says nothing about reads.
+
 ### At-least-once may duplicate
 
 By default a publish whose outcome was ambiguous (the broker may or may not

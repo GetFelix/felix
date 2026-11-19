@@ -11,6 +11,7 @@ use tokio::time::Instant;
 pub(crate) const NOT_LEADING: &str = "this broker does not lead the term the write was written in";
 pub(crate) const UNHEARD: &str = "no majority has answered this leader in this term";
 pub(crate) const LAPSED: &str = "no majority has answered this leader within its lease";
+pub(crate) const NOT_VOTER: &str = "this broker leads without a vote in its own membership";
 pub(crate) const VOID: &str = "this broker gave up its lease for the term";
 pub(crate) const WOKE: &str = "this broker was suspended less than one lease ago";
 
@@ -33,6 +34,11 @@ pub(crate) struct View {
     /// member can lead without first taking a membership this one wrote, so
     /// it needs no answer to hold the lease.
     pub(crate) sole: bool,
+    /// This member is in every voter set of its newest membership.
+    /// openraft lets a member removed as a voter go on leading, and its
+    /// quorum is then only the others': a removed voter's lease would rest
+    /// on acks from members that may already follow a newer leader.
+    pub(crate) voter: bool,
 }
 
 /// One member's lease state. In memory only: a restarted member starts with
@@ -131,6 +137,9 @@ impl Lease {
         let slept = slept.ok_or(WOKE)?;
         if view.leads != Some(term) {
             return Err(NOT_LEADING);
+        }
+        if !view.voter {
+            return Err(NOT_VOTER);
         }
         // A zero lease turns local acknowledgements off, for a sole voter too.
         if !view.sole || self.length.is_zero() {

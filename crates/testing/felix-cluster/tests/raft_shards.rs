@@ -861,6 +861,85 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
     assert!(drained.is_empty(), "records left after acks: {drained:?}");
 }
 
+/// **A consumer's claims survive its Raft leader dying.** Claims are group
+/// entries in the shard's log, so the member elected next hands a claimed
+/// record to nobody else, the holder can still extend it, and the holder
+/// reconnecting with `reclaim` takes it back at the same attempt.
+#[tokio::test]
+#[serial]
+async fn a_group_claim_survives_its_raft_leader_dying() {
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(&["raft_consumer_groups"], Duration::from_secs(30))
+        .await
+        .expect("finalize the group feature");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    for payload in [b"one".as_slice(), b"two", b"three"] {
+        publish_acked(&cluster, &leader, payload).await;
+    }
+    // Drain whatever the stream held before ours, so the claims below are on
+    // our records.
+    let mut held = Vec::new();
+    while held.len() < 2 {
+        let records = cluster
+            .group_poll_as_via(&leader, STREAM, 0, "workers", "w", false, 1)
+            .await
+            .expect("poll as a member");
+        assert!(!records.is_empty(), "ran out of records: {held:?}");
+        for record in records {
+            if [b"one".as_slice(), b"two"].contains(&record.payload.as_ref()) {
+                held.push(record);
+            } else {
+                cluster
+                    .group_ack_via(&leader, STREAM, 0, "workers", record.offset)
+                    .await
+                    .expect("ack");
+            }
+        }
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+
+    cluster
+        .group_extend_via(
+            &elected,
+            STREAM,
+            0,
+            "workers",
+            &held[0],
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("the holder extends its claim on the new leader");
+    let others = cluster
+        .group_poll_as_via(&elected, STREAM, 0, "workers", "other", false, 10)
+        .await
+        .expect("another member polls the new leader");
+    for record in &others {
+        assert!(
+            held.iter().all(|h| h.offset != record.offset),
+            "{elected} handed a claimed record to another member: {record:?}"
+        );
+    }
+    let back = cluster
+        .group_poll_as_via(&elected, STREAM, 0, "workers", "w", true, 10)
+        .await
+        .expect("the holder reclaims on the new leader");
+    for h in &held {
+        let again = back
+            .iter()
+            .find(|record| record.offset == h.offset)
+            .unwrap_or_else(|| panic!("{} was not reclaimed: {back:?}", h.offset));
+        assert_eq!(again.attempts, h.attempts, "reclaiming spent an attempt");
+    }
+}
+
 /// **An idempotent producer keeps its sequence when its Raft leader dies.**
 /// The producer's id and sequences are in the entries, so the member
 /// elected next answers a re-send of the last batch from its own log
@@ -938,20 +1017,23 @@ async fn a_producer_keeps_its_sequence_when_its_raft_leader_dies() {
         publish(i).await.expect("published after the failover");
     }
 
-    // A batch of several records is refused, and none of it is written.
-    let several = publisher.publish_idempotent_batch(
-        &cluster.tenant_id,
-        &cluster.namespace,
-        STREAM,
-        vec![record(8), record(9)],
-        producer.producer_id(),
-        8,
-    );
-    let refused = several.await.expect_err("a batch of several was taken");
-    let refused = format!("{refused:#}");
-    assert!(refused.contains("more than one record"), "{refused}");
+    // A batch of several records is written once, and its re-send is
+    // answered without writing it again.
+    for _ in 0..2 {
+        publisher
+            .publish_idempotent_batch(
+                &cluster.tenant_id,
+                &cluster.namespace,
+                STREAM,
+                vec![record(8), record(9)],
+                producer.producer_id(),
+                8,
+            )
+            .await
+            .expect("a batch of several is taken");
+    }
 
-    let owed: Vec<Vec<u8>> = (0..8).map(record).collect();
+    let owed: Vec<Vec<u8>> = (0..10).map(record).collect();
     let mut held = replay_holding(&cluster, &elected, &owed).await;
     // The harness's own readiness probe may be on the stream too.
     held.retain(|payload| payload != b"harness-probe");
@@ -1250,5 +1332,82 @@ async fn raft_shard_leaders_return_to_placement_after_a_restart() {
     })
     .await
     .expect("leadership returns to the restarted broker");
+    cluster.shutdown().await;
+}
+
+/// Bytes of segment files under `node`'s storage: what its logs hold on disk.
+fn segment_bytes(cluster: &Cluster, node: &str) -> u64 {
+    fn walk(dir: &std::path::Path) -> u64 {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let path = entry.path();
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => walk(&path),
+                    Ok(_) if path.extension().is_some_and(|ext| ext == "log") => {
+                        entry.metadata().map_or(0, |meta| meta.len())
+                    }
+                    _ => 0,
+                }
+            })
+            .sum()
+    }
+    walk(&cluster.node(node).expect("node").storage_dir())
+}
+
+/// **Retention frees disk on every member of a Raft shard.** The brokers
+/// keep 16 KiB of 4 KiB segments. Once the fleet finalizes
+/// `raft_stream_purge`, the leader's head trims hide what that drops and
+/// every member's purge deletes the segments below the floor, so each
+/// broker's segment files shrink to about the bound while the stream keeps
+/// taking publishes.
+#[tokio::test]
+#[serial]
+async fn retention_frees_the_disk_of_every_raft_member() {
+    if !opted_in() {
+        return;
+    }
+    const BOUND: u64 = 16 * 1024;
+    let mut config = raft_cluster();
+    config.broker_env.extend(
+        [
+            ("FELIX_DURABLE_SEGMENT_BYTES", "4096"),
+            ("FELIX_DURABLE_RETENTION_BYTES", "16384"),
+            ("FELIX_DURABLE_RETENTION_INTERVAL_SECONDS", "1"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string())),
+    );
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(&["raft_stream_purge"], Duration::from_secs(30))
+        .await
+        .expect("finalize raft_stream_purge");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let payload = vec![7u8; 512];
+    for _ in 0..512 {
+        publish_acked(&cluster, &leader, &payload).await;
+    }
+    // 256 KiB was written; the bound, the segment the purge point falls in
+    // and the open one are kept, plus a margin for the other logs.
+    let kept = BOUND + 4 * 4096 + 16 * 1024;
+    for node in &nodes {
+        felix_cluster::wait::until(Duration::from_secs(60), "the member's disk freed", || {
+            let held = segment_bytes(&cluster, node);
+            async move { held <= kept }
+        })
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "{node} holds {} bytes of segments: {err:#}",
+                segment_bytes(&cluster, node)
+            )
+        });
+    }
+    // Still taking publishes after the purge.
+    publish_acked(&cluster, &leader, b"after").await;
     cluster.shutdown().await;
 }

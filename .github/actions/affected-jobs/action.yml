@@ -1,0 +1,54 @@
+name: Affected jobs
+description: >
+  Which gated CI jobs a pull request can affect (scripts/ci/affected.py).
+  Anything but a pull request, a `ci:full` label, or any failure here selects
+  every job, with `full` set to 'true'. Needs a full checkout for the crate graph.
+outputs:
+  full:
+    value: ${{ steps.pick.outputs.full }}
+  test:
+    value: ${{ steps.pick.outputs.test }}
+  test_packages:
+    value: ${{ steps.pick.outputs.test_packages }}
+  test_lib_packages:
+    value: ${{ steps.pick.outputs.test_lib_packages }}
+  stress:
+    value: ${{ steps.pick.outputs.stress }}
+  sim:
+    value: ${{ steps.pick.outputs.sim }}
+  cluster:
+    value: ${{ steps.pick.outputs.cluster }}
+  images:
+    value: ${{ steps.pick.outputs.images }}
+  compose:
+    value: ${{ steps.pick.outputs.compose }}
+  chart:
+    value: ${{ steps.pick.outputs.chart }}
+  python:
+    value: ${{ steps.pick.outputs.python }}
+  typescript:
+    value: ${{ steps.pick.outputs.typescript }}
+  fuzz:
+    value: ${{ steps.pick.outputs.fuzz }}
+  coverage:
+    value: ${{ steps.pick.outputs.coverage }}
+runs:
+  using: composite
+  steps:
+    - id: pick
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BASE: ${{ github.event.pull_request.base.sha }}
+        HEAD: ${{ github.event.pull_request.head.sha }}
+        PR: ${{ github.event.pull_request.number }}
+        # cargo metadata only reads manifests; skip installing the pinned toolchain.
+        RUSTUP_TOOLCHAIN: stable
+      run: |
+        full() { echo "full=true" >> "$GITHUB_OUTPUT"; echo "::notice::$1: running every job"; exit 0; }
+        [ "$GITHUB_EVENT_NAME" = pull_request ] || full "$GITHUB_EVENT_NAME"
+        # Read live, so adding the label and re-running the workflow takes effect.
+        labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name') || full "labels unreadable"
+        files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE...$HEAD" --jq '.files[] | .filename, (.previous_filename // empty)') || full "diff unreadable"
+        out=$(python3 scripts/ci/affected.py --labels "$(echo $labels)" <<< "$files") || full "job selection failed"
+        echo "$out" | tee -a "$GITHUB_OUTPUT"

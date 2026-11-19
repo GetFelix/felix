@@ -32,6 +32,7 @@
 //!   Ok(false) => protocol error or peer sent Error/unexpected message
 //!   Err(_)    => hard failure (decode/IO/etc.)
 
+mod ack_durability;
 mod authz;
 mod cache;
 mod commit;

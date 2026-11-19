@@ -827,34 +827,42 @@ used by every shard group and by the control plane, tested once.
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
 `[workspace.dependencies]` pins one commit of openraft's main branch,
-`a8d0092bc8` (2026-11-14), past the 0.10.0 tag, for changes that ship
+`bc383014` (2026-11-18), past the 0.10.0 tag, for changes that ship
 in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
 "One timer for every group"). openraft#2313 (issue #2312) resets a drained
 queue to its start, so an idle member stops touching every page of its
 queues, and openraft#2314 starts those queues at 64 slots instead of
 reserving room for 4,096 commands and 1,024-slot response buffers, so a member's
 resident memory stays small. openraft#2324 starts the client responder
-queue at 64 slots instead of 8,192. The range from the previous pin
-(`30c947ef38`) to `5c3ad1bc2d` has six commits: two that only touch the
-jepsen test app, `7628ad401a` (cancellable runtime futures, additive),
-`3b1f7fa446` (the read state keeps the no-op and committed log ids
-separately), `e2986754ef` (`expected_leader` moves into a `WriteOption`, and
-`client_write_many` sends `WriteOption::default()`), and the responder queue
-change `5c3ad1bc2d`. From `5c3ad1bc2d` to `a8d0092bc8` there are four more:
-a CI-only change, `b3d8c1b6b2` (the `Raft::write()` builder returns an
-unboxed future; callers that only await it are unchanged), `5457dc5a62`
-(`Raft::write_many()`, additive), and `a8d0092bc8`, which adds a
-`WriteOption` argument to `client_write_many` (openraft#2321). The publish
+queue at 64 slots instead of 8,192, and openraft#2400 stops the runtime's
+`select2()` from holding each future twice. openraft#2321 adds a
+`WriteOption` argument to `client_write_many`. The publish
 task (`raft/propose.rs`) uses it for every call: a term-bound drain goes
 down as one `client_write_many` with `WriteOption::expect_leader`, which
 openraft admits or refuses whole, and an untermed one with
-`WriteOption::default()`, the previous behaviour. The read path
-(`get_read_log_id` still returns the larger of the no-op and committed ids)
-behaves the same for Felix. The pin as a whole also carries a `#[non_exhaustive]` on some name enums,
-benchmark changes, and one change to the state-machine worker: it merges
-`Apply` commands that are already queued into one `apply()` call. That
-call still gets the committed entries in log order, each once, with each
-entry's responder, which is all `apply()` in Felix relies on.
+`WriteOption::default()`.
+
+openraft#2343 and openraft#2378 replace openraft's ticker with two
+deadlines. A follower's election now starts at its own deadline, even
+with `enable_tick` off, unless `enable_elect` is off; a leader's heartbeat
+goes out at its deadline, which `enable_tick: false` pauses. Shard groups
+build with both off. The node ticker still paces heartbeats, since an idle
+group's slow heartbeats are Felix's and openraft's interval is fixed. It
+turns a member's election timer on only once its pace says the leader is
+gone, and off again when the member takes an append or grants a vote
+(`docs/per-shard-raft.md`, "One timer for every group"). With openraft's
+timer on from the start, a follower of an idle leader would stand between
+two of its 2 s heartbeats, and a restarted member would stand inside its
+vote hold. The control plane keeps openraft's own timers.
+
+The rest of the range is additive or does not change what Felix relies
+on: opt-in relaxed reads, `WriteRequest::with_option()`, the state-machine
+worker reading the next `Apply` batch while the current one applies (each
+committed entry still reaches `apply()` once, in log order, with its
+responder), `PeekableReceiver::peek()` renamed to `try_peek()`, and
+openraft no longer depending on `chrono`. The deprecated
+`millis_since_quorum_ack` metric stops growing on a leader nothing wakes;
+Felix reads `last_quorum_acked` instead.
 `openraft-multi` is pinned to the
 same commit, and `deny.toml` allows that one git source. `felix-storage` and
 `felix-replication` use the pin behind their `raft` features, and the

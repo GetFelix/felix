@@ -39,7 +39,8 @@ impl RotatedBy {
             | RotateReason::NoMarks
             | RotateReason::OtherCopy
             | RotateReason::VoteBelowMark
-            | RotateReason::Poisoned => Self::Restore,
+            | RotateReason::Poisoned
+            | RotateReason::Stopped => Self::Restore,
         }
     }
 

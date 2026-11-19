@@ -6,6 +6,7 @@
 //! optional requests a broker serves, which is negotiated separately from the
 //! flags.
 
+pub(crate) mod ack_durability;
 pub mod binary;
 pub(crate) mod error_code;
 pub(crate) mod features;

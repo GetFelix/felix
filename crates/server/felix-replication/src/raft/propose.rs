@@ -156,8 +156,6 @@ const NOT_THE_REST: &str =
     "the records are not the rest of the producer's batch, so nothing was written";
 const CONDITIONAL_SHAPE: &str =
     "a conditional publish on Raft is one record of no producer's batch, so nothing was written";
-const SEVERAL: &str =
-    "an idempotent batch of several records is not written on Raft, so nothing was written";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {
@@ -402,15 +400,9 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             len,
             ..
         }) if position != 0 || len != 1 => return Err(lost(NOT_THE_REST)),
-        // Several records would be several entries, and nothing writes
-        // those all or none. The rest of a batch the log holds the start
-        // of is let through: each piece names its place, so a log that
-        // gets only some of them knows it and refuses the next re-send.
-        Some(Sequenced {
-            position: 0,
-            per_record: false,
-            ..
-        }) if count != 1 => return Err(lost(SEVERAL)),
+        // Several records are several entries, which a leader change can
+        // cut. Each names its place, so a log that holds only some of them
+        // knows it, and the re-send writes just the rest.
         Some(Sequenced {
             position,
             len,

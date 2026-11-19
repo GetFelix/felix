@@ -435,8 +435,8 @@ export interface GroupInfo {
   /** The shard's committed tail. */
   tail: bigint;
   /**
-   * Records handed out and not yet settled. The shard leader's memory, so it
-   * restarts from zero when the leader changes.
+   * Records handed out and not yet settled. On the default engine the shard
+   * leader's memory, so it restarts from zero when the leader changes.
    */
   inFlight: bigint;
   /** Records owed again after a nack or a lapsed claim. Leader memory, like `inFlight`. */
@@ -1621,7 +1621,7 @@ export declare class Client {
    * how many milliseconds it now stands, which is less than asked when the
    * broker capped it. Pass the record `groupPoll` returned: it names that
    * delivery, and is refused once the claim has lapsed or the record has gone
-   * out again, even to this consumer.
+   * out again at another attempt.
    */
   groupExtend(
     tenantId: string,

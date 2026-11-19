@@ -612,19 +612,24 @@ fn a_restored_value_is_its_own_copy() {
     assert!(!within.contains(&value.as_ptr()));
 }
 
-/// ApplyLocalClock: apply, the snapshot and the record have no clock to read.
+/// ApplyLocalClock: apply, the snapshot and the record have no clock to read,
+/// and do not reach the hybrid cache and counter logs, whose compaction and
+/// appends stamp records from the local clock.
 #[test]
 fn apply_and_snapshot_read_no_clock() {
-    for source in [
-        include_str!("state.rs"),
-        include_str!("snapshot.rs"),
-        include_str!("record.rs"),
+    for (name, source) in [
+        ("cache.rs", include_str!("../cache.rs")),
+        ("state.rs", include_str!("state.rs")),
+        ("layers.rs", include_str!("layers.rs")),
+        ("snapshot.rs", include_str!("snapshot.rs")),
+        ("record.rs", include_str!("record.rs")),
+        ("machine.rs", include_str!("../machine.rs")),
     ] {
-        for clock in ["SystemTime", "Instant", "now("] {
-            assert!(
-                !source.contains(clock),
-                "{clock} in the cache state machine"
-            );
+        for clock in ["SystemTime", "Instant", "::now(", "now_m", "chrono::"] {
+            assert!(!source.contains(clock), "{clock} in {name}");
+        }
+        for hybrid in ["felix_storage::cache", "counter_log", "LogCache"] {
+            assert!(!source.contains(hybrid), "{hybrid} in {name}");
         }
     }
 }

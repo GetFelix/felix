@@ -46,8 +46,8 @@ pub struct GroupInfo {
     pub committed: Either<BigInt, Null>,
     /// The shard's committed tail.
     pub tail: BigInt,
-    /// Records handed out and not yet settled. The shard leader's memory, so
-    /// it restarts from zero when the leader changes.
+    /// Records handed out and not yet settled. On the default engine the
+    /// shard leader's memory, so it restarts from zero when the leader changes.
     pub in_flight: BigInt,
     /// Records owed again after a nack or a lapsed claim. Leader memory, like
     /// `inFlight`.

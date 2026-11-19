@@ -1919,6 +1919,40 @@ impl Member {
         } else {
             no_fleet()
         };
+        Self::assemble(net, name, root, broker, fleet)
+    }
+
+    /// A member of a quorum `orders` whose fleet finalized
+    /// `raft_stream_purge`, so its retention timer trims and then purges,
+    /// with the storage opened on `config`.
+    pub(crate) async fn start_purging(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        config: LogConfig,
+    ) -> Self {
+        use felix_common::fleet::{HEAD_TRIM, RAFT_HEAD_TRIM, RAFT_STREAM_PURGE};
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = broker_with_config(
+            root.path(),
+            3,
+            INCARNATION,
+            ConsistencyLevel::Quorum,
+            config,
+        )
+        .await;
+        broker.allow_raft_head_trims_when(|| true);
+        let features = [HEAD_TRIM, RAFT_HEAD_TRIM, RAFT_STREAM_PURGE].map(|feature| feature.name());
+        let fleet = Arc::new(felix_common::fleet::FleetGate::seeded(features, features));
+        Self::assemble(net, name, root, broker, fleet)
+    }
+
+    fn assemble(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        root: tempfile::TempDir,
+        broker: Arc<Broker>,
+        fleet: Arc<felix_common::fleet::FleetGate>,
+    ) -> Self {
         let sender = Arc::new(Sender {
             from: name.to_string(),
             net: Arc::clone(net),

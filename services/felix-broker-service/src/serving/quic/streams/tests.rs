@@ -16,6 +16,7 @@
 //! Run with `cargo test -p felix-broker-service --lib serving::quic::streams`, or narrow with
 //! individual test names.
 
+mod ack_durability;
 mod control_auth;
 mod control_cache;
 mod control_cache_keys;

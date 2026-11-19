@@ -15,7 +15,6 @@ use opentelemetry::KeyValue;
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::Resource;
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -29,7 +28,7 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
         );
 
         let provider = build_tracer_provider(service_name);
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = felix_common::log_filter::env_filter(cfg!(test));
         // Unit tests in this crate install this subscriber for the whole
         // binary; the test writer lets libtest capture every test's logs.
         #[cfg(test)]

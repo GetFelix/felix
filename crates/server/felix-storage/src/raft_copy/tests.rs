@@ -9,6 +9,7 @@ mod reclaim;
 mod reform;
 mod report;
 mod start;
+mod stop;
 mod vouch;
 
 use std::io;

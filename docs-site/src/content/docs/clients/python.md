@@ -1056,7 +1056,7 @@ print(info.committed, info.tail, info.in_flight, info.lag)
 existed = client.group_delete("t1", "default", "orders", shard, "billing")
 ```
 
-`group_create` and `group_seek` return a `GroupPosition`: the offset the group resumes from, and `moved`, which is `False` when `group_create` found the group already there. A seek voids the claims standing when it lands, so an ack for a record the group now owes fails with `stale_claim`. `group_describe` returns a `GroupInfo`; `committed` is `None` for a group with no cursor, and `in_flight` and `owed` are the shard leader's memory, so they start again from zero when the leader changes. All five calls are on `AsyncClient` too.
+`group_create` and `group_seek` return a `GroupPosition`: the offset the group resumes from, and `moved`, which is `False` when `group_create` found the group already there. A seek voids the claims standing when it lands, so an ack for a record the group now owes fails with `stale_claim`. `group_describe` returns a `GroupInfo`; `committed` is `None` for a group with no cursor, and `owed` (and `in_flight` on the default engine) are the shard leader's memory, so they start again from zero when the leader changes. All five calls are on `AsyncClient` too.
 
 ### The whole stream at once
 
