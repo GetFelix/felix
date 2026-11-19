@@ -13,6 +13,7 @@ FelixRaftPlacementMoveWipeTwoMoves  runs past a CI runner's six hours
 FelixRaftPlacementPlacedTarget  runs past a CI runner's six hours; PlacedTargetNoWrite is its bounded twin
 FelixRaftPlacementSameIdFiveFloorTwoWipes  runs past the job limit, dispatch 44442468320
 FelixRaftPlacementFormFiveFloor  runs past a CI runner's job limit (15M distinct, 8M queued at 95 min, PR #2798 run)
+FelixRaftPlacementSameIdFiveFloor  runs past the 60 min job limit (PR #2825 run 44622667317); tracked in #2853
 FelixRaftPlacementStaleReturnWipe  measuring in dispatch 44384289786
 FelixRaftPlacementStaleReturnWipeAnyVersion  measuring in dispatch 44384289786
 FelixRaftPlacementStaleWipeRewindNoAck  expected violation not shown yet: no result in six hours
