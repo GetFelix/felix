@@ -8,7 +8,7 @@
 use felix_wire::internal::ClientCertified;
 
 use super::*;
-use crate::serving::tls::PRINCIPAL_URI_PREFIX;
+use felix_common::tls::PRINCIPAL_URI_PREFIX;
 
 /// The subject `Credentials::token` mints for.
 const SUBJECT: &str = "p:test";

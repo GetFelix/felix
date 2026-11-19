@@ -134,7 +134,7 @@ impl BrokerAuth {
     ) -> Result<AuthContext> {
         let mut context = self.authenticate(tenant_id, token).await?;
         if self.bind_subject {
-            crate::serving::tls::check_subject_binding(
+            felix_common::tls::check_subject_binding(
                 peer_certs,
                 &context.subject,
                 context.actor.as_deref(),
@@ -195,7 +195,7 @@ impl BrokerAuth {
         verifier
             .verify_client_cert(&leaf, &intermediates, rustls::pki_types::UnixTime::now())
             .map_err(|err| refused(&format!("the forwarded client certificate: {err}")))?;
-        crate::serving::tls::check_subject_binding(
+        felix_common::tls::check_subject_binding(
             Some(std::slice::from_ref(&leaf)),
             &context.subject,
             context.actor.as_deref(),

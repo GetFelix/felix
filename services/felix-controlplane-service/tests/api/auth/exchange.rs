@@ -956,6 +956,128 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
+/// With certificate binding on, an exchange is bound to the principal it
+/// resolves from the IdP token, not to the IdP token's raw `sub`.
+#[tokio::test]
+async fn a_bound_exchange_binds_the_resolved_principal() {
+    use felix_controlplane_service::auth::cert_binding::{PeerCertificates, bind_subjects};
+
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let token = mint_upstream_token(&idp_key().pem, &issuer, "aud-1", "kid-1");
+    let store = InMemoryStore::new(StoreConfig {
+        changes_limit: 200,
+        change_retention_max_rows: Some(200),
+    });
+    store
+        .create_tenant(Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "Tenant One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .upsert_idp_issuer(
+            "t1",
+            IdpIssuerConfig {
+                issuer: issuer.clone(),
+                audiences: vec!["aud-1".to_string()],
+                discovery_url: None,
+                jwks_url: Some(format!("{issuer}/jwks")),
+                claim_mappings: ClaimMappings::default(),
+            },
+        )
+        .await
+        .expect("issuer");
+    let principal = principal_id(&issuer, "user-1");
+    store
+        .add_rbac_policy(
+            "t1",
+            PolicyRule {
+                subject: principal.clone(),
+                object: "stream:t1/payments/orders".to_string(),
+                action: "stream.publish".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    let private_key = FELIX_PRIVATE_KEY;
+    store
+        .set_tenant_signing_keys(
+            "t1",
+            TenantSigningKeys {
+                current: SigningKey {
+                    kid: "k1".to_string(),
+                    alg: Algorithm::EdDSA,
+                    private_key,
+                    public_key: Ed25519SigningKey::from_bytes(&private_key)
+                        .verifying_key()
+                        .to_bytes(),
+                },
+                previous: vec![],
+            },
+        )
+        .await
+        .expect("keys");
+    let state = AppState {
+        region: Region {
+            region_id: "local".to_string(),
+            display_name: "Local Region".to_string(),
+        },
+        api_version: "v1".to_string(),
+        features: FeatureFlags {
+            durable_storage: false,
+            tiered_storage: false,
+            bridges: false,
+        },
+        store: Arc::new(store),
+        oidc_validator: UpstreamOidcValidator::new_with_allowed_algorithms(
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+            60,
+            vec![Algorithm::RS256],
+        ),
+        bootstrap_enabled: false,
+        bootstrap_tokens: Vec::new(),
+        node_liveness: Default::default(),
+        readiness: Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
+            Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
+        )),
+        in_flight: Default::default(),
+        placement_wakes: Default::default(),
+        move_policy: Default::default(),
+        new_cluster: Default::default(),
+    };
+    // The certificate the TLS listener would have put on the request.
+    let exchange_as = |san: String| {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.subject_alt_names = vec![rcgen::SanType::URI(san.as_str().try_into().expect("uri"))];
+        let cert = params.self_signed(&key).expect("cert");
+        let peer = PeerCertificates(Arc::from(vec![cert.der().clone()]));
+        let app = bind_subjects(build_router(state.clone())).layer(axum::Extension(peer));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/tenants/t1/token/exchange")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("request");
+        app.oneshot(req)
+    };
+
+    let own = exchange_as(format!("felix:principal:{principal}"))
+        .await
+        .expect("exchange");
+    assert_eq!(own.status(), StatusCode::OK);
+
+    // The IdP's raw subject is not a Felix principal, so it binds nothing.
+    let raw = exchange_as("felix:principal:user-1".to_string())
+        .await
+        .expect("exchange");
+    assert_eq!(raw.status(), StatusCode::UNAUTHORIZED);
+}
+
 async fn spawn_jwks_server(jwks: serde_json::Value) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     // Deterministic local JWKS server to avoid flakiness and external dependencies.
     // Binding to 127.0.0.1:0 lets the OS choose an available port.

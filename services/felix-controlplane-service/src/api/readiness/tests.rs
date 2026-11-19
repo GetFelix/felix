@@ -180,6 +180,31 @@ async fn a_draining_instance_is_not_ready_even_with_a_healthy_store() {
     assert_eq!(readiness.check().await, Err(NotReady::Draining));
 }
 
+/// Startup is not draining: until the API listener is bound the instance is
+/// not ready, and it says so without claiming a shutdown.
+#[tokio::test]
+async fn a_starting_instance_is_not_ready_until_marked() {
+    let store = Fake::new();
+    let lifecycle = felix_common::lifecycle::Readiness::starting();
+    let readiness = Readiness::with_lifecycle(
+        lifecycle.clone(),
+        Arc::clone(&store) as Arc<dyn HealthProbe>,
+        Duration::from_millis(50),
+        Duration::ZERO,
+    );
+
+    let err = readiness.check().await.expect_err("not bound yet");
+    assert_eq!(err, NotReady::Starting);
+    assert!(!err.to_string().contains("shutting down"));
+    assert_eq!(store.asked(), 0);
+
+    lifecycle.mark_ready();
+    assert_eq!(readiness.check().await, Ok(()));
+
+    lifecycle.begin_draining();
+    assert_eq!(readiness.check().await, Err(NotReady::Draining));
+}
+
 /// Draining is answered without asking the store. Nothing a database says
 /// changes whether this process is shutting down, and a struggling database
 /// must not delay an instance leaving rotation.

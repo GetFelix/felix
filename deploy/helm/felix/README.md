@@ -88,6 +88,9 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `broker.clientTls.enabled` / `existingSecret` | `false` / — | The certificate clients verify brokers with, from a `kubernetes.io/tls` Secret. Off, each broker generates a self-signed certificate at every start. |
 | `broker.clientTls.clientCaKey` | — | A key in that Secret holding the CA every client must present a certificate from. |
 | `controlplane.tls.enabled` / `existingSecret` / `caKey` | `false` / — / `ca.crt` | TLS on the control-plane API, from a `kubernetes.io/tls` Secret. Brokers then use `https://` and trust `caKey` from the same Secret. |
+| `controlplane.tls.clientCaSecret` / `clientCaKey` | — / `ca.crt` | Require a client certificate from this CA on the API (`FELIX_CONTROLPLANE_TLS_CLIENT_CA`). Probes and the Raft bootstrap hook use the metrics port, so they need none. |
+| `controlplane.tls.bindSubject` | `false` | Bind each bearer token to the client certificate it arrives with. Needs `clientCaSecret`. |
+| `broker.controlplaneClientCert.existingSecret` | — | The `kubernetes.io/tls` Secret brokers present to the control plane. Required with `controlplane.tls.clientCaSecret`. |
 | `broker.shutdown.preStopSeconds` / `handoffTimeoutMs` / `drainTimeoutMs` | `15` / `30000` / `40000` | The endpoints controller's head start, then the shard handoff, then the drain. The grace period is derived; an explicit one that is too short is refused. |
 | `broker.podDisruptionBudget.maxUnavailable` | `1` | Must be below `replicas`, and at most one once there are three or more. |
 | `broker.antiAffinity` / `topologySpread` | `soft` / zone, `ScheduleAnyway` | `hard` refuses to co-locate; `DoNotSchedule` refuses to skew. |
@@ -107,6 +110,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
 - brokers are enabled with neither `peerTls.enabled` nor `peerTls.allowUnauthenticated`.
 - `clientTls` or `controlplane.tls` is on without a Secret.
+- `controlplane.tls.clientCaSecret` is set without `controlplane.tls.enabled` or, with brokers on, without `broker.controlplaneClientCert`; `bindSubject` is on without `clientCaSecret`; or a broker client certificate is set for a plain-HTTP control plane.
 - the client and internal ports are the same.
 - a budget would let every broker, or two replicas of one shard, go at once; or would never let a control-plane instance go.
 - an explicit grace period is shorter than the preStop sleep plus the drain.

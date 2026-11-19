@@ -185,6 +185,16 @@ def check_broker(docs: list[dict], label: str) -> None:
     url = env.get("FELIX_CONTROLPLANE_URL", {}).get("value", "")
     if "FELIX_CONTROLPLANE_CA" in env and not url.startswith("https://"):
         fail(f"{label}: FELIX_CONTROLPLANE_CA with {url!r}; the broker refuses that")
+    # The client certificate for the control plane: both files from a
+    # mounted Secret, over https only.
+    cp_client = [name for name in env if name.startswith("FELIX_CONTROLPLANE_CLIENT_")]
+    if cp_client:
+        if sorted(cp_client) != ["FELIX_CONTROLPLANE_CLIENT_CERT", "FELIX_CONTROLPLANE_CLIENT_KEY"]:
+            fail(f"{label}: the control-plane client certificate is half-configured: {cp_client}")
+        if "secret" not in volumes.get("controlplane-client", {}):
+            fail(f"{label}: the control-plane client certificate is not a mounted Secret")
+        if not url.startswith("https://"):
+            fail(f"{label}: a control-plane client certificate with {url!r}; the broker refuses that")
 
 
 def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
@@ -259,7 +269,11 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
                 fail(f"{label}: the bootstrap Job is not a post-install hook")
             if weight(marker) <= weight(job):
                 fail(f"{label}: the group-formed marker is not created after the bootstrap Job")
-            if "/v1/system/ready" not in "".join(containers(job)[0]["command"]):
+            # On the metrics port, which never asks for a client certificate.
+            metrics_port = next(
+                p["containerPort"] for p in container["ports"] if p["name"] == "metrics"
+            )
+            if f":{metrics_port}/ready" not in "".join(containers(job)[0]["command"]):
                 fail(f"{label}: the bootstrap Job does not wait for the group to be ready")
         policy = one(docs, "NetworkPolicy", "-controlplane")
         if policy is None:
@@ -272,21 +286,26 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
         if headless is not None and [p["name"] for p in headless["spec"]["ports"]] != ["raft"]:
             fail(f"{label}: the headless Service does not expose the peer port")
 
-    # A TLS API is probed over HTTPS, from a mounted Secret.
+    spec_volumes = {v["name"]: v for v in workload["spec"]["template"]["spec"]["volumes"]}
     if "FELIX_CONTROLPLANE_TLS_CERT" in env:
-        for probe in ("livenessProbe", "readinessProbe"):
-            if container[probe]["httpGet"].get("scheme") != "HTTPS":
-                fail(f"{label}: {probe} is not HTTPS against a TLS API")
-        spec_volumes = {v["name"]: v for v in workload["spec"]["template"]["spec"]["volumes"]}
         if "secret" not in spec_volumes.get("tls", {}):
             fail(f"{label}: the API certificate is not a mounted Secret")
+    # A client CA comes from a mounted Secret, and only with a TLS API.
+    if "FELIX_CONTROLPLANE_TLS_CLIENT_CA" in env:
+        if "FELIX_CONTROLPLANE_TLS_CERT" not in env:
+            fail(f"{label}: a client CA without a TLS API; the control plane refuses that")
+        if "secret" not in spec_volumes.get("client-ca", {}):
+            fail(f"{label}: the API client CA is not a mounted Secret")
+    if "FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT" in env and "FELIX_CONTROLPLANE_TLS_CLIENT_CA" not in env:
+        fail(f"{label}: subject binding without a client CA; the control plane refuses that")
 
-    # Liveness never asks the store; readiness does.
-    probes = container
-    if probes["livenessProbe"]["httpGet"]["path"] != "/v1/system/live":
-        fail(f"{label}: liveness is not /v1/system/live")
-    if probes["readinessProbe"]["httpGet"]["path"] != "/v1/system/ready":
-        fail(f"{label}: readiness is not /v1/system/ready")
+    # Probes go to the metrics port over plain HTTP: the kubelet has no client
+    # certificate for an API that requires one. Liveness never asks the
+    # store; readiness does.
+    for probe, path in (("livenessProbe", "/live"), ("readinessProbe", "/ready")):
+        get = container[probe]["httpGet"]
+        if get["path"] != path or get["port"] != "metrics" or get.get("scheme", "HTTP") != "HTTP":
+            fail(f"{label}: {probe} is not {path} on the metrics port")
 
     bootstrap_token = env.get("FELIX_BOOTSTRAP_TOKEN")
     if bootstrap_token is not None:
@@ -442,6 +461,15 @@ def main() -> int:
                 "broker.clientTls.enabled=true")
     must_refuse("needs controlplane.tls.existingSecret", raft,
                 "controlplane.tls.enabled=true")
+    must_refuse("needs controlplane.tls.enabled", raft,
+                "controlplane.tls.clientCaSecret=clients")
+    must_refuse("needs controlplane.tls.clientCaSecret", raft,
+                "controlplane.tls.bindSubject=true")
+    must_refuse("needs broker.controlplaneClientCert.existingSecret", raft,
+                "controlplane.tls.enabled=true", "controlplane.tls.existingSecret=api",
+                "controlplane.tls.clientCaSecret=clients")
+    must_refuse("needs an https control plane", raft,
+                "broker.controlplaneClientCert.existingSecret=cp-client")
 
     must_refuse("needs controlplane.storage.raft.peerToken.existingSecret", None,
                 "broker.credential.existingSecret=cred")

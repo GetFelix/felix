@@ -8,9 +8,9 @@
 use felix_common::random::HashSet;
 use std::time::Duration;
 
-use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -19,6 +19,7 @@ use crate::api::error::{
     ApiError, api_conflict, api_internal, api_internal_message, api_validation_error,
 };
 use crate::auth::bearer::{Refusal, extract_bearer, refused};
+use crate::auth::cert_binding::ExchangeBinding;
 use crate::auth::delegate::{JWT_TOKEN_TYPE, holds_token_delegate, verified_actor};
 use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_token_may_act};
 use crate::auth::oidc::OidcError;
@@ -132,6 +133,7 @@ pub async fn exchange_token(
     Path(tenant_id): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
+    binding: Option<Extension<ExchangeBinding>>,
     body: Option<Json<TokenExchangeRequest>>,
 ) -> Result<Json<TokenExchangeResponse>, ApiError> {
     let bearer = extract_bearer(&headers)?;
@@ -189,6 +191,7 @@ pub async fn exchange_token(
         &principal.groups,
         &request,
         audience,
+        binding.as_ref().map(|Extension(binding)| binding),
     )
     .await
     .map(Json)
@@ -196,7 +199,8 @@ pub async fn exchange_token(
 
 /// The Felix token and refresh token for `principal_id` in `tenant_id`, with
 /// the permissions RBAC grants it, narrowed by `request`. `groups` are the
-/// identity provider's group claims, already scoped by issuer.
+/// identity provider's group claims, already scoped by issuer. With
+/// `binding`, the token must be issued to the client's certificate.
 pub(crate) async fn mint_for_principal(
     state: &AppState,
     tenant_id: &str,
@@ -204,6 +208,7 @@ pub(crate) async fn mint_for_principal(
     groups: &[String],
     request: &TokenExchangeRequest,
     audience: &str,
+    binding: Option<&ExchangeBinding>,
 ) -> Result<TokenExchangeResponse, ApiError> {
     let tenant_id = tenant_id.to_string();
     let mut narrowing = narrowing_for(request, &tenant_id, audience)?;
@@ -267,6 +272,9 @@ pub(crate) async fn mint_for_principal(
         .map_err(|err| api_internal("failed to load signing keys", &err))?;
     if let Some(actor_token) = &request.actor_token {
         narrowing.may_act = Some(verified_actor(state, &keys, &tenant_id, actor_token).await?);
+    }
+    if let Some(binding) = binding {
+        binding.check(principal_id, narrowing.may_act.as_deref())?;
     }
 
     crate::auth::revocation::wait_out_revocation(state, &tenant_id, principal_id).await?;
