@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795048487712,
+  "lastUpdate": 1795050521500,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -61828,6 +61828,58 @@ window.BENCHMARK_DATA = {
             "range": "17185.17",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1197627.43\nmean: 1196650.66\nstdev: 17185.17\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3398ae132bb3276f279f58aed160e417cbc7a31b",
+          "message": "ci: run only the PR jobs a change can affect (#2791)\n\n* ci: run only the PR jobs a change can affect\n\nThe changes job now runs scripts/ci/affected.py over the PR's files and the\nworkspace crate graph (cargo metadata) and switches each heavy job on only\nwhen a crate it builds, or a file it reads, changed. Test-only changes stay\ninside their crate. The test job narrows its doctests to the affected\ncrates, and coverage skips a PR no workspace crate's tests can see.\n\nPushes to main, manual runs, the ci:full label, unknown paths and the files\nthat change every build (Cargo.toml, Cargo.lock, the toolchain, Taskfile,\nbuild scripts, the CI workflow and the selector) still run everything.\n\nSpec-Unaffected: CI job selection only\n\n* ci: felixctl, Dockerfile and fuzz-seed changes select the tests that use them\n\nSpec-Unaffected: CI job selection only\n\n* ci: broker-side and docs changes select the conformance jobs and tests that use them\n\nSpec-Unaffected: CI job selection only",
+          "timestamp": "2026-11-18T16:43:04-08:00",
+          "tree_id": "e238a58181fe88787e093c9ce6ad056fdedde380",
+          "url": "https://github.com/GetFelix/felix/commit/3398ae132bb3276f279f58aed160e417cbc7a31b"
+        },
+        "date": 1795050520601,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513028.8,
+            "range": "11566.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513028.80\nmean: 508077.03\nstdev: 11566.49\ncv: 2.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513028.8,
+            "range": "11566.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513028.80\nmean: 508077.03\nstdev: 11566.49\ncv: 2.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123905.36,
+            "range": "1022.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123905.36\nmean: 123599.91\nstdev: 1022.51\ncv: 0.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1239053.61,
+            "range": "10225.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1239053.61\nmean: 1235999.06\nstdev: 10225.12\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
