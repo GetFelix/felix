@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795066441634,
+  "lastUpdate": 1795066759546,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62296,6 +62296,58 @@ window.BENCHMARK_DATA = {
             "range": "4828.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808615.64\nmean: 810687.43\nstdev: 4828.14\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e4c5388f1b55f224fa854b5e69f7a4051a3fbaca",
+          "message": "feat(controlplane): rotate the Raft peer token without an outage (#2820)\n\n* feat(controlplane): rotate the Raft peer token without an outage (#2813)\n\nMembers accept FELIX_RAFT_PEER_TOKEN_NEXT and FELIX_RAFT_PEER_TOKEN_PREVIOUS\non inbound peer requests beside the current token and send only the current\none, so a rotation is three rolling restarts with no step at which two members\ncannot talk. Every slot is compared in constant time, and\nfelix_meta_raft_peer_token_accepted_total{token} shows when the old token is\nunused. The Helm chart reads both from optional keys of the peer token Secret.\n\nSpec-Unaffected: peer authentication on the control-plane metadata Raft listener; no lease, fence, replication or placement step changes, and no modelled path is touched.\n\n* docs(controlplane): peer token rotation prerequisites and back-out\n\nSpec-Unaffected: docs and a test fixture only.\n\n* fix(controlplane): peer token review round: digest compare, empty slots, roll waits\n\nSpec-Unaffected: peer authentication on the control-plane metadata Raft listener only.",
+          "timestamp": "2026-11-19T05:31:21Z",
+          "tree_id": "12d0ebd6e8f107924a11826e8a523e3d13c7154b",
+          "url": "https://github.com/GetFelix/felix/commit/e4c5388f1b55f224fa854b5e69f7a4051a3fbaca"
+        },
+        "date": 1795066758921,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 521619.17,
+            "range": "45871.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521619.17\nmean: 525208.07\nstdev: 45871.94\ncv: 8.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 521619.17,
+            "range": "45871.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521619.17\nmean: 525208.07\nstdev: 45871.94\ncv: 8.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123038.6,
+            "range": "1917.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123038.60\nmean: 122164.16\nstdev: 1917.33\ncv: 1.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1230385.97,
+            "range": "19173.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1230385.97\nmean: 1221641.58\nstdev: 19173.25\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
