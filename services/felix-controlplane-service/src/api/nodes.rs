@@ -151,16 +151,21 @@ pub(crate) async fn patch_node(
     Json(patch): Json<NodePatchRequest>,
 ) -> Result<Json<Node>, ApiError> {
     require_node_manage(&state, &headers, &node_id).await?;
-    if let Some(internal) = patch.internal {
+    if patch.internal.is_some() {
         // A broker's own token holds node.manage on itself, so it must not
         // be able to lift the role that keeps tenant shards off it.
         require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
-        tracing::warn!(node_id = %node_id, internal, "an operator changed a node's internal role");
     }
+    let internal = patch.internal;
     state
         .store
         .patch_node(&node_id, patch)
         .await
+        .inspect(|_| {
+            if let Some(internal) = internal {
+                tracing::warn!(node_id = %node_id, internal, "an operator changed a node's internal role");
+            }
+        })
         .map(Json)
         .map_err(|err| match err {
             StoreError::NotFound(_) => api_not_found("node is not registered"),

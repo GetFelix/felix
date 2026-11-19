@@ -1514,7 +1514,7 @@ The role, once recorded, is not cleared by the broker or by label edits:
 
 A broker registers as internal only once every control-plane member supports
 the role (metadata level 44); until then the registration is refused with 409,
-so a leader that would ignore the label never sees an internal node.
+so a leader that would ignore the label never sees an internal node. A restore (`import_state`) carrying an internal node is held to the same level and is refused with 409 below it. The restore keeps no rule against dropping the role: it replaces the records on purpose.
 
 The cluster-wide floor matters when many shards arrive at once, for example
 from an application that creates a stream per job. With only the ceiling as

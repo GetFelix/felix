@@ -4644,9 +4644,10 @@ async fn placement_acks_and_their_gate_wait_for_level_35() {
 #[tokio::test]
 async fn an_internal_registration_waits_for_level_44() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let (store, version) = store_with_member_at(dir.path(), INTERNAL_ROLE_LEVEL - 1).await;
+    let (store, version) =
+        store_with_member_at(dir.path(), super::command::INTERNAL_ROLE_LEVEL - 1).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await != INTERNAL_ROLE_LEVEL - 1 {
+    while store.group_level().await != super::command::INTERNAL_ROLE_LEVEL - 1 {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted"
@@ -4668,7 +4669,27 @@ async fn an_internal_registration_waits_for_level_44() {
         .await
         .expect("an ordinary node still registers");
 
-    version.store(INTERNAL_ROLE_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    // A restore carrying the role is held to the same level.
+    let mut state = store.machine.store().export_state().await;
+    state.nodes.push(("core-a".to_string(), internal.clone()));
+    let import = MetaCommand::ImportState {
+        state: Box::new(state),
+        overwrite: true,
+        mark_unplaced: true,
+        raise_incarnation: false,
+        lose_ordered: false,
+    };
+    assert_eq!(import.version(), super::command::INTERNAL_ROLE_LEVEL);
+    let refused = store.propose(import).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+
+    version.store(
+        super::command::INTERNAL_ROLE_LEVEL,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while store.register_node(internal.clone()).await.is_err() {
         assert!(

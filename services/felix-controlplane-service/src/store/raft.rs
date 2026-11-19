@@ -46,11 +46,6 @@ const INCARNATION_LEVEL: u16 = 10;
 /// identities a replica report names.
 const STORAGE_IDENTITY_LEVEL: u16 = 12;
 
-/// The metadata level whose members' placement acts on the internal node
-/// role. A node registered as internal earlier would be given tenant shards
-/// by a leader below it, so such a registration waits for every member.
-const INTERNAL_ROLE_LEVEL: u16 = 44;
-
 /// The metadata level whose members store which node made a replica report
 /// and the incarnations it was taken at.
 const REPORT_STAMP_LEVEL: u16 = 13;
@@ -842,13 +837,6 @@ impl ControlPlaneStore for RaftStore {
         // below is measured with it gone.
         if node.status.storage_id.is_some() && self.group_level().await < STORAGE_IDENTITY_LEVEL {
             node.status.storage_id = None;
-        }
-        if node.spec.is_internal() && self.group_level().await < INTERNAL_ROLE_LEVEL {
-            return Err(StoreError::Conflict(format!(
-                "node {} cannot register as internal until every control-plane member \
-                 runs a release that supports the role; finish upgrading the control plane",
-                node.node_id
-            )));
         }
         let command = MetaCommand::RegisterNodeInFleet { node: node.clone() };
         if self.handle.cluster_version().await >= command.version() {
