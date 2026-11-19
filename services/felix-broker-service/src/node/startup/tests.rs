@@ -41,6 +41,7 @@ async fn read_bounds_hold_the_nodes_engine() {
             kafka_advertise_addr: None,
             region: "local".to_string(),
             zone: None,
+            internal: false,
             region_bridges: Vec::new(),
             features: Default::default(),
         }),

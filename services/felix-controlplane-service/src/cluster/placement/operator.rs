@@ -84,6 +84,8 @@ pub enum Refused {
     AlreadyLeads(String),
     /// The destination is at its `max_shards` cap.
     AtCapacity(String),
+    /// The destination is marked internal, which holds no tenant's shard.
+    InternalNode(String),
     /// The destination's region may not hold this stream's data: it is not
     /// the stream's region and has no bridge from it.
     RegionNotAllowed {
@@ -125,6 +127,7 @@ impl Refused {
             Self::DestinationHalted { .. } => "destination_halted",
             Self::AlreadyLeads(_) => "already_leader",
             Self::AtCapacity(_) => "at_capacity",
+            Self::InternalNode(_) => "internal_node",
             Self::RegionNotAllowed { .. } => "region_not_allowed",
             Self::Moving => "already_moving",
             Self::LeaderUnavailable(_) => "leader_unavailable",
@@ -154,6 +157,10 @@ impl std::fmt::Display for Refused {
             ),
             Self::AlreadyLeads(node) => write!(f, "node {node} already leads this shard"),
             Self::AtCapacity(node) => write!(f, "node {node} is at its max_shards capacity"),
+            Self::InternalNode(node) => write!(
+                f,
+                "node {node} is marked internal (FELIX_NODE_ROLE) and holds no tenant shards"
+            ),
             Self::RegionNotAllowed { node, region, home } => write!(
                 f,
                 "node {node} is in region {region}, which has no bridge from this stream's region {home}"
@@ -216,6 +223,9 @@ pub fn start_move(
             node: destination.to_string(),
             lifecycle: node.status.lifecycle,
         });
+    }
+    if node.spec.is_internal() {
+        return Err(Refused::InternalNode(destination.to_string()));
     }
     if let Some(home) = home
         && !catalog.policy.regions.can_route(home, &node.spec.region)
@@ -343,6 +353,7 @@ fn zone_impact(
         .nodes
         .iter()
         .filter(|node| node.status.lifecycle == NodeLifecycle::Live)
+        .filter(|node| !node.spec.is_internal())
         .filter(|node| {
             home.is_none_or(|home| catalog.policy.regions.can_route(home, &node.spec.region))
         })

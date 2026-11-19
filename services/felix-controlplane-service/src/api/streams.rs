@@ -151,7 +151,7 @@ pub(crate) async fn short_of_brokers(state: &AppState, stream: &Stream) -> Vec<S
     // Draining, down and departed nodes are not placed on.
     let live = nodes
         .iter()
-        .filter(|node| node.status.lifecycle == NodeLifecycle::Live)
+        .filter(|node| node.status.lifecycle == NodeLifecycle::Live && !node.spec.is_internal())
         .count();
     short_warning(stream, live).into_iter().collect()
 }

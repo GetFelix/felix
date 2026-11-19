@@ -1,7 +1,7 @@
 //! Caches are placed by the same pass as streams, and are not streams.
 use super::*;
 
-fn cache(name: &str, shards: u32) -> Cache {
+pub(super) fn cache(name: &str, shards: u32) -> Cache {
     replicated_cache(name, shards, 1)
 }
 

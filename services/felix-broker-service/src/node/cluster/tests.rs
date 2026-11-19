@@ -23,6 +23,7 @@ async fn every_component_holds_the_one_engine() {
             kafka_advertise_addr: None,
             region: "local".to_string(),
             zone: None,
+            internal: false,
             region_bridges: Vec::new(),
             features: Default::default(),
         }),

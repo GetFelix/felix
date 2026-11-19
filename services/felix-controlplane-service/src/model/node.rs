@@ -195,7 +195,19 @@ pub struct NodeSpec {
     pub capacity: NodeCapacity,
 }
 
+use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+
 impl NodeSpec {
+    /// Whether the node is marked internal: placement never gives it a tenant
+    /// stream's or cache's shard, and refuses an operator move onto it.
+    ///
+    /// Carried as a label so it travels with the registration that creates
+    /// the node, and so an older control-plane member replicates it as it
+    /// does any label. A node without the label is an ordinary node.
+    pub fn is_internal(&self) -> bool {
+        self.labels.get(NODE_ROLE_LABEL).map(String::as_str) == Some(NODE_ROLE_INTERNAL)
+    }
+
     pub fn validate(&self) -> Result<(), NodeValidationError> {
         if self.region.trim().is_empty() {
             return Err(NodeValidationError::EmptyRegion);

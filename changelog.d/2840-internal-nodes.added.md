@@ -1,0 +1,1 @@
+`FELIX_NODE_ROLE=internal` marks a broker that holds no tenant shards. It registers the label `felix.dev/node-role=internal` with the node, and placement never gives such a node a stream or cache shard: not at creation, balancing, failover or restoring a lost copy. An operator move onto it is refused with `internal_node`, and a shard already on it is moved off (#2840).
