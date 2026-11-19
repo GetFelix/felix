@@ -667,7 +667,7 @@ above, a seed fails when:
 - a copy the fault did not touch rotates.
 
 A stopped or replaced copy counts toward a majority for the records it had
-flushed when it stopped, read from its log before the fault, until its new
+flushed when it stopped, read from its log as it stopped, until its new
 copy has flushed that far. A follower flushes a record before it learns the
 record is committed, so its read bound can trail what it acknowledged. The
 credit stops at the lower of the flushed index the member reported and its
