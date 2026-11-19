@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795064422748,
+  "lastUpdate": 1795064859809,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78936,6 +78936,72 @@ window.BENCHMARK_DATA = {
             "range": "591.88",
             "unit": "us",
             "extra": "trials: 5\nmedian: 529.00\nmean: 799.40\nstdev: 591.88\ncv: 74.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a8e02d6cf605eb6386539e2d51077e0b591ab9d3",
+          "message": "feat(broker): serve durable cache and counter shards from their Raft group (#2774) (#2795)\n\n* wip(storage): a Raft cache member claims its directory under the cache root (#2774)\n\n* wip(broker): route cache and counter shards to their Raft group (#2774)\n\n* wip(broker): leave caches to the hybrid on a broker without a log-backed cache store (#2774)\n\n* chore(broker): format, fill CacheMetadata literals, point the watch gap at #2792 (#2774)\n\n* fix(broker): a plain delete on a Raft cache cannot starve; refuse a shard with hybrid counters (#2774)\n\n* formal: register the two FelixRaftBatchResetCrash configurations\n\n#2749 added them and #2780 added the registry check; the merge of the two left\nboth unregistered, so docs:evidence fails on main and every PR. Expected\nresults are the ones run 44375207363 checked (pass in 5 s, violation in 2 s).\n\n* test(raft): fix the Raft cache failover and group cluster tests' checks\n\nThe cache failover test ran beside the default `orders` stream, a group\nof one on some broker, so `leader_among` saw two brokers leading and\nnever named one unless both groups landed on the same broker. It now\nstarts with no stream.\n\nThe consumer group test told records apart by payload. The startup probe\nretries a publish that went unanswered across the first leadership\nhand-over, so the stream can hold two `harness-probe` records at\ndifferent offsets. Records are now told apart by offset, and each of the\ntest's own payloads must come out exactly once.\n\nAdds a unit test that a three-broker cache group serves its placed\nleader's term.\n\nSpec-Unaffected: test-only change; no modelled path is touched.",
+          "timestamp": "2026-11-19T04:55:44Z",
+          "tree_id": "4c3758d30d65f289699dc3b01312e40ff7653bc9",
+          "url": "https://github.com/GetFelix/felix/commit/a8e02d6cf605eb6386539e2d51077e0b591ab9d3"
+        },
+        "date": 1795064848720,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 0.45\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 127.80\nstdev: 1.92\ncv: 1.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 165,
+            "range": "8.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 165.00\nmean: 166.40\nstdev: 8.11\ncv: 4.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.60\nstdev: 0.89\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 261,
+            "range": "4.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 261.00\nmean: 258.80\nstdev: 4.09\ncv: 1.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 394,
+            "range": "87.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 394.00\nmean: 416.80\nstdev: 87.61\ncv: 21.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
