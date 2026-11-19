@@ -53,6 +53,10 @@ const FENCE_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// forgotten for each new one.
 const MAX_FENCED_AT: usize = 65_536;
 
+/// How many logs' resend progress is remembered. Past it, one is forgotten
+/// for each new one; a forgotten log sends its leader back to resend once more.
+const MAX_VERIFIED: usize = 65_536;
+
 use crate::peer::metrics;
 
 /// Stores replicated records against this broker's local logs.
@@ -61,8 +65,10 @@ pub struct ReplicaHandler {
     router: Arc<ShardRouter>,
     /// How far each log's records from before the current leader's
     /// generation have been compared with it, while that takes more than one
-    /// batch. Per log: a stream and its group logs share a shard key, and
-    /// one log's progress says nothing about another's. See [`unverified_from`].
+    /// batch. Per log: a stream and its group logs share a shard key, as do a
+    /// cache and its counters, and one log's progress says nothing about
+    /// another's. Dropped by a rebuild and capped at [`MAX_VERIFIED`]. See
+    /// [`unverified_from`].
     verified:
         parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
@@ -357,6 +363,7 @@ impl ReplicaHandler {
         }
         // The in-memory tail was built from the records that just went.
         self.reset_tail(&key, log_kind, request.base_offset).await;
+        self.verified.lock().remove(&(key.clone(), log_kind));
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -432,6 +439,8 @@ impl ReplicaHandler {
             }
             self.reset_tail(key, log_kind, keep).await;
         }
+        // What was compared may be gone, and every kept record is compared again.
+        self.verified.lock().remove(&(key.clone(), log_kind));
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -902,9 +911,9 @@ impl ReplicaHandler {
             }
         };
 
-        // A divergent suffix left by a leader that is gone is droppable: no
-        // majority acknowledged it, and dropping it lets this follower rejoin
-        // instead of halting until an operator notices (#406).
+        // A divergent suffix left by a leader that is gone is droppable here: no
+        // majority acknowledged it, and dropping it lets this follower carry on
+        // without a rebuild (#406).
         //
         // Two conditions decide that, and neither is optional:
         //
@@ -915,10 +924,12 @@ impl ReplicaHandler {
         // - The divergence is at or after where that older generation began, so
         //   what is dropped belongs to it.
         //
-        // Anything else halts. Without the generation history there is no way
-        // to tell a suffix from a divergence reaching further back, and
-        // truncating on a bare conflict would discard records nothing has
-        // established are safe to lose.
+        // Anything else is refused with `LogConflict`. Without the generation
+        // history there is no way to tell a suffix from a divergence reaching
+        // further back, so nothing is truncated here. The leader halts this
+        // follower and, unless it is backing off, its base is above the commit
+        // offset or no rebuild slot is free, rebuilds it: that keeps the
+        // committed records and drops the rest.
         if let Ok(Err(Divergence::Conflict { offset, .. })) = &outcome {
             let diverged_at = *offset;
             // Below `verified` the records came from this sender already, and
@@ -994,7 +1005,7 @@ impl ReplicaHandler {
                     sender_generation = batch.shard.generation,
                     last_accepted = ?previous_generation.map(|epoch| epoch.generation),
                     "this divergence is not a previous generation's suffix; \
-                     replication stops here",
+                     refusing it, and replication stops here until the leader rebuilds this copy",
                 ),
             }
         }
@@ -1116,8 +1127,16 @@ impl ReplicaHandler {
                 if caught_up {
                     self.verified.lock().remove(&(key.clone(), log_kind));
                 } else if compared {
-                    self.verified.lock().insert(
-                        (key.clone(), log_kind),
+                    let mut verified = self.verified.lock();
+                    let entry = (key.clone(), log_kind);
+                    if verified.len() >= MAX_VERIFIED && !verified.contains_key(&entry) {
+                        let any = verified.keys().next().cloned();
+                        if let Some(any) = any {
+                            verified.remove(&any);
+                        }
+                    }
+                    verified.insert(
+                        entry,
                         Verified {
                             generation: batch.shard.generation,
                             incarnation: batch.shard.incarnation.unwrap_or(0),

@@ -366,3 +366,99 @@ async fn a_lost_history_resend_spanning_batches_moves_forward() {
     }
     assert_eq!(held(&broker).await, ["a", "b", "c", "d", "e", "f", "g"]);
 }
+
+/// The leader's rebuild after the conflict drops the stale record and any
+/// progress mark, and the re-shipped records are then the follower's only ones.
+#[tokio::test]
+async fn a_rebuild_after_the_conflict_leaves_the_leaders_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+        let mut first = batch(4, 0, &["a", "b"]);
+        first.commit_offset = Some(2);
+        old.apply(SENDER, first, felix_broker::LogKind::Stream)
+            .await;
+        old.apply(
+            SENDER,
+            batch(4, 2, &["c", "stale"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+        broker
+            .durable_storage()
+            .expect("storage")
+            .shutdown()
+            .await
+            .expect("shutdown");
+    }
+    damage(dir.path(), &Damage::Absent);
+
+    let broker = broker_on(dir.path());
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    // Compares `c`, which leaves a progress mark at 3, then conflicts at 3.
+    let answer = new
+        .apply(SENDER, batch(6, 2, &["c"]), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(!new.verified.lock().is_empty(), "no progress mark to drop");
+    let answer = new
+        .apply(SENDER, batch(6, 3, &["d"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(refusal(&answer).code, ErrorCode::LogConflict);
+
+    let answer = new
+        .rebuild(
+            SENDER,
+            felix_wire::internal::ReplicateRebuild {
+                correlation_id: 1,
+                shard: batch(6, 0, &[]).shard,
+                log: felix_wire::internal::ReplicaLog::Stream,
+                base_offset: 0,
+            },
+        )
+        .await;
+    let InternalMessage::ReplicateOk(ok) = answer else {
+        panic!("rebuild refused: {answer:?}");
+    };
+    assert!(
+        new.verified.lock().is_empty(),
+        "a progress mark survived the rebuild"
+    );
+    assert_eq!(held(&broker).await, ["a", "b"]);
+
+    let resend = ["a", "b", "c", "d"];
+    let from = usize::try_from(ok.durable_offset).expect("offset");
+    let answer = new
+        .apply(
+            SENDER,
+            batch(6, ok.durable_offset, &resend[from..]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(held(&broker).await, resend);
+}

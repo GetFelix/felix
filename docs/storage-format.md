@@ -1074,15 +1074,19 @@ answer becomes a truncation point.
 **Unlike the segments, this file is not authoritative and its loss is not
 fatal.** Absent, short, or failing its checksum, it reads as empty: every shard
 written before the file existed has none, and refusing to open those would
-trade an outage for a convenience. What is lost is the ability to repair a
-divergence automatically, never a record.
+trade an outage for a convenience. What is lost is the in-place repair of a
+divergent suffix, never a record.
 
 The check that sends a leader back over records a follower holds past its
 commit offset does not depend on the file. With no history it counts every
 record past the commit offset as uncompared, so the leader resends from there.
 Records that agree cost that one resend. A divergent one is a conflict nothing
-can label as a dead leader's suffix, so it is not truncated in place; the
-leader rebuilds the follower from the commit offset instead, which drops it.
+can label as a dead leader's suffix, so it is not truncated in place. The
+follower refuses the batch and the leader rebuilds it, which keeps the records
+up to the commit offset and drops the rest. The leader skips the rebuild while
+it is backing off from a refused one, when its own base is above the commit
+offset, or when no rebuild slot is free; until then replication to that
+follower stays stopped.
 
 The entries are bounded, because every open reads the whole file and a
 generation older than the oldest retained record cannot be one two brokers
@@ -1090,8 +1094,8 @@ diverge within.
 
 **A reset or truncation changes it under the `rewind-pending` marker.** The
 records and this file are written in separate steps, so a crash between them
-could leave records with no history (which switches off the divergence check
-for them) or a history over records that are gone. The marker below makes the
+could leave records with no history (so a divergence among them is rebuilt
+away rather than truncated in place) or a history over records that are gone. The marker below makes the
 pair change as one.
 
 See `docs/replication-design.md`, "Divergence and truncation", for what it is

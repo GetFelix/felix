@@ -783,8 +783,10 @@ rule.
 **A lost generation history is not a reason to refuse an open.** A missing,
 short or corrupt `epochs` file reads as empty. A follower with no history
 treats every record past its commit offset as uncompared, so any leader is
-sent back to the commit offset. A divergent record there is a conflict, and
-the leader rebuilds the follower from the commit offset, which drops it.
+sent back to the commit offset. A divergent record there is a conflict. The
+leader rebuilds the follower, which keeps the records up to the commit offset
+and drops the rest, unless it is backing off from a refused rebuild, its base
+is above the commit offset, or no rebuild slot is free.
 
 > `replica::tests::lost_history` damages the file each of the three ways and
 > checks the follower sends the new leader back.

@@ -3539,8 +3539,8 @@ no history at all names the commit offset to any leader, one at its own
 generation included, since nothing says who wrote what it holds. The leader rewinds
 and the overlap is compared like any other, so a conflict is found and repaired
 as above. When that takes several batches, the follower remembers in memory how
-far it has got, per log: a stream and its group logs share a shard but not
-their progress. The newest generation it holds stays older than the leader's
+far it has got, per log: a stream and its group logs share a shard, as do a
+cache and its counters, but not their progress. The newest generation it holds stays older than the leader's
 until the batches reach where the leader's own began: before that it holds only
 records the leader inherited, labelled with the generations that wrote them.
 Until then a conflict below how far it has got is the leader disagreeing with
