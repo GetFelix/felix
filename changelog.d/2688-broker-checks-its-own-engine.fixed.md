@@ -1,0 +1,1 @@
+A broker started with `FELIX_SHARD_ENGINE=raft` now checks the control plane's identity against its own engine. It used to compare it with the hybrid, so it refused a control plane running Raft and started under one running the hybrid, which never stores the target a Raft group forms on.
