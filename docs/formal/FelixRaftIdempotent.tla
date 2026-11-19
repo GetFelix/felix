@@ -200,7 +200,8 @@ LearnTerm(i, j) ==
 \* to a member's log, committed or not.
 Begin(n) ==
     /\ cur < MaxSeq
-    /\ cur = 0 \/ \E m \in Servers : WholeIn(m, cur, Len(log[m]), blen[cur])
+    \* IF, not \/: TLC tries both disjuncts of an action, and blen[0] is undefined.
+    /\ IF cur = 0 THEN TRUE ELSE \E m \in Servers : WholeIn(m, cur, Len(log[m]), blen[cur])
     /\ cur' = cur + 1
     /\ blen' = [blen EXCEPT ![cur + 1] = n]
     /\ UNCHANGED <<term, role, votedFor, granted, log, commit, mem, props, acked>>
