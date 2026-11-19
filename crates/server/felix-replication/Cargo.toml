@@ -70,6 +70,10 @@ required-features = ["raft"]
 name = "raft_open_files"
 required-features = ["raft"]
 
+[[test]]
+name = "raft_election_storm"
+required-features = ["raft"]
+
 [dev-dependencies]
 # Turns `raft` on for this crate's own tests, so `cargo test` runs the
 # runtime's without a feature flag.
