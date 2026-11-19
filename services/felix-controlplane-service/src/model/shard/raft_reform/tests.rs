@@ -119,6 +119,15 @@ fn a_floor_of_another_incarnation_is_dropped() {
     assert_eq!(record.offset_floor, None);
 }
 
+/// A floor reported in another epoch is not this group's floor.
+#[test]
+fn a_floor_of_another_epoch_is_dropped() {
+    let mut a = assignment();
+    a.raft_floor.as_mut().expect("floor").epoch = 1;
+    let record = a.reform_record(&BTreeSet::new()).expect("epoch 0");
+    assert_eq!(record.floor, None);
+}
+
 /// Past epoch 0 the record would need the bases of earlier re-forms, which
 /// it does not keep, so no record is built rather than one that claims the
 /// group never re-formed.

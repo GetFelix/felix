@@ -4767,7 +4767,7 @@ Two gaps keep every plan marked or refused for now:
   them. With the seed unknown, every plan is marked, so `apply` needs the
   operator to accept the loss.
 - **Bases are not recorded.** No re-form writes its base to the shard's record
-  yet, so a group past epoch 0 gets no record (`BasesNotRecorded`) and no plan.
+  yet, so a group whose record shows it past epoch 0 gets no record (`BasesNotRecorded`) and no plan.
 
 ### Shards with one replica
 

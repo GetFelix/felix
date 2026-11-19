@@ -1,7 +1,7 @@
 //! What the shard record holds about a Raft group's epoch, as the re-form
 //! planner's [`GroupRecord`].
 //!
-//! `docs/per-shard-raft.md`, "Re-forming a group".
+//! `docs/per-shard-raft.md`, "The control plane's record for a re-form".
 use std::collections::BTreeSet;
 
 use felix_storage::raft_copy::{EpochLogId, GroupRecord};
@@ -57,11 +57,7 @@ impl ShardAssignment {
                     term: floor.term,
                 }),
             offset_floor: floor.map(|floor| floor.offset_floor),
-            placed: self
-                .placed
-                .as_ref()
-                .filter(|placed| placed.epoch == epoch)
-                .map(|placed| placed.brokers.clone()),
+            placed: self.placed.as_ref().map(|placed| placed.brokers.clone()),
             dead: dead.clone(),
             seed: None,
             ordered: self.ordered_voter_sets(),
