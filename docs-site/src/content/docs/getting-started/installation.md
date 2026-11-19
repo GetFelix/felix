@@ -276,6 +276,24 @@ Use WSL2 for best compatibility:
 
 Native Windows support is not currently tested.
 
+## Verify a release download
+
+Each release signs its `SHA256SUMS` with Sigstore and attaches the signature as
+`SHA256SUMS.sigstore.json`. Download both next to the archive, then check the
+signature and the archive. Replace `<tag>` with the release tag, such as `v0.7.2`.
+
+```bash
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity https://github.com/GetFelix/felix/.github/workflows/release.yml@refs/tags/<tag> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+The signature is keyless: the certificate names the release workflow run, so
+there is no key to fetch. Releases before this was added have no bundle.
+
 ## Docker (Alternative)
 
 Released images are on GHCR (`ghcr.io/getfelix`) and pull without credentials. The commands work

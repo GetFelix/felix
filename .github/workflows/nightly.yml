@@ -267,7 +267,7 @@ jobs:
         working-directory: dist
         run: |
           set -euo pipefail
-          rm -f SHA256SUMS ./*.sha256
+          rm -f SHA256SUMS SHA256SUMS.sigstore.json ./*.sha256
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
 
