@@ -796,24 +796,32 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
         "an acknowledged record was handed out again: {rest:?}"
     );
     // The stream may hold records written while the cluster started, so check
-    // that ours each came out once rather than counting the whole stream.
-    let mut payloads: Vec<&[u8]> = first
+    // that ours each came out once rather than counting the whole stream. A
+    // record is its offset: the startup probe retries after an unanswered
+    // publish, so the stream can hold its payload twice.
+    let mut offsets: Vec<u64> = first
         .iter()
         .chain(rest.iter())
-        .map(|record| record.payload.as_ref())
+        .map(|record| record.offset)
         .collect();
-    let handed_out = payloads.len();
-    payloads.sort_unstable();
-    payloads.dedup();
+    let handed_out = offsets.len();
+    offsets.sort_unstable();
+    offsets.dedup();
     assert_eq!(
-        payloads.len(),
+        offsets.len(),
         handed_out,
         "a record came out twice: {first:?} {rest:?}"
     );
     for payload in [b"one".as_slice(), b"two", b"three"] {
-        assert!(
-            payloads.contains(&payload),
-            "{} was not handed out: {first:?} {rest:?}",
+        let times = first
+            .iter()
+            .chain(rest.iter())
+            .filter(|record| record.payload.as_ref() == payload)
+            .count();
+        assert_eq!(
+            times,
+            1,
+            "{} was handed out {times} times: {first:?} {rest:?}",
             String::from_utf8_lossy(payload)
         );
     }
@@ -1378,8 +1386,11 @@ async fn a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies() {
     if !opted_in() {
         return;
     }
+    // No stream: the default one is a group of one on some broker, which
+    // would count as a second leader in `leader_among`.
     let config = ClusterConfig {
         nodes: 3,
+        streams: Vec::new(),
         caches: vec![felix_cluster::CacheSpec::quorum(CACHE, 1, 3)],
         broker_env: vec![engine("raft")],
         ..Default::default()
