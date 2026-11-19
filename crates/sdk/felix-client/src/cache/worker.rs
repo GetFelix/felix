@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::debug;
 
 use super::{CacheConditionResult, LeaseToken, LeaseWrite, VersionedValue};
+use crate::connection::Renewal;
 use crate::frame_io::{read_frame_cache_timed_into_with_limit, write_frame_parts};
 #[cfg(feature = "telemetry")]
 use crate::timings;
@@ -69,6 +70,7 @@ pub(crate) async fn run_cache_worker_with_limit(
     mut rx: mpsc::Receiver<CacheRequest>,
     cache_conn_counts: Arc<Vec<AtomicUsize>>,
     max_frame_bytes: usize,
+    mut renewal: Option<Renewal>,
 ) {
     // Single writer for a cache stream; handles sequential request/response pairs.
     let sample = crate::telemetry::t_should_sample();
@@ -83,6 +85,13 @@ pub(crate) async fn run_cache_worker_with_limit(
     debug!(conn_index, "cache worker started");
     while let Some(request) = rx.recv().await {
         debug!(conn_index, "cache worker received request");
+        // Requests run one at a time, so nothing is in flight to settle first.
+        if let Some(renewal) = renewal.as_mut()
+            && renewal.due()
+            && let Some(fresh) = renewal.newer_token().await
+        {
+            renewal.move_to(fresh, &mut send, &mut recv).await;
+        }
         let result = handle_cache_request(
             &mut send,
             &mut recv,

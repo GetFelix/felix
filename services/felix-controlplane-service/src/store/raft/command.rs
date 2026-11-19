@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 40;
+pub const METADATA_VERSION: u16 = 41;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -525,7 +525,7 @@ pub enum MetaCommand {
         node_id: String,
         heard: crate::model::PlacementAck,
     },
-    /// Keep a broker's Raft copy id for a switched shard, and write the
+    /// Keep a broker's Raft copy id for a shard on Raft, and write the
     /// shard's next target if that moves it
     /// ([`crate::store::ControlPlaneStore::record_raft_copy_id`]). Level 36.
     RecordRaftCopyId {
@@ -539,6 +539,11 @@ pub enum MetaCommand {
         /// lost. Set by `settle_for_level`, so every member does the same.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_ordered: bool,
+        /// Level 41: the stream incarnation of the copy's group. Checked
+        /// against the shard's, and with it a shard that started on Raft
+        /// takes ids too. An entry without it applies as it did below 41.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shard_incarnation: Option<u64>,
     },
     /// Raise the offset floor of each shard a leader reports, where the
     /// report is above it; the others are skipped one by one

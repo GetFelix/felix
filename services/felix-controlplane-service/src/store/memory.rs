@@ -835,6 +835,7 @@ impl ControlPlaneStore for InMemoryStore {
         node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
+        shard_incarnation: Option<u64>,
     ) -> StoreResult<bool> {
         self.apply_record_raft_copy_id(
             key,
@@ -843,6 +844,8 @@ impl ControlPlaneStore for InMemoryStore {
             node_incarnation,
             copy_id,
             true,
+            shard_incarnation,
+            false,
         )
         .await
     }
