@@ -100,6 +100,11 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
 
 /// Build the tenant, namespace, stream, and two nodes every case needs.
 pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
+    seed_with_replicas(store, 1).await;
+}
+
+/// [`seed`], with the stream at `replication_factor`.
+pub(crate) async fn seed_with_replicas(store: &dyn ControlPlaneStore, replication_factor: u32) {
     let _ = store
         .create_tenant(Tenant {
             tenant_id: TENANT.to_string(),
@@ -120,7 +125,7 @@ pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
             stream: stream_name(),
             kind: StreamKind::Stream,
             shards: SHARDS,
-            replication_factor: 1,
+            replication_factor,
             retention: RetentionPolicy {
                 max_age_seconds: None,
                 max_size_bytes: None,
