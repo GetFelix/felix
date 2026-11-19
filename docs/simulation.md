@@ -573,12 +573,9 @@ it. `felix_sim::raft` tests the engine on its own, on the same paused clock.
 A run starts three or five members. Each member is what a broker will hold
 for a Raft shard: a group runtime, the engine, and a broker core whose stream
 is bounded by the engine's read bound. Each shard has one in-memory log per
-member. Links between members are simulated. There is no control plane in the
-run, so everything it shows holds with the control plane down.
-
-The member set is fixed and no member restarts. Restarts and power cuts on
-Raft shards come with the pull request that adds copy ids and the restore
-check.
+member. Links between members are simulated. Outside the disk modes there is
+no control plane in the run, so everything it shows holds with the control
+plane down, and no member restarts.
 
 Faults, drawn from the seed and healed one at a time: a member isolated, a
 minority split off, one direction of one link cut (a request that never
@@ -639,11 +636,52 @@ the run, since no member restarts. The run then also checks that:
 this way. The stopped copy coming back needs a restart, which the run does
 not have yet (issue #2300).
 
+**Disk faults.** `FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1` open every
+member the way a broker does: its data root through the restore gate
+(`open_root`), and each shard directory as a copy (`open_copy`), so the first
+voters are the copy ids the directories were given. Some faults then stop a
+member, change its disk, and start it again a few seconds later:
+
+- `FELIX_SIM_WIPE=1` empties one shard directory, or the whole data root.
+- `FELIX_SIM_RESTORE=1` puts back a copy of one shard directory, or of the
+  whole data root, saved while the member ran at least 8 seconds before.
+  That is older than a log mark can trail its log, so the copy is outside
+  the window `docs/per-shard-raft.md` names under "What this does not catch".
+
+The run also plays the control plane. Each second it takes every running
+member's root sequence, as a heartbeat would, and hands it back to the gate
+when that member next starts. A restored root is behind that copy, so it gets
+a new storage id. It also tells each shard's leader a target naming the
+member every broker holds now (the leader asks the brokers), which is how a
+rotated copy becomes a voter.
+
+A fault waits until every copy of the shards it touches is a voter, so a
+seed never replaces a majority's copies of one shard. On top of the checks
+above, a seed fails when:
+
+- a wiped copy keeps its copy id;
+- a restored copy keeps its copy id with fewer entries than it had flushed 7
+  seconds before it stopped, which its log mark covers;
+- a copy the fault did not touch rotates.
+
+A stopped or replaced copy counts toward a majority for the records it held
+below its read bound when it stopped, read from its log then, until its new
+copy has flushed that far: those were committed, so it held them. A disk-mode
+seed that never wiped or restored a directory checked too little. A read bound is checked against the same
+member's earlier bounds only within one start.
+
+`a_majority_wipe_stalls_its_shard_and_loses_nothing` wipes one shard's
+directory on a majority at once. No copy may then vote under its old id, so
+the shard has no leader for the rest of the run, and the test expects that
+stall and no lost record. Re-forming the group is an operator step the run
+does not have yet (#2350, which waits for the re-form command of #2250).
+
 `FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,
 0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
 clock skew can do to it. Without the variable the timers agree.
 
-Two pinned seeds, `raft_seed_1` and `raft_seed_2_with_skewed_timers`, run in
+Four pinned seeds, `raft_seed_1`, `raft_seed_2_with_skewed_timers`,
+`raft_seed_2_with_wipes` and `raft_seed_1_with_restores`, run in
 CI's non-blocking `sim-seeds` job with a few more seeds. They need `--cfg
 tokio_unstable` to replay (see below), so the workspace tests skip them. A
 failing seed prints its whole outcome: mode, faults, counts, terms led and
@@ -656,8 +694,8 @@ RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
   cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
 ```
 
-The nightly sweep runs 250 Raft seeds a night in each of the `raft` and
-`raft-clocks` modes ([The nightly sweep](#the-nightly-sweep)). One seed runs
+The nightly sweep runs 250 Raft seeds a night in each of the `raft`,
+`raft-clocks`, `raft-wipe` and `raft-restore` modes ([The nightly sweep](#the-nightly-sweep)). One seed runs
 the way the sweep runs it with:
 
 ```bash
@@ -727,6 +765,7 @@ mode, a window that moves 250 seeds a night, so eight nights cover seeds 1 to
 | `majority-cut`, `majority-cut-relaxed` | Several brokers lose power at once. |
 | `wipe` | Shard and data directories emptied. |
 | `raft`, `raft-clocks` | Raft groups ([Raft groups](#raft-groups)) in place of a whole cluster, the second with skewed timers. |
+| `raft-wipe`, `raft-restore` | Raft groups with members stopped and a shard directory or data root wiped, or put back from an older copy. |
 
 A Raft seed runs through the same script, one process per seed, on the
 `raft_seeds` test binary built beside the `seeds` one.

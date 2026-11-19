@@ -210,3 +210,25 @@ pub fn boot_id(root: &Path) -> io::Result<crate::run_state::BootId> {
 pub fn wipe(root: &Path, below: &Path) -> io::Result<()> {
     tree(root)?.wipe(below)
 }
+
+/// A saved copy of a directory below a root, from [`save`].
+#[derive(Clone)]
+pub struct Saved(std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>);
+
+/// Copy `below` (a directory below `root`) as a read sees it now, as a
+/// backup of a running broker would.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered or `below` does not exist.
+pub fn save(root: &Path, below: &Path) -> io::Result<Saved> {
+    Ok(Saved(tree(root)?.save(below)?))
+}
+
+/// Put `saved` back at `below`, replacing what is there, and make it
+/// durable, as restoring a backup onto a stopped broker would.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn restore(root: &Path, below: &Path, saved: &Saved) -> io::Result<()> {
+    tree(root)?.restore(below, &saved.0)
+}
