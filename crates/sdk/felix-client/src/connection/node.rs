@@ -125,7 +125,7 @@ impl NodeConnections {
     /// The broker authenticates and authorizes each stream on its own, so
     /// streams for different principals can share a connection without one's
     /// grants reaching the other's requests.
-    pub(crate) async fn open_as(&self, credentials: &Credentials) -> Result<OpenedStream> {
+    pub(crate) async fn open_as(&self, credentials: &Arc<Credentials>) -> Result<OpenedStream> {
         // Token first: placing may dial a connection, which a refused or
         // slow token would leave idle until the broker's auth timeout.
         let token = credentials.current_token().await?;
@@ -133,7 +133,7 @@ impl NodeConnections {
         let opened = credentials
             .open(lease.connection(), first, token, self.max_frame_bytes)
             .await;
-        let (send, recv, negotiated) = match opened {
+        let (send, recv, negotiated, token) = match opened {
             Ok(opened) => opened,
             Err(err) => {
                 // A spreading set may have dialled this connection for the
@@ -150,6 +150,8 @@ impl NodeConnections {
             recv,
             negotiated,
             lease,
+            token,
+            credentials: Arc::clone(credentials),
         })
     }
 
@@ -298,6 +300,23 @@ pub(crate) struct OpenedStream {
     pub(crate) recv: RecvStream,
     pub(crate) negotiated: Negotiated,
     pub(crate) lease: StreamLease,
+    /// The token the broker accepted on this stream.
+    pub(crate) token: String,
+    /// What the stream authenticated with, kept so it can authenticate
+    /// again; see [`Renewal`](super::Renewal).
+    pub(crate) credentials: Arc<Credentials>,
+}
+
+impl OpenedStream {
+    /// What keeps this stream on the provider's current token.
+    pub(crate) fn renewal(&self, max_frame_bytes: usize) -> super::Renewal {
+        super::Renewal::new(
+            Arc::clone(&self.credentials),
+            self.lease.connection().clone(),
+            self.token.clone(),
+            max_frame_bytes,
+        )
+    }
 }
 
 /// One stream's claim on a connection. Dropping it frees the room.
@@ -409,7 +428,7 @@ impl Link {
     }
 }
 
-enum Probe {
+pub(super) enum Probe {
     Opened((SendStream, RecvStream)),
     Saturated,
     Closed,
@@ -421,7 +440,7 @@ enum Probe {
 /// the peer's `MAX_STREAMS` otherwise, so one poll tells the two apart without
 /// a timer. Dropping the pending future releases nothing, because nothing was
 /// taken.
-fn try_open_bi(connection: &QuicConnection) -> Probe {
+pub(super) fn try_open_bi(connection: &QuicConnection) -> Probe {
     let mut open = pin!(connection.open_bi());
     match open
         .as_mut()

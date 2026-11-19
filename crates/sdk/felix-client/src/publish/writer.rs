@@ -22,6 +22,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use super::ack::read_ack;
 use super::{AckOutcome, Acked};
+use crate::connection::Renewal;
 use crate::frame_io::write_frame_parts;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::frame_counters;
@@ -99,10 +100,10 @@ pub(crate) async fn run_publisher_writer_with_limit(
     mut send: SendStream,
     recv: RecvStream,
     mut rx: mpsc::Receiver<PublishRequest>,
-    _chunk_bytes: usize,
     max_frame_bytes: usize,
     window: Option<Arc<Semaphore>>,
     answers_on_completion: bool,
+    mut renewal: Option<Renewal>,
 ) -> Result<()> {
     // Single writer: serialize publish requests over one bi-directional
     // stream. Acked publishes pipeline — written back to back, their acks
@@ -277,6 +278,21 @@ pub(crate) async fn run_publisher_writer_with_limit(
                 }
             }
         };
+        // A forwarded write carries the token the stream opened with, so a
+        // stream that outlives it moves to a new one. In-flight publishes
+        // finish on the old stream first, which keeps their order.
+        if let Some(renewal) = renewal.as_mut()
+            && !matches!(request, PublishRequest::Finish { .. })
+            && renewal.due()
+            && let Some(fresh) = renewal.newer_token().await
+        {
+            resolve_pending!();
+            if let Some((recv, _)) = idle.as_mut()
+                && renewal.move_to(fresh, &mut send, recv).await
+            {
+                declared = None;
+            }
+        }
         // A slot in the publish window before an acked publish goes out.
         // While none is free, settle this stream's own answers: they may be
         // what holds the slots, and waiting on them unread would deadlock.
@@ -704,10 +720,10 @@ pub(crate) async fn run_publisher_writer(
         send,
         recv,
         rx,
-        _chunk_bytes,
         crate::config::DEFAULT_MAX_FRAME_BYTES,
         None,
         false,
+        None,
     )
     .await
 }

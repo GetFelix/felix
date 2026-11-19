@@ -54,7 +54,7 @@ fn vote_for(group: GroupId, to: MemberId) -> RaftRequest {
     RaftRequest {
         group,
         to,
-        beat: 0,
+        beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
         deadline: std::time::Duration::from_secs(1),
         body: Request::Vote(VoteRequest::new(

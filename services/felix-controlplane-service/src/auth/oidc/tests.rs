@@ -17,40 +17,55 @@ use super::*;
 use crate::auth::idp_registry::ClaimMappings;
 use crate::auth::idp_registry::IdpIssuerConfig;
 
-const TEST_EC_PRIVATE_KEY_DER_B64: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgkcZLhh5bmc6yfv8ZrDxWybm+E+aoz2euIJD3fM73VSyhRANCAAQRkD6ZJEwqBms4JDddpbTjl4Ro49h8WRoNVnEcR/Tp6LhwGGZ8Ku1Gw9spY/BCsiW+5AqIqVlNVgGgJFMRbR1V";
-const TEST_EC_JWK_X: &str = "EZA-mSRMKgZrOCQ3XaW045eEaOPYfFkaDVZxHEf06eg";
-const TEST_EC_JWK_Y: &str = "uHAYZnwq7UbD2ylj8EKyJb7kCoipWU1WAaAkUxFtHVU";
+/// Test keys are generated per test binary so no private key lives in the repo.
+struct TestKeys {
+    rsa_pem: String,
+    rsa_n: String,
+    rsa_e: String,
+    ec_pkcs8: Vec<u8>,
+    ec_x: String,
+    ec_y: String,
+}
 
-const TEST_PRIVATE_KEY_PEM: &str = r#"-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTL
-UTv4l4sggh5/CYYi/cvI+SXVT9kPWSKXxJXBXd/4LkvcPuUakBoAkfh+eiFVMh2V
-rUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8H
-oGfG/AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBI
-Mc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi+yUod+j8MtvIj812dkS4QMiRVN/
-by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQIDAQABAoIBAHREk0I0O9DvECKd
-WUpAmF3mY7oY9PNQiu44Yaf+AoSuyRpRUGTMIgc3u3eivOE8ALX0BmYUO5JtuRNZ
-Dpvt4SAwqCnVUinIf6C+eH/wSurCpapSM0BAHp4aOA7igptyOMgMPYBHNA1e9A7j
-E0dCxKWMl3DSWNyjQTk4zeRGEAEfbNjHrq6YCtjHSZSLmWiG80hnfnYos9hOr5Jn
-LnyS7ZmFE/5P3XVrxLc/tQ5zum0R4cbrgzHiQP5RgfxGJaEi7XcgherCCOgurJSS
-bYH29Gz8u5fFbS+Yg8s+OiCss3cs1rSgJ9/eHZuzGEdUZVARH6hVMjSuwvqVTFaE
-8AgtleECgYEA+uLMn4kNqHlJS2A5uAnCkj90ZxEtNm3E8hAxUrhssktY5XSOAPBl
-xyf5RuRGIImGtUVIr4HuJSa5TX48n3Vdt9MYCprO/iYl6moNRSPt5qowIIOJmIjY
-2mqPDfDt/zw+fcDD3lmCJrFlzcnh0uea1CohxEbQnL3cypeLt+WbU6kCgYEAzSp1
-9m1ajieFkqgoB0YTpt/OroDx38vvI5unInJlEeOjQ+oIAQdN2wpxBvTrRorMU6P0
-7mFUbt1j+Co6CbNiw+X8HcCaqYLR5clbJOOWNR36PuzOpQLkfK8woupBxzW9B8gZ
-mY8rB1mbJ+/WTPrEJy6YGmIEBkWylQ2VpW8O4O0CgYEApdbvvfFBlwD9YxbrcGz7
-MeNCFbMz+MucqQntIKoKJ91ImPxvtc0y6e/Rhnv0oyNlaUOwJVu0yNgNG117w0g4
-t/+Q38mvVC5xV7/cn7x9UMFk6MkqVir3dYGEqIl/OP1grY2Tq9HtB5iyG9L8NIam
-QOLMyUqqMUILxdthHyFmiGkCgYEAn9+PjpjGMPHxL0gj8Q8VbzsFtou6b1deIRRA
-2CHmSltltR1gYVTMwXxQeUhPMmgkMqUXzs4/WijgpthY44hK1TaZEKIuoxrS70nJ
-4WQLf5a9k1065fDsFZD6yGjdGxvwEmlGMZgTwqV7t1I4X0Ilqhav5hcs5apYL7gn
-PYPeRz0CgYALHCj/Ji8XSsDoF/MhVhnGdIs2P99NNdmo3R2Pv0CuZbDKMU559LJH
-UvrKS8WkuWRDuKrz1W/EQKApFjDGpdqToZqriUFQzwy7mR3ayIiogzNtHcvbDHx8
-oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
------END RSA PRIVATE KEY-----"#;
+fn test_keys() -> &'static TestKeys {
+    static KEYS: std::sync::OnceLock<TestKeys> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        use aws_lc_rs::encoding::AsDer;
+        use aws_lc_rs::rsa::{KeyPair, KeySize, PublicKeyComponents};
+        use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _};
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 
-const TEST_JWK_N: &str = "yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ";
-const TEST_JWK_E: &str = "AQAB";
+        let rsa = KeyPair::generate(KeySize::Rsa2048).expect("rsa key");
+        let der = rsa.as_der().expect("pkcs8 der");
+        let body = STANDARD.encode(der.as_ref());
+        let lines: Vec<&str> = body
+            .as_bytes()
+            .chunks(64)
+            .map(|c| std::str::from_utf8(c).expect("base64 is ascii"))
+            .collect();
+        let rsa_pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            lines.join("\n")
+        );
+        let public: PublicKeyComponents<Vec<u8>> = (&rsa.public_key().clone()).into();
+
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).expect("ec key");
+        let ec = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref())
+            .expect("ec pkcs8");
+        // Uncompressed point: 0x04 || x || y.
+        let point = ec.public_key().as_ref();
+        TestKeys {
+            rsa_pem,
+            rsa_n: URL_SAFE_NO_PAD.encode(&public.n),
+            rsa_e: URL_SAFE_NO_PAD.encode(&public.e),
+            ec_pkcs8: pkcs8.as_ref().to_vec(),
+            ec_x: URL_SAFE_NO_PAD.encode(&point[1..33]),
+            ec_y: URL_SAFE_NO_PAD.encode(&point[33..65]),
+        }
+    })
+}
 
 #[tokio::test]
 async fn validates_es256_against_mock_jwks() {
@@ -62,8 +77,8 @@ async fn validates_es256_against_mock_jwks() {
             "alg": "ES256",
             "use": "sig",
             "crv": "P-256",
-            "x": TEST_EC_JWK_X,
-            "y": TEST_EC_JWK_Y
+            "x": test_keys().ec_x,
+            "y": test_keys().ec_y
         }]
     });
 
@@ -109,8 +124,8 @@ async fn rejects_es256_with_wrong_curve_jwk() {
             "alg": "ES256",
             "use": "sig",
             "crv": "P-384",
-            "x": TEST_EC_JWK_X,
-            "y": TEST_EC_JWK_Y
+            "x": test_keys().ec_x,
+            "y": test_keys().ec_y
         }]
     });
 
@@ -165,8 +180,8 @@ async fn the_default_allowlist_accepts_rs256() {
             "kid": kid,
             "alg": "RS256",
             "use": "sig",
-            "n": TEST_JWK_N,
-            "e": TEST_JWK_E
+            "n": test_keys().rsa_n,
+            "e": test_keys().rsa_e
         }]
     });
     let (addr, _handle) = spawn_jwks_server(jwks).await;
@@ -284,8 +299,8 @@ async fn validates_rsa_and_ps_algorithms() {
                 "kid": kid,
                 "alg": alg_name(alg),
                 "use": "sig",
-                "n": TEST_JWK_N,
-                "e": TEST_JWK_E
+                "n": test_keys().rsa_n,
+                "e": test_keys().rsa_e
             }]
         });
         let (addr, _handle) = spawn_jwks_server(jwks).await;
@@ -320,8 +335,8 @@ async fn validates_rsa_when_jwk_omits_alg() {
             "kty": "RSA",
             "kid": kid,
             "use": "sig",
-            "n": TEST_JWK_N,
-            "e": TEST_JWK_E
+            "n": test_keys().rsa_n,
+            "e": test_keys().rsa_e
         }]
     });
     let (addr, _handle) = spawn_jwks_server(jwks).await;
@@ -353,8 +368,8 @@ async fn rejects_rsa_and_ps_when_not_allowlisted() {
                 "kid": kid,
                 "alg": alg_name(alg),
                 "use": "sig",
-                "n": TEST_JWK_N,
-                "e": TEST_JWK_E
+                "n": test_keys().rsa_n,
+                "e": test_keys().rsa_e
             }]
         });
         let (addr, _handle) = spawn_jwks_server(jwks).await;
@@ -379,8 +394,8 @@ async fn rejects_allowed_alg_with_wrong_jwk_type() {
             "alg": "PS256",
             "use": "sig",
             "crv": "P-256",
-            "x": TEST_EC_JWK_X,
-            "y": TEST_EC_JWK_Y
+            "x": test_keys().ec_x,
+            "y": test_keys().ec_y
         }]
     });
     let (addr, _handle) = spawn_jwks_server(jwks).await;
@@ -462,8 +477,8 @@ fn es256_jwks(kid: &str) -> Value {
             "alg": "ES256",
             "use": "sig",
             "crv": "P-256",
-            "x": TEST_EC_JWK_X,
-            "y": TEST_EC_JWK_Y
+            "x": test_keys().ec_x,
+            "y": test_keys().ec_y
         }]
     })
 }
@@ -555,13 +570,12 @@ fn mint_upstream_token(alg: Algorithm, issuer: &str, audience: &str, kid: &str) 
         "exp": now + 300
     });
     match alg {
-        Algorithm::ES256 => {
-            let der = base64::engine::general_purpose::STANDARD
-                .decode(TEST_EC_PRIVATE_KEY_DER_B64)
-                .expect("ec der");
-            jsonwebtoken::encode(&header, &claims, &EncodingKey::from_ec_der(&der))
-                .expect("es256 token")
-        }
+        Algorithm::ES256 => jsonwebtoken::encode(
+            &header,
+            &claims,
+            &EncodingKey::from_ec_der(&test_keys().ec_pkcs8),
+        )
+        .expect("es256 token"),
         Algorithm::RS256
         | Algorithm::RS384
         | Algorithm::RS512
@@ -570,7 +584,7 @@ fn mint_upstream_token(alg: Algorithm, issuer: &str, audience: &str, kid: &str) 
         | Algorithm::PS512 => jsonwebtoken::encode(
             &header,
             &claims,
-            &EncodingKey::from_rsa_pem(TEST_PRIVATE_KEY_PEM.as_bytes()).expect("rsa pem"),
+            &EncodingKey::from_rsa_pem(test_keys().rsa_pem.as_bytes()).expect("rsa pem"),
         )
         .expect("rsa/ps token"),
         _ => panic!("unsupported test algorithm: {alg:?}"),
