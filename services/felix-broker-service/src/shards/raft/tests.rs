@@ -1337,6 +1337,24 @@ async fn a_replicated_cache_group_serves_its_leaders_term() {
     for name in BROKERS {
         members.push(Member::start_cache(&net, name).await);
     }
+    // Each member is owed to the copy id reporter, as a stream's is: the
+    // group forms only on the target the control plane writes from them.
+    for member in &members {
+        member.shards.take(&mut assignments([placed.clone()])).await;
+        let copy = member
+            .shards
+            .runtime
+            .status(&sessions)
+            .expect("open")
+            .member
+            .copy;
+        let held = member.shards.held_copies();
+        assert!(
+            held.iter()
+                .any(|held| held.key == sessions && held.copy == copy),
+            "{held:?}"
+        );
+    }
     let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
     form_on(&all, placed).await;
     until("placement's leader serves its term", || {
