@@ -76,7 +76,7 @@ flowchart LR
 | Quorum lost | Survivors fail readiness rather than serve writes that cannot commit; brokers keep serving on their catalogs and leases, as during any control-plane outage |
 
 Library: [openraft](https://github.com/databendlabs/openraft), pinned to one
-exact version (0.10.0), wrapped behind a seam so its pre-1.0 API churn stays
+exact version (0.10.1), wrapped behind a seam so its pre-1.0 API churn stays
 contained. What members send each other and store is Felix's own format,
 not the library's, so an openraft upgrade does not change it. 0.8 changed
 it once, with the move off redb: a 0.7 group does not upgrade member by
