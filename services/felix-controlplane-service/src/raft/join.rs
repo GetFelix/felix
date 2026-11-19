@@ -44,6 +44,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+use super::floor::{Verdict, Waiver};
 use super::{InitialClusterState, NodeId, RaftHandle, waiver};
 
 /// What a member reports to one deciding how to enter the group.
@@ -68,7 +69,20 @@ pub(super) struct Standing {
     /// the member the address was configured for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) member: Option<NodeId>,
+    /// The member's current term, given only by a member that holds its
+    /// vote: a wiped one has forgotten the terms it promised. Absent from a
+    /// build that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) term: Option<u64>,
+    /// The member withholds its vote, so it gives no term. It has promised
+    /// nothing since it lost its volume, and what it promised before went
+    /// with the volume. Absent (false) from a build that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) withheld: bool,
 }
+
+/// No floor learned yet: a withheld member serves no leader.
+pub(super) const NO_FLOOR: u64 = u64::MAX;
 
 fn has_node() -> bool {
     true
@@ -292,6 +306,54 @@ fn tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
     wrapped.or_else(|| err.source()).is_some_and(tls_failure)
 }
 
+/// The term member `asked` holds, from its `standing` answer, or `None`
+/// when it says it withholds its vote.
+async fn term_of(
+    client: &reqwest::Client,
+    asked: NodeId,
+    base: Option<&str>,
+) -> Result<Option<u64>, String> {
+    let base = base.ok_or("no address configured")?;
+    let response = client
+        .get(format!("{base}{}", super::peer_route("standing")))
+        .send()
+        .await
+        .map_err(|err| format!("{err:#}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("answered {status}"));
+    }
+    let standing = response
+        .json::<Standing>()
+        .await
+        .map_err(|err| format!("undecodable answer: {err:#}"))?;
+    match standing {
+        Standing {
+            member: Some(member),
+            ..
+        } if member != asked => Err(format!("its address is answered by member {member}")),
+        Standing { member: None, .. } => {
+            Err("it runs a build that does not say which member it is".to_string())
+        }
+        Standing {
+            term: Some(term),
+            withheld: false,
+            ..
+        } => Ok(Some(term)),
+        Standing {
+            term: None,
+            withheld: true,
+            ..
+        } => Ok(None),
+        Standing { term: Some(_), .. } => {
+            Err("it gives a term and says it withholds its vote".to_string())
+        }
+        Standing { .. } => {
+            Err("it gives no term: it runs a build that predates the term".to_string())
+        }
+    }
+}
+
 const RETRY_INTERVAL: Duration = Duration::from_millis(200);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// A target can be a tail a deposed leader never commits; past this, ask
@@ -399,7 +461,8 @@ impl RaftHandle {
         // Holding state while withholding the vote means an earlier catch-up
         // was interrupted; the group exists, so there is nothing to decide.
         let mut why = "the raft group exists";
-        if !self.member.holds_state().unwrap_or(true) {
+        let resumed = self.member.holds_state().unwrap_or(true);
+        if !resumed {
             let mut mark = match self.mark().await {
                 Ok(mark) => mark,
                 Err(err) => {
@@ -491,6 +554,7 @@ impl RaftHandle {
             }
         }
         self.drop_waiver(why);
+        self.learn_floor(&client, &others, resumed).await;
         let others: Vec<String> = others.into_iter().filter_map(|(_, base)| base).collect();
         tracing::info!(
             why,
@@ -538,6 +602,140 @@ impl RaftHandle {
             return;
         }
         self.allow_votes();
+    }
+
+    /// Whether this member answers a leader in `term`. Always, once it may
+    /// vote. Before that it has forgotten which terms it promised, so it
+    /// answers only a leader at or above the floor [`Self::learn_floor`]
+    /// set, and no leader before the floor is known. A leader it did not
+    /// answer counts it for nothing.
+    pub(super) fn serves_leader(&self, term: u64) -> bool {
+        self.may_vote.load(Ordering::SeqCst) || term >= self.floor.load(Ordering::SeqCst)
+    }
+
+    /// Ask every other member for its term until each one answers, and set
+    /// the floor to the highest. A term this member promised before it lost
+    /// its volume is held by the quorum it promised it with, so the floor
+    /// is at least that term. A member that withholds its vote too says so
+    /// and gives no term: it promised nothing since its own loss, so it
+    /// holds none of those terms, and waiting on it would leave two empty
+    /// members stranded on each other. Silence is not an answer: a member
+    /// that is down may be the only one that knows a term this member
+    /// promised.
+    ///
+    /// Withheld answers prove the floor only within the group's failure
+    /// tolerance ([`super::floor`]). Past it the member blocks until enough
+    /// members report a term, a withheld member finishing its catch-up
+    /// included, or an operator waives the members it waits on. A member
+    /// `resumed` from an interrupted catch-up skips the block: everything
+    /// it stored since its wipe came from a leader at or above the floor it
+    /// learned then, so its stored vote already refuses older leaders, and
+    /// blocking it would strand the member it was the proof for.
+    async fn learn_floor(
+        &self,
+        client: &reqwest::Client,
+        others: &[(NodeId, Option<String>)],
+        resumed: bool,
+    ) {
+        let mut last_waiting_log: Option<tokio::time::Instant> = None;
+        loop {
+            let mut floor = 0;
+            let mut with_terms = 0;
+            let mut waiting = Vec::new();
+            let mut withheld = BTreeSet::new();
+            for (id, base) in others {
+                match term_of(client, *id, base.as_deref()).await {
+                    Ok(Some(term)) => {
+                        floor = floor.max(term);
+                        with_terms += 1;
+                    }
+                    Ok(None) => {
+                        withheld.insert(*id);
+                    }
+                    Err(why) => waiting.push(format!("member {id}: {why}")),
+                }
+            }
+            let due = last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL);
+            if waiting.is_empty() {
+                let members = others.len() + 1;
+                match self.floor_gate.judge(
+                    members,
+                    &withheld,
+                    with_terms,
+                    resumed,
+                    self.floor_report_after,
+                ) {
+                    Verdict::Proven => {
+                        self.floor.store(floor, Ordering::SeqCst);
+                        tracing::info!(floor, ?withheld, "the raft members proved the floor");
+                        return;
+                    }
+                    Verdict::Waived(waiver) => {
+                        self.floor.store(floor, Ordering::SeqCst);
+                        tracing::error!(
+                            floor,
+                            lost = ?waiver.members,
+                            reason = waiver.reason,
+                            "serving raft leaders past the failure tolerance under an operator \
+                             waiver: acknowledged writes held only by the lost members may be lost"
+                        );
+                        return;
+                    }
+                    Verdict::Blocked { report: true } => tracing::error!(
+                        ?withheld,
+                        with_terms,
+                        members,
+                        "this member and the withheld members lost their raft state, and too few \
+                         members report a term to prove which leaders are safe to serve: blocked. \
+                         It resolves when a withheld member finishes catching up; if they are \
+                         lost for good, waive them with the waive-lost route"
+                    ),
+                    Verdict::Blocked { report: false } if due => {
+                        tracing::warn!(
+                            ?withheld,
+                            with_terms,
+                            members,
+                            "too few raft members report a term to prove the floor; waiting"
+                        );
+                        last_waiting_log = Some(tokio::time::Instant::now());
+                    }
+                    Verdict::Blocked { .. } => {}
+                }
+            } else if due {
+                tracing::warn!(
+                    ?waiting,
+                    "this member lost its raft state and answers no leader until every other \
+                     member reports its term or that it withholds its vote: a member that is down \
+                     may hold a term this one promised and forgot"
+                );
+                last_waiting_log = Some(tokio::time::Instant::now());
+            }
+            tokio::time::sleep(RETRY_INTERVAL).await;
+        }
+    }
+
+    /// Accept `waiver` for the floor block, if this member is blocked and it
+    /// names every member the block waits on. The members must be configured
+    /// peers other than this one.
+    pub(super) fn waive_lost(&self, waiver: Waiver) -> Result<(), String> {
+        if waiver.members.is_empty() {
+            return Err("name at least one lost member".to_string());
+        }
+        let configured = self.configured.get().cloned().unwrap_or_default();
+        if let Some(bad) = waiver
+            .members
+            .iter()
+            .find(|id| **id == self.id || !configured.contains(id))
+        {
+            return Err(format!("member {bad} is not another configured member"));
+        }
+        self.floor_gate.waive(waiver.clone())?;
+        tracing::warn!(
+            lost = ?waiver.members,
+            reason = waiver.reason,
+            "operator waived the raft floor block"
+        );
+        Ok(())
     }
 
     async fn catch_up(&self, client: &reqwest::Client, others: &[String]) {

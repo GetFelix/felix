@@ -915,3 +915,23 @@ fn a_cut_that_loses_bytes_before_the_append_reports_where_it_began() {
     }
     assert!(lost_before_whole_after > 0);
 }
+
+/// A restore puts back what was saved, unsynced bytes included, drops what
+/// came after, and survives a crash because it lands on the device.
+#[test]
+fn a_restore_puts_back_the_saved_copy_durably() {
+    let sim = Sim::new("restore");
+    let dir = sim.path("shard");
+    io::create_dir_all_durable(&dir.join("sub")).expect("dir");
+    durable_file(&dir.join("seg"), &bytes(PAGE, 1));
+    let unsynced = create(&dir.join("sub/tail"));
+    io::write_all(&unsynced, &bytes(9, 2)).expect("write");
+    let saved = sim_fs::save(&sim.root, Path::new("shard")).expect("save");
+    io::write_all(&unsynced, &bytes(5, 3)).expect("write later");
+    durable_file(&dir.join("later"), &bytes(4, 4));
+    sim_fs::restore(&sim.root, Path::new("shard"), &saved).expect("restore");
+    sim.crash(7);
+    assert_eq!(names(&dir), ["seg", "sub"]);
+    assert_eq!(fs::read(dir.join("seg")).expect("seg"), bytes(PAGE, 1));
+    assert_eq!(fs::read(dir.join("sub/tail")).expect("tail"), bytes(9, 2));
+}

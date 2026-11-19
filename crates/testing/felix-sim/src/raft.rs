@@ -4,11 +4,13 @@
 //! put one under test. This runs the engine as the service will hold it:
 //! per member a `GroupRuntime`, a `RaftEngine` and a broker core whose
 //! stream is bounded by the engine, with one in-memory log per shard and
-//! simulated links in between. There is no control plane in the run.
+//! simulated links in between.
 //!
-//! The member set is fixed and no member restarts. A seed fixes the member
-//! count, the faults, the link delays and what the clients do. See
-//! `docs/simulation.md`, "Raft groups".
+//! The brokers are fixed. In the disk modes ([`Disks`]) a member is stopped,
+//! has a directory wiped or put back, and starts again through the restore
+//! gate, and the run plays the control plane that makes a rotated copy a
+//! voter. A seed fixes the member count, the faults, the link delays and
+//! what the clients do. See `docs/simulation.md`, "Raft groups".
 //!
 //! A run that is still going after [`RaftSimConfig::run_limit`] of virtual
 //! time ends with a finding. One that holds the thread past
@@ -16,8 +18,8 @@
 
 mod net;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -31,12 +33,13 @@ use felix_cluster::history::model::{
 use felix_cluster::history::rng::Rng;
 use felix_replication::raft::{
     AckAt, AnswerAt, GroupId, GroupRuntime, LogPoint, MemberId, Placement, RaftEngine, RaftReads,
-    Role, RuntimeConfig,
+    Role, RootOpened, RootReport, RuntimeConfig, Target, TargetVersion, open_root,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
-use felix_storage::{DiskLog, EphemeralCache};
-use parking_lot::Mutex;
+use felix_storage::raft_copy::{ControlPlaneCopy, CopyRoot, Rotation};
+use felix_storage::{DiskLog, EphemeralCache, StorageId, sim_fs, storage_identity};
+use parking_lot::{Mutex, RwLock};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -74,7 +77,33 @@ pub struct RaftSimConfig {
     pub run_limit: Duration,
     /// Real time the whole run may take.
     pub real_time_limit: Duration,
+    pub disks: Disks,
 }
+
+/// What happens to the members' disks while the faults run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disks {
+    /// Each member opens its logs as copy 1 and never restarts.
+    Off,
+    /// Members open their logs as copies, through the restore gate, and
+    /// some faults stop a member, empty one shard directory or its whole
+    /// data root, and start it again. Never a majority's copies of a shard.
+    Wipe,
+    /// The same, putting back a copy of a shard directory or data root
+    /// saved at least [`RESTORE_AGE`] before.
+    Restore,
+    /// Wipe one shard's directory on a majority of members at once. Nothing
+    /// brings that group back until an operator re-forms it (#2350).
+    WipeMajority,
+}
+
+/// How old a saved directory is before it is put back: older than the
+/// most a log mark trails the log, [`MARK_TRAIL`].
+pub const RESTORE_AGE: Duration = Duration::from_secs(8);
+/// What a log mark is sure to cover: what was flushed this long ago. The
+/// batch writes marks each second, later while its fsync is backed up
+/// (`docs/per-shard-raft.md`, "What this does not catch").
+const MARK_TRAIL: Duration = Duration::from_secs(7);
 
 impl Default for RaftSimConfig {
     fn default() -> Self {
@@ -85,6 +114,7 @@ impl Default for RaftSimConfig {
             failed_flush: false,
             run_limit: Duration::from_secs(360),
             real_time_limit: Duration::from_secs(900),
+            disks: Disks::Off,
         }
     }
 }
@@ -254,13 +284,230 @@ struct Member {
     /// Per shard: the broker's stream and the Raft log under it.
     streams: Vec<StreamHandle>,
     logs: Vec<DiskLog>,
-    dir: DataDir,
+    /// Per shard: the member this broker runs, by the copy its directory
+    /// holds.
+    copies: Vec<MemberId>,
+    /// The data root the restore gate passed, in the disk modes.
+    root: Mutex<Option<CopyRoot>>,
+    /// Cancelled when the member is stopped for a disk fault.
+    down: CancellationToken,
 }
 
+/// Which directories of a member a disk fault replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Shard(u32),
+    Root,
+}
+
+impl Scope {
+    fn below(self) -> PathBuf {
+        match self {
+            Self::Shard(shard) => shard_dir(shard),
+            Self::Root => PathBuf::new(),
+        }
+    }
+
+    fn shards(self, shards: u32) -> Vec<u32> {
+        match self {
+            Self::Shard(shard) => vec![shard],
+            Self::Root => (0..shards).collect(),
+        }
+    }
+
+    fn describe(self, member: usize) -> String {
+        match self {
+            Self::Shard(shard) => format!("{}'s directory of {}", name(member), list(shard)),
+            Self::Root => format!("{}'s data root", name(member)),
+        }
+    }
+}
+
+/// A copy of a directory taken while its member ran.
+struct Save {
+    at: Instant,
+    member: usize,
+    scope: Scope,
+    /// The root's storage id then. A save from before a rotation is not
+    /// put back: the control plane holds a copy only for the newest id, so
+    /// that root would wait for evidence for good.
+    storage_id: Option<StorageId>,
+    saved: felix_storage::sim_fs::Saved,
+}
+
+/// What a disk fault does to the stopped members.
+enum Replace {
+    Wipe,
+    Restore(felix_storage::sim_fs::Saved),
+}
+
+/// What a member's start opens its logs with.
+struct Opening<'a> {
+    member: usize,
+    shards: u32,
+    rate: u64,
+    wire: Arc<Wire>,
+    dir: &'a Path,
+    /// Open through the restore gate as copies, or as copy 1.
+    copies: bool,
+    /// The control plane's copy of the root sequence.
+    control_plane: Option<ControlPlaneCopy>,
+    /// Counts the storage ids minted, so a run repeats.
+    minted: &'a AtomicU64,
+}
+
+/// Start a member's runtime and broker and open its logs. The streams are
+/// registered by the caller, once the links are up.
+async fn open_member(opening: Opening<'_>) -> anyhow::Result<(Member, Vec<Option<Rotation>>)> {
+    let Opening {
+        member,
+        shards,
+        rate,
+        wire,
+        dir,
+        copies,
+        control_plane,
+        minted,
+    } = opening;
+    let runtime = GroupRuntime::start(name(member), timers(rate), wire)
+        .map_err(|err| anyhow::anyhow!("timers: {err:?}"))?;
+    let engine = RaftEngine::new(runtime.clone());
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.set_read_bounds(Arc::new(RaftReads::new(engine.clone())));
+    broker.register_tenant(TENANT).await?;
+    broker.register_namespace(TENANT, NAMESPACE).await?;
+    let log_config = LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        preallocate_segments: false,
+        raft_log: true,
+        ..LogConfig::default()
+    };
+    let (mut logs, mut ids, mut rotations) = (Vec::new(), Vec::new(), Vec::new());
+    let root = if copies {
+        Some(open_copy_root(member, dir, control_plane, minted).await?)
+    } else {
+        None
+    };
+    for shard in 0..shards {
+        let group = GroupId::new(key(shard), 1);
+        match &root {
+            Some(root) => {
+                let opened = runtime
+                    .open_copy(group, &dir.join(shard_dir(shard)), log_config.clone(), root)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open copy: {err:?}"))?;
+                logs.push(opened.log);
+                ids.push(opened.member);
+                rotations.push(opened.rotation);
+            }
+            None => {
+                let path = dir.join(stream(shard));
+                std::fs::create_dir_all(&path)?;
+                let log = DiskLog::open(path, list(shard), log_config.clone())?;
+                runtime
+                    .open(group, 1, log.clone())
+                    .await
+                    .map_err(|err| anyhow::anyhow!("open: {err:?}"))?;
+                logs.push(log);
+                ids.push(MemberId::new(name(member), 1));
+                rotations.push(None);
+            }
+        }
+    }
+    let member = Member {
+        runtime,
+        engine,
+        broker,
+        streams: Vec::new(),
+        logs,
+        copies: ids,
+        root: Mutex::new(root),
+        down: CancellationToken::new(),
+    };
+    Ok((member, rotations))
+}
+
+/// Open `dir` through the restore gate, as a broker's start does. A root the
+/// gate finds behind the control plane's copy gets a new storage id, and the
+/// broker starts again under it, which the control plane holds no copy for.
+async fn open_copy_root(
+    member: usize,
+    dir: &Path,
+    mut control_plane: Option<ControlPlaneCopy>,
+    minted: &AtomicU64,
+) -> anyhow::Result<CopyRoot> {
+    let fresh = || {
+        let mut id = [member as u8 + 1; 16];
+        id[8..].copy_from_slice(&minted.fetch_add(1, Ordering::Relaxed).to_be_bytes());
+        id
+    };
+    loop {
+        let (registered, _) = storage_identity::load_or_create(dir, fresh)?;
+        let stop = CancellationToken::new();
+        let opened = open_root(
+            dir,
+            None,
+            false,
+            registered,
+            || async move { control_plane },
+            Duration::from_secs(1),
+            &stop,
+        )
+        .await?;
+        match opened {
+            RootOpened::Open(root) => return Ok(root),
+            RootOpened::Rotated { .. } => control_plane = None,
+            other => anyhow::bail!("{} did not open its data root: {other:?}", name(member)),
+        }
+    }
+}
+
+/// Register `shard`'s stream on `member`'s broker and follow its commits.
+async fn serve(member: &mut Member, shard: u32) -> anyhow::Result<()> {
+    let metadata = StreamMetadata {
+        consistency: ConsistencyLevel::Leader,
+        ..Default::default()
+    };
+    let stream = stream(shard);
+    let registered = member
+        .broker
+        .register_stream(TENANT, NAMESPACE, &stream, metadata);
+    registered.await?;
+    let handle = member
+        .broker
+        .resolve_stream_handle(TENANT, NAMESPACE, &stream, 0)
+        .await?;
+    handle.bound_every_level();
+    member.engine.follow_commits(&key(shard), handle.clone());
+    member.streams.push(handle);
+    Ok(())
+}
+
+/// What a stopped or replaced copy held below its read bound when it
+/// stopped, read from its log then, so it counts only for those records.
+#[derive(Default)]
+struct Credit {
+    bound: u64,
+    records: BTreeMap<u64, Held>,
+}
+
+/// Whether `credit` counts its copy as holding `record` at `offset`: only
+/// the record it held there, not whatever another member holds.
+fn credited(credit: Option<&Credit>, offset: u64, record: &Held) -> bool {
+    credit.is_some_and(|credit| credit.records.get(&offset) == Some(record))
+}
+
+/// When a copy's flushed index was sampled, and what it was.
+type Samples = VecDeque<(Instant, u64)>;
+
 struct Sim {
-    members: Vec<Member>,
+    /// Swapped for a new member when one restarts.
+    members: Vec<RwLock<Arc<Member>>>,
+    dirs: Vec<DataDir>,
+    rates: Vec<u64>,
     links: Arc<Links>,
     shards: u32,
+    disks: Disks,
     begun: Instant,
     history: Mutex<History>,
     findings: Mutex<Vec<String>>,
@@ -270,6 +517,18 @@ struct Sim {
     phase: Mutex<&'static str>,
     next_value: AtomicU64,
     next_process: AtomicUsize,
+    /// Per member: how many times it has started.
+    starts: Vec<AtomicU64>,
+    minted: AtomicU64,
+    /// Per member: the root sequence the control plane last heard.
+    control_plane: Mutex<Vec<Option<ControlPlaneCopy>>>,
+    /// Per (member, shard): a copy that is stopped or was replaced counts
+    /// as holding every offset below its read bound when it stopped. Those
+    /// were committed, so it had them. Cleared once its new copy has them.
+    credit: Mutex<BTreeMap<(usize, u32), Credit>>,
+    /// Per (member, shard): its flushed index, sampled each second.
+    flushed: Mutex<BTreeMap<(usize, u32), Samples>>,
+    saves: Mutex<Vec<Save>>,
 }
 
 /// A log record, as much of it as tells two apart: an old leader's entry
@@ -292,6 +551,58 @@ fn holders(record: &Held, offset: u64, members: &[(Option<LogPoint>, Option<Held
             flushed.is_some_and(|point| point.index >= offset) && held.as_ref() == Some(record)
         })
         .count()
+}
+
+/// The record at `offset` of `at`'s log of `shard`, blank and membership
+/// entries included.
+async fn record_in(at: &Member, shard: u32, offset: u64) -> Option<Held> {
+    let log = &at.logs[shard as usize];
+    let range = ReadRange {
+        start: offset,
+        max_bytes: 1 << 16,
+    };
+    let page = log.read_range(range).await.ok()?;
+    let record = page.records.into_iter().find(|r| r.offset == offset)?;
+    Some(Held {
+        generation: record.generation,
+        mark: record.mark,
+        payload: record.payload,
+    })
+}
+
+/// Every record of `at`'s log of `shard` below `bound`, by offset.
+async fn records_below(at: &Member, shard: u32, bound: u64) -> BTreeMap<u64, Held> {
+    let (mut records, mut start) = (BTreeMap::new(), 0);
+    let log = &at.logs[shard as usize];
+    while start < bound {
+        let range = ReadRange {
+            start,
+            max_bytes: 1 << 20,
+        };
+        let Ok(page) = log.read_range(range).await else {
+            break;
+        };
+        if page.records.is_empty() {
+            break;
+        }
+        for record in page.records {
+            start = record.offset + 1;
+            if record.offset < bound {
+                let held = Held {
+                    generation: record.generation,
+                    mark: record.mark,
+                    payload: record.payload,
+                };
+                records.insert(record.offset, held);
+            }
+        }
+    }
+    records
+}
+
+/// A shard's directory below a member's data root, in the disk modes.
+fn shard_dir(shard: u32) -> PathBuf {
+    PathBuf::from("shards").join(stream(shard))
 }
 
 fn stream(shard: u32) -> String {
@@ -348,70 +659,41 @@ impl Sim {
     async fn start(config: &RaftSimConfig, rng: &mut Rng) -> anyhow::Result<Arc<Self>> {
         let count = if rng.percent(50) { 3 } else { 5 };
         let links = Arc::new(Links::default());
-        let voters: BTreeSet<MemberId> = (0..count).map(|m| MemberId::new(name(m), 1)).collect();
-        let mut members = Vec::new();
+        let copies = config.disks != Disks::Off;
+        let minted = AtomicU64::new(1);
+        let (mut members, mut dirs, mut rates) = (Vec::new(), Vec::new(), Vec::new());
         for member in 0..count {
             let rate = match config.clocks {
                 Clocks::Off => 1_000_000,
                 Clocks::Bounded => 800_000 + rng.below(400_001),
             };
             let wire = Arc::new(Wire::new(member, links.clone(), rng.fork()));
-            let runtime = GroupRuntime::start(name(member), timers(rate), wire)
-                .map_err(|err| anyhow::anyhow!("timers: {err:?}"))?;
-            let engine = RaftEngine::new(runtime.clone());
-            let broker = Broker::new(EphemeralCache::new().into());
-            broker.set_read_bounds(Arc::new(RaftReads::new(engine.clone())));
-            broker.register_tenant(TENANT).await?;
-            broker.register_namespace(TENANT, NAMESPACE).await?;
             let dir = DataDir::new(member);
-            let mut logs = Vec::new();
-            for shard in 0..config.shards {
-                let path = dir.0.join(stream(shard));
-                std::fs::create_dir_all(&path)?;
-                let log_config = LogConfig {
-                    fsync_mode: FsyncMode::OnCommit,
-                    preallocate_segments: false,
-                    raft_log: true,
-                    ..LogConfig::default()
-                };
-                let log = DiskLog::open(path, list(shard), log_config)?;
-                runtime
-                    .open(GroupId::new(key(shard), 1), 1, log.clone())
-                    .await
-                    .map_err(|err| anyhow::anyhow!("open: {err:?}"))?;
-                logs.push(log);
-            }
-            members.push(Member {
-                runtime,
-                engine,
-                broker,
-                streams: Vec::new(),
-                logs,
-                dir,
-            });
+            let opening = Opening {
+                member,
+                shards: config.shards,
+                rate,
+                wire,
+                dir: &dir.0,
+                copies,
+                control_plane: None,
+                minted: &minted,
+            };
+            let (opened, _) = open_member(opening).await?;
+            members.push(opened);
+            dirs.push(dir);
+            rates.push(rate);
         }
         links.connect(members.iter().map(|m| m.runtime.clone()).collect());
+        let voters: Vec<BTreeSet<MemberId>> = (0..config.shards as usize)
+            .map(|shard| members.iter().map(|m| m.copies[shard].clone()).collect())
+            .collect();
         for member in &mut members {
             for shard in 0..config.shards {
-                let metadata = StreamMetadata {
-                    consistency: ConsistencyLevel::Leader,
-                    ..Default::default()
-                };
-                let stream = stream(shard);
-                let registered = member
-                    .broker
-                    .register_stream(TENANT, NAMESPACE, &stream, metadata);
-                registered.await?;
-                let handle = member
-                    .broker
-                    .resolve_stream_handle(TENANT, NAMESPACE, &stream, 0)
-                    .await?;
-                handle.bound_every_level();
-                member.engine.follow_commits(&key(shard), handle.clone());
-                member.streams.push(handle);
+                serve(member, shard).await?;
                 member
                     .runtime
-                    .initialize(&key(shard), voters.clone())
+                    .initialize(&key(shard), voters[shard as usize].clone())
                     .await
                     .map_err(|err| anyhow::anyhow!("initialize: {err:?}"))?;
                 // Placement names a leader per shard, so the runs include
@@ -432,9 +714,15 @@ impl Sim {
             history.lists.insert(list(shard), spec);
         }
         Ok(Arc::new(Self {
-            members,
+            members: members
+                .into_iter()
+                .map(|m| RwLock::new(Arc::new(m)))
+                .collect(),
+            dirs,
+            rates,
             links,
             shards: config.shards,
+            disks: config.disks,
             begun: Instant::now(),
             history: Mutex::new(history),
             findings: Mutex::new(Vec::new()),
@@ -443,7 +731,18 @@ impl Sim {
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
             next_process: AtomicUsize::new(0),
+            starts: (0..count).map(|_| AtomicU64::new(1)).collect(),
+            minted,
+            control_plane: Mutex::new(vec![None; count]),
+            credit: Mutex::new(BTreeMap::new()),
+            flushed: Mutex::new(BTreeMap::new()),
+            saves: Mutex::new(Vec::new()),
         }))
+    }
+
+    /// The member running as `member` now.
+    fn at(&self, member: usize) -> Arc<Member> {
+        self.members[member].read().clone()
     }
 
     fn now(&self) -> u64 {
@@ -469,7 +768,7 @@ impl Sim {
         let key = key(shard);
         (0..self.members.len())
             .filter_map(|member| {
-                let at = &self.members[member];
+                let at = self.at(member);
                 let status = at.runtime.status(&key)?;
                 let leads = status.role == Role::Leader && at.engine.open_term(&key).is_some();
                 leads.then_some((status.term, member))
@@ -482,7 +781,7 @@ impl Sim {
     /// Every error is recorded as unknown: a refused batch may still commit.
     async fn append(&self, process: usize, member: usize, shard: u32) -> bool {
         let value = self.next_value.fetch_add(1, Ordering::Relaxed);
-        let at = &self.members[member];
+        let at = self.at(member);
         let invoke = self.now();
         let payload = Bytes::from(value.to_le_bytes().to_vec());
         // A Periodic shard publishes with the written-majority ack here.
@@ -505,7 +804,7 @@ impl Sim {
             Ok(proposed) => match proposed.complete().await {
                 Ok(done) => {
                     let offset = done.offsets.map(|(first, _)| first);
-                    self.acknowledged(member, shard, value, offset).await;
+                    self.acknowledged(&at, member, shard, value, offset).await;
                     AppendOutcome::Ok { offset }
                 }
                 Err(_) => AppendOutcome::Info,
@@ -528,7 +827,14 @@ impl Sim {
     /// An acknowledged record is committed, so the member that acknowledged
     /// it holds it at its offset, below its read bound, and a majority holds
     /// the same record on disk.
-    async fn acknowledged(&self, member: usize, shard: u32, value: u64, offset: Option<u64>) {
+    async fn acknowledged(
+        &self,
+        at: &Member,
+        member: usize,
+        shard: u32,
+        value: u64,
+        offset: Option<u64>,
+    ) {
         let Some(offset) = offset else {
             self.finding(format!(
                 "{}: {} acknowledged a write without an offset",
@@ -538,15 +844,20 @@ impl Sim {
             return;
         };
         let key = key(shard);
-        let bound = self.members[member].engine.read_bound(&key).unwrap_or(0);
-        if bound <= offset {
+        // A member stopped since it answered has closed its log.
+        let stopped = at.down.is_cancelled();
+        let bound = at.engine.read_bound(&key).unwrap_or(0);
+        if bound <= offset && !stopped {
             self.finding(format!(
                 "{}: {} acknowledged offset {offset} with its read bound at {bound}",
                 list(shard),
                 name(member)
             ));
         }
-        let Some(record) = self.record(member, shard, offset).await else {
+        let Some(record) = record_in(at, shard, offset).await else {
+            if at.down.is_cancelled() {
+                return;
+            }
             self.finding(format!(
                 "{}: {} acknowledged offset {offset}, which its log does not hold",
                 list(shard),
@@ -578,36 +889,26 @@ impl Sim {
         self.members.len() / 2 + 1
     }
 
-    /// The record at `offset` of `member`'s log of `shard`, blank and
-    /// membership entries included.
-    async fn record(&self, member: usize, shard: u32, offset: u64) -> Option<Held> {
-        let log = &self.members[member].logs[shard as usize];
-        let range = ReadRange {
-            start: offset,
-            max_bytes: 1 << 16,
-        };
-        let page = log.read_range(range).await.ok()?;
-        let record = page.records.into_iter().find(|r| r.offset == offset)?;
-        Some(Held {
-            generation: record.generation,
-            mark: record.mark,
-            payload: record.payload,
-        })
-    }
-
     /// How many members hold `record` at `offset` of `shard` and have
-    /// flushed past it, read from each member's log.
+    /// flushed past it, read from each member's log. A member whose copy
+    /// is stopped or was replaced counts for what it was credited with.
     async fn holders(&self, shard: u32, offset: u64, record: &Held) -> usize {
         let key = key(shard);
         let mut members = Vec::new();
         for member in 0..self.members.len() {
+            if credited(self.credit.lock().get(&(member, shard)), offset, record) {
+                let point = LogPoint {
+                    term: 0,
+                    index: offset,
+                };
+                members.push((Some(point), Some(record.clone())));
+                continue;
+            }
+            let at = self.at(member);
             // Status first: a record read after it is still the one that was
             // flushed, unless it was truncated, and only uncommitted records are.
-            let flushed = self.members[member]
-                .runtime
-                .status(&key)
-                .and_then(|status| status.flushed);
-            members.push((flushed, self.record(member, shard, offset).await));
+            let flushed = at.runtime.status(&key).and_then(|status| status.flushed);
+            members.push((flushed, record_in(&at, shard, offset).await));
         }
         holders(record, offset, &members)
     }
@@ -615,17 +916,36 @@ impl Sim {
     /// A live subscriber on `member`'s broker. Only the member that leads
     /// has publishers, so this sees what it fans out while it leads. A
     /// record it is handed is committed: below the member's read bound then,
-    /// and in the log for good (checked against the final read).
+    /// and in the log for good (checked against the final read). When the
+    /// member restarts it subscribes to the new one.
     async fn subscriber(self: Arc<Self>, member: usize, shard: u32, stop: CancellationToken) {
-        let at = &self.members[member];
+        loop {
+            let at = self.at(member);
+            self.subscribe(&at, member, shard, &stop).await;
+            if stop.is_cancelled() || !at.down.is_cancelled() {
+                return;
+            }
+            while Arc::ptr_eq(&self.at(member), &at) {
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        }
+    }
+
+    /// [`Self::subscriber`] on one start of `member`, until it stops.
+    async fn subscribe(&self, at: &Member, member: usize, shard: u32, stop: &CancellationToken) {
         let stream = stream(shard);
         let subscribed = at.broker.subscribe(TENANT, NAMESPACE, &stream, 0);
         let Ok(subscription) = subscribed.await else {
-            self.finding(format!(
-                "{}: {} refused a subscriber",
-                list(shard),
-                name(member)
-            ));
+            if !at.down.is_cancelled() {
+                self.finding(format!(
+                    "{}: {} refused a subscriber",
+                    list(shard),
+                    name(member)
+                ));
+            }
             return;
         };
         let (mut receiver, _guard) = subscription.into_parts();
@@ -636,6 +956,7 @@ impl Sim {
                 biased;
                 envelope = receiver.recv() => envelope,
                 () = stop.cancelled() => return,
+                () = at.down.cancelled() => return,
             };
             let Some(envelope) = envelope else { return };
             let Some(base) = envelope.base_offset() else {
@@ -705,7 +1026,7 @@ impl Sim {
     /// What `member` serves of `shard`: its log below its read bound. `None`
     /// when it refuses reads.
     async fn read(&self, member: usize, shard: u32) -> Option<Vec<Element>> {
-        let at = &self.members[member];
+        let at = self.at(member);
         let bound = at.engine.read_bound(&key(shard)).ok()?;
         let log = &at.logs[shard as usize];
         let (mut elements, mut skipped, mut start) = (Vec::new(), 0, 0);
@@ -775,13 +1096,38 @@ impl Sim {
         }
     }
 
-    /// Faults until `length` has passed, each healed before the next.
-    async fn nemesis(&self, mut rng: Rng, length: Duration) {
+    /// Faults until `length` has passed, each healed before the next. In
+    /// the disk modes some of them stop a member and replace a directory,
+    /// drawn from `disk`, so a seed's link faults stay the same without them.
+    async fn nemesis(&self, mut rng: Rng, mut disk: Rng, length: Duration) {
         let end = Instant::now() + length;
         let count = self.members.len();
+        if self.disks == Disks::WipeMajority {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let majority: Vec<usize> = (0..self.majority()).collect();
+            self.replace(&majority, Scope::Shard(0), Replace::Wipe, &mut disk)
+                .await;
+        }
         while Instant::now() < end {
             tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
             let pick = rng.below(count as u64) as usize;
+            if self.disks == Disks::Restore {
+                self.save(&mut disk);
+            }
+            if matches!(self.disks, Disks::Wipe | Disks::Restore) && disk.percent(40) {
+                self.disk_fault(&mut disk).await;
+            } else {
+                self.link_fault(&mut rng, pick).await;
+            }
+            tokio::time::sleep(rng.between(Duration::from_secs(2), Duration::from_secs(10))).await;
+            self.links.heal();
+            self.fault("heal".into());
+        }
+    }
+
+    async fn link_fault(&self, rng: &mut Rng, pick: usize) {
+        let count = self.members.len();
+        {
             match rng.below(4) {
                 0 => {
                     self.links.isolate(pick, count);
@@ -819,9 +1165,6 @@ impl Sim {
                     ));
                 }
             }
-            tokio::time::sleep(rng.between(Duration::from_secs(2), Duration::from_secs(10))).await;
-            self.links.heal();
-            self.fault("heal".into());
         }
     }
 
@@ -836,7 +1179,7 @@ impl Sim {
             Some(leader) if rng.percent(50) => leader,
             _ => pick,
         };
-        match felix_storage::sim_fs::fail_flush(&self.members[member].dir.0, 0) {
+        match felix_storage::sim_fs::fail_flush(&self.dirs[member].0, 0) {
             Ok(()) => self.fault(format!("fail the next flush on {}", name(member))),
             Err(err) => self.finding(format!("no flush to fail on {}: {err}", name(member))),
         }
@@ -844,13 +1187,14 @@ impl Sim {
 
     /// Whether a failed flush stopped `member`'s copy of `shard`.
     fn flush_stopped(&self, member: usize, shard: u32) -> bool {
-        self.members[member].logs[shard as usize].is_poisoned()
+        self.at(member).logs[shard as usize].is_poisoned()
     }
 
     /// A copy whose log a failed flush poisoned has stopped: it leads
     /// nothing and serves no read. Nothing else on its member has.
     fn check_stopped_copies(&self) {
-        for (member, at) in self.members.iter().enumerate() {
+        for member in 0..self.members.len() {
+            let at = self.at(member);
             for shard in 0..self.shards {
                 if !self.flush_stopped(member, shard) {
                     continue;
@@ -882,18 +1226,17 @@ impl Sim {
     /// Checked every second of the run, faults or not.
     async fn watch(self: Arc<Self>, stop: CancellationToken) {
         let mut leaders: BTreeMap<(u32, u64), usize> = BTreeMap::new();
-        let mut bounds: BTreeMap<(u32, usize), u64> = BTreeMap::new();
+        // Keyed by the member's start: a new copy's bound starts over.
+        let mut bounds: BTreeMap<(u32, usize, u64), u64> = BTreeMap::new();
         let majority = self.majority();
         while !stop.is_cancelled() {
             for shard in 0..self.shards {
                 let key = key(shard);
-                let statuses: Vec<_> = self
-                    .members
-                    .iter()
-                    .map(|member| member.runtime.status(&key))
-                    .collect();
-                for (member, status) in statuses.iter().enumerate() {
-                    let Some(status) = status else { continue };
+                for member in 0..self.members.len() {
+                    let at = self.at(member);
+                    let Some(status) = at.runtime.status(&key) else {
+                        continue;
+                    };
                     if status.role == Role::Leader {
                         let first = *leaders.entry((shard, status.term)).or_insert(member);
                         self.terms_led.store(leaders.len(), Ordering::Relaxed);
@@ -907,10 +1250,14 @@ impl Sim {
                             ));
                         }
                     }
-                    let Ok(bound) = self.members[member].engine.read_bound(&key) else {
+                    if self.disks != Disks::Off {
+                        self.sample_flushed(member, shard, status.flushed);
+                    }
+                    let Ok(bound) = at.engine.read_bound(&key) else {
                         continue;
                     };
-                    let before = bounds.insert((shard, member), bound).unwrap_or(0);
+                    let start = self.starts[member].load(Ordering::Relaxed);
+                    let before = bounds.insert((shard, member, start), bound).unwrap_or(0);
                     if bound < before {
                         self.finding(format!(
                             "{}: {}'s read bound went back from {before} to {bound}",
@@ -921,8 +1268,9 @@ impl Sim {
                     // A record below the bound is committed, so a majority
                     // holds the same record on disk.
                     let holders = match bound.checked_sub(1) {
-                        Some(last) => match self.record(member, shard, last).await {
+                        Some(last) => match record_in(&at, shard, last).await {
                             Some(record) => self.holders(shard, last, &record).await,
+                            None if at.down.is_cancelled() => majority,
                             None => 0,
                         },
                         None => majority,
@@ -939,6 +1287,346 @@ impl Sim {
                 }
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Record `member`'s flushed index of `shard`, and drop the credit of a
+    /// replaced copy once the new one has flushed as far.
+    fn sample_flushed(&self, member: usize, shard: u32, flushed: Option<LogPoint>) {
+        let Some(index) = flushed.map(|point| point.index) else {
+            return;
+        };
+        {
+            let mut samples = self.flushed.lock();
+            let samples = samples.entry((member, shard)).or_default();
+            samples.push_back((Instant::now(), index));
+            while samples.len() > 30 {
+                samples.pop_front();
+            }
+        }
+        let mut credit = self.credit.lock();
+        let caught_up = credit
+            .get(&(member, shard))
+            .is_some_and(|credit| index + 1 >= credit.bound);
+        if caught_up && !self.at(member).down.is_cancelled() {
+            credit.remove(&(member, shard));
+        }
+    }
+
+    /// How many entries `member` had flushed of `shard` [`MARK_TRAIL`] ago.
+    /// The log mark covers that much, so a copy put back to fewer must not
+    /// keep its id.
+    fn covered(&self, member: usize, shard: u32) -> u64 {
+        let before = Instant::now().checked_sub(MARK_TRAIL);
+        let samples = self.flushed.lock();
+        let Some(samples) = samples.get(&(member, shard)) else {
+            return 0;
+        };
+        samples
+            .iter()
+            .rev()
+            .find(|(at, _)| before.is_some_and(|before| *at <= before))
+            .map_or(0, |(_, index)| index + 1)
+    }
+
+    /// Every member's copy of `shard` is a voter, nothing is credited for
+    /// a replaced one, and a leader is open. A disk fault waits for this, so
+    /// the sweep never replaces a majority's copies of a shard.
+    fn healed(&self, shard: u32) -> bool {
+        let Some(leader) = self.leader(shard) else {
+            return false;
+        };
+        let held: BTreeSet<MemberId> = (0..self.members.len())
+            .map(|member| self.at(member).copies[shard as usize].clone())
+            .collect();
+        let credited = self.credit.lock().keys().any(|(_, s)| *s == shard);
+        !credited && self.at(leader).runtime.voters(&key(shard)) == Some(held)
+    }
+
+    /// Save a copy of one member's shard directory or data root.
+    fn save(&self, rng: &mut Rng) {
+        let member = rng.below(self.members.len() as u64) as usize;
+        let scope = if rng.percent(30) {
+            Scope::Root
+        } else {
+            Scope::Shard(rng.below(u64::from(self.shards)) as u32)
+        };
+        let at = self.at(member);
+        if at.down.is_cancelled() {
+            return;
+        }
+        let storage_id = at.root.lock().as_ref().map(CopyRoot::storage_id);
+        match sim_fs::save(&self.dirs[member].0, &scope.below()) {
+            Ok(saved) => {
+                self.saves.lock().push(Save {
+                    at: Instant::now(),
+                    member,
+                    scope,
+                    storage_id,
+                    saved,
+                });
+                self.fault(format!("save {}", scope.describe(member)));
+            }
+            Err(err) => self.finding(format!("could not save {}: {err}", scope.describe(member))),
+        }
+    }
+
+    /// One wipe or restore, on a member whose shards in scope are healed.
+    async fn disk_fault(&self, rng: &mut Rng) {
+        let count = self.members.len() as u64;
+        match self.disks {
+            Disks::Wipe => {
+                let member = rng.below(count) as usize;
+                let scope = if rng.percent(30) {
+                    Scope::Root
+                } else {
+                    Scope::Shard(rng.below(u64::from(self.shards)) as u32)
+                };
+                if self.may_replace(scope) {
+                    self.replace(&[member], scope, Replace::Wipe, rng).await;
+                }
+            }
+            Disks::Restore => {
+                let now = Instant::now();
+                let eligible: Vec<usize> = {
+                    let mut saves = self.saves.lock();
+                    saves.retain(|save| {
+                        let root = self
+                            .at(save.member)
+                            .root
+                            .lock()
+                            .as_ref()
+                            .map(CopyRoot::storage_id);
+                        root.is_none() || root == save.storage_id
+                    });
+                    (0..saves.len())
+                        .filter(|at| now.duration_since(saves[*at].at) >= RESTORE_AGE)
+                        .collect()
+                };
+                if eligible.is_empty() {
+                    return;
+                }
+                let pick = eligible[rng.below(eligible.len() as u64) as usize];
+                let scope = self.saves.lock()[pick].scope;
+                if self.may_replace(scope) {
+                    let save = self.saves.lock().remove(pick);
+                    let replace = Replace::Restore(save.saved);
+                    self.replace(&[save.member], scope, replace, rng).await;
+                }
+            }
+            Disks::Off | Disks::WipeMajority => {}
+        }
+    }
+
+    fn may_replace(&self, scope: Scope) -> bool {
+        scope
+            .shards(self.shards)
+            .into_iter()
+            .all(|shard| self.healed(shard))
+    }
+
+    /// Stop `members`, wipe or restore `scope` on each, and start them again
+    /// through the restore gate, as an operator would with the brokers down.
+    async fn replace(&self, members: &[usize], scope: Scope, replace: Replace, rng: &mut Rng) {
+        let mut covered: Vec<Vec<u64>> = Vec::new();
+        for &member in members {
+            let at = self.at(member);
+            covered.push(
+                (0..self.shards)
+                    .map(|shard| self.covered(member, shard))
+                    .collect(),
+            );
+            for shard in 0..self.shards {
+                // A stopped copy still holds what it committed.
+                let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
+                let records = records_below(&at, shard, bound).await;
+                let mut credit = self.credit.lock();
+                let held = credit.entry((member, shard)).or_default();
+                held.bound = held.bound.max(bound);
+                held.records.extend(records);
+            }
+            self.links.set_down(member, true);
+            at.down.cancel();
+            at.runtime.shutdown().await;
+            for log in &at.logs {
+                let _ = log.close().await;
+            }
+            drop(at.root.lock().take());
+        }
+        for &member in members {
+            let root = &self.dirs[member].0;
+            let (done, what) = match &replace {
+                Replace::Wipe => (sim_fs::wipe(root, &scope.below()), "wipe"),
+                Replace::Restore(saved) => {
+                    (sim_fs::restore(root, &scope.below(), saved), "restore")
+                }
+            };
+            match done {
+                Ok(()) => self.fault(format!("{what} {}", scope.describe(member))),
+                Err(err) => self.finding(format!(
+                    "could not {what} {}: {err}",
+                    scope.describe(member)
+                )),
+            }
+        }
+        tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
+        for (&member, covered) in members.iter().zip(covered) {
+            self.reopen(member, scope, &replace, &covered, rng).await;
+        }
+    }
+
+    /// Start `member` again after a disk fault and check what its copies
+    /// did: a wiped one rotates, a restored one rotates unless it holds all
+    /// its log mark covers, and one the fault did not touch keeps its id.
+    async fn reopen(
+        &self,
+        member: usize,
+        scope: Scope,
+        replace: &Replace,
+        covered: &[u64],
+        rng: &mut Rng,
+    ) {
+        self.starts[member].fetch_add(1, Ordering::Relaxed);
+        let control_plane = self.control_plane.lock()[member];
+        let opening = Opening {
+            member,
+            shards: self.shards,
+            rate: self.rates[member],
+            wire: Arc::new(Wire::new(member, self.links.clone(), rng.fork())),
+            dir: &self.dirs[member].0,
+            copies: true,
+            control_plane,
+            minted: &self.minted,
+        };
+        let (mut opened, rotations) = match open_member(opening).await {
+            Ok(opened) => opened,
+            Err(err) => {
+                self.finding(format!("{} did not start again: {err:#}", name(member)));
+                return;
+            }
+        };
+        for shard in 0..self.shards {
+            if let Err(err) = serve(&mut opened, shard).await {
+                self.finding(format!(
+                    "{}: {} did not serve: {err:#}",
+                    list(shard),
+                    name(member)
+                ));
+            }
+            let placed = name(shard as usize % self.members.len());
+            opened.runtime.prefer(&key(shard), &placed);
+        }
+        // Registered again under a new storage id, the control plane holds
+        // no copy for it.
+        let storage_id = opened.root.lock().as_ref().map(CopyRoot::storage_id);
+        {
+            let mut held = self.control_plane.lock();
+            if held[member].is_some_and(|copy| Some(copy.storage_id) != storage_id) {
+                held[member] = None;
+            }
+        }
+        let runtime = opened.runtime.clone();
+        // How many entries each log holds as it opens.
+        let mut held = Vec::new();
+        for log in &opened.logs {
+            held.push(log.tail_offset().await.unwrap_or(0));
+        }
+        *self.members[member].write() = Arc::new(opened);
+        self.flushed.lock().retain(|(m, _), _| *m != member);
+        self.links.replace(member, runtime);
+        self.links.set_down(member, false);
+        let touched = scope.shards(self.shards);
+        for (shard, rotation) in (0..self.shards).zip(rotations) {
+            let at = shard as usize;
+            let finding = match (touched.contains(&shard), replace, &rotation) {
+                (true, Replace::Wipe, None) => Some("kept its copy id on a wiped directory".into()),
+                (true, Replace::Restore(_), None) if held[at] < covered[at] => Some(format!(
+                    "kept its copy id on a directory put back to {} entries, below the {} its \
+                     log mark covered",
+                    held[at], covered[at]
+                )),
+                (false, _, Some(rotation)) => Some(format!(
+                    "rotated its copy ({:?}) on a restart that left its directory alone",
+                    rotation.reason
+                )),
+                _ => None,
+            };
+            if let Some(finding) = finding {
+                self.finding(format!("{}: {} {finding}", list(shard), name(member)));
+            }
+            match rotation {
+                Some(rotation) => self.fault(format!(
+                    "{}: {} rotated its copy ({:?})",
+                    list(shard),
+                    name(member),
+                    rotation.reason
+                )),
+                // It holds its records again.
+                None => {
+                    self.credit.lock().remove(&(member, shard));
+                }
+            }
+        }
+    }
+
+    /// The control plane, in the disk modes. Each second it hears every
+    /// running member's root sequence, as a heartbeat carries it, and tells
+    /// each shard's leader a target naming the member each broker holds
+    /// now, which the leader asks the brokers for.
+    async fn control_plane(self: Arc<Self>, stop: CancellationToken) {
+        let brokers: Vec<String> = (0..self.members.len()).map(name).collect();
+        let mut told: BTreeMap<u32, (BTreeSet<MemberId>, u64)> = BTreeMap::new();
+        while !stop.is_cancelled() {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            for member in 0..self.members.len() {
+                let at = self.at(member);
+                if at.down.is_cancelled() {
+                    continue;
+                }
+                let report = at
+                    .root
+                    .lock()
+                    .as_ref()
+                    .map(|root| RootReport::of(root.mark_log()));
+                if let Some(report) = report {
+                    self.control_plane.lock()[member] = Some(ControlPlaneCopy {
+                        storage_id: report.storage_id,
+                        sequence: report.sequence,
+                    });
+                }
+            }
+            for shard in 0..self.shards {
+                let Some(leader) = self.leader(shard) else {
+                    continue;
+                };
+                let (at, key) = (self.at(leader), key(shard));
+                let Some(term) = at.runtime.status(&key).map(|status| status.term) else {
+                    continue;
+                };
+                let asked = at.runtime.target_members(
+                    &key,
+                    brokers.iter().map(String::as_str),
+                    Duration::from_secs(1),
+                );
+                let Ok(members) = asked.await else { continue };
+                if at.runtime.voters(&key).as_ref() == Some(&members) {
+                    continue;
+                }
+                let (held, counter) = told.entry(shard).or_insert_with(|| (BTreeSet::new(), 0));
+                if *held != members {
+                    *held = members.clone();
+                    *counter += 1;
+                }
+                let version = TargetVersion {
+                    incarnation: 0,
+                    counter: *counter,
+                };
+                let target = Target {
+                    voters: members,
+                    version,
+                };
+                at.runtime.retarget(&key, target, term);
+            }
         }
     }
 
@@ -1099,6 +1787,9 @@ async fn drive(
 ) {
     let phase = |now| *sim.phase.lock() = now;
     let mut tasks = vec![tokio::spawn(sim.clone().watch(watching.clone()))];
+    if config.disks != Disks::Off {
+        tasks.push(tokio::spawn(sim.clone().control_plane(watching.clone())));
+    }
     for shard in 0..config.shards {
         for member in 0..sim.members.len() {
             let subscriber = sim.clone().subscriber(member, shard, watching.clone());
@@ -1123,8 +1814,8 @@ async fn drive(
     phase("injecting faults");
     // Forked after the nemesis, so a seed without the failed flush runs as
     // it did before.
-    let (faults, flush) = (rng.fork(), rng.fork());
-    tokio::join!(sim.nemesis(faults, config.nemesis), async {
+    let (faults, flush, disk) = (rng.fork(), rng.fork(), rng.fork());
+    tokio::join!(sim.nemesis(faults, disk, config.nemesis), async {
         if config.failed_flush {
             sim.fail_a_flush(flush, config.nemesis).await;
         }
@@ -1149,8 +1840,8 @@ async fn drive(
         let _ = task.await;
     }
     phase("stopping the members");
-    for member in &sim.members {
-        member.runtime.shutdown().await;
+    for member in 0..sim.members.len() {
+        sim.at(member).runtime.shutdown().await;
     }
 }
 

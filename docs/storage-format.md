@@ -75,6 +75,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     00000000000000000001.log
     00000000000000000001.index
     epochs                                   ← where each generation began
+    rewind-pending                           ← a reset or truncation a crash cut short, finished at the next open
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
     replica-set                              ← the replicas this one counts, and the set it is leaving
@@ -1080,8 +1081,50 @@ The entries are bounded, because every open reads the whole file and a
 generation older than the oldest retained record cannot be one two brokers
 diverge within.
 
+**A reset or truncation changes it under the `rewind-pending` marker.** The
+records and this file are written in separate steps, so a crash between them
+could leave records with no history (which switches off the divergence check
+for them) or a history over records that are gone. The marker below makes the
+pair change as one.
+
 See `docs/replication-design.md`, "Divergence and truncation", for what it is
 for.
+
+## `rewind-pending`: a reset or truncation in progress
+
+A reset (`reset_to`) or a truncation stores this file before it drops a
+record and removes it after its last step. (A truncation or restore first
+forgets the offloaded copies past the cut, and a restore lowers the commit
+offset; both are safe to have happened without the rest.)
+
+```text
+ 0   4  magic     u32  "FLRW"
+ 4   2  version   u16  1
+ 6   1  kind      u8   1 = reset, 2 = truncation
+ 7   1  reserved  u8   zero
+ 8   8  offset    u64  the reset's new base, or where the truncation cuts
+16   4  crc       u32  CRC-32 (IEEE) of bytes 0..16
+```
+
+A rewind drops records, then rewrites what described them: the `epochs` file,
+the producer state and the durable mark. An open that finds the file does the
+rewind again, from the start, before the open hands the log out or rebuilds
+anything from it after recovery. Every step is
+safe to repeat, so whichever step the crash interrupted, the log reopens as it
+was before the rewind or as it is after it, never in between.
+
+The marker is removed, durably, before the rewind returns. A marker left in
+place over records appended later would drop them at the next open, so any
+failed step of the rewind, storing and removing the marker included, poisons
+the log, and nothing is appended until it reopens.
+
+The open refuses to start when the file does not decode, or when finishing the
+rewind would cut below the commit offset. The first attempt checked the same
+bound, so either one means the state files disagree, and starting would risk
+an acknowledged record. A broker that predates the file ignores it. So do not
+downgrade over a log that holds it: the older broker would serve the
+half-done rewind, and after an upgrade back the stale marker would be redone
+over records appended in between. Open the log once with this version first.
 
 ## `replica`: the accepted generation and the commit offset
 

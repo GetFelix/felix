@@ -985,7 +985,7 @@ async fn formed_and_leaderless(
         Duration::from_secs(10),
         || {
             nodes.iter().all(|node| {
-                node.handle.status().voters == [1, 2, 3]
+                node.handle.status().voters == (1..=dirs.len() as NodeId).collect::<Vec<_>>()
                     && node
                         .handle
                         .readiness()
@@ -1245,6 +1245,176 @@ async fn a_wiped_member_catches_up_once_a_leader_exists() {
     shutdown.cancel();
     wiped.stop().await;
     kept[0].stop().await;
+}
+
+/// #2365. A wiped member forgot the terms it promised, so it answers no
+/// leader until every other member has reported its term. With the third
+/// member down, the leader cannot commit on the wiped member's answer, and
+/// an append from a leader of an older term is refused. Counted, the wiped
+/// member would let a leader the group has since replaced commit a write
+/// the newer leader does not hold.
+#[tokio::test]
+async fn a_wiped_member_is_counted_by_no_leader_until_every_peer_reports_its_term() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    for gate in &gates {
+        gate.votes.store(false, SeqCst);
+    }
+    let leader = leader_of(&nodes.iter().collect::<Vec<_>>()).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    let leader_id = leader.status().id;
+    let mut followers: Vec<usize> = (0..3)
+        .filter(|i| nodes[*i].handle.status().id != leader_id)
+        .collect();
+    let (down, wiped_idx) = (followers.remove(0), followers.remove(0));
+    let down_id = nodes[down].handle.status().id;
+    let down_addr = nodes[down].addr;
+    nodes[down].stop().await;
+
+    let empty = tempfile::tempdir().expect("tempdir");
+    // Remove the wiped member from the list first so indexes stay valid.
+    let to_wipe = nodes.remove(wiped_idx);
+    let wiped = wipe_and_restart(to_wipe, &empty, &members, &shutdown).await;
+
+    let pending = tokio::time::timeout(Duration::from_secs(3), leader.write(set("k", "v2"))).await;
+    assert!(
+        !matches!(pending, Ok(Ok(_))),
+        "the leader committed with only the wiped member's answer"
+    );
+    assert!(
+        wiped.app.get("k").is_none(),
+        "the wiped member took the log"
+    );
+
+    // An older leader's heartbeat, as in the issue's trace: term 1 is below
+    // what the group reached, and the wiped member must not answer it.
+    let stale = serde_json::json!({
+        "vote": {"term": 1, "voted_for": leader_id, "committed": true},
+        "prev_log_id": null,
+        "entries": [],
+        "leader_commit": null,
+    });
+    let response = peer_security()
+        .client(Duration::from_secs(5))
+        .expect("peer client")
+        .post(format!(
+            "http://{}{}",
+            wiped.addr,
+            felix_controlplane_service::raft::peer_route("append-entries")
+        ))
+        .json(&stale)
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(
+        response.status().as_u16(),
+        503,
+        "a stale leader was answered"
+    );
+
+    // With every member back, the floor is known and the member catches up.
+    let restarted = start_entering(
+        dirs[down].path().into(),
+        settings(down_id, dirs[down].path().into()),
+        Some(down_addr),
+        &members,
+        &shutdown,
+    )
+    .await;
+    wait_until(
+        "the wiped member to catch up",
+        Duration::from_secs(20),
+        || wiped.app.get("k").is_some(),
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while withholds_its_vote(&wiped).await {
+        assert!(
+            Instant::now() < deadline,
+            "the wiped member never voted again"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    shutdown.cancel();
+    wiped.stop().await;
+    restarted.stop().await;
+    for node in nodes
+        .iter()
+        .filter(|node| node.handle.status().id == leader_id)
+    {
+        node.stop().await;
+    }
+}
+
+/// #2365. Two members of five lose their volumes. Each learns its floor
+/// from the other three, and the other wiped member says it withholds its
+/// vote instead of giving a term. Both catch up and vote again; waiting on
+/// each other's term, neither would.
+#[tokio::test]
+async fn two_wiped_members_of_five_do_not_wait_on_each_other() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let dirs: Vec<tempfile::TempDir> = (0..5)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    for gate in &gates {
+        gate.votes.store(false, SeqCst);
+    }
+    let leader = leader_of(&nodes.iter().collect::<Vec<_>>()).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    let leader_id = leader.status().id;
+    let followers: Vec<usize> = (0..5)
+        .filter(|i| nodes[*i].handle.status().id != leader_id)
+        .take(2)
+        .collect();
+    let (first, second) = (nodes.remove(followers[1]), nodes.remove(followers[0]));
+    let empties = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let (id, addr) = (first.handle.status().id, first.addr);
+    first.stop().await;
+    let wiped = vec![
+        wipe_and_restart(second, &empties[0], &members, &shutdown).await,
+        start_entering(
+            empties[1].path().into(),
+            settings(id, empties[1].path().into()),
+            Some(addr),
+            &members,
+            &shutdown,
+        )
+        .await,
+    ];
+    leader.write(set("k", "v2")).await.expect("write");
+    wait_until(
+        "both wiped members to catch up",
+        Duration::from_secs(20),
+        || {
+            wiped
+                .iter()
+                .all(|node| node.app.get("k").as_deref() == Some("v2"))
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    for node in &wiped {
+        while withholds_its_vote(node).await {
+            assert!(
+                Instant::now() < deadline,
+                "a wiped member never voted again"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    shutdown.cancel();
+    for node in wiped.iter().chain(&nodes) {
+        node.stop().await;
+    }
 }
 
 /// The two-volume case of #2374: two members lose their volumes while the

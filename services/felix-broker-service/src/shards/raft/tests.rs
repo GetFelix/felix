@@ -1775,8 +1775,11 @@ impl Member {
                 || felix_common::random::uuid_v4().into_bytes(),
             )
             .expect("begin the run");
+            // What this build reports, so a build that stops reporting the
+            // feature leaves it off here too.
+            let reported = felix_common::fleet::FleetGate::for_this_build().reported();
             let feature = [felix_common::fleet::RAFT_WRITTEN_COMMIT.name()];
-            Arc::new(felix_common::fleet::FleetGate::seeded(feature, feature))
+            Arc::new(felix_common::fleet::FleetGate::seeded(reported, feature))
         } else {
             no_fleet()
         };
@@ -2614,6 +2617,48 @@ async fn a_relaxed_shard_commits_on_a_written_majority_once_the_fleet_allows_it(
     stop(&members).await;
 }
 
+/// **On a relaxed broker of this build, `Quorum` commits share the periodic
+/// fsync instead of taking one each.** A new cluster finalizes
+/// `raft_written_commit`, so every copy's log opens on the broker's
+/// `periodic` mode, and the commits leave the fsync to its timer. A log
+/// that fsyncs on commit flushes at least once per commit here, since each
+/// waits for the last.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn periodic_quorum_commits_share_the_periodic_fsync() {
+    const COMMITS: u64 = 32;
+    let periodic = FsyncMode::Periodic {
+        interval: Duration::from_secs(3600),
+    };
+    let (_net, members, leader) = trio_with(ConsistencyLevel::Quorum, periodic, true).await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"p0").await;
+
+    let orders = key("orders", 0);
+    let mut logs = Vec::new();
+    for member in &members {
+        logs.push(member.shards.log_of(&orders).await.expect("open"));
+    }
+    let flushes =
+        |logs: &[felix_storage::DiskLog]| logs.iter().map(|log| log.flushes()).sum::<u64>();
+    let before = flushes(&logs);
+    let durable: Vec<_> = logs.iter().map(|log| log.durable_offset()).collect();
+    for _ in 0..COMMITS {
+        let offset = members[leader].publish(term, b"p").await;
+        until("the publish commits", || members[leader].bound() > offset).await;
+    }
+    let taken = flushes(&logs) - before;
+    assert_eq!(
+        taken, 0,
+        "{COMMITS} commits on three copies took {taken} fsyncs"
+    );
+    // `flushes` counts the commit path only; a sync from anywhere else
+    // would move the durable offset. The hour-long tick has not come.
+    let after: Vec<_> = logs.iter().map(|log| log.durable_offset()).collect();
+    assert_eq!(after, durable, "no flush of any kind covered the commits");
+    stop(&members).await;
+}
+
 /// **A publish to a `Quorum` stream fsynced on commit is answered only at
 /// its commit, though a majority has written it.** Answered on the written
 /// count, a power cut on two brokers could take a write the stream's
@@ -2706,7 +2751,17 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     let dir = root.path().join("shard");
     let fresh = || felix_common::random::uuid_v4().into_bytes();
     run_state::begin(root.path(), true, None, None, || false, fresh).expect("begin");
-    assert_eq!(super::raft_fsync_mode(none, true, &dir), none);
+    // Flushed on a timer even so, or its flushed position would never move.
+    assert_eq!(
+        super::raft_fsync_mode(none, true, &dir),
+        FsyncMode::Periodic {
+            interval: super::NONE_RAFT_FLUSH
+        }
+    );
+    let periodic = FsyncMode::Periodic {
+        interval: Duration::from_millis(250),
+    };
+    assert_eq!(super::raft_fsync_mode(periodic, true, &dir), periodic);
     assert_eq!(
         super::raft_fsync_mode(none, false, &dir),
         FsyncMode::OnCommit

@@ -132,21 +132,34 @@ impl RaftMember {
     pub(super) async fn standing(&self) -> Result<Standing> {
         let formed = self.state.formed().await?;
         let node = self.node();
-        let last_log_index = match node {
+        let (last_log_index, term, withheld) = match node {
             // The node's own state, not its metrics: those are empty until
             // the node first publishes them, and a log would be missing
             // from the answer.
-            Some(node) => node
-                .raft
-                .with_raft_state(|state| state.log_ids.last().map(|id| id.index))
-                .await
-                .map_err(|err| anyhow::anyhow!("raft node: {err}"))?,
+            Some(node) => {
+                // Read first: a running member only goes from withheld to
+                // voting, so the term read next is one it still holds.
+                let holds_promises = node.may_vote.load(std::sync::atomic::Ordering::SeqCst);
+                let (last, term) = node
+                    .raft
+                    .with_raft_state(|state| {
+                        (
+                            state.log_ids.last().map(|id| id.index),
+                            super::wire::Vote::from(state.vote_ref()).term,
+                        )
+                    })
+                    .await
+                    .map_err(|err| anyhow::anyhow!("raft node: {err}"))?;
+                (last, holds_promises.then_some(term), !holds_promises)
+            }
             None => {
                 anyhow::ensure!(
                     !self.state.holds_state()?,
                     "this member holds raft state and its node has not started"
                 );
-                None
+                // Not withheld: the node starts later, and only a running
+                // node can say whether it holds its vote.
+                (None, None, false)
             }
         };
         Ok(Standing {
@@ -156,6 +169,8 @@ impl RaftMember {
             raft: node.is_some(),
             node_id: node.map(|node| node.id),
             member: Some(self.id),
+            term,
+            withheld,
         })
     }
 }

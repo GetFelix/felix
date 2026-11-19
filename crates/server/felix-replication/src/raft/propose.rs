@@ -51,8 +51,9 @@ pub enum AckAt {
 
 impl AckAt {
     /// What a stream with fsync policy `mode` waits for: the flush when it
-    /// fsyncs on commit, the write otherwise. The Raft log under it fsyncs
-    /// on commit either way; this only places the acknowledgement.
+    /// fsyncs on commit, the write otherwise. This only places the
+    /// acknowledgement: when the Raft log under it fsyncs is the log's own
+    /// mode.
     pub fn for_fsync(mode: &FsyncMode) -> Self {
         match mode {
             FsyncMode::OnCommit => Self::Flushed,

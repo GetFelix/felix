@@ -17,6 +17,7 @@ pub(crate) async fn up(args: &[String]) -> Result<()> {
     eprintln!("starting a {nodes}-node cluster...");
     let mut config = cluster_config(nodes, true);
     config.streams = vec![up_stream(args)?];
+    config.broker_env = perf_broker_env(|name| std::env::var(name).ok());
     let cluster = Cluster::start(config).await?;
 
     let path = session::default_path();
@@ -107,6 +108,17 @@ pub(crate) fn up_stream(args: &[String]) -> Result<StreamSpec> {
     } else {
         StreamSpec::quorum(name, shards, factor)
     })
+}
+
+/// The engine and fsync choices a perf run makes, taken from the caller's
+/// environment. They go through `broker_env`, not just inheritance: the
+/// harness reads `FELIX_SHARD_ENGINE` there to know a Raft shard reports no
+/// replicas to the control plane.
+pub(crate) fn perf_broker_env(lookup: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    ["FELIX_SHARD_ENGINE", "FELIX_DURABLE_FSYNC_MODE"]
+        .into_iter()
+        .filter_map(|name| lookup(name).map(|value| (name.to_string(), value)))
+        .collect()
 }
 
 pub(crate) fn cluster_config(nodes: usize, inherit_output: bool) -> ClusterConfig {

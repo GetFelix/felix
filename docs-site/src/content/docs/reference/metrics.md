@@ -388,6 +388,7 @@ Present when the control plane runs its metadata Raft group.
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
 | `felix_meta_raft_is_leader` | gauge | - | `1` on the member that is currently leader. |
+| `felix_meta_raft_floor_blocked` | gauge | - | `1` while this member, after losing its volume, is blocked because more members lost theirs than the group survives, and the block has outlasted `FELIX_RAFT_FLOOR_REPORT_AFTER_MS`. It clears when a withheld member catches up or an operator waives the lost members. |
 | `felix_meta_raft_leader_known` | gauge | - | `1` while this member knows who the leader is. |
 | `felix_meta_raft_term` | gauge | - | Current Raft term. A term that keeps climbing means elections are not settling. A term of 2^62 or more is shown with 2^62 taken off. |
 | `felix_meta_raft_last_log_index` | gauge | - | Index of the last log entry. |

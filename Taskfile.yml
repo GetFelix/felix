@@ -268,6 +268,8 @@ tasks:
       # nothing else connects the two artifacts. A cited test that no longer
       # exists is how that drift starts showing (#598).
       - "python3 scripts/check_spec_evidence.py"
+      # Every configuration is model-checked somewhere or says why not (#2142).
+      - "bash scripts/check_tla_registry.sh"
       # A milestone label in a published page is wrong the day it is written —
       # it names a project-board row the reader has never seen — so unlike the
       # status-claim report this one can fail.
