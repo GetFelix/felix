@@ -510,6 +510,7 @@ impl MetadataStateMachine {
                 node_incarnation,
                 copy_id,
                 keep_ordered,
+                shard_incarnation,
             } => store
                 .apply_record_raft_copy_id(
                     &key,
@@ -518,6 +519,8 @@ impl MetadataStateMachine {
                     node_incarnation,
                     copy_id,
                     keep_ordered,
+                    shard_incarnation,
+                    true,
                 )
                 .await
                 .map(|changed| MetaResponse::Count {

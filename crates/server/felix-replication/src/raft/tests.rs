@@ -35,6 +35,7 @@ mod membership;
 mod propose;
 mod purge;
 mod read;
+mod reform;
 mod root;
 mod switch;
 mod written;

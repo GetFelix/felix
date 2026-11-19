@@ -17,6 +17,8 @@ pub(crate) struct FakeLink {
     replies: Arc<Mutex<HashMap<&'static str, serde_json::Value>>>,
     statuses: Arc<Mutex<HashMap<&'static str, StatusCode>>>,
     floors: Arc<Mutex<Vec<Vec<felix_replication::controlplane_link::RaftFloor>>>>,
+    copy_ids: Arc<Mutex<Vec<felix_replication::controlplane_link::RaftCopyId>>>,
+    failing: Arc<Mutex<std::collections::HashSet<&'static str>>>,
 }
 
 impl FakeLink {
@@ -32,10 +34,23 @@ impl FakeLink {
         self
     }
 
+    /// Fail `call` as if the control plane never answered.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn fail(self, call: &'static str) -> Self {
+        self.failing.lock().unwrap().insert(call);
+        self
+    }
+
     /// Each raft-floors report's entries, in the order they were sent.
     #[cfg_attr(not(feature = "raft"), allow(dead_code))]
     pub(crate) fn floors(&self) -> Vec<Vec<felix_replication::controlplane_link::RaftFloor>> {
         self.floors.lock().unwrap().clone()
+    }
+
+    /// Each raft-copy-id report, in the order it was sent.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn copy_ids(&self) -> Vec<felix_replication::controlplane_link::RaftCopyId> {
+        self.copy_ids.lock().unwrap().clone()
     }
 
     /// Answer `call` by its reply again, not by a status set earlier.
@@ -50,6 +65,9 @@ impl FakeLink {
 
     fn answer(&self, call: &'static str) -> Result<LinkResponse> {
         self.calls.lock().unwrap().push(call);
+        if self.failing.lock().unwrap().contains(call) {
+            anyhow::bail!("{call}: connection refused");
+        }
         if let Some(status) = self.statuses.lock().unwrap().get(call) {
             return Ok(LinkResponse {
                 status: *status,
@@ -131,6 +149,16 @@ impl ControlPlaneLink for FakeLink {
     ) -> Result<LinkResponse> {
         self.floors.lock().unwrap().push(floors.to_vec());
         self.answer("report_raft_floors")
+    }
+
+    async fn report_raft_copy_id(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        report: &felix_replication::controlplane_link::RaftCopyId,
+    ) -> Result<LinkResponse> {
+        self.copy_ids.lock().unwrap().push(report.clone());
+        self.answer("report_raft_copy_id")
     }
 
     async fn confirmed_assignment(

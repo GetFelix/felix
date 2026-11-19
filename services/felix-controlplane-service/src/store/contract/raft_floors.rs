@@ -122,6 +122,7 @@ async fn other_writes_keep_the_floor(store: &dyn ControlPlaneStore) {
             process.registered_at_millis,
             process.incarnation,
             3,
+            None,
         )
         .await
         .expect("copy id");
