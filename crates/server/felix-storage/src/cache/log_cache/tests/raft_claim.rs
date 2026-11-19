@@ -44,3 +44,15 @@ async fn a_claim_at_another_incarnation_is_refused() {
 
     assert!(matches!(refused, Err(StorageError::Closed(_))));
 }
+
+#[tokio::test]
+async fn a_claim_is_read_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+
+    assert_eq!(cache.claimed_for_raft(T, NS, C, 0, 0).expect("read"), Some(false));
+    cache.claim_for_raft(T, NS, C, 0, 0).expect("claim");
+
+    assert_eq!(cache.claimed_for_raft(T, NS, C, 0, 0).expect("read"), Some(true));
+    assert_eq!(cache.claimed_for_raft(T, NS, C, 0, 1).expect("read"), None);
+}

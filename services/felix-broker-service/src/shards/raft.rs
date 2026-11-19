@@ -323,13 +323,28 @@ impl RaftShards {
             let storage = broker
                 .durable_storage()
                 .context("a Raft shard needs durable storage")?;
-            let (dir, _) = storage.claim_for_raft(
-                &shard.tenant_id,
-                &shard.namespace,
-                &shard.stream,
-                shard.shard,
-                incarnation,
-            )?;
+            // A cache shard's member lives under the cache store's root, so
+            // it never shares a directory with a stream of the same name.
+            let (dir, _) = match shard.kind {
+                ShardKind::Cache => broker
+                    .cache()
+                    .as_log_cache()
+                    .context("a Raft cache shard needs durable storage")?
+                    .claim_for_raft(
+                        &shard.tenant_id,
+                        &shard.namespace,
+                        &shard.stream,
+                        shard.shard,
+                        incarnation,
+                    )?,
+                _ => storage.claim_for_raft(
+                    &shard.tenant_id,
+                    &shard.namespace,
+                    &shard.stream,
+                    shard.shard,
+                    incarnation,
+                )?,
+            };
             if holds_log_without_copy(&dir)? {
                 return Err(CarriedOver {
                     dir: dir.display().to_string(),
@@ -383,6 +398,11 @@ impl RaftShards {
             follow: None,
             retention: None,
         };
+        // A cache group keeps its entries and counters in its own state, and
+        // its leader expires them: there is no stream to open on the log.
+        if key.kind == ShardKind::Cache {
+            return Ok(member);
+        }
         let handle = self
             .broker
             .open_stream_on_engine_log(
@@ -436,7 +456,7 @@ impl RaftShards {
             assignments
                 .iter()
                 .filter(|(key, assignment)| {
-                    key.kind == ShardKind::Stream
+                    matches!(key.kind, ShardKind::Stream | ShardKind::Cache)
                         && !brokers_of(assignment).contains(self.local.as_str())
                         && unclaimed.get(*key) != Some(&assignment.incarnation)
                         && held.get(*key) != Some(&assignment.incarnation)
@@ -448,11 +468,7 @@ impl RaftShards {
         // would be thrown away, and made again on every pass.
         let mut wanted = Vec::with_capacity(candidates.len());
         for (key, incarnation) in candidates {
-            let metadata = self
-                .broker
-                .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
-                .await;
-            if metadata.is_some_and(|metadata| metadata.durable) {
+            if matches!(self.durable_rf(&key).await, Some(Durable::Yes(_))) {
                 wanted.push((key, incarnation));
             }
         }
@@ -469,12 +485,44 @@ impl RaftShards {
         Reads { claims, read }
     }
 
+    /// Whether `key`'s stream or cache keeps a log, and how many brokers it
+    /// asks for. `None` when it is not registered here yet.
+    async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
+        let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
+        if key.kind == ShardKind::Cache {
+            let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
+            return Some(if self.broker.cache().as_log_cache().is_some() {
+                Durable::Yes(metadata.replication_factor)
+            } else {
+                Durable::No
+            });
+        }
+        let metadata = self.broker.stream_metadata(tenant, namespace, name).await?;
+        Some(if metadata.durable {
+            Durable::Yes(metadata.replication_factor)
+        } else {
+            Durable::No
+        })
+    }
+
     async fn read_marker(&self, key: &ShardKey, incarnation: u64) -> anyhow::Result<Option<bool>> {
         let (broker, shard) = (Arc::clone(&self.broker), key.clone());
         let read = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<bool>> {
             let Some(storage) = broker.durable_storage() else {
                 return Ok(Some(false));
             };
+            if shard.kind == ShardKind::Cache {
+                let Some(cache) = broker.cache().as_log_cache() else {
+                    return Ok(Some(false));
+                };
+                return Ok(cache.claimed_for_raft(
+                    &shard.tenant_id,
+                    &shard.namespace,
+                    &shard.stream,
+                    shard.shard,
+                    incarnation,
+                )?);
+            }
             Ok(storage.claimed_for_raft(
                 &shard.tenant_id,
                 &shard.namespace,
@@ -741,6 +789,13 @@ impl RaftShards {
 }
 
 /// The brokers placement names for a shard, lowest id first.
+/// Whether a shard's stream or cache keeps a log, with the replica count it
+/// asks for, if it names one.
+enum Durable {
+    No,
+    Yes(Option<u32>),
+}
+
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
         .chain(&assignment.replicas)
@@ -776,7 +831,7 @@ impl EngineShards for RaftShards {
                     .runtime
                     .status(key)
                     .is_some_and(|status| status.leader.is_none());
-                if leaderless {
+                if leaderless && key.kind == ShardKind::Stream {
                     self.broker
                         .end_subscriptions(
                             &key.tenant_id,
@@ -790,7 +845,7 @@ impl EngineShards for RaftShards {
             }
             let streams: Vec<ShardKey> = assignments
                 .keys()
-                .filter(|key| key.kind == ShardKind::Stream)
+                .filter(|key| matches!(key.kind, ShardKind::Stream | ShardKind::Cache))
                 .cloned()
                 .collect();
             // Every Raft shard in the feed, and whether its placement names
@@ -799,14 +854,11 @@ impl EngineShards for RaftShards {
             let mut wanted_rf: HashMap<ShardKey, u32> = HashMap::default();
             let mut placed = HashMap::default();
             for key in streams {
-                let metadata = self
-                    .broker
-                    .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
-                    .await;
-                let wanted = match metadata {
-                    // A stream in memory has no log for a group to run on.
-                    Some(metadata) if !metadata.durable => continue,
-                    Some(metadata) => metadata.replication_factor,
+                let wanted = match self.durable_rf(&key).await {
+                    // A stream or cache in memory has no log for a group to
+                    // run on.
+                    Some(Durable::No) => continue,
+                    Some(Durable::Yes(wanted)) => wanted,
                     // Not registered here yet, so not known to be durable.
                     // Neither engine opens it this pass: a log the hybrid
                     // opened now would sit beside the member's later.
@@ -852,6 +904,9 @@ impl EngineShards for RaftShards {
                     continue;
                 };
                 self.close_member(&key, member).await;
+                if key.kind == ShardKind::Cache {
+                    continue;
+                }
                 // Ends the readers; a later open starts from the log again.
                 if let Err(err) = self
                     .broker
@@ -1374,6 +1429,14 @@ impl WriteFence for Leading {
         if let Some(wake) = self.wake.get() {
             wake.notify_one();
         }
+        // A cache group has no stream to bring to the tail: its reads wait
+        // for the commit index themselves.
+        if key.kind == ShardKind::Cache {
+            if let Some(lead) = self.terms.lock().get_mut(key).filter(|lead| lead.term == term) {
+                lead.open = true;
+            }
+            return;
+        }
         let (broker, terms, ending, key) = (
             Arc::clone(&self.broker),
             Arc::clone(&self.terms),
@@ -1427,6 +1490,9 @@ impl WriteFence for Leading {
                 return;
             }
             terms.remove(key);
+            if key.kind == ShardKind::Cache {
+                return;
+            }
             // Counted before a later term can be reported, so that term
             // waits for this one's subscribers to be ended.
             *self.ending.lock().entry(key.clone()).or_default() += 1;

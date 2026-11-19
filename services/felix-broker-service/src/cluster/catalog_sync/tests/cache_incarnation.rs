@@ -18,6 +18,7 @@ fn cache(incarnation: u64) -> Cache {
         cache: "sessions".to_string(),
         consistency: None,
         incarnation,
+        replication_factor: None,
     }
 }
 

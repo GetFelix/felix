@@ -144,6 +144,31 @@ pub(crate) async fn registered(
     Arc::new(broker)
 }
 
+/// [`broker`] on a durable cache store with counters, with `cache`
+/// registered at [`INCARNATION`] on one broker a shard.
+pub(crate) async fn cache_broker(root: &Path, cache: &str) -> Arc<Broker> {
+    let config = || LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let store = felix_storage::LogCache::open(root.join("caches"), config()).expect("cache");
+    let counters =
+        felix_storage::CounterStore::open(root.join("counters"), config()).expect("counters");
+    let broker = Broker::new(Box::new(store)).with_counters(Arc::new(counters));
+    let broker = registered(broker, root, 1, INCARNATION, ConsistencyLevel::Quorum, config()).await;
+    let metadata = felix_broker::CacheMetadata {
+        consistency: ConsistencyLevel::Quorum,
+        incarnation: INCARNATION,
+        replication_factor: Some(1),
+    };
+    broker
+        .register_cache("t1", "ns", cache, metadata)
+        .await
+        .expect("cache registered");
+    broker
+}
+
 /// Take the hard open-file limit, as a broker's start does. These tests run
 /// many brokers in one process at once, together past a soft limit of 1,024
 /// (256 on macOS), and a member that cannot open a file never serves.

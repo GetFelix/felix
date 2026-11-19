@@ -771,6 +771,30 @@ impl LogCache {
         Ok((dir, label))
     }
 
+    /// Whether [`Self::claim_for_raft`] has marked the shard's directory at
+    /// `incarnation`, on this run or an earlier one. Marks nothing. `None`
+    /// when `incarnation` is not the one set for the cache.
+    pub fn claimed_for_raft(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        incarnation: u64,
+    ) -> Result<Option<bool>> {
+        if self.incarnations.resolve(tenant, namespace, cache) != Some(incarnation) {
+            return Ok(None);
+        }
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: cache.to_string(),
+            shard,
+        };
+        let dir = layout::incarnation_dir(&self.root, &key, incarnation);
+        crate::disk_log::engine_marker::claimed_for_raft(&dir, &layout::shard_label(&key)).map(Some)
+    }
+
     /// Close one cache shard's log and forget it, for a shard this broker no
     /// longer holds. Everything accepted is flushed first.
     ///

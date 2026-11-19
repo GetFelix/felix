@@ -321,3 +321,62 @@ async fn a_peer_whose_engine_is_known_is_not_dialled_again() {
         "broker-b was dialled again"
     );
 }
+
+/// **A durable cache shard shared across engines is refused too**: a Raft
+/// broker runs it as a group, and a hybrid peer would keep a log of its own
+/// beside it.
+#[tokio::test]
+async fn a_durable_cache_shard_shared_across_engines_is_refused() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let store = felix_storage::LogCache::open(root.path().join("caches"), Default::default())
+        .expect("cache store");
+    let broker = Broker::new(Box::new(store));
+    broker.register_tenant("t1").await.expect("tenant");
+    broker.register_namespace("t1", "ns").await.expect("ns");
+    broker
+        .register_cache("t1", "ns", "sessions", Default::default())
+        .await
+        .expect("cache");
+    let fleet = [("broker-b".to_string(), PeerCapabilities::NONE)];
+    let check = EngineMatch::new(
+        Arc::new(broker),
+        Arc::new(Fleet(
+            parking_lot::Mutex::new(fleet.into_iter().collect()),
+            parking_lot::Mutex::default(),
+            Default::default(),
+        )),
+        Arc::new(|_: &str| Some(SocketAddr::from(([127, 0, 0, 1], 1)))),
+        "broker-a".to_string(),
+        true,
+        None,
+    );
+    let sessions = ShardKey {
+        kind: ShardKind::Cache,
+        ..key("sessions")
+    };
+    let feed = || {
+        let mut assignments = HashMap::default();
+        assignments.insert(
+            sessions.clone(),
+            assigned(sessions.clone(), &["broker-a", "broker-b"]),
+        );
+        assignments
+    };
+    check.take(&mut feed()).await;
+    for _ in 0..1000 {
+        if check.engines.lock().get("broker-b").is_some() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let mut assignments = feed();
+    check.take(&mut assignments).await;
+    assert!(assignments.is_empty(), "the cache shard was left to an engine");
+    match check.dispatch(&sessions, &|_| None) {
+        Some(Dispatch::Unavailable(Reason::OwnerUnavailable(why))) => {
+            assert!(why.contains("raft here, hybrid on broker-b"), "{why}");
+        }
+        other => panic!("not refused: {other:?}"),
+    }
+}
