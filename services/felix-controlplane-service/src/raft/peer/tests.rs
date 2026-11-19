@@ -175,7 +175,7 @@ async fn a_member_mid_rotation_accepts_both_tokens() {
 
 #[tokio::test]
 async fn rotation_tokens_are_accepted_but_never_sent() {
-    let member = rotating(NEW, Some(OLD), Some(OLD));
+    let member = rotating(NEW, Some(OLD), None);
     assert_eq!(sent_bearer(&member), Some(format!("Bearer {NEW}")));
     // A member that switched to the new token reaches one still on step 1.
     let step_one = guarded(rotating(OLD, None, Some(NEW)));

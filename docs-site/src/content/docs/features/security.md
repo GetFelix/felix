@@ -58,7 +58,9 @@ retired. A member accepts requests carrying either of them as well as its
 current token, but only ever sends `FELIX_RAFT_PEER_TOKEN`. So at every point in
 the roll, the token each member sends is one that every other member accepts.
 
-1. Generate the new token: `openssl rand -hex 32`.
+1. Make sure every member runs a release that knows these variables. An older
+   one ignores `FELIX_RAFT_PEER_TOKEN_NEXT` and would refuse the new token at
+   step 3. Generate the new token: `openssl rand -hex 32`.
 2. On every member, set `FELIX_RAFT_PEER_TOKEN_NEXT` to the new token and
    restart, one member at a time. Wait for each member to rejoin before the
    next. Members still send the old token.
@@ -82,7 +84,8 @@ the roll, the token each member sends is one that every other member accepts.
 A member that is restarted out of order still talks to the rest: during step 2
 it sends the old token, which everyone accepts, and during step 3 it sends the
 new one, which every member that finished step 2 accepts. Skipping step 2 is the
-mistake to avoid. A member that sends the new token to one that only knows the
+mistake to avoid. To back out after step 3, repeat it with the two tokens
+swapped, which is safe while `FELIX_RAFT_PEER_TOKEN_PREVIOUS` is still set. A member that sends the new token to one that only knows the
 old one is refused with `401`, counted in
 `felix_meta_raft_peer_rejected_total{reason="token"}`, and logged as
 "raft peer request with a missing or wrong peer token refused". Tokens are

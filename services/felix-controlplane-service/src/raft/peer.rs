@@ -123,7 +123,7 @@ impl PeerSecurity {
     /// Which configured token `offered` is, as the metric label, or `None`.
     ///
     /// Every slot is compared, so the time taken does not say which one
-    /// matched or how far a wrong token got.
+    /// matched.
     pub(super) fn match_token(&self, offered: &str) -> Option<&'static str> {
         let mut matched = None;
         for (label, token) in [
