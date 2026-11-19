@@ -521,6 +521,58 @@ impl Tree {
         Ok(())
     }
 
+    /// A copy of everything below `below` as a read sees it now, as a
+    /// backup of a running broker takes it. Directories map to `None`.
+    pub(crate) fn save(&self, below: &Path) -> io::Result<BTreeMap<PathBuf, Option<Vec<u8>>>> {
+        fn visit(node: &Node, at: PathBuf, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+            match node {
+                Node::File(file) => {
+                    out.insert(at, Some(file.data.lock().current.clone()));
+                }
+                Node::Dir(dir) => {
+                    out.insert(at.clone(), None);
+                    let entries: Vec<_> = dir.data.lock().current.clone().into_iter().collect();
+                    for (name, child) in entries {
+                        visit(&child, at.join(name), out);
+                    }
+                }
+            }
+        }
+        let node = {
+            let state = self.structure.lock();
+            walk(&state.root, &names(below)?)?
+        };
+        let mut out = BTreeMap::new();
+        visit(&node, PathBuf::new(), &mut out);
+        Ok(out)
+    }
+
+    /// Replace everything below `below` with `saved` (from [`Self::save`]),
+    /// all of it on the device, as an operator's restore of a stopped
+    /// broker's directory would leave it.
+    pub(crate) fn restore(
+        &self,
+        below: &Path,
+        saved: &BTreeMap<PathBuf, Option<Vec<u8>>>,
+    ) -> io::Result<()> {
+        self.wipe(below)?;
+        for (path, bytes) in saved {
+            let at = below.join(path);
+            match bytes {
+                None => self.create_dir_all(&at)?,
+                Some(bytes) => {
+                    let state = self.structure.lock();
+                    let names = names(&at)?;
+                    let (parent, name) = parent_of(&state.root, &names)?;
+                    let file = Node::File(Arc::new(FileNode::with_bytes(bytes.clone())));
+                    parent.data.lock().current.insert(name.to_owned(), file);
+                }
+            }
+        }
+        self.sync_all();
+        Ok(())
+    }
+
     /// Called after an append of `end - from` bytes at `from` to the segment
     /// at `path`. Cuts the power if it is armed, tearing that append, and
     /// then tells whoever armed it which file it tore.

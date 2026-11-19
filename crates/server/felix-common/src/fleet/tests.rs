@@ -174,7 +174,6 @@ fn election_features_are_declared_and_not_implemented() {
         START_HOLDERS,
         NON_VOTING,
         SHARD_RAFT,
-        RAFT_WRITTEN_COMMIT,
     ] {
         assert!(!IMPLEMENTED.contains(&feature), "{feature}");
         assert!(
@@ -276,6 +275,8 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "record_headers"
         // Off, a log stays on the format every broker reads.
         | "record_generations"
+        // Off, a Raft log fsyncs before openraft counts an entry.
+        | "raft_written_commit"
         // Off, a broker does not stand or re-send kept sets.
         | "replica_election" => Off::FailsClosed,
         "jump_hash_routing" | "peer_election" | "start_holders" | "non_voting" => Off::NotRead,

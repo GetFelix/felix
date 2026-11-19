@@ -603,6 +603,22 @@ start.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_written_commit`
+
+Once finalized, a Raft shard on a broker whose `fsync_mode` is `periodic` or
+`none` counts an entry toward its commit once the entry is written, and its
+log fsyncs on the broker's periodic schedule (once a second under `none`)
+instead of on every commit. That
+is the same loss window the default engine has under `periodic`: a power cut
+of a majority of a shard's brokers before the flush can take records that
+were acknowledged. A broker applies it when it next opens a shard, so a shard
+already open keeps fsyncing on commit until its broker restarts. Brokers on
+`on_commit` are not affected. Once finalized, do not downgrade a broker to a
+build that does not report it: that build would move a copy aside without the
+reservation the next epoch needs.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_headers`
 
 Once finalized, a durable stream in a cluster accepts record keys and headers

@@ -237,6 +237,27 @@ held 50 ms, eight appends on four logs and two workers leave a 1 ms ticker
 running, and finish faster than two workers writing in turn could. With the
 write on the caller, the ticker stops for 280–340 ms.
 
+### 12. A Raft log on a relaxed broker fsyncs on the broker's schedule
+
+openraft counts an entry toward a commit only once the log says it is
+flushed. A Raft log that fsyncs on commit therefore puts an fsync on every
+copy in front of every commit, whatever the broker's `fsync_mode`: a box
+profile of RF 3 `Quorum` on `periodic` counted 97 `fdatasync` calls per 1,000
+messages on Raft against 0.4 on the hybrid, at 118k msg/s against 198k.
+
+On a `periodic` or `none` broker whose run rotates its storage id after a
+crash, a Raft log tells openraft an entry is flushed once it is written and
+covered by the copy's synced reservation, and leaves the fsync to the periodic
+flusher, so one flush serves every commit since the last
+(`docs/per-shard-raft.md`, "Proposal: commit on a written majority on relaxed
+brokers"). Votes and terms are still synced before a vote is answered. It is
+on once the fleet finalizes `raft_written_commit`, which a new cluster does.
+On a `none` broker such a log still flushes once a second, since nothing
+else would move its flushed position. `periodic_quorum_commits_share_the_periodic_fsync`
+counts it: 32 commits on three copies take 96 commit-path flushes when the
+log fsyncs on commit, and none on `periodic`, where no flush of any kind
+moves the durable offset before the timer.
+
 ## Where the time goes
 
 ```mermaid
@@ -501,6 +522,28 @@ than be discovered during it:
    them doubles a 4ms constant. Group commit already proves the machinery for
    fanning one flush out to many waiters; the replication path should reuse it
    rather than invent a second one.
+
+## Running the Raft RF 3 comparison in Actions
+
+`perf-raft-rf3.yml` runs the hybrid and the Raft engine side by side on one runner, three
+brokers, one RF 3 Quorum stream, the same `felix-cluster` harness and `felix-loadgen` load as
+the RF 3 cells of `gate-perf.yml`. It exists so a branch can be measured against main without
+the GCP boxes ([#2646](https://github.com/GetFelix/felix/issues/2646)); the box matrix in
+[`perf-raft-parity.md`](perf-raft-parity.md) stays the source of the parity verdict.
+
+```bash
+gh workflow run perf-raft-rf3.yml -R GetFelix/felix --ref main
+gh workflow run perf-raft-rf3.yml -R GetFelix/felix --ref main -f ref=my-branch -f rounds=6
+```
+
+`ref` picks the commit to build; run it once for main and once for the branch and compare the
+two summaries. One binary serves both engines (`FELIX_SHARD_ENGINE`), and every trial checks
+the shard directories: a Raft trial fails unless they carry the Raft engine marker, and a
+hybrid trial fails if they do. The cells are fsync `on_commit` and `periodic`, each at batch 64
+(`msg/s`, acknowledged) and batch 1 (p50 and p99 per ack). Rounds alternate the engines and
+flip which goes first. The summary lists the medians per engine, then the engine A/B bounds as
+information. It is not a required check and does not block a PR: a shared runner is too noisy
+for that.
 
 ## Methodology notes
 
