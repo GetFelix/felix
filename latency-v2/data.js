@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795046214319,
+  "lastUpdate": 1795046796421,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -78342,6 +78342,72 @@ window.BENCHMARK_DATA = {
             "range": "180.11",
             "unit": "us",
             "extra": "trials: 5\nmedian: 758.00\nmean: 765.60\nstdev: 180.11\ncv: 23.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "172807012975c0cbf2e759b5db553a68fac3c417",
+          "message": "feat(raft): brokers report copy ids; targets for shards started on Raft (#2250) (#2776)\n\n* feat(controlplane): take Raft copy ids for shards that started on Raft (#2250)\n\nA copy id report that names the stream incarnation (level 41) is taken for\na durable stream's shard on a cluster whose engine is Raft, not only for one\nthat switched from the hybrid. A report for another incarnation is refused.\nEpoch 0's ordered-target list starts with such a shard's first target.\n\n* feat(broker): report each Raft copy id to the control plane (#2250)\n\nEach broker reports the copy id of every Raft member it has open, once the\ncopy is synced, with its registration and the group's stream incarnation.\nA report is retried while refused and sent again every 30 s after it was\ntaken until the feed's target names the copy. Short sets are not reported.\nA felix-cluster test checks that a shard started on Raft gets a target.\n\nSpec-Unaffected: the control plane's target rules are unchanged; this adds\nthe broker report and widens which shards take ids.\n\n* fix(raft): copy id reports stop off placement and back off; the control plane checks the replica count (#2250)\n\nA broker no longer reports a member placement moved it off, and a refused\nreport waits twice as long each time up to 5 minutes, logging the first\nrefusal. The control plane refuses a copy id for a shard that started on\nRaft when its set names fewer brokers than the stream's replica count.\nDocs: retry interval, the list starts at the first copy id stored.\n\n* fix(raft): only answered refusals back off a copy id report, capped at a minute (#2250)\n\nA report that got no answer wrote nothing to the control plane's log, so\nit keeps the 5 s retry. The cap drops to a minute because nothing tells\nthe broker when a refusal's cause clears. Tests cover the reset after a\ntaken report and the unanswered path.",
+          "timestamp": "2026-11-18T23:55:23Z",
+          "tree_id": "65ce9598bf7b4cc493b8d0fde542935ba85e625a",
+          "url": "https://github.com/GetFelix/felix/commit/172807012975c0cbf2e759b5db553a68fac3c417"
+        },
+        "date": 1795046783424,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 127,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 127.20\nstdev: 1.30\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 172,
+            "range": "3.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 173.00\nstdev: 3.54\ncv: 2.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 229,
+            "range": "13.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 229.00\nmean: 235.00\nstdev: 13.06\ncv: 5.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 174,
+            "range": "12.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 179.00\nstdev: 12.31\ncv: 6.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 347,
+            "range": "216.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 347.00\nmean: 441.00\nstdev: 216.92\ncv: 49.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 507,
+            "range": "598.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 507.00\nmean: 807.20\nstdev: 598.88\ncv: 74.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
