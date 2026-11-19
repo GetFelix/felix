@@ -266,6 +266,8 @@ pub(crate) struct Pace {
     asks_out: AtomicU64,
     /// The highest term this member sent a real vote request at.
     asked_term: AtomicU64,
+    /// Vote saves of this member under way.
+    saving: Arc<AtomicU64>,
 }
 
 /// A vote or pre-vote request on its way, counted in [`Pace`] until it is
@@ -316,6 +318,7 @@ impl Pace {
             asks: AtomicU64::new(0),
             asks_out: AtomicU64::new(0),
             asked_term: AtomicU64::new(0),
+            saving: Arc::default(),
         }
     }
 
@@ -723,9 +726,11 @@ impl Group {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
             RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
+        let own_saves = Arc::new(AtomicU64::new(0));
         log.time_vote_saves(Arc::new(VoteClock {
             saves: vote_saves,
             timers,
+            own: Arc::clone(&own_saves),
         }));
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
@@ -771,7 +776,9 @@ impl Group {
         let purge_at = machine.purging(log.reader());
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
-        let pace = Arc::new(Pace::new(timers, &id, &member));
+        let mut pace = Pace::new(timers, &id, &member);
+        pace.saving = own_saves;
+        let pace = Arc::new(pace);
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new(log.written_commit()));
         let refusals = Arc::new(Refusals::new(id.clone()));
@@ -1055,8 +1062,11 @@ impl Group {
         use openraft::async_runtime::watch::WatchReceiver;
         let watched = self.raft.metrics();
         let metrics = watched.borrow_watched();
-        metrics.state == ServerState::Candidate
-            && metrics.current_term > self.pace.asked_term.load(Ordering::Relaxed)
+        // A save of its own vote begins before openraft reports it a
+        // candidate, so the counter covers that gap too.
+        self.pace.saving.load(Ordering::Relaxed) > 0
+            || (metrics.state == ServerState::Candidate
+                && metrics.current_term > self.pace.asked_term.load(Ordering::Relaxed))
     }
 
     /// Its group took writes when this member last heard its leader: the

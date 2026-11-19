@@ -181,7 +181,9 @@ fn losing(elections: &mut Elections<Member>) {
 fn saved(elections: &Elections<Member>, now: u64, took: u64, alone: bool) {
     let ticket = elections.saves.began();
     let ticket = if alone { ticket } else { NOT_ALONE };
-    elections.saves.ended(ticket, now, Some(took * 1000));
+    elections
+        .saves
+        .ended(ticket, now, now * 1000, Some(took * 1000));
 }
 
 /// Before any save had the disk to itself, a save over a quarter of
@@ -210,26 +212,52 @@ fn a_slow_vote_save_lowers_the_limit() {
     elections.settle(3600);
     assert_eq!(elections.limit, 10);
     elections.settle(3650);
-    assert_eq!(elections.limit, 11);
+    assert_eq!(elections.limit, 10, "nothing won, so nothing comes back");
 }
 
-/// The limit never falls below the floor, and climbs back one place an
-/// interval with no slow save, with no election ending.
+/// The limit never falls below the floor. Once elections stop losing it
+/// climbs a place an interval to half of where the cut began, then a place
+/// every election_min.
 #[test]
-fn the_limit_recovers_without_elections() {
+fn the_limit_recovers_fast_to_half_then_slowly() {
     let mut elections = elections(64);
     losing(&mut elections);
     saved(&elections, 1000, 10_000, false);
     elections.settle(1000);
     assert_eq!(elections.limit, FLOOR);
+    elections.outcomes = Outcomes::default();
     for n in 1..=10 {
         elections.settle(1000 + n * 50);
     }
     assert_eq!(elections.limit, FLOOR + 10);
-    for n in 11..=100 {
+    for n in 11..=40 {
         elections.settle(1000 + n * 50);
     }
-    assert_eq!(elections.limit, 64);
+    assert_eq!(elections.limit, 32, "half of 64");
+    // 1500 ms on, one election_min has gone by since it got there.
+    let mut now = 3000;
+    for n in 1..=3 {
+        for _ in 0..20 {
+            now += 50;
+            elections.settle(now);
+        }
+        assert_eq!(elections.limit, 32 + n);
+    }
+}
+
+/// Elections that lose give nothing back but the places of those that
+/// won, so a limit at the floor does not climb back while nothing wins.
+#[test]
+fn a_losing_broker_gets_places_back_only_for_wins() {
+    let mut elections = elections(64);
+    losing(&mut elections);
+    saved(&elections, 1000, 10_000, false);
+    elections.settle(1000);
+    assert_eq!(elections.limit, FLOOR);
+    for n in 1..=40 {
+        elections.settle(1000 + n * 50);
+    }
+    assert_eq!(elections.limit, FLOOR);
 }
 
 /// A bound under the floor is its own floor.
@@ -276,7 +304,8 @@ fn a_burst_of_slow_saves_lowers_the_limit_and_it_comes_back() {
     saved(&elections, 1500, 300, false);
     elections.settle(1500);
     assert_eq!(elections.limit, FLOOR);
-    for n in 1..=56 {
+    elections.outcomes = Outcomes::default();
+    for n in 1..=1500 {
         let now = 1500 + n * 50;
         saved(&elections, now, 6, false);
         elections.settle(now);
@@ -368,4 +397,56 @@ fn the_limit_grows_by_the_elections_that_won() {
     }
     interval(&mut elections, &[], 150);
     assert_eq!(elections.limit, let_in * 2);
+}
+
+/// The disk's queue is the bound, not the places held: while the saves
+/// queued here would take over a quarter of election_min to drain, only
+/// one member is let in, and more as the queue empties.
+#[test]
+fn no_one_is_let_in_while_the_disk_is_backed_up() {
+    let mut elections = elections(64);
+    // 30 saves begin; 10 end 10 ms apart, so the disk does 100 a second.
+    let tickets: Vec<_> = (0..30).map(|_| elections.saves.began()).collect();
+    for (n, ticket) in tickets.iter().take(10).enumerate() {
+        let at = 1_000_000 + n as u64 * 10_000;
+        elections.saves.ended(*ticket, at / 1000, at, Some(10_000));
+    }
+    let members: Vec<_> = (0..100).map(Member::new).collect();
+    interval(&mut elections, &members, 0);
+    let first = elections.load().in_flight;
+    assert!((1..=6).contains(&first), "{first} let in");
+    for (n, ticket) in tickets.iter().skip(10).enumerate() {
+        let at = 1_100_000 + n as u64 * 10_000;
+        elections.saves.ended(*ticket, at / 1000, at, Some(10_000));
+    }
+    interval(&mut elections, &[], 50);
+    let then = elections.load().in_flight;
+    assert!(then > first && then < 64, "{then} let in");
+}
+
+/// A member whose own vote is being saved has not lost, even before
+/// openraft calls it a candidate.
+#[test]
+fn a_vote_save_under_way_is_counted_for_its_member() {
+    let own = Arc::new(AtomicU64::new(0));
+    let clock = VoteClock {
+        saves: Arc::default(),
+        timers: Timers {
+            started: Instant::now(),
+            tick: 50,
+            heartbeat: 200,
+            idle_heartbeat: 2000,
+            idle_after: 1000,
+            election_min: 1000,
+            election_max: 2000,
+            lease: 1500,
+            max_elections_at_once: 1,
+        },
+        own: Arc::clone(&own),
+    };
+    use felix_storage::raft_log::VoteTimer;
+    let ticket = clock.began();
+    assert_eq!(own.load(Ordering::Relaxed), 1);
+    clock.ended(ticket, None);
+    assert_eq!(own.load(Ordering::Relaxed), 0);
 }

@@ -373,6 +373,14 @@ pub(super) struct Elections<M: Campaigner = Group> {
     stand: u64,
     /// The longest a member that stood keeps its place.
     round: u64,
+    /// No member is let in while the saves queued here would take longer
+    /// than this to drain (microseconds): a quarter of `election_min`.
+    backlog: u64,
+    /// Where `limit` stood before its last cut was halved: it climbs fast
+    /// to here and slowly above. 0 before any cut.
+    regrow: usize,
+    /// When `limit` last grew above `regrow`.
+    grown: u64,
     saves: Arc<VoteSaves>,
     lowered: Lowered,
     outcomes: Outcomes,
@@ -445,6 +453,12 @@ pub(crate) struct VoteSaves {
     /// A moving average of the saves that had the disk to themselves, or 0
     /// before the first.
     alone: AtomicU64,
+    /// A moving average of the microseconds between two saves ending while
+    /// others were still under way: what the disk gets through, whatever
+    /// its width. 0 before the first.
+    gap: AtomicU64,
+    /// When the last save ended, in microseconds on the same clock.
+    last_end: AtomicU64,
 }
 
 /// The ticket of a save that began while another was under way.
@@ -457,9 +471,26 @@ impl VoteSaves {
         if others == 0 { id } else { NOT_ALONE }
     }
 
-    /// The save with `ticket` ended at `now`; it took `took` microseconds.
-    fn ended(&self, ticket: u64, now: u64, took: Option<u64>) {
-        self.saving.fetch_sub(1, Ordering::Relaxed);
+    /// How long the saves under way and `more` yet to come take to drain,
+    /// in microseconds. 0 before the disk's pace is known.
+    fn drain(&self, more: u64) -> u64 {
+        let pending = self.saving.load(Ordering::Relaxed) + more;
+        pending.saturating_mul(self.gap.load(Ordering::Relaxed))
+    }
+
+    /// The save with `ticket` ended at `now` ms, `at` microseconds on the
+    /// runtime's clock; it took `took` microseconds.
+    fn ended(&self, ticket: u64, now: u64, at: u64, took: Option<u64>) {
+        let others = self.saving.fetch_sub(1, Ordering::Relaxed) - 1;
+        let last = self.last_end.swap(at, Ordering::Relaxed);
+        if others > 0 && last > 0 {
+            let gap = at.saturating_sub(last).max(1);
+            let average = match self.gap.load(Ordering::Relaxed) {
+                0 => gap,
+                average => ((average * 7 + gap) / 8).max(1),
+            };
+            self.gap.store(average, Ordering::Relaxed);
+        }
         let Some(took) = took else {
             return;
         };
@@ -486,15 +517,20 @@ impl VoteSaves {
 pub(crate) struct VoteClock {
     pub(crate) saves: Arc<VoteSaves>,
     pub(crate) timers: Timers,
+    /// This member's saves under way.
+    pub(crate) own: Arc<AtomicU64>,
 }
 
 impl felix_storage::raft_log::VoteTimer for VoteClock {
     fn began(&self) -> u64 {
+        self.own.fetch_add(1, Ordering::Relaxed);
         self.saves.began()
     }
     fn ended(&self, ticket: u64, took: Option<Duration>) {
+        self.own.fetch_sub(1, Ordering::Relaxed);
         let took = took.map(|took| took.as_micros() as u64);
-        self.saves.ended(ticket, self.timers.now(), took);
+        let at = self.timers.started.elapsed().as_micros() as u64;
+        self.saves.ended(ticket, self.timers.now(), at.max(1), took);
     }
 }
 
@@ -517,6 +553,9 @@ impl<M: Campaigner> Elections<M> {
             never_slow: timers.election_min * 1000 / 20,
             stand: timers.election_max,
             round: timers.election_min,
+            backlog: timers.election_min * 1000 / 4,
+            regrow: 0,
+            grown: 0,
             saves,
             lowered: Lowered::default(),
             outcomes: Outcomes::default(),
@@ -548,6 +587,13 @@ impl<M: Campaigner> Elections<M> {
     /// Let members in from the front of the queues while places are free.
     fn admit(&mut self, now: u64) {
         while self.held.len() < self.limit {
+            // Rounds that gave up leave their saves queued, so places alone
+            // do not bound the disk's queue. Each member let in is about to
+            // add one.
+            let queued = self.saves.drain(self.held.len() as u64);
+            if !self.held.is_empty() && queued > self.backlog {
+                break;
+            }
             let Some(Waiting { member, since }) =
                 self.urgent.pop_front().or_else(|| self.queue.pop_front())
             else {
@@ -643,6 +689,7 @@ impl<M: Campaigner> Elections<M> {
                 from: self.limit,
                 took: slowest,
             };
+            self.regrow = (self.limit / 2).max(self.floor);
             self.limit = self.limit.min(fits(self.limit, slowest));
             self.saves.since.store(now, Ordering::Relaxed);
         } else if losing && before > slow {
@@ -653,9 +700,26 @@ impl<M: Campaigner> Elections<M> {
                 self.limit = self.limit.min(fits(self.lowered.from, before));
             }
         } else {
-            self.limit = (self.limit + won.max(1)).min(self.most);
+            self.grow(now, won, losing);
         }
         self.totals.2 += u64::from(self.limit < was);
+    }
+
+    /// Give places back: one for each election that won, up to where the
+    /// last cut stood halved, then one for each `election_min`. While
+    /// elections lose, only for the ones that won.
+    fn grow(&mut self, now: u64, won: usize, losing: bool) {
+        let won = if losing { won } else { won.max(1) };
+        if self.limit < self.regrow {
+            self.limit = (self.limit + won).min(self.regrow);
+            if self.limit == self.regrow {
+                self.grown = now;
+            }
+        } else if now >= self.grown + self.round {
+            self.grown = now;
+            self.limit += 1;
+        }
+        self.limit = self.limit.min(self.most);
     }
 
     fn load(&self) -> ElectionLoad {
