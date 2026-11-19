@@ -3534,11 +3534,13 @@ below. Accepting it would leave those records uncompared, and one of them may
 be a dead leader's unacknowledged write at an offset the new leader filled
 differently: two brokers disagreeing at a committed offset. So a batch from a newer generation that begins past them is
 answered with a `LogGap` naming the first uncompared record: the later of
-where the older generation began here and the commit offset, or the commit
-offset alone when the follower has no history at all. The leader rewinds
+where the older generation began here and the commit offset. A follower with
+no history at all names the commit offset to any leader, one at its own
+generation included, since nothing says who wrote what it holds. The leader rewinds
 and the overlap is compared like any other, so a conflict is found and repaired
 as above. When that takes several batches, the follower remembers in memory how
-far it has got. The newest generation it holds stays older than the leader's
+far it has got, per log: a stream and its group logs share a shard but not
+their progress. The newest generation it holds stays older than the leader's
 until the batches reach where the leader's own began: before that it holds only
 records the leader inherited, labelled with the generations that wrote them.
 Until then a conflict below how far it has got is the leader disagreeing with

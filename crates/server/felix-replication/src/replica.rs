@@ -59,10 +59,12 @@ use crate::peer::metrics;
 pub struct ReplicaHandler {
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
-    /// How far each shard's records from before the current leader's
+    /// How far each log's records from before the current leader's
     /// generation have been compared with it, while that takes more than one
-    /// batch. See [`unverified_from`].
-    verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
+    /// batch. Per log: a stream and its group logs share a shard key, and
+    /// one log's progress says nothing about another's. See [`unverified_from`].
+    verified:
+        parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
     /// this broker holds as committed, per log, with the stream or cache
     /// incarnation it shipped. A rebuild from that leader would only find the same
@@ -841,14 +843,15 @@ impl ReplicaHandler {
         // suffix it finds belongs to whatever generation was newest until now.
         let previous_generation = log.generations().last().copied();
 
-        // A newer leader's batch that starts past records this follower wrote
-        // under an older generation would leave them uncompared, and one of
-        // them may be a dead leader's unacknowledged write at an offset the new
-        // leader filled differently. Send the leader back to the first of them.
+        // A batch that starts past records this follower wrote under an older
+        // generation, or past records no history accounts for, would leave
+        // them uncompared, and one of them may be a dead leader's
+        // unacknowledged write at an offset the sender filled differently.
+        // Send the leader back to the first of them.
         let verified = self
             .verified
             .lock()
-            .get(&key)
+            .get(&(key.clone(), log_kind))
             .filter(|verified| {
                 verified.generation == batch.shard.generation
                     && verified.incarnation == batch.shard.incarnation.unwrap_or(0)
@@ -1111,10 +1114,10 @@ impl ReplicaHandler {
                 // copy's own records as the sender's, or a later conflict on
                 // them would not be repaired as a dead leader's suffix.
                 if caught_up {
-                    self.verified.lock().remove(&key);
+                    self.verified.lock().remove(&(key.clone(), log_kind));
                 } else if compared {
                     self.verified.lock().insert(
-                        key.clone(),
+                        (key.clone(), log_kind),
                         Verified {
                             generation: batch.shard.generation,
                             incarnation: batch.shard.incarnation.unwrap_or(0),
@@ -3109,7 +3112,8 @@ fn detail_of(reason: &RefusalReason) -> String {
 ///
 /// With no history at all (the `epochs` file was lost or unreadable) nothing
 /// says who wrote the records past the commit offset, so every one held from
-/// `base` on is uncompared. That costs one resend from the commit offset.
+/// `base` on is uncompared, whatever the sender's generation. That costs one
+/// resend from the commit offset.
 fn unverified_from(
     previous: Option<felix_storage::log::Epoch>,
     generation: u64,
