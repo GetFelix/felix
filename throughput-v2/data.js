@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795113370418,
+  "lastUpdate": 1795113791920,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -62868,6 +62868,58 @@ window.BENCHMARK_DATA = {
             "range": "11699.04",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1224988.91\nmean: 1224385.00\nstdev: 11699.04\ncv: 0.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b75f4d873b7e475ea3391b55f0dfe8e86e02b316",
+          "message": "formal(raft): conditional batches of several records, cut prefixes hidden (#2829)\n\n* formal(raft): conditional batches of several records, cut prefixes hidden (#2751)\n\nFelixRaftCond.tla now takes a batch length per client. A batch of N\nrecords is N entries appended in one step, each carrying its position\nand the batch length, kept only at expected + position. A change of\nleader can commit a strict prefix of a batch; readers skip it from the\nmember's log alone (the entry at the last index must be a kept last\npiece of the same length), and the read bound stops before a batch\nwhose last index is not committed yet.\n\nNew: WholeBatchesOnly (no reader sees a record of a batch that is not\nwhole), ReadsStable, the Hide knob with NoHide and BoundOnly twins that\nviolate it, and two witnesses (a cut commits, a whole batch is read).\nThe single-record configurations set every length to one.\n\n* formal(raft): check the cut skip's position and length, and that readers see every piece\n\nA twin (FelixRaftCondBatchAnyLast) whose skip only asks for a kept entry\nat the last index lets a cut piece through when another publish's record\nis kept there. WholeBatchesOnly now also requires every piece visible.",
+          "timestamp": "2026-11-19T18:30:37Z",
+          "tree_id": "e8b560f6c8f7e72eff02bf69f3572ee8cb40d595",
+          "url": "https://github.com/GetFelix/felix/commit/b75f4d873b7e475ea3391b55f0dfe8e86e02b316"
+        },
+        "date": 1795113791196,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 575294.09,
+            "range": "37571.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 575294.09\nmean: 573316.66\nstdev: 37571.10\ncv: 6.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 575294.09,
+            "range": "37571.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 575294.09\nmean: 573316.66\nstdev: 37571.10\ncv: 6.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124963.09,
+            "range": "7899.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124963.09\nmean: 121525.55\nstdev: 7899.33\ncv: 6.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1249630.87,
+            "range": "78993.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1249630.87\nmean: 1215255.46\nstdev: 78993.25\ncv: 6.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
