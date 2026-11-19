@@ -720,6 +720,8 @@ expectations=(
   "FelixRaftPlacementSameIdFiveFloor pass"
   # A real code bug (#2824): a stale leader commits with the waived member. The fix lifts this pin.
   "FelixRaftPlacementTwoWipesFloor violates AckedHeldSurvive"
+  "FelixRaftPlacementPlacedTargetNoWrite pass"
+  "FelixRaftPlacementReachPlacedTargetNoWrite violates NeverTransfersOffTarget"
   "FelixRaftPlacementTwoWipesFloorBlock pass"
   "FelixRaftPlacementFormWaiverFloor pass"
   "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
@@ -1409,6 +1411,7 @@ weights=(
   "FelixRaftPlacementTransferMove 51"
   "FelixRaftPlacementRewindSpareCommitted 57"
   "FelixRaftPlacementDirectTermsNoBarrier 46"
+  "FelixRaftPlacementPlacedTargetNoWrite 108"
   "FelixRaftPlacementStaleWipeTwoTerms 150"
   "FelixRaftPlacementStaleWipeRewind 275"
   "FelixRaftPlacementStaleWipeRewindSameInc 191"
