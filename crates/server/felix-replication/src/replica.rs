@@ -53,16 +53,24 @@ const FENCE_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// forgotten for each new one.
 const MAX_FENCED_AT: usize = 65_536;
 
+/// How many logs' resend progress is remembered. Past it, one is forgotten
+/// for each new one; a forgotten log sends its leader back to resend once more.
+const MAX_VERIFIED: usize = 65_536;
+
 use crate::peer::metrics;
 
 /// Stores replicated records against this broker's local logs.
 pub struct ReplicaHandler {
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
-    /// How far each shard's records from before the current leader's
+    /// How far each log's records from before the current leader's
     /// generation have been compared with it, while that takes more than one
-    /// batch. See [`unverified_from`].
-    verified: parking_lot::Mutex<HashMap<felix_router::ShardKey, Verified>>,
+    /// batch. Per log: a stream and its group logs share a shard key, as do a
+    /// cache and its counters, and one log's progress says nothing about
+    /// another's. Dropped by a rebuild and capped at [`MAX_VERIFIED`]. See
+    /// [`unverified_from`].
+    verified:
+        parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), Verified>>,
     /// The generation whose leader shipped a record that disagreed with one
     /// this broker holds as committed, per log, with the stream or cache
     /// incarnation it shipped. A rebuild from that leader would only find the same
@@ -355,6 +363,7 @@ impl ReplicaHandler {
         }
         // The in-memory tail was built from the records that just went.
         self.reset_tail(&key, log_kind, request.base_offset).await;
+        self.verified.lock().remove(&(key.clone(), log_kind));
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -430,6 +439,8 @@ impl ReplicaHandler {
             }
             self.reset_tail(key, log_kind, keep).await;
         }
+        // What was compared may be gone, and every kept record is compared again.
+        self.verified.lock().remove(&(key.clone(), log_kind));
         tracing::warn!(
             stream = %key.stream,
             shard = key.shard,
@@ -841,14 +852,15 @@ impl ReplicaHandler {
         // suffix it finds belongs to whatever generation was newest until now.
         let previous_generation = log.generations().last().copied();
 
-        // A newer leader's batch that starts past records this follower wrote
-        // under an older generation would leave them uncompared, and one of
-        // them may be a dead leader's unacknowledged write at an offset the new
-        // leader filled differently. Send the leader back to the first of them.
+        // A batch that starts past records this follower wrote under an older
+        // generation, or past records no history accounts for, would leave
+        // them uncompared, and one of them may be a dead leader's
+        // unacknowledged write at an offset the sender filled differently.
+        // Send the leader back to the first of them.
         let verified = self
             .verified
             .lock()
-            .get(&key)
+            .get(&(key.clone(), log_kind))
             .filter(|verified| {
                 verified.generation == batch.shard.generation
                     && verified.incarnation == batch.shard.incarnation.unwrap_or(0)
@@ -858,6 +870,7 @@ impl ReplicaHandler {
             Ok(tail) => unverified_from(
                 previous_generation,
                 batch.shard.generation,
+                log.physical_base(),
                 log.commit_offset(),
                 verified,
                 tail,
@@ -898,9 +911,9 @@ impl ReplicaHandler {
             }
         };
 
-        // A divergent suffix left by a leader that is gone is droppable: no
-        // majority acknowledged it, and dropping it lets this follower rejoin
-        // instead of halting until an operator notices (#406).
+        // A divergent suffix left by a leader that is gone is droppable here: no
+        // majority acknowledged it, and dropping it lets this follower carry on
+        // without a rebuild (#406).
         //
         // Two conditions decide that, and neither is optional:
         //
@@ -911,10 +924,12 @@ impl ReplicaHandler {
         // - The divergence is at or after where that older generation began, so
         //   what is dropped belongs to it.
         //
-        // Anything else halts. Without the generation history there is no way
-        // to tell a suffix from a divergence reaching further back, and
-        // truncating on a bare conflict would discard records nothing has
-        // established are safe to lose.
+        // Anything else is refused with `LogConflict`. Without the generation
+        // history there is no way to tell a suffix from a divergence reaching
+        // further back, so nothing is truncated here. The leader halts this
+        // follower and, unless it is backing off, its base is above the commit
+        // offset or no rebuild slot is free, rebuilds it: that keeps the
+        // committed records and drops the rest.
         if let Ok(Err(Divergence::Conflict { offset, .. })) = &outcome {
             let diverged_at = *offset;
             // Below `verified` the records came from this sender already, and
@@ -990,7 +1005,7 @@ impl ReplicaHandler {
                     sender_generation = batch.shard.generation,
                     last_accepted = ?previous_generation.map(|epoch| epoch.generation),
                     "this divergence is not a previous generation's suffix; \
-                     replication stops here",
+                     refusing it, and replication stops here until the leader rebuilds this copy",
                 ),
             }
         }
@@ -1110,10 +1125,18 @@ impl ReplicaHandler {
                 // copy's own records as the sender's, or a later conflict on
                 // them would not be repaired as a dead leader's suffix.
                 if caught_up {
-                    self.verified.lock().remove(&key);
+                    self.verified.lock().remove(&(key.clone(), log_kind));
                 } else if compared {
-                    self.verified.lock().insert(
-                        key.clone(),
+                    let mut verified = self.verified.lock();
+                    let entry = (key.clone(), log_kind);
+                    if verified.len() >= MAX_VERIFIED && !verified.contains_key(&entry) {
+                        let any = verified.keys().next().cloned();
+                        if let Some(any) = any {
+                            verified.remove(&any);
+                        }
+                    }
+                    verified.insert(
+                        entry,
                         Verified {
                             generation: batch.shard.generation,
                             incarnation: batch.shard.incarnation.unwrap_or(0),
@@ -3105,15 +3128,25 @@ fn detail_of(reason: &RefusalReason) -> String {
 /// Past it, those written since the last recorded generation began came from
 /// that generation's leader, or were this broker's own writes as leader; a
 /// newer leader shipping only past them would never learn they disagree.
+///
+/// With no history at all (the `epochs` file was lost or unreadable) nothing
+/// says who wrote the records past the commit offset, so every one held from
+/// `base` on is uncompared, whatever the sender's generation. That costs one
+/// resend from the commit offset.
 fn unverified_from(
     previous: Option<felix_storage::log::Epoch>,
     generation: u64,
+    base: u64,
     commit: u64,
     verified: Option<u64>,
     tail: u64,
 ) -> Option<u64> {
-    let previous = previous.filter(|previous| generation > previous.generation)?;
-    let from = previous.start_offset.max(commit).max(verified.unwrap_or(0));
+    let start = match previous {
+        Some(previous) if generation > previous.generation => previous.start_offset,
+        Some(_) => return None,
+        None => base,
+    };
+    let from = start.max(commit).max(verified.unwrap_or(0));
     (from < tail).then_some(from)
 }
 
