@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795151774971,
+  "lastUpdate": 1795154031455,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -80916,6 +80916,72 @@ window.BENCHMARK_DATA = {
             "range": "812.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1192.00\nmean: 1329.80\nstdev: 812.83\ncv: 61.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ff60827a53e384183ce4bf3e4056db29249c960",
+          "message": "demo: see failover on your laptop (3 brokers, independent checker) (#2870)\n\n* demo: one-command three-broker failover repro with an independent checker\n\ndemos/failover starts three brokers and a control plane from the released images, writes through idempotent producers, and judges the run against a full re-read of the stream: gaps, duplicates and writes in doubt, with the client-side stall time. Adds the getting-started page and a README link.\n\n* demo(failover): fail a run that proves nothing, read back past empty pages, fixed project name, one version pin\n\nA run with no acknowledgements or a dead producer is FAILED, not a pass. The read-back continues past empty pages that advance the offset and stops only past the highest acknowledged offset. A refused producer's write stops counting as in flight. run.sh down and receipt exit non-zero unless the checker passed, and the compose project name is no longer taken from the environment. The image tag lives in .env and is tracked by the release version checks; the network is overridable, no host ports are published, and the demo certificate lasts ten years and is regenerated near expiry.\n\n* demo(failover): track the env file and the reader tests",
+          "timestamp": "2026-11-20T05:48:38Z",
+          "tree_id": "fd9f49bc806f5c3f331c08bb0f3b66e928160d35",
+          "url": "https://github.com/GetFelix/felix/commit/1ff60827a53e384183ce4bf3e4056db29249c960"
+        },
+        "date": 1795154015249,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.60\nstdev: 0.89\ncv: 1.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 120.40\nstdev: 2.07\ncv: 1.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 146,
+            "range": "7.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 148.20\nstdev: 7.33\ncv: 4.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.40\nstdev: 1.14\ncv: 1.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 186,
+            "range": "4.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 186.00\nmean: 186.40\nstdev: 4.10\ncv: 2.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 319,
+            "range": "48.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 319.00\nmean: 330.00\nstdev: 48.32\ncv: 14.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
