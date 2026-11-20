@@ -541,8 +541,12 @@ async fn a_directory_from_before_copy_ids_is_not_opened() {
 
 fn timers() -> RuntimeConfig {
     RuntimeConfig {
-        election_min: Duration::from_millis(150),
-        election_max: Duration::from_millis(300),
+        // A vote is fsynced, and a loaded disk takes longer than a short
+        // election timeout to do it: groups then keep timing out each
+        // other's rounds and none wins. Placement hands over within the
+        // shortest election timeout too.
+        election_min: Duration::from_millis(600),
+        election_max: Duration::from_millis(1200),
         heartbeat: Duration::from_millis(50),
         tick: Duration::from_millis(10),
         // Inside the shortest election timeout, as the runtime requires.

@@ -143,6 +143,46 @@ impl Cluster {
             .map(|_| ())
     }
 
+    /// Wait until every shard of `stream` has taken a publish through its
+    /// owner.
+    ///
+    /// `Cluster::start` proves shard 0 serves; a shard past it can still be
+    /// between its fence and serving, and a test that counts forwards would
+    /// see its first batches forwarded. One `harness-probe` record is written
+    /// to each shard past 0, so a test that reads the shards back skips that
+    /// payload, as it already does for shard 0. Assumes the stream's default
+    /// key-to-shard mapping.
+    pub async fn await_every_shard_serving(&self, stream: &str, shards: u32) -> Result<()> {
+        for shard in 1..shards {
+            let key = (0u32..)
+                .map(|n| format!("harness-probe-{n}"))
+                .find(|key| felix_wire::routing::shard_for(shards, Some(key.as_bytes())) == shard)
+                .expect("a key for every shard");
+            crate::wait::until(
+                super::READY_TIMEOUT,
+                &format!("shard {shard} of {stream} to take a publish"),
+                || {
+                    let key = key.clone();
+                    async move {
+                        let Ok(owner) = self.shard_owner_of("stream", stream, shard).await else {
+                            return false;
+                        };
+                        self.publish_keyed_via(
+                            &owner,
+                            stream,
+                            key.as_bytes(),
+                            b"harness-probe".to_vec(),
+                        )
+                        .await
+                        .is_ok()
+                    }
+                },
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Publish with a routing key, waiting out the window where two brokers
     /// disagree about who owns a shard.
     ///
