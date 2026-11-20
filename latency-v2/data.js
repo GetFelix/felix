@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795143385574,
+  "lastUpdate": 1795143781154,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -80652,6 +80652,72 @@ window.BENCHMARK_DATA = {
             "range": "61.45",
             "unit": "us",
             "extra": "trials: 5\nmedian: 373.00\nmean: 401.20\nstdev: 61.45\ncv: 15.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3367b6f75eaaffea20a30e897047aa4ec7f5be39",
+          "message": "docs: check file.rs:NNN line citations in docs:evidence (#2219) (#2863)\n\n* docs: check file.rs:NNN line citations in docs:evidence (#2219)\n\nChecks that each cited file exists, the line is in range, and a symbol\nnamed beside the citation is on that line. Citations with no symbol can\nonly be range-checked. Fixes the 13 stale citations in\ndocs/replication-engine.md that it found.\n\n* docs: evidence check accepts line ranges, follow-on citations and refuses ambiguous paths (#2219)",
+          "timestamp": "2026-11-20T02:55:51Z",
+          "tree_id": "af97f971e7cbf9940e2bb74c218fee310d92f754",
+          "url": "https://github.com/GetFelix/felix/commit/3367b6f75eaaffea20a30e897047aa4ec7f5be39"
+        },
+        "date": 1795143767613,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 154.20\nstdev: 0.84\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "8.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 212.60\nstdev: 8.56\ncv: 4.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 968,
+            "range": "1249.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 968.00\nmean: 1280.00\nstdev: 1249.95\ncv: 97.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.20\nstdev: 1.48\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 399,
+            "range": "6.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 399.00\nmean: 399.20\nstdev: 6.50\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 559,
+            "range": "70.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 559.00\nmean: 564.80\nstdev: 70.34\ncv: 12.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
