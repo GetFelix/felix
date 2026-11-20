@@ -11,6 +11,11 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-19
+
+### Fixed
+- An idempotent producer told to follow a leader that had just died dialled it once per producer, one after another, and each dial waited out a full handshake. The dials now share one failure and give up after two seconds, so producers resume sooner after a failover without the control plane (#2871).
+
 ### Documentation
 - Operations notes warn never to delete, empty or restore a single shard directory
   (#2376). A broker keeps its storage id and copy trust, so the empty copy can

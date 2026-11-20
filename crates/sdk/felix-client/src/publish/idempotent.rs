@@ -876,7 +876,7 @@ impl Driver {
                 );
             }
             Source::Cluster(cluster) => match cluster
-                .connect_to(addr)
+                .connect_to_leader(addr)
                 .await
                 .with_context(|| format!("connect to the shard's leader {node_id} at {addr}"))
             {
