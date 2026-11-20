@@ -22,7 +22,11 @@
 //! ## Why this demo exists
 //! `docs-site/docs/getting-started/what-felix-is-for.md` describes Felix today as
 //! "optimized for high-fanout delivery with predictable tail latency and strict
-//! slow-consumer isolation". This is that claim, made runnable.
+//! slow-consumer isolation". This demo makes part of that claim runnable: one
+//! stalled client does not slow the publisher or the healthy consumers (the
+//! client-side `drop_new` loss), and the `block` arm shows the broker-side policy
+//! that trades that isolation for delivery. It does not drive the broker's own
+//! per-subscriber `DropNew` overflow.
 //!
 //! Neither policy is the right answer. Quoting
 //! `docs-site/docs/development/how-felix-works.md`: "dropping isolates healthy
@@ -226,11 +230,10 @@ mod tests {
             payload_bytes: 64,
             // The loss under test is client-side (the stalled consumer's own
             // dispatch queue), not broker-side. Every consumer drops at its own
-            // client queue once it is full, so a
-            // healthy one loses events whenever its task goes unscheduled for
-            // longer than the queue lasts: 13 ms at 64, which a busy host
-            // exceeds. 1024 lasts 200 ms, and the 4 s stall overflows it many
-            // times over.
+            // client queue once it is full, so a healthy one loses events
+            // whenever its task goes unscheduled for longer than the queue
+            // lasts: 13 ms at 64, which a busy host exceeds. 1024 lasts 200 ms,
+            // and the 4 s stall overflows it many times over.
             queue_capacity: 1024,
             phase_secs: 2,
             policies: vec![Policy::DropNew],
