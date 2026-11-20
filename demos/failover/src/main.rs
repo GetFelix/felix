@@ -81,6 +81,10 @@ async fn run(args: Args) -> Result<()> {
     let started = Instant::now();
     let run_id = payload::run_id();
     let ledger = Arc::new(Mutex::new(Ledger::new(started)));
+    ledger
+        .lock()
+        .expect("ledger")
+        .expect_producers(args.producers);
     let args = Arc::new(args);
     println!(
         "run {run_id}: {} producers x {}/s, stream {}/{}",

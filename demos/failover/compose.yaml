@@ -2,20 +2,22 @@
 # what was acknowledged is still there. Start it with ./run.sh up.
 #
 # DEVELOPMENT ONLY. Fixed credentials, no TLS identity beyond a self-signed
-# certificate, and nothing here is reachable from another machine: every host
-# port is bound to 127.0.0.1. Never deploy this file.
+# certificate, and nothing here is published on the host: the checker and
+# felixctl run inside the compose network. Never deploy this file.
 #
 # With Podman, use the docker-compose provider (2.20 or later); run.sh sets it.
 #
 # The brokers share one certificate that the `certs` service makes once, so a
 # restarted broker presents the same one and clients keep trusting it.
 #
-# FELIX_VERSION overrides the image tag, like the repository's compose.yaml.
+# The image tag is FELIX_VERSION, set in the .env file beside this one. The
+# release check keeps it on the newest tagged release. FAILOVER_NET changes the
+# private network's first three octets if 172.30.8.0/24 is taken on your machine.
 
 name: felix-failover
 
 x-broker: &broker
-  image: ghcr.io/getfelix/felix-broker:${FELIX_VERSION:-0.7.2}
+  image: ghcr.io/getfelix/felix-broker:${FELIX_VERSION}
   depends_on:
     auth:
       condition: service_completed_successfully
@@ -54,7 +56,7 @@ x-broker-env: &broker-env
 
 services:
   controlplane:
-    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.7.2}
+    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION}
     environment:
       # One Raft member on a volume: the metadata survives a restart of the
       # control plane, which the kill-controlplane step needs.
@@ -79,8 +81,6 @@ services:
       FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS: "250"
       FELIX_SHARD_RECONCILE_INTERVAL_MS: "500"
       RUST_LOG: info
-    ports:
-      - "127.0.0.1:28443:8443"
     volumes:
       - controlplane:/var/lib/felix
     healthcheck:
@@ -90,7 +90,7 @@ services:
       retries: 60
 
   auth:
-    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION:-0.7.2}
+    image: ghcr.io/getfelix/felix-controlplane:${FELIX_VERSION}
     network_mode: "service:controlplane"
     # Root, to make the shared state volume writable by the brokers.
     user: "0:0"
@@ -161,8 +161,9 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        [ -f /certs/tls.crt ] || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
-          -nodes -days 30 -subj /CN=localhost -addext subjectAltName=DNS:localhost -addext basicConstraints=critical,CA:FALSE \
+        # Made once; made again if it is missing or within a day of expiring.
+        { [ -f /certs/tls.crt ] && openssl x509 -checkend 86400 -noout -in /certs/tls.crt; } || openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+          -nodes -days 3650 -subj /CN=localhost -addext subjectAltName=DNS:localhost -addext basicConstraints=critical,CA:FALSE \
           -keyout /certs/tls.key -out /certs/tls.crt
         chmod 644 /certs/tls.key /certs/tls.crt
 
@@ -171,67 +172,61 @@ services:
     environment:
       <<: *broker-env
       FELIX_NODE_ID: broker-1
-      FELIX_NODE_ADVERTISE_ADDR: 172.30.8.11:5001
-      FELIX_CLIENT_ADVERTISE_ADDR: 172.30.8.11:5000
+      FELIX_NODE_ADVERTISE_ADDR: ${FAILOVER_NET:-172.30.8}.11:5001
+      FELIX_CLIENT_ADVERTISE_ADDR: ${FAILOVER_NET:-172.30.8}.11:5000
       FELIX_TLS_CERT: /certs/tls.crt
       FELIX_TLS_KEY: /certs/tls.key
-    ports:
-      - "127.0.0.1:28081:8080"
     volumes:
       - state:/state
       - certs:/certs:ro
       - data-1:/var/lib/felix
     networks:
       default:
-        ipv4_address: 172.30.8.11
+        ipv4_address: ${FAILOVER_NET:-172.30.8}.11
 
   broker-2:
     <<: *broker
     environment:
       <<: *broker-env
       FELIX_NODE_ID: broker-2
-      FELIX_NODE_ADVERTISE_ADDR: 172.30.8.12:5001
-      FELIX_CLIENT_ADVERTISE_ADDR: 172.30.8.12:5000
+      FELIX_NODE_ADVERTISE_ADDR: ${FAILOVER_NET:-172.30.8}.12:5001
+      FELIX_CLIENT_ADVERTISE_ADDR: ${FAILOVER_NET:-172.30.8}.12:5000
       FELIX_TLS_CERT: /certs/tls.crt
       FELIX_TLS_KEY: /certs/tls.key
-    ports:
-      - "127.0.0.1:28082:8080"
     volumes:
       - state:/state
       - certs:/certs:ro
       - data-2:/var/lib/felix
     networks:
       default:
-        ipv4_address: 172.30.8.12
+        ipv4_address: ${FAILOVER_NET:-172.30.8}.12
 
   broker-3:
     <<: *broker
     environment:
       <<: *broker-env
       FELIX_NODE_ID: broker-3
-      FELIX_NODE_ADVERTISE_ADDR: 172.30.8.13:5001
-      FELIX_CLIENT_ADVERTISE_ADDR: 172.30.8.13:5000
+      FELIX_NODE_ADVERTISE_ADDR: ${FAILOVER_NET:-172.30.8}.13:5001
+      FELIX_CLIENT_ADVERTISE_ADDR: ${FAILOVER_NET:-172.30.8}.13:5000
       FELIX_TLS_CERT: /certs/tls.crt
       FELIX_TLS_KEY: /certs/tls.key
-    ports:
-      - "127.0.0.1:28083:8080"
     volumes:
       - state:/state
       - certs:/certs:ro
       - data-3:/var/lib/felix
     networks:
       default:
-        ipv4_address: 172.30.8.13
+        ipv4_address: ${FAILOVER_NET:-172.30.8}.13
 
   # Turns on election among replicas and creates the stream.
   provision:
-    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION:-0.7.2}
+    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION}
     depends_on:
       broker-1: {condition: service_healthy}
       broker-2: {condition: service_healthy}
       broker-3: {condition: service_healthy}
     environment: &ctl-env
-      FELIX_BROKERS: 172.30.8.11:5000,172.30.8.12:5000,172.30.8.13:5000
+      FELIX_BROKERS: ${FAILOVER_NET:-172.30.8}.11:5000,${FAILOVER_NET:-172.30.8}.12:5000,${FAILOVER_NET:-172.30.8}.13:5000
       FELIX_SERVER_NAME: localhost
       FELIX_AUTH_TENANT: demo
       FELIX_AUTH_TOKEN_FILE: /state/client.jwt
@@ -261,7 +256,7 @@ services:
 
   # `docker compose run --rm felixctl <args>`, for run.sh and for you.
   felixctl:
-    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION:-0.7.2}
+    image: ghcr.io/getfelix/felixctl:${FELIX_VERSION}
     profiles: ["cli"]
     environment: *ctl-env
     volumes:
@@ -274,12 +269,12 @@ services:
       provision:
         condition: service_completed_successfully
     environment:
-      FELIX_BROKERS: 172.30.8.11:5000,172.30.8.12:5000,172.30.8.13:5000
+      FELIX_BROKERS: ${FAILOVER_NET:-172.30.8}.11:5000,${FAILOVER_NET:-172.30.8}.12:5000,${FAILOVER_NET:-172.30.8}.13:5000
       FELIX_SERVER_NAME: localhost
       FELIX_AUTH_TENANT: demo
       FELIX_AUTH_TOKEN_FILE: /state/client.jwt
       FELIX_CA_FILE: /certs/tls.crt
-      FAILOVER_CONFIG: "Quorum, replication factor 3, fsync ${FELIX_DURABLE_FSYNC_MODE:-on_commit}, felix ${FELIX_VERSION:-0.7.2}"
+      FAILOVER_CONFIG: "Quorum, replication factor 3, fsync ${FELIX_DURABLE_FSYNC_MODE:-on_commit}, felix ${FELIX_VERSION}"
     command: ["--producers", "${PRODUCERS:-4}", "--rate", "${RATE:-25}"]
     stop_signal: SIGTERM
     stop_grace_period: 120s
@@ -293,7 +288,7 @@ networks:
     ipam:
       config:
         # Brokers dial each other by IP; Felix refuses a hostname there.
-        - subnet: 172.30.8.0/24
+        - subnet: ${FAILOVER_NET:-172.30.8}.0/24
 
 volumes:
   state:

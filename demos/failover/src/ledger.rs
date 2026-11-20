@@ -5,6 +5,12 @@
 //! carried in the payload. That is separate from the broker's own producer id
 //! and sequence, so the check does not depend on the mechanism it is checking.
 //!
+//! "Indeterminate" counts only errors that reach the checker. The SDK retries a
+//! publish inside the call while it looks for the new leader, and it does not
+//! report how often, so a failover usually shows as a slow publish and an
+//! indeterminate count of 0. The count is not evidence that the in-doubt path
+//! was exercised; the unit tests are what exercise it.
+//!
 //! The ledger takes every instant as an argument so tests can drive it
 //! without sleeping.
 
@@ -54,8 +60,13 @@ pub(crate) struct Ledger {
     latched: bool,
     last_stall_start: Option<Instant>,
     stalls: Vec<Stall>,
-    /// Producers the broker ended with a typed refusal.
-    refused: u64,
+    /// Producers the run was meant to have, and how many have started.
+    expected_producers: u16,
+    started_producers: u16,
+    /// Producers that stopped before the run did, and why.
+    dead: Vec<(u16, String)>,
+    /// Highest log offset any acknowledgement reported.
+    max_offset: Option<u64>,
     reader_resubscribes: u64,
 }
 
@@ -67,6 +78,12 @@ pub(crate) struct Snapshot {
     pub(crate) in_flight: u64,
     pub(crate) sent: u64,
     pub(crate) recovered: u64,
+    pub(crate) expected_producers: u16,
+    pub(crate) started_producers: u16,
+    pub(crate) dead: Vec<(u16, String)>,
+    /// First offset past every acknowledged record, when acknowledgements
+    /// reported offsets.
+    pub(crate) read_to: Option<u64>,
 }
 
 /// What a re-read of the whole stream says about a snapshot.
@@ -83,12 +100,37 @@ pub(crate) struct Verdict {
     pub(crate) in_doubt_absent: u64,
     /// Of this run, never sent by any producer.
     pub(crate) unexpected: u64,
+    pub(crate) expected_producers: u16,
+    pub(crate) started_producers: u16,
+    pub(crate) dead: Vec<(u16, String)>,
 }
 
 impl Verdict {
     /// The invariant: every acknowledged write exactly once, nothing invented.
+    /// It also needs something to have been acknowledged and every producer to
+    /// have started and stayed up, or a run that wrote nothing would pass.
     pub(crate) fn holds(&self) -> bool {
-        self.gaps.is_empty() && self.duplicates.is_empty() && self.unexpected == 0
+        self.violation().is_none() && self.failure().is_none()
+    }
+
+    /// The data was wrong.
+    pub(crate) fn violation(&self) -> Option<&'static str> {
+        (!self.gaps.is_empty() || !self.duplicates.is_empty() || self.unexpected > 0)
+            .then_some("missing, repeated or unexpected records")
+    }
+
+    /// The run did not test anything, or stopped testing early.
+    pub(crate) fn failure(&self) -> Option<String> {
+        if self.started_producers < self.expected_producers {
+            return Some(format!(
+                "only {} of {} producers started",
+                self.started_producers, self.expected_producers
+            ));
+        }
+        if let Some((index, why)) = self.dead.first() {
+            return Some(format!("producer {index} stopped early: {why}"));
+        }
+        (self.acked == 0).then(|| "nothing was acknowledged".to_string())
     }
 }
 
@@ -101,6 +143,8 @@ pub(crate) struct Counters {
     pub(crate) delivered: u64,
     pub(crate) gaps: u64,
     pub(crate) duplicates: u64,
+    pub(crate) producers_up: u16,
+    pub(crate) producers_expected: u16,
 }
 
 impl Ledger {
@@ -120,7 +164,10 @@ impl Ledger {
             latched: false,
             last_stall_start: None,
             stalls: Vec::new(),
-            refused: 0,
+            expected_producers: 0,
+            started_producers: 0,
+            dead: Vec::new(),
+            max_offset: None,
             reader_resubscribes: 0,
         }
     }
@@ -164,10 +211,28 @@ impl Ledger {
         Some(stall)
     }
 
-    /// A producer was ended by a typed refusal; its write stays in doubt.
-    pub(crate) fn refused(&mut self, key: Key) {
-        self.refused += 1;
-        self.failed(key);
+    /// The run is meant to have this many producers.
+    pub(crate) fn expect_producers(&mut self, n: u16) {
+        self.expected_producers = n;
+    }
+
+    pub(crate) fn producer_started(&mut self) {
+        self.started_producers += 1;
+    }
+
+    /// A producer ended before the run did. A write it left in doubt stays
+    /// in doubt, but it is no longer waiting on anything.
+    pub(crate) fn producer_died(&mut self, index: u16, why: String, in_doubt: Option<Key>) {
+        if let Some(key) = in_doubt {
+            self.failed(key);
+            self.outstanding.remove(&key);
+        }
+        self.dead.push((index, why));
+    }
+
+    /// An acknowledgement reported the offset the record landed at.
+    pub(crate) fn landed_at(&mut self, offset: u64) {
+        self.max_offset = Some(self.max_offset.map_or(offset, |max| max.max(offset)));
     }
 
     pub(crate) fn reader_resubscribed(&mut self) {
@@ -210,11 +275,19 @@ impl Ledger {
         None
     }
 
+    /// Sent, not answered, and not in doubt.
+    fn in_flight(&self) -> u64 {
+        self.outstanding
+            .keys()
+            .filter(|key| !self.in_doubt.contains(key))
+            .count() as u64
+    }
+
     pub(crate) fn counters(&self, now: Instant) -> Counters {
         let in_doubt = self.in_doubt.len() as u64;
         Counters {
             acked: self.acked.len() as u64,
-            in_flight: (self.outstanding.len() as u64).saturating_sub(in_doubt),
+            in_flight: self.in_flight(),
             in_doubt,
             delivered: self.seen.len() as u64,
             gaps: self
@@ -222,6 +295,10 @@ impl Ledger {
                 .values()
                 .filter(|at| now.saturating_duration_since(**at) >= READER_GRACE)
                 .count() as u64,
+            producers_up: self
+                .started_producers
+                .saturating_sub(self.dead.len() as u16),
+            producers_expected: self.expected_producers,
             duplicates: self
                 .seen
                 .values()
@@ -231,22 +308,21 @@ impl Ledger {
     }
 
     pub(crate) fn snapshot(&self) -> Snapshot {
-        let in_doubt = self.in_doubt.len() as u64;
         Snapshot {
             acked: self.acked.keys().copied().collect(),
             in_doubt: self.in_doubt.clone(),
-            in_flight: (self.outstanding.len() as u64).saturating_sub(in_doubt),
+            in_flight: self.in_flight(),
             sent: self.sent,
             recovered: self.recovered,
+            expected_producers: self.expected_producers,
+            started_producers: self.started_producers,
+            dead: self.dead.clone(),
+            read_to: self.max_offset.map(|max| max + 1),
         }
     }
 
     pub(crate) fn stalls(&self) -> &[Stall] {
         &self.stalls
-    }
-
-    pub(crate) fn refused_producers(&self) -> u64 {
-        self.refused
     }
 
     pub(crate) fn reader_resubscribes(&self) -> u64 {
@@ -272,6 +348,9 @@ pub(crate) fn judge(snapshot: &Snapshot, counts: &HashMap<Key, u32>, unexpected:
     let mut verdict = Verdict {
         acked: snapshot.acked.len() as u64,
         unexpected,
+        expected_producers: snapshot.expected_producers,
+        started_producers: snapshot.started_producers,
+        dead: snapshot.dead.clone(),
         ..Verdict::default()
     };
     for key in &snapshot.acked {

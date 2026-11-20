@@ -9,10 +9,12 @@ command starts it:
 ```
 
 It needs Docker, or Podman with the `docker-compose` provider (2.20 or later).
-The first run builds the checker image from this repository, which takes a few
-minutes. The brokers and control plane are the released images from
-`ghcr.io/getfelix`, the same tag as the repository's `compose.yaml`
-(`FELIX_VERSION` overrides it).
+The first run builds the checker image from this repository's source (there is no
+released image of it), which takes a few minutes. The brokers and control plane
+are the released images from `ghcr.io/getfelix`. The tag is `FELIX_VERSION` in
+`.env`, which the release check keeps on the newest tagged release.
+The cluster uses the private network 172.30.8.0/24; set `FAILOVER_NET=172.30.9`
+(the first three octets) if that is taken on your machine.
 
 Then, from a second terminal:
 
@@ -25,6 +27,9 @@ Then, from a second terminal:
 ./run.sh scenario                   # all of the above, hands off
 ./run.sh down                       # final receipt, then remove everything
 ```
+
+`receipt` and `down` exit non-zero unless the checker's verdict is a pass, so
+they can gate a script.
 
 `up` follows the checker's output, one line a second. Ctrl-C stops following and
 leaves the cluster running; `./run.sh watch` follows it again.
@@ -70,6 +75,10 @@ the same stream.
   **indeterminate**, never as lost. One that is still unanswered when the
   checker stops stays indeterminate, and the receipt says whether it turned up
   in the stream. Neither outcome is a violation.
+  **Indeterminate is usually 0 anyway.** The SDK retries a publish inside the
+  call while it looks for the new leader, and it does not report how often, so
+  a failover shows up as a slow publish and an error never reaches the checker.
+  A 0 there does not show that the re-send path ran; the unit tests do that.
 - The reader follows the stream from its first record and counts what it
   delivers. The live `gaps` and `duplicates` columns come from it.
 - **The receipt does not trust the reader.** It takes the set of writes
@@ -78,10 +87,16 @@ the same stream.
   appears exactly once, that nothing appears twice, and that nothing this run
   never sent is there.
 
+A run **fails**, rather than passes with zero problems, if nothing was
+acknowledged, if a producer could not start, or if a producer stopped early
+(for example the broker refused it). The receipt says how many producers ran and
+why any stopped. The read-back keeps going past empty pages and stops only once
+it has read past the highest offset an acknowledgement reported.
+
 The status line:
 
 ```
-[  42s] acknowledged   4180  in-flight  3  indeterminate  0  delivered   4177  gaps 0  duplicates 0
+[  42s] acknowledged   4180  in-flight  3  indeterminate  0  delivered   4177  gaps 0  duplicates 0  producers 4/4
 ```
 
 `delivered` trails `acknowledged` by what is in transit. `gaps` is writes
@@ -113,8 +128,12 @@ and tests it.
 
 ## Safety
 
+This is for development only: the credentials are fixed and the certificate is
+self-signed.
+
 `run.sh` runs everything through `docker compose -p felix-failover`, so it only
-starts, kills and removes containers and volumes of that one project. Host ports
-are `28443` (control plane) and `28081`-`28083` (broker metrics), all on
-127.0.0.1. The credentials are fixed development tokens; do not reuse this
+starts, kills and removes containers and volumes of that one project. The
+project name is fixed in the script, not read from your environment, so two
+copies of this demo cannot run side by side. No host port is published, so
+nothing here can collide with, or be reached from, anything else. The credentials are fixed development tokens; do not reuse this
 file anywhere that matters.

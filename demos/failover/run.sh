@@ -18,7 +18,11 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-felix-failover}"
+# Fixed on purpose: `down -v` removes this project's volumes, so the name must
+# not come from the caller's environment.
+readonly COMPOSE_PROJECT_NAME=felix-failover
+export COMPOSE_PROJECT_NAME
+unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_ENV_FILES
 cd "$here"
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -118,6 +122,8 @@ case "$cmd" in
       now="$(compose exec -T checker cat /out/receipt.txt 2>/dev/null || true)"
       if [[ -n "$now" && "$now" != "$before" ]]; then
         printf '%s\n' "$now"
+        # Not a pass unless the verdict line says so.
+        if grep -qE '^verdict +(VIOLATED|FAILED)' <<<"$now"; then exit 1; fi
         exit 0
       fi
       sleep 1
@@ -152,14 +158,22 @@ case "$cmd" in
     "$0" receipt
     ;;
   down)
+    status=0
     if running checker; then
       say "final receipt"
       compose kill -s TERM checker >/dev/null || true
       for _ in $(seq 1 150); do running checker || break; sleep 1; done
-      compose logs --no-log-prefix --tail 30 checker 2>/dev/null | sed -n '/==== failover receipt (final)/,$p'
+      compose logs --no-log-prefix --tail 40 checker 2>/dev/null | sed -n '/==== failover receipt (final)/,$p'
+      # The checker exits 0 only when every acknowledged write was found once.
+      cid="$(compose ps -aq checker 2>/dev/null | head -1)"
+      status="$("$engine" inspect --format '{{.State.ExitCode}}' "$cid" 2>/dev/null || echo 1)"
     fi
     say "removing the $COMPOSE_PROJECT_NAME project"
     compose --profile cli down -v --remove-orphans
+    if [[ "$status" != 0 ]]; then
+      echo "run.sh: the checker did not pass (exit $status)" >&2
+    fi
+    exit "$status"
     ;;
   logs)
     compose logs --no-log-prefix "$@"

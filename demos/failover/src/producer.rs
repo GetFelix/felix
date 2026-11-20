@@ -32,10 +32,16 @@ pub(crate) async fn run(
     let producer = match cluster.idempotent_producer().await {
         Ok(producer) => producer,
         Err(err) => {
-            eprintln!("producer {index}: cannot start: {err:#}");
+            let why = format!("cannot start: {err:#}");
+            println!("producer {index} DIED: {why}");
+            ledger
+                .lock()
+                .expect("ledger")
+                .producer_died(index, why, None);
             return;
         }
     };
+    ledger.lock().expect("ledger").producer_started();
     let mut tick =
         tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(args.rate.max(1))));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -60,10 +66,16 @@ pub(crate) async fn run(
             let outcome = {
                 let mut book = ledger.lock().expect("ledger");
                 match sent {
-                    Ok(_) => Outcome::Acked(book.ack(key, Instant::now())),
+                    Ok(offset) => {
+                        if let Some(offset) = offset {
+                            book.landed_at(offset);
+                        }
+                        Outcome::Acked(book.ack(key, Instant::now()))
+                    }
                     Err(err) if err.chain().any(|cause| cause.is::<PublishRefused>()) => {
-                        book.refused(key);
-                        Outcome::Refused(format!("{err:#}"))
+                        let why = format!("the broker refused it: {err:#}");
+                        book.producer_died(index, why.clone(), Some(key));
+                        Outcome::Refused(why)
                     }
                     Err(_) => {
                         book.failed(key);
@@ -83,7 +95,7 @@ pub(crate) async fn run(
                     break;
                 }
                 Outcome::Refused(why) => {
-                    eprintln!("producer {index}: the broker refused this producer: {why}");
+                    println!("producer {index} DIED: {why}");
                     return;
                 }
                 Outcome::Failed => {}

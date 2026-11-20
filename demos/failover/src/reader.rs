@@ -55,6 +55,77 @@ pub(crate) async fn follow(
     }
 }
 
+/// One page of the stream: the payloads in it, and where the next page starts.
+pub(crate) struct Page {
+    pub(crate) payloads: Vec<Vec<u8>>,
+    pub(crate) next_offset: u64,
+}
+
+/// How long a read may keep failing, or sit short of an acknowledged offset,
+/// before the receipt gives up.
+const READ_PATIENCE: Duration = Duration::from_secs(60);
+
+/// Page through the stream with `fetch(from)` until it ends, and return how
+/// many records there were and how many times each key of this run appears.
+///
+/// An empty page is not the end: the broker skips offsets that hold no record
+/// of ours and can answer empty just after a failover. The end is a page that
+/// does not move the offset on, once `read_to` (the first offset past every
+/// acknowledged record) is reached. Short of it, the same answer is retried.
+pub(crate) async fn collect<F, Fut>(
+    run_id: &str,
+    read_to: Option<u64>,
+    patience: Duration,
+    mut fetch: F,
+) -> Result<(HashMap<Key, u32>, u64)>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Page>>,
+{
+    let mut counts: HashMap<Key, u32> = HashMap::new();
+    let mut from = 0u64;
+    let mut records = 0u64;
+    let give_up = Instant::now() + patience;
+    loop {
+        let page = match fetch(from).await {
+            Ok(page) => page,
+            Err(err) if Instant::now() > give_up => {
+                return Err(err).context("read the stream back");
+            }
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+        };
+        for payload in &page.payloads {
+            records += 1;
+            if let Some(key) = payload::decode(run_id, payload) {
+                *counts.entry(key).or_insert(0) += 1;
+            }
+        }
+        if page.next_offset > from {
+            from = page.next_offset;
+            continue;
+        }
+        anyhow::ensure!(
+            page.payloads.is_empty(),
+            "the broker returned records at offset {from} without moving the offset on"
+        );
+        {
+            if read_to.is_none_or(|to| from >= to) {
+                return Ok((counts, records));
+            }
+            if Instant::now() > give_up {
+                anyhow::bail!(
+                    "the stream ends at offset {from}, short of an acknowledged record at {}",
+                    read_to.unwrap_or(0)
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+}
+
 /// Every record of this run on the stream, as how many times each key appears,
 /// and how many records carried a key no producer ever started.
 pub(crate) async fn read_back(
@@ -62,13 +133,10 @@ pub(crate) async fn read_back(
     args: &Args,
     run_id: &str,
     ledger: &Mutex<Ledger>,
+    read_to: Option<u64>,
 ) -> Result<(HashMap<Key, u32>, u64, u64)> {
-    let mut counts: HashMap<Key, u32> = HashMap::new();
-    let mut from = 0u64;
-    let mut records = 0u64;
-    let give_up = Instant::now() + Duration::from_secs(60);
-    loop {
-        match cluster
+    let (counts, records) = collect(run_id, read_to, READ_PATIENCE, |from| async move {
+        let page = cluster
             .read(
                 &args.tenant,
                 &args.namespace,
@@ -78,31 +146,19 @@ pub(crate) async fn read_back(
                 None,
                 1000,
             )
-            .await
-        {
-            Ok(page) => {
-                if page.records.is_empty() {
-                    break;
-                }
-                for record in &page.records {
-                    records += 1;
-                    if let Some(key) = payload::decode(run_id, &record.payload) {
-                        *counts.entry(key).or_insert(0) += 1;
-                    }
-                }
-                from = page.next_offset;
-            }
-            Err(err) => {
-                if Instant::now() > give_up {
-                    return Err(err).context("read the stream back");
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        }
-    }
+            .await?;
+        Ok(Page {
+            payloads: page.records.iter().map(|r| r.payload.to_vec()).collect(),
+            next_offset: page.next_offset,
+        })
+    })
+    .await?;
     let unexpected = {
         let ledger = ledger.lock().expect("ledger");
         counts.keys().filter(|key| !ledger.was_sent(**key)).count() as u64
     };
     Ok((counts, unexpected, records))
 }
+
+#[cfg(test)]
+mod tests;

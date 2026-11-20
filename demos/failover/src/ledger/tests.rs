@@ -1,5 +1,15 @@
 use super::*;
 
+/// A ledger that expects `n` producers, all started.
+fn ledger_with(t0: Instant, n: u16) -> Ledger {
+    let mut ledger = Ledger::new(t0);
+    ledger.expect_producers(n);
+    for _ in 0..n {
+        ledger.producer_started();
+    }
+    ledger
+}
+
 fn at(base: Instant, ms: u64) -> Instant {
     base + Duration::from_millis(ms)
 }
@@ -7,7 +17,7 @@ fn at(base: Instant, ms: u64) -> Instant {
 #[test]
 fn an_acknowledged_write_read_back_once_is_clean() {
     let t0 = Instant::now();
-    let mut ledger = Ledger::new(t0);
+    let mut ledger = ledger_with(t0, 1);
     ledger.begin((0, 0), t0);
     ledger.ack((0, 0), at(t0, 3));
     ledger.delivered(Some((0, 0)));
@@ -72,7 +82,9 @@ fn a_repeated_write_is_a_duplicate() {
 #[test]
 fn a_write_in_doubt_is_never_a_gap() {
     let t0 = Instant::now();
-    let mut ledger = Ledger::new(t0);
+    let mut ledger = ledger_with(t0, 1);
+    ledger.begin((0, 9), t0);
+    ledger.ack((0, 9), t0);
     ledger.begin((0, 0), t0);
     ledger.begin((0, 1), t0);
     ledger.failed((0, 0));
@@ -80,7 +92,7 @@ fn a_write_in_doubt_is_never_a_gap() {
     let counters = ledger.counters(at(t0, 100));
     assert_eq!((counters.in_doubt, counters.in_flight), (2, 0));
     // One of them landed after all, one did not.
-    let counts = HashMap::from([((0, 0), 1)]);
+    let counts = HashMap::from([((0, 9), 1), ((0, 0), 1)]);
     let verdict = judge(&ledger.snapshot(), &counts, 0);
     assert_eq!((verdict.in_doubt_landed, verdict.in_doubt_absent), (1, 1));
     assert!(verdict.gaps.is_empty());
@@ -155,4 +167,78 @@ fn publishes_still_waiting_after_the_first_ack_are_not_a_second_stall() {
     ledger.begin((0, 1), at(t0, 8_000));
     assert!(ledger.watch(at(t0, 8_600)).is_some());
     assert_eq!(ledger.stalls().len(), 1);
+}
+
+#[test]
+fn a_run_that_acknowledged_nothing_does_not_pass() {
+    let t0 = Instant::now();
+    let ledger = ledger_with(t0, 4);
+    let verdict = judge(&ledger.snapshot(), &HashMap::new(), 0);
+    assert!(verdict.violation().is_none());
+    assert!(!verdict.holds());
+    assert_eq!(
+        verdict.failure().as_deref(),
+        Some("nothing was acknowledged")
+    );
+}
+
+#[test]
+fn a_producer_that_never_started_fails_the_run() {
+    let t0 = Instant::now();
+    let mut ledger = Ledger::new(t0);
+    ledger.expect_producers(4);
+    for _ in 0..3 {
+        ledger.producer_started();
+    }
+    ledger.begin((0, 0), t0);
+    ledger.ack((0, 0), t0);
+    let counts = HashMap::from([((0, 0), 1)]);
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert!(!verdict.holds());
+    assert!(verdict.failure().expect("failure").contains("3 of 4"));
+}
+
+#[test]
+fn a_producer_that_died_fails_the_run_with_its_reason() {
+    let t0 = Instant::now();
+    let mut ledger = ledger_with(t0, 2);
+    ledger.begin((0, 0), t0);
+    ledger.ack((0, 0), t0);
+    ledger.begin((1, 0), t0);
+    ledger.producer_died(1, "the broker refused it".to_string(), Some((1, 0)));
+    let counts = HashMap::from([((0, 0), 1)]);
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert!(!verdict.holds());
+    assert!(
+        verdict
+            .failure()
+            .expect("failure")
+            .contains("producer 1 stopped early")
+    );
+}
+
+#[test]
+fn a_refused_producers_write_stops_counting_as_waiting() {
+    let t0 = Instant::now();
+    let mut ledger = ledger_with(t0, 2);
+    ledger.begin((0, 0), t0);
+    ledger.begin((1, 0), at(t0, 10));
+    ledger.producer_died(0, "refused".to_string(), Some((0, 0)));
+    // The dead producer's write is in doubt, not in flight and not a stall.
+    let counters = ledger.counters(at(t0, 100));
+    assert_eq!((counters.in_flight, counters.in_doubt), (1, 1));
+    assert_eq!(ledger.watch(at(t0, 5_000)), Some(at(t0, 10)));
+    ledger.ack((1, 0), at(t0, 5_100));
+    assert_eq!(ledger.watch(at(t0, 5_200)), None);
+    assert_eq!(ledger.counters(at(t0, 5_200)).in_flight, 0);
+}
+
+#[test]
+fn the_read_stops_past_the_highest_acknowledged_offset() {
+    let t0 = Instant::now();
+    let mut ledger = ledger_with(t0, 1);
+    assert_eq!(ledger.snapshot().read_to, None);
+    ledger.landed_at(7);
+    ledger.landed_at(3);
+    assert_eq!(ledger.snapshot().read_to, Some(8));
 }

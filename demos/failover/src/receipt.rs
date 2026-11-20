@@ -15,14 +15,16 @@ pub(crate) fn print_line(ledger: &Mutex<Ledger>, started: Instant) {
     let ledger = ledger.lock().expect("ledger");
     let c = ledger.counters(Instant::now());
     println!(
-        "[{:>4}s] acknowledged {:>6}  in-flight {:>2}  indeterminate {:>2}  delivered {:>6}  gaps {}  duplicates {}",
+        "[{:>4}s] acknowledged {:>6}  in-flight {:>2}  indeterminate {:>2}  delivered {:>6}  gaps {}  duplicates {}  producers {}/{}",
         started.elapsed().as_secs(),
         c.acked,
         c.in_flight,
         c.in_doubt,
         c.delivered,
         c.gaps,
-        c.duplicates
+        c.duplicates,
+        c.producers_up,
+        c.producers_expected
     );
 }
 
@@ -60,7 +62,8 @@ async fn receipt(
     kind: &str,
 ) -> Result<bool> {
     let snapshot = ledger.lock().expect("ledger").snapshot();
-    let (counts, unexpected, records) = reader::read_back(cluster, args, run_id, ledger).await?;
+    let (counts, unexpected, records) =
+        reader::read_back(cluster, args, run_id, ledger, snapshot.read_to).await?;
     let verdict = judge(&snapshot, &counts, unexpected);
     let text = {
         let ledger = ledger.lock().expect("ledger");
@@ -95,6 +98,16 @@ fn render(
     );
     let _ = writeln!(
         out,
+        "producers ran        {} of {}, {} stopped early",
+        verdict.started_producers,
+        verdict.expected_producers,
+        verdict.dead.len()
+    );
+    for (index, why) in &verdict.dead {
+        let _ = writeln!(out, "  producer {index} stopped: {why}");
+    }
+    let _ = writeln!(
+        out,
         "producers            {} idempotent producers x {}/s, {}-byte payloads",
         args.producers, args.rate, args.payload_bytes
     );
@@ -110,7 +123,7 @@ fn render(
     );
     let _ = writeln!(
         out,
-        "indeterminate        {} (the last attempt errored; {} found in the stream, {} not)",
+        "indeterminate        {} (errors that reached the checker; {} found in the stream, {} not. The SDK retries inside a publish and does not count that, so 0 here does not show the re-send path ran)",
         snapshot.in_doubt.len(),
         verdict.in_doubt_landed,
         verdict.in_doubt_absent
@@ -142,9 +155,6 @@ fn render(
     if ledger.foreign() > 0 {
         let _ = writeln!(out, "other runs' records  {} ignored", ledger.foreign());
     }
-    if ledger.refused_producers() > 0 {
-        let _ = writeln!(out, "refused producers    {}", ledger.refused_producers());
-    }
     let _ = writeln!(out, "reader resubscribes  {}", ledger.reader_resubscribes());
     if ledger.stalls().is_empty() {
         let _ = writeln!(out, "write stalls         none over 500 ms");
@@ -161,14 +171,13 @@ fn render(
                 .unwrap_or_default()
         );
     }
-    let _ = writeln!(
-        out,
-        "verdict              {}",
-        if verdict.holds() {
-            "every acknowledged write is in the stream exactly once; nothing extra"
-        } else {
-            "VIOLATED: see the missing, repeated or unexpected records above"
-        }
-    );
+    let verdict_line = if let Some(why) = verdict.failure() {
+        format!("FAILED: {why}; this run proves nothing")
+    } else if verdict.violation().is_some() {
+        "VIOLATED: see the missing, repeated or unexpected records above".to_string()
+    } else {
+        "every acknowledged write is in the stream exactly once; nothing extra".to_string()
+    };
+    let _ = writeln!(out, "verdict              {verdict_line}");
     out
 }
