@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795148145408,
+  "lastUpdate": 1795151778835,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63700,6 +63700,58 @@ window.BENCHMARK_DATA = {
             "range": "4872.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807278.12\nmean: 808733.45\nstdev: 4872.87\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9b5e9a81d627341e96a55ad99b35a5753531add",
+          "message": "chore(sdk): fix SonarCloud maintainability findings (#2741) (#2865)\n\nWrap the idempotent dispose and abandon calls in Record.Exception so the\ntests assert something, use Number.NaN, add a small fixture check to the\nTypeScript conformance test, and remove a side effect from a && operand\nin pubsub.c.",
+          "timestamp": "2026-11-20T05:07:49Z",
+          "tree_id": "a95627ab318d95b7100f395e69f95f22b08fd653",
+          "url": "https://github.com/GetFelix/felix/commit/e9b5e9a81d627341e96a55ad99b35a5753531add"
+        },
+        "date": 1795151778249,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 357187.87,
+            "range": "7932.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357187.87\nmean: 359509.95\nstdev: 7932.14\ncv: 2.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 357187.87,
+            "range": "7932.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357187.87\nmean: 359509.95\nstdev: 7932.14\ncv: 2.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81243.56,
+            "range": "614.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81243.56\nmean: 81058.68\nstdev: 614.53\ncv: 0.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812435.58,
+            "range": "6145.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812435.58\nmean: 810586.85\nstdev: 6145.33\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
