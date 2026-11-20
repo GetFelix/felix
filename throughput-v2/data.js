@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795143784811,
+  "lastUpdate": 1795147564732,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63596,6 +63596,58 @@ window.BENCHMARK_DATA = {
             "range": "61336.13",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817736.42\nmean: 789780.50\nstdev: 61336.13\ncv: 7.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "294481d96cd9c460227d96c714f6032c172d9f19",
+          "message": "fix(controlplane): a withheld member reports its term, so the waived floor covers it (#2824) (#2825)\n\n* fix(metadata-raft): a waived floor takes the term a withheld member follows (#2824)\n\nA withheld member gave no term in `standing`, and `learn_floor` took the\nfloor from voting members only. After two wipes in three, under a\n`waive-lost` waiver, the second wiped member could take its floor from a\ndeposed term-1 leader alone while the first, still catching up, followed\nthe term-2 leader. The deposed leader then committed and acked a record\nwith it that the next leader truncates (TLC: TwoWipesFloor violated\nAckedHeldSurvive).\n\nA withheld member now reports its current term in a new field,\n`withheld_term`, so older askers still read the answer as withheld. The\nfloor is the highest term any member gives; only voting members count as\nproof. Past the failure tolerance, a withheld peer on a build that does\nnot give its term is waited on rather than read as term 0.\n\nSpec: LearnFloor takes every member's term, with a FloorVotersOnly knob\nfor the old rule. TwoWipesFloor passes again; the new\nTwoWipesFloorVotersOnly twin violates AckedHeldSurvive. FelixRaftPlacement\nextends Integers (as in #2798) so it parses, and the two NoWrite configs\nget the Floor knobs they lacked.\n\n* docs(metadata-raft): a deposed leader below the floor counts as lost under a waiver (#2824)\n\n* test(metadata-raft): a withheld member reports the term it served; note the resumed-path wait (#2824)\n\n* formal(raft): unregister FelixRaftPlacementSameIdFiveFloor, unfinished in a PR's hour (#2853)\n\nIt parsed only after #2798 and its weight was a guess; the shard ran 60 min\nwithout finishing it.\n\nSpec-Unaffected: no spec or cfg changed, only the registration\n\n* formal(raft): list SameIdFiveFloor as unregistered with its reason\n\nSpec-Unaffected: lists an existing configuration as unchecked by CI; no spec or cfg change.",
+          "timestamp": "2026-11-20T03:59:05Z",
+          "tree_id": "5a487346eb67874fafcf09686472cfbe097adab0",
+          "url": "https://github.com/GetFelix/felix/commit/294481d96cd9c460227d96c714f6032c172d9f19"
+        },
+        "date": 1795147564109,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 568996.45,
+            "range": "17808.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 568996.45\nmean: 561274.20\nstdev: 17808.76\ncv: 3.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 568996.45,
+            "range": "17808.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 568996.45\nmean: 561274.20\nstdev: 17808.76\ncv: 3.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 126944.32,
+            "range": "446.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 126944.32\nmean: 126966.88\nstdev: 446.28\ncv: 0.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1269443.15,
+            "range": "4462.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1269443.15\nmean: 1269668.80\nstdev: 4462.77\ncv: 0.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
