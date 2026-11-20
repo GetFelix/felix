@@ -235,6 +235,8 @@ pub(super) struct Moves {
     readmits: usize,
     /// Raft shards this pass named a new leader for.
     pub(super) raft_leaders: usize,
+    /// Raft shards this pass replaced an internal member of.
+    pub(super) raft_replacements: usize,
 }
 
 impl Moves {
@@ -255,6 +257,7 @@ impl Moves {
             stuck_renames: 0,
             readmits: 0,
             raft_leaders: 0,
+            raft_replacements: 0,
         };
         for assignment in existing {
             // A seat fence is `Draining` with `joining` and no successor:
