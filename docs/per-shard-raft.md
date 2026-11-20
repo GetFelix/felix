@@ -4009,8 +4009,10 @@ later by no report a Raft shard sends:
   copy rotates after it answered, the set names its old copy id and not the
   new one. The new copy is a member no group knows, like any copy wiped
   after its group formed, and the group runs with one voter that never
-  answers: at three replicas it cannot lose another until the group's
-  membership change replaces the copy. The question names the stream's incarnation,
+  answers: at three replicas it cannot lose another. Nothing replaces such a
+  copy yet: placement swaps a member only off an internal node, and
+  wiped-copy replacement is
+  [#2235](https://github.com/GetFelix/felix/issues/2235). The question names the stream's incarnation,
   so a member still on an older incarnation of the stream (its broker has
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
