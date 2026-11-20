@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795143781154,
+  "lastUpdate": 1795147561129,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -80718,6 +80718,72 @@ window.BENCHMARK_DATA = {
             "range": "70.34",
             "unit": "us",
             "extra": "trials: 5\nmedian: 559.00\nmean: 564.80\nstdev: 70.34\ncv: 12.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "294481d96cd9c460227d96c714f6032c172d9f19",
+          "message": "fix(controlplane): a withheld member reports its term, so the waived floor covers it (#2824) (#2825)\n\n* fix(metadata-raft): a waived floor takes the term a withheld member follows (#2824)\n\nA withheld member gave no term in `standing`, and `learn_floor` took the\nfloor from voting members only. After two wipes in three, under a\n`waive-lost` waiver, the second wiped member could take its floor from a\ndeposed term-1 leader alone while the first, still catching up, followed\nthe term-2 leader. The deposed leader then committed and acked a record\nwith it that the next leader truncates (TLC: TwoWipesFloor violated\nAckedHeldSurvive).\n\nA withheld member now reports its current term in a new field,\n`withheld_term`, so older askers still read the answer as withheld. The\nfloor is the highest term any member gives; only voting members count as\nproof. Past the failure tolerance, a withheld peer on a build that does\nnot give its term is waited on rather than read as term 0.\n\nSpec: LearnFloor takes every member's term, with a FloorVotersOnly knob\nfor the old rule. TwoWipesFloor passes again; the new\nTwoWipesFloorVotersOnly twin violates AckedHeldSurvive. FelixRaftPlacement\nextends Integers (as in #2798) so it parses, and the two NoWrite configs\nget the Floor knobs they lacked.\n\n* docs(metadata-raft): a deposed leader below the floor counts as lost under a waiver (#2824)\n\n* test(metadata-raft): a withheld member reports the term it served; note the resumed-path wait (#2824)\n\n* formal(raft): unregister FelixRaftPlacementSameIdFiveFloor, unfinished in a PR's hour (#2853)\n\nIt parsed only after #2798 and its weight was a guess; the shard ran 60 min\nwithout finishing it.\n\nSpec-Unaffected: no spec or cfg changed, only the registration\n\n* formal(raft): list SameIdFiveFloor as unregistered with its reason\n\nSpec-Unaffected: lists an existing configuration as unchecked by CI; no spec or cfg change.",
+          "timestamp": "2026-11-20T03:59:05Z",
+          "tree_id": "5a487346eb67874fafcf09686472cfbe097adab0",
+          "url": "https://github.com/GetFelix/felix/commit/294481d96cd9c460227d96c714f6032c172d9f19"
+        },
+        "date": 1795147550994,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 68.00\nstdev: 0.71\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 116,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 116.00\nmean: 116.60\nstdev: 1.95\ncv: 1.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 148,
+            "range": "11.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 147.80\nstdev: 11.23\ncv: 7.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 86.20\nstdev: 3.03\ncv: 3.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 186,
+            "range": "566.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 186.00\nmean: 585.40\nstdev: 566.15\ncv: 96.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 632,
+            "range": "1286.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 632.00\nmean: 1333.40\nstdev: 1286.22\ncv: 96.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
