@@ -136,8 +136,11 @@ public class MarshalTests
     {
         var state = new CallState<long?>(default);
         state.Pin();
-        state.Abandon();
-        state.Abandon();
+        Assert.Null(Record.Exception(() =>
+        {
+            state.Abandon();
+            state.Abandon();
+        }));
     }
 
     [Fact]

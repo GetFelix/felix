@@ -36,6 +36,7 @@ public class ClientCertificateTests
     {
         var f = MutualTls.Load();
         await using var client = await FelixClient.ConnectAsync(f.Options(f.CertFile, f.KeyFile));
+        Assert.NotNull(client);
     }
 
     [FixtureFact]

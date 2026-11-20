@@ -6304,9 +6304,13 @@ static void parity_inspector(const struct fixture *f, FelixClient *client) {
                                                             on_subscriptions, &a));
       CHECK(status == FELIX_STATUS_OK && a.json && strstr(a.json, "\"subscriptions\":["),
             "list_subscriptions gave %d: %s", (int)status, a.json ? a.json : a.w.message);
-      for (const char *at = a.json; status == FELIX_STATUS_OK && (at = strstr(at, "\"subscriber_id\":"));
-           at++) {
-        listed++;
+      const char *at = status == FELIX_STATUS_OK ? a.json : NULL;
+      while (at != NULL) {
+        at = strstr(at, "\"subscriber_id\":");
+        if (at != NULL) {
+          listed++;
+          at++;
+        }
       }
       free(cursor);
       cursor = a.next ? strdup(a.next) : NULL;
