@@ -171,9 +171,12 @@ public class CommitTests
     public async Task DisposingAProducerTwiceIsSafe()
     {
         var producer = ClosedHandleProducer();
-        await producer.DisposeAsync();
-        await producer.DisposeAsync();
-        producer.Dispose();
+        Assert.Null(await Record.ExceptionAsync(async () =>
+        {
+            await producer.DisposeAsync();
+            await producer.DisposeAsync();
+            producer.Dispose();
+        }));
     }
 
     private static unsafe void Call(delegate* unmanaged[Cdecl]<nint, int, byte*, ulong, void> callback, nint userData, int status, ulong offset) =>

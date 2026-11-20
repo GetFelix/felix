@@ -12,7 +12,8 @@
 // skipped a required scenario is not conformance, which is why the verdict
 // comes from the catalogue rather than from this suite's exit code.
 
-import { after, before, describe } from "node:test";
+import assert from "node:assert/strict";
+import { after, before, describe, test } from "node:test";
 
 import {
   connect,
@@ -66,6 +67,14 @@ after(async () => {
   const written = writeResults();
   if (written) console.log(`\nconformance results written to ${written}`);
 }, { timeout: 60_000 });
+
+// Not a conformance scenario (it is in no ledger entry): it just states, where a
+// reader and the static analyser can see it, that the suite below runs against a
+// live fixture with a connected client.
+test("the shared fixture and client are up before the scenarios run", () => {
+  assert.ok(ctx.fixture);
+  assert.ok(ctx.client);
+});
 
 describe("publish and subscribe", () => registerPubsub(ctx));
 describe("cache, counters and watches", () => registerCache(ctx));

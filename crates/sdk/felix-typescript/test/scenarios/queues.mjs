@@ -417,7 +417,7 @@ export default function register(ctx) {
       /start must be/,
     );
     const year = 365 * 24 * 3600 * 1000;
-    for (const bad of [0, -1, NaN, Infinity, year + 1]) {
+    for (const bad of [0, -1, Number.NaN, Infinity, year + 1]) {
       await assert.rejects(
         operator.groupExtend(tenant, namespace, stream, 0, "g", { offset: 0n, attempts: 1 }, bad),
         /extendMs/,
@@ -518,14 +518,14 @@ export default function register(ctx) {
     const { client, fixture } = ctx;
     const { tenant_id: tenant, namespace, durable_stream: stream } = fixture;
     const year = 365 * 24 * 3600 * 1000;
-    for (const bad of [-1, NaN, Infinity, year + 1]) {
+    for (const bad of [-1, Number.NaN, Infinity, year + 1]) {
       await assert.rejects(
         client.groupNackAfter(tenant, namespace, stream, 0, "g", { offset: 0n, attempts: 1 }, bad),
         /delayMs/,
         `delayMs ${bad} was accepted`,
       );
     }
-    for (const bad of [0, -1, NaN, Infinity, year + 1]) {
+    for (const bad of [0, -1, Number.NaN, Infinity, year + 1]) {
       await assert.rejects(
         client.groupPoll(tenant, namespace, stream, 0, "g", 1, 0, undefined, undefined, bad),
         /visibilityMs/,
