@@ -40,8 +40,8 @@ analysis reads structured data, never scraped prose.
 Three disciplines carry over from the local suite, and two are new:
 
 - **Release artifacts, never source builds.** Test machines download the
-  GitHub release tarball (`felix-<tag>-linux-x86_64.tar.gz`, produced by
-  `release.yml`) and run those bytes. Building on the target machine wastes
+  GitHub release tarball (`felix-<tag>-linux-x86_64.tar.gz`, or `-linux-aarch64` for Arm machines,
+  produced by `release.yml`) and run those bytes. Building on the target machine wastes
   budget, varies with the toolchain, and (the local lesson) compiling
   *during* a run corrupts the measurement. It also makes every result
   attributable to a tag a reader can download.
