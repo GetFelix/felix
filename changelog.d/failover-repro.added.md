@@ -1,0 +1,1 @@
+- `demos/failover`: a one-command, three-broker failover demo (`./run.sh up`) with an independent checker that reads the stream back and reports gaps, duplicates and writes in doubt, plus the page "See failover on your laptop".

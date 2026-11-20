@@ -73,6 +73,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'getting-started/overview' },
             { label: 'What Felix Is For', slug: 'getting-started/what-felix-is-for' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
+            { label: 'See failover on your laptop', slug: 'getting-started/failover-on-your-laptop' },
             { label: 'Installation', slug: 'getting-started/installation' },
             { label: 'felixctl', slug: 'getting-started/felixctl' },
             { label: 'Docker or Podman', slug: 'getting-started/containers' },

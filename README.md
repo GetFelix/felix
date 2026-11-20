@@ -23,6 +23,10 @@ docker compose run --rm felixctl pub orders 'hello'    # and a third
 The stack prints how to point an installed `felixctl` at it. The credentials are for local use only;
 see [Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
 
+**Watch it survive a killed leader.** [See failover on your laptop](https://docs.getfelix.dev/getting-started/failover-on-your-laptop/)
+starts three brokers, kills the leader mid-write, and checks from outside that no acknowledged write was lost
+(`demos/failover/run.sh up`).
+
 The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes further, and the rest is at
 [docs.getfelix.dev](https://docs.getfelix.dev).
 

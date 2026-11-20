@@ -358,14 +358,17 @@ tasks:
     cmds:
       - "cargo fmt --manifest-path demos/slow-consumer/Cargo.toml -- --check"
       - "cargo fmt --manifest-path demos/state-divergence/Cargo.toml -- --check"
+      - "cargo fmt --manifest-path demos/failover/Cargo.toml -- --check"
       - "cargo clippy --manifest-path demos/slow-consumer/Cargo.toml --all-targets -- -D warnings"
       - "cargo clippy --manifest-path demos/state-divergence/Cargo.toml --all-targets -- -D warnings"
+      - "cargo clippy --manifest-path demos/failover/Cargo.toml --all-targets -- -D warnings"
       - "cargo build --manifest-path demos/slow-consumer/Cargo.toml"
       - "cargo build --manifest-path demos/state-divergence/Cargo.toml"
       - "cargo build --manifest-path demos/rbac-live/Cargo.toml"
       - "cargo build --manifest-path demos/cross_tenant_isolation/Cargo.toml"
       - "cargo test --manifest-path demos/slow-consumer/Cargo.toml"
       - "cargo test --manifest-path demos/state-divergence/Cargo.toml"
+      - "cargo test --manifest-path demos/failover/Cargo.toml"
       # The queue demo asserts every guarantee it narrates and bails on any
       # violation, so running it is the behavioural test. It is deterministic:
       # it drives the visibility timeout itself rather than sleeping.
