@@ -4,31 +4,34 @@
 
 Felix is a replicated log over QUIC that serves streams, caches and queues from one system.
 
+**Try it in about a minute.** You need Docker or Podman. This starts a control plane and a broker
+with development credentials, publishes three records and reads them back:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
+docker compose up -d                                   # Podman: PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up -d
+docker compose run --rm felixctl pub orders 'hello' --count 3
+docker compose run --rm felixctl sub orders --from earliest --count 3
+docker compose down -v                                 # when you are done
+```
+
+The `sub` prints `hello` three times and exits. The stack runs the 0.7.2 release images, and its
+credentials are for local use only, see
+[Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
+
+**Next:** the [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) has the Rust client and a
+three-node cluster, and the rest is at [docs.getfelix.dev](https://docs.getfelix.dev).
+
+**Watch it survive a killed leader.** [See failover on your laptop](https://docs.getfelix.dev/getting-started/failover-on-your-laptop/)
+starts three brokers, kills the leader mid-write, and checks from outside that no acknowledged write was lost
+(`demos/failover/run.sh up`).
+
 - **Fanout.** Each publish is encoded once, however many subscribers read it, and every subscriber has its
   own bounded queue. By default a slow consumer drops records instead of holding up a publisher or anyone else.
 - **Streams, caches and queues.** A stream is the log read forward, a cache is its latest value per key, and a
   queue is a durable cursor over it, with one client, one wire protocol and one access model.
 - **Replication.** Quorum acknowledgement and fenced failover, with the protocol model-checked
   in TLA+ and fault-injection tests that kill brokers and simulate power loss mid-write.
-
-**Try it in one command.** A control plane, a broker and development credentials, from the released images:
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml
-docker compose up                                      # Podman: PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up
-docker compose run --rm felixctl sub orders            # in a second terminal
-docker compose run --rm felixctl pub orders 'hello'    # and a third
-```
-
-The stack prints how to point an installed `felixctl` at it. The credentials are for local use only;
-see [Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
-
-**Watch it survive a killed leader.** [See failover on your laptop](https://docs.getfelix.dev/getting-started/failover-on-your-laptop/)
-starts three brokers, kills the leader mid-write, and checks from outside that no acknowledged write was lost
-(`demos/failover/run.sh up`).
-
-The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) goes further, and the rest is at
-[docs.getfelix.dev](https://docs.getfelix.dev).
 
 <p align="center">
   <a href="https://github.com/GetFelix/felix/actions/workflows/ci.yml">

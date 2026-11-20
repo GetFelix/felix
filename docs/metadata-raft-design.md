@@ -497,12 +497,13 @@ sequenceDiagram
 So before a wiped member answers any leader, it learns a floor:
 
 1. It asks every other member for its term (`standing`, field `term`).
-   Only a member that holds its vote gives one. A member that withholds
-   its vote too says so instead (field `withheld`), and that counts as an
-   answer with no term. A member on a build that predates both fields
-   gives neither, and that does not count.
+   A member that withholds its vote too says so instead (field
+   `withheld`) and gives its current term in a field of its own
+   (`withheld_term`): 0 if it has served no leader yet, else the term of
+   the leader it follows. A member on a build that predates `term` and
+   `withheld` gives neither, and that does not count.
 2. Once every other member has answered, the floor is the highest term
-   given. Silence is never an answer. The member it promised a term to may
+   given, a withheld member's included. Silence is never an answer. The member it promised a term to may
    be the only one that knows that term, and that member may be the one
    that is down.
 3. Until it votes again, the member answers append-entries, heartbeats and
@@ -522,6 +523,16 @@ it is one the member could have backed. Once it answers that leader, its
 stored term is the leader's, and Raft's own checks refuse anything older
 from then on. It votes again only after catching up, so it never votes in
 a term it forgot either.
+
+A withheld member's term proves nothing, for the reason above, but it still
+raises the floor. That term belonged to a real leader, and a leader below
+it is deposed. Within the tolerance a voting member reports a term at least
+as high anyway: every majority holds a voter, the majority that elected
+that leader included. Past it, under a waiver, the withheld member may be the
+only one left that knows the newer leader exists. Without its term, the
+waived member would serve the deposed leader, which could then commit and
+acknowledge a record the next leader truncates
+(`FelixRaftPlacementTwoWipesFloorVotersOnly.cfg`, #2824).
 
 Hearing from a majority of the others is not enough with five members. A
 candidate that holds the member's forgotten vote can be the one member left
@@ -551,9 +562,10 @@ answers no leader.
 A block ends one of two ways:
 
 1. **A withheld member finishes catching up.** A member that is still
-   catching up after an earlier wipe also says it is withheld. It already
-   learned its floor and serves the current leader, so its catch-up does
-   not need the blocked member. Once it votes again it reports a term, and
+   catching up after an earlier wipe also says it is withheld, and gives
+   the term of the leader it follows. It already learned its floor and
+   serves the current leader, so its catch-up does not need the blocked
+   member. Once it votes again it reports a term, and
    the blocked member, which keeps asking, learns its floor. This is the
    common case: one wipe, then a second before the first has caught up. A
    member that restarts part way through its catch-up holds state, so it
@@ -570,7 +582,10 @@ A block ends one of two ways:
    names every withheld member the block waits on, and gives a reason. The
    waiver must name each of them, even one that is healthy and only
    catching up. The member logs the waiver and goes on with the floor from
-   the members that reported a term. Acknowledged writes only the lost
+   every term given, the withheld members' included. Past the tolerance a
+   withheld member on a build that does not give `withheld_term` is waited
+   on like a silent one, so the block is not reported and no waiver is
+   taken until it upgrades or finishes catching up. A member resumed from an interrupted catch-up skips that wait, because its stored vote already refuses older leaders. Acknowledged writes only the lost
    members held may be lost, and the
    [restore](#restoring-beyond-quorum-loss) path is how to get them back.
    Each blocked member takes its own waiver.
@@ -580,7 +595,9 @@ a withheld member never votes before it has caught up. So a waiver helps
 only while a member that kept its volume still leads. If the leader was
 one of the members that lost their volumes, no leader can be elected, and
 the waived member keeps reporting that it is catching up. Go straight to
-the restore path then.
+the restore path then. A leader that kept its volume but sits below the
+floor, deposed without knowing it, counts as lost here: the waived member
+does not serve it, and it cannot win a later term.
 
 A waiver is held in memory and used once. It is refused before the block
 is reported, when it misses a member the block waits on, or when it names

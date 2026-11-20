@@ -477,9 +477,11 @@ where
             };
             while !stop.load(Ordering::Relaxed) {
                 if stat.stalled.load(Ordering::Relaxed) {
-                    // The stall: hold the subscription open but stop reading. This is
-                    // what a blocked render loop or a degraded link looks like to the
-                    // broker, and it is what fills the subscriber's queue.
+                    // The stall: hold the subscription open but stop calling
+                    // `next_event`. This is what a blocked render loop looks like to
+                    // the client: its own dispatch queue fills. The client still
+                    // drains the QUIC stream into that queue, so under `drop_new`
+                    // the loss is client-side and the broker queue stays empty.
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 }

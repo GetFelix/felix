@@ -1,7 +1,7 @@
 //! Purging a Raft stream shard's log below its floor (#2602). The fleet
 //! gate is off in these brokers, so only a test's own calls purge.
 
-use felix_broker::StartPosition;
+use felix_broker::{BrokerError, StartPosition};
 use felix_storage::log::LogConfig;
 
 use super::trim::{publish, too_old, trim};
@@ -69,18 +69,35 @@ async fn purge(member: &Member) -> Option<u64> {
         .await
 }
 
+/// `member` answers a resume from `offset` with "too old". A read it serves
+/// fails at once. Any other refusal means it cannot answer yet (a restarted
+/// member still learning who leads), so it is asked again.
+async fn refuses_below(member: &Member, offset: u64, what: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let answer = member
+            .broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(offset))
+            .await;
+        match answer {
+            Err(BrokerError::CursorTooOld { .. }) => return,
+            Ok(_) => panic!("{} {what}", member.name),
+            Err(err) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{} never answered a resume from {offset}: {err:?}",
+                    member.name
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+}
+
 /// `member` refuses a resume below `floor` and serves `r4` and `r5` from it.
 async fn serves_from(member: &Member, floor: u64) {
-    assert!(
-        too_old(&member.broker, floor - 1).await,
-        "{} read below the floor",
-        member.name
-    );
-    assert!(
-        too_old(&member.broker, 0).await,
-        "{} read the purged head",
-        member.name
-    );
+    refuses_below(member, floor - 1, "read below the floor").await;
+    refuses_below(member, 0, "read the purged head").await;
     let records = member
         .broker
         .read_committed("t1", "ns", "orders", 0, floor, 1 << 16)

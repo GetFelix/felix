@@ -5,6 +5,7 @@ mod cache_routing;
 mod cancelled_producer;
 mod conditional_outcome;
 mod connections;
+mod dead_leader_dial;
 mod decisions;
 mod error_codes;
 mod explicit_shard;

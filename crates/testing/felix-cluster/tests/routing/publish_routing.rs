@@ -125,6 +125,10 @@ async fn keyed_publishes_learn_each_shard_owner() {
     })
     .await
     .expect("start cluster");
+    cluster
+        .await_every_shard_serving(KEYED, 12)
+        .await
+        .expect("every shard serving");
 
     let (_owner, non_owner) = cluster
         .owner_and_non_owner(KEYED)

@@ -138,6 +138,10 @@ fn assert_ordered(all: &BTreeMap<u32, Vec<(u64, String)>>) {
 #[tokio::test]
 async fn the_first_batches_go_to_the_leaders_with_or_without_an_ack() {
     let cluster = Cluster::start(config()).await.expect("start cluster");
+    cluster
+        .await_every_shard_serving(STREAM, SHARDS)
+        .await
+        .expect("every shard serving");
     let client = connect_via_non_owner(&cluster).await;
     let client_before = felix_client::publishes_forwarded();
     let brokers_before = broker_forwards(&cluster).await;
@@ -216,6 +220,10 @@ where
 #[tokio::test]
 async fn a_leader_change_mid_run_duplicates_nothing() {
     let cluster = Cluster::start(config()).await.expect("start cluster");
+    cluster
+        .await_every_shard_serving(STREAM, SHARDS)
+        .await
+        .expect("every shard serving");
     let client = connect_via_non_owner(&cluster).await;
 
     let publishing = publish_rounds(40, |batch| {
@@ -254,6 +262,10 @@ async fn a_leader_change_mid_run_duplicates_nothing() {
 #[tokio::test]
 async fn at_least_once_loses_nothing_across_a_leader_change() {
     let cluster = Cluster::start(config()).await.expect("start cluster");
+    cluster
+        .await_every_shard_serving(STREAM, SHARDS)
+        .await
+        .expect("every shard serving");
     let client = connect_via_non_owner(&cluster).await;
 
     let publishing = publish_rounds(40, |batch| {

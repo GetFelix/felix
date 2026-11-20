@@ -1,0 +1,1 @@
+- The README now opens with a copy-paste path that starts a broker, publishes three records and reads them back, and the quickstart page uses the same commands.

@@ -1493,8 +1493,13 @@ constraint, ahead of every preference:
   fail. A cluster whose only live brokers are internal places nothing.
 - An operator move onto it is refused with `internal_node` (409).
 - A shard it already holds, from before the role was set, is moved off the
-  way a drain moves it. A Raft shard keeps its member set; only its leader
-  moves off.
+  way a drain moves it. A Raft shard's leader moves to a member that is not
+  internal, and each of its followers on an internal node is replaced through
+  the group's membership change (see [Raft shards](#raft-shards)). With no
+  live node outside the set to take a copy, the set is left as it is, the
+  shard shows as waiting (as it does while another member is down), the warning "a shard's copy is on an internal node
+  and no live node can take its place" is logged each pass, and the gauge
+  `felix_shards_on_internal_nodes` counts it.
 - It does not count toward the shares above or the "live brokers" warning on
   stream creation.
 
@@ -1831,6 +1836,21 @@ only says which member it wants leading:
 | Destination outside the set | Copied in first | Refused (`not_a_member`), never chosen |
 | Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
 | Follower on a draining broker | Replaced | Stays |
+| Follower on an internal node | Replaced | Replaced: one write swaps it for a live node outside the set |
+
+A follower on an internal node is the one case where placement changes a Raft
+shard's set. With the leader off the internal node and the group's target
+stored for its current set, one write replaces that follower with the live
+node outside the set that holds the fewest shards, so the set keeps its size.
+The write changes the stored target, and the group's leader adds the new
+member as a learner, waits for it to catch up and only then swaps the voters
+through joint consensus, so the group never has fewer voters than its
+replication factor and never loses its quorum. A write is decided only on a target
+stored for the current set and with every other member live, so a pass stores
+one target change per shard; the group may fold swaps queued behind it into one
+joint change, which joint consensus keeps safe. The new member is chosen to keep the
+set's zone spread where it can. At most 16 shards change a pass. With no such node the shard waits
+and the set stays; a drain still leaves followers where they are.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
@@ -2336,6 +2356,7 @@ after the fence.
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled`; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, a move limit holding a drain back, or a move for balance held while the cluster recovers |
+| `felix_shards_on_internal_nodes` | shards with a copy on an internal node and no live node outside the set to take its place |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
 | `felix_placement_writes_fenced_total` | passes and operator requests that stopped because another placement write landed after they read the store; the pass re-plans, the request is decided again |
 | `felix_placement_lease_held` | 1 on the instance holding the placement lease; summed across instances it is 1, or 0 while a lease that was not released runs out |

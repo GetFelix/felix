@@ -150,11 +150,14 @@ Two things in it are worth reading closely:
   ran in this run; the checker's unit tests cover it. A publish that does
   return an error is counted as indeterminate while the checker re-sends it
   under the same sequence, and is never counted as lost.
-- **The second stall is longer than the election.** The replicas elected a new
-  leader about 7 s after the kill (the log lines above), but the first write
-  was acknowledged 18 s after it, and the last of the four producers 36 s after.
-  The clients took longer than the election to find and use the new leader. This
-  run does not say why, and it is why the checker reports both numbers.
+- **The second stall is longer than the election, on felix 0.7.2.** The numbers
+  here are from the 0.7.2 images and a client built from this repository at the
+  time. The replicas elected a new leader about 7 s after the kill (the log
+  lines above), but the first write was acknowledged 18 s after it, and the last
+  of the four producers 36 s after. From 0.7.3, the client resumes about when the
+  election finishes, about 8.5 s in the same scenario
+  ([#2871](https://github.com/GetFelix/felix/issues/2871)). The checker reports
+  both numbers so you can see the gap.
 
 ## What the checker checks
 

@@ -53,6 +53,8 @@ pub const SHARD_MOVES_TIMED_OUT_TOTAL: &str = "felix_shard_moves_timed_out_total
 
 /// Moves that could not advance in the last pass.
 pub const SHARD_MOVES_WAITING: &str = "felix_shard_moves_waiting";
+/// Shards with a copy on an internal node that has no live node to move to.
+pub const SHARDS_ON_INTERNAL_NODES: &str = "felix_shards_on_internal_nodes";
 
 /// Placements and move steps not written because the shard changed after the
 /// pass read it. Expected now and then with several instances running
@@ -100,6 +102,8 @@ pub struct ReconcileOutcome {
     pub moved: usize,
     /// Moves that could not advance this pass.
     pub waiting: usize,
+    /// Shards with a copy stuck on an internal node: no node to move it to, or a member down.
+    pub on_internal: usize,
     /// Writes skipped because another writer changed the shard after this
     /// pass read it.
     pub conflicts: usize,
@@ -656,6 +660,26 @@ pub(super) async fn apply_pass(
 
     for (key, reason) in plan.waiting() {
         outcome.waiting += 1;
+        if let super::Blocked::MemberDown { node } = reason {
+            outcome.on_internal += 1;
+            tracing::warn!(
+                kind = %key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                node = %node,
+                "a shard's copy is on an internal node and cannot be replaced while another member is down",
+            );
+        }
+        if let super::Blocked::NoReplacement { node } = reason {
+            outcome.on_internal += 1;
+            tracing::warn!(
+                kind = %key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                node = %node,
+                "a shard's copy is on an internal node and no live node can take its place",
+            );
+        }
         // Waiting on a catch-up or a drain is what a move in progress looks
         // like; the gauge below is what an operator watches.
         tracing::debug!(
@@ -786,6 +810,7 @@ pub(super) async fn apply_pass(
     metrics::counter!(PLACEMENT_WRITES_FENCED_TOTAL).increment(u64::from(outcome.fenced));
     metrics::gauge!(SHARDS_UNPLACEABLE).set(outcome.unplaceable as f64);
     metrics::gauge!(SHARD_MOVES_WAITING).set(outcome.waiting as f64);
+    metrics::gauge!(SHARDS_ON_INTERNAL_NODES).set(outcome.on_internal as f64);
     metrics::gauge!(SHARDS_ZONE_UNSPREAD).set(plan.unspread.len() as f64);
     metrics::gauge!(SHARDS_UNDER_REPLICATED).set(plan.under_replicated.len() as f64);
     metrics::gauge!(SHARD_REPLICAS_MISSING).set(f64::from(plan.missing_copies));

@@ -64,14 +64,71 @@ env:
   SOURCE_REF: ${{ inputs.ref || inputs.tag || github.ref_name }}
 
 jobs:
+  # Built on a native Arm runner, like felixctl and the wheels. Only the archive
+  # is made here: server-release collects it so one signed SHA256SUMS covers both.
+  # It builds beside linux-x86_64, so a slow Arm runner never holds that build.
+  linux-aarch64:
+    name: Linux aarch64 binaries
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: A ref other than the tag is only for a dry run
+        if: ${{ inputs.ref != '' && !inputs.dry_run && !inputs.nightly }}
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          echo "::error::ref=${REF} without dry_run would publish ${RELEASE_TAG} from a commit that is not the tag."
+          exit 1
+
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked \
+            -p felix-broker-service --bin felix-broker \
+            -p felix-controlplane-service --bin felix-controlplane
+
+      - name: Package release archive
+        run: |
+          set -euxo pipefail
+
+          archive_root="felix-${RELEASE_TAG}-linux-aarch64"
+          mkdir -p "dist/${archive_root}"
+
+          cp target/release/felix-broker "dist/${archive_root}/"
+          cp target/release/felix-controlplane "dist/${archive_root}/"
+          cp README.md LICENSE "dist/${archive_root}/"
+
+          tar -C dist -czf "dist/${archive_root}.tar.gz" "${archive_root}"
+          rm -rf "dist/${archive_root}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: felix-${{ env.RELEASE_TAG }}-linux-aarch64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
   linux-x86_64:
     name: Linux x86_64 binaries
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: write
-      # Keyless signing of SHA256SUMS below.
-      id-token: write
     env:
       CARGO_TERM_COLOR: always
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -119,44 +176,11 @@ jobs:
           tar -C dist -czf "dist/${archive_root}.tar.gz" "${archive_root}"
           rm -rf "dist/${archive_root}"
 
-          (
-            cd dist
-            sha256sum "${archive_root}.tar.gz" > SHA256SUMS
-          )
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-
-      # Keyless: the certificate names this workflow run and is recorded in
-      # the public Rekor log, so there is no key to guard or rotate. A dry
-      # run signs too, so the path is exercised before a tag.
-      - name: Sign the checksums
-        working-directory: dist
-        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
-
-      # Nightly runs this workflow from nightly.yml, so the certificate names
-      # that caller and not this file; only a direct run is checked here.
-      - name: Verify the signature
-        if: ${{ !inputs.nightly }}
-        working-directory: dist
-        env:
-          IDENTITY: https://github.com/${{ github.workflow_ref }}
-        run: |
-          cosign verify-blob \
-            --bundle SHA256SUMS.sigstore.json \
-            --certificate-identity "$IDENTITY" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            SHA256SUMS
-          sha256sum --check SHA256SUMS
-
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
           name: felix-${{ env.RELEASE_TAG }}-linux-x86_64
-          path: |
-            dist/*.tar.gz
-            dist/SHA256SUMS
-            dist/SHA256SUMS.sigstore.json
+          path: dist/*.tar.gz
           if-no-files-found: error
 
       # A tag and a version that disagree ship artifacts labelled with neither,
@@ -190,6 +214,83 @@ jobs:
           python3 scripts/changelog_section.py "${RELEASE_TAG}" > release-notes.md
           echo "--- release notes ---"
           cat release-notes.md
+
+  # The release itself: one SHA256SUMS over both server archives, signed once,
+  # then published. Downstream jobs wait on this, not on the builds, so the two
+  # archives build in parallel.
+  server-release:
+    name: Server release
+    needs: [linux-x86_64, linux-aarch64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      # Keyless signing of SHA256SUMS below.
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Download the server archives
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+          pattern: felix-${{ env.RELEASE_TAG }}-linux-*
+
+      # One SHA256SUMS for every server archive, signed once below.
+      - name: Checksum the archives
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -l
+          test "$(ls felix-*-linux-*.tar.gz | wc -l)" -eq 2
+          sha256sum felix-*-linux-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      # Keyless: the certificate names this workflow run and is recorded in
+      # the public Rekor log, so there is no key to guard or rotate. A dry
+      # run signs too, so the path is exercised before a tag.
+      - name: Sign the checksums
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+
+      # Nightly runs this workflow from nightly.yml, so the certificate names
+      # that caller and not this file; only a direct run is checked here.
+      - name: Verify the signature
+        if: ${{ !inputs.nightly }}
+        working-directory: dist
+        env:
+          IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: |
+          cosign verify-blob \
+            --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "$IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: felix-${{ env.RELEASE_TAG }}-checksums
+          path: |
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sigstore.json
+          if-no-files-found: error
+
+      - name: Extract release notes from CHANGELOG.md
+        if: ${{ !inputs.nightly }}
+        run: python3 scripts/changelog_section.py "${RELEASE_TAG}" > release-notes.md
 
       - name: Publish GitHub prerelease
         if: ${{ !inputs.dry_run && !inputs.nightly }}
@@ -259,11 +360,11 @@ jobs:
             target/${{ matrix.target }}/release/felixctl.exe
           if-no-files-found: error
 
-  # Needs linux-x86_64 so the release already exists with its notes and
+  # Needs server-release so the release already exists with its notes and
   # prerelease flag; this only adds files to it.
   felixctl-release-assets:
     name: Package felixctl and attach it to the release
-    needs: [felixctl-binaries, linux-x86_64]
+    needs: [felixctl-binaries, server-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -801,7 +902,7 @@ jobs:
   # is actually available first — it is unrelated to the crate name.
   python-release-assets:
     name: Attach wheels to the release
-    needs: [python-wheels, python-sdist, linux-x86_64]
+    needs: [python-wheels, python-sdist, server-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1000,7 +1101,7 @@ jobs:
 
   typescript-release-assets:
     name: Attach the Node addons to the release
-    needs: [typescript-addon, linux-x86_64]
+    needs: [typescript-addon, server-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1062,7 +1163,7 @@ jobs:
   # `npm_stage` remains for staging a version of a package that already exists.
   typescript-publish:
     name: Publish to npm
-    needs: [typescript-release-assets, linux-x86_64]
+    needs: [typescript-release-assets, server-release]
     if: vars.PUBLISH_NPM == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1198,9 +1299,9 @@ jobs:
 
   python-publish:
     name: Publish to PyPI
-    needs: [python-release-assets, linux-x86_64]
+    needs: [python-release-assets, server-release]
     # Off until Felix is meant to be publicly installable. See the note above.
-    # linux-x86_64 holds the release gates (ref only on a dry run, tag matches the tree,
+    # linux-x86_64, which server-release waits on, holds the release gates (ref only on a dry run, tag matches the tree,
     # changelog assembled), so nothing is published without them.
     if: vars.PUBLISH_PYPI == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
@@ -1287,11 +1388,11 @@ jobs:
 
   # The prebuilt C libraries for the GitHub release live in their own workflow
   # so an old release can be backfilled without rerunning any publish job.
-  # Called after linux-x86_64 so the release exists; a dry run and a nightly
+  # Called after server-release so the release exists; a dry run and a nightly
   # build and smoke the archives and attach nothing.
   libfelix-archives:
     name: libfelix archives
-    needs: linux-x86_64
+    needs: server-release
     permissions:
       contents: write
     uses: ./.github/workflows/release-capi-archives.yml
@@ -1389,7 +1490,7 @@ jobs:
 
   dotnet-publish:
     name: Publish to NuGet
-    needs: [dotnet-package, linux-x86_64]
+    needs: [dotnet-package, server-release]
     # Off until the nuget.org policy and PUBLISH_NUGET are in place. See the note above.
     if: vars.PUBLISH_NUGET == 'true' && !inputs.dry_run && !inputs.nightly
     runs-on: ubuntu-latest
@@ -1443,7 +1544,7 @@ jobs:
   # The checklist is in docs-site's development/building page.
   crates-publish:
     name: ${{ inputs.dry_run && 'Package crates (dry run, nothing published)' || 'Publish to crates.io' }}
-    needs: [linux-x86_64, python-conformance, typescript-conformance]
+    needs: [server-release, python-conformance, typescript-conformance]
     if: ${{ !inputs.nightly && (vars.PUBLISH_CRATES == 'true' || inputs.dry_run) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1560,9 +1661,9 @@ jobs:
   site-versions:
     name: Ask getfelix.dev to show this release
     needs:
-      [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
+      [server-release, felixctl-release-assets, homebrew-tap, images-merge,
        python-publish, typescript-publish, dotnet-publish, crates-publish]
-    if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' }}
+    if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.server-release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -1584,9 +1685,9 @@ jobs:
   companion-dispatch:
     name: Tell companion repos about this release
     needs:
-      [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
+      [server-release, felixctl-release-assets, homebrew-tap, images-merge,
        python-publish, typescript-publish, dotnet-publish, crates-publish]
-    if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' }}
+    if: ${{ always() && !inputs.nightly && !inputs.dry_run && needs.server-release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Read companions.txt with the job's own token; the dispatches use the App's.
@@ -1682,11 +1783,11 @@ jobs:
   docs-redeploy:
     name: Redeploy the docs for this release
     needs:
-      [linux-x86_64, felixctl-release-assets, homebrew-tap, images-merge,
+      [server-release, felixctl-release-assets, homebrew-tap, images-merge,
        python-publish, typescript-publish, dotnet-publish, crates-publish]
     # Only once every publish job succeeded (or was skipped), so the stable docs
     # never point at packages that failed to publish.
-    if: ${{ !failure() && !cancelled() && !inputs.nightly && !inputs.dry_run && needs.linux-x86_64.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
+    if: ${{ !failure() && !cancelled() && !inputs.nightly && !inputs.dry_run && needs.server-release.result == 'success' && !contains(inputs.tag || github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -192,8 +192,9 @@ docs and `compose.yaml` pin (`scripts/check_release_version.py`), and its releas
 `scripts/check_version_pins.py` (part of `task docs:evidence`) lists the docs
 pins to update. The workflow:
 
-- creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` (broker
-  and control plane), `SHA256SUMS` and `SHA256SUMS.sigstore.json`, its keyless
+- creates the GitHub release with `felix-<tag>-linux-x86_64.tar.gz` and
+  `felix-<tag>-linux-aarch64.tar.gz` (each with the broker and control plane,
+  the second built on a native Arm runner), `SHA256SUMS` and `SHA256SUMS.sigstore.json`, its keyless
   Sigstore signature (how to check it:
   [Verify a release download](/getting-started/installation/#verify-a-release-download));
 - attaches `felixctl-<tag>-<target>.tar.gz` (`.zip` on Windows) and a
