@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795151778835,
+  "lastUpdate": 1795154035863,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63752,6 +63752,58 @@ window.BENCHMARK_DATA = {
             "range": "6145.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812435.58\nmean: 810586.85\nstdev: 6145.33\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ff60827a53e384183ce4bf3e4056db29249c960",
+          "message": "demo: see failover on your laptop (3 brokers, independent checker) (#2870)\n\n* demo: one-command three-broker failover repro with an independent checker\n\ndemos/failover starts three brokers and a control plane from the released images, writes through idempotent producers, and judges the run against a full re-read of the stream: gaps, duplicates and writes in doubt, with the client-side stall time. Adds the getting-started page and a README link.\n\n* demo(failover): fail a run that proves nothing, read back past empty pages, fixed project name, one version pin\n\nA run with no acknowledgements or a dead producer is FAILED, not a pass. The read-back continues past empty pages that advance the offset and stops only past the highest acknowledged offset. A refused producer's write stops counting as in flight. run.sh down and receipt exit non-zero unless the checker passed, and the compose project name is no longer taken from the environment. The image tag lives in .env and is tracked by the release version checks; the network is overridable, no host ports are published, and the demo certificate lasts ten years and is regenerated near expiry.\n\n* demo(failover): track the env file and the reader tests",
+          "timestamp": "2026-11-20T05:48:38Z",
+          "tree_id": "fd9f49bc806f5c3f331c08bb0f3b66e928160d35",
+          "url": "https://github.com/GetFelix/felix/commit/1ff60827a53e384183ce4bf3e4056db29249c960"
+        },
+        "date": 1795154035360,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 518754.13,
+            "range": "30580.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 518754.13\nmean: 530007.48\nstdev: 30580.23\ncv: 5.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 518754.13,
+            "range": "30580.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 518754.13\nmean: 530007.48\nstdev: 30580.23\ncv: 5.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125708.77,
+            "range": "1280.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125708.77\nmean: 125847.45\nstdev: 1280.64\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1257087.74,
+            "range": "12806.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1257087.74\nmean: 1258474.47\nstdev: 12806.43\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
