@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795147564732,
+  "lastUpdate": 1795148145408,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63648,6 +63648,58 @@ window.BENCHMARK_DATA = {
             "range": "4462.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1269443.15\nmean: 1269668.80\nstdev: 4462.77\ncv: 0.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "85898575051d4b8908dd956e00ee1f60f75e8fe0",
+          "message": "fix(client): producers resume sooner when a leader hint names a dead broker (#2871) (#2872)\n\n* fix(client): producers following a dead leader hint share one failed dial (#2871)\n\n* fix(client): leader-hint dials honour the connect timeout and keep the full timeout for other callers (#2871)\n\n* fix(client): only a dial's own timeout marks a hint slow or narrows a shared failure (#2871)",
+          "timestamp": "2026-11-19T20:01:37-08:00",
+          "tree_id": "c52b5c00effd381a3822cf96289cf18f0999bc7e",
+          "url": "https://github.com/GetFelix/felix/commit/85898575051d4b8908dd956e00ee1f60f75e8fe0"
+        },
+        "date": 1795148144524,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359006.12,
+            "range": "20623.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359006.12\nmean: 361575.15\nstdev: 20623.69\ncv: 5.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359006.12,
+            "range": "20623.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359006.12\nmean: 361575.15\nstdev: 20623.69\ncv: 5.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80727.81,
+            "range": "487.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80727.81\nmean: 80873.35\nstdev: 487.29\ncv: 0.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807278.12,
+            "range": "4872.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807278.12\nmean: 808733.45\nstdev: 4872.87\ncv: 0.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
