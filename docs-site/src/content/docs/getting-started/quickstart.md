@@ -26,16 +26,17 @@ docker compose logs felix-dev-ready
 With Podman, use `PODMAN_COMPOSE_PROVIDER=docker-compose podman compose up -d`;
 `podman-compose` does not run this file correctly.
 
-The last command prints the connection settings once the broker is ready. Then,
-from the same directory, subscribe in one terminal and publish in a second one:
+The last command prints the connection settings once the broker is ready. Then
+publish three records and read them back from the start of the stream:
 
 ```bash
-docker compose run --rm felixctl sub orders
+docker compose run --rm felixctl pub orders 'hello' --count 3
+docker compose run --rm felixctl sub orders --from earliest --count 3
 ```
 
-```bash
-docker compose run --rm felixctl pub orders 'hello'
-```
+`sub` prints `hello` three times and exits. Without `--count` it keeps
+waiting, so you can run `sub orders` in one terminal and publish from another
+to watch records arrive live. Tear the stack down with `docker compose down -v`.
 
 The broker keeps its data on disk in the stack's volume, so `orders` is a
 durable stream and the `config` and `stats` caches can be watched, counted in
@@ -49,7 +50,9 @@ the stack runs and why its credentials are safe locally. The rest of this page
 builds Felix from source.
 
 **Stop here if you only want to try Felix.** The [tutorials](/tutorials/overview/)
-build on this stack and take you from a first stream to a small app.
+build on this stack and take you from a first stream to a small app, and
+[See failover in 2 minutes](/getting-started/failover-in-2-minutes/) kills a
+broker in a three-node cluster while you watch.
 
 ## Prerequisites
 
