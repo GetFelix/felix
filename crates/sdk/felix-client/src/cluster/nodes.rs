@@ -291,15 +291,26 @@ impl Nodes {
             Dial::Hint if !slot.hint_timed_out.load(Ordering::Relaxed) => HINT_DIAL.min(full),
             _ => full,
         };
+        // Set once this call holds the slot and is dialling.
+        let dialling = AtomicBool::new(false);
         if limit >= full {
-            return self.dial_slot(&slot, addr, how, queued, limit).await;
+            return self
+                .dial_slot(&slot, addr, how, queued, limit, &dialling)
+                .await;
         }
-        match tokio::time::timeout(limit, self.dial_slot(&slot, addr, how, queued, limit)).await {
+        let run = self.dial_slot(&slot, addr, how, queued, limit, &dialling);
+        match tokio::time::timeout(limit, run).await {
             Ok(result) => result,
             Err(_) => {
-                slot.hint_timed_out.store(true, Ordering::Relaxed);
                 let why = format!("connecting to {addr} timed out after {limit:?}");
-                slot.record_failure(why.clone(), limit);
+                // Only a dial of this call's own says anything about the
+                // broker. Running out of time in the queue behind someone
+                // else's dial must not shorten what they recorded, or send
+                // later hint dials to the full timeout.
+                if dialling.load(Ordering::Relaxed) {
+                    slot.hint_timed_out.store(true, Ordering::Relaxed);
+                    slot.record_failure(why.clone(), limit);
+                }
                 Err(anyhow::anyhow!(why))
             }
         }
@@ -319,6 +330,7 @@ impl Nodes {
         how: Dial,
         queued: Instant,
         limit: Duration,
+        dialling: &AtomicBool,
     ) -> Result<Arc<Connection>> {
         // Held across the connect, so concurrent callers for one broker share
         // a connect instead of each opening their own.
@@ -334,6 +346,8 @@ impl Nodes {
         {
             return Err(anyhow::anyhow!("{why}"));
         }
+        dialling.store(true, Ordering::Relaxed);
+        let started = Instant::now();
         let dialled = match &self.source {
             Source::Dial {
                 server_name,
@@ -375,7 +389,9 @@ impl Nodes {
                 // A token failure is the source's, not this broker's, and
                 // keeps its type for callers that stop on it.
                 if !is_token_failure(&err) {
-                    slot.record_failure(format!("{err:#}"), limit);
+                    let why = format!("{err:#}");
+                    let reach = failure_reach(&why, started.elapsed(), limit);
+                    slot.record_failure(why, reach);
                 }
                 Err(err)
             }
@@ -442,7 +458,7 @@ impl Nodes {
             .collect()
     }
 
-    fn slot(&self, addr: SocketAddr) -> Arc<Slot> {
+    pub(super) fn slot(&self, addr: SocketAddr) -> Arc<Slot> {
         Arc::clone(
             self.slots
                 .lock()
@@ -455,7 +471,7 @@ impl Nodes {
 
 /// The client for one broker.
 #[derive(Default)]
-struct Slot {
+pub(super) struct Slot {
     client: tokio::sync::Mutex<Option<Arc<Connection>>>,
     /// When the last dial failed, why, and how long it was allowed to take, for
     /// callers that queued behind it.
@@ -466,8 +482,38 @@ struct Slot {
 }
 
 impl Slot {
-    fn record_failure(&self, why: String, tried: Duration) {
-        *self.failed.lock().expect("slot failure") = Some((Instant::now(), why, tried));
+    /// Keeps the wider `tried` of two failures this close together, so a
+    /// shorter dial finishing late does not narrow who may share the longer
+    /// one.
+    pub(super) fn record_failure(&self, why: String, tried: Duration) {
+        let mut failed = self.failed.lock().expect("slot failure");
+        let tried = match failed.as_ref() {
+            Some((at, _, before)) if at.elapsed() < Duration::from_millis(50) => tried.max(*before),
+            _ => tried,
+        };
+        *failed = Some((Instant::now(), why, tried));
+    }
+
+    /// The wait the last recorded failure speaks for.
+    #[cfg(test)]
+    pub(super) fn tried(&self) -> Option<Duration> {
+        self.failed
+            .lock()
+            .expect("slot failure")
+            .as_ref()
+            .map(|f| f.2)
+    }
+}
+
+/// How long a caller must have been willing to wait to share a dial's
+/// failure. A timeout says only that the broker did not answer within `limit`.
+/// Anything else (refused, unreachable, a handshake the broker rejected) is
+/// the broker's answer, which a longer wait would not change.
+pub(super) fn failure_reach(why: &str, took: Duration, limit: Duration) -> Duration {
+    if why.contains("timed out") || took >= limit {
+        limit
+    } else {
+        Duration::MAX
     }
 }
 

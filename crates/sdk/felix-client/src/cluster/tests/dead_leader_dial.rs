@@ -134,3 +134,63 @@ async fn a_hint_that_timed_out_is_dialled_with_the_full_timeout_next() -> Result
     );
     Ok(())
 }
+
+/// **A hint waiter that runs out of time in the queue does not mark the
+/// broker slow.** Only a dial of its own that timed out does; otherwise every
+/// later hint to a dead leader would get the full connect timeout again.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_hint_that_timed_out_in_the_queue_does_not_lengthen_the_next() -> Result<()> {
+    let (cluster, _entry) = cluster_with(Duration::from_secs(4)).await?;
+    let (_socket, dead) = silent()?;
+
+    let (full, hint) = tokio::join!(cluster.connect_to(dead), async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cluster.connect_to_leader(dead).await
+    });
+    assert!(full.is_err() && hint.is_err());
+
+    let started = Instant::now();
+    assert!(cluster.connect_to_leader(dead).await.is_err());
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the next hint dial took {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// **A failure the broker gave, rather than a timeout, is shared with every
+/// caller**, and a timeout only with callers that would not have waited longer.
+#[test]
+fn only_timeouts_are_limited_to_the_callers_that_waited_as_long() {
+    use super::super::nodes::failure_reach;
+    let limit = Duration::from_secs(2);
+    let fast = Duration::from_millis(5);
+    assert_eq!(
+        failure_reach("tls handshake failed", fast, limit),
+        Duration::MAX
+    );
+    assert_eq!(
+        failure_reach("connection refused", fast, limit),
+        Duration::MAX
+    );
+    assert_eq!(
+        failure_reach("establish QUIC connection: timed out", fast, limit),
+        limit
+    );
+    assert_eq!(failure_reach("no answer", limit, limit), limit);
+}
+
+/// **A shorter dial finishing late does not narrow a longer failure.**
+#[tokio::test]
+#[serial_test::serial]
+async fn a_late_short_failure_does_not_replace_a_longer_one() -> Result<()> {
+    let (cluster, _entry) = cluster_with(Duration::from_secs(4)).await?;
+    let (_socket, dead) = silent()?;
+    let slot = cluster.nodes.slot(dead);
+    slot.record_failure("long".into(), Duration::from_secs(4));
+    slot.record_failure("short".into(), Duration::from_secs(2));
+    assert_eq!(slot.tried(), Some(Duration::from_secs(4)));
+    Ok(())
+}
