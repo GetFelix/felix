@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795140956636,
+  "lastUpdate": 1795141504069,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63440,6 +63440,58 @@ window.BENCHMARK_DATA = {
             "range": "7206.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803365.10\nmean: 807606.57\nstdev: 7206.19\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "394af043103698444c03cfd67ddd7860c3a8be1c",
+          "message": "test: every shard serving before routing tests count forwards; shard test timers a loaded disk cannot starve (#2858)\n\n* test(cluster): wait for every shard to take a publish before counting forwards (#2854)\n\n* test(raft): give the shard tests election timers a loaded disk's vote fsync cannot outlast (#2717)\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-20T02:11:59Z",
+          "tree_id": "dcd1588d5110a9f2a1b718d61b4530093760ecfd",
+          "url": "https://github.com/GetFelix/felix/commit/394af043103698444c03cfd67ddd7860c3a8be1c"
+        },
+        "date": 1795141503119,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351325.65,
+            "range": "18570.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351325.65\nmean: 354539.78\nstdev: 18570.72\ncv: 5.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351325.65,
+            "range": "18570.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351325.65\nmean: 354539.78\nstdev: 18570.72\ncv: 5.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79846.56,
+            "range": "786.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79846.56\nmean: 79994.38\nstdev: 786.92\ncv: 0.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798465.63,
+            "range": "7869.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798465.63\nmean: 799943.80\nstdev: 7869.16\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
