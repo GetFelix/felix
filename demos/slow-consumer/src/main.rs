@@ -9,6 +9,11 @@
 //! Under `drop_new` (the production default) the fault stays local: the healthy
 //! consumers keep their rate and their tail latency, the publisher is never
 //! throttled, and the stalled consumer sheds events that are counted and gone.
+//! Where the stalled consumer sheds is its own client queue
+//! (`felix_client_sub_dispatch_dropped_total`): it keeps reading its QUIC stream
+//! and drops at dispatch, so the broker's per-subscriber `DropNew` counters stay
+//! at zero in this run. The demo shows the fault staying local to one consumer,
+//! not the broker-side queue policy; that one is what the `block` arm exercises.
 //!
 //! Under `block` nothing is lost, and the cost lands everywhere: the stalled
 //! consumer backpressures the publisher, which slows delivery to the healthy
@@ -206,8 +211,10 @@ mod tests {
     }
 
     /// The property the project's headline claim rests on: under `drop_new`, a
-    /// consumer that stops reading loses events while the healthy consumers lose
-    /// none, and the publisher keeps running.
+    /// consumer that stops calling `next_event` loses events at its own client
+    /// queue while the healthy consumers lose none, and the publisher keeps
+    /// running. It does not assert broker-side drops: the stalled client keeps
+    /// reading its stream, so the broker's `DropNew` counters stay at zero.
     ///
     /// This is the demo doubling as a behavioural regression test. If isolation ever
     /// breaks, this fails.
@@ -217,7 +224,9 @@ mod tests {
             target_rate: 5_000,
             subscribers: 3,
             payload_bytes: 64,
-            // Every consumer drops at its own client queue once it is full, so a
+            // The loss under test is client-side (the stalled consumer's own
+            // dispatch queue), not broker-side. Every consumer drops at its own
+            // client queue once it is full, so a
             // healthy one loses events whenever its task goes unscheduled for
             // longer than the queue lasts: 13 ms at 64, which a busy host
             // exceeds. 1024 lasts 200 ms, and the 4 s stall overflows it many
