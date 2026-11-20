@@ -50,6 +50,16 @@ def stale_pins(text: str, current: str) -> list[tuple[int, str]]:
     return found
 
 
+def failover_env_pin() -> tuple[int, str] | None:
+    """The tag demos/failover/.env pins, with its line number."""
+    env = REPO / "demos" / "failover" / ".env"
+    for number, line in enumerate(env.read_text(encoding="utf-8").splitlines(), 1):
+        m = re.match(r"FELIX_VERSION=(\S+)", line)
+        if m:
+            return number, m.group(1)
+    return None
+
+
 def pages() -> list[Path]:
     out = [
         p
@@ -66,6 +76,11 @@ def main() -> int:
         for number, pin in stale_pins(path.read_text(encoding="utf-8"), current):
             print(f"{path.relative_to(REPO)}:{number}: {pin}, but the newest tagged release is {current}")
             bad += 1
+    pin = failover_env_pin()
+    if pin is None or pin[1] != current:
+        found = "no FELIX_VERSION" if pin is None else pin[1]
+        print(f"demos/failover/.env:{pin[0] if pin else 1}: {found}, but the newest tagged release is {current}")
+        bad += 1
     if bad:
         print(f"\n{bad} stale version pin(s). Use {current}, or add `{ALLOW}` to the line.")
         return 1

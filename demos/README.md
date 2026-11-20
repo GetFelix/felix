@@ -31,6 +31,19 @@ cargo run --release -p felix-broker-service --bin durable-restart-demo
 - Demos rely on demo auth helpers and are not intended for production.
 - The broker demos spin up an in-process broker instance for convenience.
 
+## Failover on your laptop
+
+`demos/failover/` starts a three-broker cluster from the released images, writes to a
+`Quorum` stream through idempotent producers, and lets you kill the leader and the control
+plane while an independent checker reads the stream back and reports gaps, duplicates and
+writes in doubt. It is outside the workspace and has its own tests, built by `task demo:check`.
+See [its README](failover/README.md) and
+[See failover on your laptop](https://docs.getfelix.dev/getting-started/failover-on-your-laptop/).
+
+```bash
+cd demos/failover && ./run.sh up
+```
+
 ## Slow-consumer isolation (start here)
 
 The flagship demo. One telemetry stream, three dashboard consumers, one of which

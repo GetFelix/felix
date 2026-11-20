@@ -22,6 +22,10 @@ credentials are for local use only, see
 **Next:** the [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) has the Rust client and a
 three-node cluster, and the rest is at [docs.getfelix.dev](https://docs.getfelix.dev).
 
+**Watch it survive a killed leader.** [See failover on your laptop](https://docs.getfelix.dev/getting-started/failover-on-your-laptop/)
+starts three brokers, kills the leader mid-write, and checks from outside that no acknowledged write was lost
+(`demos/failover/run.sh up`).
+
 - **Fanout.** Each publish is encoded once, however many subscribers read it, and every subscriber has its
   own bounded queue. By default a slow consumer drops records instead of holding up a publisher or anyone else.
 - **Streams, caches and queues.** A stream is the log read forward, a cache is its latest value per key, and a

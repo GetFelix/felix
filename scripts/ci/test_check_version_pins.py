@@ -38,6 +38,11 @@ class StalePins(unittest.TestCase):
         yml = "image: ghcr.io/getfelix/felix-broker:${FELIX_VERSION:-0.7.0-preview.2}\n"
         self.assertEqual(pins.released_version(yml), CURRENT)
 
+    def test_failover_demo_env_file_pins_a_version(self):
+        number, version = pins.failover_env_pin()
+        self.assertGreaterEqual(number, 1)
+        self.assertRegex(version, r"^\d+\.\d+\.\d+")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,6 +63,7 @@ DOC_ROOTS = [
     "docs-site/src/content/docs",
     "crates/tools/felixctl/README.md",
     "compose.yaml",
+    "demos/failover/compose.yaml",
 ]
 IMAGE_PIN = re.compile(
     r"ghcr\.io/(?:getfelix|gabloe)/(?:felix-broker|felix-controlplane|felixctl)"
@@ -81,6 +82,21 @@ def stale_doc_pins(expected: str) -> list[str]:
                     if match.group(1) != expected:
                         stale.append(f"{path.relative_to(REPO)}:{number}: {match.group(0)}")
     return stale
+
+
+#: The failover demo sets its image tag once, in an env file next to its
+#: compose file, so the compose file itself carries no version to go stale.
+FAILOVER_ENV = "demos/failover/.env"
+
+
+def stale_failover_env(expected: str) -> list[str]:
+    for number, line in enumerate((REPO / FAILOVER_ENV).read_text().splitlines(), 1):
+        match = re.match(r"FELIX_VERSION=(\S+)", line)
+        if match:
+            if match.group(1) == expected:
+                return []
+            return [f"{FAILOVER_ENV}:{number}: FELIX_VERSION={match.group(1)}"]
+    return [f"{FAILOVER_ENV}: no FELIX_VERSION line"]
 
 
 def main() -> int:
@@ -109,7 +125,9 @@ def main() -> int:
     # The docs recommend the newest stable release only, so a prerelease tag
     # leaves their pins alone.
     prerelease = expected is not None and "-" in expected
-    stale = stale_doc_pins(expected) if expected is not None and not prerelease else []
+    stale = []
+    if expected is not None and not prerelease:
+        stale = stale_doc_pins(expected) + stale_failover_env(expected)
     if stale:
         print(f"FAIL the docs pin images other than {expected}:")
         for pin in stale:

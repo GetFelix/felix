@@ -1,0 +1,27 @@
+[package]
+name = "demo-failover"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "An independent checker for a Felix failover: idempotent producers, a reader, and a receipt"
+
+[[bin]]
+name = "failover-check"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.6", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "fs"] }
+
+felix-client = { path = "../../crates/sdk/felix-client" }
+
+[workspace]
+
+# A separate workspace, so the root's [profile.dev] does not reach it. See
+# demos/rbac-live/Cargo.toml.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
