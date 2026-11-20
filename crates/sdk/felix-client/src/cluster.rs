@@ -362,14 +362,12 @@ impl Client {
         self.nodes.connect_to(addr).await
     }
 
-    /// [`Self::connect_to`] for a broker a refusal named, cut off after
-    /// [`discovery::CONNECT_TIMEOUT`] like a shard owner's connect, so a leader
-    /// hint that is stale does not hold the publish for a full handshake.
+    /// [`Self::connect_to`] for a broker a refusal named as the leader, cut off
+    /// early so a stale hint does not hold the publish for a full handshake.
+    /// See `Nodes::connect_to_hint`.
     pub(crate) async fn connect_to_leader(&self, addr: SocketAddr) -> Result<Arc<Connection>> {
         self.nodes.prefetch().await?;
-        self.nodes
-            .connect_within(addr, Some(discovery::CONNECT_TIMEOUT))
-            .await
+        self.nodes.connect_to_hint(addr).await
     }
 
     /// See `Nodes::prefetch`.

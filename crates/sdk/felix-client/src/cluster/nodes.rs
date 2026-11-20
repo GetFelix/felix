@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -267,22 +268,58 @@ impl Nodes {
     /// identity's client is replaced the same way, from the parent's client
     /// for that broker, which is itself rebuilt first if it has failed.
     pub(super) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Connection>> {
-        self.connect_within(addr, None).await
+        self.connect_with(addr, Dial::Full).await
     }
 
-    /// [`connect_to`](Self::connect_to), with the dial cut off after `limit`.
+    /// [`connect_to`](Self::connect_to) for a broker a refusal named as the
+    /// shard's leader.
     ///
-    /// Callers that queued behind a dial that failed or timed out share its
-    /// failure instead of dialling the same dead broker again one after
-    /// another, which turned `n` callers into `n` timeouts. Callers that
-    /// arrive after the failure dial afresh.
-    pub(super) async fn connect_within(
-        &self,
-        addr: SocketAddr,
-        limit: Option<Duration>,
-    ) -> Result<Arc<Connection>> {
+    /// During an election the hint can name the broker that just died, so the
+    /// dial, and the wait behind anyone else dialling it, is cut off after
+    /// [`HINT_DIAL`] or the configured connect timeout if that is shorter. A
+    /// hint that timed out is dialled with the full connect timeout next time,
+    /// so a leader that is only slow to answer can still be reached.
+    pub(super) async fn connect_to_hint(&self, addr: SocketAddr) -> Result<Arc<Connection>> {
+        self.connect_with(addr, Dial::Hint).await
+    }
+
+    async fn connect_with(&self, addr: SocketAddr, how: Dial) -> Result<Arc<Connection>> {
         let slot = self.slot(addr);
         let queued = Instant::now();
+        let full = self.connect_timeout();
+        let limit = match how {
+            Dial::Hint if !slot.hint_timed_out.load(Ordering::Relaxed) => HINT_DIAL.min(full),
+            _ => full,
+        };
+        if limit >= full {
+            return self.dial_slot(&slot, addr, how, queued, limit).await;
+        }
+        match tokio::time::timeout(limit, self.dial_slot(&slot, addr, how, queued, limit)).await {
+            Ok(result) => result,
+            Err(_) => {
+                slot.hint_timed_out.store(true, Ordering::Relaxed);
+                let why = format!("connecting to {addr} timed out after {limit:?}");
+                slot.record_failure(why.clone(), limit);
+                Err(anyhow::anyhow!(why))
+            }
+        }
+    }
+
+    /// Callers that queued behind a dial that failed share its failure instead
+    /// of dialling the same dead broker again one after another, which turned
+    /// `n` callers into `n` timeouts. Only a caller willing to wait no longer
+    /// than the failed dial did shares it, so a dial cut short never fails a
+    /// caller that would have waited longer. Callers that arrive after the
+    /// failure dial afresh. A shared failure is its message only: the kind
+    /// (timeout, refused, handshake) is in the text, not the type.
+    async fn dial_slot(
+        &self,
+        slot: &Slot,
+        addr: SocketAddr,
+        how: Dial,
+        queued: Instant,
+        limit: Duration,
+    ) -> Result<Arc<Connection>> {
         // Held across the connect, so concurrent callers for one broker share
         // a connect instead of each opening their own.
         let mut held = slot.client.lock().await;
@@ -291,63 +328,65 @@ impl Nodes {
         {
             return Ok(Arc::clone(client));
         }
-        if let Some((at, why)) = slot.failed.lock().expect("slot failure").as_ref()
+        if let Some((at, why, tried)) = slot.failed.lock().expect("slot failure").as_ref()
             && *at >= queued
+            && *tried >= limit
         {
             return Err(anyhow::anyhow!("{why}"));
         }
-        let dial = async {
-            match &self.source {
-                Source::Dial {
-                    server_name,
-                    config,
-                    ..
-                } => {
-                    // A broker that advertised a name is checked against that
-                    // name, as a client dialling the name directly would check it.
-                    let server_name = self
-                        .names
-                        .lock()
-                        .expect("node names")
-                        .get(&addr)
-                        .cloned()
-                        .unwrap_or_else(|| server_name.clone());
-                    Connection::connect_shared(addr, &server_name, ClientConfig::clone(config))
-                        .await
-                }
-                Source::Identity {
-                    base,
-                    tenant_id,
-                    tokens,
-                } => {
-                    let shared = Box::pin(base.connect_within(addr, limit)).await?;
+        let dialled = match &self.source {
+            Source::Dial {
+                server_name,
+                config,
+                ..
+            } => {
+                // A broker that advertised a name is checked against that
+                // name, as a client dialling the name directly would check it.
+                let server_name = self
+                    .names
+                    .lock()
+                    .expect("node names")
+                    .get(&addr)
+                    .cloned()
+                    .unwrap_or_else(|| server_name.clone());
+                Connection::connect_shared(addr, &server_name, ClientConfig::clone(config)).await
+            }
+            Source::Identity {
+                base,
+                tenant_id,
+                tokens,
+            } => match Box::pin(base.connect_with(addr, how)).await {
+                Ok(shared) => {
                     shared
                         .with_identity(tenant_id.clone(), Arc::clone(tokens))
                         .await
                 }
-            }
-        };
-        let dialled = match limit {
-            Some(limit) => tokio::time::timeout(limit, dial)
-                .await
-                .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting to {addr} timed out"))),
-            None => dial.await,
+                Err(err) => Err(err),
+            },
         };
         match dialled {
             Ok(client) => {
                 let client = Arc::new(client);
                 *held = Some(Arc::clone(&client));
+                slot.hint_timed_out.store(false, Ordering::Relaxed);
                 Ok(client)
             }
             Err(err) => {
                 // A token failure is the source's, not this broker's, and
                 // keeps its type for callers that stop on it.
                 if !is_token_failure(&err) {
-                    *slot.failed.lock().expect("slot failure") =
-                        Some((Instant::now(), format!("{err:#}")));
+                    slot.record_failure(format!("{err:#}"), limit);
                 }
                 Err(err)
             }
+        }
+    }
+
+    /// How long a dial to a broker may take, as configured.
+    fn connect_timeout(&self) -> Duration {
+        match &self.source {
+            Source::Dial { config, .. } => config.connect_timeout,
+            Source::Identity { base, .. } => base.connect_timeout(),
         }
     }
 
@@ -418,6 +457,27 @@ impl Nodes {
 #[derive(Default)]
 struct Slot {
     client: tokio::sync::Mutex<Option<Arc<Connection>>>,
-    /// When the last dial failed and why, for callers that queued behind it.
-    failed: Mutex<Option<(Instant, String)>>,
+    /// When the last dial failed, why, and how long it was allowed to take, for
+    /// callers that queued behind it.
+    failed: Mutex<Option<(Instant, String, Duration)>>,
+    /// A leader-hint dial to this broker timed out and none has connected
+    /// since, so the next one is given the full connect timeout.
+    hint_timed_out: AtomicBool,
 }
+
+impl Slot {
+    fn record_failure(&self, why: String, tried: Duration) {
+        *self.failed.lock().expect("slot failure") = Some((Instant::now(), why, tried));
+    }
+}
+
+/// Which dial a connect is.
+#[derive(Clone, Copy)]
+enum Dial {
+    Full,
+    Hint,
+}
+
+/// The longest a leader-hint dial waits, the same bound a shard owner's connect
+/// gets.
+const HINT_DIAL: Duration = super::discovery::CONNECT_TIMEOUT;

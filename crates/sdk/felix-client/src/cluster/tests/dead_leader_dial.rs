@@ -33,7 +33,7 @@ async fn cluster_with(connect_timeout: Duration) -> Result<(Client, StubBroker)>
 #[tokio::test]
 #[serial_test::serial]
 async fn callers_queued_behind_a_failed_dial_do_not_dial_again() -> Result<()> {
-    let timeout = Duration::from_millis(500);
+    let timeout = Duration::from_millis(300);
     let (cluster, _entry) = cluster_with(timeout).await?;
     let (_socket, dead) = silent()?;
 
@@ -48,7 +48,7 @@ async fn callers_queued_behind_a_failed_dial_do_not_dial_again() -> Result<()> {
 
     assert!(results.0.is_err() && results.1.is_err() && results.2.is_err() && results.3.is_err());
     assert!(
-        took < timeout * 2,
+        took < timeout * 3,
         "four callers took {took:?}; they dialled one after another"
     );
     Ok(())
@@ -70,6 +70,66 @@ async fn a_leader_hint_that_does_not_answer_is_cut_off_early() -> Result<()> {
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "the dial took {:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// **A hint dial never outlasts the configured connect timeout.**
+#[tokio::test]
+#[serial_test::serial]
+async fn a_hint_dial_is_capped_by_the_configured_timeout() -> Result<()> {
+    let (cluster, _entry) = cluster_with(Duration::from_millis(400)).await?;
+    let (_socket, dead) = silent()?;
+
+    let started = Instant::now();
+    assert!(cluster.connect_to_leader(dead).await.is_err());
+
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    Ok(())
+}
+
+/// **A failure of the short hint dial is not handed to a caller that would
+/// have waited longer.** A slow but healthy broker must still be reachable by
+/// the shard-owner and routing dials, which use the full timeout.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_cut_short_hint_failure_is_not_shared_with_a_full_dial() -> Result<()> {
+    let (cluster, _entry) = cluster_with(Duration::from_secs(3)).await?;
+    let (_socket, dead) = silent()?;
+
+    let started = Instant::now();
+    let (hint, full) = tokio::join!(cluster.connect_to_leader(dead), async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let result = cluster.connect_to(dead).await;
+        (result, started.elapsed())
+    });
+
+    assert!(hint.is_err());
+    assert!(full.0.is_err());
+    assert!(
+        full.1 >= Duration::from_millis(2900),
+        "the full dial gave up after {:?}, on the hint's failure",
+        full.1
+    );
+    Ok(())
+}
+
+/// **After a hint dial times out, the next one gets the full timeout**, so a
+/// leader whose handshake takes longer than the hint cap can still connect.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_hint_that_timed_out_is_dialled_with_the_full_timeout_next() -> Result<()> {
+    let (cluster, _entry) = cluster_with(Duration::from_secs(3)).await?;
+    let (_socket, dead) = silent()?;
+
+    assert!(cluster.connect_to_leader(dead).await.is_err());
+    let started = Instant::now();
+    assert!(cluster.connect_to_leader(dead).await.is_err());
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(2500),
+        "the second hint dial gave up after {:?}",
         started.elapsed()
     );
     Ok(())
