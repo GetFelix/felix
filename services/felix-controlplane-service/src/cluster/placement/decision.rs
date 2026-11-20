@@ -147,6 +147,11 @@ pub enum MoveStep {
     /// Only `leader` changes: the group keeps its members, and once brokers
     /// follow placement its leader hands over to the one placement names.
     RaftLeader { from: String, to: String },
+    /// A follower of a Raft shard's group sits on a node marked internal:
+    /// `to` takes its place in the set, in one write. The group's leader adds
+    /// `to` as a learner and then swaps the voters through its membership
+    /// change, so the group is never below its replication factor.
+    RaftReplaceInternal { from: String, to: String },
     /// A hybrid move left on a Raft shard is dropped. Its group never
     /// reports what the move waits for.
     RaftMoveDropped,
@@ -193,6 +198,7 @@ impl MoveStep {
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",
             Self::RaftLeader { .. } => "raft_leader",
+            Self::RaftReplaceInternal { .. } => "raft_replace_internal",
             Self::RaftMoveDropped => "raft_move_dropped",
         }
     }
@@ -240,6 +246,14 @@ pub enum Blocked {
     /// until the leader reports the joint start, or the change is dropped
     /// (a timeout, a cancel, a failover).
     SetChangePending,
+    /// A Raft shard has a member on an internal node, and no live node
+    /// outside the set can take its place. The set stays as it is, below no
+    /// quorum, until one registers.
+    NoReplacement { node: String },
+    /// A Raft shard's member on an internal node is replaced once the control
+    /// plane has stored the group's target for its current set: one set
+    /// change at a time.
+    TargetUnsettled,
 }
 
 impl std::fmt::Display for Blocked {
@@ -283,6 +297,14 @@ impl std::fmt::Display for Blocked {
             Self::SetChangePending => write!(
                 f,
                 "waiting for the leader to report its start acknowledged on both the old and the new replica set"
+            ),
+            Self::NoReplacement { node } => write!(
+                f,
+                "the copy on {node}, an internal node, has no live node to move to; it stays until one can take it"
+            ),
+            Self::TargetUnsettled => write!(
+                f,
+                "waiting for the group's membership target for its current set before changing it"
             ),
         }
     }

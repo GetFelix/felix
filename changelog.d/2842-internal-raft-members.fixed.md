@@ -1,0 +1,1 @@
+- A Raft shard whose member set already includes a broker later marked internal now has that follower replaced by a live broker through the group's membership change, instead of keeping it. With no replacement the set stays, the shard waits, and `felix_shards_on_internal_nodes` counts it (#2842).

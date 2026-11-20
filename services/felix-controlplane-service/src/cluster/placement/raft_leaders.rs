@@ -4,18 +4,26 @@
 //! hybrid's steps apply: there is no fence to wait on, no drained report, and
 //! no failover to decide. Placement only names the member it wants leading,
 //! and the group's leader hands its leadership there. Moving a leader is one
-//! write that changes `leader` to another member of the set; the set itself never
-//! changes here. `docs/control-plane.md`, "Raft shards".
+//! write that changes `leader` to another member of the set. The set changes
+//! in one case: a follower on an internal node is swapped for a live node. `docs/control-plane.md`, "Raft shards".
+use std::collections::BTreeSet;
+
+use felix_common::random::HashMap;
+
 use super::leadership::{Leadership, Owner};
 use super::moves::Moves;
 use super::rendezvous::score;
 use super::{Blocked, Decision, MoveStep};
-use crate::model::{ShardAssignment, ShardKind, ShardState};
+use crate::model::{Node, ShardAssignment, ShardKind, ShardState};
 
 /// Most Raft shards one pass names a new leader for. Once brokers follow
 /// placement each write asks for a leadership transfer, which closes the
 /// shard for an election, so one pass does not ask for thousands.
 pub(super) const RAFT_LEADERS_PER_PASS: usize = 64;
+
+/// Most Raft shards one pass changes the set of. Each is a membership change
+/// the leader runs, with a learner catching up, so one pass starts a few.
+pub(super) const RAFT_REPLACEMENTS_PER_PASS: usize = 16;
 
 /// Whether placement treats `existing` as a shard a Raft group runs: a
 /// durable stream's shard on a cluster that runs those on Raft. A shard that
@@ -35,6 +43,9 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   brokers with no member forward to the leader placement names.
 /// - A down leader with no live member stays named, with no alert: the
 ///   group cannot elect either until a member is back.
+/// - A follower on an internal node is replaced by a live node outside the
+///   set, one at a time, through the group's membership target. With no such
+///   node it stays and the shard waits, shown to the operator.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering.
@@ -47,11 +58,22 @@ pub(super) fn raft_step<'a>(
     counted: &dyn Fn(&str) -> bool,
     leaders: &mut Leadership<'a>,
     moves: &mut Moves,
+    is_internal: &dyn Fn(&str) -> bool,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
 ) -> Decision {
     if let Some(dropped) = drop_hybrid_move(existing, replication_factor) {
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
     }
     let leader = existing.leader.as_str();
+    // A leader on an internal node moves first, below; its followers are
+    // swapped on a later pass.
+    if is_live(leader)
+        && !is_internal(leader)
+        && let Some(decision) = replace_internal(existing, is_internal, eligible, load, moves)
+    {
+        return decision;
+    }
     let down = !is_serving(leader);
     let key = &existing.key;
     // Only a member can lead: a node outside the set holds no copy.
@@ -115,6 +137,80 @@ pub(super) fn raft_step<'a>(
         },
         led_by(existing, to),
     )
+}
+
+/// Swaps a follower on an internal node for a live node outside the set.
+///
+/// The set keeps its size, and the new target is stored with the new member
+/// in it before the group's leader acts, so the leader adds it as a learner
+/// and only then drops the old voter. A change is written only on a target
+/// stored for the current set, so there is one change at a time.
+fn replace_internal<'a>(
+    existing: &'a ShardAssignment,
+    is_internal: &dyn Fn(&str) -> bool,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let from = existing
+        .replicas
+        .iter()
+        .find(|node| is_internal(node.as_str()))?;
+    let key = &existing.key;
+    let to = eligible
+        .iter()
+        .map(|node| node.node_id.as_str())
+        .filter(|id| !existing.nodes().any(|member| member == id))
+        .min_by_key(|id| {
+            (
+                load.get(id).copied().unwrap_or(0),
+                u64::MAX - score(key, id),
+                *id,
+            )
+        });
+    let Some(to) = to else {
+        return Some(Decision::Waiting(Blocked::NoReplacement {
+            node: from.clone(),
+        }));
+    };
+    let settled = existing.raft_target.as_ref().is_some_and(|target| {
+        target
+            .members
+            .keys()
+            .eq(existing.nodes().collect::<BTreeSet<_>>())
+    });
+    if !settled {
+        return Some(Decision::Waiting(Blocked::TargetUnsettled));
+    }
+    if moves.paused() {
+        return Some(Decision::Waiting(Blocked::Paused));
+    }
+    if moves.raft_replacements >= RAFT_REPLACEMENTS_PER_PASS {
+        return Some(Decision::Waiting(Blocked::MoveLimit));
+    }
+    moves.raft_replacements += 1;
+    *load.entry(to).or_default() += 1;
+    let replicas = existing
+        .replicas
+        .iter()
+        .map(|node| {
+            if node == from {
+                to.to_string()
+            } else {
+                node.clone()
+            }
+        })
+        .collect();
+    Some(Decision::Move(
+        MoveStep::RaftReplaceInternal {
+            from: from.clone(),
+            to: to.to_string(),
+        },
+        ShardAssignment {
+            replicas,
+            ..existing.renamed()
+        },
+    ))
 }
 
 /// `existing` with `to`, one of its replicas, as leader. The set and every

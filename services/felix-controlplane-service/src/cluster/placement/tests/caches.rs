@@ -5,7 +5,7 @@ pub(super) fn cache(name: &str, shards: u32) -> Cache {
     replicated_cache(name, shards, 1)
 }
 
-fn replicated_cache(name: &str, shards: u32, replication_factor: u32) -> Cache {
+pub(super) fn replicated_cache(name: &str, shards: u32, replication_factor: u32) -> Cache {
     Cache {
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),

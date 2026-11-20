@@ -4053,7 +4053,8 @@ Membership changes are not built yet
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
 alone and only names the member it wants leading. It never adds or removes a
-member of a shard it has placed, except that it drops the copy a move from
+member of a shard it has placed, except that it swaps out a follower on an
+internal node and drops the copy a move from
 an older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
@@ -4065,6 +4066,11 @@ an older control plane added:
   leaves a group only through a membership change. A shard with no other
   live member, such as one at replication factor 1, keeps its leader and
   shows as waiting with "no live node can take this shard".
+- A follower on a node marked internal is replaced: one write swaps it for a
+  live node outside the set, once the control plane has stored the group's
+  target for the current set, so the group's leader adds the new member as a
+  learner and then changes the voters (see "Membership"). With no such node
+  the set stays and the shard waits.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement
@@ -4076,7 +4082,7 @@ an older control plane added:
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 
-So **replacing a broker is not supported on Raft shards.** A broker counts
+So **placement replaces a Raft shard's broker only for an internal node;** removing any other broker that holds Raft shards is not supported. While a group converges to a swapped set, a broker counts
 the shards it holds whose voters are not the brokers placement names in
 `felix_broker_raft_shards_off_placement`, and logs each one once at warn
 level. Requests that reach a broker with no formed member go to the leader

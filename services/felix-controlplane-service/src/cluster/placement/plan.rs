@@ -200,6 +200,11 @@ fn plan_once(
         })
     };
     let is_serving = |id: &str| is_live(id) || is_draining(id);
+    let is_internal = |id: &str| {
+        nodes
+            .iter()
+            .any(|node| node.node_id == id && node.spec.is_internal())
+    };
     // A follower whose broker has been down or gone long enough that
     // placement copies the shard elsewhere. Only by the reports' clock: with
     // no clock nothing is lost, and nothing is copied.
@@ -441,6 +446,9 @@ fn plan_once(
                 &counted,
                 &mut leaders,
                 &mut moves,
+                &is_internal,
+                &eligible,
+                &mut load,
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
