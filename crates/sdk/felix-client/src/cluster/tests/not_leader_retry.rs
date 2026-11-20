@@ -116,3 +116,31 @@ async fn other_refusals_are_not_retried_and_name_the_operation() -> Result<()> {
     }
     Ok(())
 }
+
+/// **A state read the stream grant refuses is a typed `forbidden`.** The grant
+/// answers it as a `PublishError`, which `subscribe` reports as a
+/// `BrokerError` too.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_state_get_refused_by_the_stream_grant_is_typed() -> Result<()> {
+    let (broker, cert) = StubBroker::start(|request_id| Message::PublishError {
+        request_id,
+        message: "forbidden".into(),
+        retry: None,
+        code: Some(ErrorCode::Forbidden),
+        detail: None,
+    })?;
+    let cluster =
+        Client::connect_with_policy(&[broker.addr], "localhost", default_config(cert)?, policy())
+            .await?;
+    let refused = cluster
+        .state_get("t1", "default", "orders", b"d00", "k")
+        .await
+        .expect_err("refused");
+    let typed = refused
+        .downcast_ref::<crate::BrokerError>()
+        .expect("a BrokerError");
+    assert_eq!(typed.code, ErrorCode::Forbidden);
+    assert_eq!(sent(&broker), ["state_get"]);
+    Ok(())
+}

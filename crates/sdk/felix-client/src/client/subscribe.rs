@@ -337,6 +337,19 @@ impl Connection {
             .await?
         {
             Message::OffsetValue { offset, .. } => Ok(offset),
+            Message::PublishError {
+                message,
+                code,
+                retry,
+                detail,
+                ..
+            } => Err(crate::error::refused(
+                "offset_for_time refused",
+                message,
+                code,
+                retry,
+                detail,
+            )),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to offset_for_time: {other:?}"
             )),

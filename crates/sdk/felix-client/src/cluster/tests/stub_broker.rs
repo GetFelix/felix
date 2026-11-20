@@ -639,8 +639,8 @@ async fn serve_stream(
                 };
                 write_message(&mut *send.lock().await, answer).await?;
             }
-            // The script's `not_leader` or error is the answer; anything else
-            // is an empty value.
+            // The script's `not_leader`, error or publish error is the answer;
+            // anything else is an empty value.
             Message::StateGet {
                 shard, request_id, ..
             } => {
@@ -649,7 +649,9 @@ async fn serve_stream(
                     .unwrap()
                     .push(("state_get", shard, vec![]));
                 let answer = match script(request_id) {
-                    refusal @ (Message::NotLeader { .. } | Message::Error { .. }) => refusal,
+                    refusal @ (Message::NotLeader { .. }
+                    | Message::Error { .. }
+                    | Message::PublishError { .. }) => refusal,
                     _ => Message::StateValue {
                         value: None,
                         version: None,

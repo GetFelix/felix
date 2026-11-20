@@ -345,6 +345,21 @@ impl Connection {
                 version,
                 as_of,
             }),
+            // The stream grant answers a refused read this way, as it does
+            // for `subscribe`.
+            Message::PublishError {
+                message,
+                code,
+                retry,
+                detail,
+                ..
+            } => Err(crate::error::refused(
+                "state_get refused",
+                message,
+                code,
+                retry,
+                detail,
+            )),
             other => Err(anyhow::anyhow!(
                 "unexpected answer to state_get: {:?}",
                 std::mem::discriminant(&other)

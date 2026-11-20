@@ -1,0 +1,1 @@
+- `state_get`, `state_get_on_shard` and `offset_for_time` refused by the stream grant now return a typed `BrokerError` (code `Forbidden`), as `subscribe` does, instead of an untyped "unexpected answer" (#1753).
