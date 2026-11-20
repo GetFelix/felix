@@ -280,7 +280,7 @@ Native Windows support is not currently tested.
 
 Each release signs its `SHA256SUMS` with Sigstore and attaches the signature as
 `SHA256SUMS.sigstore.json`. Download both next to the archive, then check the
-signature and the archive. Replace `<tag>` with the release tag, such as `v0.7.2`.
+signature and the archive. Replace `<tag>` with the release tag, such as `v0.7.3`.
 
 ```bash
 cosign verify-blob \
@@ -307,7 +307,7 @@ runs that stack with one command. For a local cluster built from source,
 `felix-cluster up` is quicker. The broker binds up to four client ports from `5000`,
 so publish the whole range, as the compose file does.
 
-Each release publishes the full version (`0.7.2`). A release without a
+Each release publishes the full version (`0.7.3`). A release without a
 pre-release suffix also publishes the minor series (`0.7`) and `latest`. Use a
 full version tag in anything you keep; the other two move. Images are
 signed by digest. See [Kubernetes](/deployment/kubernetes/) for the

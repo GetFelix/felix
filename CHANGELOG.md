@@ -733,6 +733,17 @@ MQTT publishes on a broker that runs stream shards on Raft (`FELIX_SHARD_ENGINE=
   count in a promotion and lose an acknowledged write. Replace or wipe the whole
   data directory instead. Version 0.8 removes the hazard.
 
+## [0.7.3] - 2026-11-19
+
+### Fixed
+- An idempotent producer told to follow a leader that had just died dialled it once per producer, one after another, and each dial waited out a full handshake. The dials now share one failure and give up after two seconds, so producers resume sooner after a failover without the control plane (#2871).
+
+### Documentation
+- Operations notes warn never to delete, empty or restore a single shard directory
+  (#2376). A broker keeps its storage id and copy trust, so the empty copy can
+  count in a promotion and lose an acknowledged write. Replace or wipe the whole
+  data directory instead. Version 0.8 removes the hazard.
+
 ## [0.7.2] - 2026-11-12
 
 Upgrade the control-plane leader last, or transfer leadership before upgrading it. A member that needs a snapshot recovers only once a 0.7.2 node leads.
@@ -6878,6 +6889,7 @@ token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
 [Unreleased]: https://github.com/GetFelix/felix/compare/v0.7.2...HEAD
+[0.7.3]: https://github.com/GetFelix/felix/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/GetFelix/felix/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/GetFelix/felix/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.2...v0.7.0

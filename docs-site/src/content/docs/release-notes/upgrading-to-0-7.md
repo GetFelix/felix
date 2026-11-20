@@ -276,9 +276,15 @@ and arm64. See [the C client](/clients/c/).
 
 ## Patch releases
 
-Both patches are drop-in upgrades from 0.7.0. Neither changes the wire protocol
+All three patches are drop-in upgrades from 0.7.0. None changes the wire protocol
 or adds a setting. The full lists are in the
 [changelog](https://github.com/GetFelix/felix/blob/main/CHANGELOG.md).
+
+### 0.7.3
+
+An idempotent producer told to follow a leader that had just died dialled it once per producer, one after another, and each dial waited out a full handshake. The dials now share one failure and give up after two seconds, so producers resume about 8.5 s after a leader election without the control plane, instead of 18 to 36 s (#2871).
+
+**What to do:** nothing special. The fix is in the client, so upgrade the client library to get it.
 
 ### 0.7.2
 

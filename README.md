@@ -15,7 +15,7 @@ docker compose run --rm felixctl sub orders --from earliest --count 3
 docker compose down -v                                 # when you are done
 ```
 
-The `sub` prints `hello` three times and exits. The stack runs the 0.7.2 release images, and its
+The `sub` prints `hello` three times and exits. The stack runs the 0.7.3 release images, and its
 credentials are for local use only, see
 [Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
 
