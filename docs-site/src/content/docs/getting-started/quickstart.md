@@ -50,9 +50,7 @@ the stack runs and why its credentials are safe locally. The rest of this page
 builds Felix from source.
 
 **Stop here if you only want to try Felix.** The [tutorials](/tutorials/overview/)
-build on this stack and take you from a first stream to a small app, and
-[See failover in 2 minutes](/getting-started/failover-in-2-minutes/) kills a
-broker in a three-node cluster while you watch.
+build on this stack and take you from a first stream to a small app.
 
 ## Prerequisites
 

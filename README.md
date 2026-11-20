@@ -19,9 +19,8 @@ The `sub` prints `hello` three times and exits. The stack runs the 0.7.2 release
 credentials are for local use only, see
 [Docker Compose](https://docs.getfelix.dev/deployment/docker-compose/#try-it-in-one-command).
 
-**Next:** [see failover in 2 minutes](https://docs.getfelix.dev/getting-started/failover-in-2-minutes/), with
-three brokers and one killed mid-stream. The [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/)
-has the Rust client, and the rest is at [docs.getfelix.dev](https://docs.getfelix.dev).
+**Next:** the [Quickstart](https://docs.getfelix.dev/getting-started/quickstart/) has the Rust client and a
+three-node cluster, and the rest is at [docs.getfelix.dev](https://docs.getfelix.dev).
 
 - **Fanout.** Each publish is encoded once, however many subscribers read it, and every subscriber has its
   own bounded queue. By default a slow consumer drops records instead of holding up a publisher or anyone else.

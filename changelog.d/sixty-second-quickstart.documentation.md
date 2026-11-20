@@ -1,1 +1,1 @@
-- The README now opens with a copy-paste path that starts a broker, publishes three records and reads them back, and a new page, "See failover in 2 minutes", walks through killing a leader in a three-broker cluster.
+- The README now opens with a copy-paste path that starts a broker, publishes three records and reads them back, and the quickstart page uses the same commands.
