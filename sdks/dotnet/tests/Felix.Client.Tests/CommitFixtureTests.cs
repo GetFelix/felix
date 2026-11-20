@@ -492,13 +492,19 @@ public class CommitFixtureTests
         var client = await f.ConnectAsync();
         var sub = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
 
-        await sub.DisposeAsync();
-        await sub.DisposeAsync();
-        sub.Dispose();
+        Assert.Null(await Record.ExceptionAsync(async () =>
+        {
+            await sub.DisposeAsync();
+            await sub.DisposeAsync();
+            sub.Dispose();
+        }));
 
-        await client.DisposeAsync();
-        await client.DisposeAsync();
-        client.Dispose();
+        Assert.Null(await Record.ExceptionAsync(async () =>
+        {
+            await client.DisposeAsync();
+            await client.DisposeAsync();
+            client.Dispose();
+        }));
     }
 
     [FixtureFact]
