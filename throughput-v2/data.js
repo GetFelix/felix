@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795141504069,
+  "lastUpdate": 1795143389048,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63492,6 +63492,58 @@ window.BENCHMARK_DATA = {
             "range": "7869.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798465.63\nmean: 799943.80\nstdev: 7869.16\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6d53a63d645ba907a03548569979dbee21d7598a",
+          "message": "release: publish the broker and control plane for Linux aarch64 (#2797) (#2864)\n\n* release: publish the broker and control plane for Linux aarch64 (#2797)\n\nA linux-aarch64 job on ubuntu-24.04-arm builds the archive. The\nlinux-x86_64 job downloads it and writes and signs one SHA256SUMS over\nboth archives. Needs a release dry run on a real Arm runner to confirm.\n\n* release: build the server archives in parallel and sign one SHA256SUMS in its own job (#2797)",
+          "timestamp": "2026-11-20T02:51:04Z",
+          "tree_id": "80ff8248cf39e13f9fefd83cd05ac18c30c8a76f",
+          "url": "https://github.com/GetFelix/felix/commit/6d53a63d645ba907a03548569979dbee21d7598a"
+        },
+        "date": 1795143388079,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 504545.36,
+            "range": "63368.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504545.36\nmean: 520103.11\nstdev: 63368.57\ncv: 12.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 504545.36,
+            "range": "63368.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504545.36\nmean: 520103.11\nstdev: 63368.57\ncv: 12.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120622.2,
+            "range": "8002.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120622.20\nmean: 118092.73\nstdev: 8002.54\ncv: 6.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1206221.98,
+            "range": "80025.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1206221.98\nmean: 1180927.25\nstdev: 80025.37\ncv: 6.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
