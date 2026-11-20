@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -266,7 +267,22 @@ impl Nodes {
     /// identity's client is replaced the same way, from the parent's client
     /// for that broker, which is itself rebuilt first if it has failed.
     pub(super) async fn connect_to(&self, addr: SocketAddr) -> Result<Arc<Connection>> {
+        self.connect_within(addr, None).await
+    }
+
+    /// [`connect_to`](Self::connect_to), with the dial cut off after `limit`.
+    ///
+    /// Callers that queued behind a dial that failed or timed out share its
+    /// failure instead of dialling the same dead broker again one after
+    /// another, which turned `n` callers into `n` timeouts. Callers that
+    /// arrive after the failure dial afresh.
+    pub(super) async fn connect_within(
+        &self,
+        addr: SocketAddr,
+        limit: Option<Duration>,
+    ) -> Result<Arc<Connection>> {
         let slot = self.slot(addr);
+        let queued = Instant::now();
         // Held across the connect, so concurrent callers for one broker share
         // a connect instead of each opening their own.
         let mut held = slot.client.lock().await;
@@ -275,37 +291,64 @@ impl Nodes {
         {
             return Ok(Arc::clone(client));
         }
-        let client = match &self.source {
-            Source::Dial {
-                server_name,
-                config,
-                ..
-            } => {
-                // A broker that advertised a name is checked against that
-                // name, as a client dialling the name directly would check it.
-                let server_name = self
-                    .names
-                    .lock()
-                    .expect("node names")
-                    .get(&addr)
-                    .cloned()
-                    .unwrap_or_else(|| server_name.clone());
-                Connection::connect_shared(addr, &server_name, ClientConfig::clone(config)).await?
-            }
-            Source::Identity {
-                base,
-                tenant_id,
-                tokens,
-            } => {
-                let shared = Box::pin(base.connect_to(addr)).await?;
-                shared
-                    .with_identity(tenant_id.clone(), Arc::clone(tokens))
-                    .await?
+        if let Some((at, why)) = slot.failed.lock().expect("slot failure").as_ref()
+            && *at >= queued
+        {
+            return Err(anyhow::anyhow!("{why}"));
+        }
+        let dial = async {
+            match &self.source {
+                Source::Dial {
+                    server_name,
+                    config,
+                    ..
+                } => {
+                    // A broker that advertised a name is checked against that
+                    // name, as a client dialling the name directly would check it.
+                    let server_name = self
+                        .names
+                        .lock()
+                        .expect("node names")
+                        .get(&addr)
+                        .cloned()
+                        .unwrap_or_else(|| server_name.clone());
+                    Connection::connect_shared(addr, &server_name, ClientConfig::clone(config))
+                        .await
+                }
+                Source::Identity {
+                    base,
+                    tenant_id,
+                    tokens,
+                } => {
+                    let shared = Box::pin(base.connect_within(addr, limit)).await?;
+                    shared
+                        .with_identity(tenant_id.clone(), Arc::clone(tokens))
+                        .await
+                }
             }
         };
-        let client = Arc::new(client);
-        *held = Some(Arc::clone(&client));
-        Ok(client)
+        let dialled = match limit {
+            Some(limit) => tokio::time::timeout(limit, dial)
+                .await
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("connecting to {addr} timed out"))),
+            None => dial.await,
+        };
+        match dialled {
+            Ok(client) => {
+                let client = Arc::new(client);
+                *held = Some(Arc::clone(&client));
+                Ok(client)
+            }
+            Err(err) => {
+                // A token failure is the source's, not this broker's, and
+                // keeps its type for callers that stop on it.
+                if !is_token_failure(&err) {
+                    *slot.failed.lock().expect("slot failure") =
+                        Some((Instant::now(), format!("{err:#}")));
+                }
+                Err(err)
+            }
+        }
     }
 
     /// The client for whichever of `addrs` answers first, in order, with the
@@ -375,4 +418,6 @@ impl Nodes {
 #[derive(Default)]
 struct Slot {
     client: tokio::sync::Mutex<Option<Arc<Connection>>>,
+    /// When the last dial failed and why, for callers that queued behind it.
+    failed: Mutex<Option<(Instant, String)>>,
 }
