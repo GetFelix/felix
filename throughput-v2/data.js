@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795154489461,
+  "lastUpdate": 1795194091471,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63856,6 +63856,58 @@ window.BENCHMARK_DATA = {
             "range": "13425.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1161488.76\nmean: 1164435.04\nstdev: 13425.49\ncv: 1.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "794e4487b4fc9f96cafc13d1ecca223deb58a08c",
+          "message": "chore(demos): pin the failover demo to 0.7.3 (#2875)\n\nThe v0.7.3 sync left demos/failover/.env on 0.7.2, which fails the version-pin check in docs:evidence on main.",
+          "timestamp": "2026-11-20T16:52:24Z",
+          "tree_id": "86cb2737b8ec5f6966961dbe6bb354ab82fbf83d",
+          "url": "https://github.com/GetFelix/felix/commit/794e4487b4fc9f96cafc13d1ecca223deb58a08c"
+        },
+        "date": 1795194090777,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 381897.85,
+            "range": "22656.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 381897.85\nmean: 388468.60\nstdev: 22656.41\ncv: 5.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 381897.85,
+            "range": "22656.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 381897.85\nmean: 388468.60\nstdev: 22656.41\ncv: 5.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94632.91,
+            "range": "509.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94632.91\nmean: 94577.31\nstdev: 509.36\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 946329.14,
+            "range": "5093.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 946329.14\nmean: 945773.13\nstdev: 5093.58\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
