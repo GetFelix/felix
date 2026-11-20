@@ -222,7 +222,7 @@ Recorded deliberately, because several are plausible enough to be re-proposed.
 1. **The redundant payload copy is not the bottleneck.** `decode_publish_batch`
    does `bytes.to_vec()` per payload (`crates/protocol/felix-wire/src/client/binary/publish.rs:317`) and
    every caller immediately converts back with `Bytes::from(vec)`
-   (`handlers/publish/uni.rs:82`, `control.rs:108`), a genuine
+   (`handlers/publish/uni.rs:82`, the control-stream publish path), a genuine
    `Bytes`→`Vec`→`Bytes` round trip caused only by `PublishBatch.payloads` being
    `Vec<Vec<u8>>`. Measured: **6.8 µs per 64 × 4 KiB frame (38.3 GB/s)** versus
    0.2 µs for a refcount clone. At 73 MB/s that is ~0.2% of one core. Worth
@@ -478,7 +478,7 @@ not necessarily the ideal width for a standalone broker.
 Static analysis (correctly) identified that `event_batch_max_bytes` defaults to
 64 KiB (`services/felix-broker-service/src/config.rs`), that
 `handlers/subscribe/feeder.rs` splits a 256 KiB envelope into four separately
-encoded 64 KiB lane frames, and that `_lane_flush_hints` in `feeder.rs:24-29` is
+encoded 64 KiB lane frames, and that `_lane_flush_hints` in `handlers/subscribe/feeder.rs:72-76` is
 a dead binding: `flush_max_items`, `flush_max_delay` and `max_bytes_per_write`
 are captured and never used. **All three verified in the code.**
 
@@ -729,7 +729,7 @@ with the direct writer are the natural place to start.
    show it directly. This is the highest-value next step.
 5. **Set runtime width deliberately.** Worth ~20–33% and already measurable, but
    validate against a standalone broker before changing any default.
-6. **Fix `_lane_flush_hints`** (`feeder.rs:24-29`): the configured flush delay
+6. **Fix `_lane_flush_hints`** (`handlers/subscribe/feeder.rs:72-76`): the configured flush delay
    is silently ignored. A correctness/config-honesty bug, not a throughput fix,
    though it may interact with the bimodality above since coalescing is exactly
    what the dead hints were meant to control.

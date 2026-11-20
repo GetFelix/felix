@@ -246,6 +246,7 @@ tasks:
     # dependencies and stay in its build, where a diagram change is made.
     cmds:
       - "python3 scripts/check_doc_evidence.py"
+      - "python3 -m unittest scripts/test_check_doc_evidence.py"
       - "python3 scripts/check_env_reference.py"
       # And that the *runtime* knows them, so a mistyped name is reported
       # rather than quietly taking a default.

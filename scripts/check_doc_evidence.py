@@ -64,11 +64,15 @@ def defined() -> set[str]:
     return {line[3:] for line in out.splitlines()}
 
 
-# `file.rs:NNN`, optionally with a path, optionally followed by the backticked
-# symbol it points at: `ship.rs:20` `ship_once`.
+# `file.rs:NNN` or a range `file.rs:N-M`, optionally with a path, optionally
+# followed by the backticked symbol it points at: `ship.rs:20` `ship_once`.
+# A bare `:N` right after a citation (`quorum.rs:37`, `:618`) cites the same file.
 LINE_CITATION = re.compile(
-    r"`((?:[\w.-]+/)*[\w.-]+\.rs):(\d+)`(?:[ ,]+(?:`(?:fn |struct |enum |trait )?([A-Za-z_][\w:]*)`))?"
+    r"`(?:((?:[\w.-]+/)*[\w.-]+\.rs):|:(?=\d))(\d+)(?:-(\d+))?`"
+    r"(?:[ ,]+(?:`(?:fn |struct |enum |trait )?([A-Za-z_][\w:]*)`))?"
 )
+# Text allowed between a citation and a bare follow-on `:N` for it to count.
+FOLLOW_GAP = re.compile(r"^(?:[\s,;/]|and|or)*$")
 # A table row whose first cell names the symbol: | `quorum::ShardServing` | `quorum.rs:991` |
 ROW_SYMBOL = re.compile(r"^\|\s*`([A-Za-z_][\w:]*)`\s*\|")
 
@@ -87,47 +91,73 @@ def tracked_rs() -> dict[str, list[Path]]:
 
 
 def resolve(cited_path: str, files: dict[str, list[Path]]) -> list[Path]:
-    """Files a cited path can mean: a path suffix match, so `driver.rs` finds every driver.rs."""
-    return [f[0] for rel, f in files.items() if rel == cited_path or rel.endswith("/" + cited_path)]
+    """Files a cited path can mean: the exact path, else every path-suffix match."""
+    if cited_path in files:
+        return [files[cited_path][0]]
+    return [f[0] for rel, f in files.items() if rel.endswith("/" + cited_path)]
 
 
-def check_lines() -> tuple[int, list[str]]:
-    """Check `file.rs:NNN` citations: the file exists, the line is in it, and a
-    symbol named alongside the citation is on that line. A citation with no
-    symbol can only be range-checked; cite one so drift is caught."""
+def check_lines() -> tuple[int, list[str], list[str]]:
+    """Check `file.rs:N` and `file.rs:N-M` citations: the file is unambiguous,
+    the lines are in it, and a symbol named alongside the citation is on that
+    line (or inside that range). A citation with no symbol can only be
+    range-checked; it is reported as a warning so drift stays visible."""
     files = tracked_rs()
     cache: dict[Path, list[str]] = {}
     problems: list[str] = []
+    warnings: list[str] = []
     total = 0
     for root in DOCS:
         for path in sorted(root.rglob("*.md")) + sorted(root.rglob("*.mdx")):
             for number, line in enumerate(path.read_text().splitlines(), 1):
                 row = ROW_SYMBOL.match(line)
-                for index, m in enumerate(LINE_CITATION.finditer(line)):
-                    first = index == 0
-                    total += 1
+                last_path: str | None = None
+                last_end = 0
+                first = True
+                for m in LINE_CITATION.finditer(line):
                     where = f"{path.relative_to(REPO)}:{number}"
-                    cited_path, at, symbol = m.group(1), int(m.group(2)), m.group(3)
+                    cited_path = m.group(1)
+                    if cited_path is None:
+                        if last_path is None or not FOLLOW_GAP.match(line[last_end : m.start()]):
+                            continue
+                        cited_path = last_path
+                    total += 1
+                    at = int(m.group(2))
+                    end = int(m.group(3)) if m.group(3) else at
+                    symbol = m.group(4)
+                    last_path, last_end = cited_path, m.end()
                     if symbol is None and row and first and m.start() > row.end():
                         symbol = row.group(1)
+                    first = False
                     if cited_path in EXTERNAL:
+                        continue
+                    span = f"{at}-{end}" if end != at else f"{at}"
+                    if end < at:
+                        problems.append(f"{where}: cites {cited_path}:{span}, the range runs backwards")
                         continue
                     candidates = resolve(cited_path, files)
                     if not candidates:
-                        problems.append(f"{where}: cites {cited_path}:{at}, no such file")
+                        problems.append(f"{where}: cites {cited_path}:{span}, no such file")
                         continue
-                    leaf = symbol.split("::")[-1] if symbol else None
-                    ok = False
-                    for c in candidates:
-                        lines = cache.setdefault(c, c.read_text().splitlines())
-                        if at > len(lines):
-                            continue
-                        if leaf is None or re.search(rf"\b{re.escape(leaf)}\b", lines[at - 1]):
-                            ok = True
-                    if not ok:
-                        what = f"`{leaf}` is not on line {at}" if leaf else f"line {at} is past the end"
-                        problems.append(f"{where}: cites {cited_path}:{at}, but {what}")
-    return total, problems
+                    if len(candidates) > 1:
+                        problems.append(
+                            f"{where}: cites {cited_path}:{span}, ambiguous path, cite more of it "
+                            f"({len(candidates)} files match)"
+                        )
+                        continue
+                    lines = cache.setdefault(candidates[0], candidates[0].read_text().splitlines())
+                    if end > len(lines):
+                        problems.append(f"{where}: cites {cited_path}:{span}, but the file has {len(lines)} lines")
+                        continue
+                    if symbol is None:
+                        warnings.append(f"{where}: cites {cited_path}:{span} with no symbol beside it")
+                        continue
+                    leaf = symbol.split("::")[-1]
+                    pattern = re.compile(rf"\b{re.escape(leaf)}\b")
+                    if not any(pattern.search(l) for l in lines[at - 1 : end]):
+                        where_ = f"on line {at}" if end == at else f"in lines {at}-{end}"
+                        problems.append(f"{where}: cites {cited_path}:{span}, but `{leaf}` is not {where_}")
+    return total, problems, warnings
 
 
 def main() -> int:
@@ -140,10 +170,12 @@ def main() -> int:
             print(f"\033[31mFAIL\033[0m {place}: cites `{name}`, which no test defines")
     print(f"{len(names)} cited test(s) checked, {len(missing)} missing")
 
-    total, problems = check_lines()
+    total, problems, warnings = check_lines()
+    for warning in warnings:
+        print(f"\033[33mWARN\033[0m {warning}")
     for problem in problems:
         print(f"\033[31mFAIL\033[0m {problem}")
-    print(f"{total} line citation(s) checked, {len(problems)} stale")
+    print(f"{total} line citation(s) checked, {len(problems)} stale, {len(warnings)} without a symbol")
     return 1 if missing or problems else 0
 
 
