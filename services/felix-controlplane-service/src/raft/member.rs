@@ -132,7 +132,7 @@ impl RaftMember {
     pub(super) async fn standing(&self) -> Result<Standing> {
         let formed = self.state.formed().await?;
         let node = self.node();
-        let (last_log_index, term, withheld) = match node {
+        let (last_log_index, term, withheld_term, withheld) = match node {
             // The node's own state, not its metrics: those are empty until
             // the node first publishes them, and a log would be missing
             // from the answer.
@@ -150,7 +150,12 @@ impl RaftMember {
                     })
                     .await
                     .map_err(|err| anyhow::anyhow!("raft node: {err}"))?;
-                (last, holds_promises.then_some(term), !holds_promises)
+                (
+                    last,
+                    holds_promises.then_some(term),
+                    (!holds_promises).then_some(term),
+                    !holds_promises,
+                )
             }
             None => {
                 anyhow::ensure!(
@@ -159,7 +164,7 @@ impl RaftMember {
                 );
                 // Not withheld: the node starts later, and only a running
                 // node can say whether it holds its vote.
-                (None, None, false)
+                (None, None, None, false)
             }
         };
         Ok(Standing {
@@ -171,6 +176,7 @@ impl RaftMember {
             member: Some(self.id),
             term,
             withheld,
+            withheld_term,
         })
     }
 }

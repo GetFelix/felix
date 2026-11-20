@@ -74,11 +74,18 @@ pub(super) struct Standing {
     /// build that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) term: Option<u64>,
-    /// The member withholds its vote, so it gives no term. It has promised
+    /// The member withholds its vote, so it gives no `term`. It has promised
     /// nothing since it lost its volume, and what it promised before went
     /// with the volume. Absent (false) from a build that predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(super) withheld: bool,
+    /// A withheld member's current term: 0, or the term of a leader it
+    /// served since its wipe. Not a promise, but a leader in that term
+    /// existed, and a peer learning its floor must not serve below it
+    /// (#2824). A field of its own, so a build that predates it still
+    /// reads the answer as withheld. Absent from such a build.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) withheld_term: Option<u64>,
 }
 
 /// No floor learned yet: a withheld member serves no leader.
@@ -306,13 +313,22 @@ fn tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
     wrapped.or_else(|| err.source()).is_some_and(tls_failure)
 }
 
-/// The term member `asked` holds, from its `standing` answer, or `None`
-/// when it says it withholds its vote.
+/// What member `asked` reports for the floor ([`RaftHandle::learn_floor`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Reported {
+    /// It holds its vote, in this term.
+    Voting(u64),
+    /// It withholds its vote, in this term. `None` from a build that does
+    /// not give a withheld member's term.
+    Withheld(Option<u64>),
+}
+
+/// What member `asked` reports for the floor, from its `standing` answer.
 async fn term_of(
     client: &reqwest::Client,
     asked: NodeId,
     base: Option<&str>,
-) -> Result<Option<u64>, String> {
+) -> Result<Reported, String> {
     let base = base.ok_or("no address configured")?;
     let response = client
         .get(format!("{base}{}", super::peer_route("standing")))
@@ -339,12 +355,13 @@ async fn term_of(
             term: Some(term),
             withheld: false,
             ..
-        } => Ok(Some(term)),
+        } => Ok(Reported::Voting(term)),
         Standing {
             term: None,
             withheld: true,
+            withheld_term,
             ..
-        } => Ok(None),
+        } => Ok(Reported::Withheld(withheld_term)),
         Standing { term: Some(_), .. } => {
             Err("it gives a term and says it withholds its vote".to_string())
         }
@@ -616,12 +633,15 @@ impl RaftHandle {
     /// Ask every other member for its term until each one answers, and set
     /// the floor to the highest. A term this member promised before it lost
     /// its volume is held by the quorum it promised it with, so the floor
-    /// is at least that term. A member that withholds its vote too says so
-    /// and gives no term: it promised nothing since its own loss, so it
-    /// holds none of those terms, and waiting on it would leave two empty
-    /// members stranded on each other. Silence is not an answer: a member
-    /// that is down may be the only one that knows a term this member
-    /// promised.
+    /// is at least that term. A member that withholds its vote too says so:
+    /// it promised nothing since its own loss, so it proves nothing, and
+    /// waiting on it would leave two empty members stranded on each other.
+    /// Its term still raises the floor. It took that term from a leader it
+    /// served, and past the tolerance it may be the only member left that
+    /// knows the leader existed: without it, a waived member could serve a
+    /// deposed leader that then commits over that leader's entries (#2824).
+    /// Silence is not an answer: a member that is down may be the only one
+    /// that knows a term this member promised.
     ///
     /// Withheld answers prove the floor only within the group's failure
     /// tolerance ([`super::floor`]). Past it the member blocks until enough
@@ -643,21 +663,37 @@ impl RaftHandle {
             let mut with_terms = 0;
             let mut waiting = Vec::new();
             let mut withheld = BTreeSet::new();
+            let mut untold = Vec::new();
             for (id, base) in others {
                 match term_of(client, *id, base.as_deref()).await {
-                    Ok(Some(term)) => {
+                    Ok(Reported::Voting(term)) => {
                         floor = floor.max(term);
                         with_terms += 1;
                     }
-                    Ok(None) => {
+                    Ok(Reported::Withheld(term)) => {
                         withheld.insert(*id);
+                        match term {
+                            Some(term) => floor = floor.max(term),
+                            None => untold.push(*id),
+                        }
                     }
                     Err(why) => waiting.push(format!("member {id}: {why}")),
                 }
             }
+            let members = others.len() + 1;
+            // Within the tolerance the reporters prove the floor without a
+            // withheld member's term. Past it a waiver may lean on that term,
+            // so an older build that does not give it is waited on.
+            if !resumed && !super::floor::proven(members, with_terms) {
+                waiting.extend(untold.iter().map(|id| {
+                    format!(
+                        "member {id}: it withholds its vote on a build that does not give its \
+                         term, which the floor needs past the failure tolerance"
+                    )
+                }));
+            }
             let due = last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL);
             if waiting.is_empty() {
-                let members = others.len() + 1;
                 match self.floor_gate.judge(
                     members,
                     &withheld,
