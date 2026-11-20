@@ -1,1 +1,0 @@
-- An idempotent producer told to follow a leader that had just died dialled it once per producer, one after another, and each dial waited out a full handshake. The dials now share one failure and give up after two seconds, so producers resume sooner after a failover without the control plane (#2871).
