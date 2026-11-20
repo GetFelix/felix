@@ -3977,9 +3977,10 @@ group elects without it.
 > `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged`.
 
 **Forming a group.** Placement says where a shard's group forms. After
-that the group's members are its own, and placement changes none of them.
-Membership changes are not built yet
-([#2235](https://github.com/GetFelix/felix/issues/2235)), so until they are:
+that the group's leader moves its members to the target the control plane
+stores ("Membership"). Placement changes a set only to replace a follower on
+an internal node. Because a group forms from a full set, and a set is filled
+later by no report a Raft shard sends:
 
 - A group forms only when placement names as many brokers as the stream's
   replication factor. The control plane can place a shard on the brokers it
@@ -4008,8 +4009,8 @@ Membership changes are not built yet
   copy rotates after it answered, the set names its old copy id and not the
   new one. The new copy is a member no group knows, like any copy wiped
   after its group formed, and the group runs with one voter that never
-  answers: at three replicas it cannot lose another until membership
-  changes are built. The question names the stream's incarnation,
+  answers: at three replicas it cannot lose another until the group's
+  membership change replaces the copy. The question names the stream's incarnation,
   so a member still on an older incarnation of the stream (its broker has
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They

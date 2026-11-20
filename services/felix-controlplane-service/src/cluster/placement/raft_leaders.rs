@@ -13,6 +13,7 @@ use felix_common::random::HashMap;
 use super::leadership::{Leadership, Owner};
 use super::moves::Moves;
 use super::rendezvous::score;
+use super::zones::domain;
 use super::{Blocked, Decision, MoveStep};
 use crate::model::{Node, ShardAssignment, ShardKind, ShardState};
 
@@ -70,7 +71,8 @@ pub(super) fn raft_step<'a>(
     // swapped on a later pass.
     if is_live(leader)
         && !is_internal(leader)
-        && let Some(decision) = replace_internal(existing, is_internal, eligible, load, moves)
+        && let Some(decision) =
+            replace_internal(existing, is_live, is_internal, eligible, load, moves)
     {
         return decision;
     }
@@ -147,6 +149,7 @@ pub(super) fn raft_step<'a>(
 /// stored for the current set, so there is one change at a time.
 fn replace_internal<'a>(
     existing: &'a ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
     is_internal: &dyn Fn(&str) -> bool,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
@@ -157,12 +160,31 @@ fn replace_internal<'a>(
         .iter()
         .find(|node| is_internal(node.as_str()))?;
     let key = &existing.key;
+    // The swap replaces the stored target. With another member down the group
+    // could not finish the change, so the internal voter would stay unseen.
+    if let Some(down) = existing
+        .nodes()
+        .find(|node| node.as_str() != from && !is_internal(node) && !is_live(node))
+    {
+        return Some(Decision::Waiting(Blocked::MemberDown {
+            node: down.clone(),
+        }));
+    }
+    // A replacement in a zone the rest of the set already holds comes last.
+    let staying: Vec<&str> = existing
+        .nodes()
+        .map(String::as_str)
+        .filter(|node| *node != from.as_str())
+        .collect();
     let to = eligible
         .iter()
         .map(|node| node.node_id.as_str())
         .filter(|id| !existing.nodes().any(|member| member == id))
         .min_by_key(|id| {
             (
+                staying
+                    .iter()
+                    .any(|node| domain(eligible, node) == domain(eligible, id)),
                 load.get(id).copied().unwrap_or(0),
                 u64::MAX - score(key, id),
                 *id,

@@ -253,3 +253,143 @@ fn a_cache_follower_on_an_internal_node_is_replaced() {
         "{written:?}"
     );
 }
+
+fn zoned_live(id: &str, zone: &str) -> Node {
+    let mut node = node(id, NodeLifecycle::Live, None);
+    node.spec.zone = Some(zone.to_string());
+    node
+}
+
+#[test]
+fn the_replacement_keeps_the_sets_zone_spread() {
+    // a and b hold z1 and z2; the internal node held z3. c is in z1, d in z3.
+    let mut core = internal("core");
+    core.spec.zone = Some("z3".to_string());
+    let nodes = vec![
+        zoned_live("a", "z1"),
+        zoned_live("b", "z2"),
+        zoned_live("c", "z1"),
+        zoned_live("d", "z3"),
+        core,
+    ];
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = raft_member_of_internal();
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplaceInternal { to, .. } if to == "d"),
+        "{step:?}"
+    );
+}
+
+#[test]
+fn a_down_member_holds_the_swap_visibly_until_it_returns() {
+    let mut nodes = live(&["a", "b", "c"]);
+    nodes.push(internal("core"));
+    nodes[1].status.lifecycle = NodeLifecycle::Down;
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = raft_member_of_internal();
+
+    let held = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+    assert_eq!(held.moves().count(), 0, "{held:?}");
+    assert!(
+        matches!(held.waiting().next(), Some((_, Blocked::MemberDown { node })) if node == "b"),
+        "{held:?}"
+    );
+
+    nodes[1].status.lifecycle = NodeLifecycle::Live;
+    let back = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+    assert_eq!(back.moves().count(), 1, "{back:?}");
+}
+
+#[test]
+fn a_paused_placement_holds_the_swap() {
+    let mut nodes = live(&["a", "b", "c"]);
+    nodes.push(internal("core"));
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let policy = MovePolicy {
+        paused: true,
+        ..raft()
+    };
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &raft_member_of_internal(),
+        &NothingCaughtUp,
+        policy,
+    );
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    assert!(matches!(plan.waiting().next(), Some((_, Blocked::Paused))));
+}
+
+#[test]
+fn swaps_past_the_per_pass_limit_wait() {
+    let mut nodes = live(&["a", "b", "c"]);
+    nodes.push(internal("core"));
+    let shards = (super::super::raft_leaders::RAFT_REPLACEMENTS_PER_PASS + 2) as u32;
+    let streams = vec![replicated_stream("orders", shards, 3)];
+    let existing: Vec<ShardAssignment> = (0..shards)
+        .map(|shard| {
+            let mut one = raft_member_of_internal().remove(0);
+            one.key.shard = shard;
+            one
+        })
+        .collect();
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    assert_eq!(
+        plan.moves().count(),
+        super::super::raft_leaders::RAFT_REPLACEMENTS_PER_PASS,
+        "{plan:?}"
+    );
+    assert_eq!(plan.waiting().count(), 2);
+}
+
+/// The leader leaves the internal node first; the follower is swapped on the
+/// next pass, once the stored target covers the new set.
+#[test]
+fn an_internal_leader_moves_before_its_internal_follower_is_swapped() {
+    let mut nodes = live(&["a", "b", "c"]);
+    nodes.push(internal("core"));
+    nodes.push(internal("core2"));
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let mut existing = assigned("orders", "core", &["a", "core2"]);
+    existing.raft_target = Some(crate::model::RaftTarget {
+        counter: 2,
+        members: ["core", "a", "core2"]
+            .iter()
+            .map(|node| (node.to_string(), 7))
+            .collect(),
+    });
+    // The leader leads from a member that is live; only core2 is internal
+    // among the followers, but the leader is internal too.
+    let first = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[existing.clone()],
+        &NothingCaughtUp,
+        raft(),
+    );
+    let (_, step, written) = first.moves().next().expect("a move");
+    assert!(
+        matches!(step, MoveStep::RaftLeader { to, .. } if to == "a"),
+        "{step:?}"
+    );
+
+    // Next pass: the leader is a, its follower core is still a member.
+    let mut next = written.clone();
+    next.raft_target = existing.raft_target.clone();
+    let second = plan_with(&streams, &[], &nodes, &[next], &NothingCaughtUp, raft());
+    let (_, step, _) = second.moves().next().expect("a swap");
+    assert!(
+        matches!(step, MoveStep::RaftReplaceInternal { .. }),
+        "{step:?}"
+    );
+}

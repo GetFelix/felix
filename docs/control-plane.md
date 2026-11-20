@@ -1497,7 +1497,7 @@ constraint, ahead of every preference:
   internal, and each of its followers on an internal node is replaced through
   the group's membership change (see [Raft shards](#raft-shards)). With no
   live node outside the set to take a copy, the set is left as it is, the
-  shard shows as waiting, the warning "a shard's copy is on an internal node
+  shard shows as waiting (as it does while another member is down), the warning "a shard's copy is on an internal node
   and no live node can take its place" is logged each pass, and the gauge
   `felix_shards_on_internal_nodes` counts it.
 - It does not count toward the shares above or the "live brokers" warning on
@@ -1845,8 +1845,11 @@ node outside the set that holds the fewest shards, so the set keeps its size.
 The write changes the stored target, and the group's leader adds the new
 member as a learner, waits for it to catch up and only then swaps the voters
 through joint consensus, so the group never has fewer voters than its
-replication factor and never loses its quorum. At most one change per shard is
-decided on one target, and 16 shards a pass. With no such node the shard waits
+replication factor and never loses its quorum. A write is decided only on a target
+stored for the current set and with every other member live, so a pass stores
+one target change per shard; the group may fold swaps queued behind it into one
+joint change, which joint consensus keeps safe. The new member is chosen to keep the
+set's zone spread where it can. At most 16 shards change a pass. With no such node the shard waits
 and the set stays; a drain still leaves followers where they are.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names

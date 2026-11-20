@@ -250,6 +250,10 @@ pub enum Blocked {
     /// outside the set can take its place. The set stays as it is, below no
     /// quorum, until one registers.
     NoReplacement { node: String },
+    /// A Raft shard has a member on an internal node, and another member is
+    /// not live. The internal member stays until it is, so the group can
+    /// finish the change.
+    MemberDown { node: String },
     /// A Raft shard's member on an internal node is replaced once the control
     /// plane has stored the group's target for its current set: one set
     /// change at a time.
@@ -301,6 +305,10 @@ impl std::fmt::Display for Blocked {
             Self::NoReplacement { node } => write!(
                 f,
                 "the copy on {node}, an internal node, has no live node to move to; it stays until one can take it"
+            ),
+            Self::MemberDown { node } => write!(
+                f,
+                "a copy is on an internal node; waiting for {node} to be live before replacing it"
             ),
             Self::TargetUnsettled => write!(
                 f,

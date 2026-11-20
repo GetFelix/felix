@@ -102,7 +102,7 @@ pub struct ReconcileOutcome {
     pub moved: usize,
     /// Moves that could not advance this pass.
     pub waiting: usize,
-    /// Shards with a copy stuck on an internal node, for want of a node to move it to.
+    /// Shards with a copy stuck on an internal node: no node to move it to, or a member down.
     pub on_internal: usize,
     /// Writes skipped because another writer changed the shard after this
     /// pass read it.
@@ -660,6 +660,16 @@ pub(super) async fn apply_pass(
 
     for (key, reason) in plan.waiting() {
         outcome.waiting += 1;
+        if let super::Blocked::MemberDown { node } = reason {
+            outcome.on_internal += 1;
+            tracing::warn!(
+                kind = %key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                node = %node,
+                "a shard's copy is on an internal node and cannot be replaced while another member is down",
+            );
+        }
         if let super::Blocked::NoReplacement { node } = reason {
             outcome.on_internal += 1;
             tracing::warn!(
