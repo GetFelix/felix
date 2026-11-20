@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795148139751,
+  "lastUpdate": 1795151774971,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -80850,6 +80850,72 @@ window.BENCHMARK_DATA = {
             "range": "906.88",
             "unit": "us",
             "extra": "trials: 5\nmedian: 594.00\nmean: 1151.60\nstdev: 906.88\ncv: 78.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9b5e9a81d627341e96a55ad99b35a5753531add",
+          "message": "chore(sdk): fix SonarCloud maintainability findings (#2741) (#2865)\n\nWrap the idempotent dispose and abandon calls in Record.Exception so the\ntests assert something, use Number.NaN, add a small fixture check to the\nTypeScript conformance test, and remove a side effect from a && operand\nin pubsub.c.",
+          "timestamp": "2026-11-20T05:07:49Z",
+          "tree_id": "a95627ab318d95b7100f395e69f95f22b08fd653",
+          "url": "https://github.com/GetFelix/felix/commit/e9b5e9a81d627341e96a55ad99b35a5753531add"
+        },
+        "date": 1795151762189,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 1.10\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "7.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 210.00\nstdev: 7.04\ncv: 3.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 328,
+            "range": "1128.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 328.00\nmean: 1111.20\nstdev: 1128.69\ncv: 101.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "2.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 199.40\nstdev: 2.61\ncv: 1.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 402,
+            "range": "41.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 402.00\nmean: 415.40\nstdev: 41.61\ncv: 10.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1192,
+            "range": "812.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1192.00\nmean: 1329.80\nstdev: 812.83\ncv: 61.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
