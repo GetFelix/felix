@@ -80,10 +80,10 @@ through traits the service implements:
 
 | Seam | Defined | Implemented by | What it gives the engine |
 | --- | --- | --- | --- |
-| `quorum::ShardServing` | `quorum.rs:991` | `IngressRouter`, `services/felix-broker-service/src/shards/routing.rs:534` | Is the shard replicated, which generation do I serve, is my lease valid |
-| `driver::WriteFence` | `driver.rs:296` | `ShardFence`, `services/felix-broker-service/src/shards/lifecycle/fence.rs:444` | Is the shard quiet; callbacks for serving without the lease, deposed, withheld, probed |
+| `quorum::ShardServing` | `quorum.rs:1041` | `IngressRouter`, `services/felix-broker-service/src/shards/routing.rs:534` | Is the shard replicated, which generation do I serve, is my lease valid |
+| `driver::WriteFence` | `driver.rs:298` | `ShardFence`, `services/felix-broker-service/src/shards/lifecycle/fence.rs:444` | Is the shard quiet; callbacks for serving without the lease, deposed, withheld, probed |
 | `reporter::Credential` | `reporter.rs:121` | `NodeCredential`, `services/felix-broker-service/src/cluster/credential.rs:62` | The bearer token a replica report carries |
-| `promotion::PromotionGate` | `promotion.rs:65` | `LifecycleGate`, `services/felix-broker-service/src/shards/lifecycle/promotion.rs:46` | Whether a promoted shard may open |
+| `promotion::PromotionGate` | `promotion.rs:66` | `LifecycleGate`, `services/felix-broker-service/src/shards/lifecycle/promotion.rs:46` | Whether a promoted shard may open |
 | `confirmed::ConfirmedRoutes` | `confirmed.rs:49` | `ControlPlaneRoutes`, `services/felix-broker-service/src/shards/confirmed.rs:77` | An assignment read no older than the control plane's last acknowledged write |
 | `quorum::LeadershipCheck` | `quorum.rs:92` | `leadership::ReadIndex`, `leadership.rs:90` | A read round: does a majority still answer at my generation |
 
@@ -101,20 +101,20 @@ code (`services/felix-broker-service/src/node/sim.rs`).
 ### 1. Append
 
 The broker's publish path takes offsets before it waits on durability
-(`crates/server/felix-broker/src/broker/publish.rs:257`, `begin_append`), then
+(`crates/server/felix-broker/src/broker/publish.rs:269`, `begin_append`), then
 `Completion::commit` makes the batch durable and marks the shard in
 `AppendedShards` (`crates/server/felix-broker/src/broker/publish/completion.rs:293`,
 `crates/server/felix-broker/src/broker/appended.rs:18`). That wakes the
 driver, which ships each follower one batch from its cursor (`driver.rs:167`,
 `ship.rs:20` `ship_once`, `follower.rs:24` `FollowerCursor`). The follower
-stores it at the leader's offsets (`replica.rs:624` `apply`, through
-`crates/server/felix-broker/src/durable.rs:506` `append_pending_at`).
+stores it at the leader's offsets (`replica.rs:663` `apply`, through
+`crates/server/felix-broker/src/durable.rs:577` `append_pending_at`).
 
 ### 2. Commit mark
 
 The driver computes a majority offset over the cursors (`quorum.rs:1777`
 `quorum_offset`, `driver/shard.rs:479`), counted only from the leader's own
-generation start (`quorum.rs:1959` `counted_offset`), and publishes it to
+generation start (`quorum.rs:1976` `counted_offset`), and publishes it to
 `QuorumMarks` (`quorum.rs:37`, `:618`). Writers wait in `await_quorum`
 (`quorum.rs:1018`), called from the service:
 
@@ -133,17 +133,17 @@ Caches and counters have their own waits: `await_cache_quorum`
 ### 3. Leadership and fencing
 
 The control plane assigns a leader and a generation. A promoted leader runs
-the fence before it opens: `promotion.rs:167` `fence_shard` asks a majority to
-promise the generation (the follower answers in `replica.rs:1172` `fence`),
+the fence before it opens: `promotion.rs:168` `fence_shard` asks a majority to
+promise the generation (the follower answers in `replica.rs:1275` `fence`),
 catches up, appends a generation-start record, and the driver opens it
-(`driver.rs:665` `open_promoted`). A follower refuses a stale leader with
-`FencedEpoch` (`replica.rs:1943` `check_shard_fence`). The engine tells the
-broker through `WriteFence` callbacks (`driver.rs:296` onward): `deposed`,
+(`driver.rs:677` `open_promoted`). A follower refuses a stale leader with
+`FencedEpoch` (`replica.rs:2099` `check_shard_fence`). The engine tells the
+broker through `WriteFence` callbacks (`driver.rs:298` onward): `deposed`,
 `withheld`, `serve_without_lease`, `passed`.
 
 Around that core sit the parts that make it safe across crashes and lost
 disks: ballots (`crates/server/felix-storage/src/disk_log/ballot.rs:191`),
-vouching and copy trust (`replica.rs:1764` `record_vouch`, `follower.rs:107`),
+vouching and copy trust (`replica.rs:1894` `record_vouch`, `follower.rs:107`),
 unclean starts (`unclean.rs`), reclaim (`reclaim.rs`), and opt-in election
 without the control plane (`election.rs:31`, `election/candidate.rs:403`,
 `replica/election.rs`), switched on by `FELIX_INTERNAL_ELECTION`
@@ -153,7 +153,7 @@ without the control plane (`election.rs:31`, `election/candidate.rs:403`,
 
 The control plane picks the new set. A promotion across a set change runs a
 joint fence that needs answers from both the old and the new set
-(`promotion/joint.rs:216` `JointSets`, `replica.rs:2394` `joint_fence`). A new
+(`promotion/joint.rs:216` `JointSets`, `replica.rs:2550` `joint_fence`). A new
 replica joins as a learner that ships but does not count toward the mark
 (`ship.rs:665`, `driver/shard.rs:746`), and a follower too far behind is
 rebuilt (`rebuild.rs:40`). The driver learns of a change when the router
@@ -299,7 +299,7 @@ Raft log from Felix's write path and format.
 under `DiskLog`. These `disk_log` and `io` paths are in
 `crates/server/felix-storage/src/`. Nothing in `felix-replication` writes a
 file itself: a follower stores records through the broker's `DurableLog`
-(`crates/server/felix-broker/src/durable.rs:506`), which calls `DiskLog`. An
+(`crates/server/felix-broker/src/durable.rs:577`), which calls `DiskLog`. An
 engine that writes through `DiskLog` keeps all of them.
 
 **openraft's `RaftLogStorage` maps onto `DiskLog`** (paths in
