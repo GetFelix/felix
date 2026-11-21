@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795279432384,
+  "lastUpdate": 1795282021588,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81972,6 +81972,72 @@ window.BENCHMARK_DATA = {
             "range": "917.89",
             "unit": "us",
             "extra": "trials: 5\nmedian: 543.00\nmean: 1038.60\nstdev: 917.89\ncv: 88.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "813b191d29e5801dca68aa6c06f6c96fa8e1d72c",
+          "message": "fix(auth): end streams and connections when their credentials expire (#2817) (#2900)\n\n* fix(auth): end streams and connections when their credentials expire (#2817)\n\nEvery token now ends what it opened at its exp plus the leeway it was\naccepted under, through the same Revocable end time lease tokens already\nused, so every waiter on revocation (control and uni streams,\nsubscriptions, replays, cache watches, MQTT, Kafka) ends at expiry with\nno new timers per stream. A client certificate's notAfter caps that end\ntime in authenticate_peer and authenticate_forwarded, and a stream opened\non a connection whose certificate has already expired is refused.\n\nThe QUIC client accept loop closes the connection at the certificate's\nnotAfter (close code 2, \"credential expired\"), and both sides of an\ninternal peer connection close it when the other side's certificate\nexpires (close code 5), so the next dial presents the renewed one.\n\nSpec-Unaffected: authentication and connection lifetime; no TLA spec models credentials.\n\n* fix(auth): review fixes for credential expiry (#2817)\n\nStream ends wait on the wall clock (re-checked), like the connection\ncloses, so a suspended host or a stepped clock cannot move them. The\nQUIC test checks the connection close code on a bare connection, so each\ncertificate bound is guarded alone; a unit test covers the stream cap.\nWider timing windows in the new tests. Kafka reports an expired client\ncertificate as a refusal, not a transient failure. The auth doc notes\nMQTT ends at the bare exp.\n\nSpec-Unaffected: authentication and connection lifetime; no TLA spec models credentials.\n\n* fix(auth): bound a chain by its verified path, fail closed, spread peer closes (#2817)\n\nA chain's end is now the leaf and the intermediates on the path webpki\nbuilds to a trust anchor; the anchor and stray certificates no longer\ncount. A leaf that does not parse refuses the credential. Peer\nconnections close at a random time in the last 30 s before notAfter.\nMQTT waits on the wall clock, and Kafka closes idle and long-polling\nconnections when the credential ends.\n\n* fix(kafka): bound the final write when a connection closes (#2817)\n\nA client that stops reading could keep a connection open past its\ncredential's end while the queued answers waited to be written.",
+          "timestamp": "2026-11-21T17:22:32Z",
+          "tree_id": "0f891f3cc9a4ff81795dc04e171bcbd42bb76289",
+          "url": "https://github.com/GetFelix/felix/commit/813b191d29e5801dca68aa6c06f6c96fa8e1d72c"
+        },
+        "date": 1795282005548,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 62.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 84,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.80\nstdev: 1.30\ncv: 1.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 109,
+            "range": "227.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 256.40\nstdev: 227.56\ncv: 88.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 78,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 78.00\nmean: 78.60\nstdev: 0.89\ncv: 1.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 163,
+            "range": "5.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 166.00\nstdev: 5.70\ncv: 3.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 255,
+            "range": "162.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 326.00\nstdev: 162.56\ncv: 49.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
