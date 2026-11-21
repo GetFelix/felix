@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795268212374,
+  "lastUpdate": 1795277858664,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81708,6 +81708,72 @@ window.BENCHMARK_DATA = {
             "range": "631.18",
             "unit": "us",
             "extra": "trials: 5\nmedian: 834.00\nmean: 977.40\nstdev: 631.18\ncv: 64.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd0c92b19f1d5be5ea5dbcaae4df68d6827bac6e",
+          "message": "test(raft): cut the first leader off so the later election can finish (#2828) (#2894)\n\nleaders_that_commit_nothing_open_nothing lost every append, so the first\nleader stayed reachable and answered the followers' pre-votes with its own\ncommitted vote. A follower that saw that answer before the other follower's\ngrant dropped the round, and the ordering could repeat until the 120 s wait\nran out. The test now cuts the first leader off while the others elect,\nthen heals before the final check. The stall itself is tracked in #2889.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-21T16:10:29Z",
+          "tree_id": "a8c636139268422a4647395c62a1583de23ab08e",
+          "url": "https://github.com/GetFelix/felix/commit/cd0c92b19f1d5be5ea5dbcaae4df68d6827bac6e"
+        },
+        "date": 1795277840353,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 69.60\nstdev: 0.55\ncv: 0.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 121,
+            "range": "2.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 121.00\nstdev: 2.55\ncv: 2.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 153,
+            "range": "23.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 158.80\nstdev: 23.22\ncv: 14.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.00\nstdev: 0.71\ncv: 0.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 187,
+            "range": "9.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 191.80\nstdev: 9.98\ncv: 5.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 328,
+            "range": "515.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 328.00\nmean: 650.40\nstdev: 515.31\ncv: 79.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
