@@ -2762,10 +2762,13 @@ commit table. Nothing reads openraft's metrics for it: they change on every
 heartbeat answer, and every waiter would wake. An entry is applied only
 after it is committed, so `RaftEngine::read_bound`, the last applied index
 plus one, can trail the commit index and never passes it. A follower has a
-bound too, from what it has applied.
+bound too, from what it has applied. While the applied entries end inside a
+conditional batch, the bound stays at the batch's first piece ("Conditional
+publishes", below); waits on an applied index use the applied index itself.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
-> `the_read_bound_never_passes_the_commit_index`.
+> `the_read_bound_never_passes_the_commit_index` and
+> `an_undecided_batch_holds_the_read_bound_until_it_is_whole`.
 
 The commit index to compare the bound with is the one the Raft core holds.
 `status(shard).committed` is not: it comes from openraft's metrics, which
@@ -3594,9 +3597,20 @@ reports yet (#2751). Each record of such a batch is its own entry, a
 conditional piece that names its place in the batch, and the leader keeps a
 piece only at the expected offset plus its place. The batch is appended as
 one run, so every piece is kept or every piece is blanked, on every member.
-A leader change can still commit only a prefix of a kept batch, so a reader
-must apply the whole-batch rule (`docs/storage-format.md`, "Conditional
-batches") before showing one; the gate waits for every read path to do so.
+A leader change can still commit only a prefix of a kept batch, so every
+reader applies the whole-batch rule (`docs/storage-format.md`, "Conditional
+batches") in two places. The state machine holds the read bound at the
+first piece of a batch it has not yet seen end, so no reader at any level
+gets past it, and a confirmed read still waits only for the apply. When the
+entry where the next piece belongs is anything else, the batch is cut: its
+pieces hold no record, the bound moves past them, and the next record's
+publisher reports them as skipped with the entry that cut them. A member
+that restarts or installs a snapshot inside a batch reads the open batch
+back from its log. Every disk read goes through `read_log_from`, which
+drops a cut batch's pieces like blanks and stops before an undecided one,
+so history reads, follower delivery, consumer groups, queues and Kafka
+fetches see a batch whole or not at all. A blanked batch moves the stream
+past all its offsets. The gate opens in the next change.
 A piece is an entry (tag 10) and a record kind an older build refuses,
 which the fleet gate also covers. A batch with no record is refused as on
 the hybrid. Like a plain Raft publish, a `publish_if` keeps the publisher id
@@ -3629,6 +3643,15 @@ model) lands between the guess and the append.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_conditional_publish_off_its_offset_is_a_blank_on_every_member` and
 > `a_conditional_publish_of_other_than_one_record_is_refused`;
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_leader_change_that_cuts_a_batch_leaves_no_bound_inside_it`,
+> `a_lapsed_lease_mid_batch_keeps_readers_out_of_it`,
+> `a_batch_cut_by_the_next_leader_is_never_read_into_and_is_skipped` and
+> `a_member_resuming_inside_a_batch_reads_it_back_from_its_log`;
+> `crates/server/felix-broker/src/durable/tests.rs`,
+> `a_read_skips_a_cut_conditional_batch_and_stops_before_an_undecided_one`;
+> `crates/server/felix-broker/src/stream/state/tests.rs`,
+> `a_blanked_batch_of_three_releases_three_offsets`;
 > `crates/server/felix-replication/src/raft/wire/tests.rs`,
 > `a_conditional_entry_is_refused_by_its_tag_on_an_older_build`;
 > `crates/server/felix-storage/src/raft_log/tests.rs`,
