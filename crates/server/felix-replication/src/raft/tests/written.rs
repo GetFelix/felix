@@ -457,7 +457,7 @@ impl Led {
         let answer = self
             .cluster
             .runtime(&self.leader.broker)
-            .handle(request)
+            .handle_unchecked(request)
             .await;
         assert!(answer.is_ok(), "the report was refused");
     }
@@ -487,7 +487,7 @@ impl Led {
             deadline: Duration::from_secs(1),
             body: Request::Vote(rpc),
         };
-        let answer = self.cluster.runtime(voter).handle(request).await;
+        let answer = self.cluster.runtime(voter).handle_unchecked(request).await;
         match answer.expect("the vote was refused").0 {
             Reply::Vote(answer) => answer.vote_granted,
             _ => panic!("not a vote"),

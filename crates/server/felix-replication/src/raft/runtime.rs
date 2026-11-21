@@ -25,7 +25,7 @@ use super::group::driver::MembershipProgress;
 use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
 use super::membership::Target;
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
+use super::network::{RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::propose::Clock;
 use super::reach::Reach;
 use super::ticker;
@@ -34,6 +34,10 @@ use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
+
+mod admission;
+
+pub(crate) use admission::Admission;
 
 /// How often a kept-copy reclaim that waits only on a commit save looks
 /// again. A Raft log saves its commit at most this often.
@@ -529,15 +533,6 @@ struct Inner {
     admitted: parking_lot::Mutex<BTreeMap<ShardKey, Arc<Admission>>>,
     /// See [`GroupRuntime::admit_until`].
     admitted_until: parking_lot::Mutex<Option<tokio::time::Instant>>,
-}
-
-/// See [`GroupRuntime::admit`].
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Admission {
-    /// The group epoch (stream incarnation) it was set for.
-    incarnation: u64,
-    pub(crate) blank: BTreeSet<String>,
-    pub(crate) current: BTreeSet<String>,
 }
 
 /// A copy an open found stopped, which rejoins once a leader is heard
@@ -1227,58 +1222,6 @@ impl GroupRuntime {
         self.inner.acked.fetch_max(incarnation, Ordering::AcqRel);
     }
 
-    /// Who `group`'s member takes a message from beyond its membership,
-    /// on a connection bound to a broker ([`Self::handle_from`]). A copy
-    /// with no membership cannot tell its leader from an outsider, so it
-    /// hears only from `blank`: the brokers in the group now, by the
-    /// control plane's placement and target and the voters its leader
-    /// last reported. A member also hears from `current`, the placement
-    /// and target alone, so one that missed a membership change still
-    /// hears from a new member that leads. A broker removed from both is
-    /// heard by no copy that does not hold it in its membership. Without an
-    /// admission for the group's epoch, or past [`Self::admit_until`], a
-    /// copy hears only from its membership.
-    pub fn admit(&self, group: &GroupId, blank: BTreeSet<String>, current: BTreeSet<String>) {
-        let admission = Admission {
-            incarnation: group.epoch,
-            blank,
-            current,
-        };
-        let mut admitted = self.inner.admitted.lock();
-        if admitted
-            .get(&*group.shard)
-            .is_none_or(|held| **held != admission)
-        {
-            admitted.insert((*group.shard).clone(), Arc::new(admission));
-        }
-    }
-
-    /// Drop the admissions of shards `keep` does not name.
-    pub fn retain_admitted(&self, keep: impl Fn(&ShardKey) -> bool) {
-        self.inner.admitted.lock().retain(|shard, _| keep(shard));
-    }
-
-    /// The admissions stand until `until`: they come from a view of the
-    /// control plane that ages, and a broker it has since removed must not
-    /// stay admitted while that view cannot be refreshed. `None` lapses them.
-    pub fn admit_until(&self, until: Option<tokio::time::Instant>) {
-        *self.inner.admitted_until.lock() = until;
-    }
-
-    /// `group`'s admission, while it stands.
-    fn admission(&self, group: &GroupId) -> Option<Arc<Admission>> {
-        let until = (*self.inner.admitted_until.lock())?;
-        if tokio::time::Instant::now() >= until {
-            return None;
-        }
-        self.inner
-            .admitted
-            .lock()
-            .get(&*group.shard)
-            .filter(|admitted| admitted.incarnation == group.epoch)
-            .cloned()
-    }
-
     /// Placement names `broker` as the leader of `shard`. The member that
     /// leads the group hands it the leadership once that broker's member
     /// is a voter and has caught up, paced as [`Placement`] says. A
@@ -1369,15 +1312,8 @@ impl GroupRuntime {
     /// majority without the copy committed it, so the group goes on without
     /// it and a re-run of the re-form needs none of its votes. A leader that
     /// only proves an election may still need the copy, and one from a
-    /// broker not placed in the group's epoch proves nothing.
-    fn stopped_member(
-        &self,
-        group: &GroupId,
-        to: &MemberId,
-        body: &Request,
-        from: Option<&str>,
-        admitted: Option<&Admission>,
-    ) -> bool {
+    /// broker not `placed` in the group's epoch proves nothing.
+    fn stopped_member(&self, group: &GroupId, to: &MemberId, body: &Request, placed: bool) -> bool {
         let mut held = self.inner.stopped.lock();
         let Some(found) = held.get_mut(&*group.shard) else {
             return false;
@@ -1385,10 +1321,6 @@ impl GroupRuntime {
         if found.group != *group || found.member != *to {
             return false;
         }
-        let placed = match from {
-            Some(from) => admitted.is_some_and(|admitted| admitted.blank.contains(from)),
-            None => true,
-        };
         if placed
             && let Request::Append(append) = body
             && append.vote.is_committed()
@@ -1397,70 +1329,6 @@ impl GroupRuntime {
             found.heard |= found.last.is_none_or(|last| commit.index > last);
         }
         true
-    }
-
-    /// Hand a peer's message to the member it names.
-    pub async fn handle(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
-        self.handle_as(None, request).await
-    }
-
-    /// As [`Self::handle`], for a message that came on a connection bound
-    /// to broker `from`: refused unless its sender is in the member's own
-    /// membership ([`Group::outsider`]).
-    pub(crate) async fn handle_from(
-        &self,
-        from: &str,
-        request: RaftRequest,
-    ) -> Result<RaftReply, Refused> {
-        self.handle_as(Some(from), request).await
-    }
-
-    async fn handle_as(
-        &self,
-        from: Option<&str>,
-        request: RaftRequest,
-    ) -> Result<RaftReply, Refused> {
-        let RaftRequest {
-            group,
-            to,
-            beat,
-            report,
-            body,
-            deadline: _,
-        } = request;
-        let admitted = from.and_then(|_| self.admission(&group));
-        match self.inner.registry.get(&group.shard) {
-            // Another epoch or another copy of this shard is another member.
-            Some(member) if member.id == group && member.member == to => {
-                if let Some(from) = from
-                    && let Some(refused) = member
-                        .outsider(from, super::peer::sender(&body), admitted.as_deref())
-                        .await
-                {
-                    return Err(refused);
-                }
-                member.handle(body, beat, report).await.map(RaftReply)
-            }
-            Some(member) if member.id == group && member.member.broker == to.broker => {
-                // The copy id is told only to a sender of the group.
-                if let Some(from) = from
-                    && let Some(refused) = member
-                        .outsider(from, super::peer::sender(&body), admitted.as_deref())
-                        .await
-                {
-                    return Err(refused);
-                }
-                let copy = member.member.copy;
-                Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
-            }
-            _ if self.stopped_member(&group, &to, &body, from, admitted.as_deref()) => {
-                Err(Refused::Stopped(
-                    Box::new(Addressee { group, to }),
-                    "a re-form stopped this copy".to_owned(),
-                ))
-            }
-            _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
-        }
     }
 
     /// This broker's member of `shard`'s group, if it has one.

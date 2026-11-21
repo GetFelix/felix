@@ -1190,7 +1190,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
                 data,
             },
         };
-        runtime.handle(request)
+        runtime.handle_unchecked(request)
     };
     let whole = data.len() as u64;
     let half = data.len() / 2;
@@ -1277,12 +1277,12 @@ async fn a_later_leaders_snapshot_ends_what_the_stored_vote_lets_through() {
         offset: 0,
         data,
     };
-    let installed = runtime.handle(sent(held, whole)).await;
+    let installed = runtime.handle_unchecked(sent(held, whole)).await;
     assert!(installed.is_ok(), "the snapshot was not taken");
     // openraft publishes the vote after it answers.
     eventually(|| (member.raft().metrics().borrow_watched().vote == vote).then_some(())).await;
 
-    let asked = runtime.handle(sent(held, stands(term + 2, &old.broker)));
+    let asked = runtime.handle_unchecked(sent(held, stands(term + 2, &old.broker)));
     assert!(dropped(&asked.await), "the old leader was let through");
     cluster.stop().await;
 }
@@ -1317,7 +1317,7 @@ async fn a_piece_of_a_higher_terms_snapshot_voids_the_lease() {
             offset: 0,
             data: Bytes::from_static(b"half"),
         };
-        runtime.handle(sent(&leader.broker, body))
+        runtime.handle_unchecked(sent(&leader.broker, body))
     };
 
     let outvoted = piece(term - 1).await;
@@ -1430,7 +1430,7 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
             data: Bytes::from(newer),
         },
     };
-    let refused = cluster.runtime(behind).handle(request).await;
+    let refused = cluster.runtime(behind).handle_unchecked(request).await;
     let Err(Refused::Unreachable(why)) = refused else {
         panic!("the snapshot was not refused as unreadable");
     };

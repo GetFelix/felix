@@ -375,7 +375,10 @@ impl PeerServer {
                         "refusing an internal connection: at the inbound limit",
                     );
                     metrics::record_inbound_rejected(limit);
-                    connection.close(2u32.into(), b"internal connection limit reached");
+                    connection.close(
+                        CONNECTION_LIMIT_CLOSE_CODE.into(),
+                        b"internal connection limit reached",
+                    );
                     continue;
                 }
             };
@@ -389,7 +392,10 @@ impl PeerServer {
                     "refusing connection on the internal listener: not an internal peer",
                 );
                 metrics::record_inbound_rejected("alpn");
-                connection.close(1u32.into(), b"internal listener requires felix-internal/1");
+                connection.close(
+                    NOT_INTERNAL_CLOSE_CODE.into(),
+                    b"internal listener requires felix-internal/1",
+                );
                 continue;
             }
 
@@ -401,7 +407,7 @@ impl PeerServer {
             let closing = shutdown.clone();
             connection.spawn_pump(async move {
                 closing.cancelled().await;
-                closer.close(0u32.into(), b"broker shutting down");
+                closer.close(NO_ERROR_CLOSE_CODE.into(), b"broker shutting down");
             });
 
             let node_id = self.node_id.clone();
@@ -453,16 +459,36 @@ struct Offered {
     raft: Option<Arc<dyn RaftHandler>>,
 }
 
-/// Internal connection close code for a peer whose certificate passed its
-/// `notAfter`, sent by whichever side noticed. The dialer reconnects with a
-/// renewed one.
+// The application close codes of an internal connection. A peer reads the
+// code, not the reason text, so a code keeps its meaning once shipped.
+
+/// A close that is no fault of the peer: this broker is shutting down, or
+/// the dialer is done with the connection.
+pub(crate) const NO_ERROR_CLOSE_CODE: u32 = 0;
+
+/// The connection did not negotiate the internal ALPN.
+pub(crate) const NOT_INTERNAL_CLOSE_CODE: u32 = 1;
+
+/// The listener is at its inbound connection limit, overall or for the
+/// peer's source address.
+pub(crate) const CONNECTION_LIMIT_CLOSE_CODE: u32 = 2;
+
+/// The peer's `Hello` named a node its certificate does not, or another
+/// node than the one the connection is already bound to.
+pub(crate) const PEER_IDENTITY_CLOSE_CODE: u32 = 3;
+
+/// This broker registered a new incarnation, which the caller learns by
+/// dialling again.
+pub(crate) const INCARNATION_CHANGED_CLOSE_CODE: u32 = 4;
+
+/// A peer's certificate passed its `notAfter`, sent by whichever side
+/// noticed. The dialer reconnects with a renewed one.
 pub(crate) const CERT_EXPIRED_CLOSE_CODE: u32 = 5;
 
-/// Internal connection close code for a peer that sent a request before its
-/// `Hello` was accepted.
+/// The peer sent a request before its `Hello` was accepted.
 pub(crate) const HELLO_REQUIRED_CLOSE_CODE: u32 = 6;
 
-/// Close code for a connection that did not say `Hello` in time.
+/// The connection did not say `Hello` in time.
 pub(crate) const HELLO_TIMEOUT_CLOSE_CODE: u32 = 7;
 
 /// How long a connection may stay open without a `Hello`. A dialer greets
@@ -683,7 +709,7 @@ async fn serve_connection(
                             let _ = write_frame(&mut send, &refusal).await;
                             let _ = send.finish();
                             connection.close(
-                                3u32.into(),
+                                PEER_IDENTITY_CLOSE_CODE.into(),
                                 b"peer identity does not match its certificate",
                             );
                             return;
@@ -719,7 +745,7 @@ async fn serve_connection(
                             let mut send = send.lock().await;
                             let _ = write_frame(&mut send, &refusal).await;
                             let _ = send.finish();
-                            connection.close(3u32.into(), b"peer identity changed");
+                            connection.close(PEER_IDENTITY_CLOSE_CODE.into(), b"peer identity changed");
                             return;
                         }
                         tracing::debug!(peer = %hello.node_id, "internal peer connected");
@@ -770,7 +796,7 @@ async fn serve_connection(
                                     _ = closer.closed() => {}
                                     changed = watch.wait_for(|now| *now != current) => {
                                         if changed.is_ok() {
-                                            closer.close(4u32.into(), b"node incarnation changed");
+                                            closer.close(INCARNATION_CHANGED_CLOSE_CODE.into(), b"node incarnation changed");
                                         }
                                     }
                                 }

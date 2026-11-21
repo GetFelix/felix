@@ -448,7 +448,10 @@ impl PeerConnection {
 
     pub(super) fn close(&self, reason: &str) {
         self.fail_all();
-        self.connection.close(0u32.into(), reason.as_bytes());
+        self.connection.close(
+            crate::peer::server::NO_ERROR_CLOSE_CODE.into(),
+            reason.as_bytes(),
+        );
         for task in self.tasks.lock().drain(..) {
             task.abort();
         }

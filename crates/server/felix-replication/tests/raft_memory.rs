@@ -162,7 +162,7 @@ impl RaftTransport for Net {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
         let runtime = self.brokers.lock().get(&*request.to().broker).cloned();
         match runtime {
-            Some(runtime) => runtime.handle(request).await,
+            Some(runtime) => runtime.handle_unchecked(request).await,
             None => Err(Refused::Unreachable("no such broker".into())),
         }
     }
