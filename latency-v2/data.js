@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795284282289,
+  "lastUpdate": 1795288076473,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82236,6 +82236,72 @@ window.BENCHMARK_DATA = {
             "range": "51.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 278.00\nmean: 283.00\nstdev: 51.48\ncv: 18.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14cc9fcd39617cea80fef803752cf0f8b9e660aa",
+          "message": "fix(peer): serve nothing on the internal port before an identity-checked Hello (#2819) (#2910)\n\n* fix(peer): serve nothing on the internal port before an identity-checked Hello (#2819)\n\nThe internal listener checked a peer's certificate against a node id only\nwhen the peer sent Hello, and nothing made Hello come first. A peer with any\ncertificate from the internal CA could send fences, seals, pre-votes,\nfetches, replication, Raft and forwards under no identity.\n\nThe dispatch loop now refuses every request before an accepted Hello with\nUnauthorized and closes the connection (code 6). The node id is bound once\nper connection; a second Hello naming another node closes it (code 3). Raft\nmessages that name a sender are refused when that sender's broker is not the\nbound node. Per-request authorization against membership, replica set and\nregistration needs a source that does not lag the sender and is #2909.\n\nSpec-Unaffected: transport admission only; no change to replication, election or log state.\n\n* fix(replication): refuse a Raft append in another broker's name through answer, and close a connection with no Hello (#2819)\n\nSpec-Unaffected: transport admission only; no change to replication, election or log state.",
+          "timestamp": "2026-11-21T19:00:25Z",
+          "tree_id": "a69b6633084022eac881cd3ac33b36d98dba4f33",
+          "url": "https://github.com/GetFelix/felix/commit/14cc9fcd39617cea80fef803752cf0f8b9e660aa"
+        },
+        "date": 1795288065353,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 97.80\nstdev: 1.10\ncv: 1.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 129.40\nstdev: 1.14\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 168,
+            "range": "184.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 168.00\nmean: 285.20\nstdev: 184.15\ncv: 64.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "7.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 138.20\nstdev: 7.19\ncv: 5.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 269,
+            "range": "225.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 365.40\nstdev: 225.69\ncv: 61.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 395,
+            "range": "753.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 718.20\nstdev: 753.90\ncv: 104.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
