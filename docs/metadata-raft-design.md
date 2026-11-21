@@ -932,11 +932,15 @@ Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 
 - the routes that remove RBAC rules or stage, activate or retire signing
   keys answer 409 saying the group is not yet at the version they need;
-- the leader declines leader-only requests, so heartbeats, expiry and the
-  placement lease go through the log (`record_node_heartbeat`,
-  `expire_stale_nodes`, `take_placement_lease`) as on the older build.
-  When the group reaches level 1 the leader starts a fresh soft-state
-  window, so nothing is expired at the switch.
+- the leader declines leader-only heartbeats and expiry, so those go
+  through the log (`record_node_heartbeat`, `expire_stale_nodes`) as on the
+  older build. When the group reaches level 1 the leader starts a fresh
+  soft-state window, so nothing is expired at the switch.
+- the leader still judges the placement lease. Its only write,
+  `TakePlacementLease`, applies at every level, and the log holds no
+  renewals, so a take decided anywhere but the leader's soft state could
+  name a second holder while the first one's lease runs. No store proposes
+  that take on its own.
 
 Level 2 is fleet features (see [Fleet features](control-plane.md#fleet-features)):
 `register_node_in_fleet`, a registration that keeps the broker's features
