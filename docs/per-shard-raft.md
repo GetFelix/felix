@@ -4722,9 +4722,10 @@ the feed it would answer only when it times out, about 20 s later. So a new
 term asks the watch for a view (`LeaseState::want_view`): the watch drops
 the held poll and asks again at once without the hold, and that answer
 wakes the routing feed even when nothing changed. A head lower than the bar
-moves `since` the same way and asks again too. The asks are counted, so a
-burst of new terms costs one request, and a request serves every ask made
-before it started.
+moves `since` the same way and asks again too. The asks are counted, and a request
+serves every ask made before it started, so terms that open together cost
+one request. Terms that open one after another each end the poll held at
+the time, about two requests per term, at the pace terms open.
 
 A target write is a shard-record change, so it is on the assignment feed
 with its own sequence. A restore brings the feed's sequence back with the
