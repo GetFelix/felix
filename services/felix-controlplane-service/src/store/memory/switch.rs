@@ -54,7 +54,7 @@ async fn rewrite(
         false,
         false,
         // The current set again, which a held set allows.
-        false,
+        super::SetHold::NONE,
         switch,
     )
     .await
@@ -307,6 +307,13 @@ pub(super) async fn record_raft_floors(
                 .is_some_and(|target| target.members.contains_key(node_id))
         {
             record.mark_raft_formed(report.incarnation, report.epoch);
+        }
+        // Before the floor rises, so an older report than the floor kept is
+        // known as one. Only a proposer at level 46 leaves the voters in.
+        if let Some(voters) = &report.voters
+            && voters.contains_key(node_id)
+        {
+            record.note_raft_voters(report, voters);
         }
         match record.raise_raft_floor(report) {
             Ok(true) => raised += 1,

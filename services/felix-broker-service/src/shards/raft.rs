@@ -324,9 +324,9 @@ impl RaftShards {
         let recorded = self.recorded_epochs.lock();
         let marks = self.formed_marks.lock();
         self.runtime
-            .led_commits()
+            .led_reports()
             .into_iter()
-            .filter_map(|(group, at)| {
+            .filter_map(|(group, at, voters)| {
                 let epoch = proven_epoch(
                     *epochs.get(&*group.shard)?,
                     recorded.get(&*group.shard).copied(),
@@ -339,6 +339,12 @@ impl RaftShards {
                     incarnation: group.epoch,
                     epoch,
                     at,
+                    voters: voters.map(|voters| {
+                        voters
+                            .into_iter()
+                            .map(|voter| (voter.broker.to_string(), voter.copy))
+                            .collect()
+                    }),
                     formed,
                 })
             })

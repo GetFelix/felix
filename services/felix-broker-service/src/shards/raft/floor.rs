@@ -48,16 +48,20 @@ pub(crate) struct Led {
     /// The group epoch the copy proves (`super::proven_epoch`).
     pub(crate) epoch: u64,
     pub(crate) at: LogPoint,
+    /// The group's voters, copy id by broker, when its membership is
+    /// committed at `at` and not joint.
+    pub(crate) voters: Option<BTreeMap<String, u64>>,
     /// The newest feed shows this group, at this incarnation and epoch,
     /// marked formed, so a refresh skips it.
     pub(crate) formed: bool,
 }
 
 /// A led group's committed log id and the last one the control plane took.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Entry {
     epoch: u64,
     at: LogPoint,
+    voters: Option<BTreeMap<String, u64>>,
     acked: Option<(u64, LogPoint)>,
     formed: bool,
 }
@@ -84,6 +88,7 @@ impl Floors {
             incarnation,
             epoch,
             at,
+            voters,
             formed,
         } in led.into_iter().map(Into::into)
         {
@@ -96,6 +101,7 @@ impl Floors {
                 Entry {
                     epoch,
                     at,
+                    voters,
                     acked,
                     formed,
                 },
@@ -131,6 +137,7 @@ impl Floors {
                 epoch: entry.epoch,
                 index: entry.at.index,
                 term: entry.at.term,
+                voters: entry.voters.clone(),
             })
             .collect();
         self.resume_after = resume_after;

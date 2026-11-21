@@ -149,6 +149,7 @@ fn shard_assignment(
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     }
 }

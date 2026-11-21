@@ -434,6 +434,7 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
                 raft_target: None,
                 raft_floor: None,
                 raft_formed: None,
+                raft_voters: None,
                 raft_ordered: None,
             })
             .await

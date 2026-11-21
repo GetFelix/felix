@@ -24,6 +24,7 @@ impl From<(ShardKey, u64, LogPoint)> for Led {
             incarnation,
             epoch: 0,
             at,
+            voters: None,
             formed: false,
         }
     }
@@ -167,6 +168,7 @@ async fn a_refresh_skips_a_group_marked_formed() {
                 incarnation: 1,
                 epoch: 0,
                 at: at(1, a_index),
+                voters: None,
                 formed: a_formed,
             },
             Led::from((key("b"), 1, at(1, 9))),
@@ -292,6 +294,7 @@ fn a_floor_carries_the_group_epoch_and_a_new_epoch_is_owed_again() {
         incarnation: 1,
         epoch,
         at: at(1, 5),
+        voters: None,
         formed: false,
     };
     floors.observe([led(2)]);

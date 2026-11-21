@@ -884,6 +884,7 @@ async fn shard_renewal_waits_for_every_member() {
                     raft_target: None,
                     raft_floor: None,
                     raft_formed: None,
+                    raft_voters: None,
                     raft_ordered: None,
                 })
                 .await
@@ -979,6 +980,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     raft_target: None,
                     raft_floor: None,
                     raft_formed: None,
+                    raft_voters: None,
                     raft_ordered: None,
                 })
                 .await
@@ -1186,6 +1188,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -1313,6 +1316,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1454,6 +1458,7 @@ async fn a_previous_generation_waits_for_every_member() {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1556,6 +1561,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -1694,6 +1700,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     let first = |shard: u32| {
@@ -1948,6 +1955,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2065,6 +2073,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
 
@@ -2151,6 +2160,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -2288,6 +2298,7 @@ async fn pending_sets_wait_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -2404,11 +2415,12 @@ async fn pending_sets_wait_for_every_member() {
     );
 
     // The log now holds the finalize, a level 26 entry, and assignment
-    // writes that carry the level 45 hold, which a member below refuses.
+    // writes that carry the level 45 hold, and the finalize lifts the
+    // floor to 46, which a member below refuses.
     let old = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(20))).await;
     let refused = store.handle.add_learner_without_waiting(3, old).await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 45")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 46")),
         "a member below level 21 joined: {refused:?}"
     );
 }
@@ -2464,6 +2476,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -2574,6 +2587,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -2685,6 +2699,7 @@ async fn inherited_storage_waits_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -2809,6 +2824,7 @@ async fn learners_wait_for_every_member() {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2963,6 +2979,7 @@ async fn a_refusal_waits_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -3106,6 +3123,7 @@ async fn storage_ids_wait_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -3439,6 +3457,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
@@ -3696,11 +3715,11 @@ async fn a_member_below_a_finalized_level_is_refused() {
     let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
     let addr = stub_member(Arc::clone(&version)).await;
     for (level, expected) in [
-        (8, "supports metadata version 8, but the group is at 45"),
-        (0, "supports metadata version 0, but the group is at 45"),
+        (8, "supports metadata version 8, but the group is at 46"),
+        (0, "supports metadata version 0, but the group is at 46"),
         (
             SILENT,
-            "did not report its metadata version, and the group is at 45",
+            "did not report its metadata version, and the group is at 46",
         ),
     ] {
         version.store(level, std::sync::atomic::Ordering::SeqCst);
@@ -4362,6 +4381,7 @@ async fn adoption_waits_for_every_member() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await

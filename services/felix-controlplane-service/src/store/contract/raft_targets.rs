@@ -115,7 +115,8 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
     );
     let _ = try_native_report(store, &shard, "broker-z", 43, at).await;
     // A broker outside the target leads no group of it.
-    let report = super::raft_floors::entry(&shard, 1, 1);
+    let mut report = super::raft_floors::entry(&shard, 1, 1);
+    report.voters = Some(first.members.clone());
     let floor = |node: &'static str| {
         let report = report.clone();
         async move {

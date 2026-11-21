@@ -28,6 +28,7 @@ pub(crate) fn entry(a: &ShardAssignment, index: u64, term: u64) -> RaftFloorRepo
         epoch: 0,
         index,
         term,
+        voters: None,
     }
 }
 

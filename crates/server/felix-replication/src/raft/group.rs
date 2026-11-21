@@ -2523,16 +2523,32 @@ impl Group {
 
     /// The committed log id, while this member leads its group.
     pub(crate) fn led_commit(&self) -> Option<LogPoint> {
+        self.led_report().map(|(at, _)| at)
+    }
+
+    /// The committed log id while this member leads, with the group's
+    /// voters when its membership is committed at that id and not joint.
+    /// One read of the metrics, so the voters are never newer than the id.
+    pub(crate) fn led_report(&self) -> Option<(LogPoint, Option<BTreeSet<MemberId>>)> {
         use openraft::async_runtime::watch::WatchReceiver;
         let metrics = self.raft.metrics();
         let metrics = metrics.borrow_watched();
         if metrics.running_state.is_err() || metrics.state != ServerState::Leader {
             return None;
         }
-        metrics.local_committed.as_ref().map(|id| LogPoint {
-            term: **id.committed_leader_id(),
-            index: id.index,
-        })
+        let committed = metrics.local_committed.as_ref()?;
+        let at = LogPoint {
+            term: **committed.committed_leader_id(),
+            index: committed.index,
+        };
+        let stored = &metrics.membership_config;
+        let voters = (stored.membership().get_joint_config().len() == 1
+            && stored
+                .log_id()
+                .as_ref()
+                .is_none_or(|id| id.index <= committed.index))
+        .then(|| stored.membership().voter_ids().collect());
+        Some((at, voters))
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {
