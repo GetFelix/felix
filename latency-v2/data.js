@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795279042947,
+  "lastUpdate": 1795279432384,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81906,6 +81906,72 @@ window.BENCHMARK_DATA = {
             "range": "305.54",
             "unit": "us",
             "extra": "trials: 5\nmedian: 503.00\nmean: 595.40\nstdev: 305.54\ncv: 51.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "556b046c545ef08e532f32f19f2f6e779093ddf1",
+          "message": "fix(raft): members held after a restart stand apart (#2895) (#2897)\n\n* fix(raft): members held after a restart stand apart (#2895)\n\nA restarted member with a vote on disk is held until start +\nelection_max. openraft's own random deadline falls inside that hold, so\nevery held member stood the moment the hold ended, and members of one\ngroup restarted together split their votes. Each now waits past the\nhold by the per-member jitter Pace already computes, in Group::tick and\nGroup::may_stand. Granting still resumes when the hold ends; the hold is\nnever shortened.\n\nSpec-Unaffected: liveness only. The model's hold gates granting and an\nunbounded wait before standing, and this only delays the first stand.\n\n* test(raft): bound the wait in the held-members test so a stuck member fails it\n\nSpec-Unaffected: test only.\n\n* test(raft): the held-member jitter test no longer depends on hasher values (#2895)\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-21T16:34:49Z",
+          "tree_id": "e5c2cce0beaf9c06858e62037459d26bb8f4823c",
+          "url": "https://github.com/GetFelix/felix/commit/556b046c545ef08e532f32f19f2f6e779093ddf1"
+        },
+        "date": 1795279418684,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.00\nstdev: 1.41\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "7.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 210.00\nstdev: 7.31\ncv: 3.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 255,
+            "range": "128.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 307.00\nstdev: 128.90\ncv: 41.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "12.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 202.60\nstdev: 12.58\ncv: 6.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 386,
+            "range": "323.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 386.00\nmean: 530.00\nstdev: 323.76\ncv: 61.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 543,
+            "range": "917.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 543.00\nmean: 1038.60\nstdev: 917.89\ncv: 88.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
