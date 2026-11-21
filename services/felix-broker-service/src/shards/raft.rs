@@ -989,22 +989,28 @@ enum Durable {
     Yes(Option<u32>),
 }
 
+/// How long after the feed's last answer started its admissions stand: two
+/// held polls, so a healthy feed never lets them lapse.
+const ADMITTED_FOR: Duration = Duration::from_secs(
+    2 * (super::watch::LONG_POLL_WAIT.as_secs() + super::watch::LONG_POLL_SLACK.as_secs()),
+);
+
 /// Tells the runtime who the shard's member hears from beyond its
-/// membership. A copy with no membership hears only from a broker placed in
-/// the group's epoch, so no outsider can form a group on a new or wiped
-/// copy; the record names a broker before its leader sends it anything. Any
-/// member hears from the placement and target held now. Each set includes
-/// the placement and target, which stand in for the record from a control
-/// plane that keeps none.
+/// membership ([`GroupRuntime::admit`]).
 fn admit(runtime: &GroupRuntime, key: &ShardKey, assignment: &ShardAssignment) {
-    let (placed, current) = admitted(assignment);
-    // Without a record (a shard restored by an import has none) the brokers
-    // seen placed so far stand in for it, so an old leader still moving a
-    // new member in is heard.
-    runtime.admit(key, placed, current, assignment.placed.is_none());
+    let (blank, current) = admitted(assignment);
+    runtime.admit(
+        &GroupId::new(key.clone(), assignment.incarnation),
+        blank,
+        current,
+    );
 }
 
-/// The (placed in epoch, placed now) brokers for [`admit`].
+/// The (in the group now, placed now) brokers for [`admit`]. A copy with no
+/// membership also hears from the voters the group's leader reported at
+/// this epoch: a leader the placement has moved off still leads while it
+/// moves a new member in. A broker removed from the placement and the
+/// group is in neither set.
 fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut current: BTreeSet<String> = brokers_of(assignment)
         .into_iter()
@@ -1019,11 +1025,14 @@ fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>
     if let Some(pending) = &assignment.pending_set {
         current.extend(pending.replicas.iter().cloned());
     }
-    let mut placed = current.clone();
-    if let Some(record) = &assignment.placed {
-        placed.extend(record.brokers.iter().cloned());
+    let mut blank = current.clone();
+    if let Some(voters) = &assignment.raft_voters
+        && voters.incarnation == assignment.incarnation
+        && voters.epoch == assignment.group_epoch()
+    {
+        blank.extend(voters.members.keys().cloned());
     }
-    (placed, current)
+    (blank, current)
 }
 
 /// The brokers placement names for a shard, lowest id first.
@@ -1167,6 +1176,7 @@ impl EngineShards for RaftShards {
                     tracing::warn!(shard = ?key, error = %err, "could not close a Raft shard's stream");
                 }
             }
+            self.runtime.retain_admitted(|key| fed.contains_key(key));
             let mut off_placement = 0_u32;
             let mut short: Vec<ShortShard> = Vec::new();
             for (key, (assignment, full)) in &fed {
@@ -1459,6 +1469,8 @@ impl EngineShards for RaftShards {
     /// [`Lead::met_by`]). Told on every pass: the member keeps only a newer
     /// version, or the same one for a newer term.
     fn answered(&self, as_of: Option<tokio::time::Instant>, checkpoint: Option<u64>) {
+        self.runtime
+            .admit_until(as_of.map(|as_of| as_of + ADMITTED_FOR));
         let Some(lease) = self.leading.lease.get() else {
             return;
         };

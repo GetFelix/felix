@@ -37,11 +37,11 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// How long the control plane may hold a changes request open. Under its own
 /// 25 s cap, which sits under the idle timeout of common proxies.
-const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
+pub(super) const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
 
 /// Slack on top of [`LONG_POLL_WAIT`] before a held request counts as failed.
 /// Without a bound, a connection that died silently would stop the watch.
-const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
+pub(super) const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ShardAssignment {
@@ -119,16 +119,11 @@ pub struct ShardAssignment {
     pub raft_voters: Option<RaftVoters>,
 }
 
-/// The control plane's record of the brokers placed in a shard's group
-/// epoch.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+/// The epoch half of the control plane's record of the brokers placed in
+/// a shard's group epoch. The brokers it lists are not read here.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlacedEpoch {
     pub epoch: u64,
-    /// Every broker placed in the epoch, removed ones included. The record
-    /// names a broker before its leader sends it anything. Absent from a
-    /// control plane that predates it.
-    #[serde(default)]
-    pub brokers: std::collections::BTreeSet<String>,
 }
 
 /// The stream incarnation and group epoch of a Raft group the control
@@ -182,7 +177,7 @@ pub struct PendingSet {
 impl ShardAssignment {
     /// The group epoch the control plane's record is at, 0 without one.
     pub fn group_epoch(&self) -> u64 {
-        self.placed.as_ref().map_or(0, |placed| placed.epoch)
+        self.placed.map_or(0, |placed| placed.epoch)
     }
 
     /// The control plane has told the leader to stop serving at this

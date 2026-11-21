@@ -527,12 +527,16 @@ struct Inner {
     stopped: parking_lot::Mutex<BTreeMap<ShardKey, StoppedMember>>,
     /// See [`GroupRuntime::admit`].
     admitted: parking_lot::Mutex<BTreeMap<ShardKey, Arc<Admission>>>,
+    /// See [`GroupRuntime::admit_until`].
+    admitted_until: parking_lot::Mutex<Option<tokio::time::Instant>>,
 }
 
 /// See [`GroupRuntime::admit`].
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Admission {
-    pub(crate) placed: BTreeSet<String>,
+    /// The group epoch (stream incarnation) it was set for.
+    incarnation: u64,
+    pub(crate) blank: BTreeSet<String>,
     pub(crate) current: BTreeSet<String>,
 }
 
@@ -606,6 +610,7 @@ impl GroupRuntime {
                 acked: Arc::default(),
                 stopped: parking_lot::Mutex::default(),
                 admitted: parking_lot::Mutex::default(),
+                admitted_until: parking_lot::Mutex::default(),
                 placement: config.placement,
             }),
         })
@@ -1222,31 +1227,56 @@ impl GroupRuntime {
         self.inner.acked.fetch_max(incarnation, Ordering::AcqRel);
     }
 
-    /// Who `shard`'s member takes a message from beyond its membership.
-    /// `placed` is every broker the control plane placed in the group's
-    /// epoch: a copy with no membership cannot tell its leader from an
-    /// outsider, so it hears only from them. `current` is the placement
-    /// and target the control plane holds now, so a member that missed a
-    /// membership change still hears from a new member that leads. Set
-    /// before the copy opens; a shard never given one admits any sender to
-    /// a copy with no membership, as a library user expects.
-    /// With `grow`, the brokers already held as placed are kept too: for a
-    /// shard whose control plane keeps no record of its epoch.
-    pub fn admit(
-        &self,
-        shard: &ShardKey,
-        mut placed: BTreeSet<String>,
-        current: BTreeSet<String>,
-        grow: bool,
-    ) {
+    /// Who `group`'s member takes a message from beyond its membership,
+    /// on a connection bound to a broker ([`Self::handle_from`]). A copy
+    /// with no membership cannot tell its leader from an outsider, so it
+    /// hears only from `blank`: the brokers in the group now, by the
+    /// control plane's placement and target and the voters its leader
+    /// last reported. A member also hears from `current`, the placement
+    /// and target alone, so one that missed a membership change still
+    /// hears from a new member that leads. A broker removed from both is
+    /// heard by no copy that does not hold it in its membership. Without an
+    /// admission for the group's epoch, or past [`Self::admit_until`], a
+    /// copy hears only from its membership.
+    pub fn admit(&self, group: &GroupId, blank: BTreeSet<String>, current: BTreeSet<String>) {
+        let admission = Admission {
+            incarnation: group.epoch,
+            blank,
+            current,
+        };
         let mut admitted = self.inner.admitted.lock();
-        if grow && let Some(held) = admitted.get(shard) {
-            placed.extend(held.placed.iter().cloned());
+        if admitted
+            .get(&*group.shard)
+            .is_none_or(|held| **held != admission)
+        {
+            admitted.insert((*group.shard).clone(), Arc::new(admission));
         }
-        let admission = Admission { placed, current };
-        if admitted.get(shard).is_none_or(|held| **held != admission) {
-            admitted.insert(shard.clone(), Arc::new(admission));
+    }
+
+    /// Drop the admissions of shards `keep` does not name.
+    pub fn retain_admitted(&self, keep: impl Fn(&ShardKey) -> bool) {
+        self.inner.admitted.lock().retain(|shard, _| keep(shard));
+    }
+
+    /// The admissions stand until `until`: they come from a view of the
+    /// control plane that ages, and a broker it has since removed must not
+    /// stay admitted while that view cannot be refreshed. `None` lapses them.
+    pub fn admit_until(&self, until: Option<tokio::time::Instant>) {
+        *self.inner.admitted_until.lock() = until;
+    }
+
+    /// `group`'s admission, while it stands.
+    fn admission(&self, group: &GroupId) -> Option<Arc<Admission>> {
+        let until = (*self.inner.admitted_until.lock())?;
+        if tokio::time::Instant::now() >= until {
+            return None;
         }
+        self.inner
+            .admitted
+            .lock()
+            .get(&*group.shard)
+            .filter(|admitted| admitted.incarnation == group.epoch)
+            .cloned()
     }
 
     /// Placement names `broker` as the leader of `shard`. The member that
@@ -1355,9 +1385,9 @@ impl GroupRuntime {
         if found.group != *group || found.member != *to {
             return false;
         }
-        let placed = match (from, admitted) {
-            (Some(from), Some(admitted)) => admitted.placed.contains(from),
-            _ => true,
+        let placed = match from {
+            Some(from) => admitted.is_some_and(|admitted| admitted.blank.contains(from)),
+            None => true,
         };
         if placed
             && let Request::Append(append) = body
@@ -1398,7 +1428,7 @@ impl GroupRuntime {
             body,
             deadline: _,
         } = request;
-        let admitted = from.and_then(|_| self.inner.admitted.lock().get(&*group.shard).cloned());
+        let admitted = from.and_then(|_| self.admission(&group));
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
@@ -1412,6 +1442,14 @@ impl GroupRuntime {
                 member.handle(body, beat, report).await.map(RaftReply)
             }
             Some(member) if member.id == group && member.member.broker == to.broker => {
+                // The copy id is told only to a sender of the group.
+                if let Some(from) = from
+                    && let Some(refused) = member
+                        .outsider(from, super::peer::sender(&body), admitted.as_deref())
+                        .await
+                {
+                    return Err(refused);
+                }
                 let copy = member.member.copy;
                 Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
             }

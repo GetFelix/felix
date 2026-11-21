@@ -2579,10 +2579,10 @@ impl Group {
     /// included. Otherwise it is not of the group, and answering would let
     /// it raise this member's term, take its vote or truncate its log. A
     /// copy that holds no membership yet cannot know its leader, so it
-    /// takes the message only from a broker placed in the group's epoch,
-    /// or from anyone when it was given no [`Admission`]. A member also
-    /// takes one from a broker the control plane places in the group now,
-    /// which a member that missed the change adding it does not know. See
+    /// takes the message only from a broker its [`Admission`] says is in
+    /// the group now, and from no one without one. A member also takes one
+    /// from a broker the control plane places in the group now, which a
+    /// member that missed the change adding it does not know. See
     /// `docs/threat-model-internal.md`.
     pub(crate) async fn outsider(
         &self,
@@ -2637,7 +2637,7 @@ impl Group {
             .unwrap_or(Known::Outsider);
         match known {
             Known::Member => return None,
-            Known::Blank if admission.is_none_or(|admitted| admitted.placed.contains(from)) => {
+            Known::Blank if admission.is_some_and(|admitted| admitted.blank.contains(from)) => {
                 return None;
             }
             Known::Outsider

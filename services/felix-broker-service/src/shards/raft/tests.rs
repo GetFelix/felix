@@ -417,10 +417,7 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     assert_eq!(shards.held_copies().len(), 1);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
-        epoch: 1,
-        ..Default::default()
-    });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
     assert!(
@@ -3056,30 +3053,52 @@ mod retention;
 mod short_placement;
 mod trim;
 
-/// A blank copy hears from every broker placed in the group's epoch, a
-/// removed one included: it may still lead while it moves a new member in.
-/// A broker never placed is not admitted, and a removed one is not placed
-/// now.
+/// A blank copy hears from the brokers in the group now: the placement,
+/// target, successor and pending set, and the voters the leader reported
+/// at this epoch. A broker removed from all of them is not admitted, and
+/// voters reported for another epoch count for nothing.
 #[test]
-fn a_blank_copy_admits_every_broker_placed_in_the_epoch() {
+fn a_blank_copy_admits_only_the_brokers_in_the_group_now() {
+    use crate::shards::watch::RaftVoters;
+    let names = |names: &[&str]| -> BTreeSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    };
     let mut moved = assigned(key("orders", 0), INCARNATION);
     moved.leader = "broker-d".to_string();
     moved.replicas = vec!["broker-b".to_string()];
-    moved.placed = Some(crate::shards::watch::PlacedEpoch {
-        epoch: 0,
-        brokers: ["broker-a", "broker-b", "broker-d"]
-            .map(str::to_owned)
-            .into(),
+    let voters = |epoch: u64| RaftVoters {
+        incarnation: INCARNATION,
+        epoch,
+        members: [("broker-a".to_string(), 1), ("broker-b".to_string(), 1)].into(),
+    };
+    moved.raft_voters = Some(voters(0));
+    let (blank, current) = admitted(&moved);
+    assert_eq!(current, names(&["broker-b", "broker-d"]));
+    // broker-a still leads the group while it moves broker-d in.
+    assert_eq!(blank, names(&["broker-a", "broker-b", "broker-d"]));
+    moved.raft_voters = Some(voters(1));
+    assert_eq!(admitted(&moved).0, current, "another epoch's voters");
+    moved.raft_voters = Some(RaftVoters {
+        incarnation: INCARNATION + 1,
+        ..voters(0)
     });
-    let (placed, current) = admitted(&moved);
-    assert!(placed.contains("broker-a"), "{placed:?}");
-    assert!(placed.contains("broker-d"), "{placed:?}");
-    assert!(!placed.contains("broker-c"), "{placed:?}");
-    let now: BTreeSet<String> = ["broker-b", "broker-d"].map(str::to_owned).into();
-    assert_eq!(current, now, "a removed broker is placed in the epoch only");
-    moved.placed = None;
-    assert_eq!(admitted(&moved), (now.clone(), now));
+    assert_eq!(admitted(&moved).0, current, "another incarnation's voters");
+    moved.raft_voters = None;
+    assert!(!admitted(&moved).0.contains("broker-a"), "a removed broker");
+    // The epoch's placed record names every broker ever placed in it, and
+    // admits none of them.
+    moved.placed = serde_json::from_value(serde_json::json!({
+        "epoch": 0,
+        "brokers": ["broker-a", "broker-b", "broker-d", "broker-x"],
+    }))
+    .expect("placed record");
+    moved.raft_voters = Some(voters(0));
+    assert_eq!(
+        admitted(&moved).0,
+        names(&["broker-a", "broker-b", "broker-d"])
+    );
     // A move's successor is placed before it is sent anything.
     moved.successor = Some("broker-e".to_string());
     assert!(admitted(&moved).0.contains("broker-e"));
+    assert!(admitted(&moved).1.contains("broker-e"));
 }

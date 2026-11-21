@@ -1601,7 +1601,10 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
     // A broker not placed in the group's epoch proves nothing, however
     // far its commit is.
     let placed: BTreeSet<String> = BROKERS.map(str::to_owned).into();
-    a.admit(&key, placed.clone(), placed, false);
+    a.admit(&group(0), placed.clone(), placed);
+    a.admit_until(Some(
+        tokio::time::Instant::now() + Duration::from_secs(3600),
+    ));
     let outsider = RaftRequest {
         body: {
             let leader = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("x", 1));
