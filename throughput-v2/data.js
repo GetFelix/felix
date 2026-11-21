@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795291044103,
+  "lastUpdate": 1795292058305,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64896,6 +64896,58 @@ window.BENCHMARK_DATA = {
             "range": "82804.36",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1268704.93\nmean: 1238960.02\nstdev: 82804.36\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e560a7e65cbec92994d6159206a8b297299d5a97",
+          "message": "fix(raft): a formed group's set changes only by steps its reported voters keep a majority of (#2905) (#2915)\n\n* fix(raft): a formed group's set changes only by steps its reported voters keep a majority of (#2905)\n\nA swapped-in broker stores a copy id as soon as it opens an empty member,\nso a chain of one-member swaps a slow or dead leader never applied could\nplace a set the group never reached, and those brokers form a second\ngroup. The leader's floor report now carries the group's committed voters,\nand the control plane refuses a set change on a formed group unless those\nvoters keep a majority of the new set. Behind metadata level 46.\n\n* test(raft): swap chain and replication factor 1 tests, docs for the formed-set hold (#2905)\n\n* fix(raft): count a formed group's voters by copy id and hold the target too (#2905)\n\nA voter that reopened empty has a new copy id, so counting brokers let two\nwiped voters and a new broker make an all-empty set. The move check counts\ncurrent-set brokers under their reported copy, and the target check holds a\nformed group's target whose copies the reported voters do not keep half of.\nFelixRaftFormedSet.tla models joins, wipes, lagging reports and swap chains.\n\n* fix(raft): re-send a formed group's floor until the feed shows its voters (#2905)\n\nA group idle across the finalize to level 46 had its voters stripped below\n46 and never reported again, so its set could never move. Docs state the\nempty-voter bound the hold relies on and the rollout wait.\n\n* fix(raft): voters only from the target, an RF 1 set does not move, blank voters in the model (#2905)\n\nVoters count only from a leader in the stored target and only in a report\nthe floor takes. An RF 1 Raft shard's set does not move; the hand-off is\n#2916. FelixRaftFormedSet gets empty voters, an even set, and a keep-one\nrule that violates OneGroup.\n\n* fix(raft): a kept voter reports while a set change has cleared the target (#2905)\n\nThe target-member gate left no reporter between a set change and its new\ntarget, so a target held by lagging voters could never be released.",
+          "timestamp": "2026-11-21T20:06:58Z",
+          "tree_id": "110cb77b797900feaa6862d3dc8bb0f1a946b863",
+          "url": "https://github.com/GetFelix/felix/commit/e560a7e65cbec92994d6159206a8b297299d5a97"
+        },
+        "date": 1795292057583,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 484765.2,
+            "range": "28221.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484765.20\nmean: 498704.77\nstdev: 28221.08\ncv: 5.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 484765.2,
+            "range": "28221.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484765.20\nmean: 498704.77\nstdev: 28221.08\ncv: 5.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117342.29,
+            "range": "4582.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117342.29\nmean: 116062.69\nstdev: 4582.40\ncv: 3.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1173422.85,
+            "range": "45823.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1173422.85\nmean: 1160626.93\nstdev: 45823.94\ncv: 3.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
