@@ -154,6 +154,17 @@ impl RaftHandle {
         !self.is_stopped() && self.raft.metrics().borrow_watched().current_leader == Some(self.id)
     }
 
+    /// Campaign now, as an election timeout would: a lone member wins the
+    /// next term.
+    #[cfg(test)]
+    pub(crate) async fn campaign(&self) {
+        self.raft
+            .trigger()
+            .elect(false)
+            .await
+            .expect("trigger an election");
+    }
+
     pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }

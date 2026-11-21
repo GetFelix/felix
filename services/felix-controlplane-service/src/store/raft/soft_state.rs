@@ -370,9 +370,8 @@ impl SoftState {
         node_id: &str,
         incarnation: u64,
     ) -> Result<MetaResult, NotLeader> {
-        self.leading_in(term)?;
         let at_millis = {
-            let _serial = self.serial.lock().await;
+            let _serial = self.judge(term).await?;
             let node = match self.machine.store().get_node(node_id).await {
                 Ok(node) => node,
                 Err(err) => return Ok(Err(err.into())),
@@ -430,8 +429,7 @@ impl SoftState {
     /// `expiry_before_millis`, counting the start of its leadership as a
     /// heartbeat from everyone.
     async fn expire(&self, term: u64, expiry_before_millis: u64) -> Result<MetaResult, NotLeader> {
-        self.leading_in(term)?;
-        let _serial = self.serial.lock().await;
+        let _serial = self.judge(term).await?;
         let nodes = match self.machine.store().list_nodes().await {
             Ok(nodes) => nodes,
             Err(err) => return Ok(Err(err.into())),
@@ -506,22 +504,26 @@ impl SoftState {
             Vec::new()
         } else {
             match self
-                .propose(MetaCommand::ExpireNodes { nodes: stale })
-                .await
+                .propose(term, MetaCommand::ExpireNodes { nodes: stale })
+                .await?
             {
                 Ok(MetaResponse::Nodes { nodes }) => nodes,
                 Ok(_) => return Ok(Err(MetaError::Internal("unexpected expiry answer".into()))),
                 Err(err) => return Ok(Err(err)),
             }
         };
-        if !checkpoint.is_empty()
-            && let Err(err) = self
-                .propose(MetaCommand::CheckpointHeartbeats { beats: checkpoint })
-                .await
-        {
-            // Only listings on followers are behind for it; expiry never
-            // reads the checkpoint on the leader that wrote it.
-            tracing::debug!(error = %err, "could not checkpoint heartbeats");
+        if !checkpoint.is_empty() {
+            let written = self
+                .propose(
+                    term,
+                    MetaCommand::CheckpointHeartbeats { beats: checkpoint },
+                )
+                .await;
+            if !matches!(written, Ok(Ok(_))) {
+                // Only listings on followers are behind for it; expiry never
+                // reads the checkpoint on the leader that wrote it.
+                tracing::debug!(?written, "could not checkpoint heartbeats");
+            }
         }
         Ok(Ok(MetaResponse::Nodes { nodes: expired }))
     }
@@ -534,8 +536,7 @@ impl SoftState {
         holder: &str,
         ttl_millis: u64,
     ) -> Result<MetaResult, NotLeader> {
-        self.leading_in(term)?;
-        let _serial = self.serial.lock().await;
+        let _serial = self.judge(term).await?;
         let store = self.machine.store();
         let recorded = store.placement_holder().await;
         let ttl = Duration::from_millis(ttl_millis);
@@ -572,10 +573,13 @@ impl SoftState {
             Some((_, expires)) if expires > now => Ok(Ok(MetaResponse::NoPlacementLease)),
             _ => {
                 let taken = self
-                    .propose(MetaCommand::TakePlacementLease {
-                        holder: holder.to_string(),
-                    })
-                    .await;
+                    .propose(
+                        term,
+                        MetaCommand::TakePlacementLease {
+                            holder: holder.to_string(),
+                        },
+                    )
+                    .await?;
                 if matches!(taken, Ok(MetaResponse::PlacementLease { .. })) {
                     self.set_lease(term, holder, Instant::now() + ttl);
                 }
@@ -587,8 +591,7 @@ impl SoftState {
     /// Let the lease lapse now if `holder` has it. The holder stays named, so
     /// whoever takes it next still advances the token.
     async fn release_lease(&self, term: u64, holder: &str) -> Result<MetaResult, NotLeader> {
-        self.leading_in(term)?;
-        let _serial = self.serial.lock().await;
+        let _serial = self.judge(term).await?;
         let recorded = self.machine.store().placement_holder().await;
         let mut guard = self.view.lock().expect("soft state lock");
         let view = view_for(&mut guard, term);
@@ -631,13 +634,27 @@ impl SoftState {
         }
     }
 
-    async fn propose(&self, command: MetaCommand) -> MetaResult {
-        let bytes = self
+    /// Wait for the judging slot, then check this member still leads `term`:
+    /// a handler that waited out a term change must not judge, or write a
+    /// view, for a term it no longer leads.
+    async fn judge(&self, term: u64) -> Result<tokio::sync::MutexGuard<'_, ()>, NotLeader> {
+        let serial = self.serial.lock().await;
+        self.leading_in(term)?;
+        Ok(serial)
+    }
+
+    /// Append a decision made in `term`, as leader of `term` only. Never
+    /// forwarded: another leader has not seen what this one judged from.
+    async fn propose(&self, term: u64, command: MetaCommand) -> Result<MetaResult, NotLeader> {
+        match self
             .handle
-            .write(encode_command(&command))
+            .write_as_leader_of(term, encode_command(&command))
             .await
-            .map_err(|err| MetaError::Internal(format!("{err:#}")))?;
-        decode_result(&bytes)?
+        {
+            Ok(Some(bytes)) => Ok(decode_result(&bytes).and_then(|result| result)),
+            Ok(None) => Err(NotLeader),
+            Err(err) => Ok(Err(MetaError::Internal(format!("{err:#}")))),
+        }
     }
 
     /// A node record was replaced or removed; what was seen of the old one

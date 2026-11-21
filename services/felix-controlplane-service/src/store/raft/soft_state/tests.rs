@@ -373,3 +373,61 @@ async fn a_restarted_leader_does_not_judge_before_its_blank_entry_applies() {
     );
     store.handle.shutdown().await.expect("shutdown");
 }
+
+/// A take decided in one term is not written in the next, even by the same
+/// member: what it read was judged in a term that has ended.
+#[tokio::test]
+async fn a_lease_decided_in_one_term_is_not_taken_in_the_next() {
+    use super::LeaderRequest;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let soft = std::sync::Arc::clone(&store.soft);
+    let term = store.handle.current_term();
+    // Through the blank barrier first, so the ask below stops only at the
+    // judging slot.
+    soft.dispatch(LeaderRequest::Suspicion {
+        node_id: "broker-1".to_string(),
+        incarnation: 1,
+        suspects: Default::default(),
+    })
+    .await
+    .expect("leading")
+    .expect("recorded");
+
+    let slot = soft.serial.lock().await;
+    let asker = std::sync::Arc::clone(&soft);
+    let asked = tokio::spawn(async move {
+        asker
+            .dispatch(LeaderRequest::AcquirePlacementLease {
+                holder: "instance-b".to_string(),
+                ttl_millis: 60_000,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !asked.is_finished(),
+        "answered without waiting for the slot"
+    );
+
+    store.handle.campaign().await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.handle.is_leader() || store.handle.current_term() <= term {
+        assert!(std::time::Instant::now() < deadline, "never led a new term");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(slot);
+
+    let answer = asked.await.expect("ask task");
+    assert!(
+        answer.is_err(),
+        "a take decided in term {term} was answered after the term moved: {answer:?}"
+    );
+    assert_eq!(
+        store.local().expect("caught up").placement_holder().await,
+        None,
+        "the take was written in a term it was not decided in"
+    );
+    store.handle.shutdown().await.expect("shutdown");
+}

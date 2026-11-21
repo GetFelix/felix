@@ -148,6 +148,49 @@ impl RaftHandle {
         }
     }
 
+    /// Append `command` on this member as leader of `term`, or not at all.
+    /// `Ok(None)` when this member does not lead `term` right before the
+    /// append. Never forwarded and never retried: a decision this leader
+    /// made from its own view must not commit through another leader, and
+    /// a retry could land in a later term.
+    pub(crate) async fn write_as_leader_of(
+        &self,
+        term: u64,
+        command: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>> {
+        let command = crate::store::raft::command::stamp_request_id(
+            &command,
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .unwrap_or(command);
+        let proposal = match self.proposal_bytes(&command).await {
+            Proposal::Append(bytes) => bytes,
+            Proposal::Answer(bytes) => return Ok(Some(bytes)),
+            Proposal::Forward => return Ok(None),
+        };
+        // Checked after everything above that awaits, so nothing awaits
+        // between this and the append.
+        if !self.is_leader() || self.current_term() != term {
+            return Ok(None);
+        }
+        match tokio::time::timeout(
+            self.write_timeout,
+            self.raft.client_write(Command(proposal)),
+        )
+        .await
+        {
+            Err(_) => Err(anyhow::Error::new(NoQuorum::new(
+                self.write_timeout,
+                &anyhow::anyhow!("proposal not committed in time"),
+            ))),
+            Ok(Ok(response)) => Ok(Some(response.data)),
+            Ok(Err(openraft::errors::RaftError::APIError(
+                openraft::errors::ClientWriteError::ForwardToLeader(_),
+            ))) => Ok(None),
+            Ok(Err(err)) => Err(anyhow::anyhow!(err.to_string())),
+        }
+    }
+
     /// What to append, with the leader's clock in place of the proposer's.
     ///
     /// A clock inside a command has to be the leader's when it will later be
