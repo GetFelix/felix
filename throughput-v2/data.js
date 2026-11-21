@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795298367373,
+  "lastUpdate": 1795301024054,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65052,6 +65052,58 @@ window.BENCHMARK_DATA = {
             "range": "18195.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810176.15\nmean: 802443.07\nstdev: 18195.05\ncv: 2.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa45495ab2f35004482365a7be0460c06f204996",
+          "message": "formal(raft): reads and sessions on FelixRaft (NoStaleRead, NoStaleGroupCommit, NoLostDelivery) (#2929)\n\n* formal(raft): reads and sessions on FelixRaft (NoStaleRead, NoStaleGroupCommit, NoLostDelivery) (#2266)\n\nFelixRaftReads.tla and FelixRaftSessions.tla extend FelixRaft with the\nclient-facing properties of FelixShardReads and FelixShardSessions. A read\ntakes the open term, runs openraft's read-index round, raises its bound to\nthe newest write answered on a written majority, applies it and checks the\nterm is still open. A group commit is answered once applied as the entry\nits term wrote. Each rule has a twin that drops it and fails.\n\n* formal(raft): check NoLostDelivery against the leader no broker outvoted (#2266)\n\nReview: with the newest open term as the reference, a crash of the real\nleader made a deposed one the reference and failed the check spuriously.\nAlso state that both state reads always run the round.\n\n* formal: ReadsWritten runs one term, the twin of ReadsSkipsAnswered (#2266)\n\n* formal: measured weights and state counts for the reads and sessions configs (#2266)",
+          "timestamp": "2026-11-21T22:37:10Z",
+          "tree_id": "9cb8d948f60e26837f4f8dd9b6a0cb0d9880ae83",
+          "url": "https://github.com/GetFelix/felix/commit/fa45495ab2f35004482365a7be0460c06f204996"
+        },
+        "date": 1795301023252,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344616.63,
+            "range": "35200.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344616.63\nmean: 330151.71\nstdev: 35200.54\ncv: 10.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344616.63,
+            "range": "35200.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344616.63\nmean: 330151.71\nstdev: 35200.54\ncv: 10.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79486.9,
+            "range": "4996.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79486.90\nmean: 77386.71\nstdev: 4996.56\ncv: 6.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794869,
+            "range": "49965.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794869.00\nmean: 773867.10\nstdev: 49965.58\ncv: 6.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
