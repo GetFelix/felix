@@ -252,3 +252,121 @@ async fn a_suspicion_is_kept_by_the_leader_and_written_nowhere() {
         "the leader's clock stamps it"
     );
 }
+
+/// Passes entries through to the metadata machine, holding every apply while
+/// paused.
+struct HeldApplies {
+    machine: std::sync::Arc<crate::store::raft::state_machine::MetadataStateMachine>,
+    paused: tokio::sync::watch::Sender<bool>,
+}
+
+#[async_trait::async_trait]
+impl crate::raft::AppStateMachine for HeldApplies {
+    async fn apply(&self, command: &[u8]) -> Vec<u8> {
+        let mut paused = self.paused.subscribe();
+        paused
+            .wait_for(|paused| !*paused)
+            .await
+            .expect("pause sender");
+        self.machine.apply(command).await
+    }
+    async fn snapshot(&self) -> Vec<u8> {
+        self.machine.snapshot().await
+    }
+    async fn restore(&self, snapshot: &[u8]) {
+        self.machine.restore(snapshot).await
+    }
+    fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
+        self.machine.restamp(command, now_millis)
+    }
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        self.machine.settle_for_level(command, level)
+    }
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        self.machine.depends_on_level(command)
+    }
+    fn version(&self) -> u16 {
+        self.machine.version()
+    }
+    fn join_floor(&self) -> u16 {
+        self.machine.join_floor()
+    }
+}
+
+/// A member restarted with an entry past the committed index it saved wins
+/// the next term. Until its blank entry applies, it has not applied the
+/// take of the lease that entry holds, and must not hand the lease to
+/// someone else on that state.
+#[tokio::test]
+async fn a_restarted_leader_does_not_judge_before_its_blank_entry_applies() {
+    use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
+    use crate::store::StoreConfig;
+    use crate::store::raft::command::{MetaCommand, encode_command};
+    use crate::store::raft::state_machine::MetadataStateMachine;
+    use crate::store::raft::{InMemoryStore, RaftStore};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    crate::raft::seed_unsaved_commands(
+        dir.path(),
+        vec![encode_command(&MetaCommand::TakePlacementLease {
+            holder: "instance-a".to_string(),
+        })],
+    )
+    .await;
+
+    let machine = std::sync::Arc::new(MetadataStateMachine::new(std::sync::Arc::new(
+        InMemoryStore::new(StoreConfig {
+            changes_limit: 100,
+            change_retention_max_rows: Some(1_000),
+        }),
+    )));
+    let (paused, _) = tokio::sync::watch::channel(true);
+    let app = std::sync::Arc::new(HeldApplies {
+        machine: std::sync::Arc::clone(&machine),
+        paused: paused.clone(),
+    });
+    let mut settings = RaftSettings::new(
+        1,
+        dir.path().into(),
+        crate::raft::PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: Some("0123456789abcdef0123456789abcdef".to_string()),
+            previous_token: None,
+            next_token: None,
+            tls: None,
+        },
+    );
+    settings.heartbeat_interval = Duration::from_millis(50);
+    settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
+    let handle = RaftHandle::start(settings, app as std::sync::Arc<dyn AppStateMachine>)
+        .await
+        .expect("start raft");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !handle.is_leader() || handle.current_term() <= 5 {
+        assert!(std::time::Instant::now() < deadline, "never led a new term");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let store = std::sync::Arc::new(RaftStore::new(handle, machine));
+
+    let asker = std::sync::Arc::clone(&store);
+    let asked =
+        tokio::spawn(async move { asker.acquire_placement_lease("instance-b", 60_000).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    paused.send_replace(false);
+
+    let answer = asked.await.expect("ask task").expect("acquire");
+    assert!(
+        answer.is_none(),
+        "a second holder took the lease on state the leader had not applied: {answer:?}"
+    );
+    assert_eq!(
+        store
+            .local()
+            .expect("caught up")
+            .placement_holder()
+            .await
+            .as_deref(),
+        Some("instance-a")
+    );
+    store.handle.shutdown().await.expect("shutdown");
+}

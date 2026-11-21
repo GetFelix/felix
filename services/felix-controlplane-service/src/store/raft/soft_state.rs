@@ -20,6 +20,7 @@
 //! The design is in `docs/metadata-raft-design.md` ("Liveness is leader
 //! soft state").
 use felix_common::random::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -108,6 +109,9 @@ pub(crate) struct SoftState {
     /// expired right after it was told it is alive.
     serial: tokio::sync::Mutex<()>,
     view: Mutex<Option<View>>,
+    /// The latest term in which this member, leading, saw its own blank
+    /// entry applied. Zero until then.
+    barrier_term: AtomicU64,
 }
 
 /// One term's view. Replaced whenever the term moves, so nothing a previous
@@ -153,6 +157,7 @@ impl SoftState {
             machine: Arc::clone(&machine),
             serial: tokio::sync::Mutex::new(()),
             view: Mutex::new(None),
+            barrier_term: AtomicU64::new(0),
         });
         // Weak: the machine outlives nothing it points at.
         let weak: Weak<Self> = Arc::downgrade(&state);
@@ -214,7 +219,10 @@ impl SoftState {
     }
 
     async fn dispatch(&self, request: LeaderRequest) -> Result<MetaResult, NotLeader> {
-        self.leading_term()?;
+        let term = self.leading_term()?;
+        // Every answer below reads the applied state, so none is given
+        // before this term's blank entry has applied.
+        self.await_own_blank(term).await?;
         // Judging here ends in `ExpireNodes` and `CheckpointHeartbeats`,
         // which a member at an older level cannot apply. Until every member
         // can, decline all of it, so the caller keeps heartbeats, expiry and
@@ -323,6 +331,28 @@ impl SoftState {
                     .map_err(Into::into))
             }
         }
+    }
+
+    /// Wait until this member has applied the blank entry that opened `term`.
+    ///
+    /// A new leader can hold committed entries it has not applied yet: a
+    /// restarted member past its saved committed index, or any member that
+    /// learns the commit index only through its own blank entry. Judged on
+    /// that state, it could expire a node that re-registered, or hand the
+    /// placement lease to a second holder. A read-index waits for the blank
+    /// entry, and only the first request of a term pays for it.
+    async fn await_own_blank(&self, term: u64) -> Result<(), NotLeader> {
+        if self.barrier_term.load(Ordering::Acquire) == term {
+            return Ok(());
+        }
+        self.confirm_read().await?;
+        // The read-index may have run in a later term; that one waits for
+        // its own blank entry.
+        if self.handle.current_term() != term {
+            return Err(NotLeader);
+        }
+        self.barrier_term.fetch_max(term, Ordering::AcqRel);
+        Ok(())
     }
 
     /// A read-index before answering a read, bounded as a heartbeat's is.

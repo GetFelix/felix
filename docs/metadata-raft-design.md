@@ -173,6 +173,17 @@ lease works the same way: renewals are soft state, only a change of holder is
 written, and a new leader counts the recorded holder as renewed when it took
 over.
 
+A new leader judges nothing until it has applied the blank entry that opened
+its term. Until then its applied state can be missing entries an earlier term
+committed: a member restarted past the committed index it last saved, or any
+member that learns the commit index only through its own blank entry. Judged
+on that state, it could hand the placement lease to a second holder or expire
+a node that had just registered again. So the first leader-only request of a
+term runs a read-index, which waits for the blank entry to apply, and only
+then is the request answered. Every leader-only request goes through that one
+check (`SoftState::dispatch` in `store/raft/soft_state.rs`), and later
+requests in the same term skip it.
+
 ### Reads: local, because the contract already allows it
 
 Broker snapshot/changes polling is *pull-based and eventually consistent by
