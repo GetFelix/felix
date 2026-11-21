@@ -484,3 +484,149 @@ async fn answering_refuses_an_append_or_written_in_another_brokers_name() {
     }
     broker.stop().await;
 }
+
+/// A broker outside the group's membership may not raise a member's term,
+/// take its vote or append to it, even in its own name and at a higher
+/// term. A member of the same message is answered.
+#[tokio::test]
+async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
+    use openraft::async_runtime::watch::WatchReceiver;
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let broker = Broker::start("a", &book, true).await;
+    let group = GroupId::new(shard(), 0);
+    let to = MemberId::new("a", 1);
+    broker
+        .runtime
+        .open(group.clone(), 1, open_log(&root, "a"))
+        .await
+        .expect("open");
+    let members: BTreeSet<MemberId> = ["a", "b"].map(|b| MemberId::new(b, 1)).into();
+    broker
+        .runtime
+        .initialize(&shard(), members)
+        .await
+        .expect("initialize");
+    let member = broker.runtime.group(&shard()).expect("group");
+    // The member campaigns on its own meanwhile, so only the outsider's
+    // term and name are looked for.
+    let vote = || member.raft().metrics().borrow_watched().vote.clone();
+    let ask = |name: &str, append: bool| {
+        let sender = MemberId::new(name, 1);
+        let leader = openraft::impls::leader_id_std::LeaderId::new(100, sender);
+        let mut request = vote_for(group.clone(), to.clone());
+        request.body = if append {
+            Request::Append(openraft::raft::AppendEntriesRequest {
+                vote: VoteOf::<ShardTypes>::from_leader_id(leader, true),
+                prev_log_id: None,
+                entries: Vec::new(),
+                leader_commit: None,
+            })
+        } else {
+            Request::Vote(VoteRequest::new(
+                VoteOf::<ShardTypes>::from_leader_id(leader, false),
+                None,
+            ))
+        };
+        wire::encode_request(&request).expect("encode")
+    };
+    for append in [true, false] {
+        let reply = broker
+            .runtime
+            .answer(Some("c".into()), ask("c", append))
+            .await;
+        let Err(Refused::Unreachable(why)) = wire::decode_reply(reply).expect("reply") else {
+            panic!("expected a refusal");
+        };
+        assert!(why.contains("not a member"), "{why}");
+        let now = vote();
+        assert!(term_of(&now) < 100, "an outsider raised the term: {now:?}");
+        assert_ne!(now.leader_id().node_id().broker.as_ref(), "c", "{now:?}");
+    }
+    let reply = broker
+        .runtime
+        .answer(Some("b".into()), ask("b", true))
+        .await;
+    wire::decode_reply(reply)
+        .expect("reply")
+        .expect("a member's append is answered");
+    assert_eq!(term_of(&vote()), 100, "a member's higher term is taken");
+    broker.stop().await;
+}
+
+fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {
+    vote.leader_id().term()
+}
+
+/// A broker being added is not refused anywhere on its way in: as a new
+/// copy with no membership it takes the leader's appends, as a learner it
+/// catches up, and once the joint change lands it is a voter every member
+/// answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_added_through_joint_consensus_is_answered() {
+    use crate::raft::{Target, TargetVersion};
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let mut brokers = Vec::new();
+    for name in BROKERS {
+        brokers.push(Broker::start(name, &book, true).await);
+    }
+    let first: BTreeSet<MemberId> = ["a", "b"].map(|b| MemberId::new(b, 1)).into();
+    for (name, broker) in BROKERS.iter().zip(&brokers) {
+        broker
+            .runtime
+            .open(GroupId::new(shard(), 0), 1, open_log(&root, name))
+            .await
+            .expect("open");
+    }
+    for broker in &brokers[..2] {
+        broker
+            .runtime
+            .initialize(&shard(), first.clone())
+            .await
+            .expect("initialize");
+    }
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let (leader, term) = loop {
+        if let Some((leader, term)) = brokers[..2]
+            .iter()
+            .find_map(|b| b.runtime.led_term(&shard()).map(|term| (b, term)))
+        {
+            break (leader, term);
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no leader");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let all: BTreeSet<MemberId> = BROKERS.map(|b| MemberId::new(b, 1)).into();
+    let target = Target {
+        voters: all.clone(),
+        version: TargetVersion {
+            incarnation: 0,
+            counter: 1,
+        },
+    };
+    assert!(leader.runtime.retarget(&shard(), target, term));
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let statuses: Vec<_> = brokers
+            .iter()
+            .map(|broker| broker.runtime.status(&shard()).expect("open"))
+            .collect();
+        let voters = |b: &Broker| b.runtime.group(&shard()).expect("group").voters();
+        let joined = brokers.iter().all(|b| voters(b) == all)
+            && statuses
+                .iter()
+                .all(|s| s.committed.is_some() && s.committed == statuses[0].committed);
+        if joined {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the new member did not join: {statuses:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for broker in brokers {
+        broker.stop().await;
+    }
+}

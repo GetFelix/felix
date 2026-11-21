@@ -92,9 +92,13 @@ where
 impl RaftHandler for GroupRuntime {
     async fn answer(&self, from: Option<Arc<str>>, body: Bytes) -> Bytes {
         let reply = match wire::decode_request(body) {
-            Ok(request) => match impersonation(from.as_deref(), &request) {
-                Some(refused) => Err(refused),
-                None => self.handle(request).await,
+            Ok(request) => match (impersonation(from.as_deref(), &request), from) {
+                (Some(refused), _) => Err(refused),
+                (None, Some(from)) => self.handle_from(&from, request).await,
+                // `impersonation` refuses an unbound connection already.
+                (None, None) => Err(Refused::Unreachable(
+                    "the connection has not said which broker it is".to_owned(),
+                )),
             },
             Err(err) => Err(Refused::Unreachable(format!(
                 "the message does not read: {err}"
@@ -110,16 +114,7 @@ impl RaftHandler for GroupRuntime {
 /// acts on that name; a peer may only use its own. A read index names no
 /// sender: the group answers it to any member that asks.
 pub(crate) fn impersonation(from: Option<&str>, request: &RaftRequest) -> Option<Refused> {
-    use super::network::Request;
-    use openraft::vote::RaftLeaderId;
-    let named = match &request.body {
-        Request::Append(append) => Some(append.vote.leader_id().node_id()),
-        Request::Vote(vote) | Request::PreVote(vote) => Some(vote.vote.leader_id().node_id()),
-        Request::Snapshot { vote, .. } => Some(vote.leader_id().node_id()),
-        Request::TransferLeader(transfer) => Some(transfer.from_leader().leader_id().node_id()),
-        Request::Written { from, .. } => Some(from),
-        Request::ReadIndex => None,
-    };
+    let named = sender(&request.body);
     let Some(from) = from else {
         return Some(Refused::Unreachable(
             "the connection has not said which broker it is".to_owned(),
@@ -138,6 +133,20 @@ pub(crate) fn impersonation(from: Option<&str>, request: &RaftRequest) -> Option
             )))
         }
         _ => None,
+    }
+}
+
+/// The member `body` says sent it. A read index names none.
+pub(crate) fn sender(body: &super::network::Request) -> Option<&super::types::MemberId> {
+    use super::network::Request;
+    use openraft::vote::RaftLeaderId;
+    match body {
+        Request::Append(append) => Some(append.vote.leader_id().node_id()),
+        Request::Vote(vote) | Request::PreVote(vote) => Some(vote.vote.leader_id().node_id()),
+        Request::Snapshot { vote, .. } => Some(vote.leader_id().node_id()),
+        Request::TransferLeader(transfer) => Some(transfer.from_leader().leader_id().node_id()),
+        Request::Written { from, .. } => Some(from),
+        Request::ReadIndex => None,
     }
 }
 

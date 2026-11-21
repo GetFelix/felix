@@ -40,6 +40,12 @@ whoever answers on that address, and hands it a bearer token. Set `FELIX_TLS_CER
 for anything but development; the demos and the cluster harness distribute
 trust for the generated certificate through `FELIX_TLS_CERT_EXPORT`.
 
+On the internal port a certificate proves which broker is calling, not what it
+may do. A broker answers nothing before an identity-checked `Hello`, and a
+shard's Raft member answers a vote, append or snapshot only from a broker in
+that group's own membership. So a broker holding a valid certificate still
+cannot join, lead or truncate a group it was never placed in.
+
 Certificate and key files are re-read every 30 seconds on every listener that
 takes them, so a renewal written over the same paths (cert-manager, a
 Kubernetes Secret volume) is used by the next handshake without a restart.

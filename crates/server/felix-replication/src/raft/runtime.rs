@@ -1321,6 +1321,25 @@ impl GroupRuntime {
 
     /// Hand a peer's message to the member it names.
     pub async fn handle(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        self.handle_as(None, request).await
+    }
+
+    /// As [`Self::handle`], for a message that came on a connection bound
+    /// to broker `from`: refused unless its sender is in the member's own
+    /// membership ([`Group::outsider`]).
+    pub(crate) async fn handle_from(
+        &self,
+        from: &str,
+        request: RaftRequest,
+    ) -> Result<RaftReply, Refused> {
+        self.handle_as(Some(from), request).await
+    }
+
+    async fn handle_as(
+        &self,
+        from: Option<&str>,
+        request: RaftRequest,
+    ) -> Result<RaftReply, Refused> {
         let RaftRequest {
             group,
             to,
@@ -1332,6 +1351,11 @@ impl GroupRuntime {
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
+                if let Some(from) = from
+                    && let Some(refused) = member.outsider(from, super::peer::sender(&body)).await
+                {
+                    return Err(refused);
+                }
                 member.handle(body, beat, report).await.map(RaftReply)
             }
             Some(member) if member.id == group && member.member.broker == to.broker => {

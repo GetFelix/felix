@@ -68,11 +68,17 @@ Holding a certificate from the CA is not enough on its own. Every request
 before an accepted `Hello` is refused and the connection closed, so a peer
 cannot skip the identity check and act on fences, replication, Raft or
 forwards under no name (#2819). The node id is bound once per connection, and
-a Raft message that names another broker as its sender is refused. What is
-not checked yet is whether that node may send a given request: a member of a
-shard's group, a broker in its replica set, a registered broker for a forward.
-The replica's ballot and routing checks still apply to replication; the rest
-is tracked in #2909.
+a Raft message that names another broker as its sender is refused. A Raft
+message is also refused unless its sender is a voter or learner of the
+receiving member's own effective or committed membership, so a broker that was
+never in a group's membership log cannot raise a member's term, take its vote
+or truncate its log (#2909). A new member is always in that membership before
+it needs authority: it joins as a learner whose entry the leader appends first,
+and it votes or leads only after a joint change that names it. A copy with no
+membership yet takes a leader's appends, since it has nothing acknowledged to
+lose. On the hybrid path the replica's ballot and routing checks still bound
+replication, fences and seals, and a seal's `sealer` copy id is not yet tied to
+the bound node.
 
 Without mTLS, `Hello` carries a `node_id` and nothing verifies it. The check
 runs in the other direction only, `HelloOk`'s id against the node dialled,
@@ -213,14 +219,14 @@ the connection. Neither leaves the reader mid-frame.
 | # | Abuse case | Status | Owner |
 |---|---|---|---|
 | 1 | Publish to any tenant via forwarding | Mitigated: the owner verifies the client's credential (#503) and, when it binds subjects, the client's certificate chain (#2812); mTLS proves which broker forwarded it (#125). A compromised broker can replay a token and chain it was shown until either expires | None |
-| 2 | Inject records via replication | Peer identity mitigated under mTLS, plus role + generation. Membership authorization is open: see row 9 (#2909) | #2909 |
+| 2 | Inject records via replication | Peer identity mitigated under mTLS, plus role + generation. Raft messages are refused from a broker outside the group's membership (#2909); hybrid replication relies on the ballot and generation | None |
 | 3 | Truncate a follower via bootstrap | Mitigated | None |
 | 4 | Memory exhaustion via lengths | Mitigated | None |
 | 5 | Connection exhaustion | Mitigated: accept-side caps, total and per source (#504) | None |
 | 6 | Amplification | Low | None |
 | 7 | Replay of a forwarded publish | Mitigated for idempotent producers (`SequencedForwardPublish`, deduplicated by the owner); **unmitigated** for plain forwards | None |
 | 8 | Malformed frames | Mitigated | None |
-| 9 | A non-member broker acts on a Raft group or replica set under its own name (including the seal `sealer` copy id, which the receiver takes from the request) | Open: any broker with a certificate from the internal CA can send as itself, so an outsider's Append or Written is not refused on membership | #2909 |
+| 9 | A non-member broker acts on a Raft group or replica set under its own name (including the seal `sealer` copy id, which the receiver takes from the request) | Mitigated for Raft: vote, pre-vote, append, snapshot, transfer, written and read index are refused unless the sender is in the member's effective or committed membership (#2909). The hybrid path, retired in 0.8, keeps the ballot bound on seals | None |
 
 ## Residual risk and operating assumptions
 

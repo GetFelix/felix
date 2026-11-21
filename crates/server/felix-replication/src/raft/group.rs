@@ -2555,6 +2555,70 @@ impl Group {
             .collect()
     }
 
+    /// Why a message from a connection bound to broker `from` is refused,
+    /// or `None` when it may be answered. `named` is the member the message
+    /// says sent it; a read index names none, and then any copy of `from`
+    /// will do. The sender must be a voter or learner of this member's
+    /// effective or committed membership, every set of a joint one
+    /// included. Otherwise it is not of the group, and answering would let
+    /// it raise this member's term, take its vote or truncate its log. A
+    /// copy that holds no membership yet takes the message: it is new, its
+    /// first append comes from a leader it cannot know yet, and it has
+    /// nothing acknowledged to lose. See `docs/threat-model-internal.md`.
+    pub(crate) async fn outsider(&self, from: &str, named: Option<&MemberId>) -> Option<Refused> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let sends = {
+            let from: Arc<str> = from.into();
+            let named = named.cloned();
+            move |id: &MemberId| match &named {
+                Some(named) => id == named,
+                None => *id.broker == *from,
+            }
+        };
+        {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            let membership = metrics.membership_config.membership();
+            if membership
+                .voter_ids()
+                .chain(membership.learner_ids())
+                .any(|id| sends(&id))
+            {
+                return None;
+            }
+        }
+        // The metrics can trail the core, and hold only the effective set.
+        let known = self
+            .raft
+            .with_raft_state(move |state| {
+                let sets = &state.membership_state;
+                let effective = sets.effective().membership();
+                let committed = sets.committed().membership();
+                let mut ids = effective
+                    .voter_ids()
+                    .chain(effective.learner_ids())
+                    .chain(committed.voter_ids())
+                    .chain(committed.learner_ids())
+                    .peekable();
+                ids.peek().is_none() || ids.any(|id| sends(&id))
+            })
+            .await
+            .unwrap_or(false);
+        if known {
+            return None;
+        }
+        tracing::warn!(
+            from,
+            named = ?named,
+            group = %self.id,
+            "refusing a Raft message from a broker outside the group's membership",
+        );
+        Some(Refused::Unreachable(format!(
+            "broker {from} is not a member of group {}",
+            self.id
+        )))
+    }
+
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.positions.clone()
     }

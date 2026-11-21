@@ -82,7 +82,11 @@ fall back to an older one.
 Raft messages that name their sender (vote, pre-vote, append, snapshot,
 leader transfer and a written position) are refused, as unreachable, when
 the named member's broker is not the connection's node id. A read index names
-no sender.
+no sender. Every Raft message is then refused, also as unreachable, unless its
+sender (for a read index, any copy of the connection's broker) is a voter or
+learner of the receiving member's effective or committed membership. A member
+that holds no membership yet, a new copy waiting for its first append, takes
+the message.
 
 It exists for *when* a mismatch is found, not for what is found. Every frame
 already carries the version, so a mismatched peer would be rejected on its first

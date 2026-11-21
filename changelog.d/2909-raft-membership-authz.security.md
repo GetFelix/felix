@@ -1,0 +1,1 @@
+A broker with a valid internal certificate can no longer take part in a Raft group it is not a member of. Each member refuses a vote, append, snapshot or other Raft message whose sender is not in its own membership, so an outsider cannot take leadership or truncate acknowledged entries.
