@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795288079958,
+  "lastUpdate": 1795291044103,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64844,6 +64844,58 @@ window.BENCHMARK_DATA = {
             "range": "14971.30",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1177415.54\nmean: 1180409.87\nstdev: 14971.30\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b00d90eb9a53df05e2fdee97debce6e2a861c733",
+          "message": "fix(raft): bind control-plane Raft peers to their member certificate; operator import and waiver move to the bootstrap listener (#2913)\n\n* fix(raft): bind control-plane Raft peers to their certificate's member id (WIP)\n\nUnder peer mTLS a member's certificate must carry the URI SAN\nfelix:principal:raft-member:<cluster>:<id>; vote, append, snapshot install,\nforming and standing must speak for that id. FELIX_RAFT_TLS_REVOKED refuses\nlisted certificates. The peer propose route refuses ImportState.\n\nWIP for #2802: operator import route, docs and changelog still to come.\n\nSpec-Unaffected: transport authentication only; no change to what the log holds or how members apply it.\n\n* fix(raft): return the member refusal as an Option for clippy\n\n* fix(raft): operator import and floor waiver move to the bootstrap listener\n\nThe whole-store import and the floor waiver are the operator's: both now\nlive on the bootstrap listener behind the bootstrap token, and the peer\nlistener serves neither. Under Raft the import is written by the leader\nonly, never forwarded; a follower answers 421 naming the leader.\n\nSpec-Unaffected: transport and route authentication only; no apply or log change\n\n* docs: raft peer member certificates, revocation, bootstrap import and waiver (#2802)\n\nSpec-Unaffected: docs and transport auth only\n\n* docs: name the raft TLS variables in the env reference\n\nSpec-Unaffected: docs and transport auth only\n\n* fix: register FELIX_RAFT_TLS_REVOKED as a known variable\n\nSpec-Unaffected: docs and transport auth only\n\n* fix: per-member Raft certs in Helm, operator token for whole-store routes, outbound revocation (#2802)\n\nThe chart reads one Secret per member and copies only the pod's own\ncertificate. Import and waive-lost take an operator token members hold\nonly as a digest. A member under the wrong certificate fails startup, and\nits client refuses a peer serving a revoked certificate.\n\nSpec-Unaffected: transport and route authentication only\n\n* docs: operator token is spent on use, Helm upgrade to per-member certs, node-level key exposure (#2802)\n\nThe raft-tls init container now checks all three files before copying.\n\nSpec-Unaffected: docs and chart only\n\n* chore(demos): refresh demo lockfiles for the new dependency (#2802)\n\nSpec-Unaffected: lockfiles only.",
+          "timestamp": "2026-11-21T19:52:12Z",
+          "tree_id": "db3c9224e649450abeaaae6ab5aaf5691ee05096",
+          "url": "https://github.com/GetFelix/felix/commit/b00d90eb9a53df05e2fdee97debce6e2a861c733"
+        },
+        "date": 1795291043398,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 557781.63,
+            "range": "10992.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 557781.63\nmean: 555744.20\nstdev: 10992.45\ncv: 1.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 557781.63,
+            "range": "10992.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 557781.63\nmean: 555744.20\nstdev: 10992.45\ncv: 1.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 126870.49,
+            "range": "8280.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 126870.49\nmean: 123896.00\nstdev: 8280.43\ncv: 6.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1268704.93,
+            "range": "82804.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1268704.93\nmean: 1238960.02\nstdev: 82804.36\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
