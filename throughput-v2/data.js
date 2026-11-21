@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795248584970,
+  "lastUpdate": 1795248863105,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64116,6 +64116,58 @@ window.BENCHMARK_DATA = {
             "range": "10042.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798327.77\nmean: 793394.55\nstdev: 10042.52\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c9a75a0e0a33e65c7aa5e002514770dac1fb7e3",
+          "message": "feat(storage): conditional pieces and the whole-batch read rule (#2751) (#2880)\n\n* feat(storage): conditional pieces and the whole-batch read rule (#2751)\n\nA conditional batch of several records on a Raft log is one entry per\nrecord, and a leader change can commit only a prefix of it. This adds the\nstorage half: a v9 record kind for a conditional batch's records (bits 31\nand 28, an 8-byte tag with the batch's length and the record's position),\nand `log::conditional`, which reads such a log so a reader sees a batch\nwhole or not at all and the read bound stops before an undecided batch.\n\nNothing writes the kind yet; the codec, the lift and delivery come next.\n\nSpec-Unaffected: storage only; implements the read rule docs/formal/FelixRaftCond.tla already models.\n\n* fix(storage): a conditional page grows by at most the batch it ends inside (#2751)\n\n* formal(raft): the conditional read rule cuts a batch early, as the code does (#2751)\n\nFelixRaftCond.tla now reads a batch the way log::conditional does: a\ncommitted entry inside the batch's range that is not its next piece cuts\nit at once, and the read bound looks only at the entry at the commit.\nFelixRaftCondBatchReachEarlyCut shows the early cut fires.\n\n* docs(formal): measured state counts for the conditional batch configs (#2751)\n\n* docs(formal): name the tests behind the early-cut witness (#2751)\n\nSpec-Unaffected: Evidence comment only; no TLA+ action or invariant changes",
+          "timestamp": "2026-11-21T08:05:30Z",
+          "tree_id": "5f7a0bd0c43f7259465b52ffbc8cc12b02c66c1b",
+          "url": "https://github.com/GetFelix/felix/commit/4c9a75a0e0a33e65c7aa5e002514770dac1fb7e3"
+        },
+        "date": 1795248862175,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 636986.37,
+            "range": "35042.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 636986.37\nmean: 646486.07\nstdev: 35042.48\ncv: 5.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 636986.37,
+            "range": "35042.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 636986.37\nmean: 646486.07\nstdev: 35042.48\ncv: 5.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162199.65,
+            "range": "5193.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162199.65\nmean: 159365.86\nstdev: 5193.15\ncv: 3.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1621996.46,
+            "range": "51931.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1621996.46\nmean: 1593658.64\nstdev: 51931.48\ncv: 3.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
