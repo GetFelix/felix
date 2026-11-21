@@ -215,7 +215,9 @@ pub(crate) struct Command {
     /// its place in the batch. With `expected` it is kept only at index
     /// `expected + position`, and the batch is one run, so every piece is
     /// kept or every piece blanked. Read back from the log it is the
-    /// record's `CondPiece` mark, with `expected` unset.
+    /// record's `CondPiece` mark, with `expected` unset. Left out when
+    /// unset, so a peer sees the same message an older build sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cond: Option<CondPlace>,
 }
 
