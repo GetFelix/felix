@@ -692,16 +692,23 @@ pub async fn run(
     // broker's ownership view an interval late.
     let mut delay = Duration::ZERO;
     let mut reread = Reread::new(interval);
+    // The views asked for that an answer has served (`LeaseState::want_view`).
+    let mut views_served: u64 = 0;
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}
             _ = wanted(&lease) => {}
+            // Not through a backoff: the request after it starts later anyway.
+            _ = view_wanted(&lease), if failures == 0 => {}
         }
-        // A renewal waits on this answer, so it is asked for without the
-        // long-poll's hold.
-        let urgent = lease.as_ref().is_some_and(|lease| lease.wants_routes());
+        // Read before `started`, so an answer to this request serves them.
+        let views = lease.as_ref().map_or(0, |lease| lease.views_wanted());
+        // A renewal or a new term waits on this answer, so it is asked for
+        // without the long-poll's hold.
+        let urgent =
+            views > views_served || lease.as_ref().is_some_and(|lease| lease.wants_routes());
         let wait = if urgent {
             Duration::ZERO
         } else {
@@ -728,6 +735,10 @@ pub async fn run(
                 delay = Duration::ZERO;
                 continue;
             }
+            _ = view_wanted(&lease), if !urgent => {
+                delay = Duration::ZERO;
+                continue;
+            }
             result = async {
                 match checkpoint {
                     Some(since) if !rereading => {
@@ -749,6 +760,7 @@ pub async fn run(
                 floor = floor.max(seq);
                 mm::record_checkpoint(seq);
                 ownership.write().await.answered(started, seq);
+                views_served = views;
                 // Unmoved too when a renewal waits: the feed's publish is
                 // what confirms it.
                 if moved || urgent {
@@ -859,6 +871,14 @@ impl Reread {
 async fn wanted(lease: &Option<Arc<crate::cluster::lease::LeaseState>>) {
     match lease {
         Some(lease) => lease.routes_wanted().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Resolves when a led shard asks for a fresh view; never without a lease.
+async fn view_wanted(lease: &Option<Arc<crate::cluster::lease::LeaseState>>) {
+    match lease {
+        Some(lease) => lease.view_wanted().await,
         None => std::future::pending().await,
     }
 }

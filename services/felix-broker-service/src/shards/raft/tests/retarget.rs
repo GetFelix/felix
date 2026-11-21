@@ -574,3 +574,114 @@ async fn a_withheld_view_does_not_untarget_a_leader() {
 
     shards.runtime.shutdown().await;
 }
+
+/// **A new term does not wait out a long poll held from before it (#2679).**
+/// The control plane holds every long poll and only answers one that does
+/// not wait, as when nothing changes on the feed. The watch is mid long poll
+/// when the term begins: its answer, started before the term, could never
+/// tell the target, so the term asks for a view at once.
+#[tokio::test]
+async fn a_new_term_does_not_wait_for_a_long_poll_held_from_before_it() {
+    use axum::extract::Query;
+    use axum::{Json, Router, routing::get};
+
+    use crate::shards::watch::{ShardOwnership, run};
+
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get(|| async { Json(serde_json::json!({ "items": [], "next_seq": 5 })) }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get(|Query(query): Query<HashMap<String, String>>| async move {
+                if query.get("wait_ms").map(String::as_str) != Some("0") {
+                    std::future::pending::<()>().await;
+                }
+                Json(serde_json::json!({ "items": [], "next_seq": 5 }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let lease = lease_of(&shards);
+    let changed = Arc::new(tokio::sync::Notify::new());
+    shards.wake_with(Arc::clone(&changed));
+    let ownership = Arc::new(tokio::sync::RwLock::new(ShardOwnership::default()));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let watch = tokio::spawn(run(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+        None,
+        Arc::clone(&ownership),
+        Arc::clone(&changed),
+        Duration::from_millis(10),
+        Some(Arc::clone(&lease)),
+        false,
+        shutdown.clone(),
+    ));
+    // What the routing feed does on each wake.
+    let feed = tokio::spawn({
+        let (shards, ownership, changed) = (
+            Arc::clone(&shards),
+            Arc::clone(&ownership),
+            Arc::clone(&changed),
+        );
+        async move {
+            loop {
+                changed.notified().await;
+                let (as_of, checkpoint) = {
+                    let owned = ownership.read().await;
+                    (owned.as_of(), owned.checkpoint())
+                };
+                shards.answered(as_of, checkpoint);
+            }
+        }
+    });
+    let seeded = async {
+        while ownership.read().await.as_of().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), seeded)
+        .await
+        .expect("the watch never seeded");
+    // Into its held long poll.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let orders = key("orders", 0);
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the member to lead", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("led");
+    let voters = shards.runtime.voters(&orders).expect("voters");
+    let fed = with_target(assigned(orders.clone(), INCARNATION), &voters, 1);
+    shards.take(&mut assignments([fed])).await;
+    lease.record_head(tokio::time::Instant::now(), 5);
+
+    // Far under the 20 s long poll.
+    let told_at_once = async {
+        while told(&shards).is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), told_at_once)
+        .await
+        .expect("the term waited on a long poll held from before it");
+    assert_eq!(told(&shards), [(version(1), term)]);
+
+    shutdown.cancel();
+    watch.await.expect("watch");
+    feed.abort();
+    server.abort();
+    shards.runtime.shutdown().await;
+}

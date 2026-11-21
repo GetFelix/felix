@@ -102,6 +102,11 @@ pub struct LeaseState {
     head_wake: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
     /// The highest placement incarnation an accepted heartbeat reported.
     placement: AtomicU64,
+    /// Counts asks for a feed view that starts after them. See
+    /// [`LeaseState::want_view`].
+    views_wanted: AtomicU64,
+    /// Signalled with each such ask, so the watch drops a held long poll.
+    view_wanted: tokio::sync::Notify,
 }
 
 /// The assignment feed's head as the control plane accepted a heartbeat.
@@ -181,6 +186,8 @@ impl LeaseState {
             head: parking_lot::Mutex::new(None),
             head_wake: std::sync::OnceLock::new(),
             placement: AtomicU64::new(0),
+            views_wanted: AtomicU64::new(0),
+            view_wanted: tokio::sync::Notify::new(),
         }
     }
 
@@ -192,6 +199,26 @@ impl LeaseState {
 
     pub(crate) fn want_head(&self, wanted: bool) {
         self.head_wanted.store(wanted, Ordering::Release);
+    }
+
+    /// Ask the watch for a feed view from a request that starts after this
+    /// call, without the long poll's hold. A new term takes its target only
+    /// from such a view, and a long poll already held may answer only when
+    /// it times out.
+    pub(crate) fn want_view(&self) {
+        self.views_wanted.fetch_add(1, Ordering::AcqRel);
+        self.view_wanted.notify_one();
+    }
+
+    /// How many views [`LeaseState::want_view`] asked for. A request that
+    /// starts after reading `n` and is answered serves every ask up to `n`.
+    pub(crate) fn views_wanted(&self) -> u64 {
+        self.views_wanted.load(Ordering::Acquire)
+    }
+
+    /// Resolves after a [`LeaseState::want_view`]. One waiter, the watch.
+    pub(crate) fn view_wanted(&self) -> tokio::sync::futures::Notified<'_> {
+        self.view_wanted.notified()
     }
 
     /// Wake `wake` when a head arrives while one is wanted. Only the first
