@@ -254,10 +254,10 @@ fn server_verifier(ca: &ReloadingClientCa) -> Result<Arc<rustls::client::WebPkiS
 /// `FELIX_RAFT_TLS_REVOKED` with the fingerprints in
 /// `FELIX_RAFT_TLS_REVOKED_FILE` added, when that is set.
 ///
-/// On a reload, `current` is the list in force. A file read back blank while
-/// `current` holds entries from it is refused: that is what a file caught
-/// between truncate and write looks like, and taking it would unrevoke
-/// everything. To clear the list on purpose, leave a comment in the file.
+/// On a reload, `current` is the list in force. A file that lists nothing
+/// while `current` holds entries from it is refused unless it carries the
+/// [`CLEAR_MARKER`] line: a file caught mid-write, blank or cut after a
+/// comment header, looks the same, and taking it would unrevoke everything.
 fn revocation_list(
     env: &BTreeSet<String>,
     file: Option<&str>,
@@ -267,20 +267,26 @@ fn revocation_list(
     if let Some(path) = file {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("read FELIX_RAFT_TLS_REVOKED_FILE {path}"))?;
-        anyhow::ensure!(
-            !raw.trim().is_empty() || current.is_none_or(|current| current.len() <= env.len()),
-            "FELIX_RAFT_TLS_REVOKED_FILE {path} is blank but listed fingerprints before; \
-             keeping them (write a comment to clear the list)",
-        );
         let entries = raw
             .lines()
             .map(|line| line.split('#').next().unwrap_or_default())
             .collect::<Vec<_>>()
             .join(",");
-        list.extend(parse_fingerprints("FELIX_RAFT_TLS_REVOKED_FILE", &entries)?);
+        let listed = parse_fingerprints("FELIX_RAFT_TLS_REVOKED_FILE", &entries)?;
+        anyhow::ensure!(
+            !listed.is_empty()
+                || current.is_none_or(|current| current.is_subset(env))
+                || raw.lines().any(|line| line.trim() == CLEAR_MARKER),
+            "FELIX_RAFT_TLS_REVOKED_FILE {path} lists nothing but listed fingerprints before; \
+             keeping them (a line `{CLEAR_MARKER}` clears the list)",
+        );
+        list.extend(listed);
     }
     Ok(list)
 }
+
+/// The line that marks a revocation file emptied on purpose.
+const CLEAR_MARKER: &str = "# felix: none";
 
 /// Comma- or whitespace-separated SHA-256 fingerprints. Colons and case are
 /// ignored, as tools print both.

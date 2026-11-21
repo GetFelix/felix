@@ -467,8 +467,13 @@ async fn a_revocation_file_read_back_blank_keeps_the_list() {
     live.reload();
     assert!(connect(&two, port).await.is_err(), "still revoked");
 
-    // A comment clears it on purpose.
-    std::fs::write(dir2.path().join("revoked.txt"), "# none\n").expect("clear");
+    // Cut right after a comment header.
+    std::fs::write(dir2.path().join("revoked.txt"), "# revoked peers\n").expect("cut");
+    live.reload();
+    assert!(connect(&two, port).await.is_err(), "still revoked");
+
+    // The marker clears it on purpose.
+    std::fs::write(dir2.path().join("revoked.txt"), "# felix: none\n").expect("clear");
     live.reload();
     connect(&two, port).await.expect("cleared");
 }
