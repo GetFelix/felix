@@ -1284,3 +1284,157 @@ async fn a_member_resuming_inside_a_batch_reads_it_back_from_its_log() {
         .expect("apply");
     assert_eq!(reopened.commits.borrow().read_bound(), 5);
 }
+
+/// Every read bound each member publishes from now on, by broker.
+fn watch_bounds(cluster: &Cluster) -> Arc<parking_lot::Mutex<Vec<(&'static str, u64)>>> {
+    let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    for broker in BROKERS {
+        let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+        let mut commits = group.commits();
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let bound = commits.borrow_and_update().read_bound();
+                seen.lock().push((broker, bound));
+                if commits.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    seen
+}
+
+/// Propose a conditional batch of `records` records expected at `at`.
+async fn propose_at(engine: &RaftEngine, at: u64, records: usize) -> Written {
+    let record = Record {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"piece"),
+        headers: None,
+    };
+    let batch = Batch {
+        expected: Some(at),
+        trim: None,
+        commit: false,
+        records: vec![record; records],
+        ack: AckAt::Flushed,
+        term: None,
+        producer: None,
+        publisher: None,
+    };
+    engine.propose(&shard(0), batch).await.expect("written")
+}
+
+/// Wait until `broker` has applied everything below `end`.
+async fn applied_on(cluster: &Cluster, broker: &str, end: u64) -> Commits {
+    let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+    eventually(|| {
+        let commits = group.commits().borrow().clone();
+        (commits.applied_end() >= end).then_some(commits)
+    })
+    .await
+}
+
+/// **A leader change that commits only a prefix of a conditional batch
+/// leaves no member's read bound inside it, and the next record is told of
+/// the cut pieces.** One entry per append, and the followers never get the
+/// third piece: the first two commit and every member holds its bound at
+/// the first. The leader is then lost, the next one's blank takes the third
+/// piece's index and cuts the batch, and the bound moves past all of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_change_that_cuts_a_batch_leaves_no_bound_inside_it() {
+    let mut led = led_with(RuntimeConfig {
+        append_entries: 1,
+        ..timers()
+    })
+    .await;
+    let at = led.committed + 1;
+    let seen = watch_bounds(&led.cluster);
+    *led.cluster.net.lose_entries_from.lock() = Some(at + 2);
+    let written = propose_at(&led.engine, at, 3).await;
+    assert_eq!(written.end, at + 3);
+    for broker in BROKERS {
+        let commits = applied_on(&led.cluster, broker, at + 2).await;
+        assert_eq!(commits.read_bound(), at, "{broker} holds it at the batch");
+    }
+
+    let old = led.leader.broker.to_string();
+    led.cluster.net.muted.lock().insert(old.clone());
+    *led.cluster.net.cut.lock() = HashSet::from([old.clone()]);
+    *led.cluster.net.lose_entries_from.lock() = None;
+    let next = led.cluster.elected(0).await;
+    assert_ne!(next, led.leader);
+    let engine = RaftEngine::new(led.cluster.runtime(&next.broker));
+    eventually(|| (engine.read_bound(&shard(0)).ok()? > at + 2).then_some(())).await;
+    let group = led.cluster.runtime(&next.broker).group(&shard(0));
+    let claim = group.expect("group").claim_skips();
+    let first = led.cluster.write(0, b"after").await;
+    let record = first + 1;
+    applied_on(&led.cluster, &next.broker, record).await;
+    assert_eq!(
+        claim.skipped_before(first),
+        first - at,
+        "every offset since the last record holds none"
+    );
+
+    led.heal();
+    for broker in BROKERS {
+        let commits = applied_on(&led.cluster, broker, record).await;
+        assert_eq!(commits.read_bound(), record, "{broker}");
+    }
+    let inside: Vec<_> = seen
+        .lock()
+        .iter()
+        .filter(|(_, bound)| (at + 1..at + 3).contains(bound))
+        .copied()
+        .collect();
+    assert!(inside.is_empty(), "bounds inside the batch: {inside:?}");
+    led.cluster.stop().await;
+}
+
+/// **A leader whose lease lapses with a batch half committed keeps every
+/// reader out of it.** The first two pieces commit, then no follower is
+/// heard: the bound stays at the first piece and a read cannot be
+/// confirmed. Healed, the leader commits the last piece and the bound moves
+/// past the whole batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
+    let mut led = led_with(RuntimeConfig {
+        append_entries: 1,
+        ..timers()
+    })
+    .await;
+    let at = led.committed + 1;
+    let seen = watch_bounds(&led.cluster);
+    *led.cluster.net.lose_entries_from.lock() = Some(at + 2);
+    let written = propose_at(&led.engine, at, 3).await;
+    applied_on(&led.cluster, &led.leader.broker, at + 2).await;
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    *led.cluster.net.lose_entries_from.lock() = None;
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
+    let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
+    assert!(
+        matches!(unconfirmed, Err(CommitError::TimedOut { what: "read", .. })),
+        "{unconfirmed:?}"
+    );
+    assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
+
+    led.heal();
+    assert_eq!(
+        led.engine.await_commit(&shard(0), written, PATIENCE).await,
+        Ok(())
+    );
+    for broker in BROKERS {
+        let commits = applied_on(&led.cluster, broker, at + 3).await;
+        assert!(commits.read_bound() >= at + 3, "{broker}");
+    }
+    let inside: Vec<_> = seen
+        .lock()
+        .iter()
+        .filter(|(_, bound)| (at + 1..at + 3).contains(bound))
+        .copied()
+        .collect();
+    assert!(inside.is_empty(), "bounds inside the batch: {inside:?}");
+    led.cluster.stop().await;
+}
