@@ -111,6 +111,8 @@ async fn batches_queued_together_go_to_openraft_in_one_call() {
 /// where it applies it, so nothing wakes the task to hand answers on. On
 /// one thread the task finds all 16 batches queued, makes one call, and is
 /// not polled again until every batch has committed and been applied.
+/// `led` has just committed, so the lease is fresh and no heartbeat wait
+/// adds a poll.
 #[tokio::test]
 async fn a_drain_wakes_the_publish_task_once() {
     let (mut cluster, leader, engine, committed) = led().await;

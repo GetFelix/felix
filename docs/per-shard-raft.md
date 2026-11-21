@@ -1364,13 +1364,13 @@ offset to order by before the write. The order is the order of the calls:
 3. The task does not wait for a call to commit before it makes the next.
    openraft takes calls in the order they are made, so offsets follow the
    queue.
-4. The task does not hand answers back either. Each record of a call goes
-   to openraft with a responder tied to its batch (`Raft::write_many`).
-   openraft calls it where it applies the entry, or refuses or discards
-   it, and the batch's last record to be answered tells the publisher. So
-   a call wakes the task once, however many batches it carries. A
-   responder openraft drops unanswered, as a stopped group does, answers
-   its record as stopped.
+
+The task does not hand answers back. Each record of a call goes to
+openraft with a responder tied to its batch (`Raft::write_many`). openraft
+calls it where it applies the entry, or where it refuses or discards it,
+and the batch's last record to be answered tells the publisher. So a call
+wakes the task once, however many batches it carries. A responder openraft
+drops unanswered, as a stopped group does, answers its record as stopped.
 
 A call takes no batch that would bring it past 4 MiB of payload or 4096
 records, so batches with empty payloads are bounded too. A batch past
@@ -1464,9 +1464,9 @@ place. A leader that is the only voter needs no answer and is not held. If
 no majority answers, the write is sent and openraft refuses it, with
 nothing of the call appended. A refused batch is not proposed again by the task:
 later batches may already be on their way, and it would land behind them.
-While the task waits on the lease for the next call, it still hands on
-openraft's answers to the calls it already made, so a refused publisher
-hears within one lease, not two.
+A refused publisher is told by its batch's responders when openraft
+refuses the call, whatever the task is doing by then, so it hears within
+one lease, not two.
 
 The publisher's future then waits. It puts a fresh token on the first and
 on the last record of its batch, and reads the batch's place from both. It

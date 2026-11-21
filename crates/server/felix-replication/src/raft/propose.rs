@@ -820,6 +820,9 @@ pub(super) fn respond(
 ) -> Vec<Respond<ClientWriteResult<ShardTypes>>> {
     let mut responders = Vec::with_capacity(answers.iter().map(|(records, _)| records).sum());
     for (records, to) in answers {
+        // `queued` refuses an empty batch; one here would get no responder
+        // and be told it stopped.
+        debug_assert!(records > 0);
         let tally = Arc::new(Mutex::new(Tally {
             entries: (0..records).map(|_| None).collect(),
             left: records,
@@ -1032,7 +1035,7 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     };
     let Some(span) = span else {
         // No append reported the batch: refused, dropped, or its append
-        // failed. openraft says which, and its task answers every batch.
+        // failed. openraft says which, through the batch's responders.
         return tokio::select! {
             biased;
             answered = &mut answer => committed(answered),
