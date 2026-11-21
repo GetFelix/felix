@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795279436795,
+  "lastUpdate": 1795282024485,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64584,6 +64584,58 @@ window.BENCHMARK_DATA = {
             "range": "10965.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816841.72\nmean: 815016.83\nstdev: 10965.89\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "813b191d29e5801dca68aa6c06f6c96fa8e1d72c",
+          "message": "fix(auth): end streams and connections when their credentials expire (#2817) (#2900)\n\n* fix(auth): end streams and connections when their credentials expire (#2817)\n\nEvery token now ends what it opened at its exp plus the leeway it was\naccepted under, through the same Revocable end time lease tokens already\nused, so every waiter on revocation (control and uni streams,\nsubscriptions, replays, cache watches, MQTT, Kafka) ends at expiry with\nno new timers per stream. A client certificate's notAfter caps that end\ntime in authenticate_peer and authenticate_forwarded, and a stream opened\non a connection whose certificate has already expired is refused.\n\nThe QUIC client accept loop closes the connection at the certificate's\nnotAfter (close code 2, \"credential expired\"), and both sides of an\ninternal peer connection close it when the other side's certificate\nexpires (close code 5), so the next dial presents the renewed one.\n\nSpec-Unaffected: authentication and connection lifetime; no TLA spec models credentials.\n\n* fix(auth): review fixes for credential expiry (#2817)\n\nStream ends wait on the wall clock (re-checked), like the connection\ncloses, so a suspended host or a stepped clock cannot move them. The\nQUIC test checks the connection close code on a bare connection, so each\ncertificate bound is guarded alone; a unit test covers the stream cap.\nWider timing windows in the new tests. Kafka reports an expired client\ncertificate as a refusal, not a transient failure. The auth doc notes\nMQTT ends at the bare exp.\n\nSpec-Unaffected: authentication and connection lifetime; no TLA spec models credentials.\n\n* fix(auth): bound a chain by its verified path, fail closed, spread peer closes (#2817)\n\nA chain's end is now the leaf and the intermediates on the path webpki\nbuilds to a trust anchor; the anchor and stray certificates no longer\ncount. A leaf that does not parse refuses the credential. Peer\nconnections close at a random time in the last 30 s before notAfter.\nMQTT waits on the wall clock, and Kafka closes idle and long-polling\nconnections when the credential ends.\n\n* fix(kafka): bound the final write when a connection closes (#2817)\n\nA client that stops reading could keep a connection open past its\ncredential's end while the queued answers waited to be written.",
+          "timestamp": "2026-11-21T17:22:32Z",
+          "tree_id": "0f891f3cc9a4ff81795dc04e171bcbd42bb76289",
+          "url": "https://github.com/GetFelix/felix/commit/813b191d29e5801dca68aa6c06f6c96fa8e1d72c"
+        },
+        "date": 1795282023751,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 690863.94,
+            "range": "70139.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 690863.94\nmean: 715252.70\nstdev: 70139.50\ncv: 9.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 690863.94,
+            "range": "70139.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 690863.94\nmean: 715252.70\nstdev: 70139.50\ncv: 9.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 167314.5,
+            "range": "6216.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 167314.50\nmean: 165192.92\nstdev: 6216.79\ncv: 3.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1673144.95,
+            "range": "62167.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1673144.95\nmean: 1651929.19\nstdev: 62167.92\ncv: 3.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
