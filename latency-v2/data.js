@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795283803626,
+  "lastUpdate": 1795284282289,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82170,6 +82170,72 @@ window.BENCHMARK_DATA = {
             "range": "746.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1394.00\nmean: 1408.40\nstdev: 746.23\ncv: 52.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6d155c420760cf3423f2555ceae6bcbd2f272d19",
+          "message": "test(cluster): wait for a settled Raft leader before the Kafka epoch-bump test sends (#2907) (#2908)\n\nleader_among now names a leader only once the same broker still leads two seconds later, so the group-start leader is not picked. send_ok retries retriable errors and the first send's result is asserted.\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-21T18:00:21Z",
+          "tree_id": "da622fd8b071f7925283bbe65cf618341418a00c",
+          "url": "https://github.com/GetFelix/felix/commit/6d155c420760cf3423f2555ceae6bcbd2f272d19"
+        },
+        "date": 1795284266275,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 64.20\nstdev: 2.59\ncv: 4.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 88,
+            "range": "4.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 87.20\nstdev: 4.44\ncv: 5.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 116,
+            "range": "10.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 116.00\nmean: 114.60\nstdev: 10.88\ncv: 9.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 80.60\nstdev: 1.34\ncv: 1.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 169,
+            "range": "6.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 171.40\nstdev: 6.43\ncv: 3.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 278,
+            "range": "51.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 283.00\nstdev: 51.48\ncv: 18.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
