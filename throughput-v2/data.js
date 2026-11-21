@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795284285474,
+  "lastUpdate": 1795288079958,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64792,6 +64792,58 @@ window.BENCHMARK_DATA = {
             "range": "19851.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1726850.13\nmean: 1722385.77\nstdev: 19851.06\ncv: 1.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14cc9fcd39617cea80fef803752cf0f8b9e660aa",
+          "message": "fix(peer): serve nothing on the internal port before an identity-checked Hello (#2819) (#2910)\n\n* fix(peer): serve nothing on the internal port before an identity-checked Hello (#2819)\n\nThe internal listener checked a peer's certificate against a node id only\nwhen the peer sent Hello, and nothing made Hello come first. A peer with any\ncertificate from the internal CA could send fences, seals, pre-votes,\nfetches, replication, Raft and forwards under no identity.\n\nThe dispatch loop now refuses every request before an accepted Hello with\nUnauthorized and closes the connection (code 6). The node id is bound once\nper connection; a second Hello naming another node closes it (code 3). Raft\nmessages that name a sender are refused when that sender's broker is not the\nbound node. Per-request authorization against membership, replica set and\nregistration needs a source that does not lag the sender and is #2909.\n\nSpec-Unaffected: transport admission only; no change to replication, election or log state.\n\n* fix(replication): refuse a Raft append in another broker's name through answer, and close a connection with no Hello (#2819)\n\nSpec-Unaffected: transport admission only; no change to replication, election or log state.",
+          "timestamp": "2026-11-21T19:00:25Z",
+          "tree_id": "a69b6633084022eac881cd3ac33b36d98dba4f33",
+          "url": "https://github.com/GetFelix/felix/commit/14cc9fcd39617cea80fef803752cf0f8b9e660aa"
+        },
+        "date": 1795288079352,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 538393.57,
+            "range": "43407.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538393.57\nmean: 514174.84\nstdev: 43407.85\ncv: 8.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 538393.57,
+            "range": "43407.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538393.57\nmean: 514174.84\nstdev: 43407.85\ncv: 8.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117741.55,
+            "range": "1497.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117741.55\nmean: 118040.99\nstdev: 1497.13\ncv: 1.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1177415.54,
+            "range": "14971.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1177415.54\nmean: 1180409.87\nstdev: 14971.30\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
