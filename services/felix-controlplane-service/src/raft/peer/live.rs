@@ -5,8 +5,8 @@
 //! A rotated certificate must pass the startup checks: it verifies against
 //! the cluster CA now as both client and server, covers every name the
 //! current one does, names the same member of the same cluster, and is not
-//! revoked. A rotated CA bundle must still verify this member's own
-//! certificate, and a revocation file read back blank is not taken to clear
+//! revoked. A rotated CA bundle must verify this member's own certificate or
+//! the one waiting on disk, and a revocation file read back blank is not taken to clear
 //! the list. Whatever fails is refused with an error log and the current
 //! material stays, so a bad file never takes a member off the group.
 //!
@@ -19,7 +19,8 @@ use std::sync::{Arc, Weak};
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use felix_common::tls::{
-    IdentityCheck, IdentityFiles, Presenter, ReloadingClientCa, ReloadingIdentity, verify_chain,
+    IdentityCheck, IdentityFiles, Presenter, ReloadingClientCa, ReloadingIdentity, load_pem_certs,
+    verify_chain,
 };
 use rustls::pki_types::CertificateDer;
 
@@ -144,15 +145,23 @@ impl LivePeerTls {
                 "could not reload FELIX_RAFT_TLS_REVOKED_FILE; keeping the current list",
             ),
         }
-        // A bundle that no longer verifies this member's own certificate
-        // would make it refuse every peer issued alongside it.
+        // A bundle that verifies neither this member's certificate nor the
+        // one waiting on disk would make it refuse every peer issued
+        // alongside it. The one on disk counts so that a jump to a new root
+        // (new-root-only bundle and a leaf under it, in the same tick) and a
+        // CA rotation after the current leaf expired are both taken: neither
+        // file passes against the other's old counterpart.
         let own = self.identity.chain();
+        let waiting = load_pem_certs("FELIX_RAFT_TLS_CERT", self.identity.cert_path())
+            .ok()
+            .filter(|chain| *chain != own);
         let ca = self
             .ca
             .reload_checked(|roots| {
-                [Presenter::Client, Presenter::Server]
-                    .into_iter()
-                    .try_for_each(|presenter| verify_chain(&own, roots, &provider(), presenter))
+                issued_by(&own, roots).or_else(|why| match &waiting {
+                    Some(chain) => issued_by(chain, roots).map_err(|_| why),
+                    None => Err(why),
+                })
             })
             .map_err(anyhow::Error::from);
         match ca.and_then(|changed| changed.then(|| server_verifier(&self.ca)).transpose()) {
@@ -201,6 +210,14 @@ async fn reload_while_held(live: Weak<LivePeerTls>) {
     }
 }
 
+/// Whether `chain` verifies against `roots` now as both client and server,
+/// the way every peer checks it.
+fn issued_by(chain: &[CertificateDer<'_>], roots: &rustls::RootCertStore) -> Result<(), String> {
+    [Presenter::Client, Presenter::Server]
+        .into_iter()
+        .try_for_each(|presenter| verify_chain(chain, roots, &provider(), presenter))
+}
+
 /// The startup checks, applied to every certificate this member presents:
 /// it verifies against the cluster CA as both client and server, names
 /// exactly one member of `cluster_id`, the same one as at startup, and is
@@ -212,10 +229,7 @@ fn identity_check(
     member: Arc<std::sync::OnceLock<super::super::NodeId>>,
 ) -> IdentityCheck {
     Arc::new(move |chain| {
-        let roots = ca.roots();
-        for presenter in [Presenter::Client, Presenter::Server] {
-            verify_chain(chain, &roots, &provider(), presenter)?;
-        }
+        issued_by(chain, &ca.roots())?;
         let leaf = chain.first().ok_or("no certificate")?;
         let named = member_of(leaf, &cluster_id)?;
         let first = *member.get_or_init(|| named);
