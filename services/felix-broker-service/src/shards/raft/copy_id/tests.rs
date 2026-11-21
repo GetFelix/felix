@@ -75,7 +75,15 @@ async fn a_copy_reports_the_group_epoch_it_runs() {
     let link = accepting();
     let mut ids = CopyIds::default();
     let at_zero = held("a", 7, None);
-    tick(&mut ids, &[at_zero.clone()], (1, 1), &link, "n1", None).await;
+    tick(
+        &mut ids,
+        std::slice::from_ref(&at_zero),
+        (1, 1),
+        &link,
+        "n1",
+        None,
+    )
+    .await;
     let body = serde_json::to_value(&link.copy_ids()[0]).expect("body");
     assert!(body.get("group_epoch").is_none(), "{body}");
 
