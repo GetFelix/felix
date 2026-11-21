@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795282024485,
+  "lastUpdate": 1795283489799,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64636,6 +64636,58 @@ window.BENCHMARK_DATA = {
             "range": "62167.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1673144.95\nmean: 1651929.19\nstdev: 62167.92\ncv: 3.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ebf736175563e5dde4ff5cd476bcb806fae805f1",
+          "message": "feat(raft): multi-record conditional publishes on Raft shards (#2751) (#2906)\n\n* test(raft): a blanked conditional batch releases every offset through the publish path (#2751)\n\n* feat(raft): report raft_conditional_batches and finalize it on a new cluster (#2751)\n\nA conditional publish of several records on a Raft shard is taken once the\nfleet finalizes raft_conditional_batches, and on a lone broker from the start.\nTests: a batch through the control stream is written or refused whole, and\nacross real brokers a leader killed as a batch lands leaves all of it or none.\n\n* docs(raft): conditional batches of several records are served on Raft (#2751)\n\nSpec-Unaffected: the read rule is unchanged; FelixRaftCond already models batches of several records (FelixRaftCondBatch.cfg), and raft_conditional_batches is a fleet gate.\n\n* fix(raft): review round for conditional batches on Raft (#2751)\n\nDocument raft_conditional_batches in the upgrade guide and the reported\nfeature list, correct publish_at's doc, and make the cluster test kill the\nleader while batches stream so a batch is likely in flight, retrying the\nfirst batch at whatever tail a refusal names.\n\n* test(cluster): bound the wait for the first batches before the leader kill (#2751)\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-21T17:46:51Z",
+          "tree_id": "141714a2735da9f233f1a44dd0d064f6fd75c3ad",
+          "url": "https://github.com/GetFelix/felix/commit/ebf736175563e5dde4ff5cd476bcb806fae805f1"
+        },
+        "date": 1795283489092,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 677443.01,
+            "range": "23511.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 677443.01\nmean: 680874.33\nstdev: 23511.91\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 677443.01,
+            "range": "23511.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 677443.01\nmean: 680874.33\nstdev: 23511.91\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156521.83,
+            "range": "2178.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156521.83\nmean: 157484.49\nstdev: 2178.03\ncv: 1.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1565218.3,
+            "range": "21780.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1565218.30\nmean: 1574844.95\nstdev: 21780.26\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
