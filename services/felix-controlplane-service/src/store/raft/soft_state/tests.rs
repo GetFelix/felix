@@ -352,6 +352,9 @@ async fn a_restarted_leader_does_not_judge_before_its_blank_entry_applies() {
     let asked =
         tokio::spawn(async move { asker.acquire_placement_lease("instance-b", 60_000).await });
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // Still waiting, or the take applied before it asked and this proves
+    // nothing.
+    assert!(!asked.is_finished(), "answered before the take applied");
     paused.send_replace(false);
 
     let answer = asked.await.expect("ask task").expect("acquire");
