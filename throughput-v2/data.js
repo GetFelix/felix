@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795277862323,
+  "lastUpdate": 1795278551567,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64428,6 +64428,58 @@ window.BENCHMARK_DATA = {
             "range": "28313.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1232480.63\nmean: 1216536.47\nstdev: 28313.70\ncv: 2.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "80501eaa0074d7c255d82067530d4537ca853097",
+          "message": "feat(raft): readers never see part of a conditional batch (#2751) (#2893)\n\n* feat(raft): readers never see part of a conditional batch (#2751)\n\nThe state machine holds the read bound at the first piece of an undecided\nbatch and counts a cut batch's pieces as entries holding no record. Disk\nreads resolve pages through log::conditional, the event end steps back\nover cut and undecided pieces, and a blanked batch releases all its\noffsets in the held ring.\n\nSpec-Unaffected: the read rule is log::conditional's resolve + bound, which FelixRaftCond.tla already models (#2880)\n\n* test(raft): a cut batch, a resumed batch and a blanked batch of three (#2751)\n\n* test(raft): a leader change and a lapsed lease mid-batch keep readers out of it (#2751)\n\n* docs(raft): what readers do with a conditional batch (#2751)\n\n* fix(raft): apply follows resolve for a batch whose start a log lost (#2751)\n\nReview fixes for #2893: OpenBatch tracks the next expected position, so a\nbatch applied from mid-way counts as resolve reads it; the docs say what\na resume inside a batch really does; a release-path test for a blanked\nbatch of three; read_log_from skips the rule for pages with no piece.",
+          "timestamp": "2026-11-21T08:24:07-08:00",
+          "tree_id": "742af79b91d4ee5760fbedf02660ea762e05126a",
+          "url": "https://github.com/GetFelix/felix/commit/80501eaa0074d7c255d82067530d4537ca853097"
+        },
+        "date": 1795278551072,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 522418.23,
+            "range": "22691.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522418.23\nmean: 518200.77\nstdev: 22691.58\ncv: 4.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 522418.23,
+            "range": "22691.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522418.23\nmean: 518200.77\nstdev: 22691.58\ncv: 4.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123827.92,
+            "range": "2274.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123827.92\nmean: 123105.47\nstdev: 2274.95\ncv: 1.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1238279.21,
+            "range": "22749.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1238279.21\nmean: 1231054.67\nstdev: 22749.51\ncv: 1.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
