@@ -18,15 +18,19 @@ from collections import Counter
 ALLOC = re.compile(r"malloc|^free$|cfree|realloc|_int_|__rust_(alloc|dealloc|realloc)|memcpy|memmove|"
                    r"RawVec.*grow|alloc::raw_vec|drop_in_place")
 
-# Checked against a stack leaf first; the first category with a matching frame takes it.
+# Each sample goes to the category of the frame nearest its leaf that matches one; a frame
+# that matches several takes the first listed.
 CATEGORIES = [
+    ("allocator (malloc, free, clones)", ALLOC),
+    ("tracing / metrics", re.compile(r"^(tracing|metrics|prometheus|opentelemetry)")),
+    ("fsync / IO", re.compile(r"fsync|fdatasync|pwrite|pread|io_uring|felix_storage::io|ext4|xfs_|blk_|nvme|jbd2")),
+    ("peer encode and RPC", re.compile(r"felix_replication::(peer|raft::(network|wire|peer))")),
+    ("apply / state machine", re.compile(r"raft::machine|Machine|apply", re.I)),
+    ("log append and codec", re.compile(r"felix_storage|raft::codec|raft_log|disk_log")),
+    ("release / fanout / wakes", re.compile(r"completion|deliver|fanout|release|felix_broker::stream|wake|futex")),
     ("openraft core", re.compile(r"^openraft::")),
-    ("raft engine (felix)", re.compile(r"felix_broker::.*raft|felix_raft|raft_engine|raft::", re.I)),
-    ("disk log / fsync", re.compile(r"felix_storage|fsync|fdatasync|pwrite|io_uring", re.I)),
-    ("quic / tls", re.compile(r"^(quinn|rustls|ring|aws_lc)", re.I)),
-    ("serde / json", re.compile(r"^serde|json", re.I)),
-    ("tracing / metrics", re.compile(r"^(tracing|metrics|prometheus)", re.I)),
-    ("tokio runtime", re.compile(r"^tokio::")),
+    ("client QUIC / TLS", re.compile(r"^(quinn|rustls|ring|aws_lc)|udp|sendmsg|recvmsg", re.I)),
+    ("tokio scheduling", re.compile(r"^tokio::|epoll|schedule|park")),
 ]
 
 
@@ -35,6 +39,14 @@ def clean(frame):
     frame = re.sub(r"::h[0-9a-f]{16}$", "", frame)
     frame = frame.replace("::{{closure}}", "")
     return frame
+
+
+def category(frames):
+    for fr in reversed(frames):
+        for name, rx in CATEGORIES:
+            if rx.search(fr):
+                return name
+    return "other"
 
 
 def fold():
@@ -83,12 +95,7 @@ def top(paths, limit):
                     alloc_c[caller] += n
                 for fr in set(frames):
                     incl_c[fr] += n
-                for name, rx in CATEGORIES:
-                    if any(rx.search(fr) for fr in reversed(frames)):
-                        cat_c[name] += n
-                        break
-                else:
-                    cat_c["other"] += n
+                cat_c[category(frames)] += n
     if not total:
         print("no samples")
         return
