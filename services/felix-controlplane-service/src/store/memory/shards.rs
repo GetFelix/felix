@@ -378,6 +378,7 @@ pub(super) async fn write_shard_assignment(
     stored.carry_raft_floor(existing);
     stored.carry_raft_formed(existing);
     stored.carry_raft_ordered(existing);
+    stored.carry_raft_epochs(existing);
     let held = existing
         .map(|existing| existing.readmitted.clone())
         .unwrap_or_default();

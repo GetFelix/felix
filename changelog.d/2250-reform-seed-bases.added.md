@@ -1,0 +1,1 @@
+The control plane keeps each Raft shard's epoch seed and re-form bases on the shard record (metadata level 47), so a re-form plan for a group whose brokers are all alive and readable needs no accepted loss, and refuses a Raft copy id reported from another group epoch.

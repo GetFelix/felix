@@ -27,11 +27,12 @@ pub use node::{
     NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
 };
 pub use shard::{
-    ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftFloor, RaftFloorError,
-    RaftFloorReport, RaftFormed, RaftOrdered, RaftTarget, RaftTargetError, RaftVoters, Readmitted,
-    ReformRecordError, ReplicaReport, SealOrderError, SealReport, SealReportError, SealedSideLog,
-    ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind,
-    ShardState, ShardSwitch, ShardValidationError,
+    ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftBases, RaftEpochBase,
+    RaftFloor, RaftFloorError, RaftFloorReport, RaftFormed, RaftLogId, RaftOrdered, RaftSeed,
+    RaftTarget, RaftTargetError, RaftVoters, Readmitted, ReformRecordError, ReplicaReport,
+    SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
+    ShardValidationError,
 };
 pub(crate) use shard::{
     Learning, ShardOwner, check_elected_generation, first_generation, generation_at_least,

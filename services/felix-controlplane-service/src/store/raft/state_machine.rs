@@ -199,6 +199,14 @@ impl MetadataStateMachine {
         }
     }
 
+    /// Whether a copy id entry keeps its epoch's seed and checks the
+    /// reported epoch: when it says so, or once the join floor is at the
+    /// level that knows both, like [`Self::holds_unformed`].
+    fn keeps_epochs(&self, carried: bool) -> bool {
+        use crate::raft::AppStateMachine;
+        carried || self.join_floor() >= super::REFORM_RECORD_LEVEL
+    }
+
     fn raise_floor(&self, level: u16) {
         self.floor
             .fetch_max(level, std::sync::atomic::Ordering::SeqCst);
@@ -575,6 +583,8 @@ impl MetadataStateMachine {
                 keep_ordered,
                 shard_incarnation,
                 hold_target: _,
+                group_epoch,
+                keep_seed,
             } => store
                 .apply_record_raft_copy_id(
                     &key,
@@ -586,6 +596,8 @@ impl MetadataStateMachine {
                     shard_incarnation,
                     true,
                     self.set_hold(false).formed,
+                    group_epoch,
+                    self.keeps_epochs(keep_seed),
                 )
                 .await
                 .map(|changed| MetaResponse::Count {
