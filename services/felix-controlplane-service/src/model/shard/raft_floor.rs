@@ -43,6 +43,11 @@ pub struct RaftFloorReport {
     pub index: u64,
     /// The term of the entry at `index`.
     pub term: u64,
+    /// The group's voters, copy id by node id, when its membership is
+    /// committed at `index` and not joint. Absent from a broker that
+    /// predates it. Needs metadata level 46 under Raft.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voters: Option<std::collections::BTreeMap<String, u64>>,
 }
 
 fn is_zero(value: &u64) -> bool {

@@ -1772,8 +1772,8 @@ async fn form_without_does_not_excuse_a_failed_tls_handshake() {
 
     let pki_dir = tempfile::tempdir().expect("tempdir");
     let other_pki_dir = tempfile::tempdir().expect("tempdir");
-    let tls = peer_pki(pki_dir.path());
-    let other_tls = peer_pki(other_pki_dir.path());
+    let tls = peer_pki(pki_dir.path(), 3);
+    let other_tls = peer_pki(other_pki_dir.path(), 3);
     let dirs: Vec<tempfile::TempDir> = (0..3)
         .map(|_| tempfile::tempdir().expect("tempdir"))
         .collect();
@@ -1783,9 +1783,9 @@ async fn form_without_does_not_excuse_a_failed_tls_handshake() {
         let id = (i + 1) as NodeId;
         let mut settings = settings(id, dir.path().into());
         settings.security.tls = Some(if id == 2 {
-            other_tls.clone()
+            other_tls[1].clone()
         } else {
-            tls.clone()
+            tls[i].clone()
         });
         if id != 2 {
             waive_the_second(dir.path())
@@ -1879,7 +1879,7 @@ async fn form_without_applies_after_a_blocked_first_start() {
 #[tokio::test]
 async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     let pki_dir = tempfile::tempdir().expect("tempdir");
-    let tls = peer_pki(pki_dir.path());
+    let tls = peer_pki(pki_dir.path(), 2);
     let dirs: Vec<tempfile::TempDir> = (0..2)
         .map(|_| tempfile::tempdir().expect("tempdir"))
         .collect();
@@ -1887,7 +1887,7 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     for (i, dir) in dirs.iter().enumerate() {
         let id = (i + 1) as NodeId;
         let mut settings = settings(id, dir.path().into());
-        settings.security.tls = Some(tls.clone());
+        settings.security.tls = Some(tls[i].clone());
         let app = Arc::new(KvApp::default());
         let handle = RaftHandle::start(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
             .await
@@ -1933,7 +1933,7 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     .await;
 
     // The token alone is not enough without a certificate.
-    let ca = std::fs::read(&tls.ca_path).expect("read ca");
+    let ca = std::fs::read(&tls[0].ca_path).expect("read ca");
     let no_cert = reqwest::Client::builder()
         .tls_certs_only([reqwest::Certificate::from_pem(&ca).expect("ca")])
         .build()
@@ -1963,28 +1963,94 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     }
 }
 
-/// A CA and one certificate for `localhost`, used by every member as both
-/// server and client.
-fn peer_pki(dir: &std::path::Path) -> felix_controlplane_service::raft::PeerTls {
+/// A member does not talk to a peer whose server certificate is revoked: a
+/// wiped member's old key must not answer, or vote, in its place.
+#[tokio::test]
+async fn a_member_refuses_a_peer_serving_a_revoked_certificate() {
+    use rustls::pki_types::pem::PemObject;
+    let pki_dir = tempfile::tempdir().expect("tempdir");
+    let tls = peer_pki(pki_dir.path(), 2);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut second = settings(2, dir.path().into());
+    second.security.tls = Some(tls[1].clone());
+    let handle = RaftHandle::start(second, Arc::new(KvApp::default()))
+        .await
+        .expect("start raft node");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let server = {
+        let (handle, shutdown) = (handle.clone(), shutdown.clone());
+        tokio::spawn(async move { handle.serve_peers(listener, shutdown).await })
+    };
+    let pem = std::fs::read(&tls[1].cert_path).expect("read cert");
+    let der = rustls::pki_types::CertificateDer::from_pem_slice(&pem).expect("parse cert");
+    let fingerprint = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(&der))
+    };
+    let url = format!(
+        "https://localhost:{port}{}",
+        felix_controlplane_service::raft::peer_route("standing")
+    );
+    let ask = |revoked: bool| {
+        let mut first = settings(1, dir.path().into()).security;
+        let mut own = tls[0].clone();
+        if revoked {
+            own.revoked.insert(fingerprint.clone());
+        }
+        first.tls = Some(own);
+        let client = first.client(Duration::from_secs(5)).expect("client");
+        let url = url.clone();
+        async move { client.get(url).send().await }
+    };
+    let answered = ask(false).await.expect("an unrevoked peer answers");
+    assert!(answered.status().is_success(), "{answered:?}");
+    let refused = ask(true).await;
+    assert!(refused.is_err(), "a revoked peer answered: {refused:?}");
+
+    let _ = handle.shutdown().await;
+    shutdown.cancel();
+    server.abort();
+}
+
+/// A CA and, for each of `members` members, a certificate for `localhost`
+/// naming that member, used as both server and client.
+fn peer_pki(dir: &std::path::Path, members: u64) -> Vec<felix_controlplane_service::raft::PeerTls> {
     let ca_key = rcgen::KeyPair::generate().expect("ca key");
     let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
     let ca = rcgen::Issuer::new(ca_params, ca_key);
-    let key = rcgen::KeyPair::generate().expect("peer key");
-    let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
-        .expect("peer params")
-        .signed_by(&key, &ca)
-        .expect("peer cert");
     let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
     std::fs::write(path("ca.pem"), ca_cert.pem()).expect("write ca");
-    std::fs::write(path("peer.pem"), cert.pem()).expect("write cert");
-    std::fs::write(path("peer.key"), key.serialize_pem()).expect("write key");
-    felix_controlplane_service::raft::PeerTls {
-        cert_path: path("peer.pem"),
-        key_path: path("peer.key"),
-        ca_path: path("ca.pem"),
-    }
+    (1..=members)
+        .map(|id| {
+            let key = rcgen::KeyPair::generate().expect("peer key");
+            let mut params =
+                rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("peer params");
+            params.subject_alt_names.push(rcgen::SanType::URI(
+                format!(
+                    "{}test-cluster:{id}",
+                    felix_controlplane_service::raft::MEMBER_URI_PREFIX
+                )
+                .try_into()
+                .expect("uri"),
+            ));
+            let cert = params.signed_by(&key, &ca).expect("peer cert");
+            std::fs::write(path(&format!("peer-{id}.pem")), cert.pem()).expect("write cert");
+            std::fs::write(path(&format!("peer-{id}.key")), key.serialize_pem())
+                .expect("write key");
+            felix_controlplane_service::raft::PeerTls {
+                cert_path: path(&format!("peer-{id}.pem")),
+                key_path: path(&format!("peer-{id}.key")),
+                ca_path: path("ca.pem"),
+                revoked: Default::default(),
+            }
+        })
+        .collect()
 }
 
 /// Peer credentials every member of a test group shares.

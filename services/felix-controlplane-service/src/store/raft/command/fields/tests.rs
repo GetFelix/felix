@@ -223,6 +223,12 @@ fn assignment() -> ShardAssignment {
             incarnation: 1,
             epoch: 1,
         }),
+        raft_voters: Some(crate::model::RaftVoters {
+            incarnation: 1,
+            epoch: 1,
+            index: 1,
+            members: any_map(1),
+        }),
         raft_ordered: Some(crate::model::RaftOrdered {
             incarnation: 1,
             epoch: 1,
@@ -646,6 +652,7 @@ fn commands() -> Vec<MetaCommand> {
                 epoch: 1,
                 index: 1,
                 term: 1,
+                voters: Some(any_map(1)),
             }],
             mark_formed: true,
         },
@@ -767,6 +774,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::FinalizeFleetFeature {
             feature: s("f"),
             hold_unformed: true,
+            hold_formed: true,
         },
         MetaCommand::CreateResources {
             needs_identity: true,

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 45;
+pub const METADATA_VERSION: u16 = 46;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -492,6 +492,11 @@ pub enum MetaCommand {
         /// before its first stream. Set by `settle_for_level`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_unformed: bool,
+        /// Level 46, read by nothing, like `hold_unformed`: a new cluster
+        /// holds a formed group's set change (#2905) from before its first
+        /// stream. Set by `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hold_formed: bool,
     },
     /// Streams and caches created together: one entry, so every member
     /// applies all of them or, on a conflict or a missing namespace, none.
@@ -1088,8 +1093,8 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// From level 37 a node delete also forgets the node's report stamps, and
 /// below it never does.
 ///
-/// From level 45 a fleet feature finalize carries `hold_unformed`, and below
-/// it never does.
+/// From level 45 a fleet feature finalize carries `hold_unformed`, and from
+/// level 46 `hold_formed`; below each it never does.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
     if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
@@ -1132,13 +1137,20 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
         };
     }
     if op.as_deref() == Some(FINALIZE_OP) {
-        let hold = level >= super::FIRST_FORM_LEVEL;
+        let flags = [
+            ("hold_unformed", level >= super::FIRST_FORM_LEVEL),
+            ("hold_formed", level >= super::FORMED_SET_LEVEL),
+        ];
         return Ok(edit_command_json(command, |object| {
-            if hold {
-                object.insert("hold_unformed".to_string(), true.into()) != Some(true.into())
-            } else {
-                object.remove("hold_unformed").is_some()
+            let mut edited = false;
+            for (flag, on) in flags {
+                edited |= if on {
+                    object.insert(flag.to_string(), true.into()) != Some(true.into())
+                } else {
+                    object.remove(flag).is_some()
+                };
             }
+            edited
         }));
     }
     if op.as_deref() == Some(DELETE_NODE_OP) {
@@ -1193,6 +1205,14 @@ pub fn depends_on_level(command: &[u8]) -> bool {
     op_of(command).is_some_and(|op| {
         op == IMPORT_STATE_OP || op == DELETE_NODE_OP || op == FINALIZE_OP || is_gated(&op)
     })
+}
+
+/// Whether a member may forward `command` over the peer `propose` route. An
+/// import replaces the whole store, so only the operator's route proposes
+/// one, on the leader itself. A command whose op cannot be read is refused
+/// too, so nothing reaches apply that this check read differently.
+pub fn peer_may_propose(command: &[u8]) -> bool {
+    op_of(command).is_some_and(|op| op != IMPORT_STATE_OP)
 }
 
 /// A fleet feature finalize, which carries `hold_unformed` from level 45.

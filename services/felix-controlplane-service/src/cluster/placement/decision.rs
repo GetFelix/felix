@@ -261,6 +261,9 @@ pub enum Blocked {
     /// A Raft shard's set stays until a leader of its group has reported:
     /// a second set with its own target could form beside the first (#2794).
     Unformed,
+    /// A formed Raft group has not reported voters that keep a majority of
+    /// the next set (#2905).
+    Unapplied,
 }
 
 impl std::fmt::Display for Blocked {
@@ -318,6 +321,10 @@ impl std::fmt::Display for Blocked {
                 "waiting for the group's membership target for its current set before changing it"
             ),
             Self::Unformed => write!(f, "waiting for the group to form before changing its set"),
+            Self::Unapplied => write!(
+                f,
+                "waiting for the group to report voters that keep a majority of the next set"
+            ),
         }
     }
 }

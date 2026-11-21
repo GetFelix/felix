@@ -724,7 +724,7 @@ impl RaftHandle {
                         "this member and the withheld members lost their raft state, and too few \
                          members report a term to prove which leaders are safe to serve: blocked. \
                          It resolves when a withheld member finishes catching up; if they are \
-                         lost for good, waive them with the waive-lost route"
+                         lost for good, waive them on the bootstrap listener (raft/waive-lost)"
                     ),
                     Verdict::Blocked { report: false } if due => {
                         tracing::warn!(
@@ -750,10 +750,16 @@ impl RaftHandle {
         }
     }
 
-    /// Accept `waiver` for the floor block, if this member is blocked and it
-    /// names every member the block waits on. The members must be configured
-    /// peers other than this one.
-    pub(super) fn waive_lost(&self, waiver: Waiver) -> Result<(), String> {
+    /// Accept an operator's waiver for the floor block, if this member is
+    /// blocked and `members` names every member the block waits on. The
+    /// members must be configured peers other than this one. Called from the
+    /// bootstrap listener only: no peer may accept a loss for another.
+    pub(crate) fn waive_lost(
+        &self,
+        members: BTreeSet<NodeId>,
+        reason: String,
+    ) -> Result<(), String> {
+        let waiver = Waiver { members, reason };
         if waiver.members.is_empty() {
             return Err("name at least one lost member".to_string());
         }

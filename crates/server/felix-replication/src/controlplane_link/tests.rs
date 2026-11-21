@@ -169,6 +169,7 @@ async fn raft_floors_carry_the_shard_and_the_committed_log_id() {
             epoch: 0,
             index: 40,
             term: 5,
+            voters: None,
         },
         RaftFloor {
             key: key("prices", crate::ShardKind::Cache),
@@ -176,6 +177,7 @@ async fn raft_floors_carry_the_shard_and_the_committed_log_id() {
             epoch: 1,
             index: 7,
             term: 2,
+            voters: None,
         },
     ];
 

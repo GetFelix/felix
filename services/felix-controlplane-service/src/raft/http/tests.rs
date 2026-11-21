@@ -9,6 +9,7 @@ use crate::raft::{
     AppStateMachine, CLUSTER_ID_HEADER, PEER_PREFIX, PeerSecurity, RaftHandle, RaftSettings,
 };
 
+mod identity;
 mod snapshot;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";

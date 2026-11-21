@@ -85,6 +85,7 @@ impl Cluster {
             ),
             bootstrap_enabled: false,
             bootstrap_tokens: Vec::new(),
+            operator_token_digests: Vec::new(),
             node_liveness: LIVENESS,
             readiness: std::sync::Arc::new(
                 felix_controlplane_service::api::readiness::Readiness::new(std::sync::Arc::new(

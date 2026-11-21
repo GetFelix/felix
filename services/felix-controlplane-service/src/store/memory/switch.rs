@@ -54,7 +54,7 @@ async fn rewrite(
         false,
         false,
         // The current set again, which a held set allows.
-        false,
+        super::SetHold::NONE,
         switch,
     )
     .await
@@ -142,6 +142,7 @@ pub(super) async fn record_raft_copy_id(
     copy_id: u64,
     keep_ordered: bool,
     native: Option<NativeShard>,
+    hold_formed: bool,
 ) -> StoreResult<bool> {
     // The stream or cache the shard belongs to, read before the locks below,
     // which no stream or cache write takes. A stream's durability never
@@ -248,7 +249,7 @@ pub(super) async fn record_raft_copy_id(
     }
     stored.raft_copy_ids.insert(node_id.to_string(), copy_id);
     let moved = stored
-        .settle_raft_target()
+        .settle_raft_target(hold_formed)
         .map_err(|err| StoreError::Conflict(err.to_string()))?;
     // In the same write as the target, so the list holds it before any
     // broker can read it.
@@ -300,15 +301,37 @@ pub(super) async fn record_raft_floors(
         // Only a leader reports, so a member of the target leads a group at
         // this incarnation and epoch. Before the floor, which a shard started
         // on Raft does not keep.
-        if mark_formed
-            && record
-                .raft_target
-                .as_ref()
-                .is_some_and(|target| target.members.contains_key(node_id))
-        {
+        let in_target = record
+            .raft_target
+            .as_ref()
+            .is_some_and(|target| target.members.contains_key(node_id));
+        if mark_formed && in_target {
             record.mark_raft_formed(report.incarnation, report.epoch);
         }
-        match record.raise_raft_floor(report) {
+        // A set change clears the target until the new one is stored, and
+        // the voters may be what lets it be stored, so meanwhile a voter
+        // already kept may report.
+        let may_report = in_target
+            || (record.raft_target.is_none()
+                && record
+                    .raft_voters
+                    .as_ref()
+                    .is_some_and(|held| held.members.contains_key(node_id)));
+        let floor = record.raise_raft_floor(report);
+        // Voters only from a target member, and only in a report the floor
+        // took, so a report the floor refuses cannot set a high index that
+        // shuts out later ones. Only a proposer at level 46 leaves them in.
+        if may_report
+            && matches!(
+                floor,
+                Ok(_) | Err(crate::model::RaftFloorError::NotSwitched)
+            )
+            && let Some(voters) = &report.voters
+            && voters.contains_key(node_id)
+        {
+            record.note_raft_voters(report, voters);
+        }
+        match floor {
             Ok(true) => raised += 1,
             Ok(false) => {}
             // Brokers report cache groups too, every second, so a shard
@@ -365,6 +388,7 @@ impl InMemoryStore {
         keep_ordered: bool,
         shard_incarnation: Option<u64>,
         in_group: bool,
+        hold_formed: bool,
     ) -> StoreResult<bool> {
         // A group decides the engine from its recorded identity alone, so
         // every member applies the same; one with none recorded holds no
@@ -386,6 +410,7 @@ impl InMemoryStore {
             copy_id,
             keep_ordered,
             native,
+            hold_formed,
         )
         .await
     }

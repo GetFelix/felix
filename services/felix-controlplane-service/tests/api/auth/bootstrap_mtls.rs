@@ -77,6 +77,7 @@ fn state_with_token() -> AppState {
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: true,
         bootstrap_tokens: vec!["secret".to_string()],
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),

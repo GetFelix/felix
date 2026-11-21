@@ -614,8 +614,11 @@ A block ends one of two ways:
    `FELIX_RAFT_FLOOR_REPORT_AFTER_MS` (default 60 s) the member logs an
    error naming the withheld members, sets the gauge
    `felix_meta_raft_floor_blocked` to 1, and its readiness answer says it
-   is blocked. Only then does it take a waiver: a POST to the peer route
-   `waive-lost`, which needs the peer token (the cluster-admin credential),
+   is blocked. Only then does it take a waiver: a POST to
+   `/internal/bootstrap/raft/waive-lost` on the bootstrap listener, which
+   needs the operator token (`FELIX_OPERATOR_TOKEN_SHA256`, which members
+   hold only as a digest) and goes to each blocked member (it is not a
+   peer route, so a peer cannot send it),
    names every withheld member the block waits on, and gives a reason. The
    waiver must name each of them, even one that is healthy and only
    catching up. The member logs the waiver and goes on with the floor from
@@ -732,20 +735,23 @@ Raft RPCs are JSON over HTTP on a **peer listener of their own**
 Every peer request must carry:
 
 - `x-felix-raft-cluster-id` naming this group (403 otherwise), and
-- `Authorization: Bearer <FELIX_RAFT_PEER_TOKEN>`, compared in constant
-  time (401 otherwise).
+- `Authorization: Bearer <FELIX_RAFT_PEER_TOKEN>` when a token is set,
+  compared in constant time (401 otherwise). Optional under peer mTLS.
 
 During a rotation a member also accepts `FELIX_RAFT_PEER_TOKEN_NEXT` and
 `FELIX_RAFT_PEER_TOKEN_PREVIOUS`, but sends only the current token, so the
 roll has no step at which two members cannot talk. The runbook is in
 `docs-site/src/content/docs/features/security.md`.
 
-The token is the cluster-admin credential. Members hold it, and so does the
-operator holding it; brokers and API clients never see it.
-`propose` needs nothing more because holding the token already is
-cluster-admin. A member refuses to start in Raft mode without a token of at
-least 32 characters unless `FELIX_RAFT_INSECURE_PEERS=true` says otherwise,
-which is for throwaway local groups.
+The token proves only that the caller is some member, so it is an insecure
+fallback for groups without peer TLS, and a member logs a warning at startup
+when it is the only credential. A member refuses to start with neither TLS nor
+a token of at least 32 characters unless `FELIX_RAFT_INSECURE_PEERS=true`
+says otherwise, which is for throwaway local groups. The `propose` route
+refuses an `ImportState` command; the operator import is
+`POST /internal/bootstrap/import-state` on the bootstrap listener, behind the
+operator token rather than the bootstrap token every member holds, and under
+Raft only the leader takes it.
 
 A member that refuses a connection, times out, or answers with any non-2xx
 status is treated as unreachable: the leader backs off before retrying it,
@@ -758,10 +764,17 @@ With `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`
 set, the peer listener terminates mTLS and refuses the handshake to any
 client without a certificate from that CA, and the member's own peer client
 presents the same certificate, trusts only that CA, and checks the server
-name against the address in `FELIX_RAFT_PEERS`. The token stays required
-under mTLS. What mTLS does not do yet is bind a certificate to a member id:
-any certificate from the cluster CA can speak for any member, so issue that
-CA's certificates to control-plane members only.
+name against the address in `FELIX_RAFT_PEERS`. Under mTLS the certificate
+is bound to a member id: the leaf carries one URI SAN
+`felix:principal:raft-member:<cluster_id>:<member_id>`, and a vote, append,
+snapshot, forming record or standing `from` that speaks for another member is
+refused with 403. A member refuses to start under a certificate naming another
+member, and `FELIX_RAFT_TLS_REVOKED` lists SHA-256 fingerprints of certificates
+refused on inbound requests and, on the client side, on the server a member
+connects to. The list is read at startup only. The voter record holds no
+member incarnation, so one certificate per incarnation plus revocation
+approximates it. The client checks that the server certificate names some
+member of this cluster, not that it names the member it meant to reach (#2912).
 
 The network layer resolves a member's address from `FELIX_RAFT_PEERS` by
 id before falling back to the address recorded in the membership, so moving

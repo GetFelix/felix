@@ -188,6 +188,11 @@ pub struct RaftFloor {
     pub epoch: u64,
     pub index: u64,
     pub term: u64,
+    /// The group's voters, copy id by broker, when its membership is
+    /// committed at `index` and not joint. Left out otherwise, which is what
+    /// a control plane that predates it sends and reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voters: Option<std::collections::BTreeMap<String, u64>>,
 }
 
 fn is_zero(value: &u64) -> bool {

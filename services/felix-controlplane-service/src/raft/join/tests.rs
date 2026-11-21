@@ -782,8 +782,9 @@ async fn answering_changing(
 
 /// A withheld member of three, with this one wiped too, is past the
 /// tolerance: the member blocks and serves no leader. Only an operator
-/// waiver that names the withheld member, sent with the cluster-admin
-/// credential after the block is reported, lets it go on (#2365).
+/// waiver that names the withheld member, given after the block is
+/// reported, lets it go on (#2365). No peer can give one: the peer listener
+/// serves no waiver route.
 #[tokio::test]
 async fn past_the_failure_tolerance_the_floor_blocks_until_waived() {
     let client = reqwest::Client::new();
@@ -806,18 +807,12 @@ async fn past_the_failure_tolerance_the_floor_blocks_until_waived() {
         .security
         .client(Duration::from_secs(5))
         .expect("client");
-    let waive = |members: &'static str| {
-        let body = format!(r#"{{"members":{members},"reason":"volume destroyed"}}"#);
-        admin
-            .post(&waive_url)
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
+    let waive = |members: &[u64], reason: &str| {
+        handle.waive_lost(members.iter().copied().collect(), reason.to_string())
     };
 
     // Too early: nothing is reported yet, so no waiver is taken.
-    let early = waive("[3]").await.expect("send");
-    assert_eq!(early.status(), reqwest::StatusCode::CONFLICT);
+    assert!(waive(&[3], "volume destroyed").is_err());
 
     let learning = tokio::spawn({
         let handle = handle.clone();
@@ -837,34 +832,22 @@ async fn past_the_failure_tolerance_the_floor_blocks_until_waived() {
     let ready = handle.readiness().expect_err("ready while blocked");
     assert!(ready.contains("failure tolerance"), "{ready}");
 
-    let anonymous = client
+    // Not even an authenticated peer can waive: the route is not there.
+    let from_peer = admin
         .post(&waive_url)
         .header("content-type", "application/json")
         .body(r#"{"members":[3],"reason":"volume destroyed"}"#)
         .send()
         .await
         .expect("send");
-    assert!(
-        matches!(anonymous.status().as_u16(), 401 | 403),
-        "{}",
-        anonymous.status()
-    );
-    for unnamed in ["[]", "[2]", "[1,3]", "[3,9]"] {
-        let refused = waive(unnamed).await.expect("send");
-        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT, "{unnamed}");
+    assert_eq!(from_peer.status(), reqwest::StatusCode::NOT_FOUND);
+    for unnamed in [&[][..], &[2], &[1, 3], &[3, 9]] {
+        assert!(waive(unnamed, "volume destroyed").is_err(), "{unnamed:?}");
     }
-    let no_reason = admin
-        .post(&waive_url)
-        .header("content-type", "application/json")
-        .body(r#"{"members":[3],"reason":" "}"#)
-        .send()
-        .await
-        .expect("send");
-    assert_eq!(no_reason.status(), reqwest::StatusCode::CONFLICT);
+    assert!(waive(&[3], " ").is_err(), "a waiver without a reason");
     assert!(!learning.is_finished(), "a refused waiver unblocked it");
 
-    let waived = waive("[3]").await.expect("send");
-    assert_eq!(waived.status(), reqwest::StatusCode::OK);
+    waive(&[3], "volume destroyed").expect("waived");
     tokio::time::timeout(Duration::from_secs(5), learning)
         .await
         .expect("still blocked after the waiver")
@@ -982,28 +965,12 @@ async fn a_withheld_member_reports_the_term_of_the_leader_it_served() {
     member.stop().await;
 }
 
-/// Post a floor waiver for `members` to `member` with the cluster-admin
-/// credential.
-async fn waive_on(member: &Served, members: &str) -> reqwest::StatusCode {
-    let url = format!(
-        "http://{}{}",
-        member.addr,
-        crate::raft::peer_route("waive-lost")
-    );
-    member
-        .handle
-        .security
-        .client(Duration::from_secs(5))
-        .expect("client")
-        .post(&url)
-        .header("content-type", "application/json")
-        .body(format!(
-            r#"{{"members":{members},"reason":"volume destroyed"}}"#
-        ))
-        .send()
-        .await
-        .expect("send")
-        .status()
+/// Give `member` an operator's floor waiver for `members`.
+fn waive_on(member: &Served, members: &[u64]) -> Result<(), String> {
+    member.handle.waive_lost(
+        members.iter().copied().collect(),
+        "volume destroyed".to_string(),
+    )
 }
 
 /// Two wipes in three: member 3 lost its volume, learned its floor from
@@ -1046,7 +1013,7 @@ async fn a_waived_floor_takes_the_term_a_withheld_member_follows() {
     })
     .await
     .expect("block not reported");
-    assert_eq!(waive_on(&member, "[3]").await, reqwest::StatusCode::OK);
+    waive_on(&member, &[3]).expect("waived");
     tokio::time::timeout(Duration::from_secs(5), learning)
         .await
         .expect("still blocked after the waiver")
@@ -1131,9 +1098,8 @@ async fn past_the_tolerance_a_withheld_member_must_give_its_term() {
         handle.floor_gate.reported().is_none(),
         "blocked, not waiting"
     );
-    assert_eq!(
-        waive_on(&member, "[3]").await,
-        reqwest::StatusCode::CONFLICT,
+    assert!(
+        waive_on(&member, &[3]).is_err(),
         "a waiver while waiting on an answer"
     );
 
@@ -1145,7 +1111,7 @@ async fn past_the_tolerance_a_withheld_member_must_give_its_term() {
     })
     .await
     .expect("block not reported once member 3 gives its term");
-    assert_eq!(waive_on(&member, "[3]").await, reqwest::StatusCode::OK);
+    waive_on(&member, &[3]).expect("waived");
     tokio::time::timeout(Duration::from_secs(5), learning)
         .await
         .expect("still blocked after the waiver")

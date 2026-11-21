@@ -727,6 +727,17 @@ fn plan_once(
         };
         if held {
             plan.decision = Decision::Waiting(Blocked::Unformed);
+            continue;
+        }
+        // And a formed group's step its reported voters do not keep a
+        // majority of (#2905).
+        let held = match &plan.decision {
+            Decision::Move(_, next) => existing.moves_formed_set(next, existing.incarnation),
+            Decision::Place(leader, followers) => existing.holds_formed_set_from(leader, followers),
+            _ => false,
+        };
+        if held {
+            plan.decision = Decision::Waiting(Blocked::Unapplied);
         }
     }
     shards.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
@@ -896,6 +907,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     }
 }

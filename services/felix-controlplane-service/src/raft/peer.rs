@@ -1,12 +1,17 @@
 //! Who may speak Raft to this member, and how this member proves it is one.
 //!
-//! The Raft routes can replace the entire metadata store (`propose` of an
-//! `ImportState`), so they are served on their own listener and every request
-//! must carry the cluster's peer token and cluster id. The token is the
-//! cluster-admin credential: peers, and the operator's migration tool, hold
-//! it; brokers and API clients never do. Optional mTLS on top means a
-//! connection that cannot present a certificate from the cluster CA never
-//! reaches the router at all.
+//! The Raft routes are served on their own listener, and every request must
+//! name the cluster. With peer mTLS the certificate is the member's identity:
+//! it must carry the URI SAN `felix:principal:raft-member:<cluster>:<id>`, and
+//! a vote, append, snapshot or forming record is refused unless the member it
+//! speaks for is that id ([`require_member`], [`PeerMember::refusal`]). So one
+//! member's key does not let it speak as another, and one member's
+//! certificate can be revoked on its own (`FELIX_RAFT_TLS_REVOKED`).
+//!
+//! The shared peer token (`FELIX_RAFT_PEER_TOKEN`) is the fallback for a group
+//! without peer TLS. It says only that the caller is some member, never which.
+//! No peer request can replace the whole store: an import comes from the
+//! operator's bootstrap route only, and `propose` refuses one.
 //!
 //! A Raft RPC also names the member it is meant for, and a member answers
 //! only its own ([`require_target`]).
@@ -68,6 +73,189 @@ pub struct PeerTls {
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
+    /// SHA-256 fingerprints (lowercase hex) of member certificates that are
+    /// refused even though they chain to the CA: a member that was removed,
+    /// or an earlier incarnation of one whose machine was wiped.
+    pub revoked: std::collections::BTreeSet<String>,
+}
+
+/// The URI SAN prefix naming a Raft member, after which come the cluster id,
+/// a colon, and the member id.
+pub const MEMBER_URI_PREFIX: &str = "felix:principal:raft-member:";
+
+/// The member a peer request comes from, as its certificate says. Only set
+/// under peer mTLS; without it nothing says which member is calling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PeerMember(pub(super) super::NodeId);
+
+impl PeerMember {
+    /// The refusal for a request that speaks for a member other than the
+    /// caller, or `None` when it may go on.
+    pub(super) fn refusal(caller: Option<&Self>, claimed: super::NodeId) -> Option<Response> {
+        match caller {
+            Some(Self(id)) if *id != claimed => {
+                metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "member")
+                    .increment(1);
+                tracing::warn!(
+                    caller = id,
+                    claimed,
+                    "raft peer request speaking for another member refused"
+                );
+                Some(
+                    (
+                        StatusCode::FORBIDDEN,
+                        format!("raft member {id} may not speak for member {claimed}"),
+                    )
+                        .into_response(),
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The member ids `leaf` is issued to in `cluster_id`, from its URI SANs.
+fn members_named(leaf: &[u8], cluster_id: &str) -> Result<Vec<super::NodeId>, String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(leaf)
+        .map_err(|err| format!("the peer certificate does not parse: {err}"))?;
+    let sans = cert
+        .subject_alternative_name()
+        .map_err(|err| format!("the peer certificate's SANs do not parse: {err}"))?;
+    let prefix = format!("{MEMBER_URI_PREFIX}{cluster_id}:");
+    Ok(sans
+        .into_iter()
+        .flat_map(|sans| sans.value.general_names.iter())
+        .filter_map(|name| match name {
+            x509_parser::extensions::GeneralName::URI(uri) => uri.strip_prefix(prefix.as_str()),
+            _ => None,
+        })
+        .filter_map(|id| id.parse().ok())
+        .collect())
+}
+
+/// The one member `leaf` is issued to. A certificate naming none, or more
+/// than one, identifies nobody.
+fn member_of(leaf: &[u8], cluster_id: &str) -> Result<super::NodeId, String> {
+    match members_named(leaf, cluster_id)?[..] {
+        [id] => Ok(id),
+        [] => Err(format!(
+            "the peer certificate names no member of {cluster_id} (no {MEMBER_URI_PREFIX}{cluster_id}:<id> URI SAN)"
+        )),
+        _ => Err("the peer certificate names more than one member".to_string()),
+    }
+}
+
+/// The SHA-256 fingerprint of a DER certificate, as `FELIX_RAFT_TLS_REVOKED`
+/// lists it.
+pub(super) fn fingerprint(der: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(der))
+}
+
+/// The client side of peer mTLS: this member's certificate, and a verifier
+/// that trusts only the cluster CA and refuses a revoked member's server.
+fn client_tls(tls: &PeerTls, cluster_id: &str) -> Result<rustls::ClientConfig> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let read = |path: &str, what: &str| {
+        std::fs::read(path).with_context(|| format!("read raft peer {what} {path}"))
+    };
+    // Only the cluster CA: a peer certificate from a public CA must not be
+    // enough to receive the log.
+    let mut roots = rustls::RootCertStore::empty();
+    for ca in CertificateDer::pem_slice_iter(&read(&tls.ca_path, "CA")?) {
+        roots
+            .add(ca.context("parse raft peer CA")?)
+            .context("add raft peer CA")?;
+    }
+    let chain = CertificateDer::pem_slice_iter(&read(&tls.cert_path, "certificate")?)
+        .collect::<Result<Vec<_>, _>>()
+        .context("parse raft peer certificate")?;
+    let key = PrivateKeyDer::from_pem_slice(&read(&tls.key_path, "key")?)
+        .context("parse raft peer key")?;
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        std::sync::Arc::new(roots),
+        provider.clone(),
+    )
+    .build()
+    .context("raft peer server verifier")?;
+    let verifier = MemberServerVerifier {
+        inner,
+        cluster_id: cluster_id.to_string(),
+        revoked: tls.revoked.clone(),
+    };
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .context("raft peer TLS versions")?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+        .with_client_auth_cert(chain, key)
+        .context("raft peer client identity")?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+/// Verifies a peer's server certificate as the CA does, then refuses one
+/// that is revoked or names no member of this cluster, so a wiped member's
+/// old key cannot answer for it. Which member it names is not checked
+/// against the target yet (#2912).
+#[derive(Debug)]
+struct MemberServerVerifier {
+    inner: std::sync::Arc<rustls::client::WebPkiServerVerifier>,
+    cluster_id: String,
+    revoked: std::collections::BTreeSet<String>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for MemberServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let verified = self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        )?;
+        if self.revoked.contains(&fingerprint(end_entity)) {
+            metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "revoked_server")
+                .increment(1);
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::Revoked,
+            ));
+        }
+        member_of(end_entity, &self.cluster_id)
+            .map_err(|why| rustls::Error::General(format!("raft peer server: {why}")))?;
+        Ok(verified)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
 }
 
 impl PeerSecurity {
@@ -82,23 +270,7 @@ impl PeerSecurity {
             .timeout(timeout)
             .default_headers(self.peer_headers()?);
         if let Some(tls) = &self.tls {
-            let ca = std::fs::read(&tls.ca_path)
-                .with_context(|| format!("read raft peer CA {}", tls.ca_path))?;
-            let mut identity = std::fs::read(&tls.cert_path)
-                .with_context(|| format!("read raft peer certificate {}", tls.cert_path))?;
-            identity.push(b'\n');
-            identity.extend(
-                std::fs::read(&tls.key_path)
-                    .with_context(|| format!("read raft peer key {}", tls.key_path))?,
-            );
-            // Only the cluster CA: a peer certificate from a public CA must not
-            // be enough to receive the log.
-            builder = builder.tls_certs_only(
-                reqwest::Certificate::from_pem_bundle(&ca).context("parse raft peer CA")?,
-            );
-            builder = builder.identity(
-                reqwest::Identity::from_pem(&identity).context("parse raft peer identity")?,
-            );
+            builder = builder.tls_backend_preconfigured(client_tls(tls, &self.cluster_id)?);
         }
         builder.build().context("build raft peer client")
     }
@@ -143,6 +315,30 @@ impl PeerSecurity {
             }
         }
         matched
+    }
+
+    /// Refuse to serve under a certificate that does not name this member, or
+    /// is revoked: the other members would refuse every request it sends.
+    pub(super) fn check_own_identity(&self, id: super::NodeId) -> Result<()> {
+        let Some(tls) = &self.tls else {
+            return Ok(());
+        };
+        let pem = std::fs::read(&tls.cert_path)
+            .with_context(|| format!("read raft peer certificate {}", tls.cert_path))?;
+        use rustls::pki_types::pem::PemObject;
+        let leaf = rustls::pki_types::CertificateDer::from_pem_slice(&pem)
+            .context("parse raft peer certificate")?;
+        let named = member_of(&leaf, &self.cluster_id)
+            .map_err(|why| anyhow::anyhow!("FELIX_RAFT_TLS_CERT: {why}"))?;
+        anyhow::ensure!(
+            named == id,
+            "FELIX_RAFT_TLS_CERT is issued to raft member {named}, but this is member {id}"
+        );
+        anyhow::ensure!(
+            !tls.revoked.contains(&fingerprint(&leaf)),
+            "FELIX_RAFT_TLS_CERT is listed in FELIX_RAFT_TLS_REVOKED"
+        );
+        Ok(())
     }
 
     /// Server-side TLS for the peer listener, when mTLS is configured.
@@ -208,6 +404,45 @@ pub(super) async fn require_peer(
             .increment(1);
     }
     next.run(request).await
+}
+
+/// Under peer mTLS, name the calling member from its certificate, and refuse
+/// a revoked certificate or one that names no member of this cluster.
+///
+/// The handshake already checked the chain. This is the binding between a
+/// certificate and a member id, which the CA alone does not give: any
+/// certificate it signed would otherwise speak for any member.
+pub(super) async fn require_member(
+    State(security): State<std::sync::Arc<PeerSecurity>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(tls) = &security.tls else {
+        return next.run(request).await;
+    };
+    let leaf = request
+        .extensions()
+        .get::<crate::auth::cert_binding::PeerCertificates>()
+        .and_then(|certs| certs.0.first().cloned());
+    let Some(leaf) = leaf else {
+        return refuse_member("no_certificate", "the peer presented no certificate");
+    };
+    if tls.revoked.contains(&fingerprint(&leaf)) {
+        return refuse_member("revoked", "the peer certificate is revoked");
+    }
+    match member_of(&leaf, &security.cluster_id) {
+        Ok(id) => {
+            request.extensions_mut().insert(PeerMember(id));
+            next.run(request).await
+        }
+        Err(why) => refuse_member("identity", &why),
+    }
+}
+
+fn refuse_member(reason: &'static str, why: &str) -> Response {
+    metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => reason).increment(1);
+    tracing::warn!(why, "raft peer request refused");
+    (StatusCode::FORBIDDEN, why.to_string()).into_response()
 }
 
 /// Refuse a request meant for another member, as a member that is not

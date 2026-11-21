@@ -178,6 +178,11 @@ const RAFT_NATIVE_LEVEL: u16 = 41;
 /// has formed, and mark it formed from a leader's floor report (#2794).
 const FIRST_FORM_LEVEL: u16 = 45;
 
+/// The metadata level whose members keep a Raft group's reported voters
+/// and refuse a formed group's set change those voters do not keep a
+/// majority of (#2905).
+const FORMED_SET_LEVEL: u16 = 46;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -319,6 +324,7 @@ impl RaftStore {
         assignment.raft_target = None;
         assignment.raft_floor = None;
         assignment.raft_formed = None;
+        assignment.raft_voters = None;
         assignment.raft_ordered = None;
     }
 
@@ -903,6 +909,7 @@ impl ControlPlaneStore for RaftStore {
             feature: feature.to_string(),
             // Set by `settle_for_level`, at the level the entry is gated on.
             hold_unformed: false,
+            hold_formed: false,
         };
         if self.handle.cluster_version().await < command.version() {
             return Err(StoreError::Conflict(
@@ -1250,6 +1257,13 @@ impl ControlPlaneStore for RaftStore {
                 "a control-plane member is below metadata version {RAFT_FLOOR_LEVEL}"
             )));
         };
+        // A member below the level would refuse the whole entry.
+        let mut floors = floors;
+        if level < FORMED_SET_LEVEL {
+            for floor in &mut floors {
+                floor.voters = None;
+            }
+        }
         match self
             .propose(MetaCommand::RecordRaftFloors {
                 node_id: node_id.to_string(),
@@ -1554,6 +1568,56 @@ impl ControlPlaneStore for RaftStore {
 
     async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
         self.identity().await
+    }
+
+    /// Written as leader of the term this member leads when asked, or not at
+    /// all. Never forwarded: the peer `propose` route refuses an import, so
+    /// no member relays one. A leader change mid-import answers 503: the next
+    /// leader may still commit the entry, so read before retrying.
+    async fn import_state(
+        &self,
+        state: crate::store::export::ExportedState,
+        overwrite: bool,
+    ) -> StoreResult<crate::store::ImportOutcome> {
+        let not_leader = || crate::store::ImportOutcome::NotLeader {
+            leader: self.handle.known_leader().0,
+        };
+        let term = self.handle.current_term();
+        if !self.handle.is_leader() {
+            return Ok(not_leader());
+        }
+        // The level fields are settled on the leader as it appends
+        // (`settle_for_level`), whatever is sent here.
+        let command = MetaCommand::ImportState {
+            state: Box::new(state),
+            overwrite,
+            mark_unplaced: false,
+            raise_incarnation: false,
+            lose_ordered: false,
+        };
+        match self
+            .handle
+            .write_as_leader_of(term, encode_command(&command))
+            .await
+            .map_err(StoreError::Unexpected)?
+        {
+            None => Ok(not_leader()),
+            Some(bytes) => {
+                let result = decode_result(&bytes).map_err(StoreError::from)?;
+                result.map_err(StoreError::from)?;
+                Ok(crate::store::ImportOutcome::Imported)
+            }
+        }
+    }
+
+    async fn waive_lost(
+        &self,
+        members: std::collections::BTreeSet<u64>,
+        reason: String,
+    ) -> StoreResult<()> {
+        self.handle
+            .waive_lost(members, reason)
+            .map_err(StoreError::Conflict)
     }
 
     async fn root_sequence(

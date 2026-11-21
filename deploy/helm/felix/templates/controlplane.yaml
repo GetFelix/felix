@@ -72,6 +72,40 @@ spec:
         {{- include "felix.podSecurityContext" . | nindent 8 }}
       terminationGracePeriodSeconds: {{ include "felix.controlplane.terminationGracePeriodSeconds" . }}
       {{- include "felix.scheduling" (dict "workload" $cp "selectorLabels" (include "felix.controlplane.selectorLabels" .)) | nindent 6 }}
+      {{- if and $raft $cp.storage.raft.tls.enabled }}
+      # Each member's certificate names it, so each pod needs its own. A pod
+      # spec cannot pick one Secret per ordinal, so this copies the member's
+      # own certificate out of all of them into memory; the control plane
+      # container never mounts the others.
+      initContainers:
+        - name: raft-tls
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              id="$(( ${POD_NAME##*-} + 1 ))"
+              src="/etc/felix/raft-tls-all/$id"
+              if [ ! -f "$src/tls.crt" ] || [ ! -f "$src/tls.key" ] || [ ! -f "$src/ca.crt" ]; then
+                echo "no Raft peer certificate for member $id: create Secret {{ include "felix.controlplane.raftTlsPrefix" . }}-$id with tls.crt, tls.key and {{ $cp.storage.raft.tls.caKey }}" >&2
+                exit 1
+              fi
+              cp "$src/tls.crt" "$src/tls.key" "$src/ca.crt" /etc/felix/raft-tls/
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            {{- include "felix.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: raft-tls-all
+              mountPath: /etc/felix/raft-tls-all
+              readOnly: true
+            - name: raft-tls
+              mountPath: /etc/felix/raft-tls
+      {{- end }}
       containers:
         - name: controlplane
           image: {{ $image | quote }}
@@ -190,7 +224,7 @@ spec:
             - name: FELIX_RAFT_TLS_KEY
               value: /etc/felix/raft-tls/tls.key
             - name: FELIX_RAFT_TLS_CA
-              value: /etc/felix/raft-tls/{{ $cp.storage.raft.tls.caKey }}
+              value: /etc/felix/raft-tls/ca.crt
             {{- end }}
             {{- with $cp.storage.raft.heartbeatMs }}
             - name: FELIX_RAFT_HEARTBEAT_MS
@@ -221,6 +255,10 @@ spec:
                 secretKeyRef:
                   name: {{ $cp.bootstrap.existingSecret }}
                   key: {{ $cp.bootstrap.previousTokenKey }}
+            {{- end }}
+            {{- with $cp.bootstrap.operatorTokenSha256 }}
+            - name: FELIX_OPERATOR_TOKEN_SHA256
+              value: {{ . | quote }}
             {{- end }}
             {{- end }}
             {{- with $cp.liveness.nodeExpiryTimeoutMs }}
@@ -306,9 +344,27 @@ spec:
                 path: ca.crt
         {{- end }}
         {{- if and $raft $cp.storage.raft.tls.enabled }}
+        # Renewed certificates reach a member at its next restart.
         - name: raft-tls
-          secret:
-            secretName: {{ $cp.storage.raft.tls.existingSecret }}
+          emptyDir:
+            medium: Memory
+        - name: raft-tls-all
+          projected:
+            sources:
+              {{- range $i := until (int $cp.replicas) }}
+              - secret:
+                  name: {{ printf "%s-%d" (include "felix.controlplane.raftTlsPrefix" $) (add $i 1) }}
+                  # Optional so a missing one fails only its own member, in
+                  # the init container, with a message naming it.
+                  optional: true
+                  items:
+                    - key: tls.crt
+                      path: {{ add $i 1 }}/tls.crt
+                    - key: tls.key
+                      path: {{ add $i 1 }}/tls.key
+                    - key: {{ $cp.storage.raft.tls.caKey }}
+                      path: {{ add $i 1 }}/ca.crt
+              {{- end }}
         {{- end }}
   {{- if $raft }}
   # The volume is what makes a restart a rejoin; a member whose volume is

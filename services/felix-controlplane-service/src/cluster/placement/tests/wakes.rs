@@ -36,6 +36,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await
