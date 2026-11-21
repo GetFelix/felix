@@ -575,6 +575,15 @@ async fn leaders_that_commit_nothing_open_nothing() {
             .expect("initialize");
     }
     let elected = eventually(|| leads(&cluster)).await;
+    // The first leader is cut off for the others to elect a later one. If
+    // it stayed reachable it would answer their pre-votes with its own
+    // committed vote, and a follower that sees that answer before the other
+    // follower's grant drops the round, which can repeat for good.
+    cluster
+        .net
+        .cut
+        .lock()
+        .insert(elected.member.broker.to_string());
     let later = |cluster: &Cluster| {
         let statuses = cluster.statuses(0).into_iter();
         let mut later = statuses.filter(|status| status.term > elected.term);
@@ -584,6 +593,7 @@ async fn leaders_that_commit_nothing_open_nothing() {
     let opened: Vec<_> = hosts.values().flat_map(|told| told.all()).collect();
     assert_eq!(opened, [], "opened before any entry of the term committed");
 
+    cluster.net.cut.lock().clear();
     cluster.net.lose_appends.store(false, Relaxed);
     opens_at_its_term(&cluster, &hosts).await;
     cluster.stop().await;
