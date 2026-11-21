@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795296541417,
+  "lastUpdate": 1795298367373,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65000,6 +65000,58 @@ window.BENCHMARK_DATA = {
             "range": "73260.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1188144.97\nmean: 1160878.66\nstdev: 73260.47\ncv: 6.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88cd940195ad147a15dc411c942c5b42404472a5",
+          "message": "feat(raft): keep each Raft shard's epoch seed and re-form bases on its record (#2250) (#2925)\n\n* feat(raft): keep each Raft shard's epoch seed and re-form bases on its record (#2250)\n\nThe control plane now records the voters each group epoch started with\n(raft_seed: the epoch's first target at epoch 0) and the base of every\nre-form (raft_bases), so reform_record can fill the planner's seed and\nbuild a record past epoch 0. A re-form plan for a group whose placed\nbrokers are all alive and read is then unmarked. start_reformed_epoch is\nthe one write the re-form's epoch compare and swap will make: the next\nplaced record, the base, the new seed and an empty ordered list, refused\non a stale epoch, a missing earlier base or a base that is not above the\nlast one.\n\nFrom level 47 a copy id report carries the group epoch its copy runs and\none from another epoch is refused (#2882). Below 47 nothing is recorded\nor checked, and a missing seed still marks every plan.\n\nSpec-Unaffected: FelixRaftReform's VoterSets already takes the epoch-0 seed as the first config and each later seed from the re-form's voters; the code's seed is the first stored target, with every later target on ordered, so its voter sets contain the model's and it can only mark more.\n\n* fix(raft): epoch 0 copy ids record below level 47; a re-form start re-checks the floor and its base (#2250)\n\nA copy id report at group epoch 0 is the same entry as one without an\nepoch, so a new broker records on a level-46 group during an upgrade.\nstart_reformed_epoch refuses a floor raised after the plan, a first index\nat or below the floor, and a base ending below its epoch's first index.\n\nSpec-Unaffected: the write has no caller yet and only refuses more; the\nepoch-0 report changes no applied state.",
+          "timestamp": "2026-11-21T21:53:13Z",
+          "tree_id": "aac323543659edaebdff49c97bf910de5955a87a",
+          "url": "https://github.com/GetFelix/felix/commit/88cd940195ad147a15dc411c942c5b42404472a5"
+        },
+        "date": 1795298366399,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358956.81,
+            "range": "28163.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358956.81\nmean: 345784.44\nstdev: 28163.28\ncv: 8.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358956.81,
+            "range": "28163.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358956.81\nmean: 345784.44\nstdev: 28163.28\ncv: 8.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81017.62,
+            "range": "1819.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81017.62\nmean: 80244.31\nstdev: 1819.50\ncv: 2.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810176.15,
+            "range": "18195.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810176.15\nmean: 802443.07\nstdev: 18195.05\ncv: 2.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
