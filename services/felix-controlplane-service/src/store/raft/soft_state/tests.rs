@@ -411,7 +411,8 @@ async fn a_lease_decided_in_one_term_is_not_taken_in_the_next() {
         "answered without waiting for the slot"
     );
 
-    store.handle.campaign().await;
+    // No member 1000 exists.
+    store.handle.give_up_term(1_000).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !store.handle.is_leader() || store.handle.current_term() <= term {
         assert!(std::time::Instant::now() < deadline, "never led a new term");
@@ -429,5 +430,206 @@ async fn a_lease_decided_in_one_term_is_not_taken_in_the_next() {
         None,
         "the take was written in a term it was not decided in"
     );
+    // The append alone, as a handler past its checks would make it.
+    let late = soft
+        .propose(
+            term,
+            crate::store::raft::command::MetaCommand::TakePlacementLease {
+                holder: "instance-b".to_string(),
+            },
+        )
+        .await;
+    assert!(late.is_err(), "appended in a later term: {late:?}");
+    assert_eq!(
+        store.local().expect("caught up").placement_holder().await,
+        None,
+        "the take was written in a term it was not decided in"
+    );
     store.handle.shutdown().await.expect("shutdown");
+}
+
+/// A heartbeat that waited out a term change records nothing: the view it
+/// would write belongs to a term this member no longer leads.
+#[tokio::test]
+async fn a_heartbeat_that_waited_out_a_term_records_nothing() {
+    use super::LeaderRequest;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    store
+        .register_node(registered("broker-b", 7002))
+        .await
+        .expect("register");
+    let soft = std::sync::Arc::clone(&store.soft);
+    let term = store.handle.current_term();
+    soft.dispatch(LeaderRequest::Suspicion {
+        node_id: "broker-1".to_string(),
+        incarnation: 1,
+        suspects: Default::default(),
+    })
+    .await
+    .expect("leading")
+    .expect("recorded");
+
+    let slot = soft.serial.lock().await;
+    let asker = std::sync::Arc::clone(&soft);
+    let asked = tokio::spawn(async move {
+        asker
+            .dispatch(LeaderRequest::Heartbeat {
+                node_id: "broker-b".to_string(),
+                incarnation: 0,
+            })
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!asked.is_finished(), "answered without waiting for the slot");
+
+    // No member 1000 exists.
+    store.handle.give_up_term(1_000).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.handle.is_leader() || store.handle.current_term() <= term {
+        assert!(std::time::Instant::now() < deadline, "never led a new term");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(slot);
+
+    let answer = asked.await.expect("ask task");
+    assert!(answer.is_err(), "answered after the term moved: {answer:?}");
+    let view = soft.view.lock().expect("soft state lock");
+    let beat = view
+        .as_ref()
+        .and_then(|view| view.beats.get("broker-b").map(|_| view.term));
+    assert_eq!(beat, None, "a heartbeat judged in term {term} was recorded");
+    drop(view);
+    store.handle.shutdown().await.expect("shutdown");
+}
+
+struct Member {
+    store: std::sync::Arc<crate::store::raft::RaftStore>,
+    server: tokio::task::JoinHandle<()>,
+    _dir: tempfile::TempDir,
+}
+
+/// A formed two-member group over real peer listeners.
+async fn two_member_group() -> Vec<Member> {
+    use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
+    use crate::store::StoreConfig;
+    use crate::store::raft::state_machine::MetadataStateMachine;
+    use crate::store::raft::InMemoryStore;
+    use std::collections::BTreeMap;
+    let mut started = Vec::new();
+    for id in 1..=2 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let machine = std::sync::Arc::new(MetadataStateMachine::new(std::sync::Arc::new(
+            InMemoryStore::new(StoreConfig {
+                changes_limit: 100,
+                change_retention_max_rows: Some(1_000),
+            }),
+        )));
+        let mut settings = RaftSettings::new(
+            id,
+            dir.path().into(),
+            crate::raft::PeerSecurity {
+                cluster_id: "test-cluster".to_string(),
+                token: Some("0123456789abcdef0123456789abcdef".to_string()),
+                previous_token: None,
+                next_token: None,
+                tls: None,
+            },
+        );
+        settings.heartbeat_interval = Duration::from_millis(50);
+        settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
+        let handle = RaftHandle::start(
+            settings,
+            std::sync::Arc::clone(&machine) as std::sync::Arc<dyn AppStateMachine>,
+        )
+        .await
+        .expect("start raft");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let router = handle.rpc_router();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        started.push((id, addr, handle, machine, server, dir));
+    }
+    let peers: BTreeMap<u64, String> = started
+        .iter()
+        .map(|(id, addr, ..)| (*id, addr.to_string()))
+        .collect();
+    started[0].2.initialize(peers).await.expect("initialize");
+    let members: Vec<Member> = started
+        .into_iter()
+        .map(|(_, _, handle, machine, server, dir)| Member {
+            store: std::sync::Arc::new(crate::store::raft::RaftStore::new(handle, machine)),
+            server,
+            _dir: dir,
+        })
+        .collect();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !members.iter().all(|member| {
+        let status = member.store.handle.status();
+        status.leader.is_some() && status.last_applied_index.is_some()
+    }) {
+        assert!(std::time::Instant::now() < deadline, "no committed leader");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    members
+}
+
+/// A deposed leader's decision is not forwarded to the leader that replaced
+/// it: the new leader has not seen what the old one judged from.
+#[tokio::test]
+async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
+    let members = two_member_group().await;
+    let leader = members
+        .iter()
+        .position(|member| member.store.handle.is_leader())
+        .expect("a leader");
+    let (old, new) = (&members[leader], &members[1 - leader]);
+    // Members are numbered from 1 in order.
+    let new_id = (2 - leader) as u64;
+    let term = old.store.handle.current_term();
+
+    old.store.handle.give_up_term(new_id).await;
+    // Before the old leader's own election timer can win the term back.
+    new.store.handle.campaign().await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !new.store.handle.is_leader()
+        || old.store.handle.is_leader()
+        || old.store.handle.status().leader != Some(new_id)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "leadership never moved: old {:?} new {:?}",
+            old.store.handle.status(),
+            new.store.handle.status()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let taken = old
+        .store
+        .soft
+        .propose(
+            term,
+            crate::store::raft::command::MetaCommand::TakePlacementLease {
+                holder: "instance-b".to_string(),
+            },
+        )
+        .await;
+    assert!(taken.is_err(), "the old leader's take was answered: {taken:?}");
+    // Applied on the new leader by now if it was forwarded and committed.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        new.store.local().expect("caught up").placement_holder().await,
+        None,
+        "the old leader's take committed through its successor"
+    );
+    for member in members {
+        member.store.handle.shutdown().await.expect("shutdown");
+        member.server.abort();
+    }
 }
