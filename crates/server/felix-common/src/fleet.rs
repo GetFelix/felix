@@ -206,6 +206,14 @@ pub const RAFT_ATOMIC_COMMIT: FleetFeature = FleetFeature::new("raft_atomic_comm
 /// refused. See `docs/per-shard-raft.md` ("Consumer groups").
 pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_groups");
 
+/// A stream shard on the Raft engine takes conditional publishes of several
+/// records: each record is a conditional piece, a Raft entry and a record
+/// kind a build that predates this refuses. So it waits for the whole fleet.
+/// Not in [`IMPLEMENTED`] yet: no build reports it until every read path of
+/// a Raft stream applies the whole-batch rule (`felix_storage::log::conditional`).
+/// See `docs/per-shard-raft.md` ("Conditional publishes").
+pub const RAFT_CONDITIONAL_BATCHES: FleetFeature = FleetFeature::new("raft_conditional_batches");
+
 /// A stream shard on the Raft engine frees the disk below its head trim: a
 /// member writes a stream snapshot at a point below its floor and purges its
 /// log up to it, and a member behind the purge installs that snapshot. A

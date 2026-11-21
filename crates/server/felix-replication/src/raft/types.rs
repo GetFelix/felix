@@ -211,6 +211,21 @@ pub(crate) struct Command {
     /// follower's command, and one read back from the log, has none.
     #[serde(skip)]
     pub(crate) written: Option<WrittenToken>,
+    /// Set on each record of a conditional batch of more than one record:
+    /// its place in the batch. With `expected` it is kept only at index
+    /// `expected + position`, and the batch is one run, so every piece is
+    /// kept or every piece blanked. Read back from the log it is the
+    /// record's `CondPiece` mark, with `expected` unset. Left out when
+    /// unset, so a peer sees the same message an older build sends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cond: Option<CondPlace>,
+}
+
+/// A record's place in a conditional batch: see `log::conditional`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CondPlace {
+    pub(crate) position: u32,
+    pub(crate) len: u32,
 }
 
 /// The same record, whoever waits on it.
@@ -228,6 +243,7 @@ impl PartialEq for Command {
             publisher,
             headers,
             written: _,
+            cond,
         } = self;
         *timestamp_micros == other.timestamp_micros
             && *payload == other.payload
@@ -238,6 +254,7 @@ impl PartialEq for Command {
             && *group == other.group
             && *publisher == other.publisher
             && *headers == other.headers
+            && *cond == other.cond
     }
 }
 
@@ -250,7 +267,9 @@ impl Command {
     /// append cannot store the record elsewhere, and an entry a later
     /// leader cuts takes its outcome with it.
     pub(crate) fn blank_at(&self, index: u64) -> bool {
-        self.expected.is_some_and(|expected| expected != index)
+        let position = self.cond.map_or(0, |cond| u64::from(cond.position));
+        self.expected
+            .is_some_and(|expected| expected.checked_add(position) != Some(index))
     }
 
     /// Whether the command, written at `index`, holds a client record. A

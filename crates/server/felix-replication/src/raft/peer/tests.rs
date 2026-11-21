@@ -383,6 +383,7 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         let written = leader.raft().client_write(command).await.expect("write");
         last = written.log_id.index;

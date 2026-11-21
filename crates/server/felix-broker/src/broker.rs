@@ -188,6 +188,7 @@ pub struct Broker {
     /// Whether a shard on Raft stores publishers and record headers, once
     /// the node says. Unset stores neither.
     raft_record_headers: std::sync::OnceLock<NodeGate>,
+    raft_conditional_batches: std::sync::OnceLock<NodeGate>,
     /// The data directory's head-trim marker is known to be on disk.
     head_trim_marked: std::sync::atomic::AtomicBool,
     /// Serializes the first marker write: it goes through one temporary file.
@@ -277,6 +278,7 @@ impl Broker {
             head_trims: std::sync::OnceLock::new(),
             raft_head_trims: std::sync::OnceLock::new(),
             raft_record_headers: std::sync::OnceLock::new(),
+            raft_conditional_batches: std::sync::OnceLock::new(),
             head_trim_marked: std::sync::atomic::AtomicBool::new(false),
             head_trim_marking: tokio::sync::Mutex::new(()),
             headers_marked: std::sync::atomic::AtomicBool::new(false),
@@ -592,6 +594,27 @@ impl Broker {
     /// [`Self::allow_raft_record_headers_when`].
     pub fn raft_record_headers_allowed(&self) -> bool {
         self.raft_record_headers
+            .get()
+            .is_some_and(|gate| (gate.0)())
+    }
+
+    /// Let a shard on Raft take conditional publishes of several records
+    /// whenever `gate` says so. Only the first call counts.
+    ///
+    /// Until it is called such a publish is
+    /// [`BrokerError::NotOnEngineStream`]: each record is a conditional
+    /// piece, an entry a member that predates them refuses, and a record
+    /// kind its log refuses to read. So the node says the fleet has
+    /// finalized `raft_conditional_batches`.
+    pub fn allow_raft_conditional_batches_when(
+        &self,
+        gate: impl Fn() -> bool + Send + Sync + 'static,
+    ) {
+        let _ = self.raft_conditional_batches.set(NodeGate(Arc::new(gate)));
+    }
+
+    pub(crate) fn raft_conditional_batches_allowed(&self) -> bool {
+        self.raft_conditional_batches
             .get()
             .is_some_and(|gate| (gate.0)())
     }

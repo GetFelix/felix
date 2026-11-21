@@ -48,6 +48,7 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let deadline = tokio::time::Instant::now() + PATIENCE;
     loop {
@@ -232,6 +233,7 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     assert!(!group.write_in_term(command(1), term - 1).await);
     assert!(group.write_in_term(command(2), term).await);
@@ -415,6 +417,7 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let raft = group.raft().clone();
     let writing = tokio::spawn(async move { raft.client_write(second).await.is_ok() });
@@ -455,6 +458,7 @@ async fn a_read_whose_apply_lags_past_the_election_timeout_waits_out_its_own_dea
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let raft = group.raft().clone();
     let writing = tokio::spawn(async move { raft.client_write(second).await.is_ok() });
@@ -504,6 +508,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         let id = LogIdOf::<ShardTypes>::new(1.into(), index);
         let entry = EntryOf::<ShardTypes>::new_normal(id, command);
@@ -557,6 +562,7 @@ fn entries(
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             };
             let id = LogIdOf::<ShardTypes>::new(1.into(), index);
             Ok((EntryOf::<ShardTypes>::new_normal(id, command), None))
@@ -1466,6 +1472,7 @@ async fn what_a_write_call_per_entry_costs() {
                     publisher: None,
                     headers: None,
                     written: None,
+                    cond: None,
                 });
                 let commands = commands.collect();
                 let told = super::propose::write_each(group.raft(), commands, term).await;
@@ -1590,6 +1597,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         producer: None,
         expected: None,
         written: None,
+        cond: None,
         trim: None,
         commit: false,
         group: false,

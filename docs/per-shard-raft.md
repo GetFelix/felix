@@ -3589,12 +3589,22 @@ sequenceDiagram
 ```
 
 A conditional publish carries one record. A batch of several is refused by
-name, because each record is its own entry and only the first would be at
-the expected offset (#2751). A batch with no record is refused as on the
-hybrid. Like a plain Raft publish, a `publish_if` on Raft does not keep the
-publisher id.
+name until the fleet finalizes `raft_conditional_batches`, which no build
+reports yet (#2751). Each record of such a batch is its own entry, a
+conditional piece that names its place in the batch, and the leader keeps a
+piece only at the expected offset plus its place. The batch is appended as
+one run, so every piece is kept or every piece is blanked, on every member.
+A leader change can still commit only a prefix of a kept batch, so a reader
+must apply the whole-batch rule (`docs/storage-format.md`, "Conditional
+batches") before showing one; the gate waits for every read path to do so.
+A piece is an entry (tag 10) and a record kind an older build refuses,
+which the fleet gate also covers. A batch with no record is refused as on
+the hybrid. Like a plain Raft publish, a `publish_if` keeps the publisher id
+on every piece when the publisher features are finalized, and stores none
+otherwise ("Publishers and record headers").
 
-There is no fleet setting to turn this on. On disk the leader writes only
+A conditional publish of one record needs no fleet setting. On disk the
+leader writes only
 a plain record or a blank, and followers copy that, so a member on an older
 build replicates a conditional publish's outcome like any other entry and a
 downgraded broker reads the log. The conditional entry also has its own

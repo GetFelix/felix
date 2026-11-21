@@ -225,6 +225,13 @@ pub(super) async fn wire_broker(
             raft_headers.supports(felix_common::fleet::RECORD_HEADERS)
                 && raft_headers.supports(felix_common::fleet::RAFT_RECORD_HEADERS)
         });
+        // A conditional piece is an entry and a record kind an older member
+        // refuses. A lone broker waits too: the gate is how a build says its
+        // readers apply the whole-batch rule.
+        let raft_cond = Arc::clone(fleet);
+        broker.allow_raft_conditional_batches_when(move || {
+            raft_cond.supports(felix_common::fleet::RAFT_CONDITIONAL_BATCHES)
+        });
     } else {
         broker.allow_head_trims_when(|| true);
         broker.allow_raft_head_trims_when(|| true);

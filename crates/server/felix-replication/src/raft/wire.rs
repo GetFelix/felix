@@ -25,7 +25,7 @@ use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 use super::codec::invalid;
 use super::membership::TargetVersion;
 use super::network::{Addressee, Ask, Beat, RaftReply, RaftRequest, Refused, Reply, Request};
-use super::types::{Command, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
+use super::types::{Command, CondPlace, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
 /// The first byte of every body. A reader refuses any other, so a peer
@@ -580,6 +580,13 @@ const ENTRY_COMMIT: u8 = 8;
 /// a build without it refuses the entry rather than store the write as a
 /// client record that no group table folds.
 const ENTRY_GROUP: u8 = 9;
+/// A record of a conditional batch of more than one record: a flag byte
+/// (1 when the batch's expected offset follows, 0 for a piece read back
+/// from the log), the offset, then the piece's position and the batch's
+/// length, each a u32, then laid out as [`ENTRY_RECORD`]. A new tag so a
+/// build without it refuses the entry rather than store a piece as a plain
+/// record its readers would show apart from the rest of its batch.
+const ENTRY_COND_PIECE: u8 = 10;
 /// [`ENTRY_ATTRIBUTED`] flags.
 const HAS_PUBLISHER: u8 = 1;
 const HAS_HEADERS: u8 = 2;
@@ -617,6 +624,34 @@ fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> 
             }
             // A record of no producer's batch keeps the layout it always had.
             match (command.producer, command.expected) {
+                _ if let Some(cond) = command.cond => {
+                    if command.group
+                        || command.commit
+                        || command.trim.is_some()
+                        || command.producer.is_some()
+                    {
+                        return Err(invalid(
+                            "a conditional piece names a group, a commit, a trim or a producer"
+                                .to_string(),
+                        ));
+                    }
+                    if cond.len < 2 || cond.position >= cond.len {
+                        return Err(invalid(format!(
+                            "piece {} of {} is no conditional batch's",
+                            cond.position, cond.len
+                        )));
+                    }
+                    buf.put_u8(ENTRY_COND_PIECE);
+                    match command.expected {
+                        Some(expected) => {
+                            buf.put_u8(1);
+                            buf.put_u64(expected);
+                        }
+                        None => buf.put_u8(0),
+                    }
+                    buf.put_u32(cond.position);
+                    buf.put_u32(cond.len);
+                }
                 _ if command.group
                     && (command.commit
                         || command.trim.is_some()
@@ -716,7 +751,12 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
             let tag = take_u8(buf)?;
             if !matches!(
                 tag,
-                ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_COMMIT
+                ENTRY_RECORD
+                    | ENTRY_SEQUENCED
+                    | ENTRY_PIECE
+                    | ENTRY_CONDITIONAL
+                    | ENTRY_COMMIT
+                    | ENTRY_COND_PIECE
             ) {
                 return Err(invalid(format!("{tag} is not a record a publisher names")));
             }
@@ -726,7 +766,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
             EntryOf::<ShardTypes>::new_normal(log_id, command)
         }
         tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_TRIM
-        | ENTRY_COMMIT | ENTRY_GROUP) => {
+        | ENTRY_COMMIT | ENTRY_GROUP | ENTRY_COND_PIECE) => {
             EntryOf::<ShardTypes>::new_normal(log_id, take_command(buf, tag)?)
         }
         2 => {
@@ -745,9 +785,29 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
 
 /// A record entry's body after its tag `tag`.
 fn take_command(buf: &mut Bytes, tag: u8) -> io::Result<Command> {
-    let expected = match tag {
-        ENTRY_CONDITIONAL => Some(take_u64(buf)?),
-        _ => None,
+    let (expected, cond) = match tag {
+        ENTRY_CONDITIONAL => (Some(take_u64(buf)?), None),
+        ENTRY_COND_PIECE => {
+            let expected = match take_u8(buf)? {
+                0 => None,
+                1 => Some(take_u64(buf)?),
+                other => return Err(invalid(format!("{other} is not a piece's offset flag"))),
+            };
+            let cond = CondPlace {
+                position: take_u32(buf)?,
+                len: take_u32(buf)?,
+            };
+            // The same shape the log's codec stores, so a frame no leader
+            // sends is refused here rather than at the follower's append.
+            if cond.len < 2 || cond.position >= cond.len {
+                return Err(invalid(format!(
+                    "piece {} of {} is no conditional batch's",
+                    cond.position, cond.len
+                )));
+            }
+            (expected, Some(cond))
+        }
+        _ => (None, None),
     };
     let trim = match tag {
         ENTRY_TRIM => Some(take_u64(buf)?),
@@ -786,6 +846,7 @@ fn take_command(buf: &mut Bytes, tag: u8) -> io::Result<Command> {
         publisher: None,
         headers: None,
         written: None,
+        cond,
     })
 }
 

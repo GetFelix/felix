@@ -1303,6 +1303,15 @@ After the report byte comes the message:
   headers is refused to encode. A build without 9 refuses the whole append
   (`9 is not an entry payload`), so a leader writes one only once the fleet
   has finalized `raft_consumer_groups`.
+  10 is a record of a conditional batch of more than one record: a flag
+  byte (1 when the batch's expected offset follows as a u64, 0 for a piece
+  read back from the log), the piece's position and the batch's length as
+  u32s, then laid out as 1. It may sit inside 7. A piece whose position is
+  not below its length, or whose length is under 2, is refused at decode. A
+  build without 10 refuses the whole append: a piece with no publisher
+  with `10 is not an entry payload`, and one inside 7 with `10 is not a
+  record a publisher names`. So a leader writes one only once the fleet has finalized
+  `raft_conditional_batches`.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.
