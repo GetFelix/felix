@@ -336,6 +336,18 @@ pub struct ShardAssignment {
     /// Under Raft it needs metadata level 39.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_ordered: Option<RaftOrdered>,
+    /// The voters the group's current epoch started with: see
+    /// [`RaftSeed`]. Store-owned like `raft_ordered`: written with the
+    /// epoch's first target, or by the re-form that starts the epoch, and
+    /// kept by a write at the same incarnation. Under Raft it needs metadata
+    /// level 47.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_seed: Option<RaftSeed>,
+    /// How each re-form of the group started its epoch: see [`RaftBases`].
+    /// Store-owned: only a re-form appends to it. Under Raft it needs
+    /// metadata level 47.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_bases: Option<RaftBases>,
 }
 
 /// A stream or cache at one incarnation. An import marks every one it
@@ -1397,7 +1409,7 @@ pub use raft_floor::{RaftFloor, RaftFloorError, RaftFloorReport};
 mod raft_ordered;
 pub use raft_ordered::RaftOrdered;
 mod raft_reform;
-pub use raft_reform::ReformRecordError;
+pub use raft_reform::{RaftBases, RaftEpochBase, RaftLogId, RaftSeed, ReformRecordError};
 mod raft_target;
 pub use raft_target::{RaftFormed, RaftTarget, RaftTargetError, RaftVoters};
 mod switch;

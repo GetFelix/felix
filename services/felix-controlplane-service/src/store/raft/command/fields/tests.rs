@@ -238,6 +238,22 @@ fn assignment() -> ShardAssignment {
             }],
             lost: true,
         }),
+        raft_seed: Some(crate::model::RaftSeed {
+            incarnation: 1,
+            epoch: 1,
+            members: any_map(1),
+        }),
+        raft_bases: Some(crate::model::RaftBases {
+            incarnation: 1,
+            bases: vec![crate::model::RaftEpochBase {
+                base_last: Some(crate::model::RaftLogId {
+                    index: 1,
+                    epoch: 1,
+                    term: 1,
+                }),
+                first_index: 1,
+            }],
+        }),
     }
 }
 
@@ -642,6 +658,8 @@ fn commands() -> Vec<MetaCommand> {
             keep_ordered: true,
             shard_incarnation: Some(1),
             hold_target: true,
+            group_epoch: Some(1),
+            keep_seed: true,
         },
         MetaCommand::DeclareNodeDead { node_id: s("b") },
         MetaCommand::RecordRaftFloors {

@@ -563,6 +563,8 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     raft_floor: None,
                     raft_formed: None,
                     raft_voters: None,
+                    raft_seed: None,
+                    raft_bases: None,
                     raft_ordered: None,
                 })
                 .await
@@ -855,4 +857,53 @@ async fn a_placement_write_keeps_the_ordered_targets() {
 async fn satisfies_the_declared_dead_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::declared_dead::run_declared_dead_contract(store).await;
+}
+
+/// From level 47 a copy id is taken only from a copy at the shard's group
+/// epoch (#2882); a report without one counts as epoch 0. Below the level
+/// nothing is checked, as before it.
+#[tokio::test]
+async fn a_copy_id_from_another_group_epoch_is_refused() {
+    let store = store_with_limits(100, 1000);
+    let dyn_store: &dyn ControlPlaneStore = &store;
+    crate::store::contract::shards::on_streams_of_its_own(dyn_store, async {
+        let shard = crate::store::contract::raft_targets::switched(dyn_store).await;
+        store
+            .shards
+            .write()
+            .await
+            .records
+            .get_mut(&shard.key)
+            .and_then(|record| record.placed.as_mut())
+            .expect("placed")
+            .epoch = 1;
+        let process = store.get_node("broker-x").await.expect("node").status;
+        let report = |epoch: Option<u64>, epochs: bool| {
+            store.apply_record_raft_copy_id(
+                &shard.key,
+                "broker-x",
+                process.registered_at_millis,
+                process.incarnation,
+                7,
+                true,
+                None,
+                false,
+                true,
+                epoch,
+                epochs,
+            )
+        };
+        for stale in [None, Some(0), Some(2)] {
+            assert!(
+                matches!(report(stale, true).await, Err(StoreError::Conflict(_))),
+                "{stale:?}"
+            );
+        }
+        assert!(report(Some(1), true).await.expect("current epoch"));
+        assert!(
+            !report(None, false).await.expect("below the level"),
+            "already held"
+        );
+    })
+    .await;
 }

@@ -259,6 +259,8 @@ fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     }
 }

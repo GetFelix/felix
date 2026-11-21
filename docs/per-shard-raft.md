@@ -4284,10 +4284,9 @@ hand-off through a two-broker set is not built yet (#2916).
 If the group cannot report (its majority is gone, or a majority of its
 copies was wiped), no step past its last reported voters goes ahead. The way out is a re-form, which starts a new
 epoch and is held by the first-form hold above until a leader of the new
-epoch reports. A shard can be re-formed only once for now: above epoch 0
-the control plane does not have the bases a re-form needs and refuses it
-(`BasesNotRecorded`) until #2250 lands. After that, delete and recreate the
-stream. The hold applies once the metadata join floor is at level
+epoch reports. Above epoch 0 the control plane plans a re-form only from the bases its
+earlier re-forms recorded (`raft_bases`, level 47), and refuses a record
+without them (`BasesNotRecorded`). The hold applies once the metadata join floor is at level
 46; a fleet feature finalize at 46 lifts it there for a new cluster.
 Until then a formed group's set does not move at all, since no voters are
 stored below 46, so placement replacements and drains of Raft shards wait
@@ -5178,22 +5177,47 @@ the brokers declared dead:
 | `floor` | `raft_floor`'s exact log id, at this incarnation and epoch |
 | `offset_floor` | `raft_floor.offset_floor`, at this incarnation |
 | `dead` | the brokers the caller passes as declared dead (`dead_nodes`, see "Declaring a broker dead") |
-| `seed` | always `None` for now |
-| `bases` | empty: only a group at epoch 0 gets a record |
+| `seed` | `raft_seed` at this incarnation and epoch: the epoch's first target, or the voters the re-form that started the epoch wrote; `None` when not recorded |
+| `bases` | empty at epoch 0; past it, `raft_bases` at this incarnation with one base per epoch, or no record (`BasesNotRecorded`) |
 
 Anything the record cannot vouch for stays unknown, and the planner reads
-unknown as a block or a mark, never as empty. A floor from another stream
-incarnation belongs to an earlier group, so it is dropped rather than read as
-this group's.
+unknown as a block or a mark, never as empty. A floor or seed from another
+stream incarnation belongs to an earlier group, so it is dropped rather than
+read as this group's.
 
-Two gaps keep every plan marked or refused for now:
+From metadata level 47 the shard record keeps two more store-owned fields:
 
-- **The seed is not recorded.** A group's first voters are the copy ids its
-  forming broker asks its peers for, and the control plane does not store
-  them. With the seed unknown, every plan is marked, so `apply` needs the
-  operator to accept the loss.
-- **Bases are not recorded.** No re-form writes its base to the shard's record
-  yet, so a group whose record shows it past epoch 0 gets no record (`BasesNotRecorded`) and no plan.
+- **`raft_seed`**, the voters the epoch started with. At epoch 0 it is
+  written in the copy id report that stores the epoch's first target, and only
+  when the epoch's list of ordered targets holds that target alone. A broker
+  forms the group only on a stored target, and every later one (a wiped
+  copy's new id, a set change) is on the list, so a seed that is not the
+  target the group formed on can only add a voter set to check, never hide
+  one. With the seed and the list known and every placed broker alive and
+  read, a plan is unmarked.
+- **`raft_bases`**, each re-form's base and first index, oldest first. Only
+  the re-form's own write appends to it, in the same step that writes the
+  next epoch's placed record, its seed and an empty list of ordered targets.
+  That write is refused unless the record is still at the epoch the plan was
+  made for, every earlier base is recorded, and the floor is no higher than
+  the plan read: a leader that reports a later commit after the plan was
+  made refuses the start, since the plan may cut those entries. A base must
+  end below its first index, which must be above the floor and every earlier
+  epoch's, and a base ending on an entry of a re-formed epoch must end at or
+  past that epoch's first index.
+
+A write passing either field has it replaced by the stored one, and a new
+stream incarnation starts with neither. Below level 47 neither is written:
+a group whose first target was stored there has no seed, so its plans stay
+marked and `apply` needs the operator to accept the loss.
+
+From level 47 a copy id report also carries the group epoch the copy runs
+(`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records
+at any level), and one for another epoch than the
+shard's `placed` record is refused (#2882). A directory restored from an
+old backup can otherwise report its copy id from a stale view of an earlier
+epoch. Brokers do not send the field yet, so this check only matters once a
+group leaves epoch 0.
 
 ### Shards with one replica
 
