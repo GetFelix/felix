@@ -61,11 +61,18 @@ impl ShardAssignment {
     ///
     /// No target is written until every broker in the set has reported a
     /// copy id: a target missing one would tell the group to remove it.
-    pub(crate) fn settle_raft_target(&mut self) -> Result<bool, RaftTargetError> {
+    ///
+    /// `hold_formed`: also leave the target as it is while
+    /// [`Self::holds_formed_target`] holds the new one (#2905).
+    pub(crate) fn settle_raft_target(
+        &mut self,
+        hold_formed: bool,
+    ) -> Result<bool, RaftTargetError> {
         let set = self.raft_set();
         self.raft_copy_ids.retain(|node, _| set.contains(node));
         let complete = set.iter().all(|node| self.raft_copy_ids.contains_key(node));
         if !complete
+            || (hold_formed && self.holds_formed_target(&self.raft_copy_ids))
             || self
                 .raft_target
                 .as_ref()
@@ -170,25 +177,39 @@ impl ShardAssignment {
     /// majority of `next` voting in the group as its leader last reported
     /// it. Brokers the group never reached hold empty copies and could form
     /// a second group for the shard (#2905), so the set changes only by
-    /// steps the group's reported voters keep a majority of. No report at
-    /// this incarnation and epoch holds every change.
+    /// steps the group's reported voters keep a majority of. A broker counts
+    /// only if it is in the current set under the copy the report names: a
+    /// broker that reopened empty has a new copy id and votes for nothing.
+    /// No report at this incarnation and epoch holds every change.
     pub(crate) fn holds_formed_set(&self, next: &BTreeSet<String>) -> bool {
+        *next != self.raft_set()
+            && self.formed_voters().is_some_and(|voters| match voters {
+                None => true,
+                Some(voters) => !keeps_majority(voters, &self.raft_copy_ids, next),
+            })
+    }
+
+    /// Whether a formed group's target naming `copies` is held: the voters
+    /// its leader last reported hold fewer than half of those copies. A
+    /// target only names copies that opened, so every target stored for a
+    /// formed group names at least one copy that is not empty, and no member
+    /// of it can form a second group. No report holds nothing here, since the
+    /// set is the current one and [`Self::holds_formed_set`] already held
+    /// the move to it.
+    pub(crate) fn holds_formed_target(&self, copies: &BTreeMap<String, u64>) -> bool {
+        let set = copies.keys().cloned().collect();
+        matches!(self.formed_voters(), Some(Some(voters)) if !keeps_majority(voters, copies, &set))
+    }
+
+    /// `None` when this record's group has not formed; otherwise the voters
+    /// its leader reported at this incarnation and epoch, if any.
+    fn formed_voters(&self) -> Option<Option<&RaftVoters>> {
         let key = self.formed_key();
-        if self.raft_formed != Some(key) || *next == self.raft_set() {
-            return false;
-        }
-        let Some(voters) = self
-            .raft_voters
-            .as_ref()
-            .filter(|voters| voters.incarnation == key.incarnation && voters.epoch == key.epoch)
-        else {
-            return true;
-        };
-        let kept = next
-            .iter()
-            .filter(|node| voters.members.contains_key(*node))
-            .count();
-        kept < next.len().div_ceil(2)
+        (self.raft_formed == Some(key)).then(|| {
+            self.raft_voters
+                .as_ref()
+                .filter(|voters| voters.incarnation == key.incarnation && voters.epoch == key.epoch)
+        })
     }
 
     /// The mark a leader of this record's group would set.
@@ -257,3 +278,21 @@ impl ShardAssignment {
 
 #[cfg(test)]
 mod tests;
+
+/// Whether `voters` name at least half of `set` under the copy id `copies`
+/// gives each.
+fn keeps_majority(
+    voters: &RaftVoters,
+    copies: &BTreeMap<String, u64>,
+    set: &BTreeSet<String>,
+) -> bool {
+    let kept = set
+        .iter()
+        .filter(|node| {
+            copies
+                .get(*node)
+                .is_some_and(|copy| voters.members.get(*node) == Some(copy))
+        })
+        .count();
+    kept >= set.len().div_ceil(2)
+}

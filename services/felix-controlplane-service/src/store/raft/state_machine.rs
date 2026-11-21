@@ -585,6 +585,7 @@ impl MetadataStateMachine {
                     keep_ordered,
                     shard_incarnation,
                     true,
+                    self.set_hold(false).formed,
                 )
                 .await
                 .map(|changed| MetaResponse::Count {

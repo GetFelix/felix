@@ -44,7 +44,7 @@ fn order(a: &mut ShardAssignment, pairs: &[(&str, u64)], kept: bool) {
     for (node, id) in pairs {
         a.raft_copy_ids.insert(node.to_string(), *id);
     }
-    if a.settle_raft_target().expect("counter") {
+    if a.settle_raft_target(true).expect("counter") {
         a.order_raft_target(kept);
     }
 }

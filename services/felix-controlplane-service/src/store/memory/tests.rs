@@ -815,7 +815,7 @@ async fn a_placement_write_keeps_the_ordered_targets() {
     let mut held = first.clone();
     held.start_raft_ordered();
     held.raft_copy_ids = [("broker-x".to_string(), 1)].into();
-    assert_eq!(held.settle_raft_target(), Ok(true));
+    assert_eq!(held.settle_raft_target(true), Ok(true));
     held.order_raft_target(true);
     let held = held.raft_ordered.expect("list");
     store

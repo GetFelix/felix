@@ -106,6 +106,7 @@ module_of() {
     FelixRaftMembership*) echo FelixRaftMembership ;;
     FelixRaftIdentity*) echo FelixRaftIdentity ;;
     FelixRaftFirstForm*) echo FelixRaftFirstForm ;;
+    FelixRaftFormedSet*) echo FelixRaftFormedSet ;;
     FelixRaftPlacement*) echo FelixRaftPlacement ;;
     FelixRaftReform*) echo FelixRaftReform ;;
     FelixRaftLease*) echo FelixRaftLease ;;
@@ -829,6 +830,10 @@ expectations=(
   "FelixRaftFirstFormSingle pass"
   "FelixRaftFirstFormNoHold violates OneGroup"
   "FelixRaftFirstFormNoEpoch violates OneGroup"
+  "FelixRaftFormedSet pass"
+  "FelixRaftFormedSetSingle pass"
+  "FelixRaftFormedSetNoHold violates OneGroup"
+  "FelixRaftFormedSetByBroker violates OneGroup"
   "FelixRaftReform pass"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"

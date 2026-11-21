@@ -39,6 +39,7 @@ fn member_of(shard: u32, leader: &str) -> ShardAssignment {
         index: 1,
         members: assignment.raft_target.as_ref().unwrap().members.clone(),
     });
+    assignment.raft_copy_ids = assignment.raft_target.as_ref().unwrap().members.clone();
     assignment
 }
 

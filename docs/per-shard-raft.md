@@ -4259,13 +4259,25 @@ themselves. A chain of swaps waits at each step until the group reports
 the last one applied; replacing a broker the group never added still goes
 ahead, since the rest of the set is unchanged.
 
+A broker counts only under the copy id the report names. A voter whose
+directory was wiped reopens under a new copy id, and the old copy, the one
+the group counts as a voter, is gone, so two wiped voters and a new broker
+are three empty copies, not a majority of the group. The same check runs
+again when the new set's target is stored, against the copy ids it would
+name: a voter wiped after the move but before the target is stored is
+caught there. Every target a formed group gets therefore names at least one
+copy that was a voter under that id, and a copy that ever held the group's
+log is never empty under the same id. So no target names a set of empty
+copies, and none of its brokers can form it. A single wiped copy of three
+still gets its target, and the leader replaces it.
+
 At replication factor 1 the set is one broker, so a direct re-placement
 replaces every member and is refused. The copy hands off through a
 two-broker set: place `{old, new}`, wait for the leader to report both
 voters, then place `{new}`.
 
-If the group cannot report (its majority is gone), no step past its last
-reported voters goes ahead. The way out is a re-form, which starts a new
+If the group cannot report (its majority is gone, or a majority of its
+copies was wiped), no step past its last reported voters goes ahead. The way out is a re-form, which starts a new
 epoch and is held by the first-form hold above until a leader of the new
 epoch reports. The hold applies once the metadata join floor is at level
 46; a fleet feature finalize at 46 lifts it there for a new cluster.
@@ -4275,9 +4287,16 @@ majority of the next set`.
 > `services/felix-controlplane-service/src/model/shard/raft_target/tests.rs`,
 > `a_swap_chain_waits_for_the_group_to_report_its_voters`,
 > `a_replication_factor_1_move_goes_through_two_brokers`,
-> `voters_count_only_at_the_placed_epoch`;
+> `voters_count_only_at_the_placed_epoch`,
+> `a_voter_that_reopened_empty_does_not_count`,
+> `a_target_waits_for_reported_voters_to_keep_a_majority_of_its_copies`;
 > `services/felix-controlplane-service/src/store/contract/raft_targets.rs`,
-> `a_set_holds_until_its_group_forms`.
+> `a_set_holds_until_its_group_forms`;
+> `docs/formal/FelixRaftFormedSet.tla`, where `FelixRaftFormedSetNoHold.cfg`
+> finds a second group after a chain of swaps the leader never joins,
+> `FelixRaftFormedSetByBroker.cfg` finds one when the hold counts brokers
+> instead of copies, and `FelixRaftFormedSet.cfg` and
+> `FelixRaftFormedSetSingle.cfg` pass with wipes and lagging reports.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,

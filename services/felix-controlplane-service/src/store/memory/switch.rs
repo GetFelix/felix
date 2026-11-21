@@ -142,6 +142,7 @@ pub(super) async fn record_raft_copy_id(
     copy_id: u64,
     keep_ordered: bool,
     native: Option<NativeShard>,
+    hold_formed: bool,
 ) -> StoreResult<bool> {
     // The stream or cache the shard belongs to, read before the locks below,
     // which no stream or cache write takes. A stream's durability never
@@ -248,7 +249,7 @@ pub(super) async fn record_raft_copy_id(
     }
     stored.raft_copy_ids.insert(node_id.to_string(), copy_id);
     let moved = stored
-        .settle_raft_target()
+        .settle_raft_target(hold_formed)
         .map_err(|err| StoreError::Conflict(err.to_string()))?;
     // In the same write as the target, so the list holds it before any
     // broker can read it.
@@ -372,6 +373,7 @@ impl InMemoryStore {
         keep_ordered: bool,
         shard_incarnation: Option<u64>,
         in_group: bool,
+        hold_formed: bool,
     ) -> StoreResult<bool> {
         // A group decides the engine from its recorded identity alone, so
         // every member applies the same; one with none recorded holds no
@@ -393,6 +395,7 @@ impl InMemoryStore {
             copy_id,
             keep_ordered,
             native,
+            hold_formed,
         )
         .await
     }

@@ -868,6 +868,7 @@ impl ControlPlaneStore for InMemoryStore {
             true,
             shard_incarnation,
             false,
+            true,
         )
         .await
     }
