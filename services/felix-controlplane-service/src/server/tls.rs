@@ -55,15 +55,18 @@ pub fn load_api_client_roots(tls: &ApiTlsConfig) -> Result<Option<Arc<ReloadingC
 
 /// Read the API certificate and key. Fails startup on unreadable material.
 pub fn load_api_identity(tls: &ApiTlsConfig) -> Result<Arc<felix_common::tls::ReloadingIdentity>> {
-    Ok(Arc::new(felix_common::tls::ReloadingIdentity::load(
-        felix_common::tls::IdentityFiles {
-            cert_path: tls.cert_path.clone(),
-            cert_var: "FELIX_CONTROLPLANE_TLS_CERT",
-            key_path: tls.key_path.clone(),
-            key_var: "FELIX_CONTROLPLANE_TLS_KEY",
-        },
-        provider(),
-    )?))
+    Ok(Arc::new(
+        felix_common::tls::ReloadingIdentity::load(
+            felix_common::tls::IdentityFiles {
+                cert_path: tls.cert_path.clone(),
+                cert_var: "FELIX_CONTROLPLANE_TLS_CERT",
+                key_path: tls.key_path.clone(),
+                key_var: "FELIX_CONTROLPLANE_TLS_KEY",
+            },
+            provider(),
+        )?
+        .keep_names(),
+    ))
 }
 
 /// Passed explicitly so the listener never depends on an installed process
@@ -83,6 +86,20 @@ pub fn bootstrap_server_config(
     tls: &BootstrapTlsConfig,
     shutdown: &CancellationToken,
 ) -> Result<Arc<rustls::ServerConfig>> {
+    let (config, identity, client_ca) = bootstrap_tls(tls)?;
+    spawn_reload("bootstrap", identity, Some(client_ca), shutdown);
+    Ok(config)
+}
+
+/// The bootstrap config, and the identity and client CA it reads, for the
+/// caller to reload.
+fn bootstrap_tls(
+    tls: &BootstrapTlsConfig,
+) -> Result<(
+    Arc<rustls::ServerConfig>,
+    Arc<felix_common::tls::ReloadingIdentity>,
+    Arc<ReloadingClientCa>,
+)> {
     let identity = Arc::new(
         felix_common::tls::ReloadingIdentity::load(
             felix_common::tls::IdentityFiles {
@@ -93,20 +110,16 @@ pub fn bootstrap_server_config(
             },
             provider(),
         )
-        .context("bootstrap TLS")?,
+        .context("bootstrap TLS")?
+        .keep_names(),
     );
     let client_ca = ReloadingClientCa::load(
         "FELIX_BOOTSTRAP_TLS_CLIENT_CA",
         &tls.client_ca_path,
         provider(),
     )?;
-    spawn_reload(
-        "bootstrap",
-        Arc::clone(&identity),
-        Some(Arc::clone(&client_ca)),
-        shutdown,
-    );
-    mtls_server_config(identity, client_ca)
+    let config = mtls_server_config(Arc::clone(&identity), Arc::clone(&client_ca) as _)?;
+    Ok((config, identity, client_ca))
 }
 
 /// A rustls server config that presents `identity` and requires a client
@@ -252,3 +265,6 @@ async fn sleep_until(at: Option<i64>) {
         None => std::future::pending().await,
     }
 }
+
+#[cfg(test)]
+mod tests;

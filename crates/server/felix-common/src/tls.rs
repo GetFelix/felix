@@ -7,9 +7,10 @@
 //! that is already up. A file that is missing or mid-write keeps the current
 //! identity in place; the next check tries again.
 //!
-//! A rotated certificate is presented only if it is valid now and covers
-//! every DNS name and IP address the current one does; otherwise the current
-//! one stays and the reload reports [`TlsFileError::Refused`]. A service can
+//! A rotated certificate is presented only if it is valid now and, with
+//! [`ReloadingIdentity::keep_names`], covers every DNS name and IP address the
+//! current one does; otherwise the current one stays and the reload reports
+//! [`TlsFileError::Refused`]. A service can
 //! attach an [`IdentityCheck`] on top, which the startup certificate and
 //! every rotated one must pass. [`verify_chain`] is the CA check such a rule
 //! usually wants.
@@ -51,6 +52,7 @@ pub struct ReloadingIdentity {
     provider: Arc<CryptoProvider>,
     current: ArcSwap<Loaded>,
     check: Option<IdentityCheck>,
+    keep_names: bool,
 }
 
 impl ReloadingIdentity {
@@ -77,7 +79,19 @@ impl ReloadingIdentity {
             provider,
             current: ArcSwap::from_pointee(loaded),
             check,
+            keep_names: false,
         })
+    }
+
+    /// Refuse a rotated certificate that does not cover every DNS name and IP
+    /// address the current one does, since peers may be dialling any of
+    /// them. Off where the name is the identity and a rotation may correct
+    /// it.
+    pub fn keep_names(self) -> Self {
+        Self {
+            keep_names: true,
+            ..self
+        }
     }
 
     /// Where the certificate is read from.
@@ -98,7 +112,7 @@ impl ReloadingIdentity {
         if cert == current.cert {
             return Ok(false);
         }
-        if let Some(why) = rotation::refusal(&cert[0], &current.cert[0]) {
+        if let Some(why) = rotation::refusal(&cert[0], &current.cert[0], self.keep_names) {
             return Err(TlsFileError::Refused {
                 var: self.files.cert_var,
                 path: self.files.cert_path.clone(),

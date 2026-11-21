@@ -8,9 +8,11 @@
 //! revoked. A rotated CA bundle must still verify this member's own
 //! certificate, and a revocation file read back blank is not taken to clear
 //! the list. Whatever fails is refused with an error log and the current
-//! material stays, so a bad file never takes a member off the group. A reload changes only the next handshake;
-//! connections already up close when the certificate they were opened under
-//! ends (see `server::tls::serve_tls` and [`LivePeerTls::close_at`]).
+//! material stays, so a bad file never takes a member off the group.
+//!
+//! A reload changes only the next handshake; connections already up close
+//! when the certificate they were opened under ends (see
+//! `server::tls::serve_tls` and [`LivePeerTls::close_at`]).
 use std::collections::BTreeSet;
 use std::sync::{Arc, Weak};
 
@@ -76,7 +78,8 @@ impl LivePeerTls {
                     Arc::clone(&member),
                 )),
             )
-            .context("raft peer TLS")?,
+            .context("raft peer TLS")?
+            .keep_names(),
         );
         let member = *member
             .get()

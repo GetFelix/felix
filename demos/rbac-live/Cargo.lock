@@ -947,6 +947,7 @@ name = "felix-controlplane-service"
 version = "0.8.0-preview.2"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "axum",
  "base64 0.23.1",

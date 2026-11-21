@@ -135,7 +135,9 @@ fn a_rotated_certificate_that_is_expired_or_drops_a_name_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
     let files = write_pair(dir.path(), "a", "one.test");
     overwrite(&files, &["one.test", "127.0.0.1"], 2099);
-    let identity = ReloadingIdentity::load(files.clone(), provider()).expect("load");
+    let identity = ReloadingIdentity::load(files.clone(), provider())
+        .expect("load")
+        .keep_names();
     let before = identity.chain();
 
     for (names, year, why) in [

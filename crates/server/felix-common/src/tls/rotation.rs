@@ -9,12 +9,12 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 
 use super::Presenter;
 
-/// Why `candidate` cannot replace `current`: it is not valid now, or it does
-/// not cover a DNS name or IP address `current` covers, which a peer may be
-/// dialling it by.
+/// Why `candidate` cannot replace `current`: it is not valid now, or, with
+/// `keep_names`, it does not cover a DNS name or IP address `current` covers.
 pub(super) fn refusal(
     candidate: &CertificateDer<'_>,
     current: &CertificateDer<'_>,
+    keep_names: bool,
 ) -> Option<String> {
     let Ok((_, parsed)) = x509_parser::parse_x509_certificate(candidate.as_ref()) else {
         return Some("the certificate does not parse".to_string());
@@ -33,6 +33,9 @@ pub(super) fn refusal(
     let Ok(end_entity) = webpki::EndEntityCert::try_from(candidate) else {
         return Some("the certificate does not parse".to_string());
     };
+    if !keep_names {
+        return None;
+    }
     for name in names(current) {
         if end_entity.verify_is_valid_for_subject_name(&name).is_err() {
             return Some(format!(
