@@ -3673,7 +3673,9 @@ async fn an_older_member_joins_a_group_with_nothing_finalized() {
 /// Once `stream_incarnations` is finalized, a member below level 10 would
 /// refuse the incarnated entries the others apply, so it is refused before
 /// the membership changes: at a lower level, without a reported level, and
-/// without an answer. One at the group's level joins.
+/// without an answer. One at the group's level joins. The finalize, proposed
+/// in a group at this build, also carries the level 45 hold (#2794), so the
+/// group is at 45.
 #[tokio::test]
 async fn a_member_below_a_finalized_level_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3694,11 +3696,11 @@ async fn a_member_below_a_finalized_level_is_refused() {
     let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
     let addr = stub_member(Arc::clone(&version)).await;
     for (level, expected) in [
-        (8, "supports metadata version 8, but the group is at 10"),
-        (0, "supports metadata version 0, but the group is at 10"),
+        (8, "supports metadata version 8, but the group is at 45"),
+        (0, "supports metadata version 0, but the group is at 45"),
         (
             SILENT,
-            "did not report its metadata version, and the group is at 10",
+            "did not report its metadata version, and the group is at 45",
         ),
     ] {
         version.store(level, std::sync::atomic::Ordering::SeqCst);

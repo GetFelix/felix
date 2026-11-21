@@ -135,6 +135,22 @@ async fn only_the_groups_that_moved_are_sent_again() {
     );
 }
 
+#[tokio::test]
+async fn a_refresh_sends_every_idle_group_again() {
+    let link = accepting();
+    let mut floors = Floors::default();
+    let led = || vec![(key("a"), 1, at(1, 5)), (key("b"), 1, at(1, 9))];
+
+    tick(&mut floors, led(), &link, "n1", None).await;
+    tick(&mut floors, led(), &link, "n1", None).await;
+    floors.owe_all();
+    tick(&mut floors, led(), &link, "n1", None).await;
+    tick(&mut floors, led(), &link, "n1", None).await;
+
+    let both = vec![("a".into(), 1, 5), ("b".into(), 1, 9)];
+    assert_eq!(sent(&link), [both.clone(), both]);
+}
+
 #[test]
 fn a_group_that_moved_after_its_batch_was_cut_stays_owed() {
     let mut floors = Floors::default();

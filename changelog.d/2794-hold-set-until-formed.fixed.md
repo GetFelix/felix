@@ -4,3 +4,5 @@
   it a floor report, so a broker with a stale view of placement and one with
   a fresh view form the same set. Placement shows such a shard as waiting for
   its group to form. On from control-plane metadata level 45.
+  Brokers send the floor of every group they lead again every 30 s, so an
+  idle group gets its mark without a publish.

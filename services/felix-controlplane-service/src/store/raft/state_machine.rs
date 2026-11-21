@@ -165,7 +165,13 @@ impl MetadataStateMachine {
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|feature| MetaCommand::FinalizeFleetFeature { feature }.version())
+            .map(|feature| {
+                MetaCommand::FinalizeFleetFeature {
+                    feature,
+                    hold_unformed: false,
+                }
+                .version()
+            })
             .fold(self.levels_used(), u16::max);
         self.floor.store(floor, std::sync::atomic::Ordering::SeqCst);
     }
@@ -346,9 +352,10 @@ impl MetadataStateMachine {
                     })
                     .map_err(Into::into)
             }
-            MetaCommand::FinalizeFleetFeature { feature } => {
+            MetaCommand::FinalizeFleetFeature { feature, .. } => {
                 let level = MetaCommand::FinalizeFleetFeature {
                     feature: feature.clone(),
+                    hold_unformed: false,
                 }
                 .version();
                 let enabled = store.finalize_fleet_feature(&feature).await?;
@@ -409,7 +416,12 @@ impl MetadataStateMachine {
                 expected_generation,
                 seq_generation,
             } => store
-                .put_shard_assignment_unfenced_if(assignment, expected_generation, seq_generation)
+                .put_shard_assignment_unfenced_if(
+                    assignment,
+                    expected_generation,
+                    seq_generation,
+                    self.holds_unformed(false),
+                )
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),

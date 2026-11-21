@@ -640,12 +640,14 @@ impl InMemoryStore {
         self.shards.read().await.placement.holder.clone()
     }
 
-    /// A conditional write from a Raft log entry that predates fencing.
+    /// A conditional write from a Raft log entry that predates fencing. It
+    /// carries no hold of its own; the apply passes the join floor's.
     pub(crate) async fn put_shard_assignment_unfenced_if(
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         seq_generation: bool,
+        hold_unformed: bool,
     ) -> StoreResult<AssignmentWrite> {
         put_shard_assignment_if(
             self,
@@ -656,7 +658,7 @@ impl InMemoryStore {
             0,
             false,
             false,
-            false,
+            hold_unformed,
         )
         .await
     }

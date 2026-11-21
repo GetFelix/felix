@@ -1736,3 +1736,4 @@
 45 put_shard_assignment_fenced.hold_unformed
 45 record_raft_floors.mark_formed
 45 record_raft_copy_id.hold_target
+45 finalize_fleet_feature.hold_unformed

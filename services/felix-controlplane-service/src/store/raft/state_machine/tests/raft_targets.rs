@@ -281,3 +281,69 @@ async fn a_held_set_stays_held_when_a_proposer_sees_a_lower_level() {
     })
     .await;
 }
+
+/// A new cluster finalizes its features once every member is current, and
+/// at level 45 that entry lifts the join floor, so a set is held from the
+/// first target even if a member is down when it is stored (#2794). Every
+/// write that can change the set is held, including the conditional write
+/// that predates fencing.
+#[tokio::test]
+async fn a_finalize_at_level_45_holds_later_sets() {
+    use crate::raft::AppStateMachine;
+    use crate::store::contract::raft_targets::held_set;
+    let store = InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    });
+    let machine = MetadataStateMachine::new(Arc::new(store.with_shard_engine("raft")));
+    let finalize = encode_command(&MetaCommand::FinalizeFleetFeature {
+        feature: felix_common::fleet::GENERATION_START.name().to_string(),
+        hold_unformed: false,
+    });
+    let finalize = crate::store::raft::command::settle_for_level(&finalize, 45)
+        .expect("settled")
+        .expect("edited");
+    machine.apply(&finalize).await;
+    assert_eq!(machine.join_floor(), 45);
+
+    let store: &dyn ControlPlaneStore = machine.store().as_ref();
+    on_streams_of_its_own(store, async {
+        let held = held_set(store).await;
+        let mut moved = held.clone();
+        moved.replicas = vec!["broker-z".to_string()];
+        let unflagged = encode_command(&MetaCommand::PutShardAssignment {
+            assignment: moved.clone(),
+            seq_generation: true,
+            start_placed: true,
+            hold_unformed: false,
+        });
+        let refused = decode_result(&machine.apply(&unflagged).await).expect("result");
+        assert!(
+            matches!(refused, Err(MetaError::Conflict(_))),
+            "an unflagged move after a level 45 finalize: {refused:?}"
+        );
+
+        // The conditional write that predates fencing has no hold field at
+        // all, and is held by the floor the same way.
+        let legacy = encode_command(&MetaCommand::PutShardAssignmentIf {
+            assignment: moved,
+            expected_generation: Some(held.generation),
+            seq_generation: false,
+        });
+        let refused = decode_result(&machine.apply(&legacy).await).expect("result");
+        assert!(
+            matches!(refused, Err(MetaError::Conflict(_))),
+            "a conditional move after a level 45 finalize: {refused:?}"
+        );
+        assert_eq!(
+            machine
+                .store()
+                .get_shard_assignment(&held.key)
+                .await
+                .expect("assignment")
+                .replicas,
+            held.replicas
+        );
+    })
+    .await;
+}

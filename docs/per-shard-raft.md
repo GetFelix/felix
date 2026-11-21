@@ -4116,9 +4116,15 @@ later by no report a Raft shard sends:
   level 45 is in the log, every member holds unformed sets whatever the
   proposer saw, so a control-plane member that is down, and counted at a
   lower level, cannot lift the hold. The copy-id report that stores a
-  target carries a level 45 field for exactly this reason. An idle group
-  formed before the upgrade is marked on its leader's next floor report,
-  which comes with its next commit or a new leader.
+  target carries a level 45 field for exactly this reason, and so does a
+  fleet feature finalize. A new cluster finalizes its features once every
+  control-plane member answers at this build, so it is at 45 before its
+  first stream. What is left is a group whose log has no level 45 entry yet,
+  with a control-plane member that has not answered the leader since the
+  leader started: a new cluster with a member down from the start, or one
+  upgraded from before 45. A leader also sends every group it leads again
+  every 30 s, committed or not, so an idle group formed before the upgrade
+  gets its mark without a publish.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4195,7 +4201,10 @@ re-placement replaces every member.
 > `services/felix-controlplane-service/src/store/contract/raft_targets.rs`,
 > `a_set_holds_until_its_group_forms`;
 > `services/felix-controlplane-service/src/store/raft/state_machine/tests/raft_targets.rs`,
-> `a_held_set_stays_held_when_a_proposer_sees_a_lower_level`;
+> `a_held_set_stays_held_when_a_proposer_sees_a_lower_level` and
+> `a_finalize_at_level_45_holds_later_sets`;
+> `services/felix-broker-service/src/shards/raft/floor/tests/control_plane.rs`,
+> `a_refresh_marks_an_idle_group_formed`;
 > `docs/formal/FelixRaftFirstForm.tla`, where `FelixRaftFirstFormNoHold.cfg`
 > finds two leaders without the hold.
 

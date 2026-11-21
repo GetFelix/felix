@@ -901,6 +901,8 @@ impl ControlPlaneStore for RaftStore {
     ) -> StoreResult<std::collections::BTreeSet<String>> {
         let command = MetaCommand::FinalizeFleetFeature {
             feature: feature.to_string(),
+            // Set by `settle_for_level`, at the level the entry is gated on.
+            hold_unformed: false,
         };
         if self.handle.cluster_version().await < command.version() {
             return Err(StoreError::Conflict(

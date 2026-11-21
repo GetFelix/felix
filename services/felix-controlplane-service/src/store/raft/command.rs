@@ -486,6 +486,12 @@ pub enum MetaCommand {
     /// ([`crate::cluster::fleet::check_finalize`]). Level 2.
     FinalizeFleetFeature {
         feature: String,
+        /// Level 45: the apply reads nothing from it. Carrying it lifts the
+        /// join floor to 45, so a new cluster, whose first finalize waits for
+        /// every member to be current, holds unformed Raft sets (#2794) from
+        /// before its first stream. Set by `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hold_unformed: bool,
     },
     /// Streams and caches created together: one entry, so every member
     /// applies all of them or, on a conflict or a missing namespace, none.
@@ -661,20 +667,20 @@ impl MetaCommand {
             | Self::CheckpointHeartbeats { .. } => 1,
             // Finalizing jump-hash routing makes new streams jump-hash, which
             // members before level 3 would store as modulo.
-            Self::FinalizeFleetFeature { feature }
+            Self::FinalizeFleetFeature { feature, .. }
                 if feature == felix_common::fleet::JUMP_HASH_ROUTING.name() =>
             {
                 3
             }
             // Finalizing incarnations gives new streams one, which members
             // before level 10 would drop.
-            Self::FinalizeFleetFeature { feature }
+            Self::FinalizeFleetFeature { feature, .. }
                 if feature == felix_common::fleet::STREAM_INCARNATIONS.name() =>
             {
                 10
             }
             // The same for caches, which members before level 14 would drop.
-            Self::FinalizeFleetFeature { feature }
+            Self::FinalizeFleetFeature { feature, .. }
                 if feature == felix_common::fleet::CACHE_INCARNATIONS.name() =>
             {
                 14
@@ -683,7 +689,7 @@ impl MetaCommand {
             // which members before level 21 would refuse, and adoptions
             // name a leader on the set it was elected on, which members
             // before level 26 cannot.
-            Self::FinalizeFleetFeature { feature }
+            Self::FinalizeFleetFeature { feature, .. }
                 if feature == felix_common::fleet::REPLICA_ELECTION.name() =>
             {
                 26
@@ -692,14 +698,14 @@ impl MetaCommand {
             // start holders, which members before level 23 would drop, and
             // relies on a leader's refusal to rename a shard whose fence
             // cannot learn the set it leaves, which is dropped before 25.
-            Self::FinalizeFleetFeature { feature }
+            Self::FinalizeFleetFeature { feature, .. }
                 if feature == felix_common::fleet::JOINT_FENCE.name() =>
             {
                 25
             }
             // Finalizing the Raft engine lets seals be ordered and their
             // reports recorded, which members before level 34 would refuse.
-            Self::FinalizeFleetFeature { feature }
+            Self::FinalizeFleetFeature { feature, .. }
                 if feature == felix_common::fleet::SHARD_RAFT.name() =>
             {
                 34
@@ -1081,6 +1087,9 @@ const IMPORT_STATE_OP: &str = "import_state";
 ///
 /// From level 37 a node delete also forgets the node's report stamps, and
 /// below it never does.
+///
+/// From level 45 a fleet feature finalize carries `hold_unformed`, and below
+/// it never does.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
     if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
@@ -1121,6 +1130,16 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             }
             _ => Ok(None),
         };
+    }
+    if op.as_deref() == Some(FINALIZE_OP) {
+        let hold = level >= super::FIRST_FORM_LEVEL;
+        return Ok(edit_command_json(command, |object| {
+            if hold {
+                object.insert("hold_unformed".to_string(), true.into()) != Some(true.into())
+            } else {
+                object.remove("hold_unformed").is_some()
+            }
+        }));
     }
     if op.as_deref() == Some(DELETE_NODE_OP) {
         // Settled either way: one sent with the flag below the level would
@@ -1166,12 +1185,18 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import, a node delete, a switch command, a copy
-/// id report, a floor report or a dead declaration, read without decoding
+/// Whether `command` is an import, a node delete, a finalize, a switch
+/// command, a copy id report, a floor report or a dead declaration, read
+/// without decoding
 /// what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
-    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || op == DELETE_NODE_OP || is_gated(&op))
+    op_of(command).is_some_and(|op| {
+        op == IMPORT_STATE_OP || op == DELETE_NODE_OP || op == FINALIZE_OP || is_gated(&op)
+    })
 }
+
+/// A fleet feature finalize, which carries `hold_unformed` from level 45.
+const FINALIZE_OP: &str = "finalize_fleet_feature";
 
 /// A node delete, whose report stamps go from level 37.
 const DELETE_NODE_OP: &str = "delete_node";

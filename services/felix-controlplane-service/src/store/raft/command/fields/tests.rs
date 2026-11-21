@@ -761,7 +761,10 @@ fn commands() -> Vec<MetaCommand> {
             }],
         },
         MetaCommand::RegisterNodeInFleet { node: node() },
-        MetaCommand::FinalizeFleetFeature { feature: s("f") },
+        MetaCommand::FinalizeFleetFeature {
+            feature: s("f"),
+            hold_unformed: true,
+        },
         MetaCommand::CreateResources {
             needs_identity: true,
             names: true,

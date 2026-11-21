@@ -348,3 +348,53 @@ async fn the_control_plane_stores_the_floor_once_it_stops_refusing() {
     assert_eq!(cp.posts.load(Ordering::SeqCst), 3);
     assert_eq!(cp.floor(&shard.key).await, Some((incarnation, 9, 2)));
 }
+
+/// A group whose floor the control plane took before it stored a target has
+/// no first-form mark, and an idle group never reports again on its own. The
+/// refresh sends it, so the mark lands with no publish (#2794).
+#[tokio::test]
+async fn a_refresh_marks_an_idle_group_formed() {
+    let cp = ControlPlane::start().await;
+    let shard = switched(&cp.store).await;
+    let incarnation = shard.incarnation;
+    let led = || vec![(key("a"), incarnation, at(1, 5))];
+    let mut floors = Floors::default();
+
+    cp.tick(&mut floors, led()).await;
+    assert_eq!(cp.floor(&shard.key).await, Some((incarnation, 5, 1)));
+    for (node, id) in [("broker-x", 11), ("broker-y", 12)] {
+        let process = cp.store.get_node(node).await.expect("node").status;
+        cp.store
+            .record_raft_copy_id(
+                &shard.key,
+                node,
+                process.registered_at_millis,
+                process.incarnation,
+                id,
+                None,
+            )
+            .await
+            .expect("copy id");
+    }
+    let formed = || async {
+        cp.store
+            .get_shard_assignment(&shard.key)
+            .await
+            .expect("assignment")
+            .raft_formed
+    };
+    assert_eq!(
+        formed().await,
+        None,
+        "the target is stored, the mark is not"
+    );
+
+    cp.tick(&mut floors, led()).await;
+    assert_eq!(cp.posts.load(Ordering::SeqCst), 1, "idle: nothing is sent");
+    assert_eq!(formed().await, None);
+
+    floors.owe_all();
+    cp.tick(&mut floors, led()).await;
+    assert_eq!(cp.posts.load(Ordering::SeqCst), 2);
+    assert_eq!(formed().await, Some(incarnation));
+}

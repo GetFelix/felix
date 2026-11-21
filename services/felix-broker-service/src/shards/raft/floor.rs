@@ -6,7 +6,9 @@
 //! control plane last accepted it. A group stays owed until a 200 answers a
 //! request that carried it, so a control plane that refused the writes (409
 //! before its metadata level allows them) gets every led group, idle ones
-//! included, on the first tick it accepts.
+//! included, on the first tick it accepts. Every [`REFRESH`] each led group
+//! is owed again, idle or not: a group formed before the control plane
+//! recorded the first-form mark gets it from this report alone (#2794).
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -22,6 +24,10 @@ use super::{RaftShards, ShardKey};
 
 /// How often the floors are reported.
 pub(crate) const INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often every led group is sent again though its commit did not move.
+/// Slow on purpose: each accepted request is a control-plane log entry.
+pub(crate) const REFRESH: Duration = Duration::from_secs(30);
 
 /// Most entries in one request. More wait for the next tick, so the first
 /// report of a broker leading many groups stays within the control plane's
@@ -115,6 +121,14 @@ impl Floors {
         batch
     }
 
+    /// Owe every tracked group again, as if the control plane had never
+    /// taken it. The next batches carry them all, [`MAX_BATCH`] at a time.
+    pub(crate) fn owe_all(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.acked = None;
+        }
+    }
+
     /// The control plane took `batch`. An entry that moved since stays owed.
     pub(crate) fn accepted(&mut self, batch: &[RaftFloor]) {
         for floor in batch {
@@ -169,7 +183,8 @@ pub(crate) async fn tick<L: ControlPlaneLink>(
     }
 }
 
-/// Report `shards`' floors every [`INTERVAL`] until `stop`.
+/// Report `shards`' floors every [`INTERVAL`], and every led group every
+/// [`REFRESH`], until `stop`.
 pub(crate) async fn run<L: ControlPlaneLink>(
     shards: Arc<RaftShards>,
     link: L,
@@ -180,10 +195,15 @@ pub(crate) async fn run<L: ControlPlaneLink>(
     let mut floors = Floors::default();
     let mut every = tokio::time::interval(INTERVAL);
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut refreshed = tokio::time::Instant::now();
     loop {
         tokio::select! {
             () = stop.cancelled() => return,
             _ = every.tick() => {}
+        }
+        if refreshed.elapsed() >= REFRESH {
+            floors.owe_all();
+            refreshed = tokio::time::Instant::now();
         }
         let bearer = credential.as_ref().map(|credential| credential.bearer());
         let report = tick(
