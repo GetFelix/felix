@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795267314903,
+  "lastUpdate": 1795268216251,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64324,6 +64324,58 @@ window.BENCHMARK_DATA = {
             "range": "9739.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1203433.92\nmean: 1205621.91\nstdev: 9739.50\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "580bd3e276d5481d77bf23323184cbaf4fab2477",
+          "message": "feat(raft): conditional pieces for multi-record conditional batches, behind a fleet gate (#2751) (#2892)\n\n* feat(raft): conditional pieces for multi-record conditional batches, behind raft_conditional_batches (#2751)\n\nA conditional batch of several records on a Raft shard is one run of\nentries, each a conditional piece naming its place, kept only at the\nexpected offset plus its place, so every member keeps or blanks the whole\nbatch. Pieces are stored with the CondPiece mark and cross the wire as\nentry tag 10. propose_publish_at takes such a batch only once\nraft_conditional_batches is allowed; the feature is not reported by any\nbuild until every Raft read path applies the whole-batch rule.\n\nSpec-Unaffected: FelixRaftCond.tla already keeps a piece iff index = expected + pos; this implements that write rule.\n\nPart of #2751.\n\n* fix(raft): leave cond out of a command's message when unset (#2751)\n\nA peer then sees the same message an older build sends.\n\nSpec-Unaffected: serialization only; FelixRaftCond models the read rule.\n\n* fix(raft): describe a piece's refusal and publisher exactly, refuse a no-batch piece at encode\n\nSpec-Unaffected: docs and encode-side check only.",
+          "timestamp": "2026-11-21T05:30:38-08:00",
+          "tree_id": "db89d220550991ede82c66c79028309cfd4d2539",
+          "url": "https://github.com/GetFelix/felix/commit/580bd3e276d5481d77bf23323184cbaf4fab2477"
+        },
+        "date": 1795268215493,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348447.31,
+            "range": "6466.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348447.31\nmean: 348454.87\nstdev: 6466.62\ncv: 1.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348447.31,
+            "range": "6466.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348447.31\nmean: 348454.87\nstdev: 6466.62\ncv: 1.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80409.8,
+            "range": "293.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80409.80\nmean: 80446.24\nstdev: 293.17\ncv: 0.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804098.04,
+            "range": "2931.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804098.04\nmean: 804462.36\nstdev: 2931.68\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
