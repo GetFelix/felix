@@ -1,5 +1,5 @@
 //! When a Raft shard's target counter rises.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::model::{ShardKey, ShardKind, ShardState};
@@ -184,4 +184,105 @@ fn a_reform_holds_the_new_epochs_first_target() {
     assert!(!next.mark_raft_formed(0, 0));
     assert!(next.mark_raft_formed(0, 1));
     assert!(!next.holds_unformed_set());
+}
+
+fn set(nodes: &[&str]) -> BTreeSet<String> {
+    nodes.iter().map(|node| format!("broker-{node}")).collect()
+}
+
+fn place(record: &mut ShardAssignment, nodes: &[&str]) {
+    let mut nodes = set(nodes).into_iter();
+    record.leader = nodes.next().expect("a leader");
+    record.replicas = nodes.collect();
+}
+
+fn report(record: &mut ShardAssignment, index: u64, voters: &[&str]) -> bool {
+    let report = super::super::RaftFloorReport {
+        key: record.key.clone(),
+        incarnation: record.incarnation,
+        epoch: 0,
+        index,
+        term: 1,
+        voters: None,
+    };
+    let voters = set(voters).into_iter().map(|node| (node, 1)).collect();
+    record.note_raft_voters(&report, &voters)
+}
+
+fn formed(nodes: &[&str]) -> ShardAssignment {
+    let mut record = assignment();
+    place(&mut record, nodes);
+    record.raft_formed = Some(RaftFormed {
+        incarnation: record.incarnation,
+        epoch: 0,
+    });
+    record
+}
+
+/// A chain of one-member swaps the group never applies would end on a set
+/// of brokers it never reached (#2905). Each step waits for the voters
+/// that keep a majority of it.
+#[test]
+fn a_swap_chain_waits_for_the_group_to_report_its_voters() {
+    let mut record = formed(&["1", "2", "3"]);
+    assert!(
+        record.holds_formed_set(&set(&["1", "2", "4"])),
+        "no voters reported yet"
+    );
+    assert!(report(&mut record, 5, &["1", "2", "3"]));
+    assert!(!record.holds_formed_set(&set(&["1", "2", "4"])));
+    place(&mut record, &["1", "2", "4"]);
+    assert!(
+        record.holds_formed_set(&set(&["1", "4", "5"])),
+        "the group has not added broker-4"
+    );
+    assert!(
+        !record.holds_formed_set(&set(&["1", "2", "5"])),
+        "replacing the unapplied broker-4 keeps a majority"
+    );
+    assert!(report(&mut record, 9, &["1", "2", "4"]));
+    assert!(
+        !report(&mut record, 6, &["1", "2", "3"]),
+        "a late report brings back no older voters"
+    );
+    assert!(!record.holds_formed_set(&set(&["1", "4", "5"])));
+    place(&mut record, &["1", "4", "5"]);
+    assert!(record.holds_formed_set(&set(&["4", "5", "6"])));
+    assert!(
+        !record.holds_formed_set(&set(&["1", "4", "5"])),
+        "the current set is no change"
+    );
+}
+
+/// At replication factor 1 any re-placement replaces every member, so it
+/// is refused. The old copy hands off by a two-broker step instead.
+#[test]
+fn a_replication_factor_1_move_goes_through_two_brokers() {
+    let mut record = formed(&["1"]);
+    assert!(report(&mut record, 3, &["1"]));
+    assert!(record.holds_formed_set(&set(&["2"])));
+    assert!(!record.holds_formed_set(&set(&["1", "2"])));
+    place(&mut record, &["1", "2"]);
+    assert!(
+        record.holds_formed_set(&set(&["2"])),
+        "broker-2 not added yet"
+    );
+    assert!(report(&mut record, 7, &["1", "2"]));
+    assert!(!record.holds_formed_set(&set(&["2"])));
+}
+
+/// A report from another reform epoch is an old group's and counts nothing.
+#[test]
+fn voters_count_only_at_the_placed_epoch() {
+    let mut record = formed(&["1", "2", "3"]);
+    record.placed = Some(crate::model::PlacedInEpoch {
+        epoch: 2,
+        brokers: set(&["1", "2", "3"]),
+    });
+    record.raft_formed = Some(RaftFormed {
+        incarnation: record.incarnation,
+        epoch: 2,
+    });
+    assert!(!report(&mut record, 5, &["1", "2", "3"]), "epoch 0 report");
+    assert!(record.holds_formed_set(&set(&["1", "2", "4"])));
 }

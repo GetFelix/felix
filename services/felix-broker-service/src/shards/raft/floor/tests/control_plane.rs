@@ -267,6 +267,7 @@ async fn switched(store: &InMemoryStore) -> ShardAssignment {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     store

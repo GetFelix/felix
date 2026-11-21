@@ -129,7 +129,11 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
     floor("broker-z").await;
     assert!(store.put_shard_assignment(moved.clone()).await.is_err());
     let held = read(store, &shard.key).await;
-    assert_eq!(held.raft_target, Some(first), "every view names one target");
+    assert_eq!(
+        held.raft_target.as_ref(),
+        Some(&first),
+        "every view names one target"
+    );
 
     floor("broker-x").await;
     store
@@ -146,6 +150,37 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         target.members.keys().collect::<Vec<_>>(),
         ["broker-x", "broker-z"]
     );
+
+    // The group has not reported adding broker-z, so a set of broker-z
+    // alone would name only a broker it never reached (#2905). That holds
+    // with broker-z's target stored, and against a late report of the old
+    // voters, until a leader reports the new ones.
+    let mut alone = read(store, &shard.key).await;
+    alone.leader = "broker-z".to_string();
+    alone.replicas.clear();
+    assert!(
+        matches!(
+            store.put_shard_assignment(alone.clone()).await,
+            Err(StoreError::Conflict(_))
+        ),
+        "a step the reported voters keep no majority of"
+    );
+    let mut applied = super::raft_floors::entry(&shard, 2, 1);
+    applied.voters = Some(target.members.clone());
+    let mut late = super::raft_floors::entry(&shard, 1, 1);
+    late.voters = Some(first.members.clone());
+    store
+        .record_raft_floors("broker-x", vec![applied])
+        .await
+        .expect("floors");
+    store
+        .record_raft_floors("broker-x", vec![late])
+        .await
+        .expect("floors");
+    store
+        .put_shard_assignment(alone)
+        .await
+        .expect("the group reported broker-z, so the step goes ahead");
     clear(store).await;
     store.delete_node("broker-z").await.expect("deregister");
 }

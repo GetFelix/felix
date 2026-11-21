@@ -4239,13 +4239,45 @@ placement names, which is wrong once placement and the group differ, so do
 not remove a broker that holds Raft shards. `docs/control-plane.md`, "Raft
 shards", has the placement side.
 
-One case this does not cover. If placement replaces every member of a
-formed group, the new set finds no member the group reached and forms a
-second one. That can happen in one write or one swap at a time, when the
-group never adds the brokers swapped in before the next swap. Nothing stops
-it, so operators must not make this change. At replication factor 1 the set is one broker, so any
-re-placement replaces every member. The first-form hold (#2794) does not
-cover this: it only holds a set until its group forms (#2905).
+#### Changing a formed group's set
+
+A formed group must never be placed on a set its brokers could form
+again: if every broker in the new set is one the group never reached,
+they all answer that no group reached them, and the lowest forms a second
+group. That can happen in one write, or one swap at a time when the
+group never adds the brokers swapped in before the next swap (#2905).
+
+So every floor report a leader sends carries the group's voters, copy id
+by broker, once its membership is committed at the reported index and is
+not joint. The control plane keeps the last voters a target member
+reported at the placed incarnation and reform epoch, and only from a
+report at or above the floor's log id, so a late report cannot bring back
+older voters. It then refuses a set change on a formed group unless those
+voters hold a majority of the new set (at least half of it, rounded up).
+The brokers new to the group can then never elect a leader among
+themselves. A chain of swaps waits at each step until the group reports
+the last one applied; replacing a broker the group never added still goes
+ahead, since the rest of the set is unchanged.
+
+At replication factor 1 the set is one broker, so a direct re-placement
+replaces every member and is refused. The copy hands off through a
+two-broker set: place `{old, new}`, wait for the leader to report both
+voters, then place `{new}`.
+
+If the group cannot report (its majority is gone), no step past its last
+reported voters goes ahead. The way out is a re-form, which starts a new
+epoch and is held by the first-form hold above until a leader of the new
+epoch reports. The hold applies once the metadata join floor is at level
+46; a fleet feature finalize at 46 lifts it there for a new cluster.
+Placement waits with `waiting for the group to report voters that keep a
+majority of the next set`.
+
+> `services/felix-controlplane-service/src/model/shard/raft_target/tests.rs`,
+> `a_swap_chain_waits_for_the_group_to_report_its_voters`,
+> `a_replication_factor_1_move_goes_through_two_brokers`,
+> `voters_count_only_at_the_placed_epoch`;
+> `services/felix-controlplane-service/src/store/contract/raft_targets.rs`,
+> `a_set_holds_until_its_group_forms`.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,
