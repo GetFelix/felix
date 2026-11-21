@@ -684,7 +684,7 @@ question the forming broker asks, and a broker whose own copy is like that
 does not form the group. A kept copy that cannot be read counts as one
 that holds entries, and so does a group that never acknowledged a record
 but wrote its first entry. The shard answers "not ready" until it is
-re-formed. Until the re-form command below is built, opening it means
+re-formed. Until `apply` below is built, opening it means
 giving up its records: delete the stream and create it again. That makes a
 new incarnation, which starts clean. Do not stop the brokers and remove the
 shard's directory and its kept copies by hand: the shard then re-forms as
@@ -718,6 +718,52 @@ the groups of one broker or the whole cluster, and it has two steps:
 - `apply` carries out a plan. It checks each group again first and skips
   any group whose facts differ from the plan, so nothing is done that the
   operator did not see.
+
+**Running a plan.** `plan` is built; `apply` is not yet. Run
+
+```bash
+felixctl raft reform plan                          # every Raft shard
+felixctl raft reform plan --scope node broker-2    # the shards placed on broker-2
+felixctl raft reform plan --json                   # the plan as the control plane returns it
+```
+
+with a control-plane token allowed `node.manage` on `cluster:*`. It prints
+one line per shard: `reform` with the copy it would start from and the new
+voters, `blocked` with the reason, or `left_alone` when a copy reports a
+leader for the epoch. A line that says `MAY LOSE ACKNOWLEDGED RECORDS` is a
+plan `apply` will carry out only with the loss accepted, and the line says
+why: which voters' votes are unknown, or that a vote cut a copy below what
+it holds. Entries a re-form drops are listed per broker. For an unmarked
+plan they were never committed.
+
+How the plan is made:
+
+- `POST /v1/raft/reform/plans` takes the scope and answers a plan id at
+  once. The plan lists every Raft stream shard in scope with a `placed`
+  record, and starts a survey of each from the record alone
+  (`ShardAssignment::reform_record`). Nothing is written to the store.
+- Every broker polls `GET /v1/nodes/{id}/reform/surveys` every 2 s with its
+  node credential, and answers each survey on
+  `POST /v1/nodes/{id}/reform/reports`. It reads its copy, kept copies
+  included, without stopping the member, and says whether it leads the
+  epoch. A survey names its plan id and round, and an answer counts only
+  for the current round and only from a broker that round asked, so no
+  earlier answer is reused (issue #2304). The answer is keyed by the
+  broker the credential belongs to.
+- The control plane plans from the answers (`raft_copy::wire::survey_step`).
+  A plan that needs a broker's commit or last index it was not told asks
+  again, at most 8 rounds. A broker that does not answer a round within
+  30 s blocks the shard, as does one placed in the epoch that runs no
+  survey (an older broker).
+- `GET /v1/raft/reform/plans/{id}` reads the plan: `surveying` until every
+  shard settles, then `done`. `felixctl` polls it.
+
+Plans live on the metadata Raft leader, in memory, for its term. A plan
+asked through a follower is forwarded to the leader, and so are broker
+answers. A leader change drops every plan (the read answers 404 with "plan
+again"), and since a plan changes nothing, planning again is always safe.
+A control plane without the routes answers 404, and one whose metadata
+leader runs a version without them answers 409.
 
 **Declaring a broker dead.** The command never guesses that a broker is
 gone. An operator declares a broker dead in the control plane, as a
@@ -5221,8 +5267,8 @@ From level 47 a copy id report also carries the group epoch the copy runs
 at any level), and one for another epoch than the
 shard's `placed` record is refused (#2882). A directory restored from an
 old backup can otherwise report its copy id from a stale view of an earlier
-epoch. Brokers do not send the field yet, so this check only matters once a
-group leaves epoch 0.
+epoch. A broker sends the epoch its copy proved, and reports nothing for a
+copy that cannot prove the record's epoch.
 
 ### Shards with one replica
 
