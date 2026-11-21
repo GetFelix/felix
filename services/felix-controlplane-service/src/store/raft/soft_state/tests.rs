@@ -412,7 +412,10 @@ async fn a_lease_decided_in_one_term_is_not_taken_in_the_next() {
     );
 
     // No member 1000 exists.
-    store.handle.give_up_term(1_000).await;
+    assert!(
+        store.handle.give_up_term(1_000).await,
+        "the transfer vote was refused"
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !store.handle.is_leader() || store.handle.current_term() <= term {
         assert!(std::time::Instant::now() < deadline, "never led a new term");
@@ -488,7 +491,10 @@ async fn a_heartbeat_that_waited_out_a_term_records_nothing() {
     );
 
     // No member 1000 exists.
-    store.handle.give_up_term(1_000).await;
+    assert!(
+        store.handle.give_up_term(1_000).await,
+        "the transfer vote was refused"
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !store.handle.is_leader() || store.handle.current_term() <= term {
         assert!(std::time::Instant::now() < deadline, "never led a new term");
@@ -610,8 +616,7 @@ async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
             new.store.handle.status()
         );
         // Again if the old leader's own election timer won the term back.
-        if old.store.handle.is_leader() {
-            old.store.handle.give_up_term(new_id).await;
+        if old.store.handle.is_leader() && old.store.handle.give_up_term(new_id).await {
             new.store.handle.campaign().await;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

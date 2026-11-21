@@ -230,9 +230,12 @@ impl SoftState {
         // expire brokers whose heartbeats only this leader has seen.
         let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
         if self.handle.cluster_version().await < needs {
+            // A deposed leader's answer would send the caller to the log
+            // path: let it ask the new leader instead.
+            let mut view = self.view_in(term)?;
             // Whatever was seen before is not carried into the next time
             // this is enabled: that starts a fresh window.
-            *self.view.lock().expect("soft state lock") = None;
+            *view = None;
             return Ok(Err(MetaError::Unsupported(format!(
                 "leader soft state needs every member at metadata version {needs}"
             ))));
@@ -582,7 +585,9 @@ impl SoftState {
                 if matches!(taken, Ok(MetaResponse::PlacementLease { .. })) {
                     // Committed, so answered. If the term has moved since,
                     // the next leader judges from the holder in the log.
-                    let _ = self.set_lease(term, holder, Instant::now() + ttl);
+                    if self.set_lease(term, holder, Instant::now() + ttl).is_err() {
+                        tracing::debug!(term, holder, "lease taken as the term moved");
+                    }
                 }
                 Ok(taken)
             }

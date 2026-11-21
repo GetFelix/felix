@@ -156,8 +156,9 @@ impl RaftHandle {
 
     /// Step down by granting `to` the next term's vote, as this leader's own
     /// transfer would authorize. A lone member then wins the term after.
+    /// False if the vote was refused.
     #[cfg(test)]
-    pub(crate) async fn give_up_term(&self, to: NodeId) {
+    pub(crate) async fn give_up_term(&self, to: NodeId) -> bool {
         let metrics = self.raft.metrics().borrow_watched().clone();
         let last = metrics
             .last_log_index
@@ -172,8 +173,8 @@ impl RaftHandle {
         let mut rpc = openraft::raft::VoteRequest::new(next, last);
         // Without it a leader whose quorum still acks refuses any vote.
         rpc.leadership_transfer_from = Some(metrics.vote);
-        let response = self.raft.vote(rpc).await.expect("vote");
-        assert!(response.vote_granted, "the transfer vote was refused");
+        // Refused when the metrics lag a term this member just won.
+        self.raft.vote(rpc).await.expect("vote").vote_granted
     }
 
     /// Campaign now, as an election timeout would.

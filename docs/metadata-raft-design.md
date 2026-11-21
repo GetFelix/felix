@@ -203,8 +203,12 @@ keep an old term's judgement out of a new one:
   could expire a node the successor just heard from or give the placement
   lease a second holder. The caller gets "not leader" and asks again.
 
-Every other proposal can forward, because its outcome is decided when it
-applies, on the state every member shares.
+Other proposals forward, because what they do is decided when they apply, on
+the state every member shares. The exception is the log-path fallback a
+follower uses when the leader declines soft state (an older build, or a
+member it has not heard a level from yet): its `TakePlacementLease` takes the
+lease at apply without checking expiry, as builds before soft state did
+(#2886).
 
 ### Reads: local, because the contract already allows it
 

@@ -5,3 +5,4 @@
   seen what it was judged from, so it could expire a live node or give the
   placement lease a second holder. Such a request now answers "not leader" and
   the caller asks again.
+  A member still on an older build can forward these until it is upgraded.
