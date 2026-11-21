@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795251838642,
+  "lastUpdate": 1795252332216,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64220,6 +64220,58 @@ window.BENCHMARK_DATA = {
             "range": "20161.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1201168.25\nmean: 1198937.25\nstdev: 20161.23\ncv: 1.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f7b8be54015df7280451c8820130701cff7b4901",
+          "message": "perf(raft): answer each batch where openraft applies it, one publish-task wake per drain (#2577) (#2884)\n\n* perf(raft): answer each batch where openraft applies it, one publish-task wake per drain (#2577)\n\nEach record goes to openraft through write_many with a responder tied to\nits batch, so the publish task no longer reads a per-record answer stream\nand forwards a second answer per batch. A drain wakes the task once.\n\n* docs(raft): answers travel by responder, not the publish task (review)\n\n* test(raft): the drain wake test no longer depends on lease staleness or a fixed sleep (#2577)\n\nIt runs on long election timers so the lease cannot go stale, and waits\nfor the publish task's poll count to hold still instead of sleeping.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-21T01:07:40-08:00",
+          "tree_id": "090f701af24c528c7e5bc788b5ba87ea49328690",
+          "url": "https://github.com/GetFelix/felix/commit/f7b8be54015df7280451c8820130701cff7b4901"
+        },
+        "date": 1795252331482,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 722049.97,
+            "range": "84118.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 722049.97\nmean: 684739.08\nstdev: 84118.82\ncv: 12.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 722049.97,
+            "range": "84118.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 722049.97\nmean: 684739.08\nstdev: 84118.82\ncv: 12.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163727.26,
+            "range": "14895.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163727.26\nmean: 156569.86\nstdev: 14895.75\ncv: 9.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1637272.6,
+            "range": "148957.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1637272.60\nmean: 1565698.61\nstdev: 148957.46\ncv: 9.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
