@@ -931,8 +931,10 @@ async fn held_members_stand_past_the_hold_by_their_jitter() {
         jitters[0].abs_diff(jitters[1]) >= 100,
         "the jitters {jitters:?} are too close to tell apart"
     );
+    let deadline = tokio::time::Instant::now() + timers().election_max * 3;
     let mut stood = [false; 2];
     while stood != [true; 2] {
+        assert!(tokio::time::Instant::now() < deadline, "stood: {stood:?}");
         for (i, broker) in followers.iter().enumerate() {
             let status = cluster.runtime(broker).status(&shard(0)).expect("status");
             // Read after the status, so a tick seen happened before `now`.
