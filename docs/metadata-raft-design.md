@@ -204,11 +204,11 @@ keep an old term's judgement out of a new one:
   lease a second holder. The caller gets "not leader" and asks again.
 
 Other proposals forward, because what they do is decided when they apply, on
-the state every member shares. The exception is the log-path fallback a
-follower uses when the leader declines soft state (an older build, or a
-member it has not heard a level from yet): its `TakePlacementLease` takes the
-lease at apply without checking expiry, as builds before soft state did
-(#2886).
+the state every member shares. `TakePlacementLease` is not one of them: its
+apply takes the lease without checking expiry, because expiry lives only in
+the leader's soft state. So only the leader's own judgement proposes it, and
+no store proposes it on its own, even when the leader declines other soft
+state.
 
 ### Reads: local, because the contract already allows it
 
