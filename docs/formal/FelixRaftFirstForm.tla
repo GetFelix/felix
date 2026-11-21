@@ -18,12 +18,14 @@
 (* the formed mark on the epoch, as the code does; FALSE lets a mark from   *)
 (* an earlier epoch release the new epoch's first target.                   *)
 (*                                                                         *)
-(* Once its group formed, placement changes a set only by swapping one     *)
-(* member (a leader-only write changes no set). The kept members include   *)
-(* one that voted, so the new set is never all blank and never forms       *)
-(* again. A write that replaces every member of a formed group is not      *)
-(* modelled: placement never makes one (docs/per-shard-raft.md, "One case  *)
-(* this does not cover").                                                  *)
+(* After the mark, Move is limited to a one-member swap (OneSwap). That is *)
+(* an assumption, not something the code enforces: the model does not add *)
+(* a swapped-in broker to the group, so a chain of swaps could reach an    *)
+(* all-blank set, and a replication factor 1 set is not moved at all here. *)
+(* Neither is what #2794 is about: both are a formed group re-placed onto  *)
+(* brokers it never reached, the gap docs/per-shard-raft.md names under    *)
+(* "One case this does not cover". The configs check the first form: one   *)
+(* set per shard, incarnation and epoch while the hold applies.            *)
 EXTENDS FiniteSets, Naturals
 
 CONSTANTS Brokers, Sets, Hold, PerEpoch, MaxEpoch

@@ -4117,7 +4117,11 @@ later by no report a Raft shard sends:
   out. The same goes for a former whose copy is wiped after a member voted
   for it: the voter is no longer blank, the wiped former has no group, so
   no leader reports and the set stays held until the stream is deleted
-  (the same class as #2235). The hold is on from metadata level 45; below it a set change before
+  (the same class as #2235). A shard restored from an export has no
+  recorded epoch, so the control plane reads it as epoch 0; if its group
+  had re-formed, its leader reports a later epoch, which marks nothing,
+  and a stored target holds the set until a re-form records the epoch.
+  The hold is on from metadata level 45; below it a set change before
   the first form applies as before on every member. Once any entry at
   level 45 is in the log, every member holds unformed sets whatever the
   proposer saw, so a control-plane member that is down, and counted at a
@@ -4195,8 +4199,11 @@ shards", has the placement side.
 
 One case this does not cover. If placement replaces every member of a
 formed group, the new set finds no member the group reached and forms a
-second one. Nothing stops it, so operators must not make this change. At replication factor 1 the set is one broker, so any
-re-placement replaces every member.
+second one. That can happen in one write or one swap at a time, when the
+group never adds the brokers swapped in before the next swap. Nothing stops
+it, so operators must not make this change. At replication factor 1 the set is one broker, so any
+re-placement replaces every member. The first-form hold (#2794) does not
+cover this: it only holds a set until its group forms (#2905).
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,
