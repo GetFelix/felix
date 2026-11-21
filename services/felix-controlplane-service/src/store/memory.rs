@@ -1070,6 +1070,20 @@ impl ControlPlaneStore for InMemoryStore {
         })
     }
 
+    async fn import_state(
+        &self,
+        state: crate::store::export::ExportedState,
+        overwrite: bool,
+    ) -> StoreResult<crate::store::ImportOutcome> {
+        if !overwrite && !self.is_unused().await {
+            return Err(crate::store::StoreError::Conflict(
+                "store already holds state; import requires overwrite".to_string(),
+            ));
+        }
+        InMemoryStore::import_state(self, state).await?;
+        Ok(crate::store::ImportOutcome::Imported)
+    }
+
     async fn moves_paused(&self) -> StoreResult<bool> {
         Ok(*self.moves_paused.read().await)
     }

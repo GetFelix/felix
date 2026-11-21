@@ -1556,6 +1556,56 @@ impl ControlPlaneStore for RaftStore {
         self.identity().await
     }
 
+    /// Written as leader of the term this member leads when asked, or not at
+    /// all. Never forwarded: the peer `propose` route refuses an import, so
+    /// no member relays one. A leader change mid-import answers 503: the next
+    /// leader may still commit the entry, so read before retrying.
+    async fn import_state(
+        &self,
+        state: crate::store::export::ExportedState,
+        overwrite: bool,
+    ) -> StoreResult<crate::store::ImportOutcome> {
+        let not_leader = || crate::store::ImportOutcome::NotLeader {
+            leader: self.handle.known_leader().0,
+        };
+        let term = self.handle.current_term();
+        if !self.handle.is_leader() {
+            return Ok(not_leader());
+        }
+        // The level fields are settled on the leader as it appends
+        // (`settle_for_level`), whatever is sent here.
+        let command = MetaCommand::ImportState {
+            state: Box::new(state),
+            overwrite,
+            mark_unplaced: false,
+            raise_incarnation: false,
+            lose_ordered: false,
+        };
+        match self
+            .handle
+            .write_as_leader_of(term, encode_command(&command))
+            .await
+            .map_err(StoreError::Unexpected)?
+        {
+            None => Ok(not_leader()),
+            Some(bytes) => {
+                let result = decode_result(&bytes).map_err(StoreError::from)?;
+                result.map_err(StoreError::from)?;
+                Ok(crate::store::ImportOutcome::Imported)
+            }
+        }
+    }
+
+    async fn waive_lost(
+        &self,
+        members: std::collections::BTreeSet<u64>,
+        reason: String,
+    ) -> StoreResult<()> {
+        self.handle
+            .waive_lost(members, reason)
+            .map_err(StoreError::Conflict)
+    }
+
     async fn root_sequence(
         &self,
         node_id: &str,

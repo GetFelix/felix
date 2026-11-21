@@ -19,6 +19,9 @@ pub struct AppState {
     /// rotation, so replacing the token is a rolling deploy rather than an
     /// outage — see [`crate::api::bootstrap::initialize`].
     pub bootstrap_tokens: Vec<String>,
+    /// SHA-256 digests of the operator tokens the whole-store routes require.
+    /// Members hold only digests, so no member can present the token itself.
+    pub operator_token_digests: Vec<[u8; 32]>,
     pub node_liveness: NodeLivenessConfig,
     /// Whether this instance can serve, bounded and cached.
     pub readiness: Arc<crate::api::readiness::Readiness>,

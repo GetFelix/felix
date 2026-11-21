@@ -83,6 +83,7 @@ async fn harness(region_id: &str) -> Harness {
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -1612,6 +1613,7 @@ async fn system_health_reports_unavailable_on_store_failure() {
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::StoreProbe(
@@ -1669,6 +1671,7 @@ async fn tenant_endpoints_report_internal_error_on_store_failure() {
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -1751,6 +1754,7 @@ async fn stream_and_cache_endpoints_report_internal_error_after_scope_checks() {
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -1889,6 +1893,7 @@ async fn stream_and_cache_create_report_not_found_when_store_reports_missing_nam
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -1960,6 +1965,7 @@ async fn bootstrap_initialize_reports_internal_error_when_signing_key_ensure_fai
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: true,
         bootstrap_tokens: vec!["secret".to_string()],
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),

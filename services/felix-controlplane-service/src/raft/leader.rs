@@ -129,7 +129,7 @@ impl RaftHandle {
 
     /// The leader this member knows of, with the address its membership
     /// records for it.
-    pub(super) fn known_leader(&self) -> (Option<NodeId>, Option<String>) {
+    pub(crate) fn known_leader(&self) -> (Option<NodeId>, Option<String>) {
         let metrics = self.raft.metrics();
         let metrics = metrics.borrow_watched();
         let leader = metrics.current_leader;

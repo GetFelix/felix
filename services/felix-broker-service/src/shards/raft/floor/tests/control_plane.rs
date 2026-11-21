@@ -78,6 +78,7 @@ impl ControlPlane {
             ),
             bootstrap_enabled: false,
             bootstrap_tokens: Vec::new(),
+            operator_token_digests: Vec::new(),
             node_liveness: NodeLivenessConfig {
                 heartbeat_interval_ms: 1_000,
                 expiry_timeout_ms: 60_000,

@@ -31,7 +31,7 @@ configuration:
 | Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
 | Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. Add `FELIX_CONTROLPLANE_TLS_CLIENT_CA` to require a client certificate from every caller (brokers set `FELIX_CONTROLPLANE_CLIENT_CERT` / `_KEY`), and `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT` to tie each token to that certificate. |
 | Control-plane bootstrap listener | Plain HTTP, off by default. | `FELIX_BOOTSTRAP_TLS_*`: mutual TLS, described below. |
-| Control-plane Raft peer listener (metadata backend only) | Plain HTTP, on its own port (`FELIX_RAFT_BIND_ADDR`), authenticated by a shared `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` checked on every request. | `FELIX_RAFT_TLS_CERT` / `_KEY` / `_CA`: mutual TLS on top of the token, so a connection without a certificate from the cluster CA never reaches the router. |
+| Control-plane Raft peer listener (metadata backend only) | Plain HTTP, on its own port (`FELIX_RAFT_BIND_ADDR`), authenticated by a shared `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` checked on every request. A startup warning says the token alone lets any holder speak as any member. | `FELIX_RAFT_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, with each member's certificate bound to its member id (see below). The token becomes optional. |
 
 So every QUIC connection is encrypted out of the box, the control-plane API
 is not, and "authenticated" holds only for what you configure. Without a
@@ -56,10 +56,98 @@ seconds early so they do not all drop at once. Rotate node certificates
 before they expire. Details:
 [When a credential expires](https://github.com/GetFelix/felix/blob/main/docs/auth.md#when-a-credential-expires).
 
+### Raft member certificates
+
+With `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` set,
+each control-plane member's certificate says which member it is. The leaf
+certificate must carry exactly one URI SAN:
+
+```text
+felix:principal:raft-member:<cluster_id>:<member_id>
+```
+
+`<cluster_id>` is `FELIX_RAFT_CLUSTER_ID` and `<member_id>` is
+`FELIX_RAFT_NODE_ID`, for example `felix:principal:raft-member:prod-metadata:2`.
+A request that speaks for another member (a vote, append-entries,
+install-snapshot, a forming record, or a `from` on a standing request) is
+refused with `403`. A certificate with no such SAN, or with two, is refused
+the same way. A member also refuses to start under a certificate that names a
+different member, or one that is revoked. So a stolen member key speaks only
+as that member, and one member's certificate can be revoked on its own.
+
+To revoke a certificate, put its SHA-256 fingerprint in
+`FELIX_RAFT_TLS_REVOKED` on every member (comma-separated, hex, colons
+allowed) and restart them. The list is read only at startup, and the restart
+also closes any connection the revoked certificate already had. A member then
+refuses a request carrying that certificate
+(`felix_meta_raft_peer_rejected_total{reason="revoked"}`) and refuses to
+connect to a server presenting it (`reason="revoked_server"`). After you
+wipe a member, issue a new certificate for the new incarnation and revoke the
+old one, so the old machine's key can neither call nor answer for the new
+member. A member's client checks that the server's certificate names a member
+of this cluster, but not yet that it names the member it dialed (#2912).
+
+With TLS set, `FELIX_RAFT_PEER_TOKEN` is optional. A group with only the
+token still starts, but the token says only that the caller is some member,
+so any holder can speak as any member, and the member logs a warning at
+startup. Treat it as a fallback for groups you have not yet moved to
+certificates.
+
+### Operator routes
+
+The restore import (`POST /internal/bootstrap/import-state`) and the Raft
+floor waiver (`POST /internal/bootstrap/raft/waive-lost`) can replace the
+whole store or accept lost data, so they do not take the bootstrap token,
+which every member holds. They take the operator token in the
+`X-Felix-Operator-Token` header, and members are configured with only its
+SHA-256 digest, so reading a member's environment does not give it away:
+
+```bash
+token="$(openssl rand -hex 32)"           # keep it outside the cluster
+printf %s "$token" | sha256sum | cut -d' ' -f1
+# set the digest as FELIX_OPERATOR_TOKEN_SHA256 on each member and restart it
+```
+
+Without `FELIX_OPERATOR_TOKEN_SHA256` the routes answer `403`. Leave it unset
+until you need one, and comma-separate two digests while you rotate.
+
+The token is a bearer header, so the member you send it to sees it. Treat it
+as spent once used: send it over the bootstrap listener's mTLS
+(`FELIX_BOOTSTRAP_TLS_*`) or a port-forward, never in cleartext across the
+pod network, and remove or replace the digest on every member as soon as the
+import or waiver is done. A member that leads can still append any entry to
+its own log, an import included; that is the crash-fault limit of Raft, not
+something a credential closes.
+
+Upgrading is breaking. Reissue every member's certificate with its URI SAN
+first: builds before this check only verify the CA, so they accept the new
+certificates. Then roll the new build one member at a time, keeping
+`FELIX_RAFT_PEER_TOKEN` set until every member runs it: older members still
+require the token. A member started under the wrong certificate exits at
+startup, and the others keep their quorum. No metadata level changes.
+
+Under the Helm chart the old shared certificate has no URI SAN, so a rolled
+member cannot talk to the old ones and the rollout waits on its readiness.
+Create the per-member Secrets first, run `helm upgrade`, then delete every
+control-plane pod together so all members restart on their own certificates
+(`kubectl delete pod -l app.kubernetes.io/component=controlplane`). The
+control plane is unavailable until they elect a leader; brokers keep serving
+on what they already know.
+
+Each node that runs a member holds every member's certificate Secret, since
+the chart projects them all into the init container. A compromised member
+process sees only its own key, but a compromised node, or anyone who can
+attach a debug container to the pod, can read them all.
+
+The member does not record an incarnation in its vote record, so one
+certificate per incarnation plus revocation stands in for it, and a member's
+own client checks only the CA on the server certificate it connects to.
+
 ### Rotating the Raft peer token
 
-Control-plane members on the Raft metadata backend authenticate each other with
-`FELIX_RAFT_PEER_TOKEN`. Rotate it after a member machine is compromised, or on
+Control-plane members on the Raft metadata backend that run without peer TLS
+authenticate each other with
+`FELIX_RAFT_PEER_TOKEN`, and with TLS the token is an extra check when set. Rotate it after a member machine is compromised, or on
 a schedule. The rotation is three rolling restarts, one member at a time, and
 the group keeps its quorum throughout.
 
@@ -81,7 +169,7 @@ the roll, the token each member sends is one that every other member accepts.
    the new token.
 4. Watch `felix_meta_raft_peer_token_accepted_total{token="previous"}` on every
    member. Once it stops growing, nothing sends the old token. Anything still
-   using it, such as a script that calls `waive-lost`, needs the new token.
+   using it needs the new token.
 5. On every member, unset `FELIX_RAFT_PEER_TOKEN_PREVIOUS` and restart, one at
    a time. The old token is now refused everywhere.
 

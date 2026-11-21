@@ -920,6 +920,10 @@ impl AppStateMachine for MetadataStateMachine {
         crate::store::raft::command::settle_for_level(command, level)
     }
 
+    fn peer_may_propose(&self, command: &[u8]) -> bool {
+        crate::store::raft::command::peer_may_propose(command)
+    }
+
     fn depends_on_level(&self, command: &[u8]) -> bool {
         crate::store::raft::command::depends_on_level(command)
     }

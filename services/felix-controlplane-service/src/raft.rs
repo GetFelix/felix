@@ -55,7 +55,7 @@ pub use handle::RaftHandle;
 pub use health::Replaying;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use member::RaftMember;
-pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls, TARGET_HEADER};
+pub use peer::{CLUSTER_ID_HEADER, MEMBER_URI_PREFIX, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;
 
@@ -242,6 +242,15 @@ pub trait AppStateMachine: Send + Sync + 'static {
     fn depends_on_level(&self, command: &[u8]) -> bool {
         let _ = command;
         false
+    }
+
+    /// Whether a member may send `command` for another to commit (the peer
+    /// `propose` route). A command only an operator may give, such as one
+    /// replacing the whole store, must answer false: every member holds peer
+    /// credentials, so the peer route is no proof of an operator.
+    fn peer_may_propose(&self, command: &[u8]) -> bool {
+        let _ = command;
+        true
     }
 
     /// The newest command level this build can apply, reported to peers so

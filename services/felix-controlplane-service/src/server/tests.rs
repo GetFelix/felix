@@ -28,6 +28,7 @@ fn config() -> ControlPlaneConfig {
             previous_token: None,
             tls: None,
             dev_tokens: false,
+            operator_token_digests: Vec::new(),
         },
         node_liveness: NodeLivenessConfig::default(),
         shard_moves: placement::MovePolicy::default(),
@@ -488,5 +489,71 @@ async fn a_member_is_attached_only_after_it_enters_the_group() {
     assert!(
         !member.is_attached(),
         "a member that never entered is served"
+    );
+}
+
+/// A member whose certificate does not name it must fail to start, not come
+/// up with its API serving and no peer listener.
+#[tokio::test]
+async fn a_member_under_a_certificate_that_is_not_its_own_does_not_start() {
+    use crate::config::RaftBackendConfig;
+    use crate::raft::{MEMBER_URI_PREFIX, PeerSecurity, PeerTls};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let ca_key = rcgen::KeyPair::generate().expect("ca key");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("ca params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+    let ca = rcgen::Issuer::new(ca_params, ca_key);
+    let key = rcgen::KeyPair::generate().expect("key");
+    let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("params");
+    params.subject_alt_names.push(rcgen::SanType::URI(
+        format!("{MEMBER_URI_PREFIX}test-cluster:2")
+            .try_into()
+            .expect("uri"),
+    ));
+    let cert = params.signed_by(&key, &ca).expect("cert");
+    std::fs::write(path("ca.pem"), ca_cert.pem()).expect("ca");
+    std::fs::write(path("peer.pem"), cert.pem()).expect("cert");
+    std::fs::write(path("peer.key"), key.serialize_pem()).expect("key");
+
+    let mut config = config();
+    config.storage = StorageBackend::Raft;
+    config.raft = Some(RaftBackendConfig {
+        node_id: 1,
+        data_dir: dir.path().join("raft"),
+        peers: Default::default(),
+        peer_bind_addr: "127.0.0.1:0".parse().expect("addr"),
+        security: PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: None,
+            previous_token: None,
+            next_token: None,
+            tls: Some(PeerTls {
+                cert_path: path("peer.pem"),
+                key_path: path("peer.key"),
+                ca_path: path("ca.pem"),
+                revoked: Default::default(),
+            }),
+        },
+        insecure_peers: false,
+        initial_cluster_state: crate::raft::InitialClusterState::New,
+        heartbeat_ms: None,
+        election_timeout_min_ms: None,
+        election_timeout_max_ms: None,
+        snapshot_logs_since_last: None,
+        logs_kept_behind_snapshot: None,
+        snapshot_max_bytes: None,
+        floor_report_after_ms: None,
+        write_timeout_ms: None,
+    });
+    let err = match build_state(config, Readiness::ready(), &Default::default()).await {
+        Ok(_) => panic!("a member started under member 2's certificate"),
+        Err(err) => err,
+    };
+    assert!(
+        format!("{err:#}").contains("issued to raft member 2"),
+        "{err:#}"
     );
 }

@@ -2,8 +2,7 @@
 //! RPC to the local node and answering in Felix's peer format
 //! ([`super::wire`]), the shape [`super::network`] expects, plus the
 //! proposal route, the leader-only route ([`super::leader`]), and the three
-//! a member uses to enter the group ([`super::join`]), and the operator's
-//! `waive-lost` ([`super::floor`]).
+//! a member uses to enter the group ([`super::join`]).
 //!
 //! The router is the member's ([`super::member`]), which may have no Raft
 //! node yet. `standing` answers either way. Every other route answers 503
@@ -14,9 +13,12 @@
 //! in redb served `/internal/raft`, so a member of such a group and this
 //! one never answer each other.
 //!
-//! Served on the peer listener only, behind [`super::peer::require_peer`]:
-//! `propose` alone can replace the whole store, so nothing here is reachable
-//! from the public API port or without the cluster's peer credentials.
+//! Served on the peer listener only, behind [`super::peer::require_peer`] and,
+//! under peer mTLS, [`super::peer::require_member`]. Every route that speaks
+//! for a member (a vote, an append, a snapshot, a forming record, the asker
+//! of `standing`) must speak for the caller's own id. Nothing here replaces
+//! the whole store or accepts a loss: `propose` refuses an import, and the
+//! import and the floor waiver are the operator's, on the bootstrap listener.
 use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -26,6 +28,7 @@ use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 
 use felix_storage::raft_log::SnapshotId;
 
+use super::peer::PeerMember;
 use super::types;
 use super::types::{Snapshot, Vote};
 use super::{RaftHandle, RaftMember, peer_route, wire};
@@ -47,7 +50,6 @@ pub(super) fn router(member: RaftMember) -> Router {
         .route(&peer_route("standing"), get(standing))
         .route(&peer_route("forming"), post(forming))
         .route(&peer_route("catch-up-target"), get(catch_up_target))
-        .route(&peer_route("waive-lost"), post(waive_lost))
         // Axum's default body limit (2MB) is below openraft's default
         // snapshot chunk (3MB); a snapshot install crossing that line would
         // be refused with a 413 the sender reads as a network fault. Sized
@@ -60,9 +62,20 @@ pub(super) fn router(member: RaftMember) -> Router {
             super::peer::require_target,
         ))
         .layer(axum::middleware::from_fn_with_state(
+            std::sync::Arc::clone(&security),
+            super::peer::require_member,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
             security,
             super::peer::require_peer,
         ))
+}
+
+/// The calling member, when its certificate names one.
+type Caller = Option<axum::Extension<PeerMember>>;
+
+fn caller(caller: &Caller) -> Option<&PeerMember> {
+    caller.as_ref().map(|axum::Extension(member)| member)
 }
 
 /// This member's Raft node. A route that takes it answers 503 while the
@@ -90,10 +103,21 @@ impl FromRequestParts<RaftMember> for Node {
 /// A proposal over HTTP: opaque command bytes in, the state machine's
 /// response bytes out. Goes through the seam's `write`, so a proposal
 /// landing on a follower forwards to the leader and a caller may point at
-/// **any** member — the promise the migration tool leans on. The peer token
-/// is what authorizes it: that token is the cluster-admin credential. 503
-/// only when the bounded write budget runs out: no leader, or no quorum.
+/// **any** member. 403 for a command no member may send for another
+/// ([`super::AppStateMachine::peer_may_propose`]): an import of the whole
+/// store is the operator's alone. 503 only when the bounded write budget runs
+/// out: no leader, or no quorum.
 async fn propose(Node(handle): Node, body: axum::body::Bytes) -> Response {
+    if !handle.app.peer_may_propose(&body) {
+        metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "operator_only")
+            .increment(1);
+        tracing::warn!("a peer proposal of an operator-only command refused");
+        return (
+            StatusCode::FORBIDDEN,
+            "this command is the operator's and is never taken from a raft peer",
+        )
+            .into_response();
+    }
     match handle.write(body.to_vec()).await {
         Ok(bytes) => (StatusCode::OK, bytes).into_response(),
         Err(err) => (StatusCode::SERVICE_UNAVAILABLE, format!("{err:#}")).into_response(),
@@ -126,30 +150,14 @@ fn below_floor() -> Response {
         .into_response()
 }
 
-/// The operator's waiver for a floor block ([`super::floor`]). Behind the
-/// peer check like every route here, so it takes the cluster-admin
-/// credential.
-#[derive(serde::Deserialize)]
-struct WaiveLost {
-    members: std::collections::BTreeSet<super::NodeId>,
-    reason: String,
-}
-
-async fn waive_lost(Node(handle): Node, Json(body): Json<WaiveLost>) -> Response {
-    let waiver = super::floor::Waiver {
-        members: body.members,
-        reason: body.reason,
-    };
-    match handle.waive_lost(waiver) {
-        Ok(()) => (StatusCode::OK, "waiver recorded").into_response(),
-        Err(why) => (StatusCode::CONFLICT, why).into_response(),
-    }
-}
-
 async fn append_entries(
     Node(handle): Node,
+    from: Caller,
     Json(rpc): Json<wire::AppendEntriesRequest>,
 ) -> Response {
+    if let Some(refused) = PeerMember::refusal(caller(&from), rpc.vote.voted_for) {
+        return refused;
+    }
     if !handle.serves_leader(rpc.vote.term) {
         return below_floor();
     }
@@ -183,7 +191,10 @@ async fn append_entries(
 
 /// A member withholding its vote answers like an unreachable one. openraft
 /// would grant from an empty log, which is exactly what must not happen.
-async fn vote(Node(handle): Node, Json(rpc): Json<wire::VoteRequest>) -> Response {
+async fn vote(Node(handle): Node, from: Caller, Json(rpc): Json<wire::VoteRequest>) -> Response {
+    if let Some(refused) = PeerMember::refusal(caller(&from), rpc.vote.voted_for) {
+        return refused;
+    }
     if !handle.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -206,8 +217,15 @@ async fn vote(Node(handle): Node, Json(rpc): Json<wire::VoteRequest>) -> Respons
 /// Answered with or without a Raft node.
 async fn standing(
     State(member): State<RaftMember>,
+    from: Caller,
     axum::extract::Query(asker): axum::extract::Query<super::version::Asker>,
 ) -> Response {
+    // The asker's level counts toward what the group can apply.
+    if let Some(asker) = asker.from
+        && let Some(refused) = PeerMember::refusal(caller(&from), asker)
+    {
+        return refused;
+    }
     member.note_asker(asker);
     match member.standing().await {
         Ok(standing) => Json(standing).into_response(),
@@ -218,9 +236,16 @@ async fn standing(
 /// A member that set out to form the group asks to be recorded. The record
 /// is on disk before the 204: the member votes once every peer has given
 /// one. 409 for a group other than this member's own.
-async fn forming(Node(handle): Node, Json(forming): Json<super::join::Forming>) -> Response {
+async fn forming(
+    Node(handle): Node,
+    from: Caller,
+    Json(forming): Json<super::join::Forming>,
+) -> Response {
     use super::join::NotRecorded;
 
+    if let Some(refused) = PeerMember::refusal(caller(&from), forming.member) {
+        return refused;
+    }
     match handle.record_forming(&forming).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(NotRecorded::Refused(why)) => (StatusCode::CONFLICT, why).into_response(),
@@ -240,7 +265,7 @@ async fn catch_up_target(Node(handle): Node) -> Response {
 /// The head is read first, and a stale sender, a length over the cap or a
 /// busy slot is answered before any data is read. The data goes straight
 /// to the receive file, never into memory.
-async fn install_snapshot(Node(handle): Node, body: axum::body::Body) -> Response {
+async fn install_snapshot(Node(handle): Node, from: Caller, body: axum::body::Body) -> Response {
     let mut incoming =
         felix_storage::raft_log::transfer::Incoming::new(BodyPieces(body.into_data_stream()));
     let head = match incoming.head(handle.snapshot_max_bytes).await {
@@ -251,6 +276,9 @@ async fn install_snapshot(Node(handle): Node, body: axum::body::Body) -> Respons
     let Some(head) = wire::SnapshotHead::decode(&head.head) else {
         return (StatusCode::BAD_REQUEST, "not a snapshot head").into_response();
     };
+    if let Some(refused) = PeerMember::refusal(caller(&from), head.vote.voted_for) {
+        return refused;
+    }
     if !handle.serves_leader(head.vote.term) {
         return below_floor();
     }

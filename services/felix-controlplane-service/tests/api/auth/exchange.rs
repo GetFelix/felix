@@ -219,6 +219,7 @@ async fn exchange_returns_tenant_scoped_token() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -399,6 +400,7 @@ async fn stream_trim_is_minted_only_once_head_trim_is_finalized() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -542,6 +544,7 @@ async fn exchange_forbidden_without_policies() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -669,6 +672,7 @@ async fn exchange_supports_group_claim_based_rbac() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -813,6 +817,7 @@ async fn exchange_group_claim_rbac_requires_groups_claim_mapping() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -939,6 +944,7 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -1046,6 +1052,7 @@ async fn a_bound_exchange_binds_the_resolved_principal() {
         ),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),

@@ -738,6 +738,39 @@ pub trait ControlPlaneStore: Send + Sync {
         })
     }
 
+    /// Replace the whole store with `state`: an operator's restore, from the
+    /// bootstrap listener only. [`StoreError::Conflict`] unless the store has
+    /// never held anything or `overwrite` is set. A replicated store writes
+    /// it on the leader alone and never forwards it, so no member relays a
+    /// whole-store replacement for another.
+    async fn import_state(
+        &self,
+        state: export::ExportedState,
+        overwrite: bool,
+    ) -> StoreResult<ImportOutcome> {
+        let _ = (state, overwrite);
+        Err(StoreError::Conflict(
+            "this store takes no operator import".to_string(),
+        ))
+    }
+
+    /// Accept `members` as lost for this member's Raft floor block, so it
+    /// serves leaders again past the failure tolerance; acknowledged writes
+    /// held only by those members may be lost. From the bootstrap listener
+    /// only. [`StoreError::Conflict`] when this member is not blocked, the
+    /// waiver does not name every member it waits on, or the store has no
+    /// floor.
+    async fn waive_lost(
+        &self,
+        members: std::collections::BTreeSet<u64>,
+        reason: String,
+    ) -> StoreResult<()> {
+        let _ = (members, reason);
+        Err(StoreError::Conflict(
+            "this store has no raft floor to waive".to_string(),
+        ))
+    }
+
     /// Whether placement is paused: it starts no moves of its own, while
     /// moves in flight finish and an operator may still start one. Read by
     /// every instance's placement on every pass, so it lives in the store.
@@ -1235,6 +1268,17 @@ pub enum ReportWrite {
     Stale,
     /// The reporting node does not lead the shard.
     NotLeader,
+}
+
+/// What [`ControlPlaneStore::import_state`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportOutcome {
+    Imported,
+    /// This member does not lead, and nothing was written. `leader` is the
+    /// member that does, when this one knows.
+    NotLeader {
+        leader: Option<u64>,
+    },
 }
 
 /// What [`ControlPlaneStore::acquire_placement_lease`] granted.

@@ -80,17 +80,18 @@ controlplane:
       bootstrapTimeoutSeconds: 270
       # Mutual TLS on the peer port (FELIX_RAFT_TLS_*). Off, the peer token
       # and every Raft entry cross the pod network in cleartext, and the
-      # NetworkPolicy is the only fence around the port. One Secret for every
-      # member, holding tls.crt and tls.key (cert-manager's Certificate writes
-      # them) and the CA under `caKey`. Each member presents the certificate
-      # as both server and client, so it needs both usages, and it must name
-      # every member as the peers map does,
-      # <fullname>-controlplane-<n>.<fullname>-controlplane-headless, which
-      # a `*.<fullname>-controlplane-headless` DNS name covers. The migration
-      # tool needs a certificate from the same CA.
+      # NetworkPolicy is the only fence around the port. Each member needs a
+      # certificate of its own: member n (pod ordinal n-1) reads the Secret
+      # <secretPrefix>-<n>, holding tls.crt, tls.key and the CA under
+      # `caKey`. Its certificate needs server and client usages, the DNS name
+      # <fullname>-controlplane-<n-1>.<fullname>-controlplane-headless, and
+      # the URI SAN felix:principal:raft-member:<clusterId>:<n>. A member
+      # refuses to start under a certificate that names another member. The
+      # migration tool needs a certificate from the same CA.
       tls:
         enabled: false
-        existingSecret: ""
+        # Empty means <fullname>-controlplane-raft-tls.
+        secretPrefix: ""
         caKey: ca.crt
       # Tuning; empty means the control plane's own defaults.
       heartbeatMs: ""
@@ -114,6 +115,12 @@ controlplane:
     existingSecret: ""
     tokenKey: token
     previousTokenKey: ""
+    # The SHA-256 digest (hex) of the operator token, which the whole-store
+    # routes require: the restore import and the Raft floor waiver. Members
+    # hold only the digest, never the token, so a compromised member cannot
+    # use them. Empty leaves those routes off. Comma-separate two digests
+    # while rotating.
+    operatorTokenSha256: ""
     port: 9095
   service:
     type: ClusterIP

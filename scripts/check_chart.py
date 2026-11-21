@@ -371,16 +371,30 @@ def main() -> int:
 
     print("render: raft peer TLS")
     docs = render(raft, "controlplane.storage.raft.tls.enabled=true",
-                  "controlplane.storage.raft.tls.existingSecret=raft-peer-tls")
+                  "controlplane.storage.raft.tls.secretPrefix=raft-peer")
     check_controlplane(docs, "raft-tls", "raft")
     sts = one(docs, "StatefulSet", "-controlplane")
+    pod = sts["spec"]["template"]["spec"] if sts else {}
     env = env_of(containers(sts)[0]) if sts else {}
     if not all(env.get(f"FELIX_RAFT_TLS_{k}", {}).get("value", "").startswith("/etc/felix/raft-tls/")
                for k in ("CERT", "KEY", "CA")):
-        fail("raft-tls: FELIX_RAFT_TLS_* not wired to the mounted Secret")
-    volumes = {v["name"]: v for v in sts["spec"]["template"]["spec"]["volumes"]} if sts else {}
-    if volumes.get("raft-tls", {}).get("secret", {}).get("secretName") != "raft-peer-tls":
-        fail("raft-tls: the peer certificate is not a mounted Secret")
+        fail("raft-tls: FELIX_RAFT_TLS_* not wired to the member's certificate")
+    volumes = {v["name"]: v for v in pod.get("volumes", [])}
+    # Each member has its own certificate; the container sees only its own,
+    # copied by the init container from the per-member Secrets.
+    sources = volumes.get("raft-tls-all", {}).get("projected", {}).get("sources", [])
+    names = [src.get("secret", {}).get("name") for src in sources]
+    if names != [f"raft-peer-{n}" for n in (1, 2, 3)]:
+        fail(f"raft-tls: expected one Secret per member, got {names}")
+    if "emptyDir" not in volumes.get("raft-tls", {}):
+        fail("raft-tls: the member's certificate is not copied into its own volume")
+    mounts = {m["name"] for m in containers(sts)[0].get("volumeMounts", [])} if sts else set()
+    if "raft-tls-all" in mounts:
+        fail("raft-tls: the control plane container mounts every member's certificate")
+    if [c["name"] for c in pod.get("initContainers", [])] != ["raft-tls"]:
+        fail("raft-tls: no init container picks the member's certificate")
+    if one(render(raft), "StatefulSet", "-controlplane")["spec"]["template"]["spec"].get("initContainers"):
+        fail("raft: an init container rendered with peer TLS off")
 
     print("render: raft with an explicit initial cluster state")
     docs = render(raft, "controlplane.storage.raft.initialClusterState=existing")
@@ -479,8 +493,8 @@ def main() -> int:
                 "controlplane.storage.raft.peerToken.existingSecret=")
     must_refuse("the Raft RPCs need a listener of their own", raft,
                 "controlplane.storage.raft.peerPort=8443")
-    must_refuse("needs controlplane.storage.raft.tls.existingSecret", raft,
-                "controlplane.storage.raft.tls.enabled=true")
+    must_refuse("values don't meet the specifications of the schema", raft,
+                "controlplane.storage.raft.tls.existingSecret=shared")
     must_refuse("memory keeps metadata in one process", memory, "controlplane.replicas=2")
     must_refuse("share a port", raft, "broker.ports.internal=5000")
     must_refuse("permit evicting every broker", raft,
