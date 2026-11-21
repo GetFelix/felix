@@ -1484,9 +1484,10 @@ newest one among the directory and its kept copies into the new copy
 before its copy file, so a copy keeps its epoch across a power cut or a
 restore. Two copies can still lack it: a learner placed fresh into a group
 past epoch 0, and a directory restored from a backup older than the
-group's epoch. Their votes count as unknown, so a re-form that needs them
-is marked, and the control plane refuses the floor reports such a copy
-sends as leader until the file is written (#2690).
+group's epoch. Their epoch is unknown: the broker sends neither a floor
+report nor a copy id for one while the control plane's record is past
+epoch 0, so it never becomes a voter until a start writes the file. See
+`docs/per-shard-raft.md`, "A copy's group epoch".
 
 ```text
  0   4  magic        u32  "FLEP"
@@ -1544,7 +1545,8 @@ file existed. Any other content is an error for the re-form's reads.
 A re-form's `apply` writes `stopped <epoch> <last>\n` into a shard
 directory before it reads the copy's report, and syncs it. `<epoch>` is the
 copy's group epoch and `<last>` the index of its last entry, both in
-decimal, or `-` for a copy with no entry. While the copy's `raft-epoch` is still at that
+decimal, or `-` for a copy with no entry. A copy with no `raft-epoch` is
+stopped at epoch 0. While the copy's `raft-epoch` is still at that
 epoch, no member opens on the directory. It opens only as a new copy id,
 after a leader is heard committing past `<last>`, and the rotation moves the
 directory with the marker into `.kept/`. A marker for an older epoch is

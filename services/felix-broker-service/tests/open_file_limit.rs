@@ -48,6 +48,7 @@ fn assignments(shards: &[u32]) -> HashMap<ShardKey, ShardAssignment> {
                 readmitted: Default::default(),
                 target: None,
                 targets_withheld: false,
+                placed: None,
             };
             (key(shard), assignment)
         })

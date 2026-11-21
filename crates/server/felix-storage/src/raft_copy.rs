@@ -106,10 +106,13 @@ use std::time::Duration;
 
 use crate::raft_log::LogPoint;
 
-/// The group epoch of the copy in `dir`: how many re-forms its log went
-/// through, from `raft-epoch`, and 0 for a copy that never re-formed.
-pub fn group_epoch(dir: &Path) -> std::io::Result<u64> {
-    Ok(epoch_file::load(dir)?.map_or(0, |file| file.epoch()))
+/// The group epoch `dir`'s `raft-epoch` names: how many re-forms the
+/// copy's log went through. `None` when the copy has no `raft-epoch`, which
+/// is epoch 0 only while the group never re-formed: a learner placed fresh
+/// in a later epoch and a restore older than the epoch have none either.
+/// See `docs/per-shard-raft.md`, "A copy's group epoch".
+pub fn group_epoch(dir: &Path) -> std::io::Result<Option<u64>> {
+    Ok(epoch_file::load(dir)?.map(|file| file.epoch()))
 }
 
 /// A saved vote as the marks keep it: the generation (term plus one), the

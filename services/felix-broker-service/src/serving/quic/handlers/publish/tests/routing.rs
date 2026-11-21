@@ -187,6 +187,7 @@ pub(super) fn ingress_with_routing(
                 previous_generation: None,
                 readmitted: Default::default(),
                 targets_withheld: false,
+                placed: None,
                 target: None,
             };
             (key, assignment)

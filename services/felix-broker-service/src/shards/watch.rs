@@ -102,6 +102,18 @@ pub struct ShardAssignment {
     /// plane that predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub targets_withheld: bool,
+    /// The control plane's record of the shard's group epoch. Absent is
+    /// epoch 0: a shard with no record never re-formed, and neither did one
+    /// from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed: Option<PlacedEpoch>,
+}
+
+/// The epoch half of the control plane's record of the brokers placed in
+/// a shard's group epoch. The brokers it lists are not read here.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PlacedEpoch {
+    pub epoch: u64,
 }
 
 /// A Raft shard's target as the control plane sends it.
@@ -136,6 +148,11 @@ pub struct PendingSet {
 }
 
 impl ShardAssignment {
+    /// The group epoch the control plane's record is at, 0 without one.
+    pub fn group_epoch(&self) -> u64 {
+        self.placed.map_or(0, |placed| placed.epoch)
+    }
+
     /// The control plane has told the leader to stop serving at this
     /// generation so the shard can move.
     pub fn is_draining(&self) -> bool {
@@ -219,6 +236,7 @@ impl PreviousSet {
             readmitted: Default::default(),
             target: None,
             targets_withheld: false,
+            placed: None,
         }
     }
 }

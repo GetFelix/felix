@@ -36,7 +36,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) struct Led {
     pub(crate) key: ShardKey,
     pub(crate) incarnation: u64,
-    /// The group epoch, from the copy's `raft-epoch`.
+    /// The group epoch the copy proves (`super::proven_epoch`).
     pub(crate) epoch: u64,
     pub(crate) at: LogPoint,
 }

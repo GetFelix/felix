@@ -50,7 +50,7 @@ impl StoppedCopy {
 /// closed with. Its member must already be closed, and a re-form reads the
 /// copy's report only after this.
 pub fn stop(dir: &Path, last: Option<u64>) -> io::Result<()> {
-    let epoch = super::group_epoch(dir)?;
+    let epoch = stop_epoch(dir)?;
     let last = last.map_or_else(|| "-".to_owned(), |index| index.to_string());
     state_file::store(
         dir,
@@ -71,11 +71,19 @@ pub fn stopped(dir: &Path) -> io::Result<Option<StoppedCopy>> {
             format!("{} does not decode", dir.join(FILE_NAME).display()),
         )
     })?;
-    if epoch != super::group_epoch(dir)? {
+    if epoch != stop_epoch(dir)? {
         return Ok(None);
     }
     let copy = super::copy_file::load(dir)?.map(|found| found.copy);
     Ok(Some(StoppedCopy { epoch, copy, last }))
+}
+
+/// The epoch a marker is keyed by. A copy with no `raft-epoch` reads as 0
+/// on both sides, so its marker holds until a start writes one, and only a
+/// start of a later epoch writes `raft-epoch` into a directory that has
+/// been served.
+fn stop_epoch(dir: &Path) -> io::Result<u64> {
+    Ok(super::group_epoch(dir)?.unwrap_or(0))
 }
 
 fn decode(bytes: &[u8]) -> Option<(u64, Option<u64>)> {

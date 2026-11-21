@@ -51,6 +51,7 @@ fn assignment(key: ShardKey, leader: &str, generation: u64) -> ShardAssignment {
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        placed: None,
     }
 }
 

@@ -142,10 +142,12 @@ pub(crate) struct RaftShards {
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
-    /// The group epoch of each open member, read from its copy at open. The
-    /// floor report sends it, and only a re-form changes it, which needs the
-    /// member closed.
-    epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
+    /// What each open member's `raft-epoch` named at open, `None` for a copy
+    /// without one. Only a re-form changes it, which needs the member closed.
+    /// Read through [`proven_epoch`].
+    epochs: parking_lot::Mutex<HashMap<ShardKey, Option<u64>>>,
+    /// The group epoch the newest view's record is at, per shard.
+    recorded_epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
     /// The copy id of each member open at the last pass's view, for the
     /// copy id report.
     held_copies: parking_lot::Mutex<Vec<copy_id::Held>>,
@@ -283,6 +285,7 @@ impl RaftShards {
             told: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
             epochs: parking_lot::Mutex::default(),
+            recorded_epochs: parking_lot::Mutex::default(),
             held_copies: parking_lot::Mutex::default(),
         });
         shards
@@ -311,14 +314,19 @@ impl RaftShards {
 
     /// The committed log id of every group this broker leads, with the
     /// stream incarnation the group runs and the group epoch of its copy.
-    /// A group whose epoch is not known yet is left out until it is.
+    /// A group whose epoch its copy cannot prove ([`proven_epoch`]) is left
+    /// out until it can.
     pub(crate) fn led_floors(&self) -> Vec<floor::Led> {
         let epochs = self.epochs.lock();
+        let recorded = self.recorded_epochs.lock();
         self.runtime
             .led_commits()
             .into_iter()
             .filter_map(|(group, at)| {
-                let epoch = *epochs.get(&*group.shard)?;
+                let epoch = proven_epoch(
+                    *epochs.get(&*group.shard)?,
+                    recorded.get(&*group.shard).copied(),
+                )?;
                 Some(floor::Led {
                     key: (*group.shard).clone(),
                     incarnation: group.epoch,
@@ -789,6 +797,7 @@ impl RaftShards {
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
         self.epochs.lock().remove(key);
+        self.recorded_epochs.lock().remove(key);
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();
@@ -1236,32 +1245,51 @@ impl EngineShards for RaftShards {
             // naming only the brokers placed so far would form that group.
             // A member placement moved off stays open a while, but the
             // control plane refuses a broker outside the set.
-            let held = fed
-                .iter()
-                .filter(|(_, (_, full))| *full)
-                .filter(|(_, (assignment, _))| brokers_of(assignment).contains(self.local.as_str()))
-                .filter_map(|(key, (assignment, _))| {
-                    let member = open
-                        .get(key)
-                        .filter(|member| member.incarnation == assignment.incarnation)?;
-                    let in_target = assignment
-                        .target
-                        .as_ref()
-                        .filter(|_| !assignment.targets_withheld)
-                        .and_then(|target| target.members.get(&self.local).copied());
-                    Some(copy_id::Held {
-                        key: key.clone(),
-                        incarnation: assignment.incarnation,
-                        copy: member.copy,
-                        set: std::iter::once(&assignment.leader)
-                            .chain(&assignment.replicas)
-                            .cloned()
-                            .collect(),
-                        in_target,
-                        withheld: assignment.targets_withheld,
+            let held = {
+                let mut recorded = self.recorded_epochs.lock();
+                for (key, (assignment, _)) in &fed {
+                    recorded.insert(key.clone(), assignment.group_epoch());
+                }
+                recorded.retain(|key, _| open.contains_key(key));
+                drop(recorded);
+                let epochs = self.epochs.lock();
+                fed.iter()
+                    .filter(|(_, (_, full))| *full)
+                    .filter(|(_, (assignment, _))| {
+                        brokers_of(assignment).contains(self.local.as_str())
                     })
-                })
-                .collect();
+                    // A copy id puts its copy in the target, so it votes. One
+                    // that cannot prove the record's epoch is a fresh learner or
+                    // an old restore: it waits for a `raft-epoch`.
+                    .filter(|(key, (assignment, _))| {
+                        epochs.get(*key).is_some_and(|stored| {
+                            proven_epoch(*stored, Some(assignment.group_epoch()))
+                                == Some(assignment.group_epoch())
+                        })
+                    })
+                    .filter_map(|(key, (assignment, _))| {
+                        let member = open
+                            .get(key)
+                            .filter(|member| member.incarnation == assignment.incarnation)?;
+                        let in_target = assignment
+                            .target
+                            .as_ref()
+                            .filter(|_| !assignment.targets_withheld)
+                            .and_then(|target| target.members.get(&self.local).copied());
+                        Some(copy_id::Held {
+                            key: key.clone(),
+                            incarnation: assignment.incarnation,
+                            copy: member.copy,
+                            set: std::iter::once(&assignment.leader)
+                                .chain(&assignment.replicas)
+                                .cloned()
+                                .collect(),
+                            in_target,
+                            withheld: assignment.targets_withheld,
+                        })
+                    })
+                    .collect()
+            };
             *self.held_copies.lock() = held;
             let led: Vec<&ShardKey> = open
                 .keys()
@@ -1758,5 +1786,16 @@ impl WriteFence for Leading {
 }
 
 mod retention;
+
+/// The group epoch a copy can prove: the one its `raft-epoch` names, or 0
+/// for a copy without one while the control plane's record (`recorded`) is
+/// at epoch 0. Past epoch 0 a copy without the file is a learner placed
+/// fresh or a restore older than the epoch, so its epoch is unknown
+/// (`None`): it reports no floor and no copy id. See
+/// `docs/per-shard-raft.md`, "A copy's group epoch".
+fn proven_epoch(stored: Option<u64>, recorded: Option<u64>) -> Option<u64> {
+    stored.or_else(|| (recorded == Some(0)).then_some(0))
+}
+
 #[cfg(test)]
 pub(crate) mod tests;

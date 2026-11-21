@@ -81,6 +81,7 @@ fn show(ingress: &IngressRouter, leader: &str, generation: u64) {
             readmitted: Default::default(),
             target: None,
             targets_withheld: false,
+            placed: None,
         },
     )]
     .into_iter()
