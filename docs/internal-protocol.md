@@ -91,9 +91,10 @@ control plane's placement or target, or a voter the group's leader last
 reported for the epoch. Any member also takes one from a broker the placement
 or target names now, so a member that missed the change adding a new member
 still hears from it once it leads. Both hold only while the broker's feed of
-the control plane answered within the last minute. A message for a copy this
-broker does not run is answered that there is no such member, or that a
-re-form stopped it, and tells the sender nothing else.
+the control plane answered within the last minute. A message for a group this
+broker has no member of is answered that there is no such member, or that a
+re-form stopped the copy it names. One for another copy of a member it does
+run is answered with that member's copy id, and only to a sender of the group.
 
 It exists for *when* a mismatch is found, not for what is found. Every frame
 already carries the version, so a mismatched peer would be rejected on its first
