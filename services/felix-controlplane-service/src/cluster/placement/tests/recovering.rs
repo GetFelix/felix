@@ -293,6 +293,7 @@ async fn a_dead_destination_unfences_through_the_store() {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await

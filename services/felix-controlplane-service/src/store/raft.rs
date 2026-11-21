@@ -178,6 +178,11 @@ const RAFT_NATIVE_LEVEL: u16 = 41;
 /// has formed, and mark it formed from a leader's floor report (#2794).
 const FIRST_FORM_LEVEL: u16 = 45;
 
+/// The metadata level whose members keep a Raft group's reported voters
+/// and refuse a formed group's set change those voters do not keep a
+/// majority of (#2905).
+const FORMED_SET_LEVEL: u16 = 46;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -319,6 +324,7 @@ impl RaftStore {
         assignment.raft_target = None;
         assignment.raft_floor = None;
         assignment.raft_formed = None;
+        assignment.raft_voters = None;
         assignment.raft_ordered = None;
     }
 
@@ -903,6 +909,7 @@ impl ControlPlaneStore for RaftStore {
             feature: feature.to_string(),
             // Set by `settle_for_level`, at the level the entry is gated on.
             hold_unformed: false,
+            hold_formed: false,
         };
         if self.handle.cluster_version().await < command.version() {
             return Err(StoreError::Conflict(
@@ -1250,6 +1257,13 @@ impl ControlPlaneStore for RaftStore {
                 "a control-plane member is below metadata version {RAFT_FLOOR_LEVEL}"
             )));
         };
+        // A member below the level would refuse the whole entry.
+        let mut floors = floors;
+        if level < FORMED_SET_LEVEL {
+            for floor in &mut floors {
+                floor.voters = None;
+            }
+        }
         match self
             .propose(MetaCommand::RecordRaftFloors {
                 node_id: node_id.to_string(),

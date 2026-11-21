@@ -40,6 +40,7 @@ fn assignment(key: ShardKey, leader: &str, replicas: &[&str]) -> ShardAssignment
         target: None,
         targets_withheld: false,
         raft_formed: None,
+        raft_voters: None,
         placed: None,
     }
 }

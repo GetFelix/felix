@@ -64,6 +64,7 @@ fn assignment() -> ShardAssignment {
             term: 5,
         }),
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: Some(RaftOrdered {
             incarnation: 3,
             epoch: 0,

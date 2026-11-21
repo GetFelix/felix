@@ -268,6 +268,7 @@ async fn switched(store: &InMemoryStore) -> ShardAssignment {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     store
@@ -402,6 +403,7 @@ async fn a_refresh_marks_an_idle_group_formed() {
     // The feed now shows the mark, so the next refresh sends nothing.
     let marked = || {
         vec![Led {
+            voters: None,
             formed: true,
             ..Led::from((key("a"), incarnation, at(1, 5)))
         }]

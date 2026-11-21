@@ -144,6 +144,14 @@ fn raft_member_of_internal() -> Vec<ShardAssignment> {
         incarnation: assignment.incarnation,
         epoch: 0,
     });
+    // The group applied its target, so one-member swaps go ahead.
+    assignment.raft_voters = Some(crate::model::RaftVoters {
+        incarnation: assignment.incarnation,
+        epoch: 0,
+        index: 1,
+        members: assignment.raft_target.as_ref().unwrap().members.clone(),
+    });
+    assignment.raft_copy_ids = assignment.raft_target.as_ref().unwrap().members.clone();
     vec![assignment]
 }
 
@@ -375,6 +383,14 @@ fn an_internal_leader_moves_before_its_internal_follower_is_swapped() {
         incarnation: existing.incarnation,
         epoch: 0,
     });
+    // The group applied its target, so one-member swaps go ahead.
+    existing.raft_voters = Some(crate::model::RaftVoters {
+        incarnation: existing.incarnation,
+        epoch: 0,
+        index: 1,
+        members: existing.raft_target.as_ref().unwrap().members.clone(),
+    });
+    existing.raft_copy_ids = existing.raft_target.as_ref().unwrap().members.clone();
     // The leader leads from a member that is live; only core2 is internal
     // among the followers, but the leader is internal too.
     let first = plan_with(

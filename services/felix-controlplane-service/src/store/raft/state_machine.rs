@@ -169,6 +169,7 @@ impl MetadataStateMachine {
                 MetaCommand::FinalizeFleetFeature {
                     feature,
                     hold_unformed: false,
+                    hold_formed: false,
                 }
                 .version()
             })
@@ -184,6 +185,18 @@ impl MetadataStateMachine {
     fn holds_unformed(&self, carried: bool) -> bool {
         use crate::raft::AppStateMachine;
         carried || self.join_floor() >= super::FIRST_FORM_LEVEL
+    }
+
+    /// The set holds an entry applies: the unformed hold as
+    /// [`Self::holds_unformed`] decides, and the formed group's hold (#2905)
+    /// once the join floor is at the level that knows it. Every member
+    /// reads the same floor at each entry, so all apply the same hold.
+    fn set_hold(&self, carried: bool) -> crate::store::memory::SetHold {
+        use crate::raft::AppStateMachine;
+        crate::store::memory::SetHold {
+            unformed: self.holds_unformed(carried),
+            formed: self.join_floor() >= super::FORMED_SET_LEVEL,
+        }
     }
 
     fn raise_floor(&self, level: u16) {
@@ -356,6 +369,7 @@ impl MetadataStateMachine {
                 let level = MetaCommand::FinalizeFleetFeature {
                     feature: feature.clone(),
                     hold_unformed: false,
+                    hold_formed: false,
                 }
                 .version();
                 let enabled = store.finalize_fleet_feature(&feature).await?;
@@ -406,7 +420,7 @@ impl MetadataStateMachine {
                     assignment,
                     seq_generation,
                     start_placed,
-                    self.holds_unformed(hold_unformed),
+                    self.set_hold(hold_unformed),
                 )
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
@@ -420,7 +434,7 @@ impl MetadataStateMachine {
                     assignment,
                     expected_generation,
                     seq_generation,
-                    self.holds_unformed(false),
+                    self.set_hold(false),
                 )
                 .await
                 .map(assignment_written)
@@ -443,7 +457,7 @@ impl MetadataStateMachine {
                     at_least,
                     record_previous,
                     start_placed,
-                    self.holds_unformed(hold_unformed),
+                    self.set_hold(hold_unformed),
                 )
                 .await
                 .map(assignment_written)
@@ -462,7 +476,7 @@ impl MetadataStateMachine {
                     &elected,
                     elected_set,
                     own_leader_set,
-                    self.holds_unformed(hold_unformed),
+                    self.set_hold(hold_unformed),
                 )
                 .await
                 .map(assignment_written)
@@ -571,6 +585,7 @@ impl MetadataStateMachine {
                     keep_ordered,
                     shard_incarnation,
                     true,
+                    self.set_hold(false).formed,
                 )
                 .await
                 .map(|changed| MetaResponse::Count {

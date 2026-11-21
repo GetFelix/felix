@@ -53,6 +53,7 @@ fn leading_both_shards() -> Arc<IngressRouter> {
                     target: None,
                     targets_withheld: false,
                     raft_formed: None,
+                    raft_voters: None,
                     placed: None,
                 },
             )

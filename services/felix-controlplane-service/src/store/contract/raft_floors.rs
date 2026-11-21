@@ -28,6 +28,7 @@ pub(crate) fn entry(a: &ShardAssignment, index: u64, term: u64) -> RaftFloorRepo
         epoch: 0,
         index,
         term,
+        voters: None,
     }
 }
 
@@ -47,7 +48,27 @@ async fn floor(store: &dyn ControlPlaneStore, key: &ShardKey) -> Option<(u64, u6
 
 async fn the_floor_only_rises(store: &dyn ControlPlaneStore) {
     let shard = switched(store).await;
-    assert_eq!(raise(store, vec![entry(&shard, 10, 2)]).await, 1);
+    for (id, node) in (1..).zip(shard.raft_set()) {
+        let process = store.get_node(&node).await.expect("node").status;
+        store
+            .record_raft_copy_id(
+                &shard.key,
+                &node,
+                process.registered_at_millis,
+                process.incarnation,
+                id,
+                None,
+            )
+            .await
+            .expect("copy id");
+    }
+    // Each report carries voters: a report the floor refuses keeps none,
+    // so a high index at a lower term cannot shut out later voters.
+    let entry = |index: u64, term: u64| RaftFloorReport {
+        voters: Some([("broker-x".to_string(), index)].into()),
+        ..entry(&shard, index, term)
+    };
+    assert_eq!(raise(store, vec![entry(10, 2)]).await, 1);
     let held = read(store, &shard.key).await;
     assert_eq!(held.generation, shard.generation, "written in place");
     assert_eq!(floor(store, &shard.key).await, Some((10, 2)));
@@ -56,15 +77,17 @@ async fn the_floor_only_rises(store: &dyn ControlPlaneStore) {
     // contradicts the floor and is refused.
     for (index, term) in [(10, 2), (9, 4), (12, 1)] {
         assert_eq!(
-            raise(store, vec![entry(&shard, index, term)]).await,
+            raise(store, vec![entry(index, term)]).await,
             0,
             "{index}@{term}"
         );
     }
     assert_eq!(read(store, &shard.key).await, held);
 
-    assert_eq!(raise(store, vec![entry(&shard, 15, 3)]).await, 1);
+    assert_eq!(raise(store, vec![entry(15, 3)]).await, 1);
     assert_eq!(floor(store, &shard.key).await, Some((15, 3)));
+    let voters = read(store, &shard.key).await.raft_voters;
+    assert_eq!(voters.map(|voters| voters.index), Some(15));
     clear(store).await;
 }
 

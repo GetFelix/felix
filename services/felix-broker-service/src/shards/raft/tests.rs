@@ -38,6 +38,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         target: None,
         targets_withheld: false,
         raft_formed: None,
+        raft_voters: None,
         placed: None,
     }
 }

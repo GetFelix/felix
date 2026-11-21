@@ -287,6 +287,7 @@ async fn an_election_on_another_set_is_named_on_it(store: &dyn ControlPlaneStore
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
             ..current
         }

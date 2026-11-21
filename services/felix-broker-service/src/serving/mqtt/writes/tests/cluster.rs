@@ -82,6 +82,7 @@ fn show(ingress: &IngressRouter, leader: &str, generation: u64) {
             target: None,
             targets_withheld: false,
             raft_formed: None,
+            raft_voters: None,
             placed: None,
         },
     )]
