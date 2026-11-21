@@ -174,6 +174,10 @@ const RESTORED_ORDERED_LEVEL: u16 = 40;
 /// on Raft (`MetaCommand::RecordRaftCopyId::shard_incarnation`).
 const RAFT_NATIVE_LEVEL: u16 = 41;
 
+/// The metadata level whose members hold a Raft shard's set until its group
+/// has formed, and mark it formed from a leader's floor report (#2794).
+const FIRST_FORM_LEVEL: u16 = 45;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -314,6 +318,7 @@ impl RaftStore {
         assignment.raft_copy_ids.clear();
         assignment.raft_target = None;
         assignment.raft_floor = None;
+        assignment.raft_formed = None;
         assignment.raft_ordered = None;
     }
 
@@ -896,6 +901,8 @@ impl ControlPlaneStore for RaftStore {
     ) -> StoreResult<std::collections::BTreeSet<String>> {
         let command = MetaCommand::FinalizeFleetFeature {
             feature: feature.to_string(),
+            // Set by `settle_for_level`, at the level the entry is gated on.
+            hold_unformed: false,
         };
         if self.handle.cluster_version().await < command.version() {
             return Err(StoreError::Conflict(
@@ -1065,6 +1072,7 @@ impl ControlPlaneStore for RaftStore {
                     assignment,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
                     start_placed: level >= PLACED_LEVEL,
+                    hold_unformed: level >= FIRST_FORM_LEVEL,
                 },
             )
             .await?
@@ -1104,6 +1112,7 @@ impl ControlPlaneStore for RaftStore {
                     // record; every later write grows it whatever its level,
                     // since only a member that applied the start holds one.
                     start_placed: expected_generation.is_none() && level >= PLACED_LEVEL,
+                    hold_unformed: level >= FIRST_FORM_LEVEL,
                 },
             )
             .await?
@@ -1138,6 +1147,7 @@ impl ControlPlaneStore for RaftStore {
                     elected,
                     elected_set: level >= ELECTED_SET_LEVEL,
                     own_leader_set: level >= OWN_LEADER_SET_LEVEL,
+                    hold_unformed: level >= FIRST_FORM_LEVEL,
                 },
             )
             .await?
@@ -1214,6 +1224,8 @@ impl ControlPlaneStore for RaftStore {
                 copy_id,
                 keep_ordered: false,
                 shard_incarnation,
+                // Set by `settle_for_level`, at the level the entry is gated on.
+                hold_target: false,
             })
             .await?
         {
@@ -1232,20 +1244,17 @@ impl ControlPlaneStore for RaftStore {
         if floors.is_empty() {
             return Ok(0);
         }
-        if self
-            .handle
-            .cluster_version_if_known()
-            .await
-            .is_none_or(|level| level < RAFT_FLOOR_LEVEL)
-        {
+        let level = self.handle.cluster_version_if_known().await;
+        let Some(level) = level.filter(|level| *level >= RAFT_FLOOR_LEVEL) else {
             return Err(StoreError::Conflict(format!(
                 "a control-plane member is below metadata version {RAFT_FLOOR_LEVEL}"
             )));
-        }
+        };
         match self
             .propose(MetaCommand::RecordRaftFloors {
                 node_id: node_id.to_string(),
                 floors,
+                mark_formed: level >= FIRST_FORM_LEVEL,
             })
             .await?
         {

@@ -23,6 +23,16 @@ pub struct RaftTarget {
     pub members: BTreeMap<String, u64>,
 }
 
+/// The group a leader reported from, which marks it formed: a re-form
+/// starts a new group in a new epoch, and a new incarnation is a new group.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+pub struct RaftFormed {
+    /// The stream incarnation the group runs.
+    pub incarnation: u64,
+    /// The reform epoch the group runs. 0 until a re-form.
+    pub epoch: u64,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RaftTargetError {
     #[error("the shard's Raft target counter is at its limit")]
@@ -77,6 +87,66 @@ impl ShardAssignment {
                 self.raft_target = None;
             }
         }
+    }
+
+    /// Whether this record's set must stay as it is: its group's first
+    /// target is stored and no leader of the group has reported from this
+    /// incarnation and reform epoch yet. A broker cut off from the control
+    /// plane can still form the stored target, so a second set with its own
+    /// target would let both form a group (#2794). Once a leader has
+    /// reported, the group exists and moves to a new set by changing its
+    /// membership. A re-form starts a new group, so an earlier epoch's mark
+    /// releases nothing.
+    pub(crate) fn holds_unformed_set(&self) -> bool {
+        self.raft_target.is_some() && self.raft_formed != Some(self.formed_key())
+    }
+
+    /// Note that a leader of the group at `incarnation` and reform `epoch`
+    /// reported, which releases the held set. A report from another epoch is
+    /// an old group's leader, cut off before a re-form, and marks nothing.
+    /// Returns whether this changed the record.
+    pub(crate) fn mark_raft_formed(&mut self, incarnation: u64, epoch: u64) -> bool {
+        let formed = RaftFormed { incarnation, epoch };
+        if formed != self.formed_key() || self.raft_formed == Some(formed) {
+            return false;
+        }
+        self.raft_formed = Some(formed);
+        true
+    }
+
+    /// The mark a leader of this record's group would set.
+    fn formed_key(&self) -> RaftFormed {
+        RaftFormed {
+            incarnation: self.incarnation,
+            epoch: self.placed.as_ref().map_or(0, |placed| placed.epoch),
+        }
+    }
+
+    /// Keep `previous`'s formed mark when this write is at the same stream
+    /// incarnation. A new incarnation is a new group, not yet formed; a mark
+    /// from an earlier epoch is kept but holds nothing.
+    pub(crate) fn carry_raft_formed(&mut self, previous: Option<&ShardAssignment>) {
+        self.raft_formed = previous
+            .and_then(|previous| previous.raft_formed)
+            .filter(|formed| formed.incarnation == self.incarnation);
+    }
+
+    /// Whether `next` would put this record's held set
+    /// ([`Self::holds_unformed_set`]) on other brokers. A write at another
+    /// incarnation is a new group and holds nothing.
+    pub(crate) fn moves_unformed_set(&self, next: &ShardAssignment, incarnation: u64) -> bool {
+        self.incarnation == incarnation && self.holds_set_from(&next.leader, &next.replicas)
+    }
+
+    /// Whether this record's held set ([`Self::holds_unformed_set`]) differs
+    /// from `leader` and `replicas`, so a write naming them is refused.
+    pub(crate) fn holds_set_from(&self, leader: &str, replicas: &[String]) -> bool {
+        self.holds_unformed_set()
+            && self.raft_set()
+                != std::iter::once(leader)
+                    .chain(replicas.iter().map(String::as_str))
+                    .map(str::to_string)
+                    .collect::<BTreeSet<_>>()
     }
 
     fn raft_set(&self) -> BTreeSet<String> {

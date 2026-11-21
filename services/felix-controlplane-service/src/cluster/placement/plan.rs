@@ -713,6 +713,22 @@ fn plan_once(
         note_spread(&mut unspread, shards.last(), &current, &eligible);
     }
 
+    // The store refuses a set change while a Raft group has not formed
+    // (#2794). Whichever path planned it, waiting here keeps the refused
+    // write from being proposed, and spending a move slot, every pass.
+    for plan in &mut shards {
+        let Some(existing) = current.get(&plan.key) else {
+            continue;
+        };
+        let held = match &plan.decision {
+            Decision::Move(_, next) => existing.moves_unformed_set(next, existing.incarnation),
+            Decision::Place(leader, followers) => existing.holds_set_from(leader, followers),
+            _ => false,
+        };
+        if held {
+            plan.decision = Decision::Waiting(Blocked::Unformed);
+        }
+    }
     shards.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
     unspread.sort_by(|a, b| order(a).cmp(&order(b)));
     let stream_wanted = moves.stream_wanted;
@@ -879,6 +895,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     }
 }

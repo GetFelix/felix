@@ -107,12 +107,25 @@ pub struct ShardAssignment {
     /// restored from an export has none whatever its epoch (#2882).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<PlacedEpoch>,
+    /// The Raft group the control plane has marked formed. Absent until a
+    /// leader's floor report marks it, and from a control plane that
+    /// predates it; the broker then keeps re-sending the group's floor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_formed: Option<RaftFormed>,
 }
 
 /// The epoch half of the control plane's record of the brokers placed in
 /// a shard's group epoch. The brokers it lists are not read here.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlacedEpoch {
+    pub epoch: u64,
+}
+
+/// The stream incarnation and group epoch of a Raft group the control
+/// plane has marked formed.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftFormed {
+    pub incarnation: u64,
     pub epoch: u64,
 }
 
@@ -236,6 +249,7 @@ impl PreviousSet {
             readmitted: Default::default(),
             target: None,
             targets_withheld: false,
+            raft_formed: None,
             placed: None,
         }
     }

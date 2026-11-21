@@ -850,7 +850,11 @@ since the entries after a finalize rely on it. The other is a mark the state
 machine keeps: applying an entry whose variant or fields
 (`store/raft/command/fields.txt`) need a level above 8, the last released
 one, raises it to that level, whether or not the entry succeeds. Before any
-finalize, a delete carrying `take_shards` raises it to 10. The mark comes
+finalize, a delete carrying `take_shards` raises it to 10. A finalize
+proposed while the group is at 45 carries a level 45 field
+(`hold_unformed`), so it raises the mark to 45 whatever feature it names:
+from there every member holds a Raft shard's set until its group forms
+(#2794), and a member below 45 is not added. The mark comes
 from the entries alone, so every member holds the same one, and it rides
 the snapshot as `levels_used`, left out while it is 0. A
 v0.6.0-preview.7 member, at level 8, refuses a snapshot with a non-empty

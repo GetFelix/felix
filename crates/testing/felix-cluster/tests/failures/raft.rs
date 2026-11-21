@@ -23,8 +23,28 @@ pub(crate) fn engine() -> (String, String) {
 }
 
 /// The broker among `among` that leads the shard's Raft group, once
-/// exactly one says so.
+/// exactly one says so and the same one still says so a little later. The
+/// broker that forms a group leads it only until the group-start transfer
+/// hands leadership to placement's leader.
 pub(crate) async fn leader_among(cluster: &Cluster, among: &[String]) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let first = one_leader(cluster, among).await;
+        tokio::time::sleep(LEADER_SETTLES).await;
+        if one_leader(cluster, among).await == first {
+            return first;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no stable Raft leader"
+        );
+    }
+}
+
+/// How long a leader must keep leading before [`leader_among`] names it.
+const LEADER_SETTLES: Duration = Duration::from_secs(2);
+
+async fn one_leader(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(Duration::from_secs(60), "a Raft leader", || async {
         let mut leading = Vec::new();
         for node in among {

@@ -140,6 +140,10 @@ fn raft_member_of_internal() -> Vec<ShardAssignment> {
             .map(|node| (node.to_string(), 7))
             .collect(),
     });
+    assignment.raft_formed = Some(crate::model::RaftFormed {
+        incarnation: assignment.incarnation,
+        epoch: 0,
+    });
     vec![assignment]
 }
 
@@ -366,6 +370,10 @@ fn an_internal_leader_moves_before_its_internal_follower_is_swapped() {
             .iter()
             .map(|node| (node.to_string(), 7))
             .collect(),
+    });
+    existing.raft_formed = Some(crate::model::RaftFormed {
+        incarnation: existing.incarnation,
+        epoch: 0,
     });
     // The leader leads from a member that is live; only core2 is internal
     // among the followers, but the leader is internal too.

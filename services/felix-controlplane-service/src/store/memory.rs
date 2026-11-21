@@ -287,6 +287,7 @@ impl InMemoryStore {
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
         own_leader_set: bool,
+        hold_unformed: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
         shards::adopt_elected_leader(
             self,
@@ -295,6 +296,7 @@ impl InMemoryStore {
             elected,
             elected_set,
             own_leader_set,
+            hold_unformed,
         )
         .await
     }
@@ -774,7 +776,7 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
-        shards::put_shard_assignment(self, assignment, true, true).await
+        shards::put_shard_assignment(self, assignment, true, true, true).await
     }
 
     async fn put_shard_assignment_at_least(
@@ -791,6 +793,7 @@ impl ControlPlaneStore for InMemoryStore {
             Some(fence),
             true,
             at_least,
+            true,
             true,
             true,
         )
@@ -823,6 +826,7 @@ impl ControlPlaneStore for InMemoryStore {
             &elected,
             true,
             own_leader_set,
+            true,
         )
         .await
     }
@@ -872,7 +876,7 @@ impl ControlPlaneStore for InMemoryStore {
         node_id: &str,
         floors: Vec<crate::model::RaftFloorReport>,
     ) -> StoreResult<u32> {
-        Ok(self.apply_record_raft_floors(node_id, &floors).await)
+        Ok(self.apply_record_raft_floors(node_id, &floors, true).await)
     }
 
     async fn give_up_seal(

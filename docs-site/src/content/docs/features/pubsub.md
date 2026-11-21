@@ -171,13 +171,14 @@ A few things to know:
 - A refused publish consumes no offset, so the next write is not held up and
   leaves no gap. On the Raft engine (`FELIX_SHARD_ENGINE=raft`) the leader
   decides at the offset the entry lands at, so a refusal does consume one
-  offset: a gap that readers skip, and the tail in the refusal is past it.
+  offset per record: a gap that readers skip, and the tail in the refusal is
+  past it.
 - A batch of several records is not all or nothing on a `Quorum` stream. After
   an error with an unknown outcome (a dropped connection, a quorum timeout, a
   lost leader) any prefix of it may exist. `felix_client::outcome_unknown` tells
   that from a refusal that wrote nothing. On the Raft engine a conditional
-  publish carries exactly one record, a batch of several is refused, and like
-  any Raft publish it does not keep the publisher id. Use a
+  batch is written whole or not at all once the cluster finalizes
+  `raft_conditional_batches`, as a new cluster does. Use a
   [commit](/features/atomic-commits/) when the batch must be all or nothing.
 - If the answer is lost, do not resend: the retry would be refused by your own
   write. Read the shard at the expected offset and check both that the record you

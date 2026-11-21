@@ -337,13 +337,13 @@ supports and the ones an operator has enabled:
   "enabled": [], "serving_nodes": 3 }
 ```
 
-A broker reports twenty features: `generation_start`, `majority_ack`,
+A broker reports twenty-one features: `generation_start`, `majority_ack`,
 `lease_free_reads`, `jump_hash_routing`, `atomic_commit`,
 `publisher_principal`, `fenced_caches`, `stream_incarnations`,
 `group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
 `raft_head_trim`, `record_headers`, `raft_record_headers`,
 `record_generations`, `raft_atomic_commit`, `raft_stream_purge`, `raft_consumer_groups`,
-`raft_follower_read` and `raft_written_commit`. Two more, `joint_fence` and `replica_election`, are never reported: an operator finalizes them once the
+`raft_follower_read`, `raft_written_commit` and `raft_conditional_batches`. Two more, `joint_fence` and `replica_election`, are never reported: an operator finalizes them once the
 brokers offer the peer capabilities they need (see
 [Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
 

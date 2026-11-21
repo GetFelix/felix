@@ -1522,3 +1522,141 @@ async fn retention_frees_the_disk_of_every_raft_member() {
     publish_acked(&cluster, &leader, b"after").await;
     cluster.shutdown().await;
 }
+
+/// **A conditional publish of several records on a Raft shard is written
+/// whole at its expected offset and refused whole off it, and a leader that
+/// dies as a batch lands leaves all of it or none.** Each record is a piece
+/// kept only at the expected offset plus its place, and readers on every
+/// member skip a batch the next leader cut short.
+#[tokio::test]
+#[serial]
+async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
+    use felix_client::ConditionalWrite;
+
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["raft_conditional_batches", "raft_follower_read"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize raft_conditional_batches");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let direct = std::sync::Arc::new(
+        felix_cluster::client::connect(
+            cluster.node(&leader).expect("node").client_addr,
+            &cluster.tenant_id,
+            &cluster.client_token(),
+        )
+        .await
+        .expect("connect to the leader"),
+    );
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let batch = |prefix: &str, n: usize| -> Vec<Vec<u8>> {
+        (0..n)
+            .map(|i| format!("{prefix}{i}").into_bytes())
+            .collect()
+    };
+    let publish_if = |payloads: Vec<Vec<u8>>, expected: u64| {
+        let (direct, tenant, namespace) = (direct.clone(), tenant.clone(), namespace.clone());
+        async move {
+            direct
+                .publish_if(&tenant, &namespace, STREAM, None, payloads, expected)
+                .await
+        }
+    };
+
+    // Retried at whatever tail a refusal names, so an earlier attempt that
+    // timed out and landed later only moves the tail.
+    let mut tail = 1 << 40;
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN;
+    let kept = loop {
+        assert!(tokio::time::Instant::now() < deadline, "no batch written");
+        match publish_if(batch("kept", 3), tail).await {
+            Ok(ConditionalWrite::Written { offset }) => break offset,
+            Ok(ConditionalWrite::Refused { tail: at }) => tail = at,
+            Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+        }
+    };
+    let refused = publish_if(batch("stale", 2), kept).await.expect("answered");
+    assert_eq!(refused, ConditionalWrite::Refused { tail: kept + 5 });
+
+    // Batches go to the leader back to back, each at the tail the last left,
+    // and the leader is killed once a few have landed, so one is very likely
+    // in its log but not committed: it may commit whole, be cut short by the
+    // next leader, or never be appended.
+    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::unbounded_channel();
+    let flights = {
+        let (direct, tenant, namespace) = (direct.clone(), tenant.clone(), namespace.clone());
+        tokio::spawn(async move {
+            let mut answers = Vec::new();
+            let mut at = kept + 5;
+            for k in 0u32.. {
+                let pieces = (0..4)
+                    .map(|i| format!("flight{k}-{i}").into_bytes())
+                    .collect();
+                let answer = direct
+                    .publish_if(&tenant, &namespace, STREAM, None, pieces, at)
+                    .await;
+                match answer {
+                    Ok(ConditionalWrite::Written { offset }) => {
+                        answers.push(k);
+                        at = offset + 4;
+                        let _ = landed_tx.send(());
+                    }
+                    Ok(ConditionalWrite::Refused { tail }) => at = tail,
+                    Err(_) => break,
+                }
+            }
+            answers
+        })
+    };
+    for _ in 0..3 {
+        tokio::time::timeout(ELECTED_WITHIN, landed_rx.recv())
+            .await
+            .expect("a batch landed in time")
+            .expect("a batch landed");
+    }
+    cluster.kill_node(&leader).expect("kill the leader");
+    let acknowledged = flights.await.expect("joined");
+    let elected = leader_among(&cluster, &survivors).await;
+    publish_acked(&cluster, &elected, b"after").await;
+
+    let mut owed = batch("kept", 3);
+    owed.push(b"after".to_vec());
+    for node in &survivors {
+        let held = replay_holding(&cluster, node, &owed).await;
+        let at = held.iter().position(|p| p == b"kept0").expect("kept0");
+        assert_eq!(&held[at..at + 3], &batch("kept", 3)[..], "{node}");
+        assert!(
+            !held.iter().any(|p| p.starts_with(b"stale")),
+            "{node} read part of a refused batch: {held:?}"
+        );
+        // Every batch is all there, in order, or not there at all.
+        for k in 0..=acknowledged.last().map_or(0, |k| k + 1) {
+            let pieces = batch(&format!("flight{k}-"), 4);
+            let found: Vec<usize> = held
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| pieces.contains(p))
+                .map(|(at, _)| at)
+                .collect();
+            match found.first() {
+                None => assert!(
+                    !acknowledged.contains(&k),
+                    "{node} lost acknowledged batch {k}"
+                ),
+                Some(&first) => {
+                    assert_eq!(found.len(), 4, "{node} read part of batch {k}: {held:?}");
+                    assert_eq!(held.get(first..first + 4), Some(&pieces[..]), "{node}");
+                }
+            }
+        }
+    }
+    cluster.shutdown().await;
+}

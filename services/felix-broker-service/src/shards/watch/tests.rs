@@ -31,6 +31,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        raft_formed: None,
         placed: None,
     }
 }
@@ -108,6 +109,7 @@ fn targeted(incarnation: u64, counter: u64, withheld: bool) -> ShardAssignment {
             members: [("broker-a".to_string(), counter)].into_iter().collect(),
         }),
         targets_withheld: withheld,
+        raft_formed: None,
         placed: None,
         ..assignment(0, "broker-a", 3)
     }
@@ -376,6 +378,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        raft_formed: None,
         placed: None,
     }
 }
@@ -478,6 +481,34 @@ fn an_assignment_carries_a_raft_target_when_sent() {
     assert_eq!(
         target.members.into_iter().collect::<Vec<_>>(),
         [("broker-a".to_string(), 11), ("broker-b".to_string(), 12)]
+    );
+}
+
+/// The formed mark decodes as the control plane sends it. An item without
+/// one, as every control plane that predates it sends, has none and encodes
+/// without the field.
+#[test]
+fn an_assignment_carries_the_formed_mark_when_sent() {
+    let old = r#"{"tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+        "leader": "broker-a", "generation": 1, "state": "active"}"#;
+    let old: ShardAssignment = serde_json::from_str(old).expect("an item without a mark");
+    assert_eq!(old.raft_formed, None);
+    assert!(
+        !serde_json::to_string(&old)
+            .expect("encode")
+            .contains("raft_formed")
+    );
+
+    let new = r#"{"tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+        "leader": "broker-a", "generation": 1, "state": "active",
+        "raft_formed": {"incarnation": 2, "epoch": 1}}"#;
+    let new: ShardAssignment = serde_json::from_str(new).expect("an item with a mark");
+    assert_eq!(
+        new.raft_formed,
+        Some(super::RaftFormed {
+            incarnation: 2,
+            epoch: 1
+        })
     );
 }
 

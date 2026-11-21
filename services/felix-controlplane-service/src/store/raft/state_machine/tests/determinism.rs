@@ -379,6 +379,7 @@ async fn the_join_floor_follows_apply_and_restore() {
     original
         .apply(&encode_command(&MetaCommand::FinalizeFleetFeature {
             feature: jump_hash,
+            hold_unformed: false,
         }))
         .await;
 
@@ -550,6 +551,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
     ] {
         apply(MetaCommand::FinalizeFleetFeature {
             feature: feature.name().to_string(),
+            hold_unformed: false,
         })
         .await;
     }
@@ -709,7 +711,11 @@ async fn a_flagged_stream_create_decides_from_its_proposal() {
     let mut broker = node("broker-a", 7001);
     broker.status.features.insert(feature.clone());
     apply(MetaCommand::RegisterNodeInFleet { node: broker }).await;
-    apply(MetaCommand::FinalizeFleetFeature { feature }).await;
+    apply(MetaCommand::FinalizeFleetFeature {
+        feature,
+        hold_unformed: false,
+    })
+    .await;
 
     let incarnation = |answer: MetaResponse| match answer {
         MetaResponse::Stream { stream } => stream.incarnation,
@@ -776,6 +782,7 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
     let level_8 = [
         MetaCommand::FinalizeFleetFeature {
             feature: felix_common::fleet::STREAM_INCARNATIONS.name().to_string(),
+            hold_unformed: false,
         },
         MetaCommand::CreateStream {
             needs_identity: false,

@@ -105,6 +105,7 @@ module_of() {
     FelixGroups*) echo FelixGroups ;;
     FelixRaftMembership*) echo FelixRaftMembership ;;
     FelixRaftIdentity*) echo FelixRaftIdentity ;;
+    FelixRaftFirstForm*) echo FelixRaftFirstForm ;;
     FelixRaftPlacement*) echo FelixRaftPlacement ;;
     FelixRaftReform*) echo FelixRaftReform ;;
     FelixRaftLease*) echo FelixRaftLease ;;
@@ -823,6 +824,11 @@ expectations=(
   "FelixRaftSwitchPowerLossAckBeforeSync violates BaseAgree"
   "FelixRaftSwitchEndsLeaderWiped violates liveness"
   "FelixRaftSwitchReachStartCrash violates NeverRestartsBeforeMark"
+  "FelixRaftFirstForm pass"
+  "FelixRaftFirstFormDisjoint pass"
+  "FelixRaftFirstFormSingle pass"
+  "FelixRaftFirstFormNoHold violates OneGroup"
+  "FelixRaftFirstFormNoEpoch violates OneGroup"
   "FelixRaftReform pass"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"

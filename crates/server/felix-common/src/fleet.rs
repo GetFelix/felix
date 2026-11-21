@@ -87,6 +87,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_CONSUMER_GROUPS,
     RAFT_FOLLOWER_READ,
     RAFT_WRITTEN_COMMIT,
+    RAFT_CONDITIONAL_BATCHES,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -209,9 +210,7 @@ pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_
 /// A stream shard on the Raft engine takes conditional publishes of several
 /// records: each record is a conditional piece, a Raft entry and a record
 /// kind a build that predates this refuses. So it waits for the whole fleet.
-/// Not in [`IMPLEMENTED`] yet: no build reports it until every read path of
-/// a Raft stream applies the whole-batch rule (`felix_storage::log::conditional`).
-/// See `docs/per-shard-raft.md` ("Conditional publishes").
+/// Until it is finalized such a publish is refused. See `docs/per-shard-raft.md` ("Conditional publishes").
 pub const RAFT_CONDITIONAL_BATCHES: FleetFeature = FleetFeature::new("raft_conditional_batches");
 
 /// A stream shard on the Raft engine frees the disk below its head trim: a

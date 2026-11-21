@@ -219,6 +219,10 @@ fn assignment() -> ShardAssignment {
             index: 1,
             term: 1,
         }),
+        raft_formed: Some(crate::model::RaftFormed {
+            incarnation: 1,
+            epoch: 1,
+        }),
         raft_ordered: Some(crate::model::RaftOrdered {
             incarnation: 1,
             epoch: 1,
@@ -573,6 +577,7 @@ fn commands() -> Vec<MetaCommand> {
             seq_generation: true,
             assignment: assignment(),
             start_placed: true,
+            hold_unformed: true,
         },
         MetaCommand::PutShardAssignmentIf {
             seq_generation: true,
@@ -587,6 +592,7 @@ fn commands() -> Vec<MetaCommand> {
             at_least: 3,
             record_previous: true,
             start_placed: true,
+            hold_unformed: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),
@@ -599,6 +605,7 @@ fn commands() -> Vec<MetaCommand> {
             },
             elected_set: true,
             own_leader_set: true,
+            hold_unformed: true,
         },
         MetaCommand::TakePlacementLease { holder: s("h") },
         MetaCommand::DeleteShardAssignment { key: shard_key() },
@@ -628,6 +635,7 @@ fn commands() -> Vec<MetaCommand> {
             copy_id: 1,
             keep_ordered: true,
             shard_incarnation: Some(1),
+            hold_target: true,
         },
         MetaCommand::DeclareNodeDead { node_id: s("b") },
         MetaCommand::RecordRaftFloors {
@@ -639,6 +647,7 @@ fn commands() -> Vec<MetaCommand> {
                 index: 1,
                 term: 1,
             }],
+            mark_formed: true,
         },
         MetaCommand::SealShard {
             key: shard_key(),
@@ -755,7 +764,10 @@ fn commands() -> Vec<MetaCommand> {
             }],
         },
         MetaCommand::RegisterNodeInFleet { node: node() },
-        MetaCommand::FinalizeFleetFeature { feature: s("f") },
+        MetaCommand::FinalizeFleetFeature {
+            feature: s("f"),
+            hold_unformed: true,
+        },
         MetaCommand::CreateResources {
             needs_identity: true,
             names: true,

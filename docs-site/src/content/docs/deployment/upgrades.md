@@ -683,6 +683,19 @@ broker allows them from the start.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_conditional_batches`
+
+Once finalized, a stream shard that runs on Raft accepts a conditional publish
+(`publish_if`) of several records, written whole at its expected offset or
+refused whole. Until then a broker in a cluster refuses such a batch with
+`invalid_request` and proposes nothing; a conditional publish of one record
+needs no setting. Each record of a batch is an entry and a record kind a
+broker built before it refuses, so replication to that broker would stop at
+the entry, and a broker downgraded to such a build cannot read a log that
+holds one. A single broker allows them from the start.
+
+- **A new cluster** starts with it finalized.
+
 #### `raft_consumer_groups`
 
 Once finalized, a stream shard that runs on Raft serves consumer groups. Until

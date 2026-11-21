@@ -6,7 +6,11 @@
 //! control plane last accepted it. A group stays owed until a 200 answers a
 //! request that carried it, so a control plane that refused the writes (409
 //! before its metadata level allows them) gets every led group, idle ones
-//! included, on the first tick it accepts.
+//! included, on the first tick it accepts. Every [`REFRESH`] each led group
+//! the control plane's feed does not show marked formed is owed again, idle
+//! or not: a group formed before the control plane recorded the first-form
+//! mark gets it from this report alone (#2794). A marked group is sent only
+//! when its commit moves.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -22,6 +26,11 @@ use super::{RaftShards, ShardKey};
 
 /// How often the floors are reported.
 pub(crate) const INTERVAL: Duration = Duration::from_secs(1);
+
+/// How often every led group not yet marked formed is sent again though its
+/// commit did not move. Slow on purpose: each accepted request is a
+/// control-plane log entry.
+pub(crate) const REFRESH: Duration = Duration::from_secs(30);
 
 /// Most entries in one request. More wait for the next tick, so the first
 /// report of a broker leading many groups stays within the control plane's
@@ -39,6 +48,9 @@ pub(crate) struct Led {
     /// The group epoch the copy proves (`super::proven_epoch`).
     pub(crate) epoch: u64,
     pub(crate) at: LogPoint,
+    /// The newest feed shows this group, at this incarnation and epoch,
+    /// marked formed, so a refresh skips it.
+    pub(crate) formed: bool,
 }
 
 /// A led group's committed log id and the last one the control plane took.
@@ -47,6 +59,7 @@ struct Entry {
     epoch: u64,
     at: LogPoint,
     acked: Option<(u64, LogPoint)>,
+    formed: bool,
 }
 
 /// The floors owed to the control plane, by shard and incarnation: a group
@@ -71,13 +84,22 @@ impl Floors {
             incarnation,
             epoch,
             at,
+            formed,
         } in led.into_iter().map(Into::into)
         {
             let acked = self
                 .entries
                 .remove(&(key.clone(), incarnation))
                 .and_then(|entry| entry.acked);
-            seen.insert((key, incarnation), Entry { epoch, at, acked });
+            seen.insert(
+                (key, incarnation),
+                Entry {
+                    epoch,
+                    at,
+                    acked,
+                    formed,
+                },
+            );
         }
         self.entries = seen;
     }
@@ -113,6 +135,16 @@ impl Floors {
             .collect();
         self.resume_after = resume_after;
         batch
+    }
+
+    /// Owe every tracked group not marked formed again, as if the control
+    /// plane had never taken it. The next batches carry them all,
+    /// [`MAX_BATCH`] at a time. A mark the feed has not shown, or one for
+    /// another incarnation or epoch, leaves the group owed.
+    pub(crate) fn owe_unformed(&mut self) {
+        for entry in self.entries.values_mut().filter(|entry| !entry.formed) {
+            entry.acked = None;
+        }
     }
 
     /// The control plane took `batch`. An entry that moved since stays owed.
@@ -169,7 +201,8 @@ pub(crate) async fn tick<L: ControlPlaneLink>(
     }
 }
 
-/// Report `shards`' floors every [`INTERVAL`] until `stop`.
+/// Report `shards`' floors every [`INTERVAL`], and every led group not yet
+/// marked formed every [`REFRESH`], until `stop`.
 pub(crate) async fn run<L: ControlPlaneLink>(
     shards: Arc<RaftShards>,
     link: L,
@@ -180,10 +213,15 @@ pub(crate) async fn run<L: ControlPlaneLink>(
     let mut floors = Floors::default();
     let mut every = tokio::time::interval(INTERVAL);
     every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut refreshed = tokio::time::Instant::now();
     loop {
         tokio::select! {
             () = stop.cancelled() => return,
             _ = every.tick() => {}
+        }
+        if refreshed.elapsed() >= REFRESH {
+            floors.owe_unformed();
+            refreshed = tokio::time::Instant::now();
         }
         let bearer = credential.as_ref().map(|credential| credential.bearer());
         let report = tick(
