@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795283489799,
+  "lastUpdate": 1795283806802,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64688,6 +64688,58 @@ window.BENCHMARK_DATA = {
             "range": "21780.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1565218.30\nmean: 1574844.95\nstdev: 21780.26\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aae588df8451f9cf1957a12d783110bfc733d726",
+          "message": "fix(raft): the control plane holds a shard's set until its first Raft group forms (#2794) (#2904)\n\n* fix(raft): hold a shard's set until its group first forms (#2794)\n\nA broker cut off from the control plane forms the target it last read, so\na placement move before the first form let a second set get its own target\nand a second group. The control plane now refuses a set change once it has\nstored a target, until a leader the target names sends a floor report, which\nmarks the group formed at that incarnation. Behind metadata level 45: the\ncommand carries the flag, so members below it apply as before.\n\nAdds FelixRaftFirstForm.tla: FelixRaftFirstFormNoHold finds two term-1\nleaders of different sets; FelixRaftFirstForm passes with the hold.\n\n* fix(raft): the unformed-set hold fails closed on the join floor (#2794)\n\nThe apply holds an unformed set whenever the join floor is at 45, not only\nwhen the proposer flagged the entry, so a proposer that counted a down\ncontrol-plane member low cannot lift it. The copy-id report that stores a\ntarget carries a level 45 field, and placement waits on any planned set\nchange the store would refuse.\n\n* fix(raft): idle groups get the formed mark, and every set write holds (#2794)\n\nThe broker floor reporter sends every led group again every 30 s, so a\ngroup formed before level 45 gets the first-form mark without a publish.\nA fleet feature finalize at level 45 carries a level 45 field, so a new\ncluster's join floor is 45 before its first stream. The pre-fencing\nPutShardAssignmentIf takes the join floor's hold like the other set writes.\n\n* fix(raft): only a leader of the placed epoch marks a group formed (#2794)\n\nThe floor refresh re-sends a cut-off leader's old-epoch report every 30 s.\nMarking only at the record's reform epoch keeps such a report from\nreleasing a re-formed group's held set. Note: any finalize at level 45\nlifts the join floor to 45, so no control-plane member below 45 can join\nafter it; 0.8 has no upgrade from 0.7.\n\n* fix(raft): key the formed mark on the epoch and refresh only unmarked groups (#2794)\n\nThe formed mark now records the stream incarnation and the reform epoch\n(`RaftFormed`), and `holds_unformed_set` compares it with the record's\ncurrent epoch. A re-form's first target is held again until a leader of\nthe new epoch reports; an earlier epoch's mark releases nothing.\n\nThe shard feed carries `raft_formed` as an optional field, absent unless\nset, so an old broker and an old control plane exchange the same bytes.\nThe broker's floor refresh re-sends only led groups the feed does not\nshow marked at the group's incarnation and epoch. A mark not yet seen,\nor one for another incarnation or epoch, leaves the group in the refresh.\n\nFelixRaftFirstForm models the epoch and the per-epoch mark, with configs\nfor sets that share no broker, a replication factor 1 move, and a mark\nthat ignores the epoch (violates OneGroup). After the mark the model\nchanges a set only by a one-member swap, which is what placement writes.\n\n* docs(raft): state what the first-form model assumes after the mark (#2794)\n\nThe one-member swap after the mark is a modelling assumption: a chain\nof swaps or an RF 1 re-placement can still put a formed group on blank\nbrokers, the documented gap now tracked in #2905. Document that a\nrestored shard of a re-formed group stays held until a re-form.",
+          "timestamp": "2026-11-21T17:50:12Z",
+          "tree_id": "119478812bfc7edf66bb3bebe73945a995f03476",
+          "url": "https://github.com/GetFelix/felix/commit/aae588df8451f9cf1957a12d783110bfc733d726"
+        },
+        "date": 1795283806305,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 533583.49,
+            "range": "48201.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533583.49\nmean: 562923.31\nstdev: 48201.59\ncv: 8.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 533583.49,
+            "range": "48201.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533583.49\nmean: 562923.31\nstdev: 48201.59\ncv: 8.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125043.36,
+            "range": "1369.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125043.36\nmean: 124340.14\nstdev: 1369.49\ncv: 1.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1250433.63,
+            "range": "13694.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1250433.63\nmean: 1243401.40\nstdev: 13694.89\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
