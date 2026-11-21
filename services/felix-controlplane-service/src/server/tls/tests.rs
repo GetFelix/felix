@@ -1,13 +1,14 @@
 //! The bootstrap listener follows rotation of its certificate and client CA,
-//! and keeps its certificate when a rotated one would not verify.
+//! and the API and bootstrap listeners keep their certificate when a rotated
+//! one would not verify or drops a name.
 use std::path::Path;
 use std::sync::Arc;
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName};
 
-use super::bootstrap_tls;
-use crate::config::BootstrapTlsConfig;
+use super::{bootstrap_tls, load_api_identity};
+use crate::config::{ApiTlsConfig, BootstrapTlsConfig};
 
 struct Ca {
     issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
@@ -38,7 +39,11 @@ fn leaf(ca: &Ca, name: &str, year: i32) -> (String, String, CertificateDer<'stat
 }
 
 fn write_server(dir: &Path, ca: &Ca, year: i32) -> CertificateDer<'static> {
-    let (cert, key, der) = leaf(ca, "localhost", year);
+    write_server_for(dir, ca, "localhost", year)
+}
+
+fn write_server_for(dir: &Path, ca: &Ca, name: &str, year: i32) -> CertificateDer<'static> {
+    let (cert, key, der) = leaf(ca, name, year);
     std::fs::write(dir.join("server.pem"), cert).expect("write cert");
     std::fs::write(dir.join("server.key"), key).expect("write key");
     der
@@ -146,4 +151,30 @@ async fn the_bootstrap_client_ca_rotates() {
     handshake(server, &old_ca, &old_ca)
         .await
         .expect("a client from the old CA");
+}
+
+/// Brokers dial the API and bootstrap listeners by a configured name, so a
+/// rotated certificate that drops it is refused on both.
+#[test]
+fn the_api_and_bootstrap_listeners_refuse_a_rotated_certificate_for_another_name() {
+    let ca = ca();
+    let dir = tempfile::tempdir().expect("dir");
+    write_server(dir.path(), &ca, 2099);
+    std::fs::write(dir.path().join("client-ca.pem"), &ca.pem).expect("write ca");
+    let (_, bootstrap, _) = bootstrap_tls(&config(dir.path())).expect("bootstrap tls");
+    let api = load_api_identity(&ApiTlsConfig {
+        cert_path: config(dir.path()).cert_path,
+        key_path: config(dir.path()).key_path,
+        client_ca_path: None,
+        bind_subject: false,
+    })
+    .expect("api tls");
+
+    write_server_for(dir.path(), &ca, "elsewhere.test", 2099);
+    for (what, identity) in [("api", api), ("bootstrap", bootstrap)] {
+        let err = identity
+            .reload()
+            .expect_err("a certificate dropping a name was taken");
+        assert!(err.to_string().contains("localhost"), "{what}: {err}");
+    }
 }
