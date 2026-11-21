@@ -1111,3 +1111,176 @@ mod skipped_counts {
         );
     }
 }
+
+/// A stream shard's state machine over the log and snapshot store in `dir`.
+async fn stream_machine(dir: &std::path::Path) -> super::super::machine::Opened {
+    let log = open_log(dir, "m", 0, log_config());
+    let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
+    super::super::machine::Machine::open(snapshots, ShardKind::Stream, Some(&log))
+        .await
+        .expect("open")
+}
+
+/// Entries of a stream shard's log: a record, a conditional piece or a
+/// leader's blank, at `(term, index)`.
+fn entries(
+    of: &[((u64, u64), Holds)],
+) -> impl futures::Stream<Item = std::io::Result<openraft::storage::EntryResponder<ShardTypes>>> + Unpin
+{
+    use openraft::entry::RaftEntry;
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+    let entries: Vec<_> = of
+        .iter()
+        .map(|&((term, index), holds)| {
+            let id = LogIdOf::<ShardTypes>::new(term.into(), index);
+            let cond = match holds {
+                Holds::Piece { position, len } => Some(types::CondPlace { position, len }),
+                Holds::Record | Holds::Nothing => None,
+            };
+            let entry = match holds {
+                Holds::Nothing => EntryOf::<ShardTypes>::new_blank(id),
+                Holds::Record | Holds::Piece { .. } => EntryOf::<ShardTypes>::new_normal(
+                    id,
+                    Command {
+                        timestamp_micros: index,
+                        payload: Bytes::from_static(b"r"),
+                        producer: None,
+                        expected: None,
+                        trim: None,
+                        commit: false,
+                        group: false,
+                        publisher: None,
+                        headers: None,
+                        written: None,
+                        cond,
+                    },
+                ),
+            };
+            Ok((entry, None))
+        })
+        .collect();
+    futures::stream::iter(entries)
+}
+
+/// **A batch of which only a prefix committed, cut by the next leader's
+/// blank, is never read into and counts in the next record's skips.** The
+/// member applies the two pieces in one run and the new term's blank where
+/// the third belonged in the next: the read bound it publishes stays at the
+/// first piece until the blank, then moves past the whole cut batch, and
+/// the publisher of the next record hears of all three offsets.
+#[tokio::test]
+async fn a_batch_cut_by_the_next_leader_is_never_read_into_and_is_skipped() {
+    use openraft::storage::RaftStateMachine;
+    let dir = tempfile::tempdir().expect("dir");
+    let super::super::machine::Opened {
+        mut machine,
+        commits,
+        skips,
+        ..
+    } = stream_machine(dir.path()).await;
+    let claim = skips.claim(&commits);
+    let bounds = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let watching = {
+        let (mut commits, bounds) = (commits.clone(), bounds.clone());
+        tokio::spawn(async move {
+            while commits.changed().await.is_ok() {
+                bounds.lock().push(commits.borrow_and_update().read_bound());
+            }
+        })
+    };
+    machine
+        .apply(entries(&[
+            ((1, 1), Holds::Record),
+            ((1, 2), piece(0, 3)),
+            ((1, 3), piece(1, 3)),
+        ]))
+        .await
+        .expect("apply");
+    assert_eq!(commits.borrow().read_bound(), 2);
+    assert_eq!(commits.borrow().applied_end(), 4);
+    machine
+        .apply(entries(&[((2, 4), Holds::Nothing)]))
+        .await
+        .expect("apply");
+    assert_eq!(commits.borrow().read_bound(), 5);
+    machine
+        .apply(entries(&[((2, 5), Holds::Record)]))
+        .await
+        .expect("apply");
+    assert_eq!(claim.skipped_before(5), 3, "both pieces and the blank");
+    drop(machine);
+    watching.await.expect("watcher");
+    let bounds = bounds.lock().clone();
+    assert!(
+        bounds.iter().all(|bound| !(3..=4).contains(bound)),
+        "a bound inside the batch: {bounds:?}"
+    );
+}
+
+/// **A member that resumes with its last applied entry inside a batch
+/// keeps the read bound at the batch's first piece.** It reads the open
+/// batch back from its log, after an install and after a restart, and the
+/// batch's last piece then releases the bound as on any member.
+#[tokio::test]
+async fn a_member_resuming_inside_a_batch_reads_it_back_from_its_log() {
+    use felix_storage::log::{AppendRecord, CondPiece, RecordMark};
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let applied = [
+        ((1, 1), Holds::Record),
+        ((1, 2), piece(0, 3)),
+        ((1, 3), piece(1, 3)),
+    ];
+    let sender_dir = tempfile::tempdir().expect("dir");
+    let mut sender = stream_machine(sender_dir.path()).await.machine;
+    sender.apply(entries(&applied)).await.expect("apply");
+    let built = sender
+        .get_snapshot_builder()
+        .await
+        .build_snapshot()
+        .await
+        .expect("build");
+    assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(3));
+
+    // The receiver's log holds the same entries, as a member's log does
+    // up to where it applied.
+    let dir = tempfile::tempdir().expect("dir");
+    let log = open_log(dir.path(), "m", 0, log_config());
+    let mark = |mark| AppendRecord {
+        payload: Bytes::from_static(b"r"),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    };
+    let cond = |position| RecordMark::CondPiece(CondPiece { position, len: 3 });
+    log.append_v9_for_tests(
+        &[
+            mark(RecordMark::GenerationStart),
+            mark(RecordMark::None),
+            mark(cond(0)),
+            mark(cond(1)),
+        ],
+        1,
+    )
+    .await
+    .expect("append");
+    drop(log);
+    let opened = stream_machine(dir.path()).await;
+    let mut receiver = opened.machine;
+    receiver
+        .install_snapshot(&built.meta, built.snapshot)
+        .await
+        .expect("install");
+    assert_eq!(opened.commits.borrow().read_bound(), 2, "after the install");
+    assert_eq!(opened.commits.borrow().applied_end(), 4);
+    drop(receiver);
+
+    let reopened = stream_machine(dir.path()).await;
+    assert_eq!(reopened.commits.borrow().read_bound(), 2, "after a restart");
+    let mut machine = reopened.machine;
+    machine
+        .apply(entries(&[((1, 4), piece(2, 3))]))
+        .await
+        .expect("apply");
+    assert_eq!(reopened.commits.borrow().read_bound(), 5);
+}

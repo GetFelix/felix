@@ -379,3 +379,18 @@ fn a_released_trim_behind_a_gap_on_a_deposed_broker_keeps_the_sequence() {
     assert!(stream.apply_trim(5, 1, None));
     assert_eq!(stream.log_state.lock().next_seq, 6);
 }
+
+/// **A conditional publish of three records blanked by the engine releases
+/// all three offsets.** The stream's sequence moves past every one, and the
+/// next publish reports the three as skipped, not as a drop.
+#[test]
+fn a_blanked_batch_of_three_releases_three_offsets() {
+    let stream = stream();
+    let blank = crate::stream::committed::HeldBatch::blank(4, 3);
+    assert_eq!(blank.end(), 7);
+    stream.log_state.lock().next_seq = 4;
+    stream.pass_blank(blank.first_offset, blank.blanks);
+    let state = stream.log_state.lock();
+    assert_eq!(state.next_seq, 7);
+    assert_eq!(state.generation_start_run, Some((7, 3)));
+}
