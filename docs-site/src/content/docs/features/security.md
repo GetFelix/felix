@@ -111,12 +111,33 @@ printf %s "$token" | sha256sum | cut -d' ' -f1
 Without `FELIX_OPERATOR_TOKEN_SHA256` the routes answer `403`. Leave it unset
 until you need one, and comma-separate two digests while you rotate.
 
+The token is a bearer header, so the member you send it to sees it. Treat it
+as spent once used: send it over the bootstrap listener's mTLS
+(`FELIX_BOOTSTRAP_TLS_*`) or a port-forward, never in cleartext across the
+pod network, and remove or replace the digest on every member as soon as the
+import or waiver is done. A member that leads can still append any entry to
+its own log, an import included; that is the crash-fault limit of Raft, not
+something a credential closes.
+
 Upgrading is breaking. Reissue every member's certificate with its URI SAN
 first: builds before this check only verify the CA, so they accept the new
 certificates. Then roll the new build one member at a time, keeping
 `FELIX_RAFT_PEER_TOKEN` set until every member runs it: older members still
 require the token. A member started under the wrong certificate exits at
 startup, and the others keep their quorum. No metadata level changes.
+
+Under the Helm chart the old shared certificate has no URI SAN, so a rolled
+member cannot talk to the old ones and the rollout waits on its readiness.
+Create the per-member Secrets first, run `helm upgrade`, then delete every
+control-plane pod together so all members restart on their own certificates
+(`kubectl delete pod -l app.kubernetes.io/component=controlplane`). The
+control plane is unavailable until they elect a leader; brokers keep serving
+on what they already know.
+
+Each node that runs a member holds every member's certificate Secret, since
+the chart projects them all into the init container. A compromised member
+process sees only its own key, but a compromised node, or anyone who can
+attach a debug container to the pod, can read them all.
 
 The member does not record an incarnation in its vote record, so one
 certificate per incarnation plus revocation stands in for it, and a member's

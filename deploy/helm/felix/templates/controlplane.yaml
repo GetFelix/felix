@@ -87,8 +87,8 @@ spec:
             - |
               id="$(( ${POD_NAME##*-} + 1 ))"
               src="/etc/felix/raft-tls-all/$id"
-              if [ ! -f "$src/tls.crt" ]; then
-                echo "no Raft peer certificate for member $id: create Secret {{ include "felix.controlplane.raftTlsPrefix" . }}-$id" >&2
+              if [ ! -f "$src/tls.crt" ] || [ ! -f "$src/tls.key" ] || [ ! -f "$src/ca.crt" ]; then
+                echo "no Raft peer certificate for member $id: create Secret {{ include "felix.controlplane.raftTlsPrefix" . }}-$id with tls.crt, tls.key and {{ $cp.storage.raft.tls.caKey }}" >&2
                 exit 1
               fi
               cp "$src/tls.crt" "$src/tls.key" "$src/ca.crt" /etc/felix/raft-tls/
