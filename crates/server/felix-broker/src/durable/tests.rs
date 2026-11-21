@@ -242,6 +242,82 @@ async fn the_event_end_steps_back_over_membership_and_counter_records() {
     assert_eq!(log.event_end(0, 7).await.expect("end"), 5);
 }
 
+/// `marks` as v9 records, each with its payload.
+async fn append_v9_marked(log: &StreamLog, marks: &[(RecordMark, &'static str)]) {
+    let records: Vec<AppendRecord> = marks
+        .iter()
+        .map(|(mark, payload)| AppendRecord {
+            payload: Bytes::from(*payload),
+            timestamp_micros: 1,
+            mark: *mark,
+            publisher: None,
+            headers: None,
+        })
+        .collect();
+    log.append_v9_for_tests(&records, 1)
+        .await
+        .expect("v9 append");
+}
+
+fn cond(position: u32, len: u32) -> RecordMark {
+    RecordMark::CondPiece(felix_storage::log::CondPiece { position, len })
+}
+
+/// **A read never returns part of a conditional batch.** A batch cut by a
+/// blank where its last piece belonged is skipped like the blank, wherever
+/// the read starts; a whole batch reads back whole; a batch the log ends
+/// inside is undecided and not returned. The event end steps back over the
+/// cut and the undecided pieces, so a reader waiting on them does not wait
+/// for records that never come.
+#[tokio::test]
+async fn a_read_skips_a_cut_conditional_batch_and_stops_before_an_undecided_one() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    append_v9_marked(
+        &log,
+        &[
+            (RecordMark::None, "a"),
+            (cond(0, 3), "c0"),
+            (cond(1, 3), "c1"),
+            (RecordMark::GenerationStart, "blank"),
+            (cond(0, 2), "w0"),
+            (cond(1, 2), "w1"),
+            (RecordMark::None, "b"),
+        ],
+    )
+    .await;
+    let seen = |records: Vec<LogRecord>| -> Vec<Offset> {
+        records.into_iter().map(|r| r.offset).collect()
+    };
+    assert_eq!(
+        seen(log.read_from(0, usize::MAX).await.expect("read")),
+        [0, 4, 5, 6]
+    );
+    for start in 1..=4 {
+        assert_eq!(
+            seen(log.read_from(start, 1).await.expect("read")),
+            [4, 5],
+            "from {start}: the whole batch, not the cut one"
+        );
+    }
+    assert_eq!(log.event_end(0, 4).await.expect("end"), 1, "past the cut");
+    assert_eq!(log.event_end(0, 7).await.expect("end"), 7);
+
+    // A batch the log ends inside.
+    append_v9_marked(&log, &[(cond(0, 3), "u0"), (cond(1, 3), "u1")]).await;
+    assert_eq!(
+        seen(log.read_from(0, usize::MAX).await.expect("read")),
+        [0, 4, 5, 6]
+    );
+    assert!(log.read_from(7, usize::MAX).await.expect("read").is_empty());
+    let page = log.read_log_from(6, usize::MAX).await.expect("read");
+    assert_eq!(page.next, 7, "the page stops at the undecided batch");
+    assert_eq!(log.event_end(0, 9).await.expect("end"), 7);
+}
+
 /// **Past the gate, events go into v9 and read back as written.** The log
 /// moves onto v9 only at a roll after the gate opens, and a read returns
 /// every event at its own offset, with nothing that is not one.

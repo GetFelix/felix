@@ -1763,9 +1763,10 @@ impl Group {
         self.skips.claim(&self.commits)
     }
 
-    /// One past the last offset this member knows committed. It moves when
-    /// the state machine applies an entry, so it never passes the commit
-    /// index, on a leader or a follower.
+    /// One past the last offset this member knows committed, or the first
+    /// piece of a conditional batch still undecided there. It moves when the
+    /// state machine applies an entry, so it never passes the commit index,
+    /// on a leader or a follower. See [`Commits::read_bound`].
     pub(crate) fn read_bound(&self) -> u64 {
         self.commits.borrow().read_bound()
     }
@@ -2284,7 +2285,7 @@ impl Group {
         // Applied through `bound - 1`; a bound of 0 holds at once.
         let index = bound.saturating_sub(1);
         let applied = self.applied.wait_for(&self.commits, index, |commits| {
-            (commits.read_bound() >= bound).then_some(())
+            (commits.applied_end() >= bound).then_some(())
         });
         tokio::select! {
             biased;

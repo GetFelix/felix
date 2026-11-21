@@ -32,9 +32,9 @@ use tokio::sync::{Semaphore, watch};
 
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{ShardCodec, StoredMembership, invalid};
-use super::commit::{Commits, Skips};
+use super::commit::{Commits, Holds, OpenBatch, Skips};
 use super::stream_snapshot::StreamSnapshot;
-use super::types::{Applied, ShardTypes};
+use super::types::{Applied, CondPlace, ShardTypes};
 use crate::ShardKind;
 
 /// A cache group's projection, shared by its state machine, which writes
@@ -137,7 +137,10 @@ impl Machine {
                 (Some(Arc::new(parking_lot::RwLock::new(restored))), None)
             }
         };
-        let commits = Commits::resumed(state.last_applied.as_ref().map(point));
+        let applied = state.last_applied.as_ref().map(point);
+        let commits = Commits::resumed(applied).in_batch(
+            open_batch(log.filter(|_| matches!(kind, ShardKind::Stream)), applied).await?,
+        );
         let (published, watched) = watch::channel(commits.clone());
         let applied = Queue::new();
         let waiters = applied.waiters();
@@ -189,6 +192,66 @@ impl Machine {
         self.applied
             .advance(self.commits.applied().map(|applied| applied.index));
     }
+}
+
+/// The conditional batch a stream shard's log holds `applied` inside, read
+/// back from the log the way a disk read resolves it. Apply keeps it in
+/// memory, so only a member that resumes at `applied` asks. `None` when
+/// the log no longer holds the entries (a purge or an install dropped
+/// them): its reads then see the rest of the batch the same way.
+async fn open_batch(
+    log: Option<&DiskLog>,
+    applied: Option<LogPoint>,
+) -> io::Result<Option<OpenBatch>> {
+    use felix_storage::log::{AppendOnlyLog, ReadRange, RecordMark, conditional};
+    let (Some(log), Some(applied)) = (log, applied) else {
+        return Ok(None);
+    };
+    let end = applied.index + 1;
+    let last = log
+        .read_range_with_trims(ReadRange {
+            start: applied.index.max(log.base_offset()),
+            max_bytes: 1,
+        })
+        .await
+        .map_err(io::Error::other)?;
+    let Some(RecordMark::CondPiece(piece)) = last
+        .first()
+        .filter(|record| record.offset == applied.index)
+        .map(|record| record.mark)
+    else {
+        return Ok(None);
+    };
+    let from = applied
+        .index
+        .saturating_sub(u64::from(piece.position))
+        .max(log.base_offset());
+    let mut records = Vec::new();
+    let mut next = from;
+    while next < end {
+        let page = log
+            .read_range_with_trims(ReadRange {
+                start: next,
+                max_bytes: 1 << 20,
+            })
+            .await
+            .map_err(io::Error::other)?;
+        let Some(last) = page.last() else { break };
+        next = last.offset + 1;
+        records.extend(page.into_iter().filter(|record| record.offset < end));
+    }
+    let resolved = conditional::resolve(records, end, end);
+    let (Some(first), Some(last)) = (resolved.pending.first(), resolved.pending.last()) else {
+        return Ok(None);
+    };
+    Ok(match last.mark {
+        RecordMark::CondPiece(piece) => Some(OpenBatch {
+            first: first.offset,
+            next: piece.position + 1,
+            len: piece.len,
+        }),
+        _ => None,
+    })
 }
 
 /// A state machine as [`Machine::open`] opened it, and what the member's
@@ -770,28 +833,21 @@ impl RaftStateMachine<ShardTypes> for Machine {
             // openraft applies entries read back from the log, where a
             // conditional publish off its offset is already a blank. Checked
             // again in case one ever reaches apply as the command.
-            let record = match &entry.payload {
-                EntryPayload::Normal(command) => command.holds_record_at(entry.log_id.index),
-                _ => false,
+            let holds = match &entry.payload {
+                EntryPayload::Normal(command) if command.holds_record_at(entry.log_id.index) => {
+                    match command.cond {
+                        Some(CondPlace { position, len }) => Holds::Piece { position, len },
+                        None => Holds::Record,
+                    }
+                }
+                _ => Holds::Nothing,
             };
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);
             }
-            self.commits.advance(point(&entry.log_id));
-            let index = entry.log_id.index;
-            if record {
-                if self.quiet.end == index && !self.quiet.is_empty() {
-                    skipped.push((index, index - self.quiet.start));
-                }
-                self.quiet = index + 1..index + 1;
-            } else {
-                self.commits.holds_no_record(index);
-                if self.quiet.end != index {
-                    self.quiet.start = index;
-                }
-                self.quiet.end = index + 1;
-            }
+            self.commits
+                .apply(point(&entry.log_id), holds, &mut self.quiet, &mut skipped);
             self.state.last_applied = Some(entry.log_id);
             #[cfg(test)]
             {
@@ -909,9 +965,11 @@ impl RaftStateMachine<ShardTypes> for Machine {
             membership: meta.last_membership.clone(),
         };
         // Only the snapshot's last entry is known by term now.
-        let resumed = Commits::resumed(meta.last_log_id.as_ref().map(point));
-        if resumed.read_bound() > self.commits.read_bound() {
-            self.commits = resumed;
+        let applied = meta.last_log_id.as_ref().map(point);
+        if Commits::resumed(applied).applied_end() > self.commits.applied_end() {
+            let batch = open_batch(self.log.as_ref(), applied).await?;
+            self.commits = Commits::resumed(applied).in_batch(batch);
+            self.quiet = 0..0;
             if self.publish() {
                 self.wake();
             }

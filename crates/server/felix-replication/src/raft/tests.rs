@@ -106,6 +106,9 @@ struct Net {
     muted: parking_lot::Mutex<HashSet<String>>,
     /// While set, every append is lost. Votes still go through.
     lose_appends: std::sync::atomic::AtomicBool,
+    /// While set, an append carrying an entry at this index or above is
+    /// lost, so with one entry per append a follower gets a prefix.
+    lose_entries_from: parking_lot::Mutex<Option<u64>>,
     /// While set, every vote request is lost. Pre-votes still go through.
     lose_votes: std::sync::atomic::AtomicBool,
     /// Cut appends as the peer transport does, and hold each for as long as
@@ -204,6 +207,11 @@ impl RaftTransport for Net {
         }
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
+            || matches!(
+                (&request.body, *self.lose_entries_from.lock()),
+                (Request::Append(rpc), Some(from))
+                    if rpc.entries.iter().any(|entry| entry.log_id.index >= from)
+            )
             || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
             || (matches!(request.body, Request::TransferLeader(_))
                 && self.lose_transfers.load(Relaxed))

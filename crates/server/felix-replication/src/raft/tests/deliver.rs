@@ -1460,6 +1460,47 @@ async fn a_trim_entry_is_counted_as_skipped() {
     led.cluster.stop().await;
 }
 
+/// **A conditional batch of three blanked off its offset goes through the
+/// hold as a blank of three.** The next record goes out after it with the
+/// three offsets reported as skipped, not as a drop. On Raft that count
+/// comes from the engine; how far the blank moves the stream is checked in
+/// `stream/state/tests.rs`, `a_blanked_batch_of_three_releases_three_offsets`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blanked_batch_of_three_is_skipped_by_the_next_record() {
+    let mut led = led().await;
+    let leader = led.leader.broker.to_string();
+    let (broker, handle) = broker_on_log_of(&led, &leader).await;
+    broker.allow_raft_conditional_batches_when(|| true);
+    let (mut receiver, _guard) = subscriber(&broker).await;
+
+    let at = led.committed + 1;
+    let first = publish(&led, &broker, &handle, Bytes::from_static(b"first"));
+    let outcome = first.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at, at)));
+    let proposed = led.engine.publish_at(
+        &broker,
+        &handle,
+        &shard(0),
+        None,
+        vec![Bytes::from_static(b"x"); 3],
+        Default::default(),
+        at,
+        AckAt::Flushed,
+        PATIENCE,
+    );
+    let refused = proposed.expect("proposed").complete().await;
+    assert_eq!(refused, Err(CommitError::OffsetMismatch { tail: at + 4 }));
+
+    let after = publish(&led, &broker, &handle, Bytes::from_static(b"after"));
+    let outcome = after.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at + 4, at + 4)));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(at));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(at + 4));
+    assert_eq!(envelope.skipped_before(), 3, "the blanked batch's offsets");
+    led.cluster.stop().await;
+}
+
 /// A publish carrying `publisher` and `headers` for its one record.
 fn publish_attributed(
     led: &Led,

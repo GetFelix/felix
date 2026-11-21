@@ -122,25 +122,20 @@ fn settling(version: i16) -> ResponseError {
 }
 
 /// The last client record below `tail`, stepping back over any records
-/// that are not data at the end of the log.
+/// that are not data at the end of the log, and over a conditional batch
+/// that is cut or undecided there, as [`StreamLog::event_end`] does.
 async fn last_record_before(
     log: &StreamLog,
     base: u64,
     tail: u64,
 ) -> felix_broker::Result<Option<(i64, u64)>> {
-    let mut at = tail;
-    while at > base {
-        at -= 1;
-        // Every record, so a trim record is seen at its offset rather than
-        // read past. `at` is at or above the readable base.
-        let records = log.read_replicated_from(at, 1).await?;
-        match records.first() {
-            Some(record) if record.offset == at && record.mark.is_data() => {
-                return Ok(Some((crate::records::timestamp_ms(record), record.offset)));
-            }
-            Some(record) if record.offset == at => {}
-            _ => return Ok(None),
-        }
-    }
-    Ok(None)
+    let end = log.event_end(base, tail).await?;
+    let Some(at) = end.checked_sub(1).filter(|at| *at >= base) else {
+        return Ok(None);
+    };
+    let records = log.read_replicated_from(at, 1).await?;
+    Ok(records
+        .first()
+        .filter(|record| record.offset == at && record.mark.is_data())
+        .map(|record| (crate::records::timestamp_ms(record), record.offset)))
 }

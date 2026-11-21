@@ -8,7 +8,7 @@ use felix_storage::waiters::Queue;
 use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
-use super::super::commit::{Commits, TermAt};
+use super::super::commit::{Commits, Holds, TermAt};
 use super::super::propose::{Leading, Lost};
 use super::*;
 use crate::engine::{CommitError, EngineHost, Written};
@@ -464,6 +464,178 @@ fn records_end_below_a_trailing_membership_change_and_term_blank() {
     commits.advance(at(2, 4));
     assert_eq!(commits.records_end(5), 5);
     assert_eq!(commits.records_end(4), 2);
+}
+
+/// Apply `entries` to `commits` as one run, in order from `from`, and
+/// return the skip counts it pushed.
+fn apply_run(
+    commits: &mut Commits,
+    quiet: &mut std::ops::Range<u64>,
+    from: u64,
+    entries: &[Holds],
+) -> Vec<(u64, u64)> {
+    let mut skipped = Vec::new();
+    for (index, holds) in (from..).zip(entries) {
+        commits.apply(at(1, index), *holds, quiet, &mut skipped);
+    }
+    skipped
+}
+
+fn piece(position: u32, len: u32) -> Holds {
+    Holds::Piece { position, len }
+}
+
+/// **An undecided conditional batch holds the read bound at its first
+/// piece, across runs, and a whole one releases it.** The applied index
+/// moves with every piece, so a wait on an apply is not held. The blank
+/// below the batch is skipped before its first record, as for any record.
+#[test]
+fn an_undecided_batch_holds_the_read_bound_until_it_is_whole() {
+    let mut commits = Commits::default();
+    let mut quiet = 0..0;
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        0,
+        &[Holds::Record, Holds::Nothing, piece(0, 3), piece(1, 3)],
+    );
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 2, "held at the first piece");
+    assert_eq!(commits.applied_end(), 4);
+    assert_eq!(commits.records_end(commits.read_bound()), 1);
+    // The last piece lands in a later run.
+    let skipped = apply_run(&mut commits, &mut quiet, 4, &[piece(2, 3)]);
+    assert_eq!(
+        skipped,
+        [(2, 1)],
+        "the blank at 1 is skipped before the batch"
+    );
+    assert_eq!(commits.read_bound(), 5);
+    assert_eq!(commits.records_end(5), 5);
+    let skipped = apply_run(&mut commits, &mut quiet, 5, &[Holds::Record]);
+    assert!(
+        skipped.is_empty(),
+        "nothing between the batch and the record"
+    );
+}
+
+/// **A batch cut by another entry holds no record, and its pieces count in
+/// the next record's skips.** A new leader's blank lands where the third
+/// piece belonged: the bound moves past the two pieces, which join the run
+/// below the next record with the blank before the batch and the cutter.
+#[test]
+fn a_cut_batch_holds_no_record_and_its_pieces_are_skipped() {
+    let mut commits = Commits::default();
+    let mut quiet = 0..0;
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        0,
+        &[Holds::Record, Holds::Nothing, piece(0, 3), piece(1, 3)],
+    );
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 2);
+    let skipped = apply_run(&mut commits, &mut quiet, 4, &[Holds::Nothing]);
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 5, "the cut batch no longer holds it");
+    assert_eq!(commits.records_end(5), 1, "the pieces hold no record");
+    let skipped = apply_run(&mut commits, &mut quiet, 5, &[Holds::Record]);
+    assert_eq!(skipped, [(5, 4)], "the blank, both pieces and the cutter");
+
+    // Cut by the first piece of the next batch, which then completes.
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        6,
+        &[piece(0, 2), piece(0, 2), piece(1, 2), Holds::Record],
+    );
+    assert_eq!(skipped, [(7, 1)], "the cut piece at 6 is skipped");
+    assert_eq!(commits.read_bound(), 10);
+}
+
+/// The offsets `resolve` reads as records from `marks`, laid out from `from`.
+fn resolved(from: u64, marks: &[Holds]) -> Vec<u64> {
+    use felix_storage::log::{CondPiece, LogRecord, RecordMark, conditional};
+    let records: Vec<_> = (from..)
+        .zip(marks)
+        .map(|(offset, holds)| LogRecord {
+            offset,
+            timestamp_micros: 1,
+            checksum: 0,
+            payload: Bytes::from_static(b"r"),
+            mark: match *holds {
+                Holds::Record => RecordMark::None,
+                Holds::Piece { position, len } => {
+                    RecordMark::CondPiece(CondPiece { position, len })
+                }
+                Holds::Nothing => RecordMark::GenerationStart,
+            },
+            publisher: None,
+            headers: None,
+            generation: Some(1),
+        })
+        .collect();
+    let end = from + marks.len() as u64;
+    conditional::resolve(records, end, end)
+        .records
+        .into_iter()
+        .filter(|record| record.mark.is_data())
+        .map(|record| record.offset)
+        .collect()
+}
+
+/// **A member whose log starts inside a batch counts its rest as `resolve`
+/// reads it.** After a purge snapshot at a batch's first piece, the member
+/// applies the other three: they are records, as a disk read returns them,
+/// and nothing is skipped. The bound waits at the first piece it holds,
+/// never below the snapshot. Cut, the same rest holds no record on both
+/// sides.
+#[test]
+fn a_batch_applied_from_mid_way_is_counted_as_resolve_reads_it() {
+    let whole = [piece(1, 4), piece(2, 4), piece(3, 4), Holds::Record];
+    let mut commits = Commits::resumed(Some(at(1, 10)));
+    let mut quiet = 0..0;
+    let skipped = apply_run(&mut commits, &mut quiet, 11, &whole[..2]);
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 11, "at the first piece it holds");
+    let skipped = apply_run(&mut commits, &mut quiet, 13, &whole[2..]);
+    assert!(skipped.is_empty(), "every piece is a record: {skipped:?}");
+    assert_eq!(commits.records_end(15), 15);
+    assert_eq!(resolved(11, &whole), [11, 12, 13, 14]);
+
+    let cut = [piece(1, 4), piece(2, 4), Holds::Nothing, Holds::Record];
+    let mut commits = Commits::resumed(Some(at(1, 10)));
+    let mut quiet = 0..0;
+    let skipped = apply_run(&mut commits, &mut quiet, 11, &cut);
+    assert_eq!(skipped, [(14, 3)]);
+    assert_eq!(resolved(11, &cut), [14]);
+}
+
+/// **A member that resumes inside a batch reads the open batch back and
+/// keeps the bound at its first piece.** Its pieces are then cut or
+/// completed as on a member that applied them in one go.
+#[test]
+fn a_member_resumed_inside_a_batch_keeps_its_bound_there() {
+    let batch = super::super::commit::OpenBatch {
+        first: 7,
+        next: 2,
+        len: 3,
+    };
+    let mut commits = Commits::resumed(Some(at(1, 8))).in_batch(Some(batch));
+    assert_eq!(commits.read_bound(), 7);
+    assert_eq!(commits.applied_end(), 9);
+    let mut quiet = 0..0;
+    let mut whole = commits.clone();
+    assert!(apply_run(&mut whole, &mut quiet.clone(), 9, &[piece(2, 3)]).is_empty());
+    assert_eq!(whole.read_bound(), 10);
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        9,
+        &[Holds::Nothing, Holds::Record],
+    );
+    assert_eq!(skipped, [(10, 3)]);
+    assert_eq!(commits.read_bound(), 11);
 }
 
 /// **An idle shard's term blank leaves the records where they were.** A
@@ -1010,4 +1182,331 @@ mod skipped_counts {
             "the quiet run above it is counted"
         );
     }
+}
+
+/// A stream shard's state machine over the log and snapshot store in `dir`.
+async fn stream_machine(dir: &std::path::Path) -> super::super::machine::Opened {
+    let log = open_log(dir, "m", 0, log_config());
+    let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
+    super::super::machine::Machine::open(snapshots, ShardKind::Stream, Some(&log))
+        .await
+        .expect("open")
+}
+
+/// Entries of a stream shard's log: a record, a conditional piece or a
+/// leader's blank, at `(term, index)`.
+fn entries(
+    of: &[((u64, u64), Holds)],
+) -> impl futures::Stream<Item = std::io::Result<openraft::storage::EntryResponder<ShardTypes>>> + Unpin
+{
+    use openraft::entry::RaftEntry;
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+    let entries: Vec<_> = of
+        .iter()
+        .map(|&((term, index), holds)| {
+            let id = LogIdOf::<ShardTypes>::new(term.into(), index);
+            let cond = match holds {
+                Holds::Piece { position, len } => Some(types::CondPlace { position, len }),
+                Holds::Record | Holds::Nothing => None,
+            };
+            let entry = match holds {
+                Holds::Nothing => EntryOf::<ShardTypes>::new_blank(id),
+                Holds::Record | Holds::Piece { .. } => EntryOf::<ShardTypes>::new_normal(
+                    id,
+                    Command {
+                        timestamp_micros: index,
+                        payload: Bytes::from_static(b"r"),
+                        producer: None,
+                        expected: None,
+                        trim: None,
+                        commit: false,
+                        group: false,
+                        publisher: None,
+                        headers: None,
+                        written: None,
+                        cond,
+                    },
+                ),
+            };
+            Ok((entry, None))
+        })
+        .collect();
+    futures::stream::iter(entries)
+}
+
+/// **A batch of which only a prefix committed, cut by the next leader's
+/// blank, is never read into and counts in the next record's skips.** The
+/// member applies the two pieces in one run and the new term's blank where
+/// the third belonged in the next: the read bound it publishes stays at the
+/// first piece until the blank, then moves past the whole cut batch, and
+/// the publisher of the next record hears of all three offsets.
+#[tokio::test]
+async fn a_batch_cut_by_the_next_leader_is_never_read_into_and_is_skipped() {
+    use openraft::storage::RaftStateMachine;
+    let dir = tempfile::tempdir().expect("dir");
+    let super::super::machine::Opened {
+        mut machine,
+        commits,
+        skips,
+        ..
+    } = stream_machine(dir.path()).await;
+    let claim = skips.claim(&commits);
+    let bounds = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let watching = {
+        let (mut commits, bounds) = (commits.clone(), bounds.clone());
+        tokio::spawn(async move {
+            while commits.changed().await.is_ok() {
+                bounds.lock().push(commits.borrow_and_update().read_bound());
+            }
+        })
+    };
+    machine
+        .apply(entries(&[
+            ((1, 1), Holds::Record),
+            ((1, 2), piece(0, 3)),
+            ((1, 3), piece(1, 3)),
+        ]))
+        .await
+        .expect("apply");
+    assert_eq!(commits.borrow().read_bound(), 2);
+    assert_eq!(commits.borrow().applied_end(), 4);
+    machine
+        .apply(entries(&[((2, 4), Holds::Nothing)]))
+        .await
+        .expect("apply");
+    assert_eq!(commits.borrow().read_bound(), 5);
+    machine
+        .apply(entries(&[((2, 5), Holds::Record)]))
+        .await
+        .expect("apply");
+    assert_eq!(claim.skipped_before(5), 3, "both pieces and the blank");
+    drop(machine);
+    watching.await.expect("watcher");
+    let bounds = bounds.lock().clone();
+    assert!(
+        bounds.iter().all(|bound| !(3..=4).contains(bound)),
+        "a bound inside the batch: {bounds:?}"
+    );
+}
+
+/// **A member that resumes with its last applied entry inside a batch
+/// keeps the read bound at the batch's first piece.** It reads the open
+/// batch back from its log, after an install and after a restart, and the
+/// batch's last piece then releases the bound as on any member.
+#[tokio::test]
+async fn a_member_resuming_inside_a_batch_reads_it_back_from_its_log() {
+    use felix_storage::log::{AppendRecord, CondPiece, RecordMark};
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let applied = [
+        ((1, 1), Holds::Record),
+        ((1, 2), piece(0, 3)),
+        ((1, 3), piece(1, 3)),
+    ];
+    let sender_dir = tempfile::tempdir().expect("dir");
+    let mut sender = stream_machine(sender_dir.path()).await.machine;
+    sender.apply(entries(&applied)).await.expect("apply");
+    let built = sender
+        .get_snapshot_builder()
+        .await
+        .build_snapshot()
+        .await
+        .expect("build");
+    assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(3));
+
+    // The receiver's log holds the same entries, as a member's log does
+    // up to where it applied.
+    let dir = tempfile::tempdir().expect("dir");
+    let log = open_log(dir.path(), "m", 0, log_config());
+    let mark = |mark| AppendRecord {
+        payload: Bytes::from_static(b"r"),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    };
+    let cond = |position| RecordMark::CondPiece(CondPiece { position, len: 3 });
+    log.append_v9_for_tests(
+        &[
+            mark(RecordMark::GenerationStart),
+            mark(RecordMark::None),
+            mark(cond(0)),
+            mark(cond(1)),
+        ],
+        1,
+    )
+    .await
+    .expect("append");
+    drop(log);
+    let opened = stream_machine(dir.path()).await;
+    let mut receiver = opened.machine;
+    receiver
+        .install_snapshot(&built.meta, built.snapshot)
+        .await
+        .expect("install");
+    assert_eq!(opened.commits.borrow().read_bound(), 2, "after the install");
+    assert_eq!(opened.commits.borrow().applied_end(), 4);
+    drop(receiver);
+
+    let reopened = stream_machine(dir.path()).await;
+    assert_eq!(reopened.commits.borrow().read_bound(), 2, "after a restart");
+    let mut machine = reopened.machine;
+    machine
+        .apply(entries(&[((1, 4), piece(2, 3))]))
+        .await
+        .expect("apply");
+    assert_eq!(reopened.commits.borrow().read_bound(), 5);
+}
+
+/// Every read bound each member publishes from now on, by broker.
+fn watch_bounds(cluster: &Cluster) -> Arc<parking_lot::Mutex<Vec<(&'static str, u64)>>> {
+    let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    for broker in BROKERS {
+        let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+        let mut commits = group.commits();
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let bound = commits.borrow_and_update().read_bound();
+                seen.lock().push((broker, bound));
+                if commits.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+    seen
+}
+
+/// Propose a conditional batch of `records` records expected at `at`.
+async fn propose_at(engine: &RaftEngine, at: u64, records: usize) -> Written {
+    let record = Record {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"piece"),
+        headers: None,
+    };
+    let batch = Batch {
+        expected: Some(at),
+        trim: None,
+        commit: false,
+        records: vec![record; records],
+        ack: AckAt::Flushed,
+        term: None,
+        producer: None,
+        publisher: None,
+    };
+    engine.propose(&shard(0), batch).await.expect("written")
+}
+
+/// Wait until `broker` has applied everything below `end`.
+async fn applied_on(cluster: &Cluster, broker: &str, end: u64) -> Commits {
+    let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+    eventually(|| {
+        let commits = group.commits().borrow().clone();
+        (commits.applied_end() >= end).then_some(commits)
+    })
+    .await
+}
+
+/// **A leader change that commits only a prefix of a conditional batch
+/// leaves no member's read bound inside it, and the next record is told of
+/// the cut pieces.** One entry per append, and the followers never get the
+/// third piece: the first two commit and every member holds its bound at
+/// the first. The leader is then lost, the next one's blank takes the third
+/// piece's index and cuts the batch, and the bound moves past all of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_change_that_cuts_a_batch_leaves_no_bound_inside_it() {
+    let mut led = led_with(RuntimeConfig {
+        append_entries: 1,
+        ..timers()
+    })
+    .await;
+    let at = led.committed + 1;
+    let seen = watch_bounds(&led.cluster);
+    *led.cluster.net.lose_entries_from.lock() = Some(at + 2);
+    let written = propose_at(&led.engine, at, 3).await;
+    assert_eq!(written.end, at + 3);
+    for broker in BROKERS {
+        let commits = applied_on(&led.cluster, broker, at + 2).await;
+        assert_eq!(commits.read_bound(), at, "{broker} holds it at the batch");
+    }
+
+    let old = led.leader.broker.to_string();
+    led.cluster.net.muted.lock().insert(old.clone());
+    *led.cluster.net.cut.lock() = HashSet::from([old.clone()]);
+    *led.cluster.net.lose_entries_from.lock() = None;
+    let next = led.cluster.elected(0).await;
+    assert_ne!(next, led.leader);
+    let engine = RaftEngine::new(led.cluster.runtime(&next.broker));
+    eventually(|| (engine.read_bound(&shard(0)).ok()? > at + 2).then_some(())).await;
+    let group = led.cluster.runtime(&next.broker).group(&shard(0));
+    let claim = group.expect("group").claim_skips();
+    let first = led.cluster.write(0, b"after").await;
+    let record = first + 1;
+    applied_on(&led.cluster, &next.broker, record).await;
+    assert_eq!(
+        claim.skipped_before(first),
+        first - at,
+        "every offset since the last record holds none"
+    );
+
+    led.heal();
+    for broker in BROKERS {
+        let commits = applied_on(&led.cluster, broker, record).await;
+        assert_eq!(commits.read_bound(), record, "{broker}");
+    }
+    let inside: Vec<_> = seen
+        .lock()
+        .iter()
+        .filter(|(_, bound)| (at + 1..at + 3).contains(bound))
+        .copied()
+        .collect();
+    assert!(inside.is_empty(), "bounds inside the batch: {inside:?}");
+    led.cluster.stop().await;
+}
+
+/// **A leader whose lease lapses with a batch half committed keeps every
+/// reader out of it.** The first two pieces commit, then no follower is
+/// heard: the bound stays at the first piece and a read cannot be
+/// confirmed. Healed, the leader commits the last piece and the bound moves
+/// past the whole batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
+    let mut led = led_with(RuntimeConfig {
+        append_entries: 1,
+        ..timers()
+    })
+    .await;
+    let at = led.committed + 1;
+    let seen = watch_bounds(&led.cluster);
+    *led.cluster.net.lose_entries_from.lock() = Some(at + 2);
+    let written = propose_at(&led.engine, at, 3).await;
+    applied_on(&led.cluster, &led.leader.broker, at + 2).await;
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    *led.cluster.net.lose_entries_from.lock() = None;
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
+    let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
+    assert!(
+        matches!(unconfirmed, Err(CommitError::TimedOut { what: "read", .. })),
+        "{unconfirmed:?}"
+    );
+    assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
+
+    led.heal();
+    assert_eq!(
+        led.engine.await_commit(&shard(0), written, PATIENCE).await,
+        Ok(())
+    );
+    for broker in BROKERS {
+        let commits = applied_on(&led.cluster, broker, at + 3).await;
+        assert!(commits.read_bound() >= at + 3, "{broker}");
+    }
+    let inside: Vec<_> = seen
+        .lock()
+        .iter()
+        .filter(|(_, bound)| (at + 1..at + 3).contains(bound))
+        .copied()
+        .collect();
+    assert!(inside.is_empty(), "bounds inside the batch: {inside:?}");
+    led.cluster.stop().await;
 }
