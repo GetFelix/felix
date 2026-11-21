@@ -356,7 +356,7 @@ async fn set_lifecycle(
 /// This is what closes the hole where any caller that could reach the control
 /// plane could register, drain, or deregister any broker, or keep a dead one
 /// looking alive.
-async fn require_node_manage(
+pub(crate) async fn require_node_manage(
     state: &AppState,
     headers: &HeaderMap,
     node_id: &str,

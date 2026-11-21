@@ -72,6 +72,7 @@ async fn jwks_endpoint_returns_keys_for_tenant() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        reform_plans: Default::default(),
     };
     let app = build_router(state).into_service();
 
@@ -129,6 +130,7 @@ async fn jwks_endpoint_missing_tenant_returns_404() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        reform_plans: Default::default(),
     };
     let app = build_router(state).into_service();
 

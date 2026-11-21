@@ -36,6 +36,7 @@ pub(crate) fn app_state(
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        reform_plans: Default::default(),
     }
 }
 

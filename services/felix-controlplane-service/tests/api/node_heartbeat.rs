@@ -100,6 +100,7 @@ async fn app_with(store: Arc<InMemoryStore>) -> axum::routing::RouterIntoService
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        reform_plans: Default::default(),
     };
     build_router(state).into_service()
 }

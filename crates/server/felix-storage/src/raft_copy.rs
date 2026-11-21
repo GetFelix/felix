@@ -52,6 +52,7 @@ pub(crate) mod tests;
     allow(dead_code, reason = "the re-form command, not built yet, calls it")
 )]
 mod vouch;
+mod wire;
 
 pub use copy_file::CopyFile;
 #[allow(
@@ -98,6 +99,10 @@ pub use vouch::{BrokerReport, GroupRecord, VoterId};
 )]
 pub(crate) use vouch::{
     Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, plan_reform, probes,
+};
+pub use wire::{
+    PlanView, REPORT_VERSION, SurveyStep, VersionMismatch, WireBase, WireCopy, WireFloor,
+    WireReport, WireRotated, first_probes, survey_step,
 };
 
 use std::path::Path;

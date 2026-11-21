@@ -302,6 +302,7 @@ impl ControlPlane {
             placement_wakes: Default::default(),
             move_policy: Default::default(),
             new_cluster: Default::default(),
+            reform_plans: Default::default(),
         };
         let placement_wakes = Arc::clone(&state.placement_wakes);
 

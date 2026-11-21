@@ -34,4 +34,6 @@ pub struct AppState {
     pub move_policy: crate::cluster::placement::MovePolicy,
     /// A new cluster's fleet-feature finalize still being retried.
     pub new_cluster: Arc<crate::cluster::fleet::NewClusterFinalize>,
+    /// Re-form plans made on this member. Soft state: a restart loses them.
+    pub reform_plans: Arc<crate::api::raft_reform::ReformPlans>,
 }
