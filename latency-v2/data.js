@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795236760798,
+  "lastUpdate": 1795237806888,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81180,6 +81180,72 @@ window.BENCHMARK_DATA = {
             "range": "637.17",
             "unit": "us",
             "extra": "trials: 5\nmedian: 708.00\nmean: 1023.00\nstdev: 637.17\ncv: 62.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16620ae788467e0f358323be6ec1d94bdf0c326c",
+          "message": "demo(failover): stale writer pinned to one broker, with a receipt block (#2876)\n\n* demo(failover): a stale writer pinned to one broker, with its own receipt block\n\nA second container from the checker binary writes one numbered record every\n250 ms to a single broker with no cluster routing, reconnects to the same\naddress after its connection drops, and is judged against a read-back of the\nstream: acked-but-missing and refused-but-present must both be 0.\nrun.sh gains pause and --stale-writer.\n\n* demo(failover): require the stale writer when asked for, pin the leader, record the freeze\n\nscenario and receipt with --stale-writer fail when the probe is missing or\npinned elsewhere, and down checks an exited probe. scenario refuses a\nfollower. pause resumes on interrupt and records which broker it froze.\nDocs: README quick start pins the leader; the laptop page covers the freeze.\n\n* demo(failover): up --stale-writer on a running cluster adds only the writer",
+          "timestamp": "2026-11-21T05:06:04Z",
+          "tree_id": "84a3e52d9b167dec297f242d38d5aee846ede1b0",
+          "url": "https://github.com/GetFelix/felix/commit/16620ae788467e0f358323be6ec1d94bdf0c326c"
+        },
+        "date": 1795237798396,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 62.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 83,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 83.60\nstdev: 1.34\ncv: 1.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 109,
+            "range": "42.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 126.00\nstdev: 42.01\ncv: 33.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 79,
+            "range": "3.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 79.00\nmean: 81.00\nstdev: 3.94\ncv: 4.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 174,
+            "range": "135.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 231.20\nstdev: 135.34\ncv: 58.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 260,
+            "range": "416.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 512.80\nstdev: 416.70\ncv: 81.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
