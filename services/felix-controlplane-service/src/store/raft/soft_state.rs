@@ -225,8 +225,8 @@ impl SoftState {
         self.await_own_blank(term).await?;
         // Judging here ends in `ExpireNodes` and `CheckpointHeartbeats`,
         // which a member at an older level cannot apply. Until every member
-        // can, decline all of it, so the caller keeps heartbeats, expiry and
-        // the lease on the log as the older build does; mixing the two would
+        // can, decline it, so the caller keeps heartbeats and expiry on the
+        // log as the older build does; mixing the two would
         // expire brokers whose heartbeats only this leader has seen.
         // The lease is judged here at every level: its only write,
         // `TakePlacementLease`, is one every member applies, and the log

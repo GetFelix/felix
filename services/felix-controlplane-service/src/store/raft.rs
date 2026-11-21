@@ -438,7 +438,8 @@ impl RaftStore {
     /// Ask the leader, wherever it is. `None` when the leader predates
     /// leader-only requests, or declines them because some member predates
     /// the commands they propose; both only happen part-way through a rolling
-    /// upgrade, and the caller then falls back to the log.
+    /// upgrade. Heartbeats and expiry then fall back to the log; the
+    /// placement lease does not, since the log cannot judge its expiry.
     async fn ask_leader(&self, request: LeaderRequest) -> StoreResult<Option<MetaResponse>> {
         let bytes = serde_json::to_vec(&request)?;
         match self.handle.ask_leader(bytes).await {
