@@ -20,6 +20,7 @@
 //! The design is in `docs/metadata-raft-design.md` ("Liveness is leader
 //! soft state").
 use felix_common::random::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -108,6 +109,9 @@ pub(crate) struct SoftState {
     /// expired right after it was told it is alive.
     serial: tokio::sync::Mutex<()>,
     view: Mutex<Option<View>>,
+    /// The latest term in which this member, leading, saw its own blank
+    /// entry applied. Zero until then.
+    barrier_term: AtomicU64,
 }
 
 /// One term's view. Replaced whenever the term moves, so nothing a previous
@@ -153,6 +157,7 @@ impl SoftState {
             machine: Arc::clone(&machine),
             serial: tokio::sync::Mutex::new(()),
             view: Mutex::new(None),
+            barrier_term: AtomicU64::new(0),
         });
         // Weak: the machine outlives nothing it points at.
         let weak: Weak<Self> = Arc::downgrade(&state);
@@ -214,7 +219,10 @@ impl SoftState {
     }
 
     async fn dispatch(&self, request: LeaderRequest) -> Result<MetaResult, NotLeader> {
-        self.leading_term()?;
+        let term = self.leading_term()?;
+        // Every answer below reads the applied state, so none is given
+        // before this term's blank entry has applied.
+        self.await_own_blank(term).await?;
         // Judging here ends in `ExpireNodes` and `CheckpointHeartbeats`,
         // which a member at an older level cannot apply. Until every member
         // can, decline all of it, so the caller keeps heartbeats, expiry and
@@ -233,13 +241,13 @@ impl SoftState {
             LeaderRequest::Heartbeat {
                 node_id,
                 incarnation,
-            } => self.heartbeat(&node_id, incarnation).await,
+            } => self.heartbeat(term, &node_id, incarnation).await,
             LeaderRequest::Suspicion {
                 node_id,
                 incarnation,
                 suspects,
             } => {
-                let term = self.leading_term()?;
+                self.leading_in(term)?;
                 let mut guard = self.view.lock().expect("soft state lock");
                 view_for(&mut guard, term).suspicions.insert(
                     node_id.clone(),
@@ -254,11 +262,13 @@ impl SoftState {
             }
             LeaderRequest::ExpireStaleNodes {
                 expiry_before_millis,
-            } => self.expire(expiry_before_millis).await,
+            } => self.expire(term, expiry_before_millis).await,
             LeaderRequest::AcquirePlacementLease { holder, ttl_millis } => {
-                self.acquire_lease(&holder, ttl_millis).await
+                self.acquire_lease(term, &holder, ttl_millis).await
             }
-            LeaderRequest::ReleasePlacementLease { holder } => self.release_lease(&holder).await,
+            LeaderRequest::ReleasePlacementLease { holder } => {
+                self.release_lease(term, &holder).await
+            }
             LeaderRequest::RevocationCutoffs {
                 tenant_id,
                 principal_ids,
@@ -325,6 +335,24 @@ impl SoftState {
         }
     }
 
+    /// Wait until this member has applied the blank entry that opened `term`,
+    /// so nothing is judged on state missing what earlier terms committed.
+    /// Only the first request of a term pays for the read-index; see
+    /// `docs/metadata-raft-design.md` ("Liveness is leader soft state").
+    async fn await_own_blank(&self, term: u64) -> Result<(), NotLeader> {
+        if self.barrier_term.load(Ordering::Acquire) == term {
+            return Ok(());
+        }
+        self.confirm_read().await?;
+        // A read-index from a later term proves nothing about this one; the
+        // caller retries.
+        if self.handle.current_term() != term {
+            return Err(NotLeader);
+        }
+        self.barrier_term.fetch_max(term, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// A read-index before answering a read, bounded as a heartbeat's is.
     async fn confirm_read(&self) -> Result<(), NotLeader> {
         if self.handle.confirm_leadership_within(CONFIRM_WITHIN).await {
@@ -336,8 +364,13 @@ impl SoftState {
 
     /// Record a heartbeat, then confirm this member still leads before
     /// answering: an answer is a promise the broker builds its lease on.
-    async fn heartbeat(&self, node_id: &str, incarnation: u64) -> Result<MetaResult, NotLeader> {
-        let term = self.leading_term()?;
+    async fn heartbeat(
+        &self,
+        term: u64,
+        node_id: &str,
+        incarnation: u64,
+    ) -> Result<MetaResult, NotLeader> {
+        self.leading_in(term)?;
         let at_millis = {
             let _serial = self.serial.lock().await;
             let node = match self.machine.store().get_node(node_id).await {
@@ -396,8 +429,8 @@ impl SoftState {
     /// Mark down every serving node this leader has not heard from since
     /// `expiry_before_millis`, counting the start of its leadership as a
     /// heartbeat from everyone.
-    async fn expire(&self, expiry_before_millis: u64) -> Result<MetaResult, NotLeader> {
-        let term = self.leading_term()?;
+    async fn expire(&self, term: u64, expiry_before_millis: u64) -> Result<MetaResult, NotLeader> {
+        self.leading_in(term)?;
         let _serial = self.serial.lock().await;
         let nodes = match self.machine.store().list_nodes().await {
             Ok(nodes) => nodes,
@@ -495,8 +528,13 @@ impl SoftState {
 
     /// Take or renew the placement lease. A renewal is soft state; only a
     /// change of holder is written, because only that advances the token.
-    async fn acquire_lease(&self, holder: &str, ttl_millis: u64) -> Result<MetaResult, NotLeader> {
-        let term = self.leading_term()?;
+    async fn acquire_lease(
+        &self,
+        term: u64,
+        holder: &str,
+        ttl_millis: u64,
+    ) -> Result<MetaResult, NotLeader> {
+        self.leading_in(term)?;
         let _serial = self.serial.lock().await;
         let store = self.machine.store();
         let recorded = store.placement_holder().await;
@@ -548,8 +586,8 @@ impl SoftState {
 
     /// Let the lease lapse now if `holder` has it. The holder stays named, so
     /// whoever takes it next still advances the token.
-    async fn release_lease(&self, holder: &str) -> Result<MetaResult, NotLeader> {
-        let term = self.leading_term()?;
+    async fn release_lease(&self, term: u64, holder: &str) -> Result<MetaResult, NotLeader> {
+        self.leading_in(term)?;
         let _serial = self.serial.lock().await;
         let recorded = self.machine.store().placement_holder().await;
         let mut guard = self.view.lock().expect("soft state lock");
@@ -573,6 +611,15 @@ impl SoftState {
             holder: holder.to_string(),
             expires,
         });
+    }
+
+    /// Still leading in `term`, the term [`Self::dispatch`] waited out the
+    /// blank entry of. A later term has not been through that wait.
+    fn leading_in(&self, term: u64) -> Result<(), NotLeader> {
+        match self.leading_term()? == term {
+            true => Ok(()),
+            false => Err(NotLeader),
+        }
     }
 
     fn leading_term(&self) -> Result<u64, NotLeader> {

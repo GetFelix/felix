@@ -301,3 +301,36 @@ impl LeadershipGate {
         }
     }
 }
+
+/// Leave in `dir` the store of a lone member that led term 5 and appended
+/// `commands` past the committed index it saved, as a crash right after
+/// applying them leaves it.
+#[cfg(test)]
+pub(crate) async fn seed_unsaved_commands(dir: &std::path::Path, commands: Vec<Vec<u8>>) {
+    use types::{Entry, EntryPayload, Membership, Vote, test_log_id};
+    let node = openraft::impls::BasicNode {
+        addr: "127.0.0.1:1".to_string(),
+    };
+    let membership = Membership::new(
+        vec![std::collections::BTreeSet::from([1])],
+        BTreeMap::from([(1, node)]),
+    )
+    .expect("membership");
+    let mut entries = vec![Entry {
+        log_id: test_log_id(5, 0),
+        payload: EntryPayload::Membership(membership),
+    }];
+    entries.extend(commands.into_iter().zip(1..).map(|(command, index)| Entry {
+        log_id: test_log_id(5, index),
+        payload: EntryPayload::Normal(types::Command(command)),
+    }));
+    store::seed(
+        dir,
+        "test-cluster",
+        Vote::new_committed(5, 1),
+        entries,
+        false,
+        Some(test_log_id(5, 0)),
+    )
+    .await;
+}
