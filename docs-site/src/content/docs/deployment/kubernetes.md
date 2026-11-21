@@ -158,6 +158,12 @@ Secret with a certificate for `*.<release>-felix-controlplane-headless`
 `--set controlplane.storage.raft.tls.enabled=true
 --set controlplane.storage.raft.tls.existingSecret=<secret>`. The chart mounts
 it and sets `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`.
+The chart mounts one certificate for every member, so it cannot carry a
+per-member `felix:principal:raft-member:<cluster_id>:<member_id>` URI SAN,
+which members now require (see
+[Raft member certificates](/features/security/#raft-member-certificates)).
+Until the chart issues one certificate per pod, certificates for this chart
+need that support added.
 
 The bootstrap listener is on its own ClusterIP Service, never behind the API's,
 so it is reachable only through a port-forward.
