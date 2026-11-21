@@ -196,6 +196,25 @@ print("ticks=%d hz=%s" % (int(f[11]) + int(f[12]), sys.argv[2]))
 PY
     ;;
 
+  # perf-start <dir>: sample this box's broker with `perf record -g` (run.sh PROFILE=1) until
+  # perf-stop. Needs kernel.perf_event_paranoid <= 1 and a broker built with frame pointers
+  # (build.sh FRAME_POINTERS=1), or the stacks stop at the first frame.
+  perf-start)
+    dir=$1; in_run "$dir"
+    start "$dir" perf perf record -F 499 -g -p "$(cat "$dir/broker.pid")" -o "$dir/perf.data"
+    ;;
+
+  # perf-stop <dir>: end the recording and print its stacks folded (profile.py fold).
+  perf-stop)
+    dir=$1; in_run "$dir"
+    pid=$(cat "$dir/perf.pid")
+    safe_pid "$pid" && kill -INT "$pid" 2>/dev/null || true
+    for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    rm -f "$dir/perf.pid"
+    perf script -i "$dir/perf.data" 2>/dev/null | python3 "$R/profile.py" fold
+    rm -f "$dir/perf.data"
+    ;;
+
   # cpu-at <dir> <unix-secs>: wait for that wall-clock time, then the same as cpu. Lets a
   # window that starts at --start-at be opened at its start and not at the connect.
   cpu-at)

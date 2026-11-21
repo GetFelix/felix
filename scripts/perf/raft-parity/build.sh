@@ -14,6 +14,10 @@
 # v0.7.2's loadgen has no mqtt-publish, mqtt-subscribe, resume or failover kill-file scenarios, and
 # one client for every side is the fairer comparison.
 #   BASELINE_REF=v0.7.2 scripts/perf/raft-parity/build.sh
+#
+# FRAME_POINTERS=1 builds with -C force-frame-pointers=yes, for run.sh PROFILE=1: `perf record -g`
+# walks frame pointers, and a release build has none. Run it from its own clone (the box build
+# dir is named after the tree) so it does not replace the matrix build's target dir.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -43,11 +47,13 @@ if [ -n "${BASELINE_REF:-}" ]; then
       -p felix-controlplane-service --bin felix-controlplane -p felix-broker-service --bin felix-broker
   fi
 elif [ "${SKIP_BUILD:-0}" != 1 ]; then
+  cargo=(cargo)
+  [ "${FRAME_POINTERS:-0}" != 1 ] || cargo=(env RUSTFLAGS="-C force-frame-pointers=yes" cargo)
   # The broker gets its own invocation: next to the other packages,
   # `--features felix-broker-service/raft` left the Raft engine out of the binary.
-  host_build "$top" cargo build --release \
+  host_build "$top" "${cargo[@]}" build --release \
     -p felix-controlplane-service --bin felix-controlplane -p felix-loadgen --bin felix-loadgen
-  host_build "$top" cargo build --release -p felix-broker-service --features raft --bin felix-broker
+  host_build "$top" "${cargo[@]}" build --release -p felix-broker-service --features raft --bin felix-broker
 fi
 if [ -z "${BASELINE_REF:-}" ]; then
   on 3 "strings /mnt/build/$lane/target/release/felix-broker | grep -q openraft" \
