@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use super::super::network::Router;
 use super::super::propose::{
     DRAIN_BYTES, DRAIN_RECORDS, Leading, Lost, Span, Unacknowledged, Waiting, acknowledged, drain,
-    split,
+    respond, split,
 };
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -104,6 +104,37 @@ async fn batches_queued_together_go_to_openraft_in_one_call() {
         assert_eq!(written, Ok(Written { end, generation }));
     }
     assert_eq!(status(&cluster, &leader).client_writes, 1);
+    cluster.stop().await;
+}
+
+/// **A drain wakes the publish task once.** openraft answers each batch
+/// where it applies it, so nothing wakes the task to hand answers on. On
+/// one thread the task finds all 16 batches queued, makes one call, and is
+/// not polled again until every batch has committed and been applied.
+#[tokio::test]
+async fn a_drain_wakes_the_publish_task_once() {
+    let (mut cluster, leader, engine, committed) = led().await;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let gate = Arc::clone(&member.expect("group").gate);
+
+    let queued: Vec<_> = (0..16)
+        .map(|_| engine.propose(&shard(0), batch(&[b"one", b"two"], AckAt::Flushed)))
+        .collect();
+    let written = futures::future::join_all(queued).await;
+    let end = committed + 1 + 32;
+    assert!(
+        written
+            .iter()
+            .all(|written| written.as_ref().is_ok_and(|w| w.end <= end))
+    );
+    cluster.committed_everywhere(0, end - 1).await;
+    // Room for any wake the applies left to run.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(status(&cluster, &leader).client_writes, 1);
+    assert_eq!(gate.polls.load(Relaxed), 1, "polls of the publish task");
     cluster.stop().await;
 }
 
@@ -727,22 +758,15 @@ async fn a_record_past_the_heartbeat_gets_the_time_it_needs() {
     );
 }
 
-/// A group that stops while a call is unanswered ends openraft's stream
-/// with one error. Every batch of the call is told, and the stream is not
-/// read past its end, which would panic the shard's publish task.
-#[tokio::test]
-async fn a_call_cut_short_answers_every_batch_as_stopped() {
-    use futures::StreamExt;
-    use openraft::error::Fatal;
-    // As openraft builds it: one error, then the end, then a panic.
-    let results = futures::stream::unfold(Some(()), |more| async move {
-        more.map(|()| (Err(Fatal::<ShardTypes>::Stopped), None))
-    });
-    let (first, first_told) = oneshot::channel();
-    let (second, second_told) = oneshot::channel();
-    super::super::propose::answer(results.boxed(), vec![(2, first), (3, second)], false).await;
-    for told in [first_told, second_told] {
-        let told = told.await.expect("told");
+/// A group that stops while a call is unanswered drops its responders
+/// unanswered. Every batch of the call is told it stopped.
+#[test]
+fn a_call_cut_short_answers_every_batch_as_stopped() {
+    let (first, mut first_told) = oneshot::channel();
+    let (second, mut second_told) = oneshot::channel();
+    drop(respond(vec![(2, first), (3, second)], false));
+    for told in [first_told.try_recv(), second_told.try_recv()] {
+        let told = told.expect("told");
         assert!(
             matches!(
                 told,
@@ -760,28 +784,26 @@ async fn a_call_cut_short_answers_every_batch_as_stopped() {
 /// that nothing was written, and the batch behind it gets its own answer.
 #[tokio::test]
 async fn a_batch_written_in_part_is_told_so() {
-    use futures::StreamExt;
     use openraft::error::{ClientWriteError, ForwardToLeader};
     use openraft::raft::ClientWriteResponse;
+    use openraft::raft::responder::Responder;
     let applied = |index| {
         let applied = ClientWriteResponse::<ShardTypes> {
             log_id: LogIdOf::<ShardTypes>::new(3.into(), index),
             data: super::super::types::Applied,
             membership: None,
         };
-        Ok(Ok(applied.into()))
+        Ok(applied)
     };
-    let refused = || {
-        Ok(Err(ClientWriteError::ForwardToLeader(
-            ForwardToLeader::empty(),
-        )))
-    };
-    let results = futures::stream::iter([applied(7), refused(), refused(), applied(8)]);
+    let refused = || Err(ClientWriteError::ForwardToLeader(ForwardToLeader::empty()));
+    let results = [applied(7), refused(), refused(), applied(8)];
     let (first, first_told) = oneshot::channel();
     let (second, second_told) = oneshot::channel();
     let (third, third_told) = oneshot::channel();
     let answers = vec![(2, first), (1, second), (1, third)];
-    super::super::propose::answer(results.boxed(), answers, true).await;
+    for (responder, result) in respond(answers, true).into_iter().zip(results) {
+        responder.on_complete(result);
+    }
     let detail = |told: Result<Span, Unacknowledged>| match told {
         Err(Unacknowledged {
             error: CommitError::LeadershipLost { detail, .. },
@@ -819,8 +841,7 @@ pub(super) async fn cut_after_first(
     term: u64,
     payloads: &[&'static [u8]],
 ) -> Result<Span, Unacknowledged> {
-    use super::super::propose::{answer, write};
-    use futures::StreamExt;
+    use super::super::propose::write;
     let command = |payload: &&'static [u8]| Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(payload),
@@ -834,12 +855,36 @@ pub(super) async fn cut_after_first(
         written: None,
     };
     let (first, rest) = payloads.split_first().expect("a record");
-    let first = write(raft, vec![command(first)], Some(term)).await;
-    let rest = write(raft, rest.iter().map(command).collect(), Some(term + 1)).await;
-    let results = first.expect("sent").chain(rest.expect("sent"));
     let (to, told) = oneshot::channel();
-    answer(results.boxed(), vec![(payloads.len(), to)], true).await;
+    let mut responders = respond(vec![(payloads.len(), to)], true);
+    let others = responders.split_off(1);
+    let first = write(raft, vec![command(first)], responders, Some(term)).await;
+    first.expect("sent");
+    let rest = rest.iter().map(command).collect();
+    write(raft, rest, others, Some(term + 1))
+        .await
+        .expect("sent");
     told.await.expect("told")
+}
+
+/// Hand `commands` to openraft as the publish task does, each its own
+/// batch, and return where each batch's answer comes.
+pub(super) async fn write_each(
+    raft: &openraft::Raft<ShardTypes, super::super::machine::Machine>,
+    commands: Vec<Command>,
+    term: Option<u64>,
+) -> Vec<oneshot::Receiver<Result<Span, Unacknowledged>>> {
+    let (answers, told): (Vec<_>, Vec<_>) = commands
+        .iter()
+        .map(|_| {
+            let (to, told) = oneshot::channel();
+            ((1, to), told)
+        })
+        .unzip();
+    let responders = respond(answers, term.is_some());
+    let sent = super::super::propose::write(raft, commands, responders, term).await;
+    sent.expect("running");
+    told
 }
 
 /// **A batch cut part way is told how far it was written.** Its first
@@ -876,8 +921,6 @@ async fn a_batch_cut_part_way_is_told_how_far_it_was_written() {
 /// where it was proposed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
-    use super::super::propose::write;
-    use futures::StreamExt;
     const RECORDS: u64 = 512;
     let (mut cluster, leader, _engine, _committed) = led().await;
     let term = status(&cluster, &leader).term;
@@ -906,8 +949,7 @@ async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
             let (raft, stop, sent) = (raft.clone(), Arc::clone(&stop), Arc::clone(&sent));
             tokio::spawn(async move {
                 while !stop.load(Relaxed) {
-                    let written = write(&raft, vec![command(b"other")], Some(term)).await;
-                    drop(written.expect("running"));
+                    drop(write_each(&raft, vec![command(b"other")], Some(term)).await);
                     sent.fetch_add(1, Relaxed);
                     tokio::task::yield_now().await;
                 }
@@ -918,19 +960,16 @@ async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
         tokio::task::yield_now().await;
     }
     let ours = (0..RECORDS).map(|_| command(b"ours")).collect();
-    let results = write(&raft, ours, Some(term)).await.expect("running");
+    let told = write_each(&raft, ours, Some(term)).await;
     stop.store(true, Relaxed);
     for other in others {
         other.await.expect("writer");
     }
-    let indexes: Vec<u64> = results
-        .map(|result| match result {
-            Ok(Ok(applied)) => applied.log_id.index,
-            Ok(Err(err)) => panic!("not applied: {err}"),
-            Err(fatal) => panic!("not applied: {fatal}"),
-        })
-        .collect()
-        .await;
+    let mut indexes = Vec::new();
+    for told in told {
+        let span = told.await.expect("told").expect("applied");
+        indexes.push(span.first.index);
+    }
     assert_eq!(indexes.len() as u64, RECORDS);
     let gap = indexes.windows(2).find(|pair| pair[1] != pair[0] + 1);
     assert_eq!(gap, None, "another writer's record landed inside the drain");

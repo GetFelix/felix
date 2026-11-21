@@ -1445,7 +1445,6 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "prints a ratio and checks nothing"]
 async fn what_a_write_call_per_entry_costs() {
-    use futures::StreamExt;
     const ROUNDS: u64 = 40;
     let mut cluster = Cluster::new(true);
     cluster.form(N).await;
@@ -1469,9 +1468,10 @@ async fn what_a_write_call_per_entry_costs() {
                     written: None,
                 });
                 let commands = commands.collect();
-                let sent = super::super::propose::write(group.raft(), commands, term).await;
-                let results: Vec<_> = sent.expect("running").collect().await;
-                assert!(results.iter().all(|result| matches!(result, Ok(Ok(_)))));
+                let told = super::propose::write_each(group.raft(), commands, term).await;
+                for told in told {
+                    assert!(matches!(told.await, Ok(Ok(_))));
+                }
             }
             took.push(started.elapsed().as_secs_f64());
         }

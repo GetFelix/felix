@@ -2181,7 +2181,7 @@ impl Group {
         self.proposals.get_or_init(|| {
             let (queue, queued) = mpsc::unbounded_channel();
             // Ends on `stop`, or when this group and its queue are dropped.
-            self.runtime.spawn(propose::run(
+            let run = propose::run(
                 self.raft.clone(),
                 Arc::clone(&self.pace),
                 queued,
@@ -2199,7 +2199,13 @@ impl Group {
                     clock: Arc::clone(&self.clock),
                     last: 0,
                 }),
-            ));
+            );
+            #[cfg(test)]
+            let run = propose::Polled {
+                run: Box::pin(run),
+                gate: Arc::clone(&self.gate),
+            };
+            self.runtime.spawn(run);
             queue
         })
     }
@@ -2555,12 +2561,13 @@ impl Group {
         command: super::types::Command,
         term: u64,
     ) -> impl Future<Output = bool> + use<> {
-        use futures::StreamExt;
         let raft = self.raft.clone();
         async move {
-            let sent = propose::write(&raft, vec![command], Some(term)).await;
-            let mut results = sent.expect("running");
-            matches!(results.next().await, Some(Ok(Ok(_))))
+            let (to, told) = tokio::sync::oneshot::channel();
+            let responders = propose::respond(vec![(1, to)], true);
+            let sent = propose::write(&raft, vec![command], responders, Some(term)).await;
+            sent.expect("running");
+            matches!(told.await, Ok(Ok(_)))
         }
     }
 
