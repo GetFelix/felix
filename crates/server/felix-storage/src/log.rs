@@ -1,6 +1,7 @@
 //! The log every store in this crate is built on: offsets, records, and the
 //! [`AppendOnlyLog`] trait that [`crate::DiskLog`] implements.
 
+pub mod conditional;
 mod config;
 #[cfg(test)]
 mod tests;
@@ -109,6 +110,12 @@ pub enum RecordMark {
     /// entry per record, and a leader change can put other records between
     /// them. v9 only.
     Piece(BatchPiece),
+    /// A record of a conditional batch on a Raft log, kept at its expected
+    /// offset. A leader change can commit only a prefix of such a batch, so a
+    /// reader treats the record as data only once the batch's last record is
+    /// in the log; see [`conditional`] and `docs/storage-format.md`,
+    /// "Conditional batches". v9 only.
+    CondPiece(CondPiece),
     /// A leader's first record at its generation, written before it serves.
     /// It is what lets the leader's quorum mark cover records it inherited;
     /// no reader outside replication ever sees it. The payload is the
@@ -169,16 +176,41 @@ pub struct BatchPiece {
     pub len: u32,
 }
 
+/// A record's place in a conditional batch. A batch of `len` records takes
+/// consecutive offsets, the record at `position` the batch's first offset
+/// plus `position`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CondPiece {
+    /// The record's place in the batch, from zero.
+    pub position: u32,
+    /// Records in the whole batch. Never zero, and above `position`.
+    pub len: u32,
+}
+
+impl CondPiece {
+    /// Whether this is the batch's last record.
+    pub fn is_last(&self) -> bool {
+        self.position.checked_add(1) == Some(self.len)
+    }
+}
+
 impl RecordMark {
     /// Whether a client reads the record: an event or cache entry, or a
     /// commit record holding one. Generation-start, trim, membership,
     /// counter and group records belong to storage and replication, and every client
     /// read skips them. A skipped record keeps its offset, so a reader sees
     /// the gap and can tell it from a drop; see `docs/storage-format.md`,
-    /// "Record kinds".
+    /// "Record kinds". A conditional piece is data only once its batch is
+    /// whole, which takes the records after it: see
+    /// [`conditional`].
     pub fn is_data(&self) -> bool {
         match self {
-            Self::None | Self::Opens(_) | Self::Continues | Self::Piece(_) | Self::Commit => true,
+            Self::None
+            | Self::Opens(_)
+            | Self::Continues
+            | Self::Piece(_)
+            | Self::CondPiece(_)
+            | Self::Commit => true,
             Self::GenerationStart
             | Self::Trim { .. }
             | Self::Membership
@@ -193,6 +225,7 @@ impl RecordMark {
         matches!(
             self,
             Self::Piece(_)
+                | Self::CondPiece(_)
                 | Self::Membership
                 | Self::CounterDelta
                 | Self::CounterCheckpoint

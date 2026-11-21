@@ -228,7 +228,7 @@ segment, so damage here is never a torn write. It is always an error.
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
 | 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
-| 28 | 20, 24 or 8 | `tag` | 20 bytes when only bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 24 bytes on a batch piece (bits 31 and 30, v9 only, after the 36-byte v9 header): the same, then `position u32`. 8 bytes on a trim record: `floor u64` |
+| 28 | 20, 24 or 8 | `tag` | 20 bytes when only bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 24 bytes on a batch piece (bits 31 and 30, v9 only, after the 36-byte v9 header): the same, then `position u32`. 8 bytes on a conditional piece (bits 31 and 28, v9 only): `len u32`, `position u32`. 8 bytes on a trim record: `floor u64` |
 | 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 26, preceded by the key and headers and their `u32` length; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
@@ -590,16 +590,73 @@ it. Nothing writes
 one yet: groups are not served on Raft shards (`docs/per-shard-raft.md`,
 "Consumer groups").
 
+### Conditional batches
+
+A conditional publish names the offset it must land at, and lands there or
+not at all. On a Raft log a conditional batch of several records is one
+entry per record, at consecutive offsets. Each record is a *conditional
+piece*: bits 31 and 28, and an 8-byte tag.
+
+| Tag offset | Size | Field | Notes |
+| --- | --- | --- | --- |
+| 0 | 4 | `len` | records in the whole batch, at least 1 |
+| 4 | 4 | `position` | this record's place in the batch, from 0, below `len` |
+
+Every member keeps the whole batch at its expected offsets or blanks all
+of it, so a batch never lands half at one place and half at another. But
+the commit is not atomic. A leader change can commit the first records of
+a batch and then write the new leader's blank entry where the next one
+belonged. That prefix is a *cut* batch: it stays in the log, and no reader
+may see it.
+
+A reader decides from the marks alone, in its own member's committed log:
+
+- **Whole.** The pieces follow one another, each at the next offset with
+  the next position and the same length, up to the last (`position` =
+  `len - 1`), all committed. The batch is read whole.
+- **Cut.** A committed offset where the next piece belongs holds anything
+  else: another kind of record, a piece of another batch, or a trim. The
+  batch can never become whole. Its pieces are skipped like blank entries,
+  keeping their offsets, and the read goes on past them.
+- **Undecided.** The batch's next piece would be past the committed end.
+  The batch can still turn out either way, so the read bound stops before
+  its first piece until it is decided.
+
+Raft appends a batch as one run and a log only ever loses a suffix, so
+looking forward is enough: a reader that starts inside a whole batch reads
+the rest of it. What a reader sees below the bound never changes as the
+commit grows, and the bound never falls. `docs/formal/FelixRaftCond.tla`
+checks both (`WholeBatchesOnly`, `ReadsStable`). The model's bound waits
+until the batch's last offset is committed; the code also passes a batch
+as soon as a committed entry shows it was cut, which only ever shows more
+of a log that no longer changes.
+
+`felix_storage::log::conditional` holds the rule: `resolve` for a page of
+records, `read_range` for a read that carries on to the end of the batch
+a page stops inside (so a page can run past `max_bytes` by one batch),
+and `read_bound` for the bound.
+
+Only a v9 segment holds a conditional piece, and only a Raft log writes
+one: a stream log refuses the append (`Unsupported`). Every build before v9
+reads the bits as `RecordFlags`, and so does a v9 build from before
+conditional pieces, so a member must not write one until the whole group
+reads them. Nothing writes one yet.
+
 ### Record kinds
 
 Every kind takes an offset, and offsets stay contiguous whatever the kind.
-Only **data** records reach a client: plain records, producer batch records
-and commit records (returned as their event). Generation-start, trim,
+Only **data** records reach a client: plain records, producer batch records,
+conditional pieces of a whole batch (above) and commit records (returned as
+their event). Generation-start, trim,
 membership, counter and group records are skipped by every client read:
 subscriptions and replay, `StreamRead`, Kafka fetch and offset lookups,
 consumer groups, cache watches, and the cache and counter projections. One
 predicate, `RecordMark::is_data`, makes that call at each of those sites, so
-a new kind must be decided once and cannot be missed at one site.
+a new kind must be decided once and cannot be missed at one site. A
+conditional piece is the one exception: `is_data` says yes, and whether its
+batch is whole needs the records after it, which is
+`log::conditional`'s call. The client read paths do not make it yet, so
+nothing may write a conditional piece until they do.
 
 A skipped record still holds its offset, so a reader sees a gap there. A
 subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
@@ -702,6 +759,8 @@ command stored as a trim record is refused.
 | counter delta | 30 and 28 | v9 | no |
 | counter checkpoint | 30, 29 and 28 | v9 | no |
 | group | 31, 30 and 29 | v9 | no |
+| batch piece | 31 and 30 | v9 | yes |
+| conditional piece | 31 and 28 | v9 | once its batch is whole |
 
 ### Keys and headers
 
@@ -997,6 +1056,17 @@ in a v9 segment (header crc D0 FE 7E 9D):
   01 BF 2C E8
   68 69
 
+encode_record_at(generation = 5, offset = 7, timestamp = 9, payload = "hi",
+  conditional piece position = 2, len = 5), in a v9 segment:
+  90 00 00 02
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  00 00 00 00 00 00 00 05
+  2D EC 30 7B
+  3C 63 FE E1
+  00 00 00 05  00 00 00 02
+  68 69
+
 encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
   30 00 00 02
   00 00 00 00 00 00 00 07
@@ -1019,7 +1089,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta, counter checkpoint and group records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log, as are group records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta, counter checkpoint and group records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log, as are group records. Conditional pieces (bits 31 and 28, an 8-byte tag), Raft logs only, not written yet. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the

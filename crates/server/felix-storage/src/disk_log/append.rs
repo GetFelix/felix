@@ -63,19 +63,23 @@ impl DiskLog {
             // onto v9 ahead of the fleet gate, and refused past the gate too:
             // replication cannot carry these kinds yet. A Raft log is v9
             // throughout: its membership entries are these records, its
-            // producer batches are written as pieces, and a consumer group's
-            // writes are entries of its own.
+            // producer batches are written as pieces, a conditional batch's
+            // records are conditional pieces, and a consumer group's writes
+            // are entries of its own.
             let raft_log = inner.config.raft_log;
             if records.iter().any(|r| {
                 r.mark.needs_generation()
                     && !(raft_log
                         && matches!(
                             r.mark,
-                            RecordMark::Membership | RecordMark::Piece(_) | RecordMark::Group
+                            RecordMark::Membership
+                                | RecordMark::Piece(_)
+                                | RecordMark::CondPiece(_)
+                                | RecordMark::Group
                         ))
             }) {
                 return Err(StorageError::Unsupported(
-                    "membership, counter, batch piece and group records are not written yet",
+                    "membership, counter, batch piece, conditional piece and group records are not written yet",
                 ));
             }
             records

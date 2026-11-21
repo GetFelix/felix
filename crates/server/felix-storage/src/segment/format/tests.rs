@@ -1217,7 +1217,7 @@ fn the_v9_kinds_are_record_flags_before_v9() {
             );
         }
     }
-    for kinds in [0xA0u8, 0x90, 0xB0, 0xD0, 0xF0] {
+    for kinds in [0xA0u8, 0xB0, 0xD0, 0xF0] {
         let mut buf = Vec::new();
         encode_record_at(&mut buf, Some(1), 4, 1, b"x", None, None, &RecordMark::None);
         buf[0] |= kinds;
@@ -1260,6 +1260,68 @@ fn a_batch_piece_round_trips_in_a_v9_segment_only() {
     assert_eq!(decoded.payload, Bytes::from_static(b"body"));
     assert_eq!(decoded.publisher, Some(Bytes::from_static(b"p")));
     assert!(decoded.header.check_version(GENERATION_VERSION).is_ok());
+
+    let mut old = Vec::new();
+    encode_record(&mut old, 4, 1, b"x", None, None, &mark);
+    for version in OLDEST_READABLE_VERSION..GENERATION_VERSION {
+        assert!(
+            matches!(
+                RecordHeader::decode_in(&old, version)
+                    .expect_err("older")
+                    .kind,
+                CorruptionKind::RecordFlags { .. }
+            ),
+            "at v{version}"
+        );
+        assert!(decoded.header.check_version(version).is_err());
+    }
+}
+
+/// A conditional piece is bits 31 and 28 with an 8-byte tag (length, then
+/// position), in a v9 segment only: every older build refuses the bits as
+/// `RecordFlags`. Pinned bytes, so the layout cannot drift.
+#[test]
+fn a_conditional_piece_is_a_stable_golden_vector_in_a_v9_segment_only() {
+    let mark = RecordMark::CondPiece(crate::log::CondPiece {
+        position: 2,
+        len: 5,
+    });
+    let mut buf = Vec::new();
+    let len = encode_record_at(&mut buf, Some(5), 7, 9, b"hi", None, None, &mark);
+    let expected = [
+        [0x90, 0x00, 0x00, 0x02].as_slice(),
+        &[0, 0, 0, 0, 0, 0, 0, 7],
+        &[0, 0, 0, 0, 0, 0, 0, 9],
+        &[0, 0, 0, 0, 0, 0, 0, 5],
+        &[0x2D, 0xEC, 0x30, 0x7B],
+        &[0x3C, 0x63, 0xFE, 0xE1],
+        &[0, 0, 0, 5, 0, 0, 0, 2],
+        b"hi",
+    ]
+    .concat();
+    assert_eq!(buf, expected);
+    assert_eq!(len, GENERATION_HEADER_LEN + COND_PIECE_TAG_LEN + 2);
+    assert_eq!(
+        len,
+        record_len_in(body_len(2, None, None), &mark, GENERATION_VERSION)
+    );
+    let (decoded, used) = decode_record_in(&buf, GENERATION_VERSION).expect("decode");
+    assert_eq!(used, len);
+    assert_eq!(decoded.header.kind, RecordKind::CondPiece);
+    assert_eq!(decoded.header.kind.tag_len(), COND_PIECE_TAG_LEN);
+    assert_eq!(decoded.mark, mark);
+    assert_eq!(decoded.payload, Bytes::from_static(b"hi"));
+    assert!(decoded.header.check_version(GENERATION_VERSION).is_ok());
+
+    // The tag is under the checksum.
+    let mut damaged = buf.clone();
+    damaged[GENERATION_HEADER_LEN as usize + 7] ^= 1;
+    assert!(matches!(
+        decode_record_in(&damaged, GENERATION_VERSION)
+            .expect_err("damaged")
+            .kind,
+        CorruptionKind::RecordChecksum { .. }
+    ));
 
     let mut old = Vec::new();
     encode_record(&mut old, 4, 1, b"x", None, None, &mark);

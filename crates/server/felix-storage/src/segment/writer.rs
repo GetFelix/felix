@@ -353,6 +353,7 @@ impl SegmentWriter {
                 RecordMark::Commit => self.holds_commits(),
                 RecordMark::Trim { .. } => self.holds_trims(),
                 RecordMark::Piece(_)
+                | RecordMark::CondPiece(_)
                 | RecordMark::Membership
                 | RecordMark::CounterDelta
                 | RecordMark::CounterCheckpoint

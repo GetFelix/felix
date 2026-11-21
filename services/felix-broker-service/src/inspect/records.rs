@@ -428,6 +428,13 @@ fn kind(mark: &RecordMark) -> String {
                 piece.len
             )
         }
+        RecordMark::CondPiece(piece) => {
+            format!(
+                "conditional-batch-piece ({} of {})",
+                piece.position.saturating_add(1),
+                piece.len
+            )
+        }
         RecordMark::GenerationStart => "generation-start".to_string(),
         RecordMark::Commit => "commit".to_string(),
         RecordMark::Trim { floor } => format!("trim (floor {floor})"),
