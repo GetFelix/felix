@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795301024054,
+  "lastUpdate": 1795301403790,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65104,6 +65104,58 @@ window.BENCHMARK_DATA = {
             "range": "49965.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 794869.00\nmean: 773867.10\nstdev: 49965.58\ncv: 6.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e69c715230b7b856a3107b6cebe9c0d204a63a3e",
+          "message": "fix(raft): internal-port Raft messages only from members and placed brokers of the group (#2909) (#2923)\n\n* fix(raft): refuse Raft messages from a broker outside the group's membership (#2909)\n\nA member answers a vote, pre-vote, append, snapshot, transfer, written\nposition or read index only when its sender is a voter or learner of the\nmember's own effective or committed membership. A copy with no membership\nyet takes the message, so a new copy still gets its first append.\n\nSpec-Unaffected: no TLA spec models peer identity or outsider brokers; the\ncheck only drops messages from brokers that are in no membership, which the\nspecs never send.\n\n* fix(raft): a copy with no membership hears only from brokers placed in its epoch (#2909)\n\nA copy with no membership cannot tell its leader from an outsider, so it\ntook any broker's vote or append: an outsider racing a group's first form,\nor hitting a wiped or re-formed copy, could write a membership naming\nitself and lead. The broker now tells the runtime, before the copy opens\nand on every feed pass, which brokers the control plane placed in the\ngroup's epoch; a blank copy takes a message only from them. Any member\nalso takes one from a broker placed in the group now, so a member that\nmissed the change adding a new member is caught up when that member leads.\n\nSpec-Unaffected: no TLA spec models outsider brokers; the check only drops\nmessages from brokers the control plane never placed, which the specs never\nsend.\n\n* fix(raft): gate a stopped copy's rejoin on placement, and widen the no-record set (#2909)\n\nA stopped copy took any committed leader's append as proof that the group\nwent on without it, so an outsider could make it rotate away a disk a\nre-form may still need. Only a broker placed in the group's epoch counts\nnow. Without a placed record (a shard restored by an import), the brokers\nseen placed so far, a move's successor and a pending set stand in for it,\nso an old leader moving a new member in is still heard.\n\nSpec-Unaffected: no TLA spec models outsider brokers.\n\n* fix(raft): a blank copy hears only from brokers in the group now (#2909)\n\nThe epoch's placed record never shrinks, so a broker moved off the shard\nstayed admitted to every new copy and could write its first membership.\nA blank copy now hears from the placement, target and the voters the\nleader reported for the epoch. Admissions are keyed by incarnation,\npruned with the feed, lapse a minute after its last answer, and a blank\ncopy with none refuses every peer. OtherCopy is told only to a sender\nof the group.\n\nSpec-Unaffected: no TLA spec models outsider brokers.\n\n* fix(raft): voters count only from a broker the control plane vouches for (#2909)\n\nAt level 46 any kept voter could report voters while a set change had\ncleared the target, so a removed broker could name itself back in at a\nhuge index and freeze the record; every new blank copy then admitted it.\nFrom metadata level 47 voters count only from a target member under its\nown copy id, or, while no target is stored, a kept voter still in the\nset. Any broker raises the floor, so the floor no longer decides whose\nvoters count. Below 47 the #2915 rule applies unchanged.\n\nSpec-Unaffected: FelixRaftFormedSet models honest leader reports that may\nlag; refusing a report is a stutter of that action.",
+          "timestamp": "2026-11-21T14:41:39-08:00",
+          "tree_id": "9142130c05ead9259b9cc317ab6e6c46bf4e85b1",
+          "url": "https://github.com/GetFelix/felix/commit/e69c715230b7b856a3107b6cebe9c0d204a63a3e"
+        },
+        "date": 1795301403080,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 363481.37,
+            "range": "7545.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 363481.37\nmean: 359471.25\nstdev: 7545.78\ncv: 2.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 363481.37,
+            "range": "7545.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 363481.37\nmean: 359471.25\nstdev: 7545.78\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80565.58,
+            "range": "845.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80565.58\nmean: 80400.44\nstdev: 845.81\ncv: 1.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805655.8,
+            "range": "8458.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805655.80\nmean: 804004.37\nstdev: 8458.06\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
