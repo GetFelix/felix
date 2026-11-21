@@ -144,8 +144,15 @@ if [[ "$cmd" == up && -z "$stale_broker" ]]; then compose_profiles=(); fi
 
 case "$cmd" in
   up)
-    say "starting the cluster (the first run builds the checker image, a few minutes)"
-    compose up -d --build
+    if [[ -n "$stale_broker" ]] && running checker; then
+      # The cluster is already up: add only the writer. A full `up` would run
+      # provision again, and it fails on a stream that exists.
+      say "adding the stale writer, pinned to $stale_broker"
+      compose up -d --no-build --no-deps stale-probe
+    else
+      say "starting the cluster (the first run builds the checker image, a few minutes)"
+      compose up -d --build
+    fi
     wait_for_checker
     say "running. Ctrl-C stops following; the cluster keeps running"
     echo "  in another terminal: ./run.sh kill-leader"
