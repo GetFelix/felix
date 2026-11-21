@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795240525943,
+  "lastUpdate": 1795248580697,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81312,6 +81312,72 @@ window.BENCHMARK_DATA = {
             "range": "512.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 342.00\nmean: 561.00\nstdev: 512.57\ncv: 91.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d24a7321a9c940a2d11bede01e7ff1fdf37be6bf",
+          "message": "fix(controlplane): a soft-state decision commits only in the term it was judged in (#2881) (#2885)\n\n* wip(controlplane): soft-state decisions commit only in the term they were judged in (#2881)\n\nHandlers re-check the term after the judging slot, and soft-state\nproposals append only on this member as leader of that term, never\nforwarded. The term-change test does not yet move the term on a lone\nleader (openraft ignores an election trigger from a leader); see the\nlane file. join_floor (#2878) not started.\n\n* wip(controlplane): term-change and forwarding tests for soft-state decisions (#2881)\n\n* wip(controlplane): every soft-state view write checks the term under the view lock (#2881)\n\n* fix(controlplane): a soft-state decision commits only in the term it was judged in (#2881)\n\nA leader-only request could wait out a term change and still act. The\nview is now opened only while this member leads the request's term,\nchecked under the view lock, and ExpireNodes, TakePlacementLease and\nCheckpointHeartbeats are appended only on this member as leader of that\nterm, with openraft's expected-leader check at append. They are never\nforwarded: a deposed leader's take or expiry would otherwise commit\nthrough a successor that never saw what it was judged from.\n\nSpec-Unaffected: no TLA model covers the control plane's metadata soft state or its leader-only requests.\n\n* fix(controlplane): review fixes for soft-state term checks (#2881)\n\nA deposed leader no longer answers the soft-state level gate, which\nwould send the caller to the log path. The docs name the log-path lease\ntake as the one proposal that forwarding does not make safe (#2886).\nThe step-down test helper reports a refused vote so the test retries.\n\nSpec-Unaffected: no TLA model covers the control plane's metadata soft state or its leader-only requests.",
+          "timestamp": "2026-11-21T08:03:03Z",
+          "tree_id": "b859c96cf445cfbedbce415e4cdfc014466f4f2d",
+          "url": "https://github.com/GetFelix/felix/commit/d24a7321a9c940a2d11bede01e7ff1fdf37be6bf"
+        },
+        "date": 1795248567246,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 155.80\nstdev: 2.39\ncv: 1.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "255.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 325.00\nstdev: 255.48\ncv: 78.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "1311.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 871.60\nstdev: 1311.61\ncv: 150.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 204,
+            "range": "11.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 208.80\nstdev: 11.90\ncv: 5.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 417,
+            "range": "179.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 417.00\nmean: 490.00\nstdev: 179.65\ncv: 36.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1382,
+            "range": "763.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1382.00\nmean: 1338.40\nstdev: 763.82\ncv: 57.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
