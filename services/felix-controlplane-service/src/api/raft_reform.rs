@@ -1,34 +1,20 @@
 //! Re-form plan routes. The plans themselves, and why they live on the
 //! metadata Raft leader, are in [`crate::store::reform`].
+pub use crate::store::reform::{
+    ReformAnswer, ReformPlanView, ReformScope, ReformShardView, ReformSurvey,
+};
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::AppState;
 use super::error::{ApiError, api_internal, api_not_found, api_validation_error};
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
-pub use crate::store::reform::{
-    CreateReformPlanRequest, CreateReformPlanResponse, ReformAnswer, ReformPlanView,
-    ReformReportsRequest, ReformReportsResponse, ReformScope, ReformShardView, ReformSurvey,
-    ReformSurveysResponse,
-};
 use crate::store::reform::{MAX_BATCH, ReformReply, ReformRequest};
-
-fn unexpected() -> ApiError {
-    api_internal(
-        "answer the re-form request",
-        &crate::store::StoreError::Unexpected(anyhow::anyhow!("a reply of another kind")),
-    )
-}
-
-async fn ask(state: &AppState, request: ReformRequest) -> Result<ReformReply, ApiError> {
-    state
-        .store
-        .reform(request)
-        .await
-        .map_err(|err| api_internal("answer the re-form request", &err))
-}
 
 #[utoipa::path(
     post,
@@ -145,4 +131,47 @@ pub(crate) async fn reports(
         }
         _ => Err(unexpected()),
     }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateReformPlanRequest {
+    pub scope: ReformScope,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct CreateReformPlanResponse {
+    pub plan_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ReformSurveysResponse {
+    pub surveys: Vec<ReformSurvey>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ReformReportsRequest {
+    pub reports: Vec<ReformAnswer>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ReformReportsResponse {
+    pub accepted: usize,
+    /// Answers for a plan, round or shard that is not current, or from a
+    /// broker the round does not ask.
+    pub ignored: usize,
+}
+
+fn unexpected() -> ApiError {
+    api_internal(
+        "answer the re-form request",
+        &crate::store::StoreError::Unexpected(anyhow::anyhow!("a reply of another kind")),
+    )
+}
+
+async fn ask(state: &AppState, request: ReformRequest) -> Result<ReformReply, ApiError> {
+    state
+        .store
+        .reform(request)
+        .await
+        .map_err(|err| api_internal("answer the re-form request", &err))
 }

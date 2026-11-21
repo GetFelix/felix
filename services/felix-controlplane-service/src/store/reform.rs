@@ -34,6 +34,115 @@ const MAX_PLANS: usize = 16;
 /// Most surveys or reports in one request.
 pub(crate) const MAX_BATCH: usize = 1024;
 
+/// The plans one leader holds in one term.
+#[derive(Default)]
+pub struct ReformPlans {
+    plans: Mutex<Vec<Plan>>,
+}
+
+impl ReformPlans {
+    /// Start a plan over `shards`, the Raft shards in scope.
+    pub(crate) fn create(
+        &self,
+        scope: ReformScope,
+        shards: &[ShardAssignment],
+        dead: &BTreeSet<String>,
+        now: Instant,
+    ) -> String {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let shards = shards
+            .iter()
+            .map(|s| ShardSurvey::new(s, dead, now))
+            .collect();
+        let mut plans = self.plans.lock();
+        if plans.len() >= MAX_PLANS {
+            plans.remove(0);
+        }
+        plans.push(Plan {
+            id: id.clone(),
+            scope,
+            shards,
+        });
+        id
+    }
+
+    pub(crate) fn view(&self, id: &str, now: Instant) -> Option<ReformPlanView> {
+        let mut plans = self.plans.lock();
+        let plan = plans.iter_mut().find(|p| p.id == id)?;
+        plan.shards.iter_mut().for_each(|s| s.settle(now));
+        let shards: Vec<ReformShardView> = plan.shards.iter().map(ShardSurvey::view).collect();
+        let surveying = shards.iter().any(|s| s.state == "surveying");
+        Some(ReformPlanView {
+            plan_id: plan.id.clone(),
+            scope: plan.scope.clone(),
+            state: if surveying { "surveying" } else { "done" }.to_string(),
+            shards,
+        })
+    }
+
+    /// The surveys `node` has not answered in each shard's current round.
+    pub(crate) fn surveys_for(&self, node: &str, now: Instant) -> Vec<ReformSurvey> {
+        let mut plans = self.plans.lock();
+        let mut out = Vec::new();
+        for plan in plans.iter_mut() {
+            for shard in &mut plan.shards {
+                shard.settle(now);
+                if shard.outcome.is_none()
+                    && shard.asked_brokers.contains(node)
+                    && !shard.reports.contains_key(node)
+                    && out.len() < MAX_BATCH
+                {
+                    out.push(ReformSurvey {
+                        plan_id: plan.id.clone(),
+                        round: shard.round,
+                        key: shard.key.clone(),
+                        incarnation: shard.incarnation,
+                        epoch: shard.epoch,
+                        probes: shard.probes.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Take `node`'s answers that match a current round. The node is the
+    /// authenticated one, so an answer stands only for the broker that
+    /// read the copies.
+    pub(crate) fn record(
+        &self,
+        node: &str,
+        answers: Vec<ReformAnswer>,
+        now: Instant,
+    ) -> (usize, usize) {
+        let mut plans = self.plans.lock();
+        let (mut accepted, mut ignored) = (0, 0);
+        for answer in answers {
+            let shard = plans
+                .iter_mut()
+                .find(|p| p.id == answer.plan_id)
+                .and_then(|p| p.shards.iter_mut().find(|s| s.key == answer.key));
+            let Some(shard) = shard else {
+                ignored += 1;
+                continue;
+            };
+            let current = shard.outcome.is_none()
+                && shard.round == answer.round
+                && shard.asked_brokers.contains(node)
+                && !shard.reports.contains_key(node);
+            match (current, BrokerReport::try_from(answer.report)) {
+                (true, Ok(report)) => {
+                    shard.reports.insert(node.to_string(), report);
+                    shard.settle(now);
+                    accepted += 1;
+                }
+                _ => ignored += 1,
+            }
+        }
+        (accepted, ignored)
+    }
+}
+
 /// What a plan covers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -44,14 +153,13 @@ pub enum ReformScope {
     Node(String),
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateReformPlanRequest {
-    pub scope: ReformScope,
-}
-
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct CreateReformPlanResponse {
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReformPlanView {
     pub plan_id: String,
+    pub scope: ReformScope,
+    /// `surveying` until every shard has an answer, then `done`.
+    pub state: String,
+    pub shards: Vec<ReformShardView>,
 }
 
 /// One shard's line in a plan.
@@ -74,15 +182,6 @@ pub struct ReformShardView {
     pub plan: Option<PlanView>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ReformPlanView {
-    pub plan_id: String,
-    pub scope: ReformScope,
-    /// `surveying` until every shard has an answer, then `done`.
-    pub state: String,
-    pub shards: Vec<ReformShardView>,
-}
-
 /// One survey a broker is asked to answer.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReformSurvey {
@@ -95,11 +194,6 @@ pub struct ReformSurvey {
     pub probes: BTreeSet<u64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ReformSurveysResponse {
-    pub surveys: Vec<ReformSurvey>,
-}
-
 /// One broker's answer to one survey.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReformAnswer {
@@ -110,23 +204,32 @@ pub struct ReformAnswer {
     pub report: WireReport,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ReformReportsRequest {
-    pub reports: Vec<ReformAnswer>,
+/// A re-form request, answered where the plans live.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ReformRequest {
+    Create {
+        scope: ReformScope,
+    },
+    View {
+        plan_id: String,
+    },
+    Surveys {
+        node_id: String,
+    },
+    Reports {
+        node_id: String,
+        answers: Vec<ReformAnswer>,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ReformReportsResponse {
-    pub accepted: usize,
-    /// Answers for a plan, round or shard that is not current, or from a
-    /// broker the round does not ask.
-    pub ignored: usize,
-}
-
-/// The plans one leader holds in one term.
-#[derive(Default)]
-pub struct ReformPlans {
-    plans: Mutex<Vec<Plan>>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ReformReply {
+    Created { plan_id: String },
+    Plan { plan: Option<ReformPlanView> },
+    Surveys { surveys: Vec<ReformSurvey> },
+    Recorded { accepted: usize, ignored: usize },
 }
 
 struct Plan {
@@ -248,151 +351,6 @@ impl ShardSurvey {
     }
 }
 
-impl ReformPlans {
-    /// Start a plan over `shards`, the Raft shards in scope.
-    pub(crate) fn create(
-        &self,
-        scope: ReformScope,
-        shards: &[ShardAssignment],
-        dead: &BTreeSet<String>,
-        now: Instant,
-    ) -> String {
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        let shards = shards
-            .iter()
-            .map(|s| ShardSurvey::new(s, dead, now))
-            .collect();
-        let mut plans = self.plans.lock();
-        if plans.len() >= MAX_PLANS {
-            plans.remove(0);
-        }
-        plans.push(Plan {
-            id: id.clone(),
-            scope,
-            shards,
-        });
-        id
-    }
-
-    pub(crate) fn view(&self, id: &str, now: Instant) -> Option<ReformPlanView> {
-        let mut plans = self.plans.lock();
-        let plan = plans.iter_mut().find(|p| p.id == id)?;
-        plan.shards.iter_mut().for_each(|s| s.settle(now));
-        let shards: Vec<ReformShardView> = plan.shards.iter().map(ShardSurvey::view).collect();
-        let surveying = shards.iter().any(|s| s.state == "surveying");
-        Some(ReformPlanView {
-            plan_id: plan.id.clone(),
-            scope: plan.scope.clone(),
-            state: if surveying { "surveying" } else { "done" }.to_string(),
-            shards,
-        })
-    }
-
-    /// The surveys `node` has not answered in each shard's current round.
-    pub(crate) fn surveys_for(&self, node: &str, now: Instant) -> Vec<ReformSurvey> {
-        let mut plans = self.plans.lock();
-        let mut out = Vec::new();
-        for plan in plans.iter_mut() {
-            for shard in &mut plan.shards {
-                shard.settle(now);
-                if shard.outcome.is_none()
-                    && shard.asked_brokers.contains(node)
-                    && !shard.reports.contains_key(node)
-                    && out.len() < MAX_BATCH
-                {
-                    out.push(ReformSurvey {
-                        plan_id: plan.id.clone(),
-                        round: shard.round,
-                        key: shard.key.clone(),
-                        incarnation: shard.incarnation,
-                        epoch: shard.epoch,
-                        probes: shard.probes.clone(),
-                    });
-                }
-            }
-        }
-        out
-    }
-
-    /// Take `node`'s answers that match a current round. The node is the
-    /// authenticated one, so an answer stands only for the broker that
-    /// read the copies.
-    pub(crate) fn record(
-        &self,
-        node: &str,
-        answers: Vec<ReformAnswer>,
-        now: Instant,
-    ) -> (usize, usize) {
-        let mut plans = self.plans.lock();
-        let (mut accepted, mut ignored) = (0, 0);
-        for answer in answers {
-            let shard = plans
-                .iter_mut()
-                .find(|p| p.id == answer.plan_id)
-                .and_then(|p| p.shards.iter_mut().find(|s| s.key == answer.key));
-            let Some(shard) = shard else {
-                ignored += 1;
-                continue;
-            };
-            let current = shard.outcome.is_none()
-                && shard.round == answer.round
-                && shard.asked_brokers.contains(node)
-                && !shard.reports.contains_key(node);
-            match (current, BrokerReport::try_from(answer.report)) {
-                (true, Ok(report)) => {
-                    shard.reports.insert(node.to_string(), report);
-                    shard.settle(now);
-                    accepted += 1;
-                }
-                _ => ignored += 1,
-            }
-        }
-        (accepted, ignored)
-    }
-}
-
-/// The Raft shards `scope` covers: stream shards with a record of the
-/// brokers placed in their epoch, not switched from the hybrid.
-fn in_scope(shards: Vec<ShardAssignment>, scope: &ReformScope) -> Vec<ShardAssignment> {
-    shards
-        .into_iter()
-        .filter(|s| s.key.kind == ShardKind::Stream && !s.switched())
-        .filter(|s| match (&s.placed, scope) {
-            (None, _) => false,
-            (Some(_), ReformScope::Cluster) => true,
-            (Some(placed), ReformScope::Node(node)) => placed.brokers.contains(node),
-        })
-        .collect()
-}
-
-/// A re-form request, answered where the plans live.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum ReformRequest {
-    Create {
-        scope: ReformScope,
-    },
-    View {
-        plan_id: String,
-    },
-    Surveys {
-        node_id: String,
-    },
-    Reports {
-        node_id: String,
-        answers: Vec<ReformAnswer>,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ReformReply {
-    Created { plan_id: String },
-    Plan { plan: Option<ReformPlanView> },
-    Surveys { surveys: Vec<ReformSurvey> },
-    Recorded { accepted: usize, ignored: usize },
-}
-
 /// Answer `request` from `plans`, reading shards and dead nodes from
 /// `store`. Nothing is written to `store`.
 pub(crate) async fn answer(
@@ -420,6 +378,20 @@ pub(crate) async fn answer(
             ReformReply::Recorded { accepted, ignored }
         }
     })
+}
+
+/// The Raft shards `scope` covers: stream shards with a record of the
+/// brokers placed in their epoch, not switched from the hybrid.
+fn in_scope(shards: Vec<ShardAssignment>, scope: &ReformScope) -> Vec<ShardAssignment> {
+    shards
+        .into_iter()
+        .filter(|s| s.key.kind == ShardKind::Stream && !s.switched())
+        .filter(|s| match (&s.placed, scope) {
+            (None, _) => false,
+            (Some(_), ReformScope::Cluster) => true,
+            (Some(placed), ReformScope::Node(node)) => placed.brokers.contains(node),
+        })
+        .collect()
 }
 
 #[cfg(test)]
