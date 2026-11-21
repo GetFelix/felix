@@ -186,6 +186,26 @@ requests in the same term skip it. The first heartbeat of a term pays for
 two read-indexes, so a leader with many entries left to apply fails
 forwarded heartbeats until it catches up, and brokers retry.
 
+A judgement belongs to the term it was made in, and so does what it writes.
+A request can wait for the judging slot, or for the store, while the term
+changes under it, even when the same member wins the next term. Two checks
+keep an old term's judgement out of a new one:
+
+- The view is only opened while this member still leads the request's term
+  (`SoftState::view_in`). The check runs under the view's lock, so an old
+  term's view never replaces a newer one and nothing is judged from it after
+  the term moved.
+- `ExpireNodes`, `TakePlacementLease` and `CheckpointHeartbeats` are appended
+  only on this member, as leader of that same term
+  (`RaftHandle::write_as_leader_of`). They are never forwarded and never
+  retried. A deposed leader that forwarded its decision would have it
+  committed by a successor that never saw what it was judged from, which
+  could expire a node the successor just heard from or give the placement
+  lease a second holder. The caller gets "not leader" and asks again.
+
+Every other proposal can forward, because its outcome is decided when it
+applies, on the state every member shares.
+
 ### Reads: local, because the contract already allows it
 
 Broker snapshot/changes polling is *pull-based and eventually consistent by

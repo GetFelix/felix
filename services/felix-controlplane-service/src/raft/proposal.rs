@@ -149,8 +149,8 @@ impl RaftHandle {
     }
 
     /// Append `command` on this member as leader of `term`, or not at all.
-    /// `Ok(None)` when this member does not lead `term` right before the
-    /// append. Never forwarded and never retried: a decision this leader
+    /// `Ok(None)` when this member does not lead `term` when the entry is
+    /// appended. Never forwarded and never retried: a decision this leader
     /// made from its own view must not commit through another leader, and
     /// a retry could land in a later term.
     pub(crate) async fn write_as_leader_of(
@@ -168,25 +168,31 @@ impl RaftHandle {
             Proposal::Answer(bytes) => return Ok(Some(bytes)),
             Proposal::Forward => return Ok(None),
         };
-        // Checked after everything above that awaits, so nothing awaits
-        // between this and the append.
         if !self.is_leader() || self.current_term() != term {
             return Ok(None);
         }
-        match tokio::time::timeout(
-            self.write_timeout,
-            self.raft.client_write(Command(proposal)),
-        )
-        .await
-        {
+        // The core checks the term again when it appends: this member can
+        // lose `term` and win a later one between the check above and then.
+        let written = async {
+            use futures_util::TryStreamExt;
+            let mut results = self
+                .raft
+                .client_write_many(
+                    [Command(proposal)],
+                    openraft::raft::WriteOption::expect_leader(term),
+                )
+                .await?;
+            results.try_next().await
+        };
+        match tokio::time::timeout(self.write_timeout, written).await {
             Err(_) => Err(anyhow::Error::new(NoQuorum::new(
                 self.write_timeout,
                 &anyhow::anyhow!("proposal not committed in time"),
             ))),
-            Ok(Ok(response)) => Ok(Some(response.data)),
-            Ok(Err(openraft::errors::RaftError::APIError(
-                openraft::errors::ClientWriteError::ForwardToLeader(_),
-            ))) => Ok(None),
+            Ok(Ok(Some(Ok(response)))) => Ok(Some(response.response)),
+            Ok(Ok(Some(Err(openraft::errors::ClientWriteError::ForwardToLeader(_))))) => Ok(None),
+            Ok(Ok(Some(Err(err)))) => Err(anyhow::anyhow!(err.to_string())),
+            Ok(Ok(None)) => Err(anyhow::anyhow!("raft core answered no result")),
             Ok(Err(err)) => Err(anyhow::anyhow!(err.to_string())),
         }
     }

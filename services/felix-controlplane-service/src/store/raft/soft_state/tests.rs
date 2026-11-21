@@ -482,7 +482,10 @@ async fn a_heartbeat_that_waited_out_a_term_records_nothing() {
             .await
     });
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(!asked.is_finished(), "answered without waiting for the slot");
+    assert!(
+        !asked.is_finished(),
+        "answered without waiting for the slot"
+    );
 
     // No member 1000 exists.
     store.handle.give_up_term(1_000).await;
@@ -495,12 +498,12 @@ async fn a_heartbeat_that_waited_out_a_term_records_nothing() {
 
     let answer = asked.await.expect("ask task");
     assert!(answer.is_err(), "answered after the term moved: {answer:?}");
-    let view = soft.view.lock().expect("soft state lock");
-    let beat = view
-        .as_ref()
-        .and_then(|view| view.beats.get("broker-b").map(|_| view.term));
+    let beat = {
+        let view = soft.view.lock().expect("soft state lock");
+        view.as_ref()
+            .and_then(|view| view.beats.get("broker-b").map(|_| view.term))
+    };
     assert_eq!(beat, None, "a heartbeat judged in term {term} was recorded");
-    drop(view);
     store.handle.shutdown().await.expect("shutdown");
 }
 
@@ -514,8 +517,8 @@ struct Member {
 async fn two_member_group() -> Vec<Member> {
     use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
     use crate::store::StoreConfig;
-    use crate::store::raft::state_machine::MetadataStateMachine;
     use crate::store::raft::InMemoryStore;
+    use crate::store::raft::state_machine::MetadataStateMachine;
     use std::collections::BTreeMap;
     let mut started = Vec::new();
     for id in 1..=2 {
@@ -593,21 +596,25 @@ async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
     let new_id = (2 - leader) as u64;
     let term = old.store.handle.current_term();
 
-    old.store.handle.give_up_term(new_id).await;
-    // Before the old leader's own election timer can win the term back.
-    new.store.handle.campaign().await;
+    let moved = || {
+        new.store.handle.is_leader()
+            && !old.store.handle.is_leader()
+            && old.store.handle.status().leader == Some(new_id)
+    };
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !new.store.handle.is_leader()
-        || old.store.handle.is_leader()
-        || old.store.handle.status().leader != Some(new_id)
-    {
+    while !moved() {
         assert!(
             std::time::Instant::now() < deadline,
             "leadership never moved: old {:?} new {:?}",
             old.store.handle.status(),
             new.store.handle.status()
         );
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Again if the old leader's own election timer won the term back.
+        if old.store.handle.is_leader() {
+            old.store.handle.give_up_term(new_id).await;
+            new.store.handle.campaign().await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     let taken = old
@@ -620,11 +627,18 @@ async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
             },
         )
         .await;
-    assert!(taken.is_err(), "the old leader's take was answered: {taken:?}");
+    assert!(
+        taken.is_err(),
+        "the old leader's take was answered: {taken:?}"
+    );
     // Applied on the new leader by now if it was forwarded and committed.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
-        new.store.local().expect("caught up").placement_holder().await,
+        new.store
+            .local()
+            .expect("caught up")
+            .placement_holder()
+            .await,
         None,
         "the old leader's take committed through its successor"
     );
