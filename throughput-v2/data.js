@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795278551567,
+  "lastUpdate": 1795279046790,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64480,6 +64480,58 @@ window.BENCHMARK_DATA = {
             "range": "22749.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1238279.21\nmean: 1231054.67\nstdev: 22749.51\ncv: 1.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bd54818e76dcd4e53deac6309fea653f10e6a25",
+          "message": "fix(raft): a new shard leader asks for a fresh feed view at once (#2679) (#2896)\n\n* fix(raft): a new shard leader asks for a fresh feed view at once (#2679)\n\nA new term takes its target only from a feed answer whose request started\nafter the term began. A long poll held from before the term could not\ncount, and with nothing changing on the feed the leader waited for it to\ntime out, about 20 s.\n\nThe term now asks the watch for a view (LeaseState::want_view). The watch\ndrops a held poll and asks again without the hold, and the answer wakes the\nrouting feed even when nothing moved. Asks are counted, so a burst of new\nterms costs one request.\n\nSpec-Unaffected: broker-side liveness of telling a target; the freshness\nrule (as_of >= since, checkpoint >= bar) is unchanged.\n\n* docs(raft): say what staggered new terms cost the feed watch (#2679)",
+          "timestamp": "2026-11-21T16:31:59Z",
+          "tree_id": "a0c166e4f1bdb342bbde2866e01e723bf02b9577",
+          "url": "https://github.com/GetFelix/felix/commit/0bd54818e76dcd4e53deac6309fea653f10e6a25"
+        },
+        "date": 1795279046082,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 508663.55,
+            "range": "49453.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 508663.55\nmean: 495955.81\nstdev: 49453.81\ncv: 9.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 508663.55,
+            "range": "49453.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 508663.55\nmean: 495955.81\nstdev: 49453.81\ncv: 9.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 111541.15,
+            "range": "1337.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 111541.15\nmean: 111547.62\nstdev: 1337.57\ncv: 1.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1115411.51,
+            "range": "13375.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1115411.51\nmean: 1115476.23\nstdev: 13375.71\ncv: 1.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
