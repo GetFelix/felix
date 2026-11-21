@@ -33,6 +33,17 @@ fn ca() -> Ca {
 /// Write a certificate naming member `id` into `dir`'s cert and key files,
 /// replacing what is there. Returns its DER.
 fn issue(ca: &Ca, dir: &Path, id: u64) -> CertificateDer<'static> {
+    issue_with(ca, dir, id, |_| {})
+}
+
+/// [`issue`], with `edit` applied to the certificate first. It covers
+/// `localhost` and ends in 2099 unless `edit` says otherwise.
+fn issue_with(
+    ca: &Ca,
+    dir: &Path,
+    id: u64,
+    edit: impl FnOnce(&mut rcgen::CertificateParams),
+) -> CertificateDer<'static> {
     let key = rcgen::KeyPair::generate().expect("key");
     let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).expect("params");
     params.subject_alt_names.push(rcgen::SanType::URI(
@@ -41,6 +52,7 @@ fn issue(ca: &Ca, dir: &Path, id: u64) -> CertificateDer<'static> {
             .expect("uri"),
     ));
     params.not_after = rcgen::date_time_ymd(2099, 1, 1);
+    edit(&mut params);
     let cert = params.signed_by(&key, &ca.issuer).expect("cert");
     std::fs::write(dir.join("peer.pem"), cert.pem()).expect("write cert");
     std::fs::write(dir.join("peer.key"), key.serialize_pem()).expect("write key");
@@ -65,15 +77,9 @@ fn member_security(ca: &Ca, dir: &Path) -> PeerSecurity {
     }
 }
 
-/// Serve, over `security`'s peer TLS, a route answering the fingerprint of
-/// the client certificate the connection was opened with.
-async fn serve(security: &PeerSecurity, close_now: bool) -> u16 {
-    let (config, close_at) = security.server_tls().expect("server tls").expect("mtls");
-    let close_at: crate::server::tls::CloseAt = if close_now {
-        Arc::new(|_| Some(0))
-    } else {
-        close_at
-    };
+/// Serve, through the member's own peer listener, a route answering the
+/// fingerprint of the client certificate the connection was opened with.
+async fn serve(security: &PeerSecurity) -> u16 {
     let router = axum::Router::new().route(
         "/who",
         axum::routing::get(
@@ -86,14 +92,12 @@ async fn serve(security: &PeerSecurity, close_now: bool) -> u16 {
         .await
         .expect("bind");
     let port = listener.local_addr().expect("addr").port();
-    drop(tokio::spawn(crate::server::tls::serve_tls(
-        "raft",
-        listener,
-        router,
-        config,
-        Some(close_at),
-        tokio_util::sync::CancellationToken::new(),
-    )));
+    let security = security.clone();
+    drop(tokio::spawn(async move {
+        security
+            .serve(listener, router, tokio_util::sync::CancellationToken::new())
+            .await
+    }));
     port
 }
 
@@ -148,7 +152,7 @@ async fn a_rotation_reaches_new_handshakes_on_both_sides_and_old_connections_kee
         member_security(&ca, dir1.path()),
         member_security(&ca, dir2.path()),
     );
-    let port = serve(&one, false).await;
+    let port = serve(&one).await;
 
     let (mut old, server) = connect(&two, port).await.expect("connect");
     assert_eq!(
@@ -197,7 +201,7 @@ async fn a_rotated_certificate_that_fails_the_startup_checks_is_refused_and_the_
         member_security(&ca, dir2.path()),
     );
     one.check_own_identity(1).expect("member 1 starts");
-    let port = serve(&one, false).await;
+    let port = serve(&one).await;
     let live = one.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
 
     // Member 1's files now hold member 3's certificate.
@@ -250,7 +254,7 @@ async fn a_revocation_file_change_reaches_the_next_handshake() {
         member_security(&ca, dir1.path()),
         member_security(&ca, dir2.path()),
     );
-    let port = serve(&one, false).await;
+    let port = serve(&one).await;
     connect(&two, port).await.expect("member 1 is trusted");
 
     std::fs::write(
@@ -278,23 +282,152 @@ async fn a_connection_closes_when_its_client_certificate_ends() {
         tempfile::tempdir().expect("dir"),
     );
     issue(&ca, dir1.path(), 1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock");
+    issue_with(&ca, dir2.path(), 2, |params| {
+        params.not_after = rcgen::date_time_ymd(1970, 1, 1) + now + Duration::from_secs(4);
+    });
+    let (one, two) = (
+        member_security(&ca, dir1.path()),
+        member_security(&ca, dir2.path()),
+    );
+    let port = serve(&one).await;
+    let (mut stream, _) = connect(&two, port).await.expect("connect");
+    who(&mut stream).await;
+    let mut buf = [0; 64];
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+        .await
+        .expect("the listener closes the connection by the certificate's end");
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+}
+
+/// Member 1 serves under `a1`, then each bad file is written in turn and
+/// reloaded; member 2 must still see `a1`.
+async fn assert_still_serving(
+    live: &super::super::live::LivePeerTls,
+    two: &PeerSecurity,
+    port: u16,
+    a1: &str,
+    why: &str,
+) {
+    live.reload();
+    assert_eq!(connect(two, port).await.expect("connect").1, a1, "{why}");
+}
+
+#[tokio::test]
+async fn a_rotated_certificate_that_would_not_verify_is_refused_and_the_old_one_kept() {
+    let ca = ca();
+    let (dir1, dir2) = (
+        tempfile::tempdir().expect("dir"),
+        tempfile::tempdir().expect("dir"),
+    );
+    let a1 = fingerprint(&issue(&ca, dir1.path(), 1));
     issue(&ca, dir2.path(), 2);
     let (one, two) = (
         member_security(&ca, dir1.path()),
         member_security(&ca, dir2.path()),
     );
-    let port = serve(&one, true).await;
-    let (mut stream, _) = connect(&two, port).await.expect("connect");
-    let mut buf = [0; 64];
-    let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
-        .await
-        .expect("the listener closes the connection");
-    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
-
-    // The real rule: the chain's notAfter, spread over the 30 s before it.
+    let port = serve(&one).await;
     let live = one.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
-    let chain = vec![issue(&ca, dir2.path(), 2)];
-    let end = 4_070_908_800; // 2099-01-01
-    let at = live.close_at(&chain).expect("an end");
-    assert!((end - 30..=end).contains(&at), "{at}");
+
+    issue_with(&ca, dir1.path(), 1, |params| {
+        params.not_after = rcgen::date_time_ymd(2020, 1, 1);
+    });
+    assert_still_serving(&live, &two, port, &a1, "an expired certificate").await;
+
+    issue(&self::ca(), dir1.path(), 1);
+    assert_still_serving(&live, &two, port, &a1, "a certificate from another CA").await;
+
+    issue_with(&ca, dir1.path(), 1, |params| {
+        params.subject_alt_names[0] =
+            rcgen::SanType::DnsName("elsewhere.test".try_into().expect("dns"));
+    });
+    assert_still_serving(&live, &two, port, &a1, "a certificate for another host").await;
+}
+
+#[tokio::test]
+async fn a_ca_rotation_rolls_over_without_a_gap_and_a_bundle_dropping_the_live_root_is_refused() {
+    let (old_ca, new_ca) = (ca(), ca());
+    let (dir1, dir2) = (
+        tempfile::tempdir().expect("dir"),
+        tempfile::tempdir().expect("dir"),
+    );
+    let a1 = fingerprint(&issue(&old_ca, dir1.path(), 1));
+    issue(&old_ca, dir2.path(), 2);
+    let (one, two) = (
+        member_security(&old_ca, dir1.path()),
+        member_security(&old_ca, dir2.path()),
+    );
+    let port = serve(&one).await;
+    let reload = |security: &PeerSecurity| {
+        security
+            .tls
+            .as_ref()
+            .expect("tls")
+            .live(CLUSTER)
+            .expect("live")
+            .reload();
+    };
+
+    // Dropping the root this member's own certificate chains to is refused.
+    let live = one.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
+    std::fs::write(dir1.path().join("ca.pem"), &new_ca.pem).expect("write ca");
+    assert_still_serving(&live, &two, port, &a1, "a bundle without the live root").await;
+
+    // Both roots everywhere, then new leaves, then the new root alone.
+    let both = format!("{}{}", old_ca.pem, new_ca.pem);
+    for dir in [&dir1, &dir2] {
+        std::fs::write(dir.path().join("ca.pem"), &both).expect("write ca");
+    }
+    reload(&one);
+    reload(&two);
+    let b1 = fingerprint(&issue(&new_ca, dir1.path(), 1));
+    reload(&one);
+    assert_eq!(
+        connect(&two, port)
+            .await
+            .expect("old-CA client to new-CA server")
+            .1,
+        b1
+    );
+    issue(&new_ca, dir2.path(), 2);
+    reload(&two);
+    for dir in [&dir1, &dir2] {
+        std::fs::write(dir.path().join("ca.pem"), &new_ca.pem).expect("write ca");
+    }
+    reload(&one);
+    reload(&two);
+    let (mut stream, server) = connect(&two, port).await.expect("new CA only");
+    assert_eq!(server, b1);
+    who(&mut stream).await;
+}
+
+#[tokio::test]
+async fn a_revocation_file_read_back_blank_keeps_the_list() {
+    let ca = ca();
+    let (dir1, dir2) = (
+        tempfile::tempdir().expect("dir"),
+        tempfile::tempdir().expect("dir"),
+    );
+    let a1 = fingerprint(&issue(&ca, dir1.path(), 1));
+    issue(&ca, dir2.path(), 2);
+    std::fs::write(dir2.path().join("revoked.txt"), format!("{a1}\n")).expect("revoke");
+    let (one, two) = (
+        member_security(&ca, dir1.path()),
+        member_security(&ca, dir2.path()),
+    );
+    let port = serve(&one).await;
+    let live = two.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
+    assert!(connect(&two, port).await.is_err(), "revoked at startup");
+
+    // Caught between truncate and write.
+    std::fs::write(dir2.path().join("revoked.txt"), "").expect("truncate");
+    live.reload();
+    assert!(connect(&two, port).await.is_err(), "still revoked");
+
+    // A comment clears it on purpose.
+    std::fs::write(dir2.path().join("revoked.txt"), "# none\n").expect("clear");
+    live.reload();
+    connect(&two, port).await.expect("cleared");
 }

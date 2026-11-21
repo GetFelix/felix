@@ -412,6 +412,37 @@ impl PeerSecurity {
         Ok(Some((config, close_at)))
     }
 
+    /// Serve `router` on `listener` until `shutdown`: over mTLS when it is
+    /// configured, closing each connection when its client certificate
+    /// ends.
+    pub(super) async fn serve(
+        &self,
+        listener: tokio::net::TcpListener,
+        router: axum::Router,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        match self.server_tls()? {
+            Some((tls, close_at)) => {
+                crate::server::tls::serve_tls(
+                    "raft",
+                    listener,
+                    router,
+                    tls,
+                    Some(close_at),
+                    shutdown,
+                )
+                .await;
+            }
+            None => {
+                axum::serve(listener, router.into_make_service())
+                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
+                    .await
+                    .context("serve raft peer listener")?;
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `der` is a revoked member certificate, as of now.
     fn is_revoked(&self, der: &[u8]) -> bool {
         self.tls

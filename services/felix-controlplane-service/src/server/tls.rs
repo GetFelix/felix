@@ -20,6 +20,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::cert_binding::PeerCertificates;
+use felix_common::tls::ReloadingClientCa;
+
 use crate::config::{ApiTlsConfig, BootstrapTlsConfig};
 
 /// The API listener's rustls config over `identity`, which the caller keeps
@@ -46,8 +48,9 @@ pub fn api_server_config(
 pub fn load_api_client_roots(tls: &ApiTlsConfig) -> Result<Option<Arc<ReloadingClientCa>>> {
     tls.client_ca_path
         .as_deref()
-        .map(|path| ReloadingClientCa::load("FELIX_CONTROLPLANE_TLS_CLIENT_CA", path))
+        .map(|path| ReloadingClientCa::load("FELIX_CONTROLPLANE_TLS_CLIENT_CA", path, provider()))
         .transpose()
+        .map_err(Into::into)
 }
 
 /// Read the API certificate and key. Fails startup on unreadable material.
@@ -92,7 +95,11 @@ pub fn bootstrap_server_config(
         )
         .context("bootstrap TLS")?,
     );
-    let client_ca = ReloadingClientCa::load("FELIX_BOOTSTRAP_TLS_CLIENT_CA", &tls.client_ca_path)?;
+    let client_ca = ReloadingClientCa::load(
+        "FELIX_BOOTSTRAP_TLS_CLIENT_CA",
+        &tls.client_ca_path,
+        provider(),
+    )?;
     spawn_reload(
         "bootstrap",
         Arc::clone(&identity),
@@ -142,145 +149,6 @@ pub(crate) fn spawn_reload(
             _ = ca => {}
         }
     }));
-}
-
-/// A client CA bundle re-read on a timer, and the verifier built from it.
-///
-/// A bundle that does not read or parse keeps the current one, as a
-/// half-written certificate does.
-pub struct ReloadingClientCa {
-    var: &'static str,
-    path: String,
-    current: arc_swap::ArcSwap<ClientTrust>,
-}
-
-struct ClientTrust {
-    bundle: Vec<rustls::pki_types::CertificateDer<'static>>,
-    roots: Arc<rustls::RootCertStore>,
-    verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
-}
-
-impl ReloadingClientCa {
-    /// Read the bundle. Fails startup on an unreadable or empty one.
-    pub fn load(var: &'static str, path: &str) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self {
-            var,
-            path: path.to_string(),
-            current: arc_swap::ArcSwap::from_pointee(client_trust(var, path)?),
-        }))
-    }
-
-    /// The roots currently trusted.
-    pub fn roots(&self) -> Arc<rustls::RootCertStore> {
-        Arc::clone(&self.current.load().roots)
-    }
-
-    /// Re-read the bundle. `Ok(true)` when it changed.
-    pub fn reload(&self) -> Result<bool> {
-        let fresh = client_trust(self.var, &self.path)?;
-        let changed = fresh.bundle != self.current.load().bundle;
-        if changed {
-            self.current.store(Arc::new(fresh));
-        }
-        Ok(changed)
-    }
-
-    /// Check the bundle every [`felix_common::tls::RELOAD_INTERVAL`], for
-    /// ever. Callers race it against their shutdown.
-    pub async fn reload_periodically(self: Arc<Self>, what: &'static str) {
-        let mut ticker = tokio::time::interval(felix_common::tls::RELOAD_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            match self.reload() {
-                Ok(true) => tracing::info!(ca = %self.path, "{what} client CA rotated"),
-                Ok(false) => {}
-                Err(err) => tracing::warn!(
-                    error = %format!("{err:#}"),
-                    "could not reload the {what} client CA; keeping the current one",
-                ),
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for ReloadingClientCa {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReloadingClientCa")
-            .field("path", &self.path)
-            .finish()
-    }
-}
-
-fn client_trust(var: &'static str, path: &str) -> Result<ClientTrust> {
-    let bundle = felix_common::tls::load_pem_certs(var, path)?;
-    let roots = Arc::new(felix_common::tls::load_roots(var, path)?);
-    let verifier =
-        rustls::server::WebPkiClientVerifier::builder_with_provider(Arc::clone(&roots), provider())
-            .build()
-            .with_context(|| format!("build the client verifier for {var}"))?;
-    Ok(ClientTrust {
-        bundle,
-        roots,
-        verifier,
-    })
-}
-
-impl rustls::server::danger::ClientCertVerifier for ReloadingClientCa {
-    fn offer_client_auth(&self) -> bool {
-        true
-    }
-
-    fn client_auth_mandatory(&self) -> bool {
-        true
-    }
-
-    // Hints are optional, and a borrow of the current bundle cannot outlive
-    // the load that would produce it.
-    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
-        &[]
-    }
-
-    fn verify_client_cert(
-        &self,
-        end_entity: &rustls::pki_types::CertificateDer<'_>,
-        intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        now: rustls::pki_types::UnixTime,
-    ) -> std::result::Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
-        self.current
-            .load()
-            .verifier
-            .verify_client_cert(end_entity, intermediates, now)
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.current
-            .load()
-            .verifier
-            .verify_tls12_signature(message, cert, dss)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.current
-            .load()
-            .verifier
-            .verify_tls13_signature(message, cert, dss)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.current.load().verifier.supported_verify_schemes()
-    }
 }
 
 /// When a connection must close because a certificate it was opened under

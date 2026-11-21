@@ -7,10 +7,15 @@
 //! that is already up. A file that is missing or mid-write keeps the current
 //! identity in place; the next check tries again.
 //!
-//! A service can attach an [`IdentityCheck`], which a rotated certificate
-//! must pass just as the startup one did.
+//! A rotated certificate is presented only if it is valid now and covers
+//! every DNS name and IP address the current one does; otherwise the current
+//! one stays and the reload reports [`TlsFileError::Refused`]. A service can
+//! attach an [`IdentityCheck`] on top, which the startup certificate and
+//! every rotated one must pass. [`verify_chain`] is the CA check such a rule
+//! usually wants.
 //!
-//! [`load_roots`] reads a CA bundle; callers that reload trust call it again.
+//! [`ReloadingClientCa`] does the same for an mTLS listener's client CA, and
+//! [`load_roots`] reads a CA bundle once.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,11 +26,15 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::sign::CertifiedKey;
 
 mod binding;
+mod client_ca;
 pub use binding::{PRINCIPAL_URI_PREFIX, check_subject_binding};
+pub use client_ca::ReloadingClientCa;
 mod expiry;
+mod rotation;
 pub use expiry::{
     ChainExpiry, Presenter, UnreadableCertificate, sleep_until_unix, spread_before, until_unix,
 };
+pub use rotation::verify_chain;
 
 /// How often services check their certificate files for a rotation.
 pub const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
@@ -84,12 +93,21 @@ impl ReloadingIdentity {
     /// Re-read the files. `Ok(true)` when the certificate changed and the new
     /// one is now presented; an error leaves the current one in place.
     pub fn reload(&self) -> Result<bool, TlsFileError> {
-        let fresh = load(&self.files, &self.provider, self.check.as_ref())?;
-        let changed = fresh.cert != self.current.load().cert;
-        if changed {
-            self.current.store(Arc::new(fresh));
+        let cert = load_pem_certs(self.files.cert_var, &self.files.cert_path)?;
+        let current = self.current.load();
+        if cert == current.cert {
+            return Ok(false);
         }
-        Ok(changed)
+        if let Some(why) = rotation::refusal(&cert[0], &current.cert[0]) {
+            return Err(TlsFileError::Refused {
+                var: self.files.cert_var,
+                path: self.files.cert_path.clone(),
+                why,
+            });
+        }
+        let fresh = certified(&self.files, cert, &self.provider, self.check.as_ref())?;
+        self.current.store(Arc::new(fresh));
+        Ok(true)
     }
 
     /// Check the files every [`RELOAD_INTERVAL`], for ever. `what` names the
@@ -222,8 +240,16 @@ pub fn load_pem_certs(
 
 /// Read a CA bundle into a root store.
 pub fn load_roots(var: &'static str, path: &str) -> Result<rustls::RootCertStore, TlsFileError> {
+    roots_from(var, path, &load_pem_certs(var, path)?)
+}
+
+fn roots_from(
+    var: &'static str,
+    path: &str,
+    bundle: &[CertificateDer<'static>],
+) -> Result<rustls::RootCertStore, TlsFileError> {
     let mut roots = rustls::RootCertStore::empty();
-    for cert in load_pem_certs(var, path)? {
+    for cert in bundle.iter().cloned() {
         roots.add(cert).map_err(|source| TlsFileError::Root {
             var,
             path: path.to_string(),
@@ -245,6 +271,16 @@ fn load(
     check: Option<&IdentityCheck>,
 ) -> Result<Loaded, TlsFileError> {
     let cert = load_pem_certs(files.cert_var, &files.cert_path)?;
+    certified(files, cert, provider, check)
+}
+
+/// `cert` with the key on disk, once it passes `check`.
+fn certified(
+    files: &IdentityFiles,
+    cert: Vec<CertificateDer<'static>>,
+    provider: &CryptoProvider,
+    check: Option<&IdentityCheck>,
+) -> Result<Loaded, TlsFileError> {
     if let Some(check) = check {
         check(&cert).map_err(|why| TlsFileError::Refused {
             var: files.cert_var,

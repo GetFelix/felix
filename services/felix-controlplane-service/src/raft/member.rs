@@ -124,26 +124,7 @@ impl RaftMember {
             );
         }
         let router = self.rpc_router();
-        match self.security.server_tls()? {
-            Some((tls, close_at)) => {
-                crate::server::tls::serve_tls(
-                    "raft",
-                    listener,
-                    router,
-                    tls,
-                    Some(close_at),
-                    shutdown,
-                )
-                .await;
-            }
-            None => {
-                axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                    .await
-                    .context("serve raft peer listener")?;
-            }
-        }
-        Ok(())
+        self.security.serve(listener, router, shutdown).await
     }
 
     /// What this member reports to one deciding how to enter the group, or
