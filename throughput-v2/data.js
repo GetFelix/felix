@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795283806802,
+  "lastUpdate": 1795284285474,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64740,6 +64740,58 @@ window.BENCHMARK_DATA = {
             "range": "13694.89",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1250433.63\nmean: 1243401.40\nstdev: 13694.89\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6d155c420760cf3423f2555ceae6bcbd2f272d19",
+          "message": "test(cluster): wait for a settled Raft leader before the Kafka epoch-bump test sends (#2907) (#2908)\n\nleader_among now names a leader only once the same broker still leads two seconds later, so the group-start leader is not picked. send_ok retries retriable errors and the first send's result is asserted.\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-21T18:00:21Z",
+          "tree_id": "da622fd8b071f7925283bbe65cf618341418a00c",
+          "url": "https://github.com/GetFelix/felix/commit/6d155c420760cf3423f2555ceae6bcbd2f272d19"
+        },
+        "date": 1795284284792,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 693572.26,
+            "range": "38976.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 693572.26\nmean: 699503.87\nstdev: 38976.43\ncv: 5.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 693572.26,
+            "range": "38976.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 693572.26\nmean: 699503.87\nstdev: 38976.43\ncv: 5.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 172685.01,
+            "range": "1985.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 172685.01\nmean: 172238.58\nstdev: 1985.11\ncv: 1.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1726850.13,
+            "range": "19851.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1726850.13\nmean: 1722385.77\nstdev: 19851.06\ncv: 1.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
