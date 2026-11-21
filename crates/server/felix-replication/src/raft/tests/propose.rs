@@ -629,6 +629,7 @@ async fn a_token_does_not_leave_with_an_append() {
         payload: Bytes::from_static(b"p"),
         producer: None,
         written: Some(token),
+        cond: None,
         headers: None,
         publisher: None,
     };
@@ -754,6 +755,7 @@ async fn a_record_past_the_heartbeat_gets_the_time_it_needs() {
         payload: Bytes::from(vec![7u8; 30_000_000]),
         producer: None,
         written: None,
+        cond: None,
         headers: None,
         publisher: None,
     };
@@ -873,6 +875,7 @@ pub(super) async fn cut_after_first(
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let (first, rest) = payloads.split_first().expect("a record");
     let (to, told) = oneshot::channel();
@@ -957,6 +960,7 @@ async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
 
     // The writers run only while the drain is handed over, which is when a

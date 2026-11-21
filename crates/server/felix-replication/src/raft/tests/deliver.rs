@@ -7,6 +7,7 @@ use felix_broker::{
     StreamHandle, StreamMetadata, SubscriptionGuard, SubscriptionReceiver,
 };
 use felix_storage::EphemeralCache;
+use felix_storage::log::{AppendOnlyLog, CondPiece, ReadRange, RecordMark};
 use tokio::sync::oneshot;
 
 use super::super::deliver::{Proposed, settled};
@@ -1287,8 +1288,9 @@ async fn a_read_is_refused_if_the_shard_closes_while_it_waits_for_the_apply() {
     led.cluster.stop().await;
 }
 
-/// **A conditional publish of no record, or of several, proposes nothing.**
-/// No record has no offset to land at, and the condition covers one entry.
+/// **A conditional publish of no record proposes nothing, and one of
+/// several waits for its gate.** No record has no offset to land at, and
+/// several are pieces a member that predates them refuses.
 #[tokio::test]
 async fn a_conditional_publish_of_other_than_one_record_is_refused() {
     let mut led = led().await;
@@ -1315,6 +1317,61 @@ async fn a_conditional_publish_of_other_than_one_record_is_refused() {
         publish_at(two),
         Err(BrokerError::NotOnEngineStream { .. })
     ));
+    led.cluster.stop().await;
+}
+
+/// The marks every member's log holds from `start`, once it has `count`
+/// records there.
+async fn marks_on_every_member(led: &Led, start: u64, count: usize) -> Vec<Vec<RecordMark>> {
+    let mut all = Vec::new();
+    for log in led.cluster.logs.values() {
+        eventually(|| (log.durable_offset() >= start + count as u64).then_some(())).await;
+        let read = ReadRange {
+            start,
+            max_bytes: 1 << 20,
+        };
+        let page = log.read_range(read).await.expect("read");
+        all.push(page.records.iter().take(count).map(|r| r.mark).collect());
+    }
+    all
+}
+
+/// **A conditional batch of several records is kept whole at its offsets,
+/// or blanked whole, on every member.** Each entry is a piece naming its
+/// place and kept only at `expected + position`, so a batch that misses
+/// its offset leaves no record of it on any member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conditional_batch_is_kept_or_blanked_whole_on_every_member() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    broker.allow_raft_conditional_batches_when(|| true);
+    let at = led.committed + 1;
+    let publish_at = |payloads: &[&'static [u8]], expected: u64| {
+        let proposed = led.engine.publish_at(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            payloads.iter().copied().map(Bytes::from_static).collect(),
+            Default::default(),
+            expected,
+            AckAt::Flushed,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    };
+    let landed = publish_at(&[b"a", b"b", b"c"], at).await.expect("joined");
+    assert_eq!(landed.expect("written").offsets, Some((at, at + 2)));
+    let piece = |position| RecordMark::CondPiece(CondPiece { position, len: 3 });
+    for marks in marks_on_every_member(&led, at, 3).await {
+        assert_eq!(marks, [piece(0), piece(1), piece(2)]);
+    }
+
+    let refused = publish_at(&[b"x", b"y"], at).await.expect("joined");
+    assert_eq!(refused, Err(CommitError::OffsetMismatch { tail: at + 5 }));
+    for marks in marks_on_every_member(&led, at + 3, 2).await {
+        assert!(marks.iter().all(|mark| !mark.is_data()), "{marks:?}");
+    }
     led.cluster.stop().await;
 }
 

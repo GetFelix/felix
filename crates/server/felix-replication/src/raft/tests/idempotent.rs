@@ -449,6 +449,7 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         group.raft().client_write(command).await.expect("written");
     }
@@ -634,6 +635,7 @@ async fn numbered_records_cut_by_a_leader_change_are_finished_by_the_resend() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         group.raft().client_write(command).await.expect("written");
     }
@@ -706,6 +708,7 @@ async fn a_cut_batch_finished_with_headers_keeps_each_records_own() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         group.raft().client_write(command).await.expect("written");
     }
@@ -856,6 +859,7 @@ async fn a_member_installed_past_a_cut_batch_refuses_its_resend() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         group.raft().client_write(command).await.expect("written");
     }

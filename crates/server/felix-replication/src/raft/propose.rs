@@ -27,7 +27,7 @@ use super::cache::{self, CacheCommand};
 use super::group::Pace;
 use super::lead::Leadership;
 use super::machine::{Cache, Machine};
-use super::types::{Command, ProducerMark, ShardTypes};
+use super::types::{Command, CondPlace, ProducerMark, ShardTypes};
 use super::wire;
 use crate::engine::{CommitError, Written};
 
@@ -155,8 +155,7 @@ const EMPTY: &str = "the batch held no record";
 const WRONG_KIND: &str = "the shard's group does not take this kind of write";
 const NOT_THE_REST: &str =
     "the records are not the rest of the producer's batch, so nothing was written";
-const CONDITIONAL_SHAPE: &str =
-    "a conditional publish on Raft is one record of no producer's batch, so nothing was written";
+const CONDITIONAL_SHAPE: &str = "a conditional publish on Raft names no producer's batch and a trim is one record, so nothing was written";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {
@@ -402,12 +401,19 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     if count == 0 {
         return Err(lost(EMPTY));
     }
-    // One entry, so its index alone says whether it landed where expected.
-    // A trim with no expected offset is retention's: its floor is at or
-    // below the tail it was proposed at, so below any index it can take.
-    if (expected.is_some() || trim.is_some()) && (count != 1 || producer.is_some()) {
+    // A trim is one entry, so its index alone says whether it landed where
+    // expected. A trim with no expected offset is retention's: its floor is
+    // at or below the tail it was proposed at, so below any index it can
+    // take. A conditional batch of several records is one run of entries,
+    // each naming its place, so all land at their offsets or none do.
+    if (expected.is_some() || trim.is_some()) && producer.is_some() || trim.is_some() && count != 1
+    {
         return Err(lost(CONDITIONAL_SHAPE));
     }
+    let cond_len = match expected {
+        Some(_) if count > 1 => Some(u32::try_from(count).map_err(|_| lost(CONDITIONAL_SHAPE))?),
+        _ => None,
+    };
     // A commit is one record, so it lands whole or not at all.
     if commit && (count != 1 || producer.is_some() || trim.is_some()) {
         return Err(lost(CONDITIONAL_SHAPE));
@@ -473,6 +479,10 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                 publisher: publisher.clone(),
                 headers: record.headers.map(Box::new),
                 written: None,
+                cond: cond_len.map(|len| CondPlace {
+                    position: index,
+                    len,
+                }),
             }
         })
         .collect();
@@ -499,6 +509,7 @@ pub(crate) fn split_group(
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     queued(vec![command], Vec::new(), Some(term), bytes, AckAt::Written)
 }
@@ -519,6 +530,7 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         })
         .collect();
     queued(commands, writes, None, 0, AckAt::Written)

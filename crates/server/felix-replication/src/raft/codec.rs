@@ -4,12 +4,12 @@ use std::collections::BTreeSet;
 use std::io;
 
 use bytes::Bytes;
-use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
+use felix_storage::log::{AppendRecord, CondPiece, LogRecord, RecordMark};
 use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use serde::{Deserialize, Serialize};
 
 use super::membership::TargetVersion;
-use super::types::{Command, MemberId, Membership, ProducerMark, ShardTypes};
+use super::types::{Command, CondPlace, MemberId, Membership, ProducerMark, ShardTypes};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ShardCodec;
@@ -98,10 +98,28 @@ impl EntryCodec<ShardTypes> for ShardCodec {
                     .into(),
             ));
         }
+        // Readers apply the whole-batch rule to the piece mark alone, so it
+        // must not share a record with any other meaning.
+        if let Some(cond) = data.cond
+            && (data.trim.is_some()
+                || data.commit
+                || data.group
+                || data.producer.is_some()
+                || cond.len < 2
+                || cond.position >= cond.len)
+        {
+            return Err(invalid(format!(
+                "a conditional piece {}/{} names a trim, a commit, a group or a producer, or is no batch's",
+                cond.position, cond.len
+            )));
+        }
         Ok(AppendRecord {
             payload: data.payload.clone(),
             timestamp_micros: data.timestamp_micros,
             mark: match data.trim {
+                _ if let Some(CondPlace { position, len }) = data.cond => {
+                    RecordMark::CondPiece(CondPiece { position, len })
+                }
                 Some(floor) => RecordMark::Trim { floor },
                 None if data.commit => RecordMark::Commit,
                 None if data.group => RecordMark::Group,
@@ -123,6 +141,10 @@ impl EntryCodec<ShardTypes> for ShardCodec {
             RecordMark::Trim { floor } => Some(floor),
             _ => None,
         };
+        let cond = match record.mark {
+            RecordMark::CondPiece(CondPiece { position, len }) => Some(CondPlace { position, len }),
+            _ => None,
+        };
         Ok(Command {
             timestamp_micros: record.timestamp_micros,
             payload: record.payload,
@@ -134,6 +156,7 @@ impl EntryCodec<ShardTypes> for ShardCodec {
             publisher: record.publisher,
             headers: record.headers,
             written: None,
+            cond,
         })
     }
 

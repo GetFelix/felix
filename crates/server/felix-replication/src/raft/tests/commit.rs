@@ -925,6 +925,7 @@ mod skipped_counts {
                         publisher: None,
                         headers: None,
                         written: None,
+                        cond: None,
                     };
                     EntryOf::<ShardTypes>::new_normal(id(index), command)
                 } else {

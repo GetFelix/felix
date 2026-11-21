@@ -163,6 +163,7 @@ fn group_entries(
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             };
             [
                 (index, command(write.encode(), true)),
@@ -256,6 +257,7 @@ async fn a_group_entry_that_does_not_decode_stops_the_apply() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let id = LogIdOf::<ShardTypes>::new(1.into(), 1);
     let entries = [Ok((EntryOf::<ShardTypes>::new_normal(id, command), None))];

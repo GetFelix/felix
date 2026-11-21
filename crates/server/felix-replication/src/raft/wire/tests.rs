@@ -84,6 +84,7 @@ fn every_request() -> Vec<RaftRequest> {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             },
         ),
         EntryOf::<ShardTypes>::new_membership(log_id(2, 7), membership()),
@@ -105,6 +106,7 @@ fn every_request() -> Vec<RaftRequest> {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             },
         ),
         EntryOf::<ShardTypes>::new_normal(
@@ -125,6 +127,7 @@ fn every_request() -> Vec<RaftRequest> {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             },
         ),
         EntryOf::<ShardTypes>::new_normal(
@@ -140,6 +143,7 @@ fn every_request() -> Vec<RaftRequest> {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             },
         ),
         EntryOf::<ShardTypes>::new_normal(
@@ -155,6 +159,7 @@ fn every_request() -> Vec<RaftRequest> {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             },
         ),
     ];
@@ -551,6 +556,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             },
         )],
         leader_commit: None,
@@ -564,7 +570,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
     const { assert!(ENTRY_CONDITIONAL > ENTRY_PIECE) };
     // An older build takes 5 the way this one takes any tag it lacks.
     let mut unknown = BytesMut::from(&bytes[..]);
-    unknown[at] = ENTRY_GROUP + 1;
+    unknown[at] = ENTRY_COND_PIECE + 1;
     let refused = decode_request(unknown.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -588,6 +594,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let append = |command| {
         request(Request::Append(AppendEntriesRequest {
@@ -606,7 +613,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
     // Tags 0 to 5 are what the build before this one reads.
     const { assert!(ENTRY_TRIM == ENTRY_CONDITIONAL + 1) };
     let mut older = BytesMut::from(&bytes[..]);
-    older[at] = ENTRY_GROUP + 1;
+    older[at] = ENTRY_COND_PIECE + 1;
     let refused = decode_request(older.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -643,6 +650,7 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
         publisher,
         headers: None,
         written: None,
+        cond: None,
     };
     let append = |command| {
         request(Request::Append(AppendEntriesRequest {
@@ -667,7 +675,7 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
         let at = bytes.len() - payload.len() - 4 - 8 - 1;
         assert_eq!(bytes[at], ENTRY_COMMIT);
         let mut older = BytesMut::from(&bytes[..]);
-        older[at] = ENTRY_GROUP + 1;
+        older[at] = ENTRY_COND_PIECE + 1;
         let refused = decode_request(older.freeze()).expect_err("refused");
         assert!(refused.to_string().contains("is not"), "{refused}");
     }
@@ -703,6 +711,7 @@ fn a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let append = |command| {
         request(Request::Append(AppendEntriesRequest {
@@ -729,7 +738,7 @@ fn a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
     // Tags 0 to 8 are what the build before this one reads.
     const { assert!(ENTRY_GROUP == ENTRY_COMMIT + 1) };
     let mut older = BytesMut::from(&bytes[..]);
-    older[at] = ENTRY_GROUP + 1;
+    older[at] = ENTRY_COND_PIECE + 1;
     let refused = decode_request(older.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -794,6 +803,7 @@ fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() 
         publisher,
         headers: headers.map(Box::new),
         written: None,
+        cond: None,
     };
     let append = |command| {
         request(Request::Append(AppendEntriesRequest {
@@ -850,7 +860,7 @@ fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() 
             // Tags 0 to 6 are what the build before this one reads.
             const { assert!(ENTRY_ATTRIBUTED == ENTRY_TRIM + 1) };
             let mut older = BytesMut::from(&bytes[..]);
-            older[at] = ENTRY_GROUP + 1;
+            older[at] = ENTRY_COND_PIECE + 1;
             let refused = decode_request(older.freeze()).expect_err("refused");
             assert!(
                 refused.to_string().contains("is not an entry payload"),
@@ -941,6 +951,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                     publisher: None,
                     headers: None,
                     written: None,
+                    cond: None,
                 },
             )
         })
@@ -993,6 +1004,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                     publisher: None,
                     headers: None,
                     written: None,
+                    cond: None,
                 },
             )
         })
@@ -1095,6 +1107,7 @@ fn an_entry_that_continues_a_batch_is_refused() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let written = request(Request::Append(AppendEntriesRequest {
         vote: vote(2, true),
@@ -1123,5 +1136,63 @@ impl RaftRequest {
             entries: rpc.entries[..n].to_vec(),
             leader_commit: rpc.leader_commit,
         }))
+    }
+}
+
+fn piece_entry(expected: Option<u64>, position: u32, len: u32) -> Request {
+    Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 11),
+            Command {
+                timestamp_micros: 103,
+                payload: Bytes::from_static(b"a piece"),
+                producer: None,
+                expected,
+                trim: None,
+                commit: false,
+                group: false,
+                publisher: Some(Bytes::from_static(b"alice")),
+                headers: None,
+                written: None,
+                cond: Some(CondPlace { position, len }),
+            },
+        )],
+        leader_commit: None,
+    })
+}
+
+/// **A conditional piece crosses the wire with its place and, when the
+/// leader sends it before its append, the batch's offset.** A follower
+/// decides the piece's blank from them as the leader did, so a frame that
+/// dropped either would let the two logs differ.
+#[test]
+fn a_conditional_piece_keeps_its_place_and_offset_on_the_wire() {
+    for expected in [Some(10), None] {
+        let sent = request(piece_entry(expected, 1, 3));
+        let bytes = encode_request(&sent).expect("encode");
+        let Request::Append(read) = decode_request(bytes).expect("decode").body else {
+            panic!("not an append");
+        };
+        let Request::Append(sent) = &sent.body else {
+            unreachable!()
+        };
+        assert!(read.entries[0].payload == sent.entries[0].payload);
+    }
+}
+
+/// **A piece no conditional batch has is refused at decode.** The log's
+/// codec would refuse it at the follower's append, holding replication there.
+#[test]
+fn a_piece_of_no_batch_is_refused_on_the_wire() {
+    for (position, len) in [(0, 1), (3, 3), (0, 0)] {
+        let sent = request(piece_entry(Some(10), position, len));
+        let bytes = encode_request(&sent).expect("encode");
+        let refused = decode_request(bytes).expect_err("refused");
+        assert!(
+            refused.to_string().contains("no conditional batch"),
+            "{refused}"
+        );
     }
 }

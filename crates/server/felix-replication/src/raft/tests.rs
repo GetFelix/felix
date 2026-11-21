@@ -487,6 +487,7 @@ impl Cluster {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             };
             match member.raft().client_write(command).await {
                 Ok(written) => return written.log_id.index,
@@ -522,6 +523,7 @@ impl Cluster {
                     publisher: None,
                     headers: None,
                     written: None,
+                    cond: None,
                 })
             });
             for written in futures::future::join_all(writes)
@@ -1652,6 +1654,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
         payload: Bytes::from_static(b"proposed"),
         producer: None,
         written: Some(token),
+        cond: None,
         headers: None,
         publisher: None,
     };
@@ -1702,6 +1705,7 @@ fn a_commands_token_is_not_serialized() {
         payload: Bytes::from_static(b"p"),
         producer: None,
         written: Some(token),
+        cond: None,
         headers: None,
         publisher: None,
     };
@@ -2012,6 +2016,7 @@ async fn a_restarted_member_reads_back_publisher_and_headers() {
         publisher: Some(publisher.clone()),
         headers: Some(Box::new(headers.clone())),
         written: None,
+        cond: None,
     };
     let at = member
         .raft()
@@ -2176,6 +2181,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         };
         last = member
             .raft()
@@ -2395,6 +2401,7 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         })
         .await
     });
@@ -2826,6 +2833,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             publisher: None,
             headers: None,
             written: None,
+            cond: None,
         })
         .await
     });
@@ -2950,6 +2958,7 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     publisher: None,
                     headers: None,
                     written: None,
+                    cond: None,
                 })
                 .await
             })
@@ -3126,6 +3135,7 @@ fn a_group_write_round_trips_through_its_record() {
         publisher: None,
         headers: None,
         written: None,
+        cond: None,
     };
     let record = ShardCodec.encode_data(&group()).expect("encode");
     assert_eq!(record.mark, felix_storage::log::RecordMark::Group);
@@ -3204,4 +3214,84 @@ fn a_dropped_tick_is_counted_for_the_broker() {
         rendered.contains(&format!("{} 2", super::group::DROPPED_TICKS_TOTAL)),
         "{rendered}"
     );
+}
+
+/// **A conditional piece is kept only at `expected + position`, is stored
+/// with the log's piece mark and reads back as the same place with no
+/// offset.** So every piece of a batch proposed as one run is kept or
+/// every piece blanked, and a piece is never stored with another meaning.
+#[test]
+fn a_conditional_piece_round_trips_through_its_record() {
+    use felix_storage::log::{CondPiece, LogRecord, RecordMark};
+    let piece = |expected| Command {
+        timestamp_micros: 9,
+        payload: Bytes::from_static(b"b"),
+        producer: None,
+        expected,
+        trim: None,
+        commit: false,
+        group: false,
+        publisher: None,
+        headers: None,
+        written: None,
+        cond: Some(types::CondPlace {
+            position: 1,
+            len: 3,
+        }),
+    };
+    assert!(!piece(Some(10)).blank_at(11));
+    assert!(piece(Some(10)).blank_at(10));
+    assert!(piece(Some(10)).blank_at(12));
+    assert!(piece(Some(u64::MAX)).blank_at(0));
+    let record = ShardCodec.encode_data(&piece(Some(10))).expect("encode");
+    assert_eq!(
+        record.mark,
+        RecordMark::CondPiece(CondPiece {
+            position: 1,
+            len: 3
+        })
+    );
+    let read = ShardCodec
+        .decode_data(LogRecord {
+            offset: 11,
+            timestamp_micros: record.timestamp_micros,
+            checksum: 0,
+            payload: record.payload,
+            mark: record.mark,
+            publisher: None,
+            headers: None,
+            generation: Some(3),
+        })
+        .expect("decode");
+    assert_eq!(read, piece(None));
+    let refusals: [fn(&mut Command); 6] = [
+        |c| c.commit = true,
+        |c| c.group = true,
+        |c| c.trim = Some(1),
+        |c| {
+            c.producer = Some(types::ProducerMark {
+                producer_id: 1,
+                sequence: 1,
+                position: 1,
+                len: 3,
+            })
+        },
+        |c| {
+            c.cond = Some(types::CondPlace {
+                position: 0,
+                len: 1,
+            })
+        },
+        |c| {
+            c.cond = Some(types::CondPlace {
+                position: 3,
+                len: 3,
+            })
+        },
+    ];
+    for refuse in refusals {
+        let mut command = piece(Some(10));
+        refuse(&mut command);
+        ShardCodec.encode_data(&command).expect_err("refused");
+    }
 }

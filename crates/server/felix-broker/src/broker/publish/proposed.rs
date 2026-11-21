@@ -150,8 +150,14 @@ impl Broker {
     /// outcome is the group's. See `docs/per-shard-raft.md`, "Conditional
     /// publishes".
     ///
-    /// No record is [`BrokerError::EmptyConditionalPublish`] and more than
-    /// one is [`BrokerError::NotOnEngineStream`], with `propose` not called.
+    /// Several records must land at `expected` and the offsets after it, all
+    /// or none: each is a conditional piece naming its place, so a cut
+    /// prefix is skipped by every reader (`felix_storage::log::conditional`).
+    ///
+    /// No record is [`BrokerError::EmptyConditionalPublish`], and more than
+    /// one is [`BrokerError::NotOnEngineStream`] until
+    /// [`Self::allow_raft_conditional_batches_when`] allows them, with
+    /// `propose` not called.
     #[allow(clippy::too_many_arguments)]
     pub fn propose_publish_at<F, E>(
         &self,
@@ -172,7 +178,7 @@ impl Broker {
         if payload.is_empty() {
             return Err(BrokerError::EmptyConditionalPublish);
         }
-        if payload.len() != 1 {
+        if payload.len() != 1 && !self.raft_conditional_batches_allowed() {
             return Err(BrokerError::NotOnEngineStream {
                 what: SEVERAL_CONDITIONAL,
             });

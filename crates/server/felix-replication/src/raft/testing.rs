@@ -42,6 +42,7 @@ impl GroupRuntime {
                 publisher: None,
                 headers: None,
                 written: None,
+                cond: None,
             };
             let written = group.raft().client_write(command).await.ok()?;
             offsets.push(written.log_id.index);
