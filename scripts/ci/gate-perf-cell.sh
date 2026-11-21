@@ -14,6 +14,11 @@
 #                          directories: Raft leaves an engine marker, the hybrid leaves none.
 #                          A cell that ran the other engine fails instead of reporting.
 #   FELIX_DURABLE_FSYNC_MODE is passed through to the brokers as it is.
+#   FANOUT_TOTAL=N         runs felix-loadgen's pubsub scenario instead of ingest: one
+#                          publisher sends N records unacked in <batch>-record batches to
+#                          FANOUT subscribers (default 4) and <secs> is ignored. msg_s is
+#                          the delivered rate and p50/p99 are publish-to-delivery, so a
+#                          backlog the engine drains slowly shows up in p99.
 set -euo pipefail
 
 bin=${1:?bin dir}; side=${2:?side}; cell=${3:?cell}; rf=${4:?replication factor}
@@ -53,11 +58,15 @@ session=$work/felix-cluster.json
 brokers=$(jq -r '[.nodes[].client_addr] | join(",")' "$session")
 # Let placement and the first leases settle before measuring.
 sleep 5
+if [ -n "${FANOUT_TOTAL:-}" ]; then
+  load=(--scenario pubsub --fanout "${FANOUT:-4}" --warmup 2000 --total "$FANOUT_TOTAL")
+else
+  load=(--scenario ingest --in-flight 8 --concurrency 4 --duration-secs "$secs")
+fi
 "$bin/felix-loadgen" --brokers "$brokers" \
   --tenant "$(jq -r .tenant_id "$session")" --namespace "$(jq -r .namespace "$session")" \
   --token "$(jq -r .client_token "$session")" \
-  --scenario ingest --stream perf --payload-bytes "$payload" --batch "$batch" \
-  --in-flight 8 --concurrency 4 --duration-secs "$secs" \
+  --stream perf --payload-bytes "$payload" --batch "$batch" "${load[@]}" \
   --environment "gate-$side-$cell" >"$work/loadgen.out" 2>"$work/loadgen.err" \
   || { tail -20 "$work/loadgen.err"; echo "loadgen failed" >&2; exit 1; }
 
@@ -73,7 +82,15 @@ fi
 
 line=$(grep '^LOADGEN_JSON ' "$work/loadgen.out" | head -1 | cut -d' ' -f2-)
 [ -n "$line" ] || { echo "no LOADGEN_JSON line" >&2; exit 1; }
-jq -c --arg side "$side" --arg cell "$cell" --argjson round "$round" --arg engine "$engine" \
-  '{side: $side, cell: $cell, round: $round, engine: $engine,
-    msg_s: (.acked_throughput_msg_s // .throughput_msg_s),
-    p50_us: .batch_ack_latency_us.p50, p99_us: .batch_ack_latency_us.p99, failed_sends: .failed_sends}' <<<"$line" >>"$results"
+if [ -n "${FANOUT_TOTAL:-}" ]; then
+  jq -c --arg side "$side" --arg cell "$cell" --argjson round "$round" --arg engine "$engine" \
+    '{side: $side, cell: $cell, round: $round, engine: $engine,
+      msg_s: .delivered_throughput_msg_s, publish_msg_s: .publish_throughput_msg_s,
+      p50_us: .delivery_latency_us.p50, p99_us: .delivery_latency_us.p99,
+      received_per_sub: .healthy_received_per_sub, expected_per_sub: .expected_per_sub}' <<<"$line" >>"$results"
+else
+  jq -c --arg side "$side" --arg cell "$cell" --argjson round "$round" --arg engine "$engine" \
+    '{side: $side, cell: $cell, round: $round, engine: $engine,
+      msg_s: (.acked_throughput_msg_s // .throughput_msg_s),
+      p50_us: .batch_ack_latency_us.p50, p99_us: .batch_ack_latency_us.p99, failed_sends: .failed_sends}' <<<"$line" >>"$results"
+fi
