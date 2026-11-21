@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795194091471,
+  "lastUpdate": 1795236765339,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63908,6 +63908,58 @@ window.BENCHMARK_DATA = {
             "range": "5093.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 946329.14\nmean: 945773.13\nstdev: 5093.58\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2370c35853b7c635d689d2c44130b5abf45902f2",
+          "message": "fix(controlplane): a new metadata leader judges nothing before its blank entry applies (#2496) (#2877)\n\n* fix(controlplane): a new metadata leader judges nothing before its blank entry applies (#2496)\n\nHeartbeats, expiry and the placement lease read the applied state on the\nleader. A leader restarted with committed entries past its saved committed\nindex could read that state before applying them, and hand the lease to a\nsecond holder. Every leader-only request now waits, once per term, for a\nread-index that covers the term's blank entry.\n\n* fix(controlplane): judge in the term the blank-entry wait covered\n\nHandlers re-read the term after dispatch awaited the level probe, so a\nlater term could be judged without its own wait. Pass dispatch's term in\nand refuse when leadership moved. The test now checks the ask was still\npending when applies resumed, so the revert check cannot pass vacuously.\n\nSpec-Unaffected: control-plane soft state is not in any docs/formal model.",
+          "timestamp": "2026-11-21T04:44:12Z",
+          "tree_id": "83b7bc63cd1b35796e617d2f789b91fbaac37a85",
+          "url": "https://github.com/GetFelix/felix/commit/2370c35853b7c635d689d2c44130b5abf45902f2"
+        },
+        "date": 1795236764518,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 368232.89,
+            "range": "14149.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368232.89\nmean: 362152.69\nstdev: 14149.02\ncv: 3.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 368232.89,
+            "range": "14149.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368232.89\nmean: 362152.69\nstdev: 14149.02\ncv: 3.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81578.11,
+            "range": "295.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81578.11\nmean: 81422.65\nstdev: 295.13\ncv: 0.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815781.07,
+            "range": "2951.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815781.07\nmean: 814226.50\nstdev: 2951.26\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
