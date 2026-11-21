@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795292058305,
+  "lastUpdate": 1795296541417,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64948,6 +64948,58 @@ window.BENCHMARK_DATA = {
             "range": "45823.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1173422.85\nmean: 1160626.93\nstdev: 45823.94\ncv: 3.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "35df99849dd15ddd922296630e4aa576eecab76e",
+          "message": "perf: run the Raft parity matrix on Azure, and a PR-level Raft RF 3 A/B (#2917)\n\n* perf(raft-parity): run the parity matrix on three Azure VMs, and a PR-level Raft RF 3 A/B (#2646)\n\n* perf(raft-parity): fix review findings in the Azure scripts (#2646)\n\n* perf(raft-parity): D16ls_v6 in centralus with a Premium SSD v2 data disk\n\nDefaults to 3 x Standard_D16ls_v6 in one zone of centralus, with one Premium SSD v2\ndata disk per VM mounted at /mnt/build. Local NVMe still works for L-series sizes.\nThe group delete takes the disks. Docs carry the VM choice, fsync note and cost.\n\nSpec-Unaffected: perf tooling only.",
+          "timestamp": "2026-11-21T21:21:34Z",
+          "tree_id": "76c55634c2ddcd4425c442330a71db8a9a6a891e",
+          "url": "https://github.com/GetFelix/felix/commit/35df99849dd15ddd922296630e4aa576eecab76e"
+        },
+        "date": 1795296540481,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 521857.1,
+            "range": "54521.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521857.10\nmean: 542976.24\nstdev: 54521.24\ncv: 10.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 521857.1,
+            "range": "54521.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521857.10\nmean: 542976.24\nstdev: 54521.24\ncv: 10.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118814.5,
+            "range": "7326.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118814.50\nmean: 116087.87\nstdev: 7326.05\ncv: 6.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1188144.97,
+            "range": "73260.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1188144.97\nmean: 1160878.66\nstdev: 73260.47\ncv: 6.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
