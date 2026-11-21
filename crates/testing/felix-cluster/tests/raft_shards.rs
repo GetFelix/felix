@@ -1522,3 +1522,108 @@ async fn retention_frees_the_disk_of_every_raft_member() {
     publish_acked(&cluster, &leader, b"after").await;
     cluster.shutdown().await;
 }
+
+/// **A conditional publish of several records on a Raft shard is written
+/// whole at its expected offset and refused whole off it, and a leader that
+/// dies as a batch lands leaves all of it or none.** Each record is a piece
+/// kept only at the expected offset plus its place, and readers on every
+/// member skip a batch the next leader cut short.
+#[tokio::test]
+#[serial]
+async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
+    use felix_client::ConditionalWrite;
+
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["raft_conditional_batches", "raft_follower_read"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize raft_conditional_batches");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let direct = std::sync::Arc::new(
+        felix_cluster::client::connect(
+            cluster.node(&leader).expect("node").client_addr,
+            &cluster.tenant_id,
+            &cluster.client_token(),
+        )
+        .await
+        .expect("connect to the leader"),
+    );
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let batch = |prefix: &str, n: usize| -> Vec<Vec<u8>> {
+        (0..n)
+            .map(|i| format!("{prefix}{i}").into_bytes())
+            .collect()
+    };
+    let publish_if = |payloads: Vec<Vec<u8>>, expected: u64| {
+        let (direct, tenant, namespace) = (direct.clone(), tenant.clone(), namespace.clone());
+        async move {
+            direct
+                .publish_if(&tenant, &namespace, STREAM, None, payloads, expected)
+                .await
+        }
+    };
+
+    let tail = felix_cluster::wait::until_some(ELECTED_WITHIN, "the shard's tail", || async {
+        match publish_if(batch("far", 2), 1 << 40).await {
+            Ok(ConditionalWrite::Refused { tail }) => Some(tail),
+            _ => None,
+        }
+    })
+    .await
+    .expect("a refusal with the tail");
+    let written = publish_if(batch("kept", 3), tail).await.expect("answered");
+    assert_eq!(written, ConditionalWrite::Written { offset: tail });
+    let refused = publish_if(batch("stale", 2), tail).await.expect("answered");
+    assert_eq!(refused, ConditionalWrite::Refused { tail: tail + 5 });
+
+    // The leader dies while a batch is in flight: it may commit whole, be
+    // cut short by the next leader, or never be appended.
+    let in_flight = tokio::spawn(publish_if(batch("flight", 4), tail + 5));
+    cluster.kill_node(&leader).expect("kill the leader");
+    let answered = in_flight.await.expect("joined");
+    let elected = leader_among(&cluster, &survivors).await;
+    publish_acked(&cluster, &elected, b"after").await;
+
+    let mut owed = batch("kept", 3);
+    owed.push(b"after".to_vec());
+    for node in &survivors {
+        let held = replay_holding(&cluster, node, &owed).await;
+        let kept = held.iter().position(|p| p == b"kept0").expect("kept0");
+        assert_eq!(&held[kept..kept + 3], &batch("kept", 3)[..], "{node}");
+        assert!(
+            !held
+                .iter()
+                .any(|p| p.starts_with(b"stale") || p.starts_with(b"far")),
+            "{node} read part of a refused batch: {held:?}"
+        );
+        let flight: Vec<usize> = held
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.starts_with(b"flight"))
+            .map(|(at, _)| at)
+            .collect();
+        match flight.first() {
+            None => assert!(
+                !matches!(answered, Ok(ConditionalWrite::Written { .. })),
+                "{node} lost an acknowledged batch"
+            ),
+            Some(&first) => {
+                assert_eq!(flight.len(), 4, "{node} read part of a batch: {held:?}");
+                assert_eq!(
+                    held.get(first..first + 4),
+                    Some(&batch("flight", 4)[..]),
+                    "{node}"
+                );
+            }
+        }
+    }
+    cluster.shutdown().await;
+}
