@@ -1213,6 +1213,9 @@ impl ControlPlaneStore for RaftStore {
         shard_incarnation: Option<u64>,
         group_epoch: Option<u64>,
     ) -> StoreResult<bool> {
+        // Epoch 0 is what an entry without one reports, so a broker that
+        // sends it still records against a group below 47.
+        let group_epoch = group_epoch.filter(|&epoch| epoch != 0);
         let needs = if group_epoch.is_some() {
             REFORM_RECORD_LEVEL
         } else if shard_incarnation.is_some() {

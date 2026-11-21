@@ -576,3 +576,91 @@ fn a_finalize_carries_the_hold_from_level_45() {
     ));
     assert_eq!(level, 46);
 }
+
+/// A copy id report settled at level 47 carries `keep_seed`, which lifts
+/// the entry to 47; below it the flag is never added or kept.
+#[test]
+fn a_copy_id_report_keeps_the_seed_from_level_47() {
+    let level = super::super::REFORM_RECORD_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    let raw = encode_command(&MetaCommand::RecordRaftCopyId {
+        key: crate::model::ShardKey {
+            tenant_id: "t".to_string(),
+            namespace: "n".to_string(),
+            stream: "s".to_string(),
+            shard: 0,
+            kind: crate::model::ShardKind::Stream,
+        },
+        node_id: "b".to_string(),
+        node_registered_at_millis: 1,
+        node_incarnation: 1,
+        copy_id: 1,
+        keep_ordered: false,
+        shard_incarnation: Some(1),
+        hold_target: false,
+        group_epoch: None,
+        keep_seed: false,
+    });
+    let settled = settle_for_level(&raw, level)
+        .expect("settled")
+        .expect("edited");
+    let (command, needs) = decode_command_with_level(&settled).expect("decode");
+    assert!(matches!(
+        command,
+        MetaCommand::RecordRaftCopyId {
+            keep_seed: true,
+            ..
+        }
+    ));
+    assert_eq!(needs, level);
+    // Below 47 nothing adds it, and an entry that carries it is refused.
+    let below = settle_for_level(&raw, level - 1)
+        .expect("settled")
+        .expect("edited");
+    let (command, needs) = decode_command_with_level(&below).expect("decode");
+    assert!(matches!(
+        command,
+        MetaCommand::RecordRaftCopyId {
+            keep_seed: false,
+            ..
+        }
+    ));
+    assert!(needs < level);
+    assert!(settle_for_level(&settled, level - 1).is_err());
+    // One this build cannot decode has the flag taken off.
+    let sent = format!(r#"{{"v":1,"op":"{COPY_ID_OP}","keep_seed":true}}"#);
+    let stripped = settle_for_level(sent.as_bytes(), level - 1)
+        .expect("settles")
+        .expect("edited");
+    let json: serde_json::Value = serde_json::from_slice(&stripped).expect("json");
+    assert_eq!(json["keep_seed"], serde_json::Value::Null);
+}
+
+/// Epoch 0 is what a report without an epoch means, so it is written the
+/// same as no epoch and does not lift the entry to level 47.
+#[test]
+fn a_copy_id_report_at_epoch_zero_is_the_old_wire_form() {
+    let report = |group_epoch| {
+        encode_command(&MetaCommand::RecordRaftCopyId {
+            key: crate::model::ShardKey {
+                tenant_id: "t".to_string(),
+                namespace: "n".to_string(),
+                stream: "s".to_string(),
+                shard: 0,
+                kind: crate::model::ShardKind::Stream,
+            },
+            node_id: "b".to_string(),
+            node_registered_at_millis: 1,
+            node_incarnation: 1,
+            copy_id: 1,
+            keep_ordered: false,
+            shard_incarnation: Some(1),
+            hold_target: false,
+            group_epoch,
+            keep_seed: false,
+        })
+    };
+    assert_eq!(report(Some(0)), report(None));
+    let (_, needs) = decode_command_with_level(&report(Some(0))).expect("decode");
+    assert!(needs < super::super::REFORM_RECORD_LEVEL);
+}

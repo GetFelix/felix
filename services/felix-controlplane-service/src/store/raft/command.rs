@@ -577,8 +577,9 @@ pub enum MetaCommand {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_target: bool,
         /// Level 47: the group epoch the copy runs, checked against the
-        /// shard's (#2882). An entry without it reports epoch 0.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// shard's (#2882). An entry without it reports epoch 0, so epoch 0
+        /// is left out and the entry is the same bytes as below 47.
+        #[serde(default, skip_serializing_if = "is_epoch_zero")]
         group_epoch: Option<u64>,
         /// Level 47: keep the epoch's first target as its seed and check the
         /// epoch. Carrying it lifts the join floor to 47, and from there
@@ -993,6 +994,10 @@ struct Envelope {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+fn is_epoch_zero(epoch: &Option<u64>) -> bool {
+    epoch.is_none_or(|epoch| epoch == 0)
 }
 
 /// Serialize a command for proposal.

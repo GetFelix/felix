@@ -255,6 +255,7 @@ fn a_re_form_writes_the_next_epochs_record() {
     a.start_reformed_epoch(
         0,
         &dead,
+        Some(40),
         base(Some((40, 0, 5)), 45),
         copies(&[("a", 11), ("b", 12)]),
     )
@@ -282,8 +283,14 @@ fn a_re_form_writes_the_next_epochs_record() {
     );
     assert_eq!(record.seed, Some(voters(&[("a", 11), ("b", 12)])));
 
-    a.start_reformed_epoch(1, &BTreeSet::new(), base(None, 60), copies(&[("a", 11)]))
-        .expect("epoch 2");
+    a.start_reformed_epoch(
+        1,
+        &BTreeSet::new(),
+        Some(40),
+        base(None, 60),
+        copies(&[("a", 11)]),
+    )
+    .expect("epoch 2");
     let record = a.reform_record(&BTreeSet::new()).expect("both bases");
     assert_eq!(record.bases.len(), 2);
 }
@@ -297,7 +304,7 @@ fn a_re_form_write_refuses_what_it_cannot_vouch_for() {
     let refused = |mut a: ShardAssignment, expected, base, voters| {
         let before = a.clone();
         let err = a
-            .start_reformed_epoch(expected, &BTreeSet::new(), base, voters)
+            .start_reformed_epoch(expected, &BTreeSet::new(), Some(40), base, voters)
             .expect_err("refused");
         assert_eq!(a, before);
         err
@@ -327,7 +334,7 @@ fn a_re_form_write_refuses_what_it_cannot_vouch_for() {
     );
 
     let mut once = assignment();
-    once.start_reformed_epoch(0, &BTreeSet::new(), base(None, 45), voters())
+    once.start_reformed_epoch(0, &BTreeSet::new(), Some(40), base(None, 45), voters())
         .expect("epoch 1");
     assert!(matches!(
         refused(once.clone(), 1, base(None, 45), voters()),
@@ -341,14 +348,97 @@ fn a_re_form_write_refuses_what_it_cannot_vouch_for() {
     );
 }
 
+/// A leader that reports a higher floor after the plan read the record
+/// refuses the start: the plan may cut entries up to it, and its first
+/// index may be at or below it. A first index at the floor is refused even
+/// for a plan that read it.
+#[test]
+fn a_floor_raised_after_the_plan_refuses_the_start() {
+    let voters = || copies(&[("a", 11), ("b", 12)]);
+    let mut raised = assignment();
+    if let Some(floor) = raised.raft_floor.as_mut() {
+        floor.offset_floor = 50;
+        floor.index = 50;
+    }
+    let before = raised.clone();
+    assert_eq!(
+        raised.start_reformed_epoch(
+            0,
+            &BTreeSet::new(),
+            Some(40),
+            base(Some((40, 0, 5)), 45),
+            voters()
+        ),
+        Err(ReformWriteError::FloorRaised {
+            planned: 40,
+            stored: 50
+        })
+    );
+    assert_eq!(
+        raised.start_reformed_epoch(0, &BTreeSet::new(), None, base(None, 55), voters()),
+        Err(ReformWriteError::FloorRaised {
+            planned: 0,
+            stored: 50
+        })
+    );
+    assert_eq!(raised, before);
+
+    let mut at_floor = assignment();
+    assert!(matches!(
+        at_floor.start_reformed_epoch(0, &BTreeSet::new(), Some(40), base(None, 40), voters()),
+        Err(ReformWriteError::BaseBehind(_))
+    ));
+}
+
+/// A base whose last entry is from a re-formed epoch but below that
+/// epoch's first index names an entry no copy can hold, and is refused.
+#[test]
+fn a_base_below_its_epochs_first_index_is_refused() {
+    let mut a = assignment();
+    a.start_reformed_epoch(
+        0,
+        &BTreeSet::new(),
+        Some(40),
+        base(None, 45),
+        copies(&[("a", 11)]),
+    )
+    .expect("epoch 1");
+    let before = a.clone();
+    assert!(matches!(
+        a.start_reformed_epoch(
+            1,
+            &BTreeSet::new(),
+            Some(40),
+            base(Some((44, 1, 6)), 60),
+            copies(&[("a", 11)])
+        ),
+        Err(ReformWriteError::BaseBehind(_))
+    ));
+    assert_eq!(a, before);
+    a.start_reformed_epoch(
+        1,
+        &BTreeSet::new(),
+        Some(40),
+        base(Some((45, 1, 6)), 60),
+        copies(&[("a", 11)]),
+    )
+    .expect("an entry at the epoch's first index");
+}
+
 /// Seed and bases are store-owned: a write at the same incarnation keeps
 /// the stored ones whatever it passes, and a new incarnation starts none,
 /// so a caller can neither forge nor roll back a base.
 #[test]
 fn a_write_keeps_the_stored_seed_and_bases() {
     let mut held = assignment();
-    held.start_reformed_epoch(0, &BTreeSet::new(), base(None, 45), copies(&[("a", 11)]))
-        .expect("epoch 1");
+    held.start_reformed_epoch(
+        0,
+        &BTreeSet::new(),
+        Some(40),
+        base(None, 45),
+        copies(&[("a", 11)]),
+    )
+    .expect("epoch 1");
     let mut write = assignment();
     write.raft_seed = Some(seed(3, 1, &[("e", 1)]));
     write.raft_bases = None;

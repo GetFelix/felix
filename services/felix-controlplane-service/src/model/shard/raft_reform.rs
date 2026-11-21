@@ -82,6 +82,8 @@ pub(crate) enum ReformWriteError {
     VoterNotPlaced(String),
     #[error("the base is not above the current epoch's: {0}")]
     BaseBehind(&'static str),
+    #[error("the floor rose to {stored} after the plan read {planned}")]
+    FloorRaised { planned: u64, stored: u64 },
 }
 
 /// Why no [`GroupRecord`] can be built for a shard.
@@ -213,11 +215,15 @@ impl ShardAssignment {
     /// record, `base` appended to the bases, `voters` as the new epoch's
     /// seed, and an empty ordered list.
     ///
-    /// Refused unless the group is still at `expected` and every earlier
-    /// base is recorded, so a stale plan never writes over a newer epoch and
-    /// a later re-form never starts without the bases before it. `base`
-    /// must end at or below its first index, which must be above every
-    /// earlier epoch's.
+    /// Refused unless the group is still at `expected`, every earlier base
+    /// is recorded and the floor is no higher than `planned_floor`, the
+    /// highest of the floor index and offset floor the plan read. A stale
+    /// plan never writes over a newer epoch, a later re-form never starts
+    /// without the bases before it, and a floor a leader reported after the
+    /// plan, whose entries the plan may cut, refuses the start. `base` must
+    /// end below its first index, which must be above the floor and every
+    /// earlier epoch's, and an entry of a re-formed epoch it ends on must be
+    /// at or past that epoch's first index.
     #[allow(
         dead_code,
         reason = "the re-form command's epoch compare and swap (#2250) calls it"
@@ -226,6 +232,7 @@ impl ShardAssignment {
         &mut self,
         expected: u64,
         dead: &BTreeSet<String>,
+        planned_floor: Option<u64>,
         base: RaftEpochBase,
         voters: BTreeMap<String, u64>,
     ) -> Result<(), ReformWriteError> {
@@ -234,6 +241,26 @@ impl ShardAssignment {
             return Err(ReformWriteError::EpochMoved { expected, current });
         }
         let mut bases = self.epoch_bases()?;
+        // The same bound the planner reads off `reform_record`.
+        let record = self
+            .raft_floor
+            .as_ref()
+            .filter(|floor| floor.incarnation == self.incarnation);
+        let stored = record
+            .filter(|floor| floor.epoch == current)
+            .map(|floor| floor.index)
+            .max(record.map(|floor| floor.offset_floor));
+        if let Some(stored) = stored {
+            let planned = planned_floor.unwrap_or(0);
+            if planned_floor.is_none_or(|planned| stored > planned) {
+                return Err(ReformWriteError::FloorRaised { planned, stored });
+            }
+            if base.first_index <= stored {
+                return Err(ReformWriteError::BaseBehind(
+                    "its first index is not above the floor",
+                ));
+            }
+        }
         let placed = self
             .placed
             .as_ref()
@@ -254,6 +281,18 @@ impl ShardAssignment {
             if last.index >= base.first_index {
                 return Err(ReformWriteError::BaseBehind(
                     "it ends at or past its first index",
+                ));
+            }
+            // An epoch's entries start at its first index; no copy holds
+            // one below it.
+            let first = last
+                .epoch
+                .checked_sub(1)
+                .and_then(|e| usize::try_from(e).ok())
+                .and_then(|e| bases.get(e));
+            if first.is_some_and(|epoch| last.index < epoch.first_index) {
+                return Err(ReformWriteError::BaseBehind(
+                    "its last entry is below its epoch's first index",
                 ));
             }
         }

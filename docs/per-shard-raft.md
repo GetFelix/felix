@@ -5199,8 +5199,12 @@ From metadata level 47 the shard record keeps two more store-owned fields:
   the re-form's own write appends to it, in the same step that writes the
   next epoch's placed record, its seed and an empty list of ordered targets.
   That write is refused unless the record is still at the epoch the plan was
-  made for and every earlier base is recorded, and a base must end below its
-  first index, which must be above every earlier epoch's.
+  made for, every earlier base is recorded, and the floor is no higher than
+  the plan read: a leader that reports a later commit after the plan was
+  made refuses the start, since the plan may cut those entries. A base must
+  end below its first index, which must be above the floor and every earlier
+  epoch's, and a base ending on an entry of a re-formed epoch must end at or
+  past that epoch's first index.
 
 A write passing either field has it replaced by the stored one, and a new
 stream incarnation starts with neither. Below level 47 neither is written:
@@ -5208,7 +5212,8 @@ a group whose first target was stored there has no seed, so its plans stay
 marked and `apply` needs the operator to accept the loss.
 
 From level 47 a copy id report also carries the group epoch the copy runs
-(`group_epoch`, absent meaning 0), and one for another epoch than the
+(`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records
+at any level), and one for another epoch than the
 shard's `placed` record is refused (#2882). A directory restored from an
 old backup can otherwise report its copy id from a stale view of an earlier
 epoch. Brokers do not send the field yet, so this check only matters once a

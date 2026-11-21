@@ -5047,6 +5047,49 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
     .await;
 }
 
+/// A broker that reports epoch 0 records its copy id on a group at level
+/// 46, as one that reports no epoch does; only a later epoch needs 47. A
+/// rolling upgrade otherwise refuses every new broker's report and no new
+/// group forms.
+#[tokio::test]
+async fn a_copy_id_at_epoch_zero_records_below_level_47() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, _version) = store_with_member_at(dir.path(), REFORM_RECORD_LEVEL - 1).await;
+    let shared: &dyn ControlPlaneStore = store.as_ref();
+    crate::store::contract::shards::on_streams_of_its_own(shared, async {
+        let shard = crate::store::contract::raft_targets::switched(shared).await;
+        let process = shared.get_node("broker-x").await.expect("node").status;
+        let report = |group_epoch| {
+            shared.record_raft_copy_id(
+                &shard.key,
+                "broker-x",
+                process.registered_at_millis,
+                process.incarnation,
+                2,
+                None,
+                group_epoch,
+            )
+        };
+        let refused = report(Some(1)).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("version 47")),
+            "epoch 1 below level 47: {refused:?}"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match report(Some(0)).await {
+                Ok(true) => break,
+                other => assert!(
+                    std::time::Instant::now() < deadline,
+                    "epoch 0 refused at level 46: {other:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
 /// Below level 37 a node delete keeps the node's report stamps on every
 /// member alike; from it the delete clears them (#2619).
 #[tokio::test]
