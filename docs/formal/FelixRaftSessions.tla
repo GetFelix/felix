@@ -13,10 +13,10 @@
 (* felix-replication/src/raft/group.rs:1794, which moves on apply and so   *)
 (* never passes the commit index; `follow_commits`, raft/deliver.rs:669).  *)
 (* No round and no lease on that path. NoLostDelivery says everything      *)
-(* delivered is at its offset in the log of the newest open leader: what   *)
-(* was handed out is never taken back. `DeliverUncommitted` hands out the  *)
-(* uncommitted tail, and TLC finds a successor holding something else at   *)
-(* that offset.                                                            *)
+(* delivered is at its offset in the log of an open leader no broker has   *)
+(* outvoted: what was handed out is never taken back.                     *)
+(* `DeliverUncommitted` hands out the uncommitted tail, and TLC finds a    *)
+(* successor holding something else at that offset.                       *)
 (*                                                                         *)
 (* A group commit (a poll's claim, an ack, a dead-letter change) is a      *)
 (* proposal to the shard's Raft group in the term the coordinator serves   *)
@@ -24,7 +24,8 @@
 (* groups.rs:61), answered once it is applied as the entry that term       *)
 (* wrote there (`OnRaft::applied`, groups.rs:80, waiting on                *)
 (* `commit::committed`, raft/commit.rs:372). The read the coordinator      *)
-(* decides from is FelixRaftReads' read. NoStaleGroupCommit says no        *)
+(* decides from (`OnRaft::fresh`) is FelixRaftReads' read, checked there,  *)
+(* so the group configs run no read. NoStaleGroupCommit says no            *)
 (* commit is answered at a term older than one that had opened before the  *)
 (* commit began: two coordinators of one group are never both taking       *)
 (* commits. The knobs:                                                     *)
@@ -111,10 +112,10 @@ SessionsNext ==
 
 SessionsSpec == SessionsInit /\ [][SessionsNext]_sessAllVars
 
-\* Everything delivered is at its offset in the log of the newest open
-\* leader, or below its purged id.
+\* Everything delivered is at its offset in the log of an open leader no
+\* broker has outvoted, or below its purged id.
 NoLostDelivery ==
-    \A l \in Servers : (Open(l) /\ vote[l].term = OpenTerm) =>
+    \A l \in Servers : (Open(l) /\ \A s \in Servers : vote[s].term <= vote[l].term) =>
         \A k \in 1..Len(got) :
             \/ got[k].off <= base[l].idx
             \/ Has(l, got[k].off) /\ IsRecord(EntryAt(l, got[k].off), got[k].val)

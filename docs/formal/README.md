@@ -745,7 +745,7 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReadsNoRound.cfg` | the round skipped | violate `NoStaleRead`: a deposed leader answers without its successor's write |
 | `FelixRaftReadsNoBlankBarrier.cfg` | a read served before the term opened, its bound the commit index alone | violate `NoStaleRead`: a new leader reads before it learned what its predecessor committed |
 | `FelixRaftReadsSkipsAnswered.cfg` | written-majority answers, the bound left at the read index; one term | violate `NoStaleRead`: an answered write above the commit index is missed |
-| `FelixRaftSessionsSubscriber.cfg` | `FelixRaftSessions.tla`: a subscriber reading up to what any broker that believes it leads applied, resuming by offset; two terms, two writes, one crash | pass `NoLostDelivery`, `OffsetNeverReused` |
+| `FelixRaftSessionsSubscriber.cfg` | `FelixRaftSessions.tla`: a subscriber reading up to what any broker that believes it leads applied, resuming by offset; checked against the open leader no broker has outvoted; two terms, two writes, one crash | pass `NoLostDelivery`, `OffsetNeverReused` |
 | `FelixRaftSessionsPastCommit.cfg` | the subscriber reads past the commit index | violate `NoLostDelivery` |
 | `FelixRaftSessionsGroup.cfg` | one group commit, proposed in the term its coordinator has open and answered once applied as the entry that term wrote; two terms, one crash | pass `NoStaleGroupCommit` |
 | `FelixRaftSessionsGroupAckOnWrite.cfg` | the commit answered once in the coordinator's own log | violate `NoStaleGroupCommit` |
@@ -4385,8 +4385,9 @@ What is abstracted:
   broker applied. The answered bound is read when the read begins, before the
   round, where the code reads it after: a smaller bound, so the check is at
   least as strict.
-- The lease read, which skips the round, is not here. It rests on a clock
-  drift bound and `FelixRaftLease.tla` checks it.
+- Both state reads always run the round. The lease read, which skips it, is
+  reached only before a read that could start below a head trim, and
+  `FelixRaftLease.tla` checks it.
 - Written-majority answers are checked without crashes. What a crash does to
   an unsynced majority is `FelixRaftWritten.tla`'s question.
 - A group commit is a record entry. What it does to group state is
