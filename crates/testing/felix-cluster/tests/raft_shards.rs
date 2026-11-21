@@ -1571,24 +1571,56 @@ async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
         }
     };
 
-    let tail = felix_cluster::wait::until_some(ELECTED_WITHIN, "the shard's tail", || async {
-        match publish_if(batch("far", 2), 1 << 40).await {
-            Ok(ConditionalWrite::Refused { tail }) => Some(tail),
-            _ => None,
+    // Retried at whatever tail a refusal names, so an earlier attempt that
+    // timed out and landed later only moves the tail.
+    let mut tail = 1 << 40;
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN;
+    let kept = loop {
+        assert!(tokio::time::Instant::now() < deadline, "no batch written");
+        match publish_if(batch("kept", 3), tail).await {
+            Ok(ConditionalWrite::Written { offset }) => break offset,
+            Ok(ConditionalWrite::Refused { tail: at }) => tail = at,
+            Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
         }
-    })
-    .await
-    .expect("a refusal with the tail");
-    let written = publish_if(batch("kept", 3), tail).await.expect("answered");
-    assert_eq!(written, ConditionalWrite::Written { offset: tail });
-    let refused = publish_if(batch("stale", 2), tail).await.expect("answered");
-    assert_eq!(refused, ConditionalWrite::Refused { tail: tail + 5 });
+    };
+    let refused = publish_if(batch("stale", 2), kept).await.expect("answered");
+    assert_eq!(refused, ConditionalWrite::Refused { tail: kept + 5 });
 
-    // The leader dies while a batch is in flight: it may commit whole, be
-    // cut short by the next leader, or never be appended.
-    let in_flight = tokio::spawn(publish_if(batch("flight", 4), tail + 5));
+    // Batches go to the leader back to back, each at the tail the last left,
+    // and the leader is killed once a few have landed, so one is very likely
+    // in its log but not committed: it may commit whole, be cut short by the
+    // next leader, or never be appended.
+    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::unbounded_channel();
+    let flights = {
+        let (direct, tenant, namespace) = (direct.clone(), tenant.clone(), namespace.clone());
+        tokio::spawn(async move {
+            let mut answers = Vec::new();
+            let mut at = kept + 5;
+            for k in 0u32.. {
+                let pieces = (0..4)
+                    .map(|i| format!("flight{k}-{i}").into_bytes())
+                    .collect();
+                let answer = direct
+                    .publish_if(&tenant, &namespace, STREAM, None, pieces, at)
+                    .await;
+                match answer {
+                    Ok(ConditionalWrite::Written { offset }) => {
+                        answers.push(k);
+                        at = offset + 4;
+                        let _ = landed_tx.send(());
+                    }
+                    Ok(ConditionalWrite::Refused { tail }) => at = tail,
+                    Err(_) => break,
+                }
+            }
+            answers
+        })
+    };
+    for _ in 0..3 {
+        landed_rx.recv().await.expect("a batch landed");
+    }
     cluster.kill_node(&leader).expect("kill the leader");
-    let answered = in_flight.await.expect("joined");
+    let acknowledged = flights.await.expect("joined");
     let elected = leader_among(&cluster, &survivors).await;
     publish_acked(&cluster, &elected, b"after").await;
 
@@ -1596,32 +1628,30 @@ async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
     owed.push(b"after".to_vec());
     for node in &survivors {
         let held = replay_holding(&cluster, node, &owed).await;
-        let kept = held.iter().position(|p| p == b"kept0").expect("kept0");
-        assert_eq!(&held[kept..kept + 3], &batch("kept", 3)[..], "{node}");
+        let at = held.iter().position(|p| p == b"kept0").expect("kept0");
+        assert_eq!(&held[at..at + 3], &batch("kept", 3)[..], "{node}");
         assert!(
-            !held
-                .iter()
-                .any(|p| p.starts_with(b"stale") || p.starts_with(b"far")),
+            !held.iter().any(|p| p.starts_with(b"stale")),
             "{node} read part of a refused batch: {held:?}"
         );
-        let flight: Vec<usize> = held
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.starts_with(b"flight"))
-            .map(|(at, _)| at)
-            .collect();
-        match flight.first() {
-            None => assert!(
-                !matches!(answered, Ok(ConditionalWrite::Written { .. })),
-                "{node} lost an acknowledged batch"
-            ),
-            Some(&first) => {
-                assert_eq!(flight.len(), 4, "{node} read part of a batch: {held:?}");
-                assert_eq!(
-                    held.get(first..first + 4),
-                    Some(&batch("flight", 4)[..]),
-                    "{node}"
-                );
+        // Every batch is all there, in order, or not there at all.
+        for k in 0..=acknowledged.last().map_or(0, |k| k + 1) {
+            let pieces = batch(&format!("flight{k}-"), 4);
+            let found: Vec<usize> = held
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| pieces.contains(p))
+                .map(|(at, _)| at)
+                .collect();
+            match found.first() {
+                None => assert!(
+                    !acknowledged.contains(&k),
+                    "{node} lost acknowledged batch {k}"
+                ),
+                Some(&first) => {
+                    assert_eq!(found.len(), 4, "{node} read part of batch {k}: {held:?}");
+                    assert_eq!(held.get(first..first + 4), Some(&pieces[..]), "{node}");
+                }
             }
         }
     }

@@ -179,9 +179,11 @@ impl RaftEngine {
         )
     }
 
-    /// [`Self::publish`] for a conditional publish: one record, written
-    /// only if it lands at offset `expected`. Anything but one record is
-    /// refused with nothing proposed.
+    /// [`Self::publish`] for a conditional publish, written only if it lands
+    /// at offset `expected`. No record is refused with nothing proposed, and
+    /// so are several until the broker allows conditional batches
+    /// (`Broker::allow_raft_conditional_batches_when`); each record of a batch
+    /// is then a piece kept only at `expected` plus its place.
     ///
     /// The condition is decided where the leader's log appends the entry,
     /// at its final index and from that index alone: off `expected`, it
