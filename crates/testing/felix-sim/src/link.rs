@@ -169,6 +169,21 @@ impl ControlPlaneLink for NodeLink {
         self.cut.through(REQUEST_TIMEOUT, call).await
     }
 
+    async fn reform_surveys(&self, bearer: Option<&str>, node_id: &str) -> Result<LinkResponse> {
+        let call = self.inner.reform_surveys(bearer, node_id);
+        self.cut.through(REQUEST_TIMEOUT, call).await
+    }
+
+    async fn reform_reports(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<LinkResponse> {
+        let call = self.inner.reform_reports(bearer, node_id, body);
+        self.cut.through(REQUEST_TIMEOUT, call).await
+    }
+
     async fn confirmed_assignment(
         &self,
         bearer: Option<&str>,

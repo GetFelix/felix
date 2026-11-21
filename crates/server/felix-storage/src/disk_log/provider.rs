@@ -177,6 +177,22 @@ impl DiskLogProvider {
         engine_marker::claimed_for_raft(&dir, &layout::shard_label(shard)).map(Some)
     }
 
+    /// Where a Raft member of `shard` at `incarnation` keeps its copy, for a
+    /// re-form survey to read: the directory [`Self::claim_for_raft`]
+    /// marked, or the one it would mark when nothing is there yet (which
+    /// reads as an empty copy). Marks and creates nothing.
+    ///
+    /// `None` when `incarnation` is not the stream's, or the directory
+    /// holds a log no Raft member claimed: neither is this broker's copy.
+    pub fn raft_dir(&self, shard: &ShardKey, incarnation: u64) -> Result<Option<PathBuf>> {
+        let dir = layout::incarnation_dir(&self.root, shard, incarnation);
+        Ok(match self.claimed_for_raft(shard, incarnation)? {
+            Some(true) => Some(dir),
+            Some(false) if !crate::fs::try_exists(&dir)? => Some(dir),
+            _ => None,
+        })
+    }
+
     /// What [`Self::open_incarnation`] would return, when the log is open
     /// already; `None` without creating, recovering or waiting otherwise.
     /// `None` for `incarnation` checks nothing, as [`Self::open_shard`] does.

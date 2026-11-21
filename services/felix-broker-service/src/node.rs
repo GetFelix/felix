@@ -455,6 +455,13 @@ where
             root_sequence.clone(),
             sync_shutdown.clone(),
         );
+        cluster::answer_reform_surveys(
+            &raft_shards,
+            link.clone(),
+            membership.node_id.clone(),
+            credential.clone(),
+            sync_shutdown.clone(),
+        );
     }
     startup::bind_read_check(
         &config,

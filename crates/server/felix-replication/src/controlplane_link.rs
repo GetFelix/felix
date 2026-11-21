@@ -128,6 +128,21 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         report: &RaftCopyId,
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 
+    /// `GET /v1/nodes/{node_id}/reform/surveys`.
+    fn reform_surveys(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
+
+    /// `POST /v1/nodes/{node_id}/reform/reports`.
+    fn reform_reports(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &serde_json::Value,
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
+
     /// `GET /v1/shard-assignments/confirmed` for `key`, abandoned after
     /// `timeout`.
     fn confirmed_assignment(
@@ -391,6 +406,26 @@ impl ControlPlaneLink for HttpControlPlaneLink {
             .client
             .post(self.url(&format!("/v1/nodes/{node_id}/raft-copy-id")))
             .json(report);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn reform_surveys(&self, bearer: Option<&str>, node_id: &str) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .get(self.url(&format!("/v1/nodes/{node_id}/reform/surveys")));
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn reform_reports(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url(&format!("/v1/nodes/{node_id}/reform/reports")))
+            .json(body);
         finish(bearer_if(request, bearer)).await
     }
 

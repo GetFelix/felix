@@ -42,6 +42,7 @@ use crate::cluster::lease::{Head, LeaseState};
 pub(crate) mod copy_id;
 pub(crate) mod floor;
 mod groups;
+pub(crate) mod reform_survey;
 pub(crate) use groups::Groups as RaftGroups;
 
 /// How long a leader that could not move its stream to the committed tail

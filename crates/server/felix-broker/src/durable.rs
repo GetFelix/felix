@@ -276,6 +276,28 @@ impl DurableStorage {
             .map_err(BrokerError::from)
     }
 
+    /// Where a Raft member of this shard at `incarnation` keeps its copy,
+    /// for a re-form survey to read. Marks and creates nothing. See
+    /// `DiskLogProvider::raft_dir`.
+    pub fn raft_dir(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: u64,
+    ) -> Result<Option<std::path::PathBuf>> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        self.provider
+            .raft_dir(&key, incarnation)
+            .map_err(BrokerError::from)
+    }
+
     /// Whether [`Self::claim_for_raft`] has marked this shard's directory,
     /// on this run or an earlier one. Marks nothing. `None` when
     /// `incarnation` is not the stream's current one, without reading.
