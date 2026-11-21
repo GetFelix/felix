@@ -687,6 +687,14 @@ pub trait ControlPlaneStore: Send + Sync {
     /// registered again after a delete restarts at incarnation 0. Decided
     /// against the record it lands on. Level 36, and 41 with
     /// `shard_incarnation`.
+    ///
+    /// `group_epoch` is the group epoch the copy runs. From level 47 a
+    /// report whose epoch (0 when absent) is not the shard's
+    /// `PlacedInEpoch::epoch` is a [`StoreError::Conflict`] (#2882), and the
+    /// epoch's first target is kept as its seed
+    /// ([`crate::model::ShardAssignment::raft_seed`]). Level 47 with
+    /// `group_epoch`.
+    #[allow(clippy::too_many_arguments)]
     async fn record_raft_copy_id(
         &self,
         key: &ShardKey,
@@ -695,6 +703,7 @@ pub trait ControlPlaneStore: Send + Sync {
         node_incarnation: u64,
         copy_id: u64,
         shard_incarnation: Option<u64>,
+        group_epoch: Option<u64>,
     ) -> StoreResult<bool> {
         let _ = (
             key,
@@ -703,6 +712,7 @@ pub trait ControlPlaneStore: Send + Sync {
             node_incarnation,
             copy_id,
             shard_incarnation,
+            group_epoch,
         );
         Err(StoreError::Conflict(
             "this store keeps no Raft copy ids".to_string(),

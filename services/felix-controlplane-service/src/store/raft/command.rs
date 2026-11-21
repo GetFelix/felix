@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 46;
+pub const METADATA_VERSION: u16 = 47;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -576,6 +576,15 @@ pub enum MetaCommand {
         /// Set by `settle_for_level`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_target: bool,
+        /// Level 47: the group epoch the copy runs, checked against the
+        /// shard's (#2882). An entry without it reports epoch 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group_epoch: Option<u64>,
+        /// Level 47: keep the epoch's first target as its seed and check the
+        /// epoch. Carrying it lifts the join floor to 47, and from there
+        /// every member does both. Set by `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_seed: bool,
     },
     /// Raise the offset floor of each shard a leader reports, where the
     /// report is above it; the others are skipped one by one
@@ -1094,7 +1103,8 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// below it never does.
 ///
 /// From level 45 a fleet feature finalize carries `hold_unformed`, and from
-/// level 46 `hold_formed`; below each it never does.
+/// level 46 `hold_formed`; below each it never does. From level 47 a copy id
+/// report carries `keep_seed`.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
     if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
@@ -1119,6 +1129,7 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             _ if gated == COPY_ID_OP || gated == ACCEPT_SEAL_OP => {
                 let keep = level >= super::RAFT_ORDERED_LEVEL;
                 let hold = gated == COPY_ID_OP && level >= super::FIRST_FORM_LEVEL;
+                let seed = gated == COPY_ID_OP && level >= super::REFORM_RECORD_LEVEL;
                 Ok(edit_command_json(command, |object| {
                     let mut edited = if keep {
                         object.insert("keep_ordered".to_string(), true.into()) != Some(true.into())
@@ -1129,6 +1140,11 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
                         object.insert("hold_target".to_string(), true.into()) != Some(true.into())
                     } else {
                         object.remove("hold_target").is_some()
+                    };
+                    edited |= if seed {
+                        object.insert("keep_seed".to_string(), true.into()) != Some(true.into())
+                    } else {
+                        object.remove("keep_seed").is_some()
                     };
                     edited
                 }))

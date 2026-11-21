@@ -224,6 +224,8 @@ impl Cluster {
                 raft_formed: None,
                 raft_voters: None,
                 raft_ordered: None,
+                raft_seed: None,
+                raft_bases: None,
             })
             .await
             .expect("assign");

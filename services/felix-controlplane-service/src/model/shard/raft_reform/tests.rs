@@ -65,6 +65,8 @@ fn assignment() -> ShardAssignment {
         }),
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: Some(RaftOrdered {
             incarnation: 3,
             epoch: 0,
@@ -130,9 +132,9 @@ fn a_floor_of_another_epoch_is_dropped() {
     assert_eq!(record.floor, None);
 }
 
-/// Past epoch 0 the record would need the bases of earlier re-forms, which
-/// it does not keep, so no record is built rather than one that claims the
-/// group never re-formed.
+/// Past epoch 0 without the bases of earlier re-forms (a record written
+/// below metadata level 47), no record is built rather than one that claims
+/// the group never re-formed.
 #[test]
 fn a_group_past_epoch_zero_is_refused() {
     let mut a = assignment();
@@ -155,4 +157,208 @@ fn what_the_record_cannot_vouch_for_stays_unknown() {
     assert_eq!(record.placed, None);
     assert_eq!(record.ordered, None);
     assert_eq!(record.seed, None);
+}
+
+fn copies(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
+    pairs.iter().map(|(n, id)| (n.to_string(), *id)).collect()
+}
+
+fn seed(incarnation: u64, epoch: u64, pairs: &[(&str, u64)]) -> RaftSeed {
+    RaftSeed {
+        incarnation,
+        epoch,
+        members: copies(pairs),
+    }
+}
+
+/// A seed reaches the planner only for this incarnation and epoch: one left
+/// from before a re-create or a re-form names another group's voters.
+#[test]
+fn only_the_current_epochs_seed_is_read() {
+    let mut a = assignment();
+    a.raft_seed = Some(seed(3, 0, &[("a", 11), ("b", 12), ("c", 13)]));
+    let record = a.reform_record(&BTreeSet::new()).expect("epoch 0");
+    assert_eq!(
+        record.seed,
+        Some(voters(&[("a", 11), ("b", 12), ("c", 13)]))
+    );
+
+    for stale in [seed(2, 0, &[("a", 11)]), seed(3, 1, &[("a", 11)])] {
+        a.raft_seed = Some(stale);
+        let record = a.reform_record(&BTreeSet::new()).expect("epoch 0");
+        assert_eq!(record.seed, None);
+    }
+}
+
+/// The seed is the epoch's first target, taken in the write that stores
+/// it. A list holding more than that target, or one lost, started too late
+/// to show which target came first, so no seed is written.
+#[test]
+fn the_first_target_of_the_epoch_is_its_seed() {
+    let first = target(1, &[("a", 11), ("b", 12), ("c", 13)]);
+    let mut a = assignment();
+    a.raft_target = Some(first.clone());
+    a.raft_ordered.as_mut().expect("ordered").targets = vec![first.clone()];
+    a.seed_from_first_target();
+    assert_eq!(
+        a.raft_seed,
+        Some(seed(3, 0, &[("a", 11), ("b", 12), ("c", 13)]))
+    );
+
+    // A later target, such as a wiped copy's new id, leaves it alone.
+    let second = target(2, &[("a", 11), ("b", 12), ("c", 23)]);
+    a.raft_target = Some(second.clone());
+    a.raft_ordered
+        .as_mut()
+        .expect("ordered")
+        .targets
+        .push(second);
+    a.seed_from_first_target();
+    assert_eq!(
+        a.raft_seed,
+        Some(seed(3, 0, &[("a", 11), ("b", 12), ("c", 13)]))
+    );
+
+    // Even when the target in force is the list's first again.
+    let mut late = assignment();
+    late.raft_target = late
+        .raft_ordered
+        .as_ref()
+        .and_then(|o| o.targets.first().cloned());
+    late.seed_from_first_target();
+    assert_eq!(late.raft_seed, None, "two targets on the list");
+
+    let mut lost = assignment();
+    lost.raft_target = Some(first.clone());
+    let ordered = lost.raft_ordered.as_mut().expect("ordered");
+    ordered.targets = vec![first];
+    ordered.lost = true;
+    lost.seed_from_first_target();
+    assert_eq!(lost.raft_seed, None, "lost list");
+}
+
+fn base(last: Option<(u64, u64, u64)>, first_index: u64) -> RaftEpochBase {
+    RaftEpochBase {
+        base_last: last.map(|(index, epoch, term)| RaftLogId { index, epoch, term }),
+        first_index,
+    }
+}
+
+/// The re-form's write starts the next epoch in one step: its placed
+/// brokers, the base appended, the plan's voters as its seed and an empty
+/// list of targets. The record of the new epoch then builds, and a second
+/// re-form can follow it.
+#[test]
+fn a_re_form_writes_the_next_epochs_record() {
+    let mut a = assignment();
+    let dead = set(&["c"]);
+    a.start_reformed_epoch(
+        0,
+        &dead,
+        base(Some((40, 0, 5)), 45),
+        copies(&[("a", 11), ("b", 12)]),
+    )
+    .expect("epoch 1");
+    assert_eq!(a.placed.as_ref().map(|placed| placed.epoch), Some(1));
+    assert_eq!(
+        a.placed.as_ref().map(|placed| placed.brokers.clone()),
+        Some(set(&["a", "b", "d"]))
+    );
+    assert_eq!(a.raft_seed, Some(seed(3, 1, &[("a", 11), ("b", 12)])));
+    let ordered = a.raft_ordered.as_ref().expect("ordered");
+    assert_eq!((ordered.epoch, ordered.targets.len()), (1, 0));
+
+    let record = a.reform_record(&BTreeSet::new()).expect("bases recorded");
+    assert_eq!(
+        record.bases,
+        vec![felix_storage::raft_copy::EpochBase {
+            base_last: Some(EpochLogId {
+                index: 40,
+                epoch: 0,
+                term: 5
+            }),
+            first_index: 45,
+        }]
+    );
+    assert_eq!(record.seed, Some(voters(&[("a", 11), ("b", 12)])));
+
+    a.start_reformed_epoch(1, &BTreeSet::new(), base(None, 60), copies(&[("a", 11)]))
+        .expect("epoch 2");
+    let record = a.reform_record(&BTreeSet::new()).expect("both bases");
+    assert_eq!(record.bases.len(), 2);
+}
+
+/// A stale plan, a base that would give out an offset again, a voter the
+/// new epoch does not place and an epoch whose earlier bases are missing
+/// are all refused, and the record is left as it was.
+#[test]
+fn a_re_form_write_refuses_what_it_cannot_vouch_for() {
+    let voters = || copies(&[("a", 11), ("b", 12)]);
+    let refused = |mut a: ShardAssignment, expected, base, voters| {
+        let before = a.clone();
+        let err = a
+            .start_reformed_epoch(expected, &BTreeSet::new(), base, voters)
+            .expect_err("refused");
+        assert_eq!(a, before);
+        err
+    };
+    assert_eq!(
+        refused(assignment(), 1, base(None, 45), voters()),
+        ReformWriteError::EpochMoved {
+            expected: 1,
+            current: 0
+        }
+    );
+    assert!(matches!(
+        refused(assignment(), 0, base(Some((45, 0, 5)), 45), voters()),
+        ReformWriteError::BaseBehind(_)
+    ));
+    assert!(matches!(
+        refused(assignment(), 0, base(Some((40, 1, 5)), 45), voters()),
+        ReformWriteError::BaseBehind(_)
+    ));
+    assert_eq!(
+        refused(assignment(), 0, base(None, 45), copies(&[("e", 1)])),
+        ReformWriteError::VoterNotPlaced("e".to_string())
+    );
+    assert_eq!(
+        refused(assignment(), 0, base(None, 45), BTreeMap::new()),
+        ReformWriteError::NoVoter
+    );
+
+    let mut once = assignment();
+    once.start_reformed_epoch(0, &BTreeSet::new(), base(None, 45), voters())
+        .expect("epoch 1");
+    assert!(matches!(
+        refused(once.clone(), 1, base(None, 45), voters()),
+        ReformWriteError::BaseBehind(_)
+    ));
+    let mut unrecorded = once;
+    unrecorded.raft_bases = None;
+    assert_eq!(
+        refused(unrecorded, 1, base(None, 60), voters()),
+        ReformWriteError::Record(ReformRecordError::BasesNotRecorded(1))
+    );
+}
+
+/// Seed and bases are store-owned: a write at the same incarnation keeps
+/// the stored ones whatever it passes, and a new incarnation starts none,
+/// so a caller can neither forge nor roll back a base.
+#[test]
+fn a_write_keeps_the_stored_seed_and_bases() {
+    let mut held = assignment();
+    held.start_reformed_epoch(0, &BTreeSet::new(), base(None, 45), copies(&[("a", 11)]))
+        .expect("epoch 1");
+    let mut write = assignment();
+    write.raft_seed = Some(seed(3, 1, &[("e", 1)]));
+    write.raft_bases = None;
+    write.carry_raft_epochs(Some(&held));
+    assert_eq!(
+        (&write.raft_seed, &write.raft_bases),
+        (&held.raft_seed, &held.raft_bases)
+    );
+
+    write.incarnation = 4;
+    write.carry_raft_epochs(Some(&held));
+    assert_eq!((write.raft_seed, write.raft_bases), (None, None));
 }

@@ -62,6 +62,7 @@ async fn try_native_report(
             process.incarnation,
             id,
             shard_incarnation,
+            None,
         )
         .await
 }
@@ -406,6 +407,7 @@ async fn try_report(
             process.incarnation,
             id,
             None,
+            None,
         )
         .await
 }
@@ -444,7 +446,7 @@ async fn copy_ids_write_the_target_and_only_a_change_moves_it(store: &dyn Contro
 async fn only_a_broker_in_a_raft_shards_set_reports(store: &dyn ControlPlaneStore) {
     let shard = switched(store).await;
     let err = store
-        .record_raft_copy_id(&shard.key, "broker-z", 1, 1, 1, None)
+        .record_raft_copy_id(&shard.key, "broker-z", 1, 1, 1, None, None)
         .await
         .expect_err("not in the set");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
@@ -483,6 +485,7 @@ async fn a_report_from_an_earlier_process_is_refused(store: &dyn ControlPlaneSto
             before.incarnation,
             41,
             None,
+            None,
         )
         .await
         .expect_err("an earlier process");
@@ -520,6 +523,7 @@ async fn a_report_from_before_a_delete_is_refused(store: &dyn ControlPlaneStore)
             old.registered_at_millis,
             old.incarnation,
             51,
+            None,
             None,
         )
         .await

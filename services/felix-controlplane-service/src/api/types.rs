@@ -714,6 +714,11 @@ pub struct RaftCopyIdRequest {
     /// from the hybrid. Needs metadata version 41.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shard_incarnation: Option<u64>,
+    /// The group epoch the copy runs, from its `raft-epoch` file; absent
+    /// means 0. A report for another epoch than the shard's is refused.
+    /// Needs metadata version 47.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_epoch: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
