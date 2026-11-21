@@ -22,10 +22,9 @@ use felix_controlplane_service::store::{
     AssignmentWrite, AuthStore, ControlPlaneStore, StoreConfig,
 };
 use felix_replication::controlplane_link::HttpControlPlaneLink;
-use felix_replication::raft::LogPoint;
 
 use super::{at, key};
-use crate::shards::raft::floor::{Floors, tick};
+use crate::shards::raft::floor::{Floors, Led, tick};
 use crate::shards::{ShardKey, ShardKind};
 
 const TENANT: &str = "t1";
@@ -143,7 +142,7 @@ impl ControlPlane {
         }
     }
 
-    async fn tick(&self, floors: &mut Floors, led: Vec<(ShardKey, u64, LogPoint)>) {
+    async fn tick(&self, floors: &mut Floors, led: Vec<impl Into<Led>>) {
         tick(floors, led, &self.link, "broker-x", Some(&self.token)).await;
     }
 
@@ -393,8 +392,25 @@ async fn a_refresh_marks_an_idle_group_formed() {
     assert_eq!(cp.posts.load(Ordering::SeqCst), 1, "idle: nothing is sent");
     assert_eq!(formed().await, None);
 
-    floors.owe_all();
+    floors.owe_unformed();
     cp.tick(&mut floors, led()).await;
     assert_eq!(cp.posts.load(Ordering::SeqCst), 2);
-    assert_eq!(formed().await, Some(incarnation));
+    let mark = formed().await.expect("marked");
+    assert_eq!((mark.incarnation, mark.epoch), (incarnation, 0));
+
+    // The feed now shows the mark, so the next refresh sends nothing.
+    let marked = || {
+        vec![Led {
+            formed: true,
+            ..Led::from((key("a"), incarnation, at(1, 5)))
+        }]
+    };
+    cp.tick(&mut floors, marked()).await;
+    floors.owe_unformed();
+    cp.tick(&mut floors, marked()).await;
+    assert_eq!(
+        cp.posts.load(Ordering::SeqCst),
+        2,
+        "a marked group is not re-sent"
+    );
 }

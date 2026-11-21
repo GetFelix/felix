@@ -363,7 +363,7 @@ async fn the_snapshot_marks_only_a_first_assignment() {
 
 /// The feed carries a Raft target with its version only while every
 /// registered broker has acknowledged the placement incarnation, and never
-/// the record's own field.
+/// the record's own field. The formed mark goes out as recorded.
 #[tokio::test]
 async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     let fixture = fixture().await;
@@ -379,6 +379,7 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     for entry in state["shards"].as_array_mut().expect("shards") {
         entry[1]["raft_target"] = serde_json::json!({"counter": 3, "members": {"broker-x": 7}});
         entry[1]["raft_copy_ids"] = serde_json::json!({"broker-x": 7});
+        entry[1]["raft_formed"] = serde_json::json!({"incarnation": 0, "epoch": 0});
     }
     let state = serde_json::from_value(state).expect("state");
     fixture.store.import_state(state).await.expect("import");
@@ -409,6 +410,12 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     assert!(item.get("raft_target").is_none(), "{item}");
     assert!(item.get("raft_copy_ids").is_none(), "{item}");
     assert!(item.get("targets_withheld").is_none(), "{item}");
+    // The formed mark goes out as recorded: a broker stops re-sending a
+    // marked group's floor.
+    assert_eq!(
+        item["raft_formed"],
+        serde_json::json!({"incarnation": 0, "epoch": 0})
+    );
 
     // A broker holds an incarnation this store never issued: the store
     // moves past it, and nobody has acknowledged the new one.

@@ -147,5 +147,40 @@ fn only_a_report_from_the_placed_epoch_marks_the_group_formed() {
     assert!(!a.mark_raft_formed(1, 1), "another incarnation");
     assert_eq!(a.raft_formed, None);
     assert!(a.mark_raft_formed(0, 1));
-    assert_eq!(a.raft_formed, Some(0));
+    assert_eq!(
+        a.raft_formed,
+        Some(RaftFormed {
+            incarnation: 0,
+            epoch: 1
+        })
+    );
+}
+
+/// The mark is per epoch: after a re-form, the new epoch's first target is
+/// held again until a leader of the new epoch reports.
+#[test]
+fn a_reform_holds_the_new_epochs_first_target() {
+    let mut a = reported(
+        assignment(),
+        &[("broker-a", 1), ("broker-b", 2), ("broker-c", 3)],
+    );
+    assert_eq!(a.settle_raft_target(), Ok(true));
+    let placed = crate::model::PlacedInEpoch {
+        epoch: 0,
+        brokers: a.placed_nodes().cloned().collect(),
+    };
+    a.placed = Some(placed.clone());
+    assert!(a.mark_raft_formed(0, 0));
+    assert!(!a.holds_unformed_set());
+
+    a.placed = Some(placed.next_epoch(&a, &Default::default()));
+    let mut next = a.clone();
+    next.carry_raft_formed(Some(&a));
+    assert!(
+        next.holds_unformed_set(),
+        "the old epoch's mark holds nothing"
+    );
+    assert!(!next.mark_raft_formed(0, 0));
+    assert!(next.mark_raft_formed(0, 1));
+    assert!(!next.holds_unformed_set());
 }

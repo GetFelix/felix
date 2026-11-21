@@ -8,111 +8,156 @@
 (* any candidate of term 1. A group's leader needs a majority of the set   *)
 (* it initialized with.                                                    *)
 (*                                                                         *)
+(* A re-form starts a new group in the next epoch, with a first form of    *)
+(* its own. Every copy, vote and leader below belongs to one epoch, and a  *)
+(* leader of an old epoch, cut off before the re-form, still reports.      *)
+(*                                                                         *)
 (* Hold = TRUE is the fix: the control plane refuses to move a set whose    *)
 (* target is stored until a leader of the group has reported. Hold = FALSE  *)
-(* finds two leaders of two different sets in term 1.                       *)
+(* finds two leaders of two different sets in term 1. PerEpoch = TRUE keys  *)
+(* the formed mark on the epoch, as the code does; FALSE lets a mark from   *)
+(* an earlier epoch release the new epoch's first target.                   *)
+(*                                                                         *)
+(* Once its group formed, placement changes a set only by swapping one     *)
+(* member (a leader-only write changes no set). The kept members include   *)
+(* one that voted, so the new set is never all blank and never forms       *)
+(* again. A write that replaces every member of a formed group is not      *)
+(* modelled: placement never makes one (docs/per-shard-raft.md, "One case  *)
+(* this does not cover").                                                  *)
 EXTENDS FiniteSets, Naturals
 
-CONSTANTS Brokers, Sets, Hold
+CONSTANTS Brokers, Sets, Hold, PerEpoch, MaxEpoch
 
 ASSUME Sets \subseteq SUBSET Brokers
+ASSUME MaxEpoch \in Nat
+
+Epochs == 0..MaxEpoch
 
 VARIABLES
+    epoch,      \* the control plane's reform epoch
     placed,     \* the set the control plane places
     target,     \* the set its stored target names, or {} for none
-    reported,   \* a leader of the group has reported to the control plane
-    view,       \* each broker's last read of [set, target]
-    init,       \* the set each broker initialized with, or {} if blank
-    votedFor,   \* each broker's term-1 vote, or 0 for none
-    leader      \* the brokers that won term 1
+    marked,     \* the epochs a leader of the group has reported from
+    view,       \* each broker's last read of [set, target, epoch]
+    init,       \* per broker and epoch, the set it initialized, or {}
+    votedFor,   \* per broker and epoch, its term-1 vote, or 0 for none
+    leader      \* the <<broker, epoch>> pairs that won term 1
 
-vars == <<placed, target, reported, view, init, votedFor, leader>>
+vars == <<epoch, placed, target, marked, view, init, votedFor, leader>>
 
 Min(S) == CHOOSE b \in S : \A c \in S : b <= c
 Majority(S, T) == 2 * Cardinality(S \cap T) > Cardinality(S)
-Blank(b) == init[b] = {} /\ votedFor[b] = 0
+Blank(b, e) == init[b][e] = {} /\ votedFor[b][e] = 0
+
+\* The control plane holds the current epoch's group formed.
+Formed == IF PerEpoch THEN epoch \in marked ELSE marked # {}
+
+\* A set change placement makes on a formed group: one member swapped.
+OneSwap(s) == Cardinality(placed \ s) <= 1 /\ s \cap placed # {}
 
 Init ==
+    /\ epoch = 0
     /\ placed \in Sets
     /\ target = {}
-    /\ reported = FALSE
-    /\ view = [b \in Brokers |-> [set |-> placed, target |-> {}]]
-    /\ init = [b \in Brokers |-> {}]
-    /\ votedFor = [b \in Brokers |-> 0]
+    /\ marked = {}
+    /\ view = [b \in Brokers |-> [set |-> placed, target |-> {}, epoch |-> 0]]
+    /\ init = [b \in Brokers |-> [e \in Epochs |-> {}]]
+    /\ votedFor = [b \in Brokers |-> [e \in Epochs |-> 0]]
     /\ leader = {}
 
 \* Every member of the placed set has named its copy.
 StoreTarget ==
     /\ target # placed
     /\ target' = placed
-    /\ UNCHANGED <<placed, reported, view, init, votedFor, leader>>
+    /\ UNCHANGED <<epoch, placed, marked, view, init, votedFor, leader>>
 
-\* Placement moves before the group forms. A move drops the stored target:
-\* the new set needs its own.
+\* Placement moves. A move drops the stored target: the new set needs its
+\* own.
 Move(s) ==
     /\ s # placed
-    /\ ~Hold \/ target = {} \/ reported
+    /\ Hold => (target = {} \/ Formed)
+    /\ Formed => OneSwap(s)
     /\ placed' = s
     /\ target' = {}
-    /\ UNCHANGED <<reported, view, init, votedFor, leader>>
+    /\ UNCHANGED <<epoch, marked, view, init, votedFor, leader>>
+
+\* A re-form: the next epoch's group starts blank on any set, and needs a
+\* target of its own. The mark stays, as the code keeps it.
+Reform(s) ==
+    /\ epoch < MaxEpoch
+    /\ epoch' = epoch + 1
+    /\ placed' = s
+    /\ target' = {}
+    /\ UNCHANGED <<marked, view, init, votedFor, leader>>
 
 \* A broker reads the feed. One that does not is cut off and keeps its view.
 Read(b) ==
-    /\ view' = [view EXCEPT ![b] = [set |-> placed, target |-> target]]
-    /\ UNCHANGED <<placed, target, reported, init, votedFor, leader>>
+    /\ view' = [view EXCEPT ![b] = [set |-> placed, target |-> target, epoch |-> epoch]]
+    /\ UNCHANGED <<epoch, placed, target, marked, init, votedFor, leader>>
 
 \* The ask and the initialize, with the check against its own view.
 Form(b) ==
-    LET s == view[b].set IN
-    /\ b \in s
-    /\ b = Min(s)
-    /\ view[b].target = s
-    /\ \A m \in s : Blank(m)
-    /\ init' = [init EXCEPT ![b] = s]
-    /\ UNCHANGED <<placed, target, reported, view, votedFor, leader>>
+    LET s == view[b].set
+        e == view[b].epoch
+    IN  /\ b \in s
+        /\ b = Min(s)
+        /\ view[b].target = s
+        /\ \A m \in s : Blank(m, e)
+        /\ init' = [init EXCEPT ![b][e] = s]
+        /\ UNCHANGED <<epoch, placed, target, marked, view, votedFor, leader>>
 
 \* A blank member's vote is not gated on any target.
-Vote(v, c) ==
-    /\ init[c] # {}
-    /\ votedFor[v] = 0
-    /\ v \in init[c]
-    /\ votedFor' = [votedFor EXCEPT ![v] = c]
-    /\ UNCHANGED <<placed, target, reported, view, init, leader>>
+Vote(v, c, e) ==
+    /\ init[c][e] # {}
+    /\ votedFor[v][e] = 0
+    /\ v \in init[c][e]
+    /\ votedFor' = [votedFor EXCEPT ![v][e] = c]
+    /\ UNCHANGED <<epoch, placed, target, marked, view, init, leader>>
 
-Win(c) ==
-    /\ init[c] # {}
-    /\ c \notin leader
-    /\ Majority(init[c], {v \in Brokers : votedFor[v] = c})
-    /\ leader' = leader \cup {c}
-    /\ UNCHANGED <<placed, target, reported, view, init, votedFor>>
+Win(c, e) ==
+    /\ init[c][e] # {}
+    /\ <<c, e>> \notin leader
+    /\ Majority(init[c][e], {v \in Brokers : votedFor[v][e] = c})
+    /\ leader' = leader \cup {<<c, e>>}
+    /\ UNCHANGED <<epoch, placed, target, marked, view, init, votedFor>>
 
-\* A leader reports a floor; only a broker the target names is counted.
-Report(c) ==
-    /\ c \in leader
+\* A leader reports a floor at its epoch. Only a broker the target names is
+\* counted, and a report from another epoch marks nothing.
+Report(c, e) ==
+    /\ <<c, e>> \in leader
     /\ target # {}
     /\ c \in target
-    /\ reported' = TRUE
-    /\ UNCHANGED <<placed, target, view, init, votedFor, leader>>
+    /\ e = epoch
+    /\ marked' = marked \cup {e}
+    /\ UNCHANGED <<epoch, placed, target, view, init, votedFor, leader>>
 
 Next ==
     \/ StoreTarget
-    \/ \E s \in Sets : Move(s)
-    \/ \E b \in Brokers : Read(b) \/ Form(b) \/ Win(b) \/ Report(b)
-    \/ \E v, c \in Brokers : Vote(v, c)
+    \/ \E s \in Sets : Move(s) \/ Reform(s)
+    \/ \E b \in Brokers : Read(b) \/ Form(b)
+    \/ \E b \in Brokers, e \in Epochs : Win(b, e) \/ Report(b, e)
+    \/ \E v, c \in Brokers, e \in Epochs : Vote(v, c, e)
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
+    /\ epoch \in Epochs
     /\ placed \in Sets
     /\ target \in Sets \cup {{}}
-    /\ reported \in BOOLEAN
-    /\ leader \subseteq Brokers
-    /\ votedFor \in [Brokers -> Brokers \cup {0}]
+    /\ marked \subseteq Epochs
+    /\ leader \subseteq Brokers \X Epochs
+    /\ votedFor \in [Brokers -> [Epochs -> Brokers \cup {0}]]
 
-\* Two brokers lead term 1 only if they initialized the same set, which is
-\* one group: Raft's single vote per term keeps that to one leader.
-OneGroup == \A a, b \in leader : init[a] = init[b]
+\* Two brokers lead term 1 of one epoch only if they initialized the same
+\* set, which is one group: Raft's single vote per term keeps that to one
+\* leader.
+OneGroup ==
+    \A a, b \in Brokers, e \in Epochs :
+        <<a, e>> \in leader /\ <<b, e>> \in leader => init[a][e] = init[b][e]
 
-\* Every formed member formed the same set.
-OneFirstSet == \A a, b \in Brokers : init[a] # {} /\ init[b] # {} => init[a] = init[b]
+\* In each epoch every formed member formed the same set: one group per
+\* shard, stream incarnation and epoch.
+OneFirstSet ==
+    \A a, b \in Brokers, e \in Epochs :
+        init[a][e] # {} /\ init[b][e] # {} => init[a][e] = init[b][e]
 ==================================================================================

@@ -4106,13 +4106,18 @@ later by no report a Raft shard sends:
   target for a set, it refuses any write that changes the set until a
   leader the target names has sent it a floor report at the record's
   reform epoch, which marks the group formed at that stream incarnation
-  (`raft_formed`). A leader of an older epoch marks nothing. Every broker that can
+  and epoch (`raft_formed`). A leader of an older epoch marks nothing, and
+  a re-form starts a new group whose first target is held again: the old
+  epoch's mark releases nothing. Every broker that can
   form therefore reads the same set and target, and only the lowest broker
   of that set forms it. Placement waits for the mark too, showing "waiting
   for the group to form before changing its set". A member that dies before
   the first form holds the form, and so the set, until it is back: no group
   formed, so nothing was acknowledged, and deleting the stream is the way
-  out. The hold is on from metadata level 45; below it a set change before
+  out. The same goes for a former whose copy is wiped after a member voted
+  for it: the voter is no longer blank, the wiped former has no group, so
+  no leader reports and the set stays held until the stream is deleted
+  (the same class as #2235). The hold is on from metadata level 45; below it a set change before
   the first form applies as before on every member. Once any entry at
   level 45 is in the log, every member holds unformed sets whatever the
   proposer saw, so a control-plane member that is down, and counted at a
@@ -4123,9 +4128,15 @@ later by no report a Raft shard sends:
   first stream. What is left is a group whose log has no level 45 entry yet,
   with a control-plane member that has not answered the leader since the
   leader started: a new cluster with a member down from the start, or one
-  upgraded from before 45. A leader also sends every group it leads again
-  every 30 s, committed or not, so an idle group formed before the upgrade
-  gets its mark without a publish.
+  upgraded from before 45. Floor reports come only from a member that
+  leads its group and has a committed log id. Every 30 s a leader sends
+  again each group it leads that the shard feed does not show marked
+  formed at the group's incarnation and epoch, so an idle group formed
+  before the upgrade gets its mark without a publish. A marked group is
+  sent only when its commit moves, so once every group is marked the
+  refresh sends nothing. A mark the broker has not seen, from a control
+  plane that predates the field or a feed that has not caught up, leaves
+  the group in the refresh.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4206,8 +4217,15 @@ re-placement replaces every member.
 > `a_finalize_at_level_45_holds_later_sets`;
 > `services/felix-broker-service/src/shards/raft/floor/tests/control_plane.rs`,
 > `a_refresh_marks_an_idle_group_formed`;
+> `services/felix-broker-service/src/shards/raft/floor/tests.rs`,
+> `a_refresh_skips_a_group_marked_formed`;
+> `services/felix-controlplane-service/src/model/shard/raft_target/tests.rs`,
+> `a_reform_holds_the_new_epochs_first_target`;
 > `docs/formal/FelixRaftFirstForm.tla`, where `FelixRaftFirstFormNoHold.cfg`
-> finds two leaders without the hold.
+> finds two leaders without the hold, `FelixRaftFirstFormNoEpoch.cfg` finds
+> two in a re-form's epoch with a mark that ignores the epoch, and
+> `FelixRaftFirstFormDisjoint.cfg` and `FelixRaftFirstFormSingle.cfg` check
+> sets that share no broker.
 
 **Every broker that holds a shard must run it on the same engine.** A
 hybrid broker placed in a Raft shard would keep a log of its own that no

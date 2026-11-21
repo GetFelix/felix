@@ -28,7 +28,10 @@ fn member_of(shard: u32, leader: &str) -> ShardAssignment {
         counter: 2,
         members: ABC.iter().map(|node| (node.to_string(), 7)).collect(),
     });
-    assignment.raft_formed = Some(assignment.incarnation);
+    assignment.raft_formed = Some(crate::model::RaftFormed {
+        incarnation: assignment.incarnation,
+        epoch: 0,
+    });
     assignment
 }
 

@@ -148,6 +148,8 @@ pub(crate) struct RaftShards {
     epochs: parking_lot::Mutex<HashMap<ShardKey, Option<u64>>>,
     /// The group epoch the newest view's record is at, per shard.
     recorded_epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
+    /// The group the newest view's record marks formed, per shard.
+    formed_marks: parking_lot::Mutex<HashMap<ShardKey, super::watch::RaftFormed>>,
     /// The copy id of each member open at the last pass's view, for the
     /// copy id report.
     held_copies: parking_lot::Mutex<Vec<copy_id::Held>>,
@@ -286,6 +288,7 @@ impl RaftShards {
             open: tokio::sync::Mutex::default(),
             epochs: parking_lot::Mutex::default(),
             recorded_epochs: parking_lot::Mutex::default(),
+            formed_marks: parking_lot::Mutex::default(),
             held_copies: parking_lot::Mutex::default(),
         });
         shards
@@ -319,6 +322,7 @@ impl RaftShards {
     pub(crate) fn led_floors(&self) -> Vec<floor::Led> {
         let epochs = self.epochs.lock();
         let recorded = self.recorded_epochs.lock();
+        let marks = self.formed_marks.lock();
         self.runtime
             .led_commits()
             .into_iter()
@@ -327,11 +331,15 @@ impl RaftShards {
                     *epochs.get(&*group.shard)?,
                     recorded.get(&*group.shard).copied(),
                 )?;
+                let formed = marks
+                    .get(&*group.shard)
+                    .is_some_and(|mark| mark.incarnation == group.epoch && mark.epoch == epoch);
                 Some(floor::Led {
                     key: (*group.shard).clone(),
                     incarnation: group.epoch,
                     epoch,
                     at,
+                    formed,
                 })
             })
             .collect()
@@ -799,6 +807,7 @@ impl RaftShards {
         self.runtime.close(key).await;
         self.epochs.lock().remove(key);
         self.recorded_epochs.lock().remove(key);
+        self.formed_marks.lock().remove(key);
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();
@@ -1253,6 +1262,15 @@ impl EngineShards for RaftShards {
                 }
                 recorded.retain(|key, _| open.contains_key(key));
                 drop(recorded);
+                let mut marks = self.formed_marks.lock();
+                marks.clear();
+                for (key, (assignment, _)) in &fed {
+                    if let Some(mark) = assignment.raft_formed {
+                        marks.insert(key.clone(), mark);
+                    }
+                }
+                marks.retain(|key, _| open.contains_key(key));
+                drop(marks);
                 let epochs = self.epochs.lock();
                 fed.iter()
                     .filter(|(_, (_, full))| *full)

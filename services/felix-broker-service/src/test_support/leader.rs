@@ -277,6 +277,7 @@ fn assignment(key: &ShardKey, state: &str) -> ShardAssignment {
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        raft_formed: None,
         placed: None,
     }
 }

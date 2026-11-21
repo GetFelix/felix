@@ -39,6 +39,7 @@ fn assignment(key: ShardKey, leader: &str, replicas: &[&str]) -> ShardAssignment
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        raft_formed: None,
         placed: None,
     }
 }

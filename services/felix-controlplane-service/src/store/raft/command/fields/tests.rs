@@ -219,7 +219,10 @@ fn assignment() -> ShardAssignment {
             index: 1,
             term: 1,
         }),
-        raft_formed: Some(1),
+        raft_formed: Some(crate::model::RaftFormed {
+            incarnation: 1,
+            epoch: 1,
+        }),
         raft_ordered: Some(crate::model::RaftOrdered {
             incarnation: 1,
             epoch: 1,
