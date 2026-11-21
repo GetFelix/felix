@@ -4250,10 +4250,11 @@ group never adds the brokers swapped in before the next swap (#2905).
 So every floor report a leader sends carries the group's voters, copy id
 by broker, once its membership is committed at the reported index and is
 not joint. The control plane keeps the last voters a leader reported, when
-the leader is one of them and in the stored target, at the placed
-incarnation and reform epoch, and only from a report the floor takes (at or
-above its log id, at no lower term), so a late report cannot bring back
-older voters. It then refuses a set change on a formed group unless those
+the leader is one of them and in the stored target (or, while a set
+change has cleared the target, among the voters already kept), at the
+placed incarnation and reform epoch, and only from a report the floor takes
+(not below its index, and not above it at a lower term), so a late report
+cannot bring back older voters. It then refuses a set change on a formed group unless those
 voters hold at least half of the new set, rounded up. With the bound on
 empty voters below, the new set keeps a copy that holds the group's log, and
 the first form, which needs every member empty, never runs on it. A chain of swaps waits at each step until the group reports
@@ -4277,8 +4278,8 @@ still gets its target, and the leader replaces it.
 
 At replication factor 1 the set is one broker, so any re-placement
 replaces every member and is refused. An RF 1 Raft shard's set does not
-move. To get it onto another broker, re-form it or delete and recreate the
-stream. A hand-off through a two-broker set is not built yet (#2916).
+move; to get it onto another broker, delete and recreate the stream. A
+hand-off through a two-broker set is not built yet (#2916).
 
 If the group cannot report (its majority is gone, or a majority of its
 copies was wiped), no step past its last reported voters goes ahead. The way out is a re-form, which starts a new

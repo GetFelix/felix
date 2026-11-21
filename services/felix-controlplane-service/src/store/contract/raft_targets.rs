@@ -140,6 +140,15 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         .put_shard_assignment(moved)
         .await
         .expect("the group formed, so its set moves");
+    // The move cleared the target; a voter already kept still reports.
+    let mut lagging = super::raft_floors::entry(&shard, 1, 1);
+    lagging.voters = Some([("broker-x".to_string(), 41)].into());
+    store
+        .record_raft_floors("broker-x", vec![lagging])
+        .await
+        .expect("floors");
+    let kept = read(store, &shard.key).await.raft_voters.expect("voters");
+    assert_eq!(kept.members.keys().collect::<Vec<_>>(), ["broker-x"]);
     for (node, id) in [("broker-x", 41), ("broker-z", 43)] {
         try_native_report(store, &shard, node, id, at)
             .await

@@ -308,11 +308,20 @@ pub(super) async fn record_raft_floors(
         if mark_formed && in_target {
             record.mark_raft_formed(report.incarnation, report.epoch);
         }
+        // A set change clears the target until the new one is stored, and
+        // the voters may be what lets it be stored, so meanwhile a voter
+        // already kept may report.
+        let may_report = in_target
+            || (record.raft_target.is_none()
+                && record
+                    .raft_voters
+                    .as_ref()
+                    .is_some_and(|held| held.members.contains_key(node_id)));
         let floor = record.raise_raft_floor(report);
         // Voters only from a target member, and only in a report the floor
         // took, so a report the floor refuses cannot set a high index that
         // shuts out later ones. Only a proposer at level 46 leaves them in.
-        if in_target
+        if may_report
             && matches!(
                 floor,
                 Ok(_) | Err(crate::model::RaftFloorError::NotSwitched)
