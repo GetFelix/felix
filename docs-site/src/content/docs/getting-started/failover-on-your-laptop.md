@@ -180,11 +180,44 @@ It is `demos/failover/src`, a separate program that uses the public client.
   that nothing this run never sent is there.
 
 What it does not cover: a `SIGKILL` leaves the page cache intact, so it does
-not test power loss; a killed container is not a partitioned or paused leader
-(that is a different test); and it checks presence and multiplicity, not order.
+not test power loss; a killed container is not a partitioned leader (a paused one is the
+[next section's](#freeze-the-leader-and-wake-it) test); and it checks presence and multiplicity, not order.
 Only one broker is down at a time among three. The
 [README](https://github.com/GetFelix/felix/blob/main/demos/failover/README.md)
 has the full list.
+
+## Freeze the leader and wake it
+
+A killed leader is gone. A frozen one keeps its state and, when it resumes, has
+not noticed that the others replaced it. To see what it does with writes sent
+to it, add a writer that talks to one broker only, with no cluster routing:
+
+```bash
+./run.sh up --stale-writer "$(./run.sh leader)"
+./run.sh pause leader 25
+./run.sh receipt
+```
+
+`pause` freezes the broker's container for 25 seconds and then resumes it. The
+writer sends one numbered record every 250 ms to that broker and never re-sends.
+The broker's connections are closed after 6 seconds without traffic, so the
+writer dials the same address again once the broker answers, as a client of the
+old leader would. It prints one line per write: `ok`, `forwarded` (another
+broker wrote it), `refused` with the broker's code, `indeterminate` (the broker
+may have written it), or `no answer`.
+
+The receipt gains a stale writer block. It reads the stream back from its
+oldest record and checks two counts that must be zero: writes the broker
+acknowledged that are missing, and writes it refused that are present anyway.
+Indeterminate writes may be present or absent. The run fails, and does not pass
+with zeros, if the writer's connection never dropped or it got no
+acknowledgement after reconnecting, or if the writer is not running when you
+ask for the receipt. `./run.sh scenario --stale-writer broker-3` does all of
+it, and refuses to run unless that broker is the leader.
+
+In one run on a laptop, the old leader forwarded every write to the new one
+after it resumed, and none of the writes it had acknowledged went missing.
+That is what one broker did in one run, not a guarantee.
 
 ## Clean up
 

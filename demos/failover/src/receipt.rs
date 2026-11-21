@@ -151,7 +151,7 @@ fn render(
         "records read back    {records} (whole stream, from the oldest, after the snapshot)"
     );
     if verdict.pinned {
-        stale_block(&mut out, snapshot, verdict);
+        stale_block(&mut out, snapshot, verdict, args);
     }
     let _ = writeln!(out, "GAPS                 {}", verdict.gaps.len());
     let _ = writeln!(out, "DUPLICATES           {}", verdict.duplicates.len());
@@ -204,8 +204,22 @@ fn render(
 
 /// The stale writer's part of the receipt. Each write got one answer, so
 /// every count is of writes, not attempts.
-fn stale_block(out: &mut String, snapshot: &crate::ledger::Snapshot, verdict: &Verdict) {
+fn stale_block(
+    out: &mut String,
+    snapshot: &crate::ledger::Snapshot,
+    verdict: &Verdict,
+    args: &Args,
+) {
     let _ = writeln!(out, "---- the stale writer ----");
+    // Written by `run.sh pause`, beside the receipt.
+    let note = std::path::Path::new(&args.receipt_file).with_file_name("freeze-note");
+    let note = std::fs::read_to_string(note).ok();
+    let _ = writeln!(
+        out,
+        "freeze               {}",
+        note.as_deref()
+            .map_or("not recorded (freeze it with ./run.sh pause)", str::trim)
+    );
     let _ = writeln!(out, "sent                 {}", snapshot.sent);
     let _ = writeln!(out, "acked                {}", verdict.acked);
     let _ = writeln!(

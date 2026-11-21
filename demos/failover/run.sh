@@ -12,9 +12,9 @@
 #   ./run.sh evidence           election log lines and promotion metrics from the brokers
 #   ./run.sh receipt            ask the checker for a receipt now
 #   ./run.sh scenario           the whole sequence, hands off
-#
-# Add --stale-writer <broker> to up or scenario (a pinned writer and its own
-# receipt; with scenario, the freeze act replaces the kill sequence).
+#   --stale-writer <broker>     with up: add a writer pinned to that broker, with its own
+#                               receipt. With scenario or receipt: require it, and with
+#                               scenario run the freeze act in place of the kill sequence
 #   ./run.sh down               final receipt, then remove everything
 #
 # Everything is scoped to the compose project below. Nothing outside it is
@@ -89,6 +89,30 @@ receipt_of() {
   return 1
 }
 
+# The broker the running stale-probe is pinned to, as `broker-N`.
+pinned_broker() {
+  local cid
+  cid="$(compose ps -q stale-probe 2>/dev/null | head -1)"
+  [[ -n "$cid" ]] || return 1
+  "$engine" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null \
+    | sed -n 's/^FAILOVER_STALE_WRITER=.*\.1\([123]\):5000$/broker-\1/p'
+}
+
+# With --stale-writer, a stale block is required: a missing or different probe
+# is a failure, not a pass without the block.
+require_probe() {
+  local pinned
+  pinned="$(pinned_broker || true)"
+  if [[ -z "$pinned" ]]; then
+    echo "run.sh: the stale-probe is not running; start it with: ./run.sh up --stale-writer $stale_broker" >&2
+    return 1
+  fi
+  if [[ "$pinned" != "$stale_broker" ]]; then
+    echo "run.sh: the stale-probe is pinned to $pinned, not $stale_broker" >&2
+    return 1
+  fi
+}
+
 cmd="${1:-help}"
 shift || true
 
@@ -150,11 +174,27 @@ case "$cmd" in
     echo "$(stamp) pausing $target for $secs s (the process is frozen, not stopped)"
     # The engine's own pause and unpause: `compose unpause` did nothing on
     # Podman with the docker-compose provider.
-    cid="$(compose ps -a -q "$target")"
+    cid="$(compose ps -q "$target")"
     [[ -n "$cid" ]] || { echo "run.sh: $target is not running" >&2; exit 1; }
+    # Record what was frozen for the stale writer's receipt.
+    if probe_cid="$(compose ps -q stale-probe)" && [[ -n "$probe_cid" ]]; then
+      pinned="$(pinned_broker || true)"
+      lead="$(leader)"
+      note="$(mktemp)"
+      printf '%s frozen for %s s at %s; leader then: %s; the writer is pinned to %s (%s)\n' \
+        "$target" "$secs" "$(stamp)" "$lead" "$pinned" \
+        "$([[ "$pinned" == "$lead" ]] && echo "the leader" || echo "not the leader")" >"$note"
+      "$engine" cp "$note" "$probe_cid:/out/freeze-note" >/dev/null
+      rm -f "$note"
+    fi
+    # Resume on any exit, so an interrupt does not leave the broker frozen.
+    frozen=1
+    resume() { if ((frozen)); then frozen=0; "$engine" unpause "$cid" >/dev/null 2>&1 || true; fi; }
+    trap resume EXIT
+    trap 'exit 130' INT TERM
     "$engine" pause "$cid" >/dev/null
     sleep "$secs"
-    "$engine" unpause "$cid" >/dev/null
+    resume
     echo "$(stamp) resumed $target"
     ;;
   restart)
@@ -184,6 +224,10 @@ case "$cmd" in
   receipt)
     running checker || { echo "run.sh: the checker is not running" >&2; exit 1; }
     status=0
+    if [[ -n "$stale_broker" ]]; then
+      require_probe || exit 1
+      running stale-probe || { echo "run.sh: the stale-probe is not running" >&2; exit 1; }
+    fi
     receipt_of checker /out/receipt.txt || status=1
     if running stale-probe; then
       receipt_of stale-probe /out/stale-receipt.txt || status=1
@@ -193,13 +237,19 @@ case "$cmd" in
   scenario)
     wait_for_checker
     if [[ -n "$stale_broker" ]]; then
+      require_probe || exit 1
+      # A frozen follower is not a leader that comes back.
+      if [[ "$(leader)" != "$stale_broker" && "${FAILOVER_ALLOW_FOLLOWER:-}" != 1 ]]; then
+        echo "run.sh: $stale_broker is not the leader ($(leader) is). Pin the leader, or set FAILOVER_ALLOW_FOLLOWER=1 to freeze a follower anyway" >&2
+        exit 1
+      fi
       say "steady state for 15 s"
       sleep 15
       say "freeze $stale_broker (the leader is $(leader)), wake it, and see what the pinned writer got"
       "$0" pause "$stale_broker" "${FAILOVER_PAUSE_SECS:-25}"
       sleep 30
       say "receipt"
-      "$0" receipt
+      "$0" receipt --stale-writer "$stale_broker"
       exit
     fi
     say "steady state for 15 s"
@@ -229,7 +279,19 @@ case "$cmd" in
   down)
     status=0
     for service in checker stale-probe; do
-      running "$service" || continue
+      if ! running "$service"; then
+        # A probe that is gone before `down` did not finish its run.
+        if [[ "$service" == stale-probe ]]; then
+          cid="$(compose ps -aq stale-probe 2>/dev/null | head -1)"
+          if [[ -n "$cid" ]]; then
+            code="$("$engine" inspect --format '{{.State.ExitCode}}' "$cid" 2>/dev/null || echo 1)"
+            echo "run.sh: the stale-probe had exited (exit $code)" >&2
+            status="$code"
+            [[ "$status" != 0 ]] || status=1
+          fi
+        fi
+        continue
+      fi
       say "final receipt ($service)"
       compose kill -s TERM "$service" >/dev/null || true
       for _ in $(seq 1 150); do running "$service" || break; sleep 1; done

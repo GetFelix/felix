@@ -29,7 +29,7 @@ Then, from a second terminal:
 ```
 
 To freeze a broker instead of killing it, see
-[A leader that comes back](#a-leader-that-comes-back) below.
+[A leader that comes back](#a-leader-that-comes-back).
 
 `receipt` and `down` exit non-zero unless the checker's verdict is a pass, so
 they can gate a script.
@@ -116,8 +116,10 @@ publish left waiting to the first acknowledgement after it.
 - A `SIGKILL` of a broker process does not test power loss: the kernel keeps the
   page cache. `on_commit` is what covers a flush that never happened, and this
   demo does not pull a plug.
-- Killing a container is not a network partition or a paused process. The
-  stale writer above covers a paused one; a network partition is not covered.
+- Killing a container is not a network partition or a paused process. A
+  paused leader is covered by the stale writer
+  ([A leader that comes back](#a-leader-that-comes-back)); a network partition
+  is not.
 - One broker down at a time among three. Losing two stops writes by design.
 - The checker is a single process on one network. It cannot see a fault in its
   own bookkeeping, which is why the logic is small and has unit tests
@@ -130,15 +132,20 @@ state, and when it resumes it has not noticed it was replaced. To see what it
 does with writes sent to it, start a writer pinned to one broker:
 
 ```bash
-./run.sh up --stale-writer broker-2     # a leader is usually broker-1 or -3; ./run.sh leader says
-./run.sh pause leader 25                # freeze it for 25 s, then resume it
+./run.sh up                                       # Ctrl-C once it is producing
+./run.sh up --stale-writer "$(./run.sh leader)"   # add a writer pinned to the leader
+./run.sh pause leader 25                          # freeze it for 25 s, then resume it
 ./run.sh receipt
 ```
 
-Or hands off, with the broker you pinned: `./run.sh scenario --stale-writer
-broker-2` (steady state, a freeze of `FAILOVER_PAUSE_SECS`, default 25, a
-30 s wait, then the receipt). With the flag, `scenario` runs this act in place
-of the kill sequence. Without it nothing changes.
+Or hands off, once the writer is pinned to the leader: `./run.sh scenario
+--stale-writer broker-N` (steady state, a freeze of `FAILOVER_PAUSE_SECS`,
+default 25, a 30 s wait, then the receipt). With the flag, `scenario` runs this
+act in place of the kill sequence. Without it nothing changes. It refuses to
+run unless the stale writer is running and pinned to that broker, and unless
+that broker leads the stream (`FAILOVER_ALLOW_FOLLOWER=1` freezes a follower
+anyway). `receipt --stale-writer broker-N` and `down` fail if the writer is
+missing or exited early, so a run cannot pass without its stale block.
 
 The writer is a second container, `stale-probe`, from the same checker
 binary. It opens one connection to that one broker, with no cluster routing,
@@ -158,7 +165,9 @@ leader. It prints one line per write:
 `forwarded` comes from the client's process-wide forwarded-publish counter,
 which is exact here because the writer is the only publisher in its process.
 
-Its receipt, kept in `/out/stale-receipt.txt`, has a block "the stale writer":
+Its receipt, kept in `/out/stale-receipt.txt`, has a block "the stale writer".
+It says which broker `pause` froze and whether the writer was pinned to the
+leader at that moment, and counts:
 
 - sent, acked, refused, forwarded, indeterminate;
 - acked and present exactly once;
