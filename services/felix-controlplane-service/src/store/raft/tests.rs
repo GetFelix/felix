@@ -5223,6 +5223,7 @@ async fn raft_floors_wait_for_every_member_known_at_level_38() {
             node_id: "broker-x".to_string(),
             floors: floors.clone(),
             mark_formed: false,
+            vouched_voters: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");

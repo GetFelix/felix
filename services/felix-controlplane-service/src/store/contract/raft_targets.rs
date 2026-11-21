@@ -141,6 +141,17 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         .put_shard_assignment(moved)
         .await
         .expect("the group formed, so its set moves");
+    // broker-y left the set but is still a kept voter. Naming itself at a
+    // huge index, it neither gets back into the voters a blank copy admits
+    // nor shuts out the reports that follow (#2909).
+    let mut removed = super::raft_floors::entry(&shard, u64::MAX / 2, 1);
+    removed.voters = Some(first.members.clone());
+    store
+        .record_raft_floors("broker-y", vec![removed])
+        .await
+        .expect("floors");
+    let after = read(store, &shard.key).await.raft_voters.expect("voters");
+    assert_eq!(after.index, 1, "a removed broker's voters");
     // The move cleared the target; a voter already kept still reports.
     let mut lagging = super::raft_floors::entry(&shard, 1, 1);
     lagging.voters = Some([("broker-x".to_string(), 41)].into());

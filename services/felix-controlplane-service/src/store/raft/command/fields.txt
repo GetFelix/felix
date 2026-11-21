@@ -1889,3 +1889,4 @@
 47 snapshot.state.shards[][].raft_bases.bases[].base_last.term
 47 snapshot.state.shards[][].raft_bases.bases[].first_index
 47 snapshot.state.shards[][].raft_bases.incarnation
+48 record_raft_floors.vouched_voters

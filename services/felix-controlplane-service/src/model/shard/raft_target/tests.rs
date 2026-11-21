@@ -210,7 +210,7 @@ fn report(record: &mut ShardAssignment, index: u64, voters: &[&str]) -> bool {
         voters: None,
     };
     let voters = set(voters).into_iter().map(|node| (node, 1)).collect();
-    record.note_raft_voters(&report, &voters)
+    record.note_raft_voters(&report, &voters, false)
 }
 
 fn formed(nodes: &[&str]) -> ShardAssignment {
@@ -358,4 +358,102 @@ fn a_target_waits_for_reported_voters_to_keep_a_majority_of_its_copies() {
     let mut quiet = formed(&["1", "2", "3"]);
     quiet.raft_copy_ids.insert("broker-2".to_string(), 2);
     assert_eq!(quiet.settle_raft_target(true), Ok(true));
+}
+
+/// Voters count only from a target member under its own copy, or, while a
+/// set change has cleared the target, a kept voter still placed. A broker
+/// removed from the set never names itself back in (#2909).
+#[test]
+fn only_a_vouched_broker_reports_voters() {
+    let mut record = formed(&["1", "2", "3"]);
+    let named = |nodes: &[&str]| -> BTreeMap<String, u64> {
+        set(nodes).into_iter().map(|node| (node, 1)).collect()
+    };
+    record.raft_target = Some(RaftTarget {
+        counter: 1,
+        members: named(&["1", "2", "3"]),
+    });
+    assert!(record.may_report_voters("broker-1", &named(&["1", "2", "3"])));
+    assert!(
+        !record.may_report_voters("broker-1", &ids(&[("broker-1", 9)])),
+        "another copy than the target's"
+    );
+    assert!(
+        !record.may_report_voters("broker-9", &named(&["1", "9"])),
+        "outside the target"
+    );
+    assert!(
+        !record.may_report_voters("broker-2", &named(&["1"])),
+        "not among the voters it reports"
+    );
+
+    // broker-3 leaves the set; the change clears the target.
+    assert!(report(&mut record, 5, &["1", "2", "3"]));
+    place(&mut record, &["1", "2", "4"]);
+    record.raft_target = None;
+    assert!(record.may_report_voters("broker-1", &named(&["1", "2", "4"])));
+    assert!(
+        !record.may_report_voters("broker-3", &named(&["1", "2", "3"])),
+        "a kept voter no longer placed"
+    );
+    assert!(
+        !record.may_report_voters("broker-4", &named(&["1", "2", "4"])),
+        "placed, but not a kept voter"
+    );
+    record.raft_copy_ids.insert("broker-1".into(), 7);
+    assert!(
+        !record.may_report_voters("broker-1", &named(&["1", "2", "4"])),
+        "a kept voter that reopened under a new copy"
+    );
+}
+
+/// Any broker raises the floor, so from level 48 a floor pushed past the
+/// group's own reports no longer shuts out a vouched leader's voters.
+#[test]
+fn a_raised_floor_does_not_freeze_the_voters() {
+    let mut record = formed(&["1", "2", "3"]);
+    record.raft_floor = Some(super::super::RaftFloor {
+        incarnation: record.incarnation,
+        offset_floor: u64::MAX,
+        epoch: 0,
+        index: u64::MAX,
+        term: u64::MAX,
+    });
+    assert!(report(&mut record, 5, &["1", "2", "3"]));
+    let report = super::super::RaftFloorReport {
+        key: record.key.clone(),
+        incarnation: record.incarnation,
+        epoch: 0,
+        index: 6,
+        term: 1,
+        voters: None,
+    };
+    let voters = set(&["1", "2"]).into_iter().map(|node| (node, 1)).collect();
+    assert!(
+        !record.note_raft_voters(&report, &voters, true),
+        "below 48 the floor still decides"
+    );
+}
+
+/// A set change clears the target, and lagging voters may hold the next
+/// one; a kept voter still placed reports the group's new voters, which
+/// releases it (#2915).
+#[test]
+fn a_kept_voters_report_releases_a_held_target() {
+    let mut record = formed(&["1", "2", "3"]);
+    assert!(report(&mut record, 5, &["1", "2", "3"]));
+    place(&mut record, &["1", "4", "5"]);
+    let copies = record.raft_copy_ids.clone();
+    assert!(
+        record.holds_formed_target(&copies),
+        "the kept voters name one of three"
+    );
+    let reported: BTreeMap<String, u64> = set(&["1", "4", "5"])
+        .into_iter()
+        .map(|node| (node, 1))
+        .collect();
+    assert!(record.may_report_voters("broker-1", &reported));
+    assert!(report(&mut record, 6, &["1", "4", "5"]));
+    assert!(!record.holds_formed_target(&copies));
+    assert_eq!(record.settle_raft_target(true), Ok(true));
 }

@@ -673,6 +673,7 @@ fn commands() -> Vec<MetaCommand> {
                 voters: Some(any_map(1)),
             }],
             mark_formed: true,
+            vouched_voters: true,
         },
         MetaCommand::SealShard {
             key: shard_key(),

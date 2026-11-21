@@ -156,6 +156,11 @@ The short version:
   so a peer cannot act under no name. The node id is bound once per
   connection, and a Raft message that names another broker as its sender is
   refused.
+- **Raft messages only from members.** A shard's Raft member refuses a vote,
+  append, snapshot or read index unless the sender is in that group's own
+  membership, so a broker outside a group cannot raise its term, take its
+  vote or truncate its log
+  ([#2909](https://github.com/GetFelix/felix/issues/2909)).
 - **Forwarding is not authority.** A forwarded publish or cache write carries
   the client's own token, and the owner verifies it before writing. With
   subject binding on, the owner also verifies the client's certificate chain
@@ -173,9 +178,11 @@ The short version:
 
 **Open**
 
-- **Membership is not checked per request.** Any broker with a certificate
-  from the internal CA can send as itself to a Raft group or replica set it
-  is not a member of ([#2909](https://github.com/GetFelix/felix/issues/2909)).
+- **Hybrid replication does not check membership per request.** On the
+  hybrid engine, a broker with a certificate from the internal CA can send
+  fetch, replicate, fence and seal requests to a replica set it is not in;
+  only the ballot and generation bound them
+  ([#2920](https://github.com/GetFelix/felix/issues/2920)).
 - **A compromised broker can replay what it was shown.** It can forward a
   client's token and certificate chain until either expires. Closing that
   needs proof that the client holds its key

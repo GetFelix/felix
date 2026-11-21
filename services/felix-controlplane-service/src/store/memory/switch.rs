@@ -296,11 +296,16 @@ pub(super) async fn record_raft_copy_id(
 /// `mark_formed`: a report from a broker the stored target names also marks
 /// the group formed, also in place; false for a Raft entry proposed below
 /// the level that knows the mark.
+///
+/// `vouched_voters`: voters count only from a reporter
+/// [`crate::model::ShardAssignment::may_report_voters`] admits, whatever
+/// the floor did with the report (#2909); false below level 48.
 pub(super) async fn record_raft_floors(
     store: &InMemoryStore,
     node_id: &str,
     floors: &[crate::model::RaftFloorReport],
     mark_formed: bool,
+    vouched_voters: bool,
 ) -> u32 {
     let mut state = store.shards.write().await;
     let mut raised = 0;
@@ -327,25 +332,33 @@ pub(super) async fn record_raft_floors(
         // A set change clears the target until the new one is stored, and
         // the voters may be what lets it be stored, so meanwhile a voter
         // already kept may report.
-        let may_report = in_target
-            || (record.raft_target.is_none()
-                && record
-                    .raft_voters
-                    .as_ref()
-                    .is_some_and(|held| held.members.contains_key(node_id)));
+        let may_report = match &report.voters {
+            Some(voters) if vouched_voters => record.may_report_voters(node_id, voters),
+            Some(voters) => {
+                voters.contains_key(node_id)
+                    && (in_target
+                        || (record.raft_target.is_none()
+                            && record
+                                .raft_voters
+                                .as_ref()
+                                .is_some_and(|held| held.members.contains_key(node_id))))
+            }
+            None => false,
+        };
         let floor = record.raise_raft_floor(report);
-        // Voters only from a target member, and only in a report the floor
-        // took, so a report the floor refuses cannot set a high index that
-        // shuts out later ones. Only a proposer at level 46 leaves them in.
-        if may_report
-            && matches!(
+        // Only a proposer at level 46 leaves voters in. Below 48 they count
+        // only in a report the floor took; from 48 the reporter gate alone
+        // decides, since any broker can push the floor past honest reports.
+        let taken = vouched_voters
+            || matches!(
                 floor,
                 Ok(_) | Err(crate::model::RaftFloorError::NotSwitched)
-            )
+            );
+        if may_report
+            && taken
             && let Some(voters) = &report.voters
-            && voters.contains_key(node_id)
         {
-            record.note_raft_voters(report, voters);
+            record.note_raft_voters(report, voters, !vouched_voters);
         }
         match floor {
             Ok(true) => raised += 1,
@@ -440,8 +453,9 @@ impl InMemoryStore {
         node_id: &str,
         floors: &[crate::model::RaftFloorReport],
         mark_formed: bool,
+        vouched_voters: bool,
     ) -> u32 {
-        record_raft_floors(self, node_id, floors, mark_formed).await
+        record_raft_floors(self, node_id, floors, mark_formed, vouched_voters).await
     }
 
     pub(crate) async fn apply_accept_seal_report(

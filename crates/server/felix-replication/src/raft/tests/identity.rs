@@ -1598,6 +1598,34 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
         ));
         assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
     }
+    // A broker not placed in the group's epoch proves nothing, however
+    // far its commit is.
+    let placed: BTreeSet<String> = BROKERS.map(str::to_owned).into();
+    a.admit(&group(0), placed.clone(), placed);
+    a.admit_until(Some(
+        tokio::time::Instant::now() + Duration::from_secs(3600),
+    ));
+    let outsider = RaftRequest {
+        body: {
+            let leader = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("x", 1));
+            let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, true);
+            Request::Append(openraft::raft::AppendEntriesRequest {
+                vote,
+                prev_log_id: None,
+                entries: Vec::new(),
+                leader_commit: Some(openraft::type_config::alias::LogIdOf::<ShardTypes>::new(
+                    99.into(),
+                    u64::MAX,
+                )),
+            })
+        },
+        ..ask_vote()
+    };
+    assert!(matches!(
+        a.handle_from("x", outsider).await,
+        Err(Refused::Stopped(..))
+    ));
+    assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
     cluster.net.cut.lock().clear();
 
     // b and c elect and go on; the next open of a after the leader's
