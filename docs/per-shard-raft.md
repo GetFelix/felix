@@ -961,7 +961,8 @@ are of an unknown epoch: a learner placed fresh into the group, and a
 directory restored from a backup older than the epoch.
 
 The broker reads the group epoch the control plane's record is at from
-`placed.epoch` in the shard assignments it watches (absent is 0). For each
+`placed.epoch` in the shard assignments it watches. Absent reads as 0, the
+same as the control plane's floor check reads it. For each
 member it holds, it checks both:
 
 | The copy's `raft-epoch` | The record's epoch | Floor report | Copy id report |
@@ -979,10 +980,20 @@ for an epoch other than its record's (`OtherEpoch`), but a broker that
 sent one at epoch 0 would retry it forever and the group's floor would
 stay where it was.
 
-The view can be older than the record, but not in a way that lets a fresh
-copy through. A broker opens a member only for a view that names it, and
-the write that first names a broker in an epoch is the one that adds it to
-that epoch's placed record, so that view carries the epoch.
+The check runs on the broker, against its own view, so two gaps remain
+until the control plane checks the epoch in the copy id report itself
+(#2882):
+
+- A view can be older than the record. A broker first named in a later
+  epoch is safe, because the write that names it also adds it to that
+  epoch's placed record. A broker named in both epochs whose directory came
+  back from an old backup can still read an epoch-0 view and send its copy
+  id.
+- An import drops every shard's placed record, so a shard restored after a
+  re-form reads as epoch 0.
+
+Neither is reachable yet: no group leaves epoch 0 until the re-form
+command ships (#2250).
 
 Such a copy stays a learner until something writes its `raft-epoch`. Only
 a re-form start writes one into a copy that has served (a rotation writes

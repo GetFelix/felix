@@ -102,9 +102,9 @@ pub struct ShardAssignment {
     /// plane that predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub targets_withheld: bool,
-    /// The control plane's record of the shard's group epoch. Absent is
-    /// epoch 0: a shard with no record never re-formed, and neither did one
-    /// from a control plane that predates it.
+    /// The control plane's record of the shard's group epoch. Absent reads
+    /// as epoch 0, as the control plane's own floor check reads it. A shard
+    /// restored from an export has none whatever its epoch (#2882).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<PlacedEpoch>,
 }

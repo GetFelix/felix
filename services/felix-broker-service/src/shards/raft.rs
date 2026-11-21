@@ -457,9 +457,9 @@ impl RaftShards {
             Ok(Ok(epoch)) => {
                 self.epochs.lock().insert(key.clone(), epoch);
             }
-            // The member still serves; only its floor report waits.
+            // The member still serves; its floor and copy id reports wait.
             Ok(Err(err)) => {
-                tracing::warn!(shard = ?key, error = %err, "could not read a Raft member's group epoch; its floor is not reported")
+                tracing::warn!(shard = ?key, error = %err, "could not read a Raft member's group epoch; its floor and copy id are not reported until it reopens")
             }
             Err(err) => tracing::warn!(shard = ?key, error = %err, "group epoch read task"),
         }
