@@ -19,6 +19,7 @@ fn held(stream: &str, copy: u64, in_target: Option<u64>) -> Held {
         key: key(stream),
         incarnation: 3,
         copy,
+        epoch: 0,
         set: ["n1", "n2"].map(String::from).into(),
         in_target,
         withheld: false,
@@ -61,8 +62,35 @@ async fn a_copy_is_reported_with_its_registration_and_stream_incarnation() {
             incarnation: 4,
             registered_at_millis: 1_000,
             shard_incarnation: 3,
+            group_epoch: 0,
         }]
     );
+}
+
+/// The control plane refuses a copy id for another epoch than the shard's
+/// (#2882), so a copy at a re-formed epoch says which one it runs. At 0 the
+/// field is left out and an older control plane reads the body it always did.
+#[tokio::test(start_paused = true)]
+async fn a_copy_reports_the_group_epoch_it_runs() {
+    let link = accepting();
+    let mut ids = CopyIds::default();
+    let at_zero = held("a", 7, None);
+    tick(&mut ids, &[at_zero.clone()], (1, 1), &link, "n1", None).await;
+    let body = serde_json::to_value(&link.copy_ids()[0]).expect("body");
+    assert!(body.get("group_epoch").is_none(), "{body}");
+
+    // A re-form moves the copy to epoch 1: that is a new report, not a
+    // resend of the one epoch 0 took.
+    let re_formed = Held {
+        epoch: 1,
+        ..at_zero
+    };
+    tick(&mut ids, &[re_formed], (1, 1), &link, "n1", None).await;
+    let sent = link.copy_ids();
+    assert_eq!(sent.len(), 2, "sent at once for the new epoch");
+    assert_eq!(sent[1].group_epoch, 1);
+    let body = serde_json::to_value(&sent[1]).expect("body");
+    assert_eq!(body["group_epoch"], 1);
 }
 
 /// The control plane drops a shard's ids when its set changes and a

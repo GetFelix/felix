@@ -1376,6 +1376,7 @@ impl EngineShards for RaftShards {
                             key: key.clone(),
                             incarnation: assignment.incarnation,
                             copy: member.copy,
+                            epoch: assignment.group_epoch(),
                             set: std::iter::once(&assignment.leader)
                                 .chain(&assignment.replicas)
                                 .cloned()

@@ -227,6 +227,10 @@ pub struct RaftCopyId {
     pub registered_at_millis: u64,
     /// The stream incarnation the group runs.
     pub shard_incarnation: u64,
+    /// The group epoch the copy runs. Left out at 0, so a control plane
+    /// below the level that reads it gets the body it always did.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub group_epoch: u64,
 }
 
 /// The body of a raft-floors report.
