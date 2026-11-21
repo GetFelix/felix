@@ -15,7 +15,7 @@ fn raft() -> MovePolicy {
 }
 
 /// Shard `shard` of `orders`, led by `leader` with every other broker of
-/// `ABC` a member, and a target the group was told.
+/// `ABC` a member, a target the group was told, and the group formed.
 fn member_of(shard: u32, leader: &str) -> ShardAssignment {
     let mut assignment = pinned("orders", shard, leader);
     assignment.replicas = ABC
@@ -28,6 +28,7 @@ fn member_of(shard: u32, leader: &str) -> ShardAssignment {
         counter: 2,
         members: ABC.iter().map(|node| (node.to_string(), 7)).collect(),
     });
+    assignment.raft_formed = Some(assignment.incarnation);
     assignment
 }
 
@@ -234,6 +235,23 @@ fn a_hybrid_move_left_on_a_raft_shard_is_dropped() {
         }
         other => panic!("expected the move dropped, got {other:?}"),
     }
+
+    // Before its group forms the drop changes a held set, which the store
+    // refuses, so placement waits rather than propose it every pass (#2794).
+    staged.raft_formed = None;
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        std::slice::from_ref(&staged),
+        &NothingCaughtUp,
+        raft(),
+    );
+    assert_eq!(
+        plan.shards[0].decision,
+        Decision::Waiting(Blocked::Unformed)
+    );
+    assert_eq!(plan.moves().count(), 0, "no refused write is proposed");
 }
 
 #[test]

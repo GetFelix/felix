@@ -632,6 +632,7 @@ fn commands() -> Vec<MetaCommand> {
             copy_id: 1,
             keep_ordered: true,
             shard_incarnation: Some(1),
+            hold_target: true,
         },
         MetaCommand::DeclareNodeDead { node_id: s("b") },
         MetaCommand::RecordRaftFloors {

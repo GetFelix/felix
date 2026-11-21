@@ -671,6 +671,12 @@ async fn a_leader_only_write_keeps_the_raft_target() {
     );
     assert_eq!(read.raft_copy_ids, ids);
 
+    // A leader of the group reports, so its set may change (#2794).
+    let report = crate::store::contract::raft_floors::entry(&read, 1, 1);
+    store
+        .record_raft_floors("broker-y", vec![report])
+        .await
+        .expect("floors");
     let mut shrunk = assignment(0, "broker-y");
     shrunk.replicas.clear();
     store.put_shard_assignment(shrunk).await.expect("shrink");

@@ -20,6 +20,7 @@ async fn copy_id(
         copy_id,
         keep_ordered: true,
         shard_incarnation: None,
+        hold_target: false,
     }
 }
 
@@ -214,6 +215,69 @@ async fn a_snapshot_keeps_the_list() {
         let restored = machine();
         restored.restore(&original.snapshot().await).await;
         assert_eq!(ordered(&restored, &key).await, held);
+    })
+    .await;
+}
+
+/// A proposer that counts a down control-plane member at its join floor can
+/// see a level below 45 and send a move without `hold_unformed`. Once an
+/// entry has lifted the floor to 45, every member holds the set anyway, and
+/// so does one restored from a snapshot (#2794).
+#[tokio::test]
+async fn a_held_set_stays_held_when_a_proposer_sees_a_lower_level() {
+    use crate::raft::AppStateMachine;
+    use crate::store::contract::raft_targets::held_set;
+    let on_raft = || {
+        let store = InMemoryStore::new(StoreConfig {
+            changes_limit: 100,
+            change_retention_max_rows: Some(1_000),
+        });
+        MetadataStateMachine::new(Arc::new(store.with_shard_engine("raft")))
+    };
+    let machine = on_raft();
+    let store: &dyn ControlPlaneStore = machine.store().as_ref();
+    on_streams_of_its_own(store, async {
+        let held = held_set(store).await;
+        let mut copy_id = copy_id(&machine, &held.key, "broker-x", 41).await;
+        if let MetaCommand::RecordRaftCopyId {
+            shard_incarnation,
+            hold_target,
+            ..
+        } = &mut copy_id
+        {
+            *shard_incarnation = Some(held.incarnation);
+            *hold_target = true;
+        }
+        machine.apply(&encode_command(&copy_id)).await;
+        assert_eq!(machine.join_floor(), 45);
+
+        let mut moved = held.clone();
+        moved.replicas = vec!["broker-z".to_string()];
+        let unflagged = encode_command(&MetaCommand::PutShardAssignment {
+            assignment: moved,
+            seq_generation: true,
+            start_placed: true,
+            hold_unformed: false,
+        });
+        let refused = decode_result(&machine.apply(&unflagged).await).expect("result");
+        assert!(
+            matches!(refused, Err(MetaError::Conflict(_))),
+            "an unflagged move at floor 45: {refused:?}"
+        );
+
+        let restored = on_raft();
+        restored.restore(&machine.snapshot().await).await;
+        let refused = decode_result(&restored.apply(&unflagged).await).expect("result");
+        assert!(matches!(refused, Err(MetaError::Conflict(_))));
+        assert_eq!(
+            restored
+                .store()
+                .get_shard_assignment(&held.key)
+                .await
+                .expect("assignment")
+                .replicas,
+            held.replicas
+        );
     })
     .await;
 }

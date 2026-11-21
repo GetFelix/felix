@@ -558,6 +558,13 @@ pub enum MetaCommand {
         /// Raft takes ids too. An entry without it applies as it did below 41.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shard_incarnation: Option<u64>,
+        /// Level 45: the target this entry may store is held until its group
+        /// forms (#2794). The apply reads nothing from it: carrying it lifts
+        /// the join floor to 45 before any target is stored, and from there
+        /// every member holds unformed sets whatever a later proposer saw.
+        /// Set by `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hold_target: bool,
     },
     /// Raise the offset floor of each shard a leader reports, where the
     /// report is above it; the others are skipped one by one
@@ -1097,12 +1104,19 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             }
             _ if gated == COPY_ID_OP || gated == ACCEPT_SEAL_OP => {
                 let keep = level >= super::RAFT_ORDERED_LEVEL;
+                let hold = gated == COPY_ID_OP && level >= super::FIRST_FORM_LEVEL;
                 Ok(edit_command_json(command, |object| {
-                    if keep {
+                    let mut edited = if keep {
                         object.insert("keep_ordered".to_string(), true.into()) != Some(true.into())
                     } else {
                         object.remove("keep_ordered").is_some()
-                    }
+                    };
+                    edited |= if hold {
+                        object.insert("hold_target".to_string(), true.into()) != Some(true.into())
+                    } else {
+                        object.remove("hold_target").is_some()
+                    };
+                    edited
                 }))
             }
             _ => Ok(None),

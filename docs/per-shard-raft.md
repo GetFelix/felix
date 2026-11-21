@@ -4112,7 +4112,13 @@ later by no report a Raft shard sends:
   the first form holds the form, and so the set, until it is back: no group
   formed, so nothing was acknowledged, and deleting the stream is the way
   out. The hold is on from metadata level 45; below it a set change before
-  the first form applies as before on every member.
+  the first form applies as before on every member. Once any entry at
+  level 45 is in the log, every member holds unformed sets whatever the
+  proposer saw, so a control-plane member that is down, and counted at a
+  lower level, cannot lift the hold. The copy-id report that stores a
+  target carries a level 45 field for exactly this reason. An idle group
+  formed before the upgrade is marked on its leader's next floor report,
+  which comes with its next commit or a new leader.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4188,6 +4194,8 @@ re-placement replaces every member.
 > `a_short_placement_acknowledges_nothing`;
 > `services/felix-controlplane-service/src/store/contract/raft_targets.rs`,
 > `a_set_holds_until_its_group_forms`;
+> `services/felix-controlplane-service/src/store/raft/state_machine/tests/raft_targets.rs`,
+> `a_held_set_stays_held_when_a_proposer_sees_a_lower_level`;
 > `docs/formal/FelixRaftFirstForm.tla`, where `FelixRaftFirstFormNoHold.cfg`
 > finds two leaders without the hold.
 

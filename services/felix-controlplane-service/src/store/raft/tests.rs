@@ -1732,7 +1732,8 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(store.machine.join_floor(), PLACED_LEVEL);
+    // Every assignment write at the current level carries the hold.
+    assert_eq!(store.machine.join_floor(), FIRST_FORM_LEVEL);
 
     let moved = store
         .put_shard_assignment(set(shard, &["broker-z"]))
@@ -1767,7 +1768,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
             .brokers,
         brokers
     );
-    assert_eq!(restored.join_floor(), PLACED_LEVEL);
+    assert_eq!(restored.join_floor(), FIRST_FORM_LEVEL);
 }
 
 /// An import marks the streams and caches it restores, so every member
@@ -2402,12 +2403,12 @@ async fn pending_sets_wait_for_every_member() {
             .contains(election)
     );
 
-    // The log now holds the finalize, a level 26 entry, which a member
-    // below would refuse.
+    // The log now holds the finalize, a level 26 entry, and assignment
+    // writes that carry the level 45 hold, which a member below refuses.
     let old = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(20))).await;
     let refused = store.handle.add_learner_without_waiting(3, old).await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 26")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 45")),
         "a member below level 21 joined: {refused:?}"
     );
 }
@@ -4939,6 +4940,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
             copy_id: 2,
             keep_ordered: false,
             shard_incarnation: None,
+            hold_target: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");

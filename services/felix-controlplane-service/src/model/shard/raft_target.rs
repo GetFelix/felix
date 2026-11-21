@@ -111,9 +111,18 @@ impl ShardAssignment {
     /// ([`Self::holds_unformed_set`]) on other brokers. A write at another
     /// incarnation is a new group and holds nothing.
     pub(crate) fn moves_unformed_set(&self, next: &ShardAssignment, incarnation: u64) -> bool {
-        self.incarnation == incarnation
-            && self.holds_unformed_set()
-            && self.raft_set() != next.raft_set()
+        self.incarnation == incarnation && self.holds_set_from(&next.leader, &next.replicas)
+    }
+
+    /// Whether this record's held set ([`Self::holds_unformed_set`]) differs
+    /// from `leader` and `replicas`, so a write naming them is refused.
+    pub(crate) fn holds_set_from(&self, leader: &str, replicas: &[String]) -> bool {
+        self.holds_unformed_set()
+            && self.raft_set()
+                != std::iter::once(leader)
+                    .chain(replicas.iter().map(String::as_str))
+                    .map(str::to_string)
+                    .collect::<BTreeSet<_>>()
     }
 
     fn raft_set(&self) -> BTreeSet<String> {

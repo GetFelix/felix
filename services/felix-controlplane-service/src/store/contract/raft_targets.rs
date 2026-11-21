@@ -66,11 +66,10 @@ async fn try_native_report(
         .await
 }
 
-/// A broker cut off from the control plane keeps forming the first target
-/// it read. A second set with its own target would let another broker form
-/// a second group beside it (#2794), so the set holds until a leader the
-/// target names reports, and only then moves.
-async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
+/// An active shard that started on Raft, on {broker-x, broker-y} with its
+/// first target stored and no leader reported yet, so its set is held.
+/// Registers broker-z, outside the set, which the caller deregisters.
+pub(crate) async fn held_set(store: &dyn ControlPlaneStore) -> ShardAssignment {
     let shard = active(store, 0).await;
     let at = Some(shard.incarnation);
     store
@@ -91,8 +90,20 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
     try_native_report(store, &shard, "broker-y", 42, at)
         .await
         .expect("y");
+    let held = read(store, &shard.key).await;
+    assert!(held.holds_unformed_set());
+    held
+}
+
+/// A broker cut off from the control plane keeps forming the first target
+/// it read. A second set with its own target would let another broker form
+/// a second group beside it (#2794), so the set holds until a leader the
+/// target names reports, and only then moves.
+async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
     // What the cut-off broker-x will keep reading.
-    let stale = read(store, &shard.key).await;
+    let stale = held_set(store).await;
+    let shard = stale.clone();
+    let at = Some(shard.incarnation);
     let first = stale.raft_target.clone().expect("first target");
 
     let mut moved = stale.clone();

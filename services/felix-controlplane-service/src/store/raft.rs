@@ -1222,6 +1222,8 @@ impl ControlPlaneStore for RaftStore {
                 copy_id,
                 keep_ordered: false,
                 shard_incarnation,
+                // Set by `settle_for_level`, at the level the entry is gated on.
+                hold_target: false,
             })
             .await?
         {
