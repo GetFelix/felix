@@ -204,7 +204,7 @@ Cross-account import and export has no direct counterpart. Sharing between
 tenants is not a built-in feature. Tenants authenticate through the control
 plane, which can exchange an identity provider's OIDC token for a Felix token.
 Per-tenant publish rate limits exist, set in each broker's environment. See
-[Security](/features/security/) and [Multi-tenant SaaS](/use-cases/multi-tenant-saas/).
+[Security](/security/) and [Multi-tenant SaaS](/use-cases/multi-tenant-saas/).
 
 ## Browsers
 

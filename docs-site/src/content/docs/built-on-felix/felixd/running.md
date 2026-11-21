@@ -247,7 +247,7 @@ them everything is kept.
   token for `run`. A node reads the `workloads` and `modules` caches, writes
   `leases`, `epochs` and `nodes`, reads every input stream, and reads and publishes
   to `wl.*.out` and `wl.*.snap`. It also writes `workloads`, to record a failure.
-  Grants are [RBAC](/features/security/) on the node's token. Today any node may
+  Grants are [RBAC](/security/authentication/) on the node's token. Today any node may
   write any workload's output, and fencing keeps that correct. Credentials
   are per node, not per lease ([#74](https://github.com/GetFelix/felixd/issues/74)).
 - **A shared felixd build.** Every node of a cluster has to run the same build,

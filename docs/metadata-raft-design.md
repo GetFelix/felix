@@ -741,7 +741,7 @@ Every peer request must carry:
 During a rotation a member also accepts `FELIX_RAFT_PEER_TOKEN_NEXT` and
 `FELIX_RAFT_PEER_TOKEN_PREVIOUS`, but sends only the current token, so the
 roll has no step at which two members cannot talk. The runbook is in
-`docs-site/src/content/docs/features/security.md`.
+`docs-site/src/content/docs/security/hardening.md`.
 
 The token proves only that the caller is some member, so it is an insecure
 fallback for groups without peer TLS, and a member logs a warning at startup

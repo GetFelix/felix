@@ -82,7 +82,7 @@ bootstrap and a token exchange with your identity provider; the
 [Docker Compose page](/deployment/docker-compose/#broker-credential)
 shows the requests. A development stack with no identity provider can ask the
 bootstrap listener for a
-[development token](/features/security/#development-tokens) instead;
+[development token](/security/authentication/#development-tokens) instead;
 `felix-cluster` mints its tokens itself.
 
 A started broker logs a `quic listener started` line with its address for
