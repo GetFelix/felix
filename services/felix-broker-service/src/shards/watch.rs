@@ -37,11 +37,11 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// How long the control plane may hold a changes request open. Under its own
 /// 25 s cap, which sits under the idle timeout of common proxies.
-const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
+pub(super) const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
 
 /// Slack on top of [`LONG_POLL_WAIT`] before a held request counts as failed.
 /// Without a bound, a connection that died silently would stop the watch.
-const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
+pub(super) const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ShardAssignment {
