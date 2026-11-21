@@ -141,7 +141,9 @@ impl Revocable {
         let mut changed = self.revocations.changed.subscribe();
         let ended = async {
             match self.ends_at {
-                Some(ends_at) => tokio::time::sleep(until(ends_at)).await,
+                // On the wall clock, re-checked, so a suspended host or a
+                // stepped clock moves the end with the clock that checks it.
+                Some(ends_at) => felix_common::tls::sleep_until_unix(ends_at).await,
                 None => std::future::pending().await,
             }
         };
@@ -177,11 +179,6 @@ impl std::error::Error for Revoked {}
 
 fn now_secs() -> i64 {
     since_epoch().as_secs().try_into().unwrap_or(i64::MAX)
-}
-
-/// How long until `at` (seconds since the epoch); zero once it has passed.
-fn until(at: i64) -> Duration {
-    Duration::from_secs(u64::try_from(at).unwrap_or(0)).saturating_sub(since_epoch())
 }
 
 fn since_epoch() -> Duration {

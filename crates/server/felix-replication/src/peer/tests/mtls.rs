@@ -213,13 +213,13 @@ async fn a_connection_closes_when_a_certificate_on_it_expires() {
     for dialer_expires in [true, false] {
         let (dialer, listener_cert) = if dialer_expires {
             (
-                pki.issue_with("a", "broker-a", expiring_in(2)),
+                pki.issue_with("a", "broker-a", expiring_in(5)),
                 pki.issue("b", PEER),
             )
         } else {
             (
                 pki.issue("a", "broker-a"),
-                pki.issue_with("b", PEER, expiring_in(2)),
+                pki.issue_with("b", PEER, expiring_in(5)),
             )
         };
         let server = listener(PEER, Some(tls(&listener_cert))).await;
@@ -228,7 +228,7 @@ async fn a_connection_closes_when_a_certificate_on_it_expires() {
             .await
             .expect("both certificates are still valid");
 
-        tokio::time::sleep(Duration::from_secs(4)).await;
+        tokio::time::sleep(Duration::from_secs(7)).await;
         let err = pool
             .request(PEER, server.addr, forward())
             .await

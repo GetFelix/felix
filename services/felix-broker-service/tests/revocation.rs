@@ -287,11 +287,11 @@ fn token_ending_in(left: i64) -> Result<String> {
 async fn a_subscription_ends_when_its_token_expires() -> Result<()> {
     let fixture = start().await?;
     let mut config = client_config(&fixture)?;
-    config.auth_token = Some(token_ending_in(3)?);
+    config.auth_token = Some(token_ending_in(5)?);
     let client = Connection::connect(fixture.addr, "localhost", config).await?;
     let mut sub = client.subscribe("t1", "default", "orders").await?;
 
-    let ended = timeout(Duration::from_secs(8), sub.next_event()).await?;
+    let ended = timeout(Duration::from_secs(10), sub.next_event()).await?;
     let Err(err) = ended else {
         anyhow::bail!("the subscription should end with an error at the token's exp");
     };
@@ -313,7 +313,7 @@ async fn a_connection_closes_when_its_client_certificate_expires() -> Result<()>
     let leaf_key = rcgen::KeyPair::generate()?;
     let mut leaf_params = rcgen::CertificateParams::new(vec!["client".to_string()])?;
     leaf_params.not_after =
-        rcgen::date_time_ymd(1970, 1, 1) + Duration::from_secs(u64::try_from(now_secs())? + 3);
+        rcgen::date_time_ymd(1970, 1, 1) + Duration::from_secs(u64::try_from(now_secs())? + 5);
     let issuer = rcgen::Issuer::new(ca_params, ca_key);
     let leaf = leaf_params.signed_by(&leaf_key, &issuer)?;
 
@@ -329,15 +329,29 @@ async fn a_connection_closes_when_its_client_certificate_expires() -> Result<()>
     let quinn = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(tls)?,
     ));
+    // A bare connection that opens no stream: only the connection-level
+    // close can end it, with its own code.
+    let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse()?)?;
+    endpoint.set_default_client_config(quinn.clone());
+    let bare = endpoint.connect(fixture.addr, "localhost")?.await?;
+
     let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
     config.auth_tenant_id = Some("t1".to_string());
     config.auth_token = Some(fixture.token.clone());
     let client = Connection::connect(fixture.addr, "localhost", config).await?;
     let mut sub = client.subscribe("t1", "default", "orders").await?;
 
+    match timeout(Duration::from_secs(9), bare.closed()).await? {
+        quinn::ConnectionError::ApplicationClosed(close) => {
+            assert_eq!(close.error_code, quinn::VarInt::from_u32(2));
+            assert_eq!(close.reason.as_ref(), b"credential expired");
+        }
+        other => anyhow::bail!("expected the credential-expired close, got {other}"),
+    }
+
     // The subscription ends with the stream's credential, and the connection
     // closes under it, so nothing new opens on it either.
-    let ended = timeout(Duration::from_secs(8), sub.next_event()).await?;
+    let ended = timeout(Duration::from_secs(2), sub.next_event()).await?;
     assert!(ended.is_err() || ended.is_ok_and(|event| event.is_none()));
     let again = timeout(
         Duration::from_secs(5),

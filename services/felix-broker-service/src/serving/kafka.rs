@@ -136,6 +136,7 @@ impl Cluster for BrokerCluster {
             // The token's own fault is safe to say. Anything else is the
             // control plane being unreachable, whose error text can carry its
             // URL, so it is logged here and not handed to the client.
+            Err(err) if err.is::<crate::serving::auth::CredentialRefused>() => Err(err.to_string()),
             Err(err) => match err.downcast_ref::<AuthzError>() {
                 Some(authz) => Err(format!("token rejected: {authz}")),
                 None => {

@@ -440,7 +440,7 @@ every principal of the tenant.
 No stream outlives the credentials it was opened with. Every stream a token
 opened, on every listener, ends when the token expires: at its `exp` plus the
 60 seconds of clock-skew leeway it was accepted under (2 seconds for a lease
-token). A stream on a connection with a client certificate also ends at the
+token). MQTT is stricter and disconnects at the bare `exp` (`token_expired`). A stream on a connection with a client certificate also ends at the
 certificate's `notAfter`, the earliest one in the chain the client presented,
 if that comes first.
 

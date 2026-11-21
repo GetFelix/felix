@@ -451,12 +451,12 @@ struct Offered {
     raft: Option<Arc<dyn RaftHandler>>,
 }
 
-/// Serve every stream a peer opens on one connection.
 /// Internal connection close code for a peer whose certificate passed its
 /// `notAfter`, sent by whichever side noticed. The dialer reconnects with a
 /// renewed one.
 pub(crate) const CERT_EXPIRED_CLOSE_CODE: u32 = 5;
 
+/// Serve every stream a peer opens on one connection.
 async fn serve_connection(
     connection: QuicConnection,
     node_id: String,
