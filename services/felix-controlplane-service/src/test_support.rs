@@ -29,6 +29,7 @@ pub(crate) fn app_state(
         oidc_validator: crate::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: Arc::new(Readiness::new(probe)),
         in_flight: Default::default(),

@@ -95,7 +95,11 @@ FELIX_RAFT_DATA_DIR=/var/lib/felix/raft
 FELIX_RAFT_PEERS=1=cp-0:8444,2=cp-1:8444,3=cp-2:8444
 FELIX_RAFT_BIND_ADDR=0.0.0.0:8444
 FELIX_RAFT_CLUSTER_ID=prod-metadata
-FELIX_RAFT_PEER_TOKEN=<at least 32 random characters, from a Secret>
+FELIX_RAFT_TLS_CERT=/etc/felix/raft/tls.crt   # URI SAN felix:principal:raft-member:prod-metadata:1
+FELIX_RAFT_TLS_KEY=/etc/felix/raft/tls.key
+FELIX_RAFT_TLS_CA=/etc/felix/raft/ca.crt
+# Without the three TLS variables, a shared token instead (weaker, see below):
+# FELIX_RAFT_PEER_TOKEN=<at least 32 random characters, from a Secret>
 FELIX_RAFT_INITIAL_CLUSTER_STATE=new   # first start of the cluster only
 ```
 
@@ -105,14 +109,26 @@ must survive restarts, because that is what makes a restart a rejoin.
 
 The Raft RPCs are served on their own **peer listener**
 (`FELIX_RAFT_BIND_ADDR`), and `FELIX_RAFT_PEERS` names each member's peer
-listener, not its API port. Every peer request must name the cluster and
-carry the peer token, or it is refused before any route runs. That token is
-the cluster-admin credential (the `propose` route behind it can replace the
-whole store), so keep it in a Secret, expose the peer port to the other
-members only, and give the token to nothing but the members. A member refuses to start without one unless
-`FELIX_RAFT_INSECURE_PEERS=true`, which is for a throwaway local group. Add
-`FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` for peer
-mTLS on top.
+listener, not its API port. Every peer request must name the cluster, or it
+is refused before any route runs. Expose the peer port to the other members
+only.
+
+Under peer mTLS the certificate is the member's identity. Each member's leaf
+certificate carries one URI SAN, `felix:principal:raft-member:<cluster_id>:<member_id>`,
+and a vote, append, snapshot or forming record that speaks for another member
+is refused with 403. A member exits at startup under a certificate that names
+another member or is listed in `FELIX_RAFT_TLS_REVOKED`, and refuses to
+connect to a peer serving a revoked certificate. See
+[Security](/security/hardening/#raft-member-certificates) for revocation and the
+upgrade order.
+
+Without TLS, a member authenticates with the shared `FELIX_RAFT_PEER_TOKEN`
+(at least 32 characters, from a Secret). That is an insecure fallback: the
+token proves only that the caller is some member, and the member logs a
+warning at startup. A member refuses to start with neither TLS nor a token
+unless `FELIX_RAFT_INSECURE_PEERS=true`, which is for a throwaway local
+group. The `propose` route refuses an `ImportState` command either way, so no
+peer can replace the store.
 
 `FELIX_RAFT_CLUSTER_ID` is recorded in the data dir on first start; a member
 refuses to start on a data dir from another cluster. Empty members form a
@@ -174,18 +190,19 @@ catching up):
 
 ```bash
 curl --fail-with-body -X POST \
-  "https://cp-0:8444/internal/raft/v2/waive-lost" \
-  -H "Authorization: Bearer $FELIX_RAFT_PEER_TOKEN" \
-  -H "x-felix-raft-cluster-id: prod-metadata" \
+  "http://cp-0:9095/internal/bootstrap/raft/waive-lost" \
+  -H "X-Felix-Operator-Token: $OPERATOR_TOKEN" \
   -H "content-type: application/json" \
   -d '{"members": [2], "reason": "cp-1 volume destroyed"}'
 ```
 
-Use `http://` when the peer listener has no TLS, and with peer mTLS add
-`--cert`, `--key` and `--cacert`. The member logs the waiver with its
+This is the bootstrap listener (`FELIX_BOOTSTRAP_ENABLED`,
+`FELIX_BOOTSTRAP_BIND_ADDR`, `FELIX_OPERATOR_TOKEN_SHA256`), not the peer port. Send
+it to each blocked member, and use `https://` with the client certificate
+if you set `FELIX_BOOTSTRAP_TLS_*`. The member logs the waiver with its
 reason and goes on. Writes that only the lost members held may be gone;
 [restore from an export](#restoring-beyond-quorum-loss) to get them back.
-The waiver is refused (409) before the block is reported or if it misses a
+The waiver is refused (409, with the reason) before the block is reported or if it misses a
 member, and a restart of the blocked member drops it. A waiver does not
 let a member vote, so if no member that kept its volume leads (the leader
 was one of the lost ones), no waiver helps: restore from an export. The steps are in
@@ -337,10 +354,20 @@ recorded that in a ConfigMap; every start after that is `existing`.
 
 ## Restoring beyond quorum loss
 
-The group can load a state-machine snapshot with the `ImportState` command on
-its peer listener, refused unless the group is empty or `overwrite` is set.
-No shipped command writes or proposes such a snapshot, so a restore beyond
-quorum loss has no operator path today; recover by bringing members back.
+If the group cannot form a quorum again, an operator can load an exported
+state with `POST /internal/bootstrap/import-state` on the bootstrap listener
+(`FELIX_BOOTSTRAP_ENABLED`, `FELIX_BOOTSTRAP_BIND_ADDR`) with the operator
+token in `X-Felix-Operator-Token`. Members hold only its digest
+(`FELIX_OPERATOR_TOKEN_SHA256`); see
+[operator routes](/security/hardening/#operator-routes). The body is `{"state": <exported state>, "overwrite": false}`.
+The peer `propose` route refuses this command, so it never comes from a peer.
+
+Under Raft only the leader takes it. A follower answers `421` with code
+`not_leader`, naming the leader's member id, and writes nothing; send it
+there. The route answers `409` when the store holds state and `overwrite` is
+not `true`. A `503` means the write may still have committed, so read the
+store before you retry, above all with `overwrite`: a second import would
+wipe whatever was written after the first. Bringing members back is still the first thing to try.
 
 A broker kept running across a restore to an earlier point refuses a stream
 whose restored incarnation is below the one it holds, since it never moves a

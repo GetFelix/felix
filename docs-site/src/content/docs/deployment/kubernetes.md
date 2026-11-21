@@ -152,12 +152,43 @@ than start an empty one. The hook gives up after
 The Raft peer port (`8444`) is admitted only from control-plane pods by the
 chart's NetworkPolicy (add the migration tool's pods under
 `controlplane.networkPolicy.raftPeerFrom`). Without peer TLS the peer token
-crosses the pod network in cleartext. To encrypt and authenticate it, create a
-Secret with a certificate for `*.<release>-felix-controlplane-headless`
-(server and client usages), its key and the CA, and pass
-`--set controlplane.storage.raft.tls.enabled=true
---set controlplane.storage.raft.tls.existingSecret=<secret>`. The chart mounts
-it and sets `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA`.
+crosses the pod network in cleartext. To encrypt and authenticate it, give
+each member its own certificate. Member `n` runs in pod ordinal `n-1` and reads
+the Secret `<release>-felix-controlplane-raft-tls-<n>` (or
+`<secretPrefix>-<n>` with `controlplane.storage.raft.tls.secretPrefix`),
+holding `tls.crt`, `tls.key` and `ca.crt`. Each certificate needs server and
+client usages, the DNS name
+`<release>-felix-controlplane-<n-1>.<release>-felix-controlplane-headless`,
+and the URI SAN `felix:principal:raft-member:<cluster_id>:<n>`, where
+`<cluster_id>` is `controlplane.storage.raft.clusterId` (the control plane's
+full name by default). With cert-manager, one `Certificate` per member does
+it:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: felix-controlplane-raft-tls-1
+spec:
+  secretName: felix-controlplane-raft-tls-1
+  issuerRef: { name: felix-raft-ca, kind: Issuer }
+  dnsNames: [felix-controlplane-0.felix-controlplane-headless]
+  uris: ["felix:principal:raft-member:felix-controlplane:1"]
+  usages: [server auth, client auth]
+```
+
+Then pass `--set controlplane.storage.raft.tls.enabled=true`. An init
+container copies the member's own certificate into memory, so the control
+plane container never sees another member's key, and a pod whose Secret is
+missing fails in that init container with a message naming the Secret. A
+renewed certificate reaches a member at its next restart. See
+[Raft member certificates](/security/hardening/#raft-member-certificates) for
+revocation.
+
+The whole-store routes on the bootstrap listener (restore import and floor
+waiver) take an operator token that members hold only as a digest: set
+`controlplane.bootstrap.operatorTokenSha256` when you need one of them, and
+leave it empty otherwise. See [operator routes](/security/hardening/#operator-routes).
 
 The bootstrap listener is on its own ClusterIP Service, never behind the API's,
 so it is reachable only through a port-forward.

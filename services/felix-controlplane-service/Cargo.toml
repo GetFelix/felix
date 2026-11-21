@@ -54,6 +54,7 @@ rand = "0.10"
 # loading comes from pki-types' own "pem" feature, not rustls-pemfile, which
 # is unmaintained (RUSTSEC-2025-0134).
 rustls = { workspace = true }
+x509-parser = { workspace = true }
 tokio-rustls = "0.26"
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio", "service"] }
 # The metadata Raft core (`src/raft/`), per docs/metadata-raft-design.md.

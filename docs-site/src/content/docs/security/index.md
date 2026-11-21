@@ -35,7 +35,7 @@ most of them.
 | Client identity | A bearer token. Whoever holds it is the client. | Client certificates (`FELIX_TLS_CLIENT_CA`), bound to the token's subject (`FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`), so a stolen token is useless without the key. |
 | Control-plane API | Plain HTTP. Node tokens, token exchange and tenant keys cross it in clear text. | HTTPS (`FELIX_CONTROLPLANE_TLS_CERT`, `_KEY`), optionally with client certificates (`FELIX_CONTROLPLANE_TLS_CLIENT_CA`). |
 | Broker to broker | A cluster member refuses to start without peer mTLS, unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | mTLS with one certificate per broker, named for its node id (`FELIX_INTERNAL_TLS_CERT`, `_KEY`, `_CA`). |
-| Control-plane Raft peers | A shared cluster id and peer token on every request, over plain HTTP. A member refuses to start without the token, unless `FELIX_RAFT_INSECURE_PEERS=true`. | mTLS on top (`FELIX_RAFT_TLS_CERT`, `_KEY`, `_CA`), and the peer port reachable from the other members only. |
+| Control-plane Raft peers | A shared cluster id and peer token on every request, over plain HTTP. Any token holder can speak as any member. | mTLS with one certificate per member, bound to its member id (`FELIX_RAFT_TLS_CERT`, `_KEY`, `_CA`), and the peer port reachable from the other members only. |
 | Bootstrap | Off. | Used once per tenant, on loopback with mTLS, then turned off again. |
 | Kafka and MQTT | Off until `FELIX_KAFKA_LISTEN` or `FELIX_MQTT_LISTEN` is set. Then TLS by default, with a token as the password. | Leave TLS on and never set the anonymous-tenant switches. |
 | Data on disk | Plaintext. | Filesystem or block encryption, which you provide. |
@@ -55,8 +55,8 @@ configuration:
 | Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
 | Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. Add `FELIX_CONTROLPLANE_TLS_CLIENT_CA` to require a client certificate from every caller (brokers set `FELIX_CONTROLPLANE_CLIENT_CERT` / `_KEY`), and `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT` to tie each token to that certificate. |
 | Control-plane bootstrap listener | Plain HTTP, off by default. | `FELIX_BOOTSTRAP_TLS_*`: mutual TLS. See [Bootstrap](/security/authentication/#bootstrap-mode-day-0). |
-| Control-plane Raft peer listener (Raft metadata backend only) | Plain HTTP, on its own port (`FELIX_RAFT_BIND_ADDR`), authenticated by a shared `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` checked on every request. | `FELIX_RAFT_TLS_CERT` / `_KEY` / `_CA`: mutual TLS on top of the token, so a connection without a certificate from the cluster CA never reaches the router. Any certificate from that CA is accepted for any member ([#2802](https://github.com/GetFelix/felix/issues/2802)). |
-| Broker and control-plane metrics ports | Plain HTTP, no authentication. Read-only: metrics, health and, on brokers, `/replication/halted`. | Nothing to configure. Keep them off public networks. |
+| Control-plane Raft peer listener (Raft metadata backend only) | Plain HTTP, on its own port (`FELIX_RAFT_BIND_ADDR`), authenticated by a shared `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` checked on every request. A startup warning says the token alone lets any holder speak as any member. | `FELIX_RAFT_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, with each member's certificate bound to its member id. The token becomes optional. See [Raft member certificates](/security/hardening/#raft-member-certificates). |
+| Broker and control-plane metrics ports | Plain HTTP, no authentication. Metrics and health. Brokers also serve `/replication/halted` and `/backup/offsets` there. | Nothing to configure. Keep them off public networks. |
 
 So every QUIC connection is encrypted out of the box, the control-plane API
 is not, and "authenticated" holds only for what you configure. Without a
@@ -83,9 +83,12 @@ still read once, at startup:
 
 An open connection does not outlive its credentials. Every stream ends when
 the token it was opened with expires, and a connection with a client
-certificate closes at that certificate's `notAfter`. Short certificate
-lifetimes therefore work as revocation: a renewed certificate is used on the
-next connection, and an unrenewed one stops working everywhere it is in use.
+certificate closes at that certificate's `notAfter`, on every broker
+listener. Short certificate lifetimes therefore work as revocation: a renewed
+certificate is used on the next connection, and an unrenewed one stops
+working on brokers. The control plane's REST and Raft listeners do not yet
+close an open connection at `notAfter`
+([#2899](https://github.com/GetFelix/felix/issues/2899)).
 Clients should refresh before expiry and reconnect. Internal broker-to-broker
 connections close the same way when a node certificate expires, each up to 30
 seconds early so they do not all drop at once. One exception: a Kafka

@@ -261,8 +261,9 @@ with rotation and monitoring, in [Hardening a deployment](/security/hardening/).
       `FELIX_CONTROLPLANE_TLS_CLIENT_CA` on the control plane and
       `FELIX_CONTROLPLANE_CLIENT_CERT` and `_KEY` on every broker, gateway and
       admin host, and probe the metrics port's `/ready` and `/live`.
-- [ ] Under the Raft backend, `FELIX_RAFT_TLS_*` and a strong
-      `FELIX_RAFT_PEER_TOKEN`.
+- [ ] Under the Raft backend, `FELIX_RAFT_TLS_*`, with each member's
+      certificate carrying its own `felix:principal:raft-member:<cluster_id>:<member_id>`
+      URI SAN. A shared `FELIX_RAFT_PEER_TOKEN` alone is an insecure fallback.
 
 **Identity and access**
 

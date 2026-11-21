@@ -28,7 +28,7 @@ as the project's own account, not an audit.
 | A client of a tenant | A valid token for its own tenant, possibly with narrow grants. | More than its grants: other streams, admin actions, another tenant's data. |
 | Another tenant | A valid token for a different tenant. | To read or disturb your tenant. |
 | A compromised broker or storage machine | Everything on that machine: its node token, internal-port certificate, lease key file, segments on disk, and the tokens of clients connected to it. | To forge records, act as other brokers, or widen its reach to tenants or shards it does not serve. |
-| A compromised control-plane member | Its Raft store (signing keys, RBAC), the Raft peer token and its certificates. | To mint tokens, rewrite metadata, or take over the group. |
+| A compromised control-plane member | Its Raft store (signing keys, RBAC), its member certificate, and the Raft peer token if one is set. | To mint tokens, rewrite metadata, or take over the group. |
 | An operator | Bootstrap and Raft peer tokens, cluster-scope grants, shell access. | Mistakes are the usual risk. A malicious operator is out of scope: Felix has no audit log yet ([#2806](https://github.com/GetFelix/felix/issues/2806)). |
 
 ## Trust boundaries
@@ -107,8 +107,10 @@ MQTT as the `CONNECT` password.
   64 KiB cap before authentication. Connections are capped per source address
   (`FELIX_MAX_CONNECTIONS_PER_IP`).
 - **One tenant cannot starve another.** Per-tenant publish rate limits,
-  per-subscriber bounded queues (a slow reader never blocks a publisher), and
-  per-user limits on a shared connection.
+  per-subscriber bounded queues (a slow reader never blocks a publisher), and,
+  when one connection carries several users, a subscription cap and publish
+  byte budget for each (`FELIX_MAX_SUBSCRIPTIONS_PER_CONN`,
+  `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`).
 - **Hostile frames.** Decoders bound every length before allocating, and the
   wire protocol is fuzzed. See the
   [panic audit](https://github.com/GetFelix/felix/blob/main/docs/security/panic-audit.md)
@@ -205,10 +207,12 @@ a new tenant before any admin token exists.
 
 **Controls present**
 
-- **Every API call needs a Felix token** with an audience of
+- **API calls need a Felix token** with an audience of
   `felix-controlplane`, so a broker cannot replay a client's broker token
-  against the API. The credential is checked before existence: nothing about
-  what exists is learned without one.
+  against the API. The credential is checked before existence. The
+  exceptions are the probes and `/v1/system/info`, token exchange and
+  refresh (which carry their own credentials), and the tenant JWKS, which is
+  public by design.
 - **TLS and client certificates are available**: `FELIX_CONTROLPLANE_TLS_CERT`
   and `_KEY`, `FELIX_CONTROLPLANE_TLS_CLIENT_CA` to refuse callers without a
   certificate, and `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT` to tie
@@ -245,6 +249,11 @@ a new tenant before any admin token exists.
   ([#2839](https://github.com/GetFelix/felix/issues/2839)).
 - **Single-use upstream tokens are single-use per control-plane member**, not
   across the group ([#2844](https://github.com/GetFelix/felix/issues/2844)).
+- **The tenant JWKS route tells an anonymous caller whether a tenant exists**
+  ([#2918](https://github.com/GetFelix/felix/issues/2918)).
+- **An open connection outlives its client certificate.** The REST listener
+  does not close a keep-alive connection at the certificate's `notAfter`
+  ([#2899](https://github.com/GetFelix/felix/issues/2899)).
 - **Certificate rotation needs restarts** for CA bundles
   ([#2816](https://github.com/GetFelix/felix/issues/2816)) and for the broker's
   control-plane client certificate
@@ -253,38 +262,52 @@ a new tenant before any admin token exists.
 ## 4. Control-plane member to member
 
 With the Raft metadata backend, control-plane members replicate the store
-over their own peer port (`FELIX_RAFT_BIND_ADDR`). A `propose` there can
-replace the entire store, so this port carries cluster-admin power.
+over their own peer port (`FELIX_RAFT_BIND_ADDR`). A member that speaks for
+the group can change any metadata, so this port carries cluster-admin power.
+The whole-store import and the Raft floor waiver are not on it: they live on
+the bootstrap listener, behind a separate operator token.
 
 **Controls present**
 
 - **A separate listener**, never the API port.
-- **Every request carries the cluster id and peer token**
-  (`FELIX_RAFT_CLUSTER_ID`, `FELIX_RAFT_PEER_TOKEN`), and a member answers only
-  requests addressed to itself. A member refuses to start without the token
-  unless `FELIX_RAFT_INSECURE_PEERS=true`.
-- **Optional mTLS** (`FELIX_RAFT_TLS_CERT`, `_KEY`, `_CA`): a connection
-  without a certificate from the cluster CA never reaches the router.
-- **The token rotates without an outage.** See
+- **Every request carries the cluster id**, and a member answers only
+  requests addressed to itself.
+- **Member certificates.** With `FELIX_RAFT_TLS_CERT`, `_KEY` and `_CA`, a
+  connection without a certificate from the cluster CA never reaches the
+  router, and each certificate names one member
+  (`felix:principal:raft-member:<cluster_id>:<member_id>`). A vote, append,
+  snapshot or forming record that speaks for another member is refused, so a
+  stolen member key speaks only as that member. A single certificate can be
+  revoked with `FELIX_RAFT_TLS_REVOKED`. See
+  [Raft member certificates](/security/hardening/#raft-member-certificates).
+- **A peer token without TLS.** Without certificates, every request must carry
+  `FELIX_RAFT_PEER_TOKEN`, and a member refuses to start with neither unless
+  `FELIX_RAFT_INSECURE_PEERS=true`. The token rotates without an outage. See
   [Rotating the Raft peer token](/security/hardening/#rotating-the-raft-peer-token).
 - **Empty members do not form a new group** unless told to with
   `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`.
 
 **Open**
 
-- **One shared token, no per-member identity.** Every member holds the same
-  peer token, so one compromised member holds admin over the whole group, and
-  any certificate from the Raft CA can speak for any member
-  ([#2802](https://github.com/GetFelix/felix/issues/2802); fix in review in
-  [PR #2913](https://github.com/GetFelix/felix/pull/2913)). Follow-ups to that
-  fix: the dialling side does not check which member answered
-  ([#2912](https://github.com/GetFelix/felix/issues/2912)), a member wiped and
-  rejoined under the same id is indistinguishable from its old incarnation
-  ([#2911](https://github.com/GetFelix/felix/issues/2911)), and the operator
-  token for import and waive is not bound to one request
+- **Token-only groups have no per-member identity.** Without Raft mTLS, every
+  member holds the same peer token, and any holder can speak as any member.
+- **The dialling side does not check which member answered**, only that the
+  certificate names a member of this cluster
+  ([#2912](https://github.com/GetFelix/felix/issues/2912)).
+- **No incarnation in the vote record.** A member wiped and rejoined under the
+  same id is told apart from its old self only by issuing a new certificate
+  and revoking the old one
+  ([#2911](https://github.com/GetFelix/felix/issues/2911)).
+- **The operator token is a bearer header.** The member it is sent to sees it
+  and could replay it until its digest is removed
   ([#2914](https://github.com/GetFelix/felix/issues/2914)).
+- **A node that runs a member can read every member's key** under the Helm
+  chart, which projects all member Secrets into the init container.
 - **Plain HTTP without `FELIX_RAFT_TLS_*`.** The peer token then crosses the
   network in clear text.
+- **Open connections outlive certificates.** The Raft listener does not close
+  a connection at the peer certificate's `notAfter`
+  ([#2899](https://github.com/GetFelix/felix/issues/2899)).
 - The Raft certificate is read only at startup
   ([#2815](https://github.com/GetFelix/felix/issues/2815)).
 

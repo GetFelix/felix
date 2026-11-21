@@ -65,7 +65,8 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 | `controlplane.storage.raft.initialClusterState` | — | `new` lets empty members form a group, `existing` never does. Empty means `new` until the group has formed once, then `existing`: a post-install hook Job waits for the API to be ready and creates the `<fullname>-controlplane-raft-formed` ConfigMap, which members read at every start. Lost volumes then never start an empty control plane, even before the first upgrade. |
 | `controlplane.storage.raft.bootstrapTimeoutSeconds` | `270` | How long that hook waits for the group to form. Keep `helm --timeout` above it. |
 | `controlplane.storage.raft.tls.enabled` | `false` | Mutual TLS on the Raft peer port (`FELIX_RAFT_TLS_*`). Off, the peer token and Raft traffic cross the pod network in cleartext. |
-| `controlplane.storage.raft.tls.existingSecret` | — | Secret with `tls.crt`, `tls.key` and the CA under `caKey` (`ca.crt`). One certificate for every member, with server and client usages, naming `*.<fullname>-controlplane-headless`. |
+| `controlplane.storage.raft.tls.secretPrefix` | `<fullname>-controlplane-raft-tls` | Member `n` (pod ordinal `n-1`) reads the Secret `<secretPrefix>-<n>`, with `tls.crt`, `tls.key` and the CA under `caKey` (`ca.crt`). Its certificate needs server and client usages, the pod's headless DNS name and the URI SAN `felix:principal:raft-member:<clusterId>:<n>`. Only the member's own certificate reaches its container. |
+| `controlplane.bootstrap.operatorTokenSha256` | — | SHA-256 digest (hex) of the operator token the restore import and Raft floor waiver require (`FELIX_OPERATOR_TOKEN_SHA256`). Empty leaves those routes off. |
 | `controlplane.networkPolicy.enabled` | `true` | Under `raft`, admits the peer port only from control-plane pods and `raftPeerFrom` (e.g. the migration tool). Other ports stay open. |
 | `controlplane.storage.raft.insecurePeers` | `false` | Run Raft with no peer token. Throwaway clusters only. |
 | `controlplane.bootstrap.enabled` | `false` | The day-0 listener, on its own ClusterIP Service. Turn it off after use. |
@@ -105,7 +106,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 `helm template` fails, with the reason, when:
 
 - `bootstrap` is on without a Secret.
-- `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port, or peer `tls` on without a Secret.
+- `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port.
 - `memory` has more than one replica.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
 - brokers are enabled with neither `peerTls.enabled` nor `peerTls.allowUnauthenticated`.
