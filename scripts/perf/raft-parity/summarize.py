@@ -280,6 +280,8 @@ def load_run(run, raft_from=None):
 
 
 SIDES = ("hybrid", "raft")
+# The generator box rotates over three boxes and the side order over two or three sides.
+ROUND_BALANCE = 6
 CURRENT = ("hybrid", "raft")
 
 
@@ -397,6 +399,10 @@ def summarize(run, raft_from=None):
     if raft_from and env.get("rounds") != env.get("raft_from.rounds"):
         warnings.append("round counts differ: %s round(s) in the main run, %s in the --raft-from run" % (
             env.get("rounds"), env.get("raft_from.rounds")))
+    n_rounds = int(env.get("rounds", "0"))
+    if n_rounds % ROUND_BALANCE:
+        warnings.append("ROUNDS=%d is not a multiple of %d: generator placement not balanced "
+                        "(the loadgen box and the side order rotate by round)" % (n_rounds, ROUND_BALANCE))
     res["warnings"] = warnings
     if has_baseline:
         judged = [c for c in cells if c["baseline_verdict"] != "N/A"]

@@ -416,7 +416,7 @@ tasks:
         "$PY" scripts/perf/make_charts.py
         "$PY" scripts/perf/render_markdown_snippets.py
   perf:raft-parity:
-    desc: "Raft vs hybrid parity matrix on the GCP build boxes: builds one binary, runs every cell on both engines, writes results.md and results.json with a PASS/FAIL gate (docs/perf-raft-parity.md)"
+    desc: "Raft vs hybrid parity matrix on the GCP build boxes (Azure: scripts/perf/raft-parity/azure.sh): builds one binary, runs every cell on both engines, writes results.md and results.json with a PASS/FAIL gate (docs/perf-raft-parity.md)"
     cmds:
       - "scripts/perf/raft-parity/build.sh"
       - "STRICT=1 scripts/perf/raft-parity/run.sh {{.CLI_ARGS}}"
