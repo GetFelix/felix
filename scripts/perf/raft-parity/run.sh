@@ -121,8 +121,9 @@ for b in "${BOXES[@]}"; do
   raw "$b" "mkdir -p $R/hold $R/run && cat > $R/node.sh" < "$here/node.sh"
 done
 # Nothing from an earlier run may survive into this one: stop what its pid files name, delete
-# its run directories, and refuse to start if a perf process is still alive. CLEAN_RUNS=0 skips it.
-if [ "${CLEAN_RUNS:-1}" = 1 ]; then
+# its run directories, and refuse to start if a perf process is still alive. CLEAN_RUNS=0 skips it; on by default only on Azure.
+# Azure only: the GCP boxes are shared with other lanes, whose processes this would trip over.
+if [ "${CLEAN_RUNS:-$([ "$PARITY_PROVIDER" = azure ] && echo 1 || echo 0)}" = 1 ]; then
   for b in "${BOXES[@]}"; do on "$b" clean-runs || { echo "!! $(host_name "$b") is not clean" >&2; exit 1; }; done
 fi
 sums=""

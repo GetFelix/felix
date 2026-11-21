@@ -140,6 +140,12 @@ cmd_provision() {
   ci=$(render_cloud_init)
   cidr=${OPERATOR_CIDR:-$(curl -fsS https://api.ipify.org)/32}
   stop=$(date -u -v+"$MAX_HOURS"H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "+$MAX_HOURS hours" '+%Y-%m-%dT%H:%M:%SZ')
+  # az group create would overwrite the tags of a group that is not ours, and teardown trusts them.
+  if [ "${DRY_RUN:-0}" != 1 ] && [ "$(az group exists -n "$GROUP")" = true ]; then
+    [ "$(az group show -n "$GROUP" --query 'tags."felix-perf"' -o tsv)" = "$TAG" ] \
+      || die "$GROUP exists and was not made by this script; pick another NAME"
+    [ "${FRESH_ONLY:-0}" != 1 ] || die "$GROUP already exists (a KEEP=1 leftover?); run teardown first"
+  fi
   log "provisioning 3 x $VM_SIZE in $LOCATION as $GROUP (ssh from $cidr)"
   log "if this fails part way, run: $0 teardown"
   cli az group create -n "$GROUP" -l "$LOCATION" --tags "felix-perf=$TAG" "autoTeardownAfter=$stop" -o none
@@ -285,11 +291,14 @@ cmd_teardown() {
   load_cloud
   need jq
   if [ "${DRY_RUN:-0}" != 1 ]; then
-    if [ "$(az group exists -n "$GROUP")" != true ]; then
+    local ex
+    ex=$(az group exists -n "$GROUP") || die "az group exists failed (login expired?); fix that and run teardown again"
+    if [ "$ex" = false ]; then
       log "$GROUP does not exist; nothing to delete"
       [ ! -f "$STATE/hosts.env" ] || mv "$STATE/hosts.env" "$STATE/hosts.env.deleted"
       return 0
     fi
+    [ "$ex" = true ] || die "unexpected answer from az group exists: '$ex'"
     # Only ever delete a group this script made.
     [ "$(az group show -n "$GROUP" --query "tags.\"felix-perf\"" -o tsv)" = "$TAG" ] \
       || die "$GROUP is not tagged felix-perf=$TAG; refusing to delete it"
@@ -299,10 +308,10 @@ cmd_teardown() {
   [ "${DRY_RUN:-0}" = 1 ] && return 0
   local i
   for i in $(seq 1 90); do
-    [ "$(az group exists -n "$GROUP")" = false ] && break
+    [ "$(az group exists -n "$GROUP" 2>/dev/null)" = false ] && break
     sleep 10
   done
-  if [ "$(az group exists -n "$GROUP")" = false ]; then
+  if [ "$(az group exists -n "$GROUP" 2>/dev/null)" = false ]; then
     log "$GROUP is deleted"
     [ ! -f "$STATE/hosts.env" ] || mv "$STATE/hosts.env" "$STATE/hosts.env.deleted"
   else
@@ -316,7 +325,7 @@ close_masters() {
   # shellcheck source=hosts.sh
   . "$here/hosts.sh" 2>/dev/null || return 0
   for b in 1 2 3; do
-    ssh -O exit -o ControlPath="$STATE/cm-%C" -i "$AZ_KEY" -p "$AZ_SSH_PORT" "$AZ_USER@$(_az_var PUB "$b")" 2>/dev/null || true
+    ssh -O exit -o ControlPath="/tmp/fpcm-%C" -i "$AZ_KEY" -p "$AZ_SSH_PORT" "$AZ_USER@$(_az_var PUB "$b")" 2>/dev/null || true
   done
 }
 
@@ -324,10 +333,10 @@ close_masters() {
 cmd_all() {
   # The group is torn down whatever happens after this line, unless KEEP=1.
   if [ "${KEEP:-0}" != 1 ]; then
-    trap 'exit 130' INT; trap 'exit 143' TERM
-    trap 'rc=$?; trap - EXIT; log "tearing down (exit $rc)"; "$0" teardown || echo "!! TEARDOWN FAILED: run $0 teardown, then az group show -n '"$GROUP"'" >&2; exit $rc' EXIT
+    trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
+    trap 'rc=$?; trap - EXIT; exec >>"'"$LOG"'" 2>&1; log "tearing down (exit $rc)"; "$0" teardown || echo "!! TEARDOWN FAILED: run $0 teardown, then az group show -n '"$GROUP"'" >&2; exit $rc' EXIT
   fi
-  cmd_provision
+  FRESH_ONLY=1 cmd_provision
   cmd_build
   cmd_smoke
   cmd_run

@@ -39,7 +39,7 @@ case "$PARITY_PROVIDER" in
       local b=$1; shift
       ssh -i "$AZ_KEY" -p "$AZ_SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes \
         -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$PARITY_STATE/known_hosts" \
-        -o ControlMaster=auto -o ControlPersist=10m -o ControlPath="$PARITY_STATE/cm-%C" \
+        -o ControlMaster=auto -o ControlPersist=10m -o ControlPath="/tmp/fpcm-%C" \
         -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o LogLevel=ERROR \
         "$AZ_USER@$(_az_var PUB "$b")" "$@"
     }

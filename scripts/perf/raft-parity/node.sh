@@ -21,6 +21,8 @@ BOOT_TOKEN="raft-parity-bootstrap-only"
 die() { echo "!! $*" >&2; exit 1; }
 # Refuse any path outside the run tree, so a bad argument can never wipe more.
 in_run() { case "$1" in "$R"/run/?*) ;; *) die "refusing path outside $R/run: $1" ;; esac; }
+# A pid file can outlive a reboot; never signal a reused pid that is plainly not ours.
+safe_pid() { case "$(cat "/proc/$1/comm" 2>/dev/null)" in sshd|systemd|init|"") return 1 ;; esac; }
 ip_self() { hostname -I | awk '{print $1}'; }
 
 # start <dir> <name> <cmd...>: detached, output to <dir>/<name>.log, pid to <dir>/<name>.pid.
@@ -237,6 +239,7 @@ PY
     dir=$1; in_run "$dir"
     for p in "$dir"/*.pid; do
       [ -f "$p" ] || continue; pid=$(cat "$p")
+      safe_pid "$pid" || { rm -f "$p"; continue; }
       kill "$pid" 2>/dev/null || true
     done
     for _ in $(seq 1 20); do
@@ -244,7 +247,7 @@ PY
       for p in "$dir"/*.pid; do [ -f "$p" ] && kill -0 "$(cat "$p")" 2>/dev/null && alive=1; done
       [ $alive = 0 ] && break; sleep 0.5
     done
-    for p in "$dir"/*.pid; do [ -f "$p" ] && kill -9 "$(cat "$p")" 2>/dev/null || true; done
+    for p in "$dir"/*.pid; do [ -f "$p" ] && safe_pid "$(cat "$p")" && kill -9 "$(cat "$p")" 2>/dev/null || true; done
     ;;
 
   # logs <dir>: the lines worth keeping from a cell (errors, warnings, the tails).
@@ -367,7 +370,7 @@ print("LOADGEN_JSON " + json.dumps({"scenario": "kafka-tail", "consumed_records"
     done
     for d in "$R"/run/*; do [ -e "$d" ] && { in_run "$d"; rm -rf "$d"; }; done
     rm -f "$R"/hold/*
-    left=$(pgrep -x -l 'felix-broker|felix-controlplane|felix-loadgen|java' || true)
+    left=$(pgrep -x -l 'felix-broker|felix-controlpl|felix-loadgen|java' || true)
     [ -z "$left" ] || die "perf processes still running: $(echo "$left" | tr '\n' ' ')"
     ;;
 
