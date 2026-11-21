@@ -64,6 +64,16 @@ rather than after a `HelloOk`. A broker can therefore speak only as the name
 its certificate carries, which is what makes the catalog's node ids trustworthy
 across the peer link.
 
+Holding a certificate from the CA is not enough on its own. Every request
+before an accepted `Hello` is refused and the connection closed, so a peer
+cannot skip the identity check and act on fences, replication, Raft or
+forwards under no name (#2819). The node id is bound once per connection, and
+a Raft message that names another broker as its sender is refused. What is
+not checked yet is whether that node may send a given request: a member of a
+shard's group, a broker in its replica set, a registered broker for a forward.
+The replica's ballot and routing checks still apply to replication; the rest
+is tracked in #2909.
+
 Without mTLS, `Hello` carries a `node_id` and nothing verifies it. The check
 runs in the other direction only, `HelloOk`'s id against the node dialled,
 and an inbound peer's claimed identity is not used for any decision, which is,

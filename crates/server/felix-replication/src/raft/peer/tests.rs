@@ -294,8 +294,12 @@ async fn an_unreadable_message_is_answered_unreachable() {
         Arc::new(crate::raft::AgreeingPeers),
     )
     .expect("timers");
-    let answer =
-        crate::peer::RaftHandler::answer(&runtime, bytes::Bytes::from_static(b"\x09\x03")).await;
+    let answer = crate::peer::RaftHandler::answer(
+        &runtime,
+        Some("b".into()),
+        bytes::Bytes::from_static(b"\x09\x03"),
+    )
+    .await;
     let refused = crate::raft::wire::decode_reply(answer)
         .expect("an answer")
         .err()
@@ -434,4 +438,16 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
     for broker in brokers {
         broker.stop().await;
     }
+}
+
+/// A vote names its candidate, and openraft grants it to that member. A
+/// connection bound to one broker may not ask in another's name, nor ask at
+/// all before it is bound.
+#[test]
+fn a_raft_message_in_another_brokers_name_is_refused() {
+    let vote = vote_for(GroupId::new(shard(), 0), MemberId::new("b", 1));
+    assert!(impersonation(Some("a"), &vote).is_none());
+    let refused = impersonation(Some("c"), &vote).expect("refused");
+    assert!(matches!(refused, Refused::Unreachable(_)), "{refused}");
+    assert!(impersonation(None, &vote).is_some());
 }
