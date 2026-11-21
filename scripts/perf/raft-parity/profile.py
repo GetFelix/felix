@@ -2,8 +2,9 @@
 """CPU profiles for the parity matrix's PROFILE=1 mode (see run.sh).
 
     profile.py fold < perf-script-output > folded     one line per stack: frames;...;leaf count
-    profile.py top <folded>... [--top N]              Markdown: top frames by self and
-                                                      inclusive samples, and by category
+    profile.py top <folded>... [--top N]              Markdown: samples by category, the
+                                                      allocator share by caller, and the top
+                                                      frames by self and inclusive samples
 
 fold does what inferno-collapse-perf does for `perf script` output, so the boxes need only
 perf. Rust symbol hashes and closure markers are trimmed so one function reads the same in
@@ -13,6 +14,10 @@ import re
 import sys
 from collections import Counter
 
+# Allocator and copy frames: malloc and free, Vec growth, clones that memcpy.
+ALLOC = re.compile(r"malloc|^free$|cfree|realloc|_int_|__rust_(alloc|dealloc|realloc)|memcpy|memmove|"
+                   r"RawVec.*grow|alloc::raw_vec|drop_in_place")
+
 # Checked against a stack leaf first; the first category with a matching frame takes it.
 CATEGORIES = [
     ("openraft core", re.compile(r"^openraft::")),
@@ -21,7 +26,6 @@ CATEGORIES = [
     ("quic / tls", re.compile(r"^(quinn|rustls|ring|aws_lc)", re.I)),
     ("serde / json", re.compile(r"^serde|json", re.I)),
     ("tracing / metrics", re.compile(r"^(tracing|metrics|prometheus)", re.I)),
-    ("alloc / copy", re.compile(r"malloc|^free$|cfree|realloc|_int_|__rust_(alloc|dealloc|realloc)|memcpy|memmove")),
     ("tokio runtime", re.compile(r"^tokio::")),
 ]
 
@@ -61,7 +65,7 @@ def fold():
 
 
 def top(paths, limit):
-    self_c, incl_c, cat_c = Counter(), Counter(), Counter()
+    self_c, incl_c, cat_c, alloc_c = Counter(), Counter(), Counter(), Counter()
     total = 0
     for path in paths:
         with open(path) as f:
@@ -73,6 +77,10 @@ def top(paths, limit):
                 frames = stack.split(";")
                 total += n
                 self_c[frames[-1]] += n
+                # An allocator leaf is charged to the nearest caller outside the allocator.
+                if ALLOC.search(frames[-1]):
+                    caller = next((fr for fr in reversed(frames) if not ALLOC.search(fr)), "?")
+                    alloc_c[caller] += n
                 for fr in set(frames):
                     incl_c[fr] += n
                 for name, rx in CATEGORIES:
@@ -92,6 +100,8 @@ def top(paths, limit):
         print()
 
     table("Category", cat_c, len(cat_c))
+    print("Allocator and copy leaves: %.1f%% of samples\n" % (100.0 * sum(alloc_c.values()) / total))
+    table("Allocator and copy leaves by caller", alloc_c, 15)
     table("Self", self_c, limit)
     table("Inclusive", Counter({k: v for k, v in incl_c.items() if v < total}), limit)
 
