@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795268216251,
+  "lastUpdate": 1795277862323,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64376,6 +64376,58 @@ window.BENCHMARK_DATA = {
             "range": "2931.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 804098.04\nmean: 804462.36\nstdev: 2931.68\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd0c92b19f1d5be5ea5dbcaae4df68d6827bac6e",
+          "message": "test(raft): cut the first leader off so the later election can finish (#2828) (#2894)\n\nleaders_that_commit_nothing_open_nothing lost every append, so the first\nleader stayed reachable and answered the followers' pre-votes with its own\ncommitted vote. A follower that saw that answer before the other follower's\ngrant dropped the round, and the ordering could repeat until the 120 s wait\nran out. The test now cuts the first leader off while the others elect,\nthen heals before the final check. The stall itself is tracked in #2889.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-21T16:10:29Z",
+          "tree_id": "a8c636139268422a4647395c62a1583de23ab08e",
+          "url": "https://github.com/GetFelix/felix/commit/cd0c92b19f1d5be5ea5dbcaae4df68d6827bac6e"
+        },
+        "date": 1795277861581,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 559536.79,
+            "range": "44519.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 559536.79\nmean: 549926.49\nstdev: 44519.10\ncv: 8.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 559536.79,
+            "range": "44519.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 559536.79\nmean: 549926.49\nstdev: 44519.10\ncv: 8.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123248.06,
+            "range": "2831.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123248.06\nmean: 121653.65\nstdev: 2831.37\ncv: 2.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1232480.63,
+            "range": "28313.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1232480.63\nmean: 1216536.47\nstdev: 28313.70\ncv: 2.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
