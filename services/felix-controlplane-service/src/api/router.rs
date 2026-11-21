@@ -323,7 +323,8 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// The bootstrap listener's router: tenant auth initialization and nothing else.
+/// The bootstrap listener's router: tenant auth initialization and the
+/// operator's import and Raft floor waiver.
 pub fn build_bootstrap_router(state: AppState) -> Router {
     bootstrap_routes()
         .layer(TraceLayer::new_for_http())
@@ -343,11 +344,29 @@ pub fn build_bootstrap_router_with_dev_tokens(state: AppState) -> Router {
 }
 
 fn bootstrap_routes() -> Router<AppState> {
-    Router::new().route(
-        "/internal/bootstrap/tenants/{tenant_id}/initialize",
-        axum::routing::post(api::bootstrap::initialize),
-    )
+    Router::new()
+        .route(
+            "/internal/bootstrap/tenants/{tenant_id}/initialize",
+            axum::routing::post(api::bootstrap::initialize),
+        )
+        // The operator's whole-store and loss-accepting operations live here,
+        // never on the Raft peer listener, so no member can do them for
+        // another.
+        .route(
+            "/internal/bootstrap/import-state",
+            axum::routing::post(api::bootstrap::import_state)
+                // An export is the whole store; the default 2 MiB is far
+                // too small for one.
+                .layer(axum::extract::DefaultBodyLimit::max(IMPORT_BODY_LIMIT)),
+        )
+        .route(
+            "/internal/bootstrap/raft/waive-lost",
+            axum::routing::post(api::bootstrap::waive_lost),
+        )
 }
+
+/// The largest export the import route reads.
+const IMPORT_BODY_LIMIT: usize = 512 * 1024 * 1024;
 
 /// The OpenAPI document. Felix serves no UI for it; any OpenAPI viewer can be
 /// pointed at this URL.

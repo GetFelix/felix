@@ -78,6 +78,7 @@ impl ControlPlane {
             ),
             bootstrap_enabled: false,
             bootstrap_tokens: Vec::new(),
+            operator_token_digests: Vec::new(),
             node_liveness: NodeLivenessConfig {
                 heartbeat_interval_ms: 1_000,
                 expiry_timeout_ms: 60_000,
@@ -267,6 +268,7 @@ async fn switched(store: &InMemoryStore) -> ShardAssignment {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     };
     store
@@ -401,6 +403,7 @@ async fn a_refresh_marks_an_idle_group_formed() {
     // The feed now shows the mark, so the next refresh sends nothing.
     let marked = || {
         vec![Led {
+            voters: None,
             formed: true,
             ..Led::from((key("a"), incarnation, at(1, 5)))
         }]

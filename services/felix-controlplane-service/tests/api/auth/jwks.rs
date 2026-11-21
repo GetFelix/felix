@@ -63,6 +63,7 @@ async fn jwks_endpoint_returns_keys_for_tenant() {
         oidc_validator: UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -119,6 +120,7 @@ async fn jwks_endpoint_missing_tenant_returns_404() {
         oidc_validator: UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),

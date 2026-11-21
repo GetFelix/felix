@@ -41,6 +41,7 @@ mod refresh_tokens;
 mod resources;
 mod revocations;
 mod shards;
+pub(crate) use shards::SetHold;
 mod streams;
 mod switch;
 mod tenants;
@@ -287,7 +288,7 @@ impl InMemoryStore {
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
         own_leader_set: bool,
-        hold_unformed: bool,
+        hold: SetHold,
     ) -> StoreResult<crate::store::AssignmentWrite> {
         shards::adopt_elected_leader(
             self,
@@ -296,7 +297,7 @@ impl InMemoryStore {
             elected,
             elected_set,
             own_leader_set,
-            hold_unformed,
+            hold,
         )
         .await
     }
@@ -776,7 +777,7 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
-        shards::put_shard_assignment(self, assignment, true, true, true).await
+        shards::put_shard_assignment(self, assignment, true, true, SetHold::ALL).await
     }
 
     async fn put_shard_assignment_at_least(
@@ -795,7 +796,7 @@ impl ControlPlaneStore for InMemoryStore {
             at_least,
             true,
             true,
-            true,
+            SetHold::ALL,
         )
         .await
     }
@@ -826,7 +827,7 @@ impl ControlPlaneStore for InMemoryStore {
             &elected,
             true,
             own_leader_set,
-            true,
+            SetHold::ALL,
         )
         .await
     }
@@ -867,6 +868,7 @@ impl ControlPlaneStore for InMemoryStore {
             true,
             shard_incarnation,
             false,
+            true,
         )
         .await
     }
@@ -1068,6 +1070,20 @@ impl ControlPlaneStore for InMemoryStore {
         Ok(crate::store::identity::GroupIdentity::NoGroup {
             shard_engine: self.shard_engine.clone(),
         })
+    }
+
+    async fn import_state(
+        &self,
+        state: crate::store::export::ExportedState,
+        overwrite: bool,
+    ) -> StoreResult<crate::store::ImportOutcome> {
+        if !overwrite && !self.is_unused().await {
+            return Err(crate::store::StoreError::Conflict(
+                "store already holds state; import requires overwrite".to_string(),
+            ));
+        }
+        InMemoryStore::import_state(self, state).await?;
+        Ok(crate::store::ImportOutcome::Imported)
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

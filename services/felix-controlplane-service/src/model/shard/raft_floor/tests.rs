@@ -55,6 +55,7 @@ fn switched() -> ShardAssignment {
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
+        raft_voters: None,
         raft_ordered: None,
     }
 }
@@ -66,6 +67,7 @@ fn report(index: u64, term: u64) -> RaftFloorReport {
         epoch: 0,
         index,
         term,
+        voters: None,
     }
 }
 

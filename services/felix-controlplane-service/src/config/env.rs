@@ -124,6 +124,11 @@ impl ControlPlaneConfig {
                     .ok()
                     .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
                     .unwrap_or(false),
+                operator_token_digests: std::env::var("FELIX_OPERATOR_TOKEN_SHA256")
+                    .ok()
+                    .map(|value| super::bootstrap::parse_operator_token_digests(&value))
+                    .transpose()?
+                    .unwrap_or_default(),
             },
             node_liveness,
             shard_moves,

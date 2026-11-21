@@ -188,6 +188,7 @@ pub(super) fn ingress_with_routing(
                 readmitted: Default::default(),
                 targets_withheld: false,
                 raft_formed: None,
+                raft_voters: None,
                 placed: None,
                 target: None,
             };

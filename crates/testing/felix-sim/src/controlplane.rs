@@ -216,6 +216,7 @@ impl SimControlPlane {
             oidc_validator: Default::default(),
             bootstrap_enabled: false,
             bootstrap_tokens: Vec::new(),
+            operator_token_digests: Vec::new(),
             node_liveness: config.liveness.clone(),
             readiness: Arc::new(Readiness::new(Arc::new(AlwaysReady))),
             in_flight: Default::default(),

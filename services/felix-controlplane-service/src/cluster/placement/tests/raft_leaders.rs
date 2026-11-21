@@ -32,6 +32,14 @@ fn member_of(shard: u32, leader: &str) -> ShardAssignment {
         incarnation: assignment.incarnation,
         epoch: 0,
     });
+    // The group applied its target, so one-member swaps go ahead.
+    assignment.raft_voters = Some(crate::model::RaftVoters {
+        incarnation: assignment.incarnation,
+        epoch: 0,
+        index: 1,
+        members: assignment.raft_target.as_ref().unwrap().members.clone(),
+    });
+    assignment.raft_copy_ids = assignment.raft_target.as_ref().unwrap().members.clone();
     assignment
 }
 

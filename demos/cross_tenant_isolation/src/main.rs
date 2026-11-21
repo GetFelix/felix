@@ -362,6 +362,7 @@ async fn spawn_controlplane(store: Arc<InMemoryStore>) -> Result<(SocketAddr, Jo
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: true,
         bootstrap_tokens: vec![BOOTSTRAP_TOKEN.to_string()],
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         // The demo's store is in-memory, which has nothing to be unready about.
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(

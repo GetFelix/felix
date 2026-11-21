@@ -89,6 +89,7 @@ async fn harness() -> Harness {
         oidc_validator: felix_controlplane_service::auth::oidc::UpstreamOidcValidator::default(),
         bootstrap_enabled: false,
         bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),

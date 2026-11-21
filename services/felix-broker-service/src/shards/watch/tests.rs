@@ -32,6 +32,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         target: None,
         targets_withheld: false,
         raft_formed: None,
+        raft_voters: None,
         placed: None,
     }
 }
@@ -110,6 +111,7 @@ fn targeted(incarnation: u64, counter: u64, withheld: bool) -> ShardAssignment {
         }),
         targets_withheld: withheld,
         raft_formed: None,
+        raft_voters: None,
         placed: None,
         ..assignment(0, "broker-a", 3)
     }
@@ -379,6 +381,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         target: None,
         targets_withheld: false,
         raft_formed: None,
+        raft_voters: None,
         placed: None,
     }
 }

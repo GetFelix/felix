@@ -18,14 +18,11 @@
 (* the formed mark on the epoch, as the code does; FALSE lets a mark from   *)
 (* an earlier epoch release the new epoch's first target.                   *)
 (*                                                                         *)
-(* After the mark, Move is limited to a one-member swap (OneSwap). That is *)
-(* an assumption, not something the code enforces: the model does not add *)
-(* a swapped-in broker to the group, so a chain of swaps could reach an    *)
-(* all-blank set, and a replication factor 1 set is not moved at all here. *)
-(* Neither is what #2794 is about: both are a formed group re-placed onto  *)
-(* brokers it never reached, the gap docs/per-shard-raft.md names under    *)
-(* "One case this does not cover". The configs check the first form: one   *)
-(* set per shard, incarnation and epoch while the hold applies.            *)
+(* After the mark, Move is limited to a one-member swap (OneSwap), and   *)
+(* replication factor 1 does not move. Changing a formed group's set,     *)
+(* with joins, wipes and chains of swaps, is FelixRaftFormedSet.tla. The   *)
+(* configs here check the first form: one set per shard, incarnation and   *)
+(* epoch while the hold applies.                                           *)
 EXTENDS FiniteSets, Naturals
 
 CONSTANTS Brokers, Sets, Hold, PerEpoch, MaxEpoch

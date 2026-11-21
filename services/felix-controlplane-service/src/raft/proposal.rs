@@ -151,8 +151,9 @@ impl RaftHandle {
     /// Append `command` on this member as leader of `term`, or not at all.
     /// `Ok(None)` when this member does not lead `term` when the entry is
     /// appended. Never forwarded and never retried: a decision this leader
-    /// made from its own view must not commit through another leader, and
-    /// a retry could land in a later term.
+    /// made from its own view must not be forwarded to another leader, and
+    /// a retry could land in a later term. An entry appended here can still
+    /// be committed by the next leader that holds it.
     pub(crate) async fn write_as_leader_of(
         &self,
         term: u64,
@@ -191,6 +192,14 @@ impl RaftHandle {
             ))),
             Ok(Ok(Some(Ok(response)))) => Ok(Some(response.response)),
             Ok(Ok(Some(Err(openraft::errors::ClientWriteError::ForwardToLeader(_))))) => Ok(None),
+            // Discarded on a leader change: a later leader holding the entry
+            // may still commit it, so the outcome is unknown, as on a timeout.
+            Ok(Ok(Some(Err(err @ openraft::errors::ClientWriteError::LogEntryDiscarded(_))))) => {
+                Err(anyhow::Error::new(NoQuorum::new(
+                    self.write_timeout,
+                    &anyhow::anyhow!(err.to_string()),
+                )))
+            }
             Ok(Ok(Some(Err(err)))) => Err(anyhow::anyhow!(err.to_string())),
             Ok(Ok(None)) => Err(anyhow::anyhow!("raft core answered no result")),
             Ok(Err(err)) => Err(anyhow::anyhow!(err.to_string())),

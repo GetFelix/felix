@@ -1457,6 +1457,21 @@ impl GroupRuntime {
         }
     }
 
+    /// [`Self::led_commits`], with each group's voters when its membership
+    /// is committed and not joint. The control plane checks a set change
+    /// against them (`docs/per-shard-raft.md`, "Changing a formed group's set").
+    pub fn led_reports(&self) -> Vec<(GroupId, LogPoint, Option<BTreeSet<MemberId>>)> {
+        self.inner
+            .registry
+            .ticked()
+            .iter()
+            .filter_map(|group| {
+                let (at, voters) = group.led_report()?;
+                Some((group.id.clone(), at, voters))
+            })
+            .collect()
+    }
+
     /// The committed log id of every group this broker leads.
     pub fn led_commits(&self) -> Vec<(GroupId, LogPoint)> {
         self.inner

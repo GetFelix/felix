@@ -73,6 +73,7 @@ pub(super) async fn build_state(
             ),
             bootstrap_enabled: config.bootstrap.enabled,
             bootstrap_tokens: config.bootstrap.accepted_tokens(),
+            operator_token_digests: config.bootstrap.operator_token_digests.clone(),
             node_liveness: config.node_liveness,
             move_policy: config.shard_moves,
             new_cluster: Arc::new(crate::cluster::fleet::NewClusterFinalize::new(
@@ -146,14 +147,17 @@ async fn open_store(
 /// Bind the peer listener and serve the member on it.
 ///
 /// The Raft routes get a listener of their own, authenticated as peers:
-/// `propose` can replace the whole store, so it must never share the public
-/// API port. It serves before the member has a Raft node, so the member
+/// they carry the log, so they must never share the public API port. Fails
+/// before binding when this member's certificate is not its own. It serves before the member has a Raft node, so the member
 /// answers `standing` from the start and nothing else until the node is
 /// attached.
 async fn serve_peers(
     member: &RaftMember,
     raft_cfg: &RaftBackendConfig,
 ) -> anyhow::Result<(tokio::task::JoinHandle<()>, CancellationToken)> {
+    member
+        .check_peer_security()
+        .context("refusing to start the raft member")?;
     let listener = tokio::net::TcpListener::bind(raft_cfg.peer_bind_addr).await?;
     tracing::info!(
         addr = %listener.local_addr().unwrap_or(raft_cfg.peer_bind_addr),
@@ -163,7 +167,7 @@ async fn serve_peers(
         accepts_next_token = raft_cfg.security.next_token.is_some(),
         "raft peer listener listening"
     );
-    if raft_cfg.security.token.is_none() {
+    if raft_cfg.security.token.is_none() && raft_cfg.security.tls.is_none() {
         tracing::warn!(
             "FELIX_RAFT_INSECURE_PEERS is set: anyone who reaches the raft peer \
              listener can replace the metadata store"

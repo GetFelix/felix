@@ -299,6 +299,7 @@ async fn a_finalize_at_level_45_holds_later_sets() {
     let finalize = encode_command(&MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::GENERATION_START.name().to_string(),
         hold_unformed: false,
+        hold_formed: false,
     });
     let finalize = crate::store::raft::command::settle_for_level(&finalize, 45)
         .expect("settled")

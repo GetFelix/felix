@@ -73,7 +73,7 @@ fn head(term: u64, index: u64) -> Vec<u8> {
 }
 
 /// A whole body in 64 KiB pieces.
-fn whole(term: u64, index: u64, data: &[u8]) -> Vec<Bytes> {
+pub(super) fn whole(term: u64, index: u64, data: &[u8]) -> Vec<Bytes> {
     let mut crc = transfer::DataCrc::default();
     crc.update(data);
     let mut pieces = vec![transfer::encode_start(

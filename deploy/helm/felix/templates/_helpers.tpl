@@ -120,6 +120,14 @@ The ConfigMap whose presence says the Raft group has formed once.
 {{- end -}}
 
 {{/*
+The prefix of the per-member Raft peer certificate Secrets: member n reads
+<prefix>-<n>.
+*/}}
+{{- define "felix.controlplane.raftTlsPrefix" -}}
+{{- .Values.controlplane.storage.raft.tls.secretPrefix | default (printf "%s-raft-tls" (include "felix.controlplane.fullname" .)) -}}
+{{- end -}}
+
+{{/*
 Grace periods. The drain has to finish before SIGKILL, so the period is
 derived from the drain unless the operator sets one that still fits.
 */}}
@@ -173,9 +181,6 @@ applies.
 {{- end -}}
 {{- if eq (int $cp.storage.raft.peerPort) (int $cp.service.port) -}}
 {{- fail "controlplane.storage.raft.peerPort and controlplane.service.port share a port; the Raft RPCs need a listener of their own" -}}
-{{- end -}}
-{{- if and $cp.storage.raft.tls.enabled (not $cp.storage.raft.tls.existingSecret) -}}
-{{- fail "controlplane.storage.raft.tls.enabled needs controlplane.storage.raft.tls.existingSecret: a Secret with the members' peer certificate, key and CA" -}}
 {{- end -}}
 {{- if not (has $cp.storage.raft.initialClusterState (list "" "new" "existing")) -}}
 {{- fail (printf "controlplane.storage.raft.initialClusterState must be new, existing or empty, not %q" $cp.storage.raft.initialClusterState) -}}

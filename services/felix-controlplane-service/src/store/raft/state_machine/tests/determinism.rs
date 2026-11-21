@@ -380,6 +380,7 @@ async fn the_join_floor_follows_apply_and_restore() {
         .apply(&encode_command(&MetaCommand::FinalizeFleetFeature {
             feature: jump_hash,
             hold_unformed: false,
+            hold_formed: false,
         }))
         .await;
 
@@ -552,6 +553,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
         apply(MetaCommand::FinalizeFleetFeature {
             feature: feature.name().to_string(),
             hold_unformed: false,
+            hold_formed: false,
         })
         .await;
     }
@@ -714,6 +716,7 @@ async fn a_flagged_stream_create_decides_from_its_proposal() {
     apply(MetaCommand::FinalizeFleetFeature {
         feature,
         hold_unformed: false,
+        hold_formed: false,
     })
     .await;
 
@@ -783,6 +786,7 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
         MetaCommand::FinalizeFleetFeature {
             feature: felix_common::fleet::STREAM_INCARNATIONS.name().to_string(),
             hold_unformed: false,
+            hold_formed: false,
         },
         MetaCommand::CreateStream {
             needs_identity: false,

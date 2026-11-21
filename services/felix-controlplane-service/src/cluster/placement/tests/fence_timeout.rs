@@ -185,6 +185,7 @@ async fn fenced_in_store() -> (crate::store::memory::InMemoryStore, u64) {
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
+            raft_voters: None,
             raft_ordered: None,
         })
         .await

@@ -562,6 +562,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     raft_target: None,
                     raft_floor: None,
                     raft_formed: None,
+                    raft_voters: None,
                     raft_ordered: None,
                 })
                 .await
@@ -672,7 +673,11 @@ async fn a_leader_only_write_keeps_the_raft_target() {
     assert_eq!(read.raft_copy_ids, ids);
 
     // A leader of the group reports, so its set may change (#2794).
-    let report = crate::store::contract::raft_floors::entry(&read, 1, 1);
+    let mut report = crate::store::contract::raft_floors::entry(&read, 1, 1);
+    report.voters = read
+        .raft_target
+        .as_ref()
+        .map(|target| target.members.clone());
     store
         .record_raft_floors("broker-y", vec![report])
         .await
@@ -810,7 +815,7 @@ async fn a_placement_write_keeps_the_ordered_targets() {
     let mut held = first.clone();
     held.start_raft_ordered();
     held.raft_copy_ids = [("broker-x".to_string(), 1)].into();
-    assert_eq!(held.settle_raft_target(), Ok(true));
+    assert_eq!(held.settle_raft_target(true), Ok(true));
     held.order_raft_target(true);
     let held = held.raft_ordered.expect("list");
     store

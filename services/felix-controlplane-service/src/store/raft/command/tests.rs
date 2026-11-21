@@ -334,6 +334,7 @@ fn a_shard_switch_needs_level_34() {
     let finalize = MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
         hold_unformed: false,
+        hold_formed: false,
     };
     for command in [seal, report, give_up, finalize] {
         assert_eq!(command.version(), 34, "{command:?}");
@@ -373,6 +374,7 @@ fn joint_fence_waits_for_the_level_that_keeps_refusals() {
     let finalize = MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
         hold_unformed: false,
+        hold_formed: false,
     };
     assert_eq!(finalize.version(), 25);
 }
@@ -486,6 +488,7 @@ fn a_floor_report_is_refused_below_level_38() {
             epoch: 0,
             index: 1,
             term: 1,
+            voters: None,
         }],
         mark_formed: false,
     });
@@ -535,6 +538,7 @@ fn a_finalize_carries_the_hold_from_level_45() {
     let raw = encode_command(&MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::MAJORITY_ACK.name().to_string(),
         hold_unformed: false,
+        hold_formed: false,
     });
     assert!(depends_on_level(&raw));
     assert_eq!(settle_for_level(&raw, 44), Ok(None));
@@ -546,6 +550,7 @@ fn a_finalize_carries_the_hold_from_level_45() {
         command,
         MetaCommand::FinalizeFleetFeature {
             hold_unformed: true,
+            hold_formed: false,
             ..
         }
     ));
@@ -554,4 +559,18 @@ fn a_finalize_carries_the_hold_from_level_45() {
         .expect("settled")
         .expect("edited");
     assert_eq!(decode_command_with_level(&unsettled).expect("decode").1, 2);
+    // From level 46 it carries the formed group's hold too (#2905).
+    let settled = settle_for_level(&raw, 46)
+        .expect("settled")
+        .expect("edited");
+    let (command, level) = decode_command_with_level(&settled).expect("decode");
+    assert!(matches!(
+        command,
+        MetaCommand::FinalizeFleetFeature {
+            hold_unformed: true,
+            hold_formed: true,
+            ..
+        }
+    ));
+    assert_eq!(level, 46);
 }
