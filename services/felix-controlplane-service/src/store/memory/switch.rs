@@ -301,22 +301,28 @@ pub(super) async fn record_raft_floors(
         // Only a leader reports, so a member of the target leads a group at
         // this incarnation and epoch. Before the floor, which a shard started
         // on Raft does not keep.
-        if mark_formed
-            && record
-                .raft_target
-                .as_ref()
-                .is_some_and(|target| target.members.contains_key(node_id))
-        {
+        let in_target = record
+            .raft_target
+            .as_ref()
+            .is_some_and(|target| target.members.contains_key(node_id));
+        if mark_formed && in_target {
             record.mark_raft_formed(report.incarnation, report.epoch);
         }
-        // Before the floor rises, so an older report than the floor kept is
-        // known as one. Only a proposer at level 46 leaves the voters in.
-        if let Some(voters) = &report.voters
+        let floor = record.raise_raft_floor(report);
+        // Voters only from a target member, and only in a report the floor
+        // took, so a report the floor refuses cannot set a high index that
+        // shuts out later ones. Only a proposer at level 46 leaves them in.
+        if in_target
+            && matches!(
+                floor,
+                Ok(_) | Err(crate::model::RaftFloorError::NotSwitched)
+            )
+            && let Some(voters) = &report.voters
             && voters.contains_key(node_id)
         {
             record.note_raft_voters(report, voters);
         }
-        match record.raise_raft_floor(report) {
+        match floor {
             Ok(true) => raised += 1,
             Ok(false) => {}
             // Brokers report cache groups too, every second, so a shard

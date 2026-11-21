@@ -138,7 +138,8 @@ impl ShardAssignment {
 
     /// Note the voters a leader of the group reported at `index`, when the
     /// report is for this record's incarnation and epoch and is not older
-    /// than the floor already kept (checked before the floor is raised).
+    /// than the floor (checked after the floor took the report) or the
+    /// voters already kept.
     /// Returns whether this changed the record.
     pub(crate) fn note_raft_voters(
         &mut self,

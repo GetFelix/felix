@@ -3,8 +3,10 @@
 (* set, each placed broker reports the copy it opened, and the control     *)
 (* plane stores a target naming those copies. The group's leader, while a *)
 (* majority of its voters live, joins the target: the copies it names     *)
-(* become voters and hold the group's log. A slow or dead leader never     *)
-(* joins, and the control plane's voter report can lag the group.          *)
+(* become voters, and a majority of them get the group's log; the rest    *)
+(* can stay empty. Blank0 is the minority of the first voters that the    *)
+(* first membership committed without. A slow or dead leader never joins, *)
+(* and the control plane's voter report can lag the group.                *)
 (*                                                                         *)
 (* A broker's copy can be wiped. It reopens empty under the next copy id,  *)
 (* and the old copy votes for nothing again.                               *)
@@ -16,15 +18,18 @@
 (* new group, and is not modeled.                                          *)
 (*                                                                         *)
 (* Hold = TRUE is the fix: a move and a target each keep at least half of  *)
-(* the new set among the reported voters. ByCopy = TRUE counts a broker    *)
-(* only under the copy the report names, as the code does; FALSE counts    *)
-(* brokers, which a wiped voter defeats.                                   *)
+(* the new set among the reported voters (Rule = "half"). Rule = "one"     *)
+(* keeps only one, which an empty voter defeats. ByCopy = TRUE counts a    *)
+(* broker only under the copy the report names, as the code does; FALSE   *)
+(* counts brokers, which a wiped voter defeats.                            *)
 EXTENDS FiniteSets, Naturals
 
-CONSTANTS Brokers, Sets, Init0, Hold, ByCopy, MaxWipes
+CONSTANTS Brokers, Sets, Init0, Blank0, Hold, Rule, ByCopy, MaxWipes
 
 ASSUME Sets \subseteq SUBSET Brokers
 ASSUME Init0 \in Sets
+ASSUME Blank0 \subseteq Init0 /\ 2 * Cardinality(Blank0) < Cardinality(Init0)
+ASSUME Rule \in {"half", "one"}
 
 Copies == 0..MaxWipes
 None == MaxWipes + 1
@@ -45,7 +50,7 @@ Live(p) == copy[p[1]] = p[2] /\ data[p[1]] = "g1"
 Open(p) == copy[p[1]] = p[2] /\ data[p[1]] # "g2"
 Majority(S, P(_)) == 2 * Cardinality({p \in S : P(p)}) > Cardinality(S)
 Counted(p) == IF ByCopy THEN p \in reported ELSE \E c \in Copies : <<p[1], c>> \in reported
-KeepsHalf(n, k) == 2 * k >= n
+KeepsHalf(n, k) == IF Rule = "half" THEN 2 * k >= n ELSE k >= 1
 
 \* A move counts only brokers of the current set, under the copy it has.
 MoveKeeps(s) ==
@@ -56,7 +61,7 @@ TargetKeeps(t) == KeepsHalf(Cardinality(t), Cardinality({p \in t : Counted(p)}))
 Init ==
     /\ placed = Init0
     /\ copy = [b \in Brokers |-> 0]
-    /\ data = [b \in Brokers |-> IF b \in Init0 THEN "g1" ELSE "blank"]
+    /\ data = [b \in Brokers |-> IF b \in Init0 \ Blank0 THEN "g1" ELSE "blank"]
     /\ voters = {<<b, 0>> : b \in Init0}
     /\ reported = voters
     /\ cpCopy = [b \in Brokers |-> IF b \in Init0 THEN 0 ELSE None]
@@ -86,15 +91,18 @@ StoreTarget ==
         /\ target' = t
         /\ UNCHANGED <<placed, copy, data, voters, reported, cpCopy, wipes>>
 
-\* The leader commits the target: a majority of the old voters and of the
-\* target's copies take part, and each joined copy gets the group's log.
-Join ==
+\* The leader commits the target: a majority of the old voters and the
+\* copies J, a majority of the target's, take part and get the group's log.
+\* The target's other copies become voters as they are, possibly empty.
+Join(J) ==
     /\ target # {}
     /\ target # voters
     /\ Majority(voters, Live)
-    /\ Majority(target, Open)
+    /\ J \subseteq target
+    /\ \A p \in J : Open(p)
+    /\ Majority(target, LAMBDA p : p \in J)
     /\ voters' = target
-    /\ data' = [b \in Brokers |-> IF <<b, copy[b]>> \in target THEN "g1" ELSE data[b]]
+    /\ data' = [b \in Brokers |-> IF <<b, copy[b]>> \in J THEN "g1" ELSE data[b]]
     /\ UNCHANGED <<placed, copy, reported, cpCopy, target, wipes>>
 
 Report ==
@@ -121,7 +129,8 @@ Form ==
 Next ==
     \/ \E s \in Sets : Move(s)
     \/ \E b \in Brokers : ReportCopy(b) \/ Wipe(b)
-    \/ StoreTarget \/ Join \/ Report \/ Form
+    \/ \E J \in SUBSET target : Join(J)
+    \/ StoreTarget \/ Report \/ Form
 
 Spec == Init /\ [][Next]_vars
 

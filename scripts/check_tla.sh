@@ -834,6 +834,8 @@ expectations=(
   "FelixRaftFormedSetSingle pass"
   "FelixRaftFormedSetNoHold violates OneGroup"
   "FelixRaftFormedSetByBroker violates OneGroup"
+  "FelixRaftFormedSetEven pass"
+  "FelixRaftFormedSetKeepOne violates OneGroup"
   "FelixRaftReform pass"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"

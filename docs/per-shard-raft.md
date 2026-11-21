@@ -4250,8 +4250,9 @@ group never adds the brokers swapped in before the next swap (#2905).
 So every floor report a leader sends carries the group's voters, copy id
 by broker, once its membership is committed at the reported index and is
 not joint. The control plane keeps the last voters a leader reported, when
-the leader is one of them, at the placed incarnation and reform epoch, and only from a
-report at or above the floor's log id, so a late report cannot bring back
+the leader is one of them and in the stored target, at the placed
+incarnation and reform epoch, and only from a report the floor takes (at or
+above its log id, at no lower term), so a late report cannot bring back
 older voters. It then refuses a set change on a formed group unless those
 voters hold at least half of the new set, rounded up. With the bound on
 empty voters below, the new set keeps a copy that holds the group's log, and
@@ -4274,15 +4275,18 @@ So no target names a set of empty copies, and none of its brokers can form
 it. A single wiped copy of three
 still gets its target, and the leader replaces it.
 
-At replication factor 1 the set is one broker, so a direct re-placement
-replaces every member and is refused. The copy hands off through a
-two-broker set: place `{old, new}`, wait for the leader to report both
-voters, then place `{new}`.
+At replication factor 1 the set is one broker, so any re-placement
+replaces every member and is refused. An RF 1 Raft shard's set does not
+move. To get it onto another broker, re-form it or delete and recreate the
+stream. A hand-off through a two-broker set is not built yet (#2916).
 
 If the group cannot report (its majority is gone, or a majority of its
 copies was wiped), no step past its last reported voters goes ahead. The way out is a re-form, which starts a new
 epoch and is held by the first-form hold above until a leader of the new
-epoch reports. The hold applies once the metadata join floor is at level
+epoch reports. A shard can be re-formed only once for now: above epoch 0
+the control plane does not have the bases a re-form needs and refuses it
+(`BasesNotRecorded`) until #2250 lands. After that, delete and recreate the
+stream. The hold applies once the metadata join floor is at level
 46; a fleet feature finalize at 46 lifts it there for a new cluster.
 Until then a formed group's set does not move at all, since no voters are
 stored below 46, so placement replacements and drains of Raft shards wait
@@ -4294,7 +4298,8 @@ majority of the next set`.
 
 > `services/felix-controlplane-service/src/model/shard/raft_target/tests.rs`,
 > `a_swap_chain_waits_for_the_group_to_report_its_voters`,
-> `a_replication_factor_1_move_goes_through_two_brokers`,
+> `a_replication_factor_1_set_does_not_move`,
+> `an_even_set_moves_keeping_half_of_its_voters`,
 > `voters_count_only_at_the_placed_epoch`,
 > `a_voter_that_reopened_empty_does_not_count`,
 > `a_target_waits_for_reported_voters_to_keep_a_majority_of_its_copies`;
@@ -4303,8 +4308,11 @@ majority of the next set`.
 > `docs/formal/FelixRaftFormedSet.tla`, where `FelixRaftFormedSetNoHold.cfg`
 > finds a second group after a chain of swaps the leader never joins,
 > `FelixRaftFormedSetByBroker.cfg` finds one when the hold counts brokers
-> instead of copies, and `FelixRaftFormedSet.cfg` and
-> `FelixRaftFormedSetSingle.cfg` pass with wipes and lagging reports.
+> instead of copies, `FelixRaftFormedSetKeepOne.cfg` finds one when a move
+> keeps a single reported voter, which can be an empty one, and
+> `FelixRaftFormedSet.cfg`, `FelixRaftFormedSetEven.cfg` and
+> `FelixRaftFormedSetSingle.cfg` pass with empty voters, wipes and lagging
+> reports.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,

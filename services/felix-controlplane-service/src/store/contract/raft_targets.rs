@@ -165,6 +165,23 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         ),
         "a step the reported voters keep no majority of"
     );
+    // A broker that lists itself among the voters, outside the target,
+    // leads no group of it, and its voters would let the step through.
+    let mut outsider = super::raft_floors::entry(&shard, 1, 1);
+    let mut listed = target.members.clone();
+    listed.insert("broker-q".to_string(), 9);
+    outsider.voters = Some(listed);
+    store
+        .record_raft_floors("broker-q", vec![outsider])
+        .await
+        .expect("floors");
+    assert!(
+        matches!(
+            store.put_shard_assignment(alone.clone()).await,
+            Err(StoreError::Conflict(_))
+        ),
+        "voters from outside the target"
+    );
     let mut applied = super::raft_floors::entry(&shard, 2, 1);
     applied.voters = Some(target.members.clone());
     let mut late = super::raft_floors::entry(&shard, 1, 1);

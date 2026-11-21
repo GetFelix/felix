@@ -257,20 +257,26 @@ fn a_swap_chain_waits_for_the_group_to_report_its_voters() {
 }
 
 /// At replication factor 1 any re-placement replaces every member, so it
-/// is refused. The old copy hands off by a two-broker step instead.
+/// is refused: the set does not move, and a re-form is the way out.
 #[test]
-fn a_replication_factor_1_move_goes_through_two_brokers() {
+fn a_replication_factor_1_set_does_not_move() {
     let mut record = formed(&["1"]);
+    assert!(record.holds_formed_set(&set(&["2"])), "no voters reported");
     assert!(report(&mut record, 3, &["1"]));
     assert!(record.holds_formed_set(&set(&["2"])));
-    assert!(!record.holds_formed_set(&set(&["1", "2"])));
-    place(&mut record, &["1", "2"]);
+}
+
+/// An even set keeps exactly half: two of four reported voters still hold
+/// a copy with the group's log, since at most one of four can be empty.
+#[test]
+fn an_even_set_moves_keeping_half_of_its_voters() {
+    let mut record = formed(&["1", "2", "3", "4"]);
+    assert!(report(&mut record, 5, &["1", "2", "3", "4"]));
+    assert!(!record.holds_formed_set(&set(&["1", "2", "5", "6"])));
     assert!(
-        record.holds_formed_set(&set(&["2"])),
-        "broker-2 not added yet"
+        record.holds_formed_set(&set(&["1", "5", "6", "7"])),
+        "one of four"
     );
-    assert!(report(&mut record, 7, &["1", "2"]));
-    assert!(!record.holds_formed_set(&set(&["2"])));
 }
 
 /// A report from another reform epoch is an old group's and counts nothing.
