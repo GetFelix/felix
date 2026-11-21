@@ -147,48 +147,75 @@ impl LivePeerTls {
         }
         // A bundle that verifies neither this member's certificate nor the
         // one waiting on disk would make it refuse every peer issued
-        // alongside it. The one on disk counts so that a jump to a new root
-        // (new-root-only bundle and a leaf under it, in the same tick) and a
-        // CA rotation after the current leaf expired are both taken: neither
-        // file passes against the other's old counterpart.
+        // alongside it. The waiting one counts so that a jump to a new root
+        // (bundle and leaf in the same tick) is taken.
         let own = self.identity.chain();
         let waiting = load_pem_certs("FELIX_RAFT_TLS_CERT", self.identity.cert_path())
             .ok()
             .filter(|chain| *chain != own);
+        let saved = (self.ca.saved(), self.server_verifier.load_full());
+        let mut on_waiting = false;
         let ca = self
             .ca
             .reload_checked(|roots| {
                 issued_by(&own, roots).or_else(|why| match &waiting {
-                    Some(chain) => issued_by(chain, roots).map_err(|_| why),
+                    Some(chain) => issued_by(chain, roots)
+                        .map(|()| on_waiting = true)
+                        .map_err(|waiting| format!("{why}; the certificate on disk: {waiting}")),
                     None => Err(why),
                 })
             })
             .map_err(anyhow::Error::from);
-        match ca.and_then(|changed| changed.then(|| server_verifier(&self.ca)).transpose()) {
-            Ok(Some(verifier)) => {
-                self.server_verifier.store(verifier);
-                tracing::info!("raft peer CA rotated; new handshakes use it");
+        let ca_rotated =
+            match ca.and_then(|changed| changed.then(|| server_verifier(&self.ca)).transpose()) {
+                Ok(Some(verifier)) => {
+                    self.server_verifier.store(verifier);
+                    true
+                }
+                Ok(None) => false,
+                Err(err) => {
+                    tracing::error!(
+                        error = %format!("{err:#}"),
+                        "could not reload FELIX_RAFT_TLS_CA; keeping the current one",
+                    );
+                    false
+                }
+            };
+        let rotated = match self.identity.reload() {
+            Ok(rotated) => rotated,
+            Err(err @ felix_common::tls::TlsFileError::Refused { .. }) => {
+                tracing::error!(
+                    error = %err,
+                    "refused the rotated raft peer certificate; keeping the current one",
+                );
+                false
             }
-            Ok(None) => {}
-            Err(err) => tracing::error!(
-                error = %format!("{err:#}"),
-                "could not reload FELIX_RAFT_TLS_CA; keeping the current one",
-            ),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "could not reload the raft peer certificate; keeping the current one",
+                );
+                false
+            }
+        };
+        // A bundle taken on the waiting certificate's word only stands if
+        // that certificate is now presented: the current one does not chain
+        // to it, so keeping it would cut this member off from its peers.
+        if ca_rotated && on_waiting && !rotated {
+            self.ca.restore(saved.0);
+            self.server_verifier.store(saved.1);
+            tracing::error!(
+                "kept the current FELIX_RAFT_TLS_CA: the new bundle only verifies the \
+                 certificate on disk, which was not taken",
+            );
+        } else if ca_rotated {
+            tracing::info!("raft peer CA rotated; new handshakes use it");
         }
-        match self.identity.reload() {
-            Ok(true) => tracing::info!(
+        if rotated {
+            tracing::info!(
                 cert = %self.identity.cert_path(),
                 "raft peer TLS certificate rotated; new connections use it",
-            ),
-            Ok(false) => {}
-            Err(err @ felix_common::tls::TlsFileError::Refused { .. }) => tracing::error!(
-                error = %err,
-                "refused the rotated raft peer certificate; keeping the current one",
-            ),
-            Err(err) => tracing::warn!(
-                error = %err,
-                "could not reload the raft peer certificate; keeping the current one",
-            ),
+            );
         }
     }
 }

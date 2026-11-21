@@ -29,7 +29,7 @@ use rustls::sign::CertifiedKey;
 mod binding;
 mod client_ca;
 pub use binding::{PRINCIPAL_URI_PREFIX, check_subject_binding};
-pub use client_ca::ReloadingClientCa;
+pub use client_ca::{ReloadingClientCa, SavedClientCa};
 mod expiry;
 mod rotation;
 pub use expiry::{

@@ -23,6 +23,9 @@ pub struct ReloadingClientCa {
     current: ArcSwap<ClientTrust>,
 }
 
+/// A bundle [`ReloadingClientCa::saved`] set aside.
+pub struct SavedClientCa(Arc<ClientTrust>);
+
 struct ClientTrust {
     bundle: Vec<CertificateDer<'static>>,
     roots: Arc<RootCertStore>,
@@ -73,6 +76,17 @@ impl ReloadingClientCa {
         })?;
         self.current.store(Arc::new(fresh));
         Ok(true)
+    }
+
+    /// The trust in force now, to put back with [`restore`](Self::restore).
+    pub fn saved(&self) -> SavedClientCa {
+        SavedClientCa(self.current.load_full())
+    }
+
+    /// Go back to `saved`. The next reload sees the bundle on disk as a
+    /// change again and re-checks it.
+    pub fn restore(&self, saved: SavedClientCa) {
+        self.current.store(saved.0);
     }
 
     /// Check the bundle every [`RELOAD_INTERVAL`], for ever. Callers race it

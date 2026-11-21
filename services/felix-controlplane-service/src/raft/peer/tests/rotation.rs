@@ -444,6 +444,33 @@ async fn a_new_root_and_a_leaf_under_it_in_the_same_tick_are_taken_together() {
     assert_eq!(who(&mut stream).await, b2);
 }
 
+/// A new-root-only bundle taken on the word of a leaf that is then refused
+/// (here it names another member) is put back, so the member stays on the
+/// old root with its peers.
+#[tokio::test]
+async fn a_new_root_whose_waiting_leaf_is_refused_is_not_kept() {
+    let (old_ca, new_ca) = (ca(), ca());
+    let (dir1, dir2) = (
+        tempfile::tempdir().expect("dir"),
+        tempfile::tempdir().expect("dir"),
+    );
+    let a1 = fingerprint(&issue(&old_ca, dir1.path(), 1));
+    issue(&old_ca, dir2.path(), 2);
+    let (one, two) = (
+        member_security(&old_ca, dir1.path()),
+        member_security(&old_ca, dir2.path()),
+    );
+    let port = serve(&one).await;
+    let live = one.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
+
+    issue(&new_ca, dir1.path(), 2);
+    std::fs::write(dir1.path().join("ca.pem"), &new_ca.pem).expect("write ca");
+    live.reload();
+    let (mut stream, server) = connect(&two, port).await.expect("still on the old root");
+    assert_eq!(server, a1);
+    who(&mut stream).await;
+}
+
 #[tokio::test]
 async fn a_revocation_file_read_back_blank_keeps_the_list() {
     let ca = ca();
