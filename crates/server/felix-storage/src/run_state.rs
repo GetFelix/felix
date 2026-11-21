@@ -216,6 +216,17 @@ pub fn begin(
         copy_trust::forget_raft_marks(root)?;
     }
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
+    // After the id: a crash in between leaves an id with no record, which
+    // only costs the mint its readmission credit.
+    if origin != Origin::Loaded {
+        record_mint(
+            root,
+            Mint {
+                id: loaded,
+                bound: None,
+            },
+        )?;
+    }
     copy_trust::ensure(root, origin == Origin::Created)?;
     // A copy that vouched for unsynced records did so after the run's record
     // was written, so the marker speaks for the last run and for this one.
@@ -655,26 +666,89 @@ pub fn forget_rotation(root: &Path) -> Result<()> {
     remove_record(root, ROTATION_FILE_NAME)
 }
 
+/// The mint record's name under the durable root: an id [`begin`] wrote new
+/// and the registration it was bound to.
+pub const MINT_FILE_NAME: &str = "minted-id";
+const MINT_HEADER: &str = "minted_id\n";
+
+/// An id [`begin`] wrote new, for a wiped directory or in place of a corrupt
+/// id file. `bound` is `None` until the run that wrote it records a dated
+/// registration ([`record_dated_registration`]); a start that did not write
+/// it removes an unbound one, so a mint is never bound by a later run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mint {
+    pub id: StorageId,
+    pub bound: Option<Binding>,
+}
+
+fn record_mint(root: &Path, mint: Mint) -> Result<()> {
+    let body = format!(
+        "{MINT_HEADER}{}\n{}",
+        mint.id.to_hex(),
+        mint.bound.map(Binding::encode).unwrap_or_default()
+    );
+    write_atomically(root, MINT_FILE_NAME, body.as_bytes(), true)
+}
+
+/// What [`begin`] or [`record_dated_registration`] recorded of the id's mint
+/// under `root`. `None` without the file or for one that does not decode.
+pub fn last_mint(root: &Path) -> Result<Option<Mint>> {
+    let Some(body) = read_text(root, MINT_FILE_NAME)? else {
+        return Ok(None);
+    };
+    Ok(body.strip_prefix(MINT_HEADER).and_then(|body| {
+        let mut lines = body.lines();
+        let id = StorageId::from_hex(lines.next()?)?;
+        let mut rest = lines.peekable();
+        let bound = match rest.peek() {
+            None => None,
+            Some(_) => Some(Binding::decode(rest)?),
+        };
+        Some(Mint { id, bound })
+    }))
+}
+
+/// Remove the mint record under `root`, durably.
+pub fn forget_mint(root: &Path) -> Result<()> {
+    remove_record(root, MINT_FILE_NAME)
+}
+
 /// [`record_registration`] for a registration the control plane dated, which
 /// a rotation can then be bound to ([`registration_binding`]).
 ///
-/// The rotation record moves first: one bound to the registration just
-/// before this one, under the id the directory has now, is bound to this
-/// one. A crash before the registration record leaves the directory reading
-/// as older than its registration, which rotates it again.
+/// The rotation and mint records move first: one bound to the registration
+/// just before this one, under the id the directory has now, is bound to this
+/// one. An unbound mint record is bound to this one too: only the run that
+/// minted the id keeps it unbound that long. A crash before the registration
+/// record leaves the directory reading as older than its registration, which
+/// rotates it again.
 pub fn record_dated_registration(root: &Path, registration: Binding) -> Result<()> {
+    let current = storage_identity::load(root)?;
+    let follows = |bound: Binding| {
+        bound.registered_at_millis == registration.registered_at_millis
+            && bound.incarnation.checked_add(1) == Some(registration.incarnation)
+    };
     if let Some(rotation) = last_rotation(root)?
-        && storage_identity::load(root)? == Some(rotation.to)
-        && rotation.bound.is_some_and(|bound| {
-            bound.registered_at_millis == registration.registered_at_millis
-                && bound.incarnation.checked_add(1) == Some(registration.incarnation)
-        })
+        && current == Some(rotation.to)
+        && rotation.bound.is_some_and(follows)
     {
         record_rotation(
             root,
             Rotation {
                 bound: Some(registration),
                 ..rotation
+            },
+        )?;
+    }
+    if let Some(mint) = last_mint(root)?
+        && current == Some(mint.id)
+        && mint.bound.is_none_or(follows)
+    {
+        record_mint(
+            root,
+            Mint {
+                bound: Some(registration),
+                ..mint
             },
         )?;
     }

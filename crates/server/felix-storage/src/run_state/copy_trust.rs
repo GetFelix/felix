@@ -411,6 +411,10 @@ static LIVE: Mutex<Vec<std::sync::Weak<CopyTrust>>> = Mutex::new(Vec::new());
 /// hold the mark log open: the gate's own rotation reopens it after.
 pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
     forget_raft_marks(root)?;
+    // A rotation says the directory's contents may be older than what sets
+    // naming its id counted, so the mint's credit ends even if a crash keeps
+    // the old id.
+    super::forget_mint(root)?;
     let next = StorageId::from_bytes(fresh);
     if let Some(from) = storage_identity::load(root)? {
         // Bound to the registration the directory holds now, so a later

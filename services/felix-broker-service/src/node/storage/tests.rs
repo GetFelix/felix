@@ -488,6 +488,7 @@ fn a_start_from_the_view_attests_no_kept_ballot() {
         readmits: true,
         minted: true,
         rotation: None,
+        mint: None,
         deferred: false,
     };
     assert!(kept.attested(false).ballots && kept.attested(false).readmits);
@@ -545,6 +546,7 @@ fn a_checked_start_from_the_view_attests_its_own_kept_ballots() {
         readmits: false,
         minted: false,
         rotation: None,
+        mint: None,
         deferred: true,
     };
     let record = |storage_id: Option<&str>| Registered {
@@ -880,6 +882,111 @@ fn a_start_that_rotated_keeps_its_rotation_record() {
     assert!(rotated && kept.minted);
     assert_eq!(kept.rotation.map(|rotation| rotation.to), Some(id));
     assert_eq!(rotation_record(root), kept.rotation);
+}
+
+fn mint_record(root: &Path) -> Option<felix_storage::run_state::Mint> {
+    felix_storage::run_state::last_mint(root).expect("read the mint record")
+}
+
+/// [`restart`] after a clean stop, so it runs where a process crash rotates.
+fn stop_and_restart(root: &Path, registered: Option<&Registered>) -> (StorageId, Kept) {
+    let id = felix_storage::storage_identity::load(root)
+        .expect("read the id")
+        .expect("an id");
+    mark_clean_stop(root, id).expect("clean stop");
+    restart(root, registered)
+}
+
+/// A wiped directory's first run on its new id: the node ran under `other`
+/// at incarnation 1, so the copies here are lost. The run registers at 2.
+fn wiped_and_registered(other: StorageId) -> (tempfile::TempDir, StorageId) {
+    let root = tempfile::tempdir().expect("tempdir");
+    let log = felix_storage::log::LogConfig::default();
+    let (id, rotated, _, kept) =
+        start_run(root.path(), &log, Some(&dated(other, 1)), None).expect("wiped");
+    assert!(!rotated && kept.minted && kept.readmits && !kept.ballots);
+    register(root.path(), 2);
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    (root, id)
+}
+
+/// **A wiped directory's new id keeps its readmission credit across a clean
+/// restart once its run registered** (#2552). The start that wrote the id
+/// records it, and that run's registration binds the record, so the next
+/// start finds the id minted while the control plane names it under that
+/// registration or the next one. The deferred restore check decides the
+/// same.
+#[test]
+fn a_new_id_keeps_its_credit_across_a_clean_restart_once_registered() {
+    let other = StorageId::from_bytes([9; 16]);
+    let (root, id) = wiped_and_registered(other);
+    let root = root.path();
+
+    let (again, kept) = stop_and_restart(root, Some(&dated(id, 2)));
+    assert_eq!(again, id);
+    assert!(
+        kept.minted && kept.readmits && !kept.ballots,
+        "lost, minted and readmitting is what counts a readmission from 0: {kept:?}"
+    );
+    register(root, 3);
+    let (_, kept) = stop_and_restart(root, Some(&dated(id, 3)));
+    assert!(kept.minted, "the registration moved the binding on");
+
+    let (_, kept) = stop_and_restart(root, None);
+    assert!(!kept.minted);
+    assert!(kept.checked(Some(&dated(id, 3))).minted);
+    assert!(!kept.checked(Some(&dated(id, 5))).minted);
+
+    // The node registered another directory since: older sets may name this id.
+    let (_, kept) = stop_and_restart(root, Some(&dated(other, 3)));
+    assert!(!kept.minted);
+    assert_eq!(mint_record(root), None);
+    let (_, kept) = stop_and_restart(root, Some(&dated(id, 3)));
+    assert!(!kept.minted, "the record went with that");
+}
+
+/// **A new id earns no credit across a restart until its run's
+/// registration binds it.** A run that stopped before a dated registration
+/// leaves the record unbound, and the next start removes it: only the run
+/// that wrote the id may bind it, so a later registration, after the node may
+/// have run elsewhere, does not. That costs a readmission, never safety.
+#[test]
+fn an_unbound_mint_gets_no_credit_and_no_later_binding() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let root = root.path();
+    let log = felix_storage::log::LogConfig::default();
+    let (id, _, _, kept) = start_run(root, &log, None, None).expect("wiped");
+    assert!(kept.minted, "the run that wrote the id");
+    assert_eq!(kept.mint.and_then(|mint| mint.bound), None);
+    // Registered, but the control plane did not date it.
+    felix_storage::run_state::record_registration(root, 1).expect("register");
+    mark_clean_stop(root, id).expect("clean stop");
+
+    let undated = Registered {
+        registered_at_millis: None,
+        ..dated(id, 1)
+    };
+    let (_, kept) = stop_and_restart(root, Some(&undated));
+    assert!(!kept.minted);
+    assert_eq!(mint_record(root), None);
+    register(root, 2);
+    assert_eq!(mint_record(root), None, "a later run does not bind it");
+    let (_, kept) = stop_and_restart(root, Some(&dated(id, 2)));
+    assert!(!kept.minted);
+}
+
+/// **A mint record goes with the id it names.** After a rotation the
+/// rotation record speaks for the id, and the mint record is removed.
+#[test]
+fn a_mint_record_for_an_older_id_is_removed() {
+    let other = StorageId::from_bytes([9; 16]);
+    let (root, id) = wiped_and_registered(other);
+    let root = root.path();
+    let after = rotate_mid_run(root, 7);
+    assert_ne!(after, id);
+    let (_, kept) = stop_and_restart(root, Some(&dated(id, 2)));
+    assert!(kept.minted, "the rotation's credit");
+    assert_eq!(mint_record(root), None);
 }
 
 /// **An uncredited rotation record is removed from a simulated directory

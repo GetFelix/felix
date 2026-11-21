@@ -63,6 +63,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
   last-rotation                              ← the id the last rotation gave the directory, the one before, and the registration then
+  minted-id                                  ← an id a start wrote new, and the registration that bound it
   registered-at                              ← the node record's registration time, beside the incarnation
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
   copy-trust-kept                            ← a release that keeps copy-trust ran here
@@ -2507,6 +2508,37 @@ directory's (a crash between the record and the id), and one that does not
 decode. It keeps the record when it rotated the id itself, and when it
 started from the view and has no control plane record yet; the deferred
 restore check then decides by the same rule. A missing file claims nothing,
+which only costs a readmission. An older release neither reads nor writes
+the file.
+
+## `minted-id`: an id a start wrote new
+
+One text file at the durable root, written by a start that wrote the storage
+id new (a wiped directory, or a corrupt id file replaced), right after the id,
+through `minted-id.tmp`, synced, renamed and the directory synced.
+
+```text
+minted_id
+<the new storage id, 32 hex digits>
+registered_at=<the node record's registered_at_millis>
+incarnation=<the node incarnation>
+```
+
+The start writes it without the binding lines. The first registration the
+control plane dates during that run adds them, and each registration after
+it moves them on the same way it moves `last-rotation`'s. A start credits a
+bound record, so a lost copy here counts from the first set that readmits it,
+when the control plane's record names the minted id, has the bound
+`registered_at_millis`, and its incarnation is the bound one or the next.
+
+Only the run that wrote the id may bind the record. Any other start removes
+an unbound record, so a run that stopped before its first dated registration
+loses the credit: a later registration may come after the node ran from
+another directory. A start also removes a record naming another id than the
+directory's, one the control plane's record does not credit, and one that
+does not decode. A rotation removes the record before it writes
+`last-rotation`. A start from the view keeps a bound record for the deferred
+restore check to decide by the same rule. A missing file claims nothing,
 which only costs a readmission. An older release neither reads nor writes
 the file.
 
