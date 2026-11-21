@@ -213,15 +213,6 @@ fn every_request() -> Vec<RaftRequest> {
                 leader_commit: None,
             }))
         },
-        RaftRequest {
-            report: crate::raft::network::Ask::WrittenIfStrict,
-            ..request(Request::Append(AppendEntriesRequest {
-                vote: vote(2, true),
-                prev_log_id: Some(log_id(2, 7)),
-                entries: vec![EntryOf::<ShardTypes>::new_blank(log_id(2, 8))],
-                leader_commit: None,
-            }))
-        },
         request(Request::ReadIndex),
     ]
 }

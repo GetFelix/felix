@@ -1271,7 +1271,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
 | send number | `u64`: on a leader's append, its place among the leader's appends in that term. A follower stores the beat only from an append numbered above the last one it stored a beat from. 0 otherwise |
-| report | `u8`: 1 on a leader's append with entries when it wants the member's written position back (message 7); 0 otherwise. Any other value is refused |
+| report | `u8`: 1 on a leader's append with entries when it wants the member's written position back (message 7); 0 otherwise. 2, which older builds send, reads as 1. Any other value is refused |
 | vote | term `u64`, the member voted for, committed `u8` |
 | log id | term `u64`, index `u64` |
 

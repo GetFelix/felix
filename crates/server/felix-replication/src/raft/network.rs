@@ -59,22 +59,15 @@ pub(crate) struct Beat {
 
 /// What a leader's append asks a follower for: a written report
 /// (`Request::Written`) once its entries are written, before their fsync.
-/// The leader's mode picks the ask and the follower's mode answers it, so
-/// neither keeps the other's mode. See `docs/per-shard-raft.md`, "What each
-/// signal means".
+/// See `docs/per-shard-raft.md`, "What each signal means".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ask {
     /// No report: not an append with entries, or no write waits on reports.
     Nothing,
-    /// From a leader whose log fsyncs before Raft counts an entry. Every
-    /// follower reports, since only a report lets a `Quorum` write go
-    /// before the commit.
+    /// Report once written. Every follower does, whatever its log's mode:
+    /// the report lets a `Quorum` write go without waiting for the commit
+    /// to reach the leader's state machine.
     Written,
-    /// From a leader on a written-commit log. A follower on one too answers
-    /// the append at the write, and that answer counts toward the commit,
-    /// so it does not report. A follower that fsyncs first still reports:
-    /// without it a `Quorum` write would wait for that fsync.
-    WrittenIfStrict,
 }
 
 pub(crate) enum Request {

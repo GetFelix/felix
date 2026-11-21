@@ -188,13 +188,10 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     put_member(&mut buf, &request.to)?;
     buf.put_u64(request.beat.gap);
     buf.put_u64(request.beat.seq);
-    // 0 and 1 read as the boolean older builds take. Only a written-commit
-    // log sends 2, and that needs the fleet to finalize `raft_written_commit`,
-    // which no build without this byte reports.
+    // 0 and 1 read as the boolean older builds take.
     buf.put_u8(match request.report {
         Ask::Nothing => 0,
         Ask::Written => 1,
-        Ask::WrittenIfStrict => 2,
     });
     match &request.body {
         Request::Append(rpc) => {
@@ -262,8 +259,9 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     };
     let report = match take_u8(&mut buf)? {
         0 => Ask::Nothing,
-        1 => Ask::Written,
-        2 => Ask::WrittenIfStrict,
+        // 2 is what older written-commit leaders sent. They asked only
+        // followers that fsync first; reporting anyway is what they lacked.
+        1 | 2 => Ask::Written,
         other => return Err(invalid(format!("{other} is not a report ask"))),
     };
     let body = match tag {

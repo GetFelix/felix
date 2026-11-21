@@ -6168,16 +6168,16 @@ Each follower answers an append by its own mode, and the leader's mode
 decides whether it asks for the written report (`await_quorum_ack`,
 `Request::Written`):
 
-- **A relaxed follower** answers at the write, so a written report would
-  say nothing its answer has not.
-- **A strict follower** answers after its fsync, and still sends the
-  written report when its leader asks for one.
-- **A relaxed leader** does not ask: its followers' answers are what
-  commits. Without the report, a `Quorum` write on a stream that does not
-  fsync would wait for a strict follower's fsync where today it does not,
-  so a relaxed leader with strict followers keeps asking them and counts
-  their reports toward the acknowledgement, as today. A strict leader
-  asks as today.
+- **A relaxed follower** answers at the write and sends the written
+  report right after a successful answer. The answer commits, but the
+  commit only acknowledges once the leader's state machine has applied
+  the entry. The report lets the leader acknowledge at the written
+  majority without that wait, as the hybrid does.
+- **A strict follower** answers after its fsync, and sends the written
+  report first, at the write.
+- **Every leader asks** once a `Quorum` write has waited on reports, and
+  counts them the same way: the leader's own term only, voters only, a
+  majority of each set.
 
 A group can have members on both kinds of broker. The argument is meant
 to hold member by member: a strict copy answers after its fsync, and a
@@ -6383,13 +6383,12 @@ not a weaker flush.
 - A broker opens a shard's Raft log with its own fsync mode only when the
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
-- The written report follows "What each signal means": a leader on a
-  written-commit log asks with `Ask::WrittenIfStrict`, a follower on one
-  skips that ask (no marker sync, no `Request::Written`), and a follower
-  that fsyncs first reports as before. A leader that fsyncs first asks with
-  `Ask::Written`, which every follower answers. Neither keeps the other's
-  mode, so a follower restarted in another mode answers by its new one.
-  Skipping a report can only make a `Quorum` write wait for the commit.
+- The written report follows "What each signal means": every leader asks
+  with `Ask::Written` and every follower answers it. A follower on a
+  written-commit log sends its report after its answer, from a task of its
+  own, so the answer does not wait on the report's round trip. The ask
+  byte 2 that older builds send reads as `Ask::Written`. A lost report can
+  only make a `Quorum` write wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`read_copies`, `kept_logs`): every reservation in the shard directory and
   its kept directories, from which the plan's first index is set

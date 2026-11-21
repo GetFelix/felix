@@ -33,8 +33,6 @@ pub(crate) struct Reports {
     /// once a publisher has waited on one, so a shard whose writes never
     /// wait this way costs its followers no message.
     wanted: AtomicBool,
-    /// This member's log counts its written entries toward the commit.
-    written_commit: bool,
     heard: watch::Sender<Vec<(MemberId, LogPoint)>>,
     /// `ranks[n - 1]` wakes the waits that need `n` senders at or past
     /// their entry, keyed by the `n`th furthest position heard. A write
@@ -63,12 +61,9 @@ pub(crate) enum Look {
 }
 
 impl Reports {
-    /// `written_commit`: this member's log counts written entries toward
-    /// the commit ([`RaftLog::written_commit`](felix_storage::raft_log::RaftLog::written_commit)).
-    pub(crate) fn new(written_commit: bool) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             wanted: AtomicBool::new(false),
-            written_commit,
             heard: watch::Sender::default(),
             ranks: Mutex::new(Vec::new()),
         }
@@ -76,10 +71,10 @@ impl Reports {
 
     /// What a leader's append that carries entries asks the follower for.
     pub(crate) fn ask(&self) -> Ask {
-        match (self.wanted.load(Ordering::Relaxed), self.written_commit) {
-            (false, _) => Ask::Nothing,
-            (true, false) => Ask::Written,
-            (true, true) => Ask::WrittenIfStrict,
+        if self.wanted.load(Ordering::Relaxed) {
+            Ask::Written
+        } else {
+            Ask::Nothing
         }
     }
 
