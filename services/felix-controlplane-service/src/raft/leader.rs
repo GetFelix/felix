@@ -154,6 +154,39 @@ impl RaftHandle {
         !self.is_stopped() && self.raft.metrics().borrow_watched().current_leader == Some(self.id)
     }
 
+    /// Step down by granting `to` the next term's vote, as this leader's own
+    /// transfer would authorize. A lone member then wins the term after.
+    /// False if the vote was refused.
+    #[cfg(test)]
+    pub(crate) async fn give_up_term(&self, to: NodeId) -> bool {
+        let metrics = self.raft.metrics().borrow_watched().clone();
+        let last = metrics
+            .last_log_index
+            .map(|index| super::types::test_log_id(metrics.current_term, index));
+        let next = super::types::Vote {
+            leader_id: super::types::LeaderId {
+                term: metrics.current_term + 1,
+                voted_for: to,
+            },
+            committed: false,
+        };
+        let mut rpc = openraft::raft::VoteRequest::new(next, last);
+        // Without it a leader whose quorum still acks refuses any vote.
+        rpc.leadership_transfer_from = Some(metrics.vote);
+        // Refused when the metrics lag a term this member just won.
+        self.raft.vote(rpc).await.expect("vote").vote_granted
+    }
+
+    /// Campaign now, as an election timeout would.
+    #[cfg(test)]
+    pub(crate) async fn campaign(&self) {
+        self.raft
+            .trigger()
+            .elect(false)
+            .await
+            .expect("trigger an election");
+    }
+
     pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }
