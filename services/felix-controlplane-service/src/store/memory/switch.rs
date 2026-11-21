@@ -143,6 +143,8 @@ pub(super) async fn record_raft_copy_id(
     keep_ordered: bool,
     native: Option<NativeShard>,
     hold_formed: bool,
+    group_epoch: Option<u64>,
+    epochs: bool,
 ) -> StoreResult<bool> {
     // The stream or cache the shard belongs to, read before the locks below,
     // which no stream or cache write takes. A stream's durability never
@@ -240,6 +242,17 @@ pub(super) async fn record_raft_copy_id(
             "the report is not from {node_id}'s registered process"
         )));
     }
+    // A copy reports the epoch it runs, so a stale view of an earlier
+    // epoch, such as a directory restored from an old backup, never names
+    // the current group's member (#2882). A report without one is from a
+    // broker that predates re-forms and is only taken at epoch 0.
+    let epoch = existing.placed.as_ref().map_or(0, |placed| placed.epoch);
+    if epochs && group_epoch.unwrap_or(0) != epoch {
+        return Err(StoreError::Conflict(format!(
+            "the report is for group epoch {}, the shard is at {epoch}",
+            group_epoch.unwrap_or(0)
+        )));
+    }
     if existing.raft_copy_ids.get(node_id) == Some(&copy_id) {
         return Ok(false);
     }
@@ -255,6 +268,9 @@ pub(super) async fn record_raft_copy_id(
     // broker can read it.
     if moved {
         stored.order_raft_target(keep_ordered);
+        if epochs {
+            stored.seed_from_first_target();
+        }
     }
     if moved && !super::all_registered_acked(&nodes, &placement) {
         return Err(StoreError::Conflict(
@@ -283,7 +299,7 @@ pub(super) async fn record_raft_copy_id(
 ///
 /// `vouched_voters`: voters count only from a reporter
 /// [`crate::model::ShardAssignment::may_report_voters`] admits, whatever
-/// the floor did with the report (#2909); false below level 47.
+/// the floor did with the report (#2909); false below level 48.
 pub(super) async fn record_raft_floors(
     store: &InMemoryStore,
     node_id: &str,
@@ -330,8 +346,8 @@ pub(super) async fn record_raft_floors(
             None => false,
         };
         let floor = record.raise_raft_floor(report);
-        // Only a proposer at level 46 leaves voters in. Below 47 they count
-        // only in a report the floor took; from 47 the reporter gate alone
+        // Only a proposer at level 46 leaves voters in. Below 48 they count
+        // only in a report the floor took; from 48 the reporter gate alone
         // decides, since any broker can push the floor past honest reports.
         let taken = vouched_voters
             || matches!(
@@ -402,6 +418,8 @@ impl InMemoryStore {
         shard_incarnation: Option<u64>,
         in_group: bool,
         hold_formed: bool,
+        group_epoch: Option<u64>,
+        epochs: bool,
     ) -> StoreResult<bool> {
         // A group decides the engine from its recorded identity alone, so
         // every member applies the same; one with none recorded holds no
@@ -424,6 +442,8 @@ impl InMemoryStore {
             keep_ordered,
             native,
             hold_formed,
+            group_epoch,
+            epochs,
         )
         .await
     }

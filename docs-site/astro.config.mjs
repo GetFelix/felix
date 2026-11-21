@@ -14,7 +14,10 @@ export default defineConfig({
   // Only the stable root carries the old-URL redirect.
   redirects: isNext
     ? {}
-    : { '/features/real-network-performance': '/features/v060-performance/' },
+    : {
+        '/features/real-network-performance': '/features/v060-performance/',
+        '/features/security': '/security/',
+      },
   integrations: [
     prefixBaseLinks({ base }),
     mermaid({ autoTheme: true, enableLog: false }),
@@ -87,6 +90,16 @@ export default defineConfig({
             { label: 'A Work Queue', slug: 'tutorials/work-queue' },
             { label: 'Cache, Leases and Watches', slug: 'tutorials/cache-leases-watches' },
             { label: 'Build an App', slug: 'tutorials/build-an-app' },
+          ],
+        },
+        {
+          label: 'Security',
+          items: [
+            { label: 'Overview', slug: 'security' },
+            { label: 'Threat Model', slug: 'security/threat-model' },
+            { label: 'Hardening a Deployment', slug: 'security/hardening' },
+            { label: 'Authentication and RBAC', slug: 'security/authentication' },
+            { label: 'Reporting a Vulnerability', slug: 'security/reporting' },
           ],
         },
         {
@@ -224,7 +237,6 @@ export default defineConfig({
               ],
             },
             { label: 'Observability', slug: 'features/observability' },
-            { label: 'Security', slug: 'features/security' },
           ],
         },
         {

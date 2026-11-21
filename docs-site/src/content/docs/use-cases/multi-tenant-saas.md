@@ -235,9 +235,9 @@ C# clients.
 
 ## Related
 
-- [Security](/features/security/)
-- [Multi-tenancy and isolation](/features/security/#multi-tenancy-and-isolation)
-- [Token exchange](/features/security/#token-exchange-oidc--felix)
+- [Security](/security/)
+- [Multi-tenancy and isolation](/security/#multi-tenancy-and-isolation)
+- [Token exchange](/security/authentication/#token-exchange-oidc--felix)
 - [Control plane API](/api/control-plane-api/)
 - [Acting for many users](/clients/rust/#acting-for-many-users)
 - [Who published an event](/clients/rust/subscribing/#who-published-an-event)

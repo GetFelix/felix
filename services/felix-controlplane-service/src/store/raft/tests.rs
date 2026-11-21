@@ -885,6 +885,8 @@ async fn shard_renewal_waits_for_every_member() {
                     raft_floor: None,
                     raft_formed: None,
                     raft_voters: None,
+                    raft_seed: None,
+                    raft_bases: None,
                     raft_ordered: None,
                 })
                 .await
@@ -981,6 +983,8 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     raft_floor: None,
                     raft_formed: None,
                     raft_voters: None,
+                    raft_seed: None,
+                    raft_bases: None,
                     raft_ordered: None,
                 })
                 .await
@@ -1189,6 +1193,8 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -1317,6 +1323,8 @@ async fn a_refused_ballot_waits_for_every_member() {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1459,6 +1467,8 @@ async fn a_previous_generation_waits_for_every_member() {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1562,6 +1572,8 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -1701,6 +1713,8 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     };
     let first = |shard: u32| {
@@ -1956,6 +1970,8 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2074,6 +2090,8 @@ async fn fence_storage_ids_wait_for_every_member() {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     };
 
@@ -2161,6 +2179,8 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -2299,6 +2319,8 @@ async fn pending_sets_wait_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -2477,6 +2499,8 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -2588,6 +2612,8 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -2700,6 +2726,8 @@ async fn inherited_storage_waits_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -2825,6 +2853,8 @@ async fn learners_wait_for_every_member() {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2980,6 +3010,8 @@ async fn a_refusal_waits_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -3124,6 +3156,8 @@ async fn storage_ids_wait_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -3458,6 +3492,8 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -4382,6 +4418,8 @@ async fn adoption_waits_for_every_member() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -4946,6 +4984,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
                 process.incarnation,
                 2,
                 None,
+                None,
             )
             .await;
         assert!(
@@ -4963,6 +5002,8 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
             keep_ordered: false,
             shard_incarnation: None,
             hold_target: false,
+            group_epoch: None,
+            keep_seed: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
@@ -4990,6 +5031,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
                     process.incarnation,
                     2,
                     None,
+                    None,
                 )
                 .await
             {
@@ -4997,6 +5039,49 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
                 other => assert!(
                     std::time::Instant::now() < deadline,
                     "still refused at level 36: {other:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+}
+
+/// A broker that reports epoch 0 records its copy id on a group at level
+/// 46, as one that reports no epoch does; only a later epoch needs 47. A
+/// rolling upgrade otherwise refuses every new broker's report and no new
+/// group forms.
+#[tokio::test]
+async fn a_copy_id_at_epoch_zero_records_below_level_47() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, _version) = store_with_member_at(dir.path(), REFORM_RECORD_LEVEL - 1).await;
+    let shared: &dyn ControlPlaneStore = store.as_ref();
+    crate::store::contract::shards::on_streams_of_its_own(shared, async {
+        let shard = crate::store::contract::raft_targets::switched(shared).await;
+        let process = shared.get_node("broker-x").await.expect("node").status;
+        let report = |group_epoch| {
+            shared.record_raft_copy_id(
+                &shard.key,
+                "broker-x",
+                process.registered_at_millis,
+                process.incarnation,
+                2,
+                None,
+                group_epoch,
+            )
+        };
+        let refused = report(Some(1)).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("version 47")),
+            "epoch 1 below level 47: {refused:?}"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match report(Some(0)).await {
+                Ok(true) => break,
+                other => assert!(
+                    std::time::Instant::now() < deadline,
+                    "epoch 0 refused at level 46: {other:?}"
                 ),
             }
             tokio::time::sleep(Duration::from_millis(50)).await;

@@ -564,11 +564,22 @@ class RaftFrom(Baseline):
         a = self.write(self.rows(rounds=3))
         b = self.write([r for r in self.rows(rounds=2) if r[2] == "raft"])
         res = s.summarize(a, raft_from=b)
-        self.assertEqual(len(res["warnings"]), 1)
+        self.assertEqual(len([w for w in res["warnings"] if w.startswith("round counts")]), 1)
         md = s.markdown(res)
         self.assertIn("WARNING: round counts differ", md)
         self.assertIn("raft_from.rev abc", md)
         self.assertIn("rev abc", md)
+
+
+class Balance(Baseline):
+    def test_rounds_not_a_multiple_of_six_warn_about_placement(self):
+        res = s.summarize(self.write(self.rows(rounds=2)))
+        self.assertTrue(any("generator placement not balanced" in w for w in res["warnings"]))
+        self.assertIn("WARNING: ROUNDS=2 is not a multiple of 6", s.markdown(res))
+
+    def test_six_rounds_do_not_warn(self):
+        res = s.summarize(self.write(self.rows(rounds=6)))
+        self.assertFalse(any("placement" in w for w in res["warnings"]))
 
 
 class Cli(Baseline):

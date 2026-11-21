@@ -34,8 +34,11 @@ pub struct RaftFormed {
 }
 
 /// The voters a leader of the group reported as committed, with the log id
-/// it reported them at. Only a report at or above the floor's log id
-/// replaces them, so a late report cannot bring back older voters.
+/// it reported them at. Only a report not older than the kept voters
+/// replaces them, so a late report cannot bring back older voters. From
+/// metadata level 48 the floor does not decide which reports count, since
+/// any broker can raise it; only a reporter the stored target vouches for,
+/// or a kept voter still placed while no target is stored, does (#2909).
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct RaftVoters {
     /// The stream incarnation the group runs.
@@ -165,7 +168,7 @@ impl ShardAssignment {
     /// report is for this record's incarnation and epoch and is not older
     /// than the voters already kept.
     ///
-    /// `by_floor`: also refuse one older than the floor. Below level 47
+    /// `by_floor`: also refuse one older than the floor. Below level 48
     /// only; any broker raises the floor, so it must not decide whose
     /// voters count.
     /// Returns whether this changed the record.

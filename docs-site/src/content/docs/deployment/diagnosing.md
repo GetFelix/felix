@@ -422,7 +422,7 @@ a token with exactly that grant. A wildcard such as `node.view:*` does not
 count, and no tenant admin can grant it.
 
 **What to do.** Mint a token with the grant, or fix the tenant the client
-authenticates under. See [Security](/features/security/).
+authenticates under. See [Authentication and RBAC](/security/authentication/).
 
 ## Local disk is filling while offload is on
 

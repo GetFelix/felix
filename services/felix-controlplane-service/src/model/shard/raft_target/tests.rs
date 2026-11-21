@@ -35,6 +35,8 @@ fn assignment() -> ShardAssignment {
         raft_floor: None,
         raft_formed: None,
         raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
         raft_ordered: None,
     }
 }
@@ -405,7 +407,7 @@ fn only_a_vouched_broker_reports_voters() {
     );
 }
 
-/// Any broker raises the floor, so from level 47 a floor pushed past the
+/// Any broker raises the floor, so from level 48 a floor pushed past the
 /// group's own reports no longer shuts out a vouched leader's voters.
 #[test]
 fn a_raised_floor_does_not_freeze_the_voters() {
@@ -429,7 +431,7 @@ fn a_raised_floor_does_not_freeze_the_voters() {
     let voters = set(&["1", "2"]).into_iter().map(|node| (node, 1)).collect();
     assert!(
         !record.note_raft_voters(&report, &voters, true),
-        "below 47 the floor still decides"
+        "below 48 the floor still decides"
     );
 }
 

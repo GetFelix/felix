@@ -183,10 +183,15 @@ const FIRST_FORM_LEVEL: u16 = 45;
 /// majority of (#2905).
 const FORMED_SET_LEVEL: u16 = 46;
 
+/// The metadata level whose members keep each Raft shard's epoch seed and
+/// re-form bases (`ShardAssignment::raft_seed`, `raft_bases`) and refuse a
+/// copy id reported from another group epoch (#2882).
+const REFORM_RECORD_LEVEL: u16 = 47;
+
 /// The metadata level whose members take a Raft group's voters only from a
 /// reporter its stored target vouches for, or a kept voter still placed
 /// while no target is stored (#2909).
-const VOUCHED_VOTERS_LEVEL: u16 = 47;
+const VOUCHED_VOTERS_LEVEL: u16 = 48;
 
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
@@ -1211,8 +1216,14 @@ impl ControlPlaneStore for RaftStore {
         node_incarnation: u64,
         copy_id: u64,
         shard_incarnation: Option<u64>,
+        group_epoch: Option<u64>,
     ) -> StoreResult<bool> {
-        let needs = if shard_incarnation.is_some() {
+        // Epoch 0 is what an entry without one reports, so a broker that
+        // sends it still records against a group below 47.
+        let group_epoch = group_epoch.filter(|&epoch| epoch != 0);
+        let needs = if group_epoch.is_some() {
+            REFORM_RECORD_LEVEL
+        } else if shard_incarnation.is_some() {
             RAFT_NATIVE_LEVEL
         } else {
             RAFT_TARGET_LEVEL
@@ -1238,6 +1249,8 @@ impl ControlPlaneStore for RaftStore {
                 shard_incarnation,
                 // Set by `settle_for_level`, at the level the entry is gated on.
                 hold_target: false,
+                group_epoch,
+                keep_seed: false,
             })
             .await?
         {

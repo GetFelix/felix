@@ -224,7 +224,7 @@ broker's certificate. Where each comes from:
 - **The tenant and token.** A client token is a Felix token issued by the
   control plane's token exchange (`POST /v1/tenants/{tenant}/token/exchange`)
   for an identity-provider token; see
-  [Security](/features/security/#token-exchange-oidc--felix). For a
+  [Security](/security/authentication/#token-exchange-oidc--felix). For a
   `felix-cluster up` cluster, the session file holds a ready-made one
   (`tenant_id`, `namespace`, `client_token`) along with each broker's client
   address.

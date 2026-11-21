@@ -411,6 +411,8 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await
@@ -564,6 +566,8 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
             raft_floor: None,
             raft_formed: None,
             raft_voters: None,
+            raft_seed: None,
+            raft_bases: None,
             raft_ordered: None,
         })
         .await

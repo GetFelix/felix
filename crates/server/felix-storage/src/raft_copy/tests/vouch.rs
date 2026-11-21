@@ -905,3 +905,32 @@ fn a_reform_carries_the_highest_floor_read() {
     assert_eq!(plan.floor, floor(5, 5, b"five"));
     assert!(plan.first_index >= 6, "first index {}", plan.first_index);
 }
+
+/// The record the control plane builds at epoch 0 from level 47: the seed
+/// is the epoch's first target and every target ordered since is on
+/// `ordered`, here a second one after c's copy was wiped before the group
+/// formed. With every broker alive and read, nothing is marked; the same
+/// record without a seed (written below the level) is marked.
+#[test]
+fn a_recorded_seed_with_every_broker_read_is_unmarked() {
+    let mut rec = record(&["a", "b", "c"], &[], &[], floor(1, 0, 1));
+    let rewiped: BTreeSet<_> = [("a", 1), ("b", 1), ("c", 2)].into_iter().collect();
+    rec.ordered = Some(vec![set(&["a", "b", "c"]), rewiped]);
+    let mut c2 = copy("c", &[1, 1], Some(1), Some(1));
+    c2.copy = Some(2);
+    let reports = || {
+        vec![
+            ("a", report(copy("a", &[1, 1], Some(1), Some(1)), vec![])),
+            ("b", report(copy("b", &[1, 1], Some(1), Some(1)), vec![])),
+            ("c", report(c2.clone(), vec![])),
+        ]
+    };
+    let plan = plan(&rec, reports());
+    assert_eq!(plan.marked, None);
+    assert!(!plan.needs_accept_loss());
+
+    rec.seed = None;
+    let reports: BTreeMap<_, _> = reports().into_iter().collect();
+    let unseeded = plan_reform(&rec, &reports).expect("a plan");
+    assert_eq!(unseeded.marked, Some(Marked::Unknown(VoterSource::Seed)));
+}

@@ -270,6 +270,8 @@ async fn switched(store: &InMemoryStore) -> ShardAssignment {
         raft_formed: None,
         raft_voters: None,
         raft_ordered: None,
+        raft_seed: None,
+        raft_bases: None,
     };
     store
         .put_shard_assignment(wanted.clone())
@@ -372,6 +374,7 @@ async fn a_refresh_marks_an_idle_group_formed() {
                 process.registered_at_millis,
                 process.incarnation,
                 id,
+                None,
                 None,
             )
             .await

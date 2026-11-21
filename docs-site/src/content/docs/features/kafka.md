@@ -78,7 +78,7 @@ FELIX_TOKEN=$(curl -s -X POST "https://controlplane:8443/v1/tenants/t1/token/exc
   | jq -r .felix_token)
 ```
 
-See [Security](/features/security/) for how tokens and permissions work.
+See [Authentication and RBAC](/security/authentication/) for how tokens and permissions work.
 
 ### 4. Connect
 

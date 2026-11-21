@@ -308,6 +308,7 @@ pub(crate) async fn report_raft_copy_id(
             request.incarnation,
             request.copy_id,
             request.shard_incarnation,
+            request.group_epoch,
         )
         .await
     {

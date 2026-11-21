@@ -38,7 +38,7 @@ KBL has no database. Everything it keeps is in Felix.
 | Importing an upstream bug once | A conditional write on the upstream id that succeeds only if the key is absent |
 | The record | One durable stream, `work.events`, with the publisher recorded |
 | Replay and the live dashboard | Range reads, and subscribe from an offset, through [felix-gateway](/clients/browsers/) |
-| What each principal may write | [RBAC](/features/security/), down to a cache key prefix |
+| What each principal may write | [RBAC](/security/authentication/), down to a cache key prefix |
 
 The consumer group is what keeps two agents off the same item. An agent asks
 `kbl-mcp` for its next item, and the tracker claims it from the group as a

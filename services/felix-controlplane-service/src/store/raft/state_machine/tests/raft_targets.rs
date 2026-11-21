@@ -21,6 +21,8 @@ async fn copy_id(
         keep_ordered: true,
         shard_incarnation: None,
         hold_target: false,
+        group_epoch: None,
+        keep_seed: false,
     }
 }
 
@@ -347,4 +349,37 @@ async fn a_finalize_at_level_45_holds_later_sets() {
         );
     })
     .await;
+}
+
+/// Below level 47 no seed is written, so the re-form planner reads the seed
+/// as unknown and marks the group, as before the level. An entry carrying
+/// `keep_seed` keeps the epoch's first target as the seed, and a later
+/// target (here a wiped copy's new id) leaves it alone.
+#[tokio::test]
+async fn the_seed_is_kept_only_from_the_level_that_knows_it() {
+    for keep_seed in [false, true] {
+        let machine = machine();
+        let store: &dyn ControlPlaneStore = machine.store().as_ref();
+        on_streams_of_its_own(store, async {
+            let shard = switched(store).await;
+            for (node, id) in [("broker-x", 1), ("broker-y", 2), ("broker-y", 3)] {
+                let mut command = copy_id(&machine, &shard.key, node, id).await;
+                if let MetaCommand::RecordRaftCopyId {
+                    keep_seed: keep, ..
+                } = &mut command
+                {
+                    *keep = keep_seed;
+                }
+                machine.dispatch(command).await.expect("copy id");
+            }
+            let held = store.get_shard_assignment(&shard.key).await.expect("shard");
+            let seed = held
+                .reform_record(&Default::default())
+                .expect("epoch 0")
+                .seed;
+            let first = [("broker-x".to_string(), 1), ("broker-y".to_string(), 2)];
+            assert_eq!(seed, keep_seed.then(|| first.into_iter().collect()));
+        })
+        .await;
+    }
 }

@@ -109,7 +109,7 @@ or stream in one tenant and namespace. A node can lose its disk and rejoin.
 | Snapshots | A durable single-shard stream per workload |
 | Surviving a broker's loss | `Quorum` streams and caches |
 | Replay to a time | `offset_for_time` and range reads |
-| What each node may write | [RBAC](/features/security/) grants on the node's token |
+| What each node may write | [RBAC](/security/authentication/) grants on the node's token |
 
 [How it works](/built-on-felix/felixd/how-it-works/) follows a workload through
 these.

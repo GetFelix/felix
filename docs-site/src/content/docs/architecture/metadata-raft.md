@@ -119,7 +119,7 @@ and a vote, append, snapshot or forming record that speaks for another member
 is refused with 403. A member exits at startup under a certificate that names
 another member or is listed in `FELIX_RAFT_TLS_REVOKED`, and refuses to
 connect to a peer serving a revoked certificate. See
-[Security](/features/security/#raft-member-certificates) for revocation and the
+[Security](/security/hardening/#raft-member-certificates) for revocation and the
 upgrade order.
 
 Without TLS, a member authenticates with the shared `FELIX_RAFT_PEER_TOKEN`
@@ -259,7 +259,7 @@ they were meant for another member (`reason="target"`), which means two
 addresses in `FELIX_RAFT_PEERS` reach the same member.
 `felix_meta_raft_peer_token_accepted_total{token}` says which token accepted
 requests carried, which tells you when a [peer token
-rotation](/features/security/#rotating-the-raft-peer-token) can drop the old one.
+rotation](/security/hardening/#rotating-the-raft-peer-token) can drop the old one.
 `felix_meta_raft_deduplicated_proposals_total` counts retried writes answered
 from the first attempt's result. `felix_meta_raft_unsupported_commands_total`
 counts committed commands this build could not apply, which in a mixed-version
@@ -359,7 +359,7 @@ state with `POST /internal/bootstrap/import-state` on the bootstrap listener
 (`FELIX_BOOTSTRAP_ENABLED`, `FELIX_BOOTSTRAP_BIND_ADDR`) with the operator
 token in `X-Felix-Operator-Token`. Members hold only its digest
 (`FELIX_OPERATOR_TOKEN_SHA256`); see
-[operator routes](/features/security/#operator-routes). The body is `{"state": <exported state>, "overwrite": false}`.
+[operator routes](/security/hardening/#operator-routes). The body is `{"state": <exported state>, "overwrite": false}`.
 The peer `propose` route refuses this command, so it never comes from a peer.
 
 Under Raft only the leader takes it. A follower answers `421` with code

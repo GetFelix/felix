@@ -182,13 +182,13 @@ container copies the member's own certificate into memory, so the control
 plane container never sees another member's key, and a pod whose Secret is
 missing fails in that init container with a message naming the Secret. A
 renewed certificate reaches a member at its next restart. See
-[Raft member certificates](/features/security/#raft-member-certificates) for
+[Raft member certificates](/security/hardening/#raft-member-certificates) for
 revocation.
 
 The whole-store routes on the bootstrap listener (restore import and floor
 waiver) take an operator token that members hold only as a digest: set
 `controlplane.bootstrap.operatorTokenSha256` when you need one of them, and
-leave it empty otherwise. See [operator routes](/features/security/#operator-routes).
+leave it empty otherwise. See [operator routes](/security/hardening/#operator-routes).
 
 The bootstrap listener is on its own ClusterIP Service, never behind the API's,
 so it is reachable only through a port-forward.
@@ -224,7 +224,7 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize
 ```
 
 Then exchange an IdP token for the broker principal (the
-[token exchange](/features/security/#token-exchange-oidc--felix) flow)
+[token exchange](/security/authentication/#token-exchange-oidc--felix) flow)
 and put the Felix token in a Secret:
 
 ```bash
@@ -530,4 +530,4 @@ by symptom.
 - **Control-plane HA**: [what the database must provide](/deployment/control-plane-ha/)
 - **Graceful shutdown**: [what the probes and drain do](/deployment/graceful-shutdown/)
 - **Configure fully**: [Configuration Reference](/reference/configuration/)
-- **Secure deployment**: [Security Guide](/features/security/)
+- **Secure deployment**: [Hardening a deployment](/security/hardening/)
