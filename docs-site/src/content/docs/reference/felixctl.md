@@ -35,6 +35,7 @@ felixctl stream ls --json
 | [`felixctl node`](#felixctl-node) | List, inspect, drain and deregister brokers (control plane) |
 | [`felixctl shard`](#felixctl-shard) | List shard assignments and move shards (control plane) |
 | [`felixctl placement`](#felixctl-placement) | See what placement will do, and pause or resume its moves (control plane) |
+| [`felixctl raft`](#felixctl-raft) | Plan re-forming Raft groups that lost their majority (control plane) |
 | [`felixctl features`](#felixctl-features) | List fleet features and finalize them (control plane) |
 | [`felixctl backup-point`](#felixctl-backup-point) | Record every shard's committed offsets as a backup point (control plane) |
 | [`felixctl rbac`](#felixctl-rbac) | List, grant and revoke RBAC policies and role assignments (control plane) |
@@ -1554,6 +1555,57 @@ Examples:
 ```bash
 felixctl placement abandon orders 2 --yes
 felixctl placement abandon sessions 0 --cache --yes
+```
+
+## `felixctl raft`
+
+Re-form a Raft group that can no longer elect a leader, because too many of its copies are lost. `raft reform plan` surveys the brokers and prints what a re-form would do for each shard: which copy it starts from, the new voters, and whether records could be lost. It changes nothing. Needs a control-plane token allowed node.manage on the cluster.
+
+```text
+felixctl raft [OPTIONS] <COMMAND>
+```
+
+Examples:
+
+```bash
+felixctl raft reform plan
+felixctl raft reform plan --scope node broker-2
+felixctl raft reform plan --json
+```
+
+### `felixctl raft reform`
+
+Re-form Raft groups that lost their majority. `plan` shows what a re-form would do and changes nothing.
+
+```text
+felixctl raft reform [OPTIONS] <COMMAND>
+```
+
+Examples:
+
+```bash
+felixctl raft reform plan
+felixctl raft reform plan --scope node broker-2
+```
+
+#### `felixctl raft reform plan`
+
+Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again.
+
+```text
+felixctl raft reform plan [OPTIONS]
+```
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--scope` | `<SCOPE>` | `cluster` | `cluster` for every Raft shard, or `node ID` for the shards placed on one broker |
+
+Examples:
+
+```bash
+felixctl raft reform plan
+felixctl raft reform plan --scope cluster
+felixctl raft reform plan --scope node broker-2 --json
 ```
 
 ## `felixctl features`
