@@ -750,3 +750,68 @@ async fn unknown_kid_fetches_share_one_budget_across_tenants() -> Result<()> {
     );
     Ok(())
 }
+
+fn context_ending_at(ends_at: i64) -> AuthContext {
+    AuthContext {
+        tenant_id: "t1".to_string(),
+        matcher: PermissionMatcher::from_strings(&[]).expect("perms"),
+        token: "token".to_string(),
+        subject: "alice".to_string(),
+        actor: None,
+        publisher: None,
+        issued_at: 1_000,
+        expires_at: ends_at,
+        lease_token: false,
+        revocable: Revocable::new(
+            Arc::new(crate::serving::revocation::Revocations::default()),
+            "t1".to_string(),
+            "alice".to_string(),
+            None,
+            1_000,
+        )
+        .ending_at(ends_at),
+        client_chain: None,
+    }
+}
+
+fn unix_now() -> i64 {
+    felix_common::clock::system_time()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[test]
+fn a_client_certificate_ends_what_its_token_opens_when_it_expires_first() {
+    let now = unix_now();
+    // An expired certificate on a still-open connection refuses the stream.
+    let mut context = context_ending_at(now + 3_600);
+    let err = bound_by_certificate(&mut context, now - 1).expect_err("expired");
+    assert!(err.is::<CredentialRefused>(), "{err:#}");
+
+    // A sooner notAfter ends the token's streams; a later one changes nothing.
+    let mut context = context_ending_at(now + 3_600);
+    bound_by_certificate(&mut context, now + 1).expect("still valid");
+    assert!(!context.revocable.is_revoked());
+    let mut later = context_ending_at(now - 1);
+    bound_by_certificate(&mut later, now + 3_600).expect_err("the token already ended");
+}
+
+/// A leaf that does not parse has no known end, so it is refused rather than
+/// left unbounded.
+#[tokio::test]
+async fn a_client_certificate_that_does_not_parse_is_refused() {
+    let demo = crate::serving::auth::demo::demo_auth_for_tenant("t1").expect("demo auth");
+    let junk = [rustls::pki_types::CertificateDer::from(&b"junk"[..])];
+    let err = demo
+        .auth
+        .authenticate_peer("t1", &demo.token, Some(&junk))
+        .await
+        .err()
+        .expect("an unreadable certificate was accepted");
+    assert!(err.is::<CredentialRefused>(), "{err:#}");
+    demo.auth
+        .authenticate_peer("t1", &demo.token, None)
+        .await
+        .expect("no certificate");
+}

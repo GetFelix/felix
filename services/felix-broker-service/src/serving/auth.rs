@@ -51,9 +51,16 @@ pub struct BrokerAuth {
     /// Checks a forwarded client chain against `FELIX_TLS_CLIENT_CA`, as the
     /// client listeners do in the handshake.
     client_verifier: Option<Arc<dyn rustls::server::danger::ClientCertVerifier>>,
+    /// When a client chain ends, against `FELIX_TLS_CLIENT_CA` (empty without
+    /// one).
+    client_chains: felix_common::tls::ChainExpiry,
     /// Without it this broker neither mints nor accepts lease tokens.
     lease: Option<Arc<LeaseTokens>>,
 }
+
+/// The clock skew allowed on a token's `exp`, both when it is accepted and
+/// when what it opened is ended.
+const TOKEN_LEEWAY_SECS: i64 = 60;
 
 impl BrokerAuth {
     pub fn new(controlplane_url: String) -> Self {
@@ -65,14 +72,20 @@ impl BrokerAuth {
             key_cache.clone(),
         ));
         let verifier = Arc::new(
-            FelixTokenVerifier::new("felix-auth", "felix-broker", 60, key_store.clone())
-                .with_cache(key_cache),
+            FelixTokenVerifier::new(
+                "felix-auth",
+                "felix-broker",
+                TOKEN_LEEWAY_SECS.unsigned_abs(),
+                key_store.clone(),
+            )
+            .with_cache(key_cache),
         );
         Self {
             verifier,
             key_store,
             bind_subject: false,
             client_verifier: None,
+            client_chains: client_chains(None),
             lease: None,
         }
     }
@@ -81,14 +94,20 @@ impl BrokerAuth {
     pub fn with_key_store(key_store: Arc<ControlPlaneKeyStore>) -> Self {
         let key_cache = key_store.key_cache.clone();
         let verifier = Arc::new(
-            FelixTokenVerifier::new("felix-auth", "felix-broker", 60, key_store.clone())
-                .with_cache(key_cache),
+            FelixTokenVerifier::new(
+                "felix-auth",
+                "felix-broker",
+                TOKEN_LEEWAY_SECS.unsigned_abs(),
+                key_store.clone(),
+            )
+            .with_cache(key_cache),
         );
         Self {
             verifier,
             key_store,
             bind_subject: false,
             client_verifier: None,
+            client_chains: client_chains(None),
             lease: None,
         }
     }
@@ -112,6 +131,40 @@ impl BrokerAuth {
         self
     }
 
+    /// The roots client chains were verified with, so a chain's end is read
+    /// from its validated path. Without them every certificate that could be
+    /// an intermediate counts.
+    pub(crate) fn with_client_roots(mut self, roots: Option<Arc<rustls::RootCertStore>>) -> Self {
+        self.client_chains = client_chains(roots);
+        self
+    }
+
+    /// When a client chain stops being valid; see [`ChainExpiry::not_after`].
+    ///
+    /// [`ChainExpiry::not_after`]: felix_common::tls::ChainExpiry::not_after
+    pub(crate) fn client_chain_ends(
+        &self,
+        chain: &[rustls::pki_types::CertificateDer<'_>],
+    ) -> Result<Option<i64>, felix_common::tls::UnreadableCertificate> {
+        self.client_chains.not_after(chain)
+    }
+
+    /// [`bound_by_certificate`] with the end of `chain`, refusing a chain
+    /// whose leaf cannot be read.
+    fn bound_by_chain(
+        &self,
+        context: &mut AuthContext,
+        chain: &[rustls::pki_types::CertificateDer<'_>],
+    ) -> Result<()> {
+        match self.client_chain_ends(chain) {
+            Ok(Some(not_after)) => bound_by_certificate(context, not_after),
+            Ok(None) => Ok(()),
+            Err(_) => Err(anyhow::Error::new(CredentialRefused(
+                "token refused: the client certificate does not parse".to_string(),
+            ))),
+        }
+    }
+
     /// Mint and accept lease tokens with these keys.
     pub fn with_lease_tokens(mut self, lease: Option<Arc<LeaseTokens>>) -> Self {
         self.lease = lease;
@@ -133,6 +186,9 @@ impl BrokerAuth {
         peer_certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     ) -> Result<AuthContext> {
         let mut context = self.authenticate(tenant_id, token).await?;
+        if let Some(chain) = peer_certs {
+            self.bound_by_chain(&mut context, chain)?;
+        }
         if self.bind_subject {
             felix_common::tls::check_subject_binding(
                 peer_certs,
@@ -170,7 +226,28 @@ impl BrokerAuth {
         token: &str,
         client_chain: Option<&[bytes::Bytes]>,
     ) -> Result<AuthContext> {
-        let context = self.authenticate(tenant_id, token).await?;
+        let mut context = self.authenticate(tenant_id, token).await?;
+        // Only ever shortens what the token opens, so it is safe to apply
+        // before the chain is verified, or when it is not verified at all.
+        if let Some(chain) = client_chain {
+            let chain: Vec<_> = chain
+                .iter()
+                .map(|cert| rustls::pki_types::CertificateDer::from(cert.as_ref()))
+                .collect();
+            match self.client_chain_ends(&chain) {
+                Ok(Some(not_after)) => bound_by_certificate(&mut context, not_after)?,
+                Ok(None) => {}
+                // A binding broker trusts the chain, so it must know when it
+                // ends. Otherwise the chain is ignored.
+                Err(_) if self.bind_subject => {
+                    return Err(anyhow::Error::new(CredentialRefused(
+                        "token refused: the forwarded client certificate does not parse"
+                            .to_string(),
+                    )));
+                }
+                Err(_) => {}
+            }
+        }
         if !self.bind_subject {
             return Ok(context);
         }
@@ -251,13 +328,14 @@ impl BrokerAuth {
             actor.clone(),
             claims.iat,
         );
-        if lease_token {
-            revocable = revocable.ending_at(
-                claims
-                    .exp
-                    .saturating_add(crate::serving::lease::LEEWAY_SECS),
-            );
-        }
+        // Everything the token opens ends at its `exp`, with the same leeway
+        // it was accepted under, so no stream outlives its credential.
+        let leeway = if lease_token {
+            crate::serving::lease::LEEWAY_SECS
+        } else {
+            TOKEN_LEEWAY_SECS
+        };
+        revocable = revocable.ending_at(claims.exp.saturating_add(leeway));
         if revocable.is_revoked() {
             return Err(anyhow::Error::new(Revoked));
         }
@@ -275,6 +353,27 @@ impl BrokerAuth {
             client_chain: None,
         })
     }
+}
+
+/// End what `context` opens by the client certificate's `notAfter` too, and
+/// refuse it if that has passed: the handshake checked the certificate once,
+/// but a long-lived connection can open a stream after it expired.
+fn bound_by_certificate(context: &mut AuthContext, not_after: i64) -> Result<()> {
+    context.revocable = context.revocable.clone().ending_at(not_after);
+    if context.revocable.has_ended() {
+        return Err(anyhow::Error::new(CredentialRefused(
+            "token refused: the client certificate has expired".to_string(),
+        )));
+    }
+    Ok(())
+}
+
+fn client_chains(roots: Option<Arc<rustls::RootCertStore>>) -> felix_common::tls::ChainExpiry {
+    felix_common::tls::ChainExpiry::new(
+        roots.unwrap_or_else(|| Arc::new(rustls::RootCertStore::empty())),
+        &crate::serving::tls::provider(),
+        felix_common::tls::Presenter::Client,
+    )
 }
 
 /// Tenant scope plus the permission matcher from a verified token.

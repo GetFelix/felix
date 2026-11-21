@@ -91,6 +91,7 @@ Connection admission and protocol failures on the client listener.
 | `felix_quic_connections_refused_total` | counter | `reason` | Client connections refused on arrival, by `reason`. |
 | `felix_quic_handshake_failures_total` | counter | - | Client handshakes that failed. |
 | `felix_quic_auth_timeout_total` | counter | - | Connections closed for not authenticating in time. |
+| `felix_quic_credential_expired_total` | counter | - | Client connections closed because their client certificate passed `notAfter`. |
 | `felix_quic_protocol_violation_total` | counter | `stream` | Streams closed for violating the protocol, by stream kind. Telemetry build only. |
 
 ## Broker: caches, queues and groups

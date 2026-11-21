@@ -451,6 +451,16 @@ struct Offered {
     raft: Option<Arc<dyn RaftHandler>>,
 }
 
+/// Internal connection close code for a peer whose certificate passed its
+/// `notAfter`, sent by whichever side noticed. The dialer reconnects with a
+/// renewed one.
+pub(crate) const CERT_EXPIRED_CLOSE_CODE: u32 = 5;
+
+/// How far before its certificate's `notAfter` a peer connection may close.
+/// Brokers whose certificates were issued together would otherwise all drop
+/// their links in the same instant. Closing early is safe; late is not.
+pub(crate) const CERT_CLOSE_SPREAD: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Serve every stream a peer opens on one connection.
 async fn serve_connection(
     connection: QuicConnection,
@@ -473,9 +483,33 @@ async fn serve_connection(
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // What the peer offered in its `Hello`, which shapes its answers.
     let caller = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // The handshake checked the peer's certificate once; the connection must
+    // not outlive it. A leaf that does not parse has no known end: close at
+    // once.
+    let cert_expiry = tls
+        .as_ref()
+        .zip(peer_certs.as_deref())
+        .and_then(|(tls, chain)| {
+            tls.chain_expiry(felix_common::tls::Presenter::Client)
+                .not_after(chain)
+                .unwrap_or(Some(0))
+                .map(|at| felix_common::tls::spread_before(at, CERT_CLOSE_SPREAD))
+        });
+    let cert_expired = async move {
+        match cert_expiry {
+            Some(at) => felix_common::tls::sleep_until_unix(at).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(cert_expired);
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
+            () = &mut cert_expired => {
+                tracing::info!(node = %node_id, "closing an internal connection: the peer's certificate expired");
+                connection.close(CERT_EXPIRED_CLOSE_CODE.into(), b"peer certificate expired");
+                break;
+            }
             accepted = connection.accept_bi() => match accepted {
                 Ok(stream) => stream,
                 // The peer closed, or the connection dropped. Either way this

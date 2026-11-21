@@ -247,6 +247,7 @@ pub struct Principal {
     tenant_id: String,
     access: Access,
     revoked: Option<RevocationCheck>,
+    ends: Option<EndWatch>,
 }
 
 /// Says whether the credential a principal authenticated with has since been
@@ -257,6 +258,17 @@ struct RevocationCheck(Arc<dyn Fn() -> bool + Send + Sync>);
 impl std::fmt::Debug for RevocationCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RevocationCheck")
+    }
+}
+
+/// Starts a wait that resolves once the credential a principal authenticated
+/// with ends, by revocation or its own end time.
+#[derive(Clone)]
+struct EndWatch(Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>);
+
+impl std::fmt::Debug for EndWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EndWatch")
     }
 }
 
@@ -275,6 +287,7 @@ impl Principal {
             tenant_id: tenant_id.into(),
             access: Access::Token(matcher),
             revoked: None,
+            ends: None,
         }
     }
 
@@ -283,6 +296,24 @@ impl Principal {
     pub fn with_revocation(mut self, revoked: impl Fn() -> bool + Send + Sync + 'static) -> Self {
         self.revoked = Some(RevocationCheck(Arc::new(revoked)));
         self
+    }
+
+    /// Close the connection, idle or not, once `ends` resolves: the
+    /// credential was revoked or reached its end time.
+    pub fn with_end(
+        mut self,
+        ends: impl Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync + 'static,
+    ) -> Self {
+        self.ends = Some(EndWatch(Arc::new(ends)));
+        self
+    }
+
+    /// Resolves once the credential ends; never, without [`Self::with_end`].
+    pub(crate) fn ended(&self) -> futures::future::BoxFuture<'static, ()> {
+        match &self.ends {
+            Some(ends) => (ends.0)(),
+            None => Box::pin(std::future::pending()),
+        }
     }
 
     /// Whether the credential this principal authenticated with was revoked.
@@ -297,6 +328,7 @@ impl Principal {
             tenant_id: tenant_id.into(),
             access: Access::Anonymous,
             revoked: None,
+            ends: None,
         }
     }
 

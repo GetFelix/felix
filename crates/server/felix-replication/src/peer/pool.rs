@@ -71,6 +71,8 @@ pub struct PeerPool {
     /// Whether this broker presents a certificate and verifies each peer's
     /// against the node id it dials.
     authenticated: bool,
+    /// When a peer's certificate ends, under mTLS.
+    cert_expiry: Option<felix_common::tls::ChainExpiry>,
     /// What each peer said it can do, shared with this broker's listener.
     known: KnownCapabilities,
 }
@@ -104,6 +106,9 @@ impl PeerPool {
         )
         .context("bind peer QUIC endpoint")?;
         let authenticated = tls.is_some();
+        let cert_expiry = tls
+            .as_ref()
+            .map(|tls| tls.chain_expiry(felix_common::tls::Presenter::Server));
 
         let pool = Arc::new(Self {
             partition: config
@@ -116,6 +121,7 @@ impl PeerPool {
             peers: Mutex::new(HashMap::default()),
             shutdown,
             authenticated,
+            cert_expiry,
             known: KnownCapabilities::default(),
         });
         pool.clone().spawn_reaper();
@@ -447,6 +453,7 @@ impl PeerPool {
             self.config.outgoing_capabilities(),
             self.config.streams_per_conn,
             self.config.handshake_timeout,
+            self.cert_expiry.as_ref(),
         )
         .await;
 

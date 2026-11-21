@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::Shared;
@@ -58,8 +58,15 @@ where
     tokio::pin!(read, write);
     tokio::select! {
         read = &mut read => {
-            // The answers already queued are still owed.
-            let written = write.await;
+            // The answers already queued are still owed, but a connection the
+            // reader gave up on (an ended credential, a bad frame) must not
+            // stay open behind a client that stops reading.
+            let written = match &read {
+                Ok(()) => write.await,
+                Err(_) => tokio::time::timeout(CLOSING_WRITE_LIMIT, write)
+                    .await
+                    .unwrap_or(Ok(())),
+            };
             read.and(written)
         }
         // The writer only ends first when it fails.
@@ -81,12 +88,19 @@ where
     let auth_deadline = Instant::now() + shared.settings.auth_timeout;
     // Whether a produce was queued since the writer last drained.
     let mut pipelined = false;
+    // Watched while idle and while a request is handled, so neither an idle
+    // connection nor a long-poll fetch outlives the credential.
+    let mut ended: BoxFuture<'static, ()> = Box::pin(std::future::pending());
     loop {
+        if let Some(next) = session.take_end() {
+            ended = next;
+        }
         let authenticated = session.authenticated();
         let mut size = [0u8; 4];
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => return Ok(()),
+            () = &mut ended => return credential_ended(&queue).await,
             _ = tokio::time::sleep_until(auth_deadline), if !authenticated => {
                 return Err(auth_timed_out(shared));
             }
@@ -137,7 +151,12 @@ where
         if !parsed.pipelines() && std::mem::take(&mut pipelined) {
             drain(&queue).await?;
         }
-        match api::handle(shared, &mut session, parsed, shutdown).await? {
+        let handled = tokio::select! {
+            biased;
+            () = &mut ended => return credential_ended(&queue).await,
+            handled = api::handle(shared, &mut session, parsed, shutdown) => handled?,
+        };
+        match handled {
             Handled::Later(answer) => {
                 pipelined = true;
                 send(
@@ -170,6 +189,19 @@ where
             }
         }
     }
+}
+
+/// How long a connection being closed waits for its queued answers to be
+/// written. A client that stops reading must not keep it open.
+const CLOSING_WRITE_LIMIT: Duration = Duration::from_secs(5);
+
+/// Close a connection whose credential was revoked or reached its end time,
+/// once the answers already queued are written, or after
+/// [`CLOSING_WRITE_LIMIT`].
+async fn credential_ended(queue: &mpsc::Sender<Queued<'_>>) -> Result<()> {
+    tracing::info!("closing a kafka connection: its credential ended");
+    let _ = tokio::time::timeout(CLOSING_WRITE_LIMIT, drain(queue)).await;
+    bail!("closing the connection: credential ended");
 }
 
 /// Queue an answer, waiting while the pipeline is full: the connection stops

@@ -196,6 +196,53 @@ async fn an_expired_certificate_is_refused() {
     server.stop().await;
 }
 
+fn expiring_in(secs: u64) -> impl FnOnce(&mut rcgen::CertificateParams) {
+    move |params| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        params.not_after = rcgen::date_time_ymd(1970, 1, 1) + now + Duration::from_secs(secs);
+    }
+}
+
+/// A connection closes when either side's certificate expires, so the next
+/// request has to dial again, and the handshake checks the certificate anew.
+#[tokio::test]
+async fn a_connection_closes_when_a_certificate_on_it_expires() {
+    let pki = Pki::new();
+    for dialer_expires in [true, false] {
+        let (dialer, listener_cert) = if dialer_expires {
+            (
+                pki.issue_with("a", "broker-a", expiring_in(5)),
+                pki.issue("b", PEER),
+            )
+        } else {
+            (
+                pki.issue("a", "broker-a"),
+                pki.issue_with("b", PEER, expiring_in(5)),
+            )
+        };
+        let server = listener(PEER, Some(tls(&listener_cert))).await;
+        let pool = pool_as("broker-a", Some(tls(&dialer)));
+        pool.request(PEER, server.addr, forward())
+            .await
+            .expect("both certificates are still valid");
+
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        let err = pool
+            .request(PEER, server.addr, forward())
+            .await
+            .expect_err("a request went out over an expired certificate");
+        assert!(
+            refused_at_handshake(&err),
+            "dialer_expires={dialer_expires}: {err:?}"
+        );
+
+        pool.shutdown().await;
+        server.stop().await;
+    }
+}
+
 /// **The certificate's name is the identity.** A peer holding a valid
 /// certificate for one node id cannot claim another in `Hello`: the
 /// handshake proves it is *a* broker, the name check proves *which*.

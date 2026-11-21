@@ -501,6 +501,7 @@ where
         BrokerAuth::with_key_store(Arc::clone(&key_store))
             .with_subject_binding(config.client_tls.bind_subject)
             .with_client_verifier(client_tls.client_verifier()?)
+            .with_client_roots(client_tls.client_roots())
             .with_lease_tokens(crate::serving::lease::LeaseTokens::from_env()?.map(Arc::new)),
     );
     // One set for every client listener, so the per-address cap and each
