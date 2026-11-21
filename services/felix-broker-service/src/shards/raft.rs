@@ -1386,8 +1386,9 @@ impl EngineShards for RaftShards {
         {
             let targets = self.targets.lock();
             let mut terms = self.leading.terms.lock();
+            let mut reset = false;
             for (key, lead) in terms.iter_mut() {
-                lead.take_bar(head);
+                reset |= lead.take_bar(head);
                 if !lead.met_by(as_of, checkpoint) {
                     continue;
                 }
@@ -1402,6 +1403,9 @@ impl EngineShards for RaftShards {
             // Under the lock `opened` sets it under, so a new term's want
             // is not lost.
             lease.want_head(terms.values().any(|lead| lead.bar.is_none()));
+            if reset {
+                lease.want_view();
+            }
         }
         for (key, target, term) in tell {
             let kept = match &target {
@@ -1604,19 +1608,21 @@ impl Lead {
     /// Take the bar from `head`, the newest a heartbeat brought, once one
     /// sent at or after `since` has. Heads only grow on one feed, so a lower
     /// one means it was reset: it becomes the bar, and `since` moves to now
-    /// so a view of the old feed does not meet it.
-    fn take_bar(&mut self, head: Option<Head>) {
+    /// so a view of the old feed does not meet it. Returns whether it moved.
+    fn take_bar(&mut self, head: Option<Head>) -> bool {
         let Some(head) = head.filter(|head| head.sent >= self.since) else {
-            return;
+            return false;
         };
         match self.bar {
             None => self.bar = Some(head.seq),
             Some(bar) if head.seq < bar => {
                 self.bar = Some(head.seq);
                 self.since = tokio::time::Instant::now();
+                return true;
             }
             Some(_) => {}
         }
+        false
     }
 
     /// Whether a feed view fetched by a request that started at `as_of`,
@@ -1671,6 +1677,9 @@ impl WriteFence for Leading {
             terms.insert(key.clone(), Lead::new(term));
             if let Some(lease) = self.lease.get() {
                 lease.want_head(true);
+                // After `since`: a long poll held from before it would leave
+                // the target waiting until the poll times out.
+                lease.want_view();
             }
         }
         if let Some(wake) = self.wake.get() {

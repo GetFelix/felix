@@ -4747,8 +4747,15 @@ target it holds and does not hand leadership away by placement during a
 restore. The field is absent whenever targets are not withheld.
 
 A new leader waits for a feed request that started after its term began.
-A long poll already in flight does not count, so with nothing changing on
-the feed the wait can be a whole long poll, about 20 s (#2679).
+A long poll already in flight does not count, and with nothing changing on
+the feed it would answer only when it times out, about 20 s later. So a new
+term asks the watch for a view (`LeaseState::want_view`): the watch drops
+the held poll and asks again at once without the hold, and that answer
+wakes the routing feed even when nothing changed. A head lower than the bar
+moves `since` the same way and asks again too. The asks are counted, and a request
+serves every ask made before it started, so terms that open together cost
+one request. Terms that open one after another each end the poll held at
+the time, about two requests per term, at the pace terms open.
 
 A target write is a shard-record change, so it is on the assignment feed
 with its own sequence. A restore brings the feed's sequence back with the
