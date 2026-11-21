@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::Instant;
+use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::Shared;
@@ -58,8 +58,15 @@ where
     tokio::pin!(read, write);
     tokio::select! {
         read = &mut read => {
-            // The answers already queued are still owed.
-            let written = write.await;
+            // The answers already queued are still owed, but a connection the
+            // reader gave up on (an ended credential, a bad frame) must not
+            // stay open behind a client that stops reading.
+            let written = match &read {
+                Ok(()) => write.await,
+                Err(_) => tokio::time::timeout(CLOSING_WRITE_LIMIT, write)
+                    .await
+                    .unwrap_or(Ok(())),
+            };
             read.and(written)
         }
         // The writer only ends first when it fails.
@@ -184,11 +191,16 @@ where
     }
 }
 
+/// How long a connection being closed waits for its queued answers to be
+/// written. A client that stops reading must not keep it open.
+const CLOSING_WRITE_LIMIT: Duration = Duration::from_secs(5);
+
 /// Close a connection whose credential was revoked or reached its end time,
-/// once the answers already queued are written.
+/// once the answers already queued are written, or after
+/// [`CLOSING_WRITE_LIMIT`].
 async fn credential_ended(queue: &mpsc::Sender<Queued<'_>>) -> Result<()> {
     tracing::info!("closing a kafka connection: its credential ended");
-    drain(queue).await?;
+    let _ = tokio::time::timeout(CLOSING_WRITE_LIMIT, drain(queue)).await;
     bail!("closing the connection: credential ended");
 }
 
