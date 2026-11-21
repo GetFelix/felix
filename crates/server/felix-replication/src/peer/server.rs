@@ -452,6 +452,11 @@ struct Offered {
 }
 
 /// Serve every stream a peer opens on one connection.
+/// Internal connection close code for a peer whose certificate passed its
+/// `notAfter`, sent by whichever side noticed. The dialer reconnects with a
+/// renewed one.
+pub(crate) const CERT_EXPIRED_CLOSE_CODE: u32 = 5;
+
 async fn serve_connection(
     connection: QuicConnection,
     node_id: String,
@@ -473,9 +478,26 @@ async fn serve_connection(
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // What the peer offered in its `Hello`, which shapes its answers.
     let caller = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // The handshake checked the peer's certificate once; the connection must
+    // not outlive it.
+    let cert_expiry = peer_certs
+        .as_deref()
+        .and_then(felix_common::tls::chain_not_after);
+    let cert_expired = async move {
+        match cert_expiry {
+            Some(at) => felix_common::tls::sleep_until_unix(at).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(cert_expired);
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
+            () = &mut cert_expired => {
+                tracing::info!(node = %node_id, "closing an internal connection: the peer's certificate expired");
+                connection.close(CERT_EXPIRED_CLOSE_CODE.into(), b"peer certificate expired");
+                break;
+            }
             accepted = connection.accept_bi() => match accepted {
                 Ok(stream) => stream,
                 // The peer closed, or the connection dropped. Either way this

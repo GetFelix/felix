@@ -186,6 +186,21 @@ impl PeerConnection {
             });
         }
 
+        // The handshake checked the peer's certificate once; a connection to
+        // it must not outlive it. The next dial checks the renewed one.
+        if let Some(at) = connection
+            .peer_certificates()
+            .and_then(|chain| felix_common::tls::chain_not_after(&chain))
+        {
+            let closer = connection.clone();
+            tasks.push(tokio::spawn(async move {
+                felix_common::tls::sleep_until_unix(at).await;
+                closer.close(
+                    crate::peer::server::CERT_EXPIRED_CLOSE_CODE.into(),
+                    b"peer certificate expired",
+                );
+            }));
+        }
         let peer = Arc::new(Self {
             node_id: node_id.clone(),
             connection,

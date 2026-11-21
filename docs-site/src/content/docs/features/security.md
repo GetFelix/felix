@@ -45,6 +45,15 @@ takes them, so a renewal written over the same paths (cert-manager, a
 Kubernetes Secret volume) is used by the next handshake without a restart.
 CA bundles are read at startup.
 
+An open connection does not outlive its credentials. Every stream ends when
+the token it was opened with expires, and a connection with a client
+certificate closes at that certificate's `notAfter`. Short certificate
+lifetimes therefore work as revocation: a renewed certificate is used on the
+next connection, and an unrenewed one stops working everywhere it is in use.
+Clients should refresh before expiry and reconnect. Internal broker-to-broker
+connections close the same way when a node certificate expires. Details:
+[When a credential expires](https://github.com/GetFelix/felix/blob/main/docs/auth.md#when-a-credential-expires).
+
 ### Rotating the Raft peer token
 
 Control-plane members on the Raft metadata backend authenticate each other with

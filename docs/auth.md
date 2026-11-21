@@ -435,6 +435,38 @@ upgrade finishes. Removing the principal's groupings stops the next refresh
 too, and ends its chain. `"principal_id": "*"` revokes the broker tokens of
 every principal of the tenant.
 
+### When a credential expires
+
+No stream outlives the credentials it was opened with. Every stream a token
+opened, on every listener, ends when the token expires: at its `exp` plus the
+60 seconds of clock-skew leeway it was accepted under (2 seconds for a lease
+token). A stream on a connection with a client certificate also ends at the
+certificate's `notAfter`, the earliest one in the chain the client presented,
+if that comes first.
+
+The stream ends as a revoked one does: the broker sends code `revoked` as the
+last frame of a subscription, cache watch or control stream, closes a publish
+stream, disconnects an MQTT client with `Not authorized`, and refuses the next
+Kafka request. The broker also closes a QUIC client connection at its
+certificate's `notAfter`, with application close code `2` and reason
+`credential expired`, and refuses any stream opened on it after that.
+
+The broker's own clock decides, the same clock that checked the credential
+when it was accepted. A broker clock that runs fast ends streams early; one
+that runs slow lets them run late by the same amount.
+
+A token cannot be swapped on an open stream: a second `Auth` is refused. A
+client keeps working by fetching a fresh token, or renewing its certificate,
+before the old one expires, and opening a new connection with it. The Rust
+client's token provider (see [In the Rust client](#in-the-rust-client)) is
+asked again when it reconnects. A client that holds one connection for longer
+than its token lives should expect it to end and reconnect.
+
+Broker-to-broker connections on the internal port follow the same rule: each
+side closes the connection when the other side's certificate passes
+`notAfter` (close code `5`, `peer certificate expired`), and the next dial
+presents the renewed certificate.
+
 ### Revoking a principal
 
 A revocation is a cutoff time recorded for one principal of a tenant. Every
@@ -948,12 +980,12 @@ A lease token is a Felix token with a few differences:
 
 ### Session end
 
-Other tokens are checked when a stream opens, and an open stream outlives
-the token. A lease token's streams do not: every stream it opened, on every
-listener, ends 2 seconds after its `exp`, the same way a revocation ends it
-(code `revoked`). Otherwise a node could keep writing over an open stream
-long after it lost the lease. The Kafka listener checks the same end time at
-each request and closes the connection after it.
+Every stream a lease token opened, on every listener, ends 2 seconds after
+its `exp`, the same way a revocation ends it (code `revoked`). Otherwise a
+node could keep writing over an open stream long after it lost the lease.
+The Kafka listener checks the same end time at each request and closes the
+connection after it. Other tokens end the same way, with their own 60 second
+leeway (see [When a credential expires](#when-a-credential-expires)).
 
 ### The lease key
 

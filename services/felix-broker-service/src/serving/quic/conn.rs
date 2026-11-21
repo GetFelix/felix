@@ -13,7 +13,9 @@ use tokio_util::task::TaskTracker;
 
 use super::client_error::ClientError;
 use super::handlers::publish::{PublishContext, build_tracked_publish_context};
-use super::preauth::{AUTH_TIMEOUT_CLOSE_CODE, ConnectionLimit, auth_timeout};
+use super::preauth::{
+    AUTH_TIMEOUT_CLOSE_CODE, CREDENTIAL_EXPIRED_CLOSE_CODE, ConnectionLimit, auth_timeout,
+};
 use super::streams::{handle_stream, handle_uni_stream};
 use crate::config::BrokerConfig;
 use crate::observability::timings;
@@ -293,6 +295,18 @@ pub(crate) async fn handle_connection_with_shutdown(
     let preauth = Arc::clone(&publish_ctx.preauth);
     let auth_deadline = auth_timeout(&config).map(|timeout| tokio::time::Instant::now() + timeout);
     let mut awaiting_auth = auth_deadline.is_some();
+    // The handshake checked the client certificate once; the connection must
+    // not outlive it. Each stream's credential also ends by then (`auth.rs`).
+    let cert_expiry = connection
+        .peer_certificates()
+        .and_then(|chain| felix_common::tls::chain_not_after(&chain));
+    let cert_expired = async move {
+        match cert_expiry {
+            Some(at) => felix_common::tls::sleep_until_unix(at).await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(cert_expired);
     loop {
         // Accept both bidirectional control streams and uni-directional publish streams.
         tokio::select! {
@@ -353,6 +367,17 @@ pub(crate) async fn handle_connection_with_shutdown(
                     "closing client connection: not authenticated in time"
                 );
                 connection.close(AUTH_TIMEOUT_CLOSE_CODE.into(), b"authentication timeout");
+                streams.close();
+                return Ok(());
+            }
+            () = &mut cert_expired => {
+                metrics::counter!("felix_quic_credential_expired_total").increment(1);
+                tracing::info!(
+                    conn = connection.info().id.0,
+                    peer = %connection.info().peer_addr,
+                    "closing client connection: its client certificate expired"
+                );
+                connection.close(CREDENTIAL_EXPIRED_CLOSE_CODE.into(), b"credential expired");
                 streams.close();
                 return Ok(());
             }

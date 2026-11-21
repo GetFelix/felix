@@ -18,6 +18,10 @@ use crate::config::BrokerConfig;
 /// time. `0` is a deliberate shutdown.
 pub(crate) const AUTH_TIMEOUT_CLOSE_CODE: u32 = 1;
 
+/// QUIC application close code for a connection whose client certificate
+/// passed its `notAfter`. The client should reconnect with a renewed one.
+pub(crate) const CREDENTIAL_EXPIRED_CLOSE_CODE: u32 = 2;
+
 /// One connection's pre-auth state, shared by its streams.
 pub(crate) struct PreAuthGate {
     authenticated: watch::Sender<bool>,

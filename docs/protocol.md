@@ -39,8 +39,14 @@ succeeds the broker limits what the stream may cost it:
 - Connections past `max_client_connections` are refused during the QUIC
   handshake (`CONNECTION_REFUSED`).
 
+- A connection with a client certificate is closed at the certificate's
+  `notAfter` with QUIC application error code `2` and reason `credential
+  expired`. Each stream authenticated on it has already ended with `revoked` by
+  then, as has any stream whose token reached its `exp` (see "When a credential
+  expires" in [docs/auth.md](auth.md)). Reconnect with a renewed certificate.
+
 Client connection close codes: `0` broker shutting down, `1` authentication
-timeout.
+timeout, `2` client certificate expired.
 
 ## Frame Envelope
 All messages are sent in a fixed header + payload frame.
@@ -2334,7 +2340,7 @@ client MUST act on the class it received, not on this table.
 | `internal` | `outcome_unknown` | 13 | Something failed inside the broker. | Anything not covered above. Sent as `retry` for reads and failures before any write, `fatal` for configuration the request cannot change. |
 | `storage` | `outcome_unknown` | 14 | The storage layer failed. | A durable write, a group's state, or a cache log that could not be read. `retry` for reads. |
 | `stale_claim` | `retry` | 15 | The group has no record of handing this offset out. Nothing was applied; the record will be delivered again. | A `group_ack` or `group_nack` for an offset the log holds that was written after the group's in-flight state was last rebuilt and not yet handed out. Also sent as `fatal` to a `group_extend`, or a `group_nack` naming `attempts`, whose claim no longer stands. A client that does not know the code sees an unknown code with `retry`. |
-| `revoked` | `fatal` | 16 | The credential was revoked: its principal, or the actor of a delegated token, was revoked after the token was issued. | In answer to `auth` with such a token. Also as the last frame of an open stream when the revocation reaches the broker: an `error` on a control stream, which is then closed, and on the event stream of a subscription or cache watch. A token minted after the revocation may still be accepted, so a client with a token provider can authenticate again. A client that does not know the code sees an unknown code with `fatal`; a client without `FEATURE_ERROR_CODES` gets the `error` with the text `credential revoked`. |
+| `revoked` | `fatal` | 16 | The credential was revoked: its principal, or the actor of a delegated token, was revoked after the token was issued. Also sent when the credential expired: the token's `exp` (plus its leeway) or the client certificate's `notAfter` passed. | In answer to `auth` with such a token. Also as the last frame of an open stream when the revocation reaches the broker or the credential expires: an `error` on a control stream, which is then closed, and on the event stream of a subscription or cache watch. A token minted after the revocation may still be accepted, so a client with a token provider can authenticate again. A client that does not know the code sees an unknown code with `fatal`; a client without `FEATURE_ERROR_CODES` gets the `error` with the text `credential revoked`. |
 | `stale_width` | `retry` | 17 | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | A keyed batch to the stream named by the client's last `publish_width` on that control stream, when the width or mapping it names differs from the broker's routing snapshot: the stream was most likely deleted and created again. Ask `stream_shards` again before retrying. Only a client that sent `publish_width` can get it. |
 | `feature_not_enabled` | `fatal` | 18 | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A `trim_before` before the fleet finalizes `head_trim`, or `raft_head_trim` for a shard on Raft (`detail.reason` = `head_trim` for both). It keeps failing until an operator finalizes the feature. Only a client that offered `FEATURE_HEAD_TRIM` can get it. Also, with `detail.reason` = `record_headers`, a publish that carries record headers to a single broker whose `FELIX_RECORD_HEADERS` switch is off, or that is forwarded to an owner that predates headers or has not yet seen the finalize, or, for a shard on Raft, before the fleet finalizes `raft_record_headers`: [what the broker does with headers](#what-the-broker-does-with-headers). |
 | `stream_has_commits` | `fatal` | 19 | The stream holds atomic commits, whose state lives in the records a trim would remove. Nothing was written. | A `trim_before` on such a stream. Only a client that offered `FEATURE_HEAD_TRIM` can get it. |

@@ -55,6 +55,10 @@ pub struct BrokerAuth {
     lease: Option<Arc<LeaseTokens>>,
 }
 
+/// The clock skew allowed on a token's `exp`, both when it is accepted and
+/// when what it opened is ended.
+const TOKEN_LEEWAY_SECS: i64 = 60;
+
 impl BrokerAuth {
     pub fn new(controlplane_url: String) -> Self {
         // The verifier and the JWKS store share one key cache, so a JWKS
@@ -65,8 +69,13 @@ impl BrokerAuth {
             key_cache.clone(),
         ));
         let verifier = Arc::new(
-            FelixTokenVerifier::new("felix-auth", "felix-broker", 60, key_store.clone())
-                .with_cache(key_cache),
+            FelixTokenVerifier::new(
+                "felix-auth",
+                "felix-broker",
+                TOKEN_LEEWAY_SECS.unsigned_abs(),
+                key_store.clone(),
+            )
+            .with_cache(key_cache),
         );
         Self {
             verifier,
@@ -81,8 +90,13 @@ impl BrokerAuth {
     pub fn with_key_store(key_store: Arc<ControlPlaneKeyStore>) -> Self {
         let key_cache = key_store.key_cache.clone();
         let verifier = Arc::new(
-            FelixTokenVerifier::new("felix-auth", "felix-broker", 60, key_store.clone())
-                .with_cache(key_cache),
+            FelixTokenVerifier::new(
+                "felix-auth",
+                "felix-broker",
+                TOKEN_LEEWAY_SECS.unsigned_abs(),
+                key_store.clone(),
+            )
+            .with_cache(key_cache),
         );
         Self {
             verifier,
@@ -133,6 +147,9 @@ impl BrokerAuth {
         peer_certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
     ) -> Result<AuthContext> {
         let mut context = self.authenticate(tenant_id, token).await?;
+        if let Some(not_after) = peer_certs.and_then(felix_common::tls::chain_not_after) {
+            bound_by_certificate(&mut context, not_after)?;
+        }
         if self.bind_subject {
             felix_common::tls::check_subject_binding(
                 peer_certs,
@@ -170,7 +187,18 @@ impl BrokerAuth {
         token: &str,
         client_chain: Option<&[bytes::Bytes]>,
     ) -> Result<AuthContext> {
-        let context = self.authenticate(tenant_id, token).await?;
+        let mut context = self.authenticate(tenant_id, token).await?;
+        // Only ever shortens what the token opens, so it is safe to apply
+        // before the chain is verified, or when it is not verified at all.
+        if let Some(not_after) = client_chain.and_then(|chain| {
+            let chain: Vec<_> = chain
+                .iter()
+                .map(|cert| rustls::pki_types::CertificateDer::from(cert.as_ref()))
+                .collect();
+            felix_common::tls::chain_not_after(&chain)
+        }) {
+            bound_by_certificate(&mut context, not_after)?;
+        }
         if !self.bind_subject {
             return Ok(context);
         }
@@ -251,13 +279,14 @@ impl BrokerAuth {
             actor.clone(),
             claims.iat,
         );
-        if lease_token {
-            revocable = revocable.ending_at(
-                claims
-                    .exp
-                    .saturating_add(crate::serving::lease::LEEWAY_SECS),
-            );
-        }
+        // Everything the token opens ends at its `exp`, with the same leeway
+        // it was accepted under, so no stream outlives its credential.
+        let leeway = if lease_token {
+            crate::serving::lease::LEEWAY_SECS
+        } else {
+            TOKEN_LEEWAY_SECS
+        };
+        revocable = revocable.ending_at(claims.exp.saturating_add(leeway));
         if revocable.is_revoked() {
             return Err(anyhow::Error::new(Revoked));
         }
@@ -275,6 +304,19 @@ impl BrokerAuth {
             client_chain: None,
         })
     }
+}
+
+/// End what `context` opens by the client certificate's `notAfter` too, and
+/// refuse it if that has passed: the handshake checked the certificate once,
+/// but a long-lived connection can open a stream after it expired.
+fn bound_by_certificate(context: &mut AuthContext, not_after: i64) -> Result<()> {
+    context.revocable = context.revocable.clone().ending_at(not_after);
+    if context.revocable.has_ended() {
+        return Err(anyhow::Error::new(CredentialRefused(
+            "token refused: the client certificate has expired".to_string(),
+        )));
+    }
+    Ok(())
 }
 
 /// Tenant scope plus the permission matcher from a verified token.
