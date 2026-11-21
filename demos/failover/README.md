@@ -28,6 +28,9 @@ Then, from a second terminal:
 ./run.sh down                       # final receipt, then remove everything
 ```
 
+To freeze a broker instead of killing it, see
+[A leader that comes back](#a-leader-that-comes-back).
+
 `receipt` and `down` exit non-zero unless the checker's verdict is a pass, so
 they can gate a script.
 
@@ -44,6 +47,7 @@ has the commands with real output.
 | `broker-1`, `broker-2`, `broker-3` | The brokers, on fixed addresses on a private network. |
 | `provision` | Runs once: turns on election among replicas and creates the stream. |
 | `checker` | The independent checker, built from `src/`. |
+| `stale-probe` | Only with `--stale-writer`: the writer pinned to one broker, with its own receipt. |
 
 The stream is `default/orders`: one shard, **replication factor 3**,
 **`Quorum`** consistency, durable. A publish is acknowledged once a majority of
@@ -112,12 +116,75 @@ publish left waiting to the first acknowledgement after it.
 - A `SIGKILL` of a broker process does not test power loss: the kernel keeps the
   page cache. `on_commit` is what covers a flush that never happened, and this
   demo does not pull a plug.
-- Killing a container is not a network partition or a paused process. A leader
-  that comes back still believing it leads is a different test.
+- Killing a container is not a network partition or a paused process. A
+  paused leader is covered by the stale writer
+  ([A leader that comes back](#a-leader-that-comes-back)); a network partition
+  is not.
 - One broker down at a time among three. Losing two stops writes by design.
 - The checker is a single process on one network. It cannot see a fault in its
   own bookkeeping, which is why the logic is small and has unit tests
   (`cargo test --manifest-path demos/failover/Cargo.toml`).
+
+## A leader that comes back
+
+`kill-leader` ends the process. A frozen leader is different: it keeps its
+state, and when it resumes it has not noticed it was replaced. To see what it
+does with writes sent to it, start a writer pinned to one broker:
+
+```bash
+./run.sh up                                       # Ctrl-C once it is producing
+./run.sh up --stale-writer "$(./run.sh leader)"   # add a writer pinned to the leader
+./run.sh pause leader 25                          # freeze it for 25 s, then resume it
+./run.sh receipt
+```
+
+Or hands off, once the writer is pinned to the leader: `./run.sh scenario
+--stale-writer broker-N` (steady state, a freeze of `FAILOVER_PAUSE_SECS`,
+default 25, a 30 s wait, then the receipt). With the flag, `scenario` runs this
+act in place of the kill sequence. Without it nothing changes. It refuses to
+run unless the stale writer is running and pinned to that broker, and unless
+that broker leads the stream (`FAILOVER_ALLOW_FOLLOWER=1` freezes a follower
+anyway). `receipt --stale-writer broker-N` and `down` fail if the writer is
+missing or exited early, so a run cannot pass without its stale block.
+
+The writer is a second container, `stale-probe`, from the same checker
+binary. It opens one connection to that one broker, with no cluster routing,
+and sends one numbered write to `default/orders` every 250 ms. It never
+re-sends. When its connection drops (the 6 s QUIC idle limit ends it during a
+freeze) it dials the same address again, so it behaves like a client of the old
+leader. It prints one line per write:
+
+| Line | Meaning |
+|---|---|
+| `ok offset N` | acknowledged by the broker it dialed |
+| `forwarded (ok offset N)` | acknowledged, and the broker said another broker wrote it |
+| `refused <code>` | a typed refusal that wrote nothing, e.g. `shard_unavailable` |
+| `indeterminate <reason>` | the broker may have written it: a lost acknowledgement, or a code whose retry class is outcome-unknown |
+| `no answer (...)` | no typed answer at all (no reply in 15 s, or a transport error). The receipt counts it as indeterminate |
+
+`forwarded` comes from the client's process-wide forwarded-publish counter,
+which is exact here because the writer is the only publisher in its process.
+
+Its receipt, kept in `/out/stale-receipt.txt`, has a block "the stale writer".
+It says which broker `pause` froze and whether the writer was pinned to the
+leader at that moment, and counts:
+
+- sent, acked, refused, forwarded, indeterminate;
+- acked and present exactly once;
+- **acked but missing**, which must be 0;
+- **refused but present**, which must be 0;
+- indeterminate writes found in the stream and not found. Neither is a
+  violation.
+
+Presence is judged the same way as for the producers: the stream is read back
+from its oldest record after the run. The run is reported as **FAILED**, not
+passed, if the writer's connection never dropped or it got no acknowledgement
+after reconnecting, because then the freeze tested nothing. Pause for longer
+than 6 s. `receipt` and `down` print both receipts and exit non-zero if either
+fails.
+
+This is one broker and one freeze on a laptop. What it shows is what that
+broker did in that run, not that it must do so.
 
 ## Why a demo crate and not a felixctl command
 

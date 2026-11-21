@@ -283,6 +283,30 @@ services:
       - certs:/certs:ro
       - out:/out
 
+  # Only with `./run.sh up --stale-writer broker-N`. One writer pinned to one
+  # broker, with its own receipt; see README.md.
+  stale-probe:
+    <<: *checker-build
+    profiles: ["stale"]
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+    environment:
+      FELIX_BROKERS: ${FAILOVER_NET:-172.30.8}.11:5000,${FAILOVER_NET:-172.30.8}.12:5000,${FAILOVER_NET:-172.30.8}.13:5000
+      FELIX_SERVER_NAME: localhost
+      FELIX_AUTH_TENANT: demo
+      FELIX_AUTH_TOKEN_FILE: /state/client.jwt
+      FELIX_CA_FILE: /certs/tls.crt
+      FAILOVER_STALE_WRITER: ${FAILOVER_STALE_WRITER:-}
+      FAILOVER_CONFIG: "Quorum, replication factor 3, fsync ${FELIX_DURABLE_FSYNC_MODE:-on_commit}, felix ${FELIX_VERSION}"
+    command: ["--receipt-file", "/out/stale-receipt.txt"]
+    stop_signal: SIGTERM
+    stop_grace_period: 120s
+    volumes:
+      - state:/state:ro
+      - certs:/certs:ro
+      - out:/out
+
 networks:
   default:
     ipam:

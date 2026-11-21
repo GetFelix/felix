@@ -68,6 +68,15 @@ pub(crate) struct Ledger {
     /// Highest log offset any acknowledgement reported.
     max_offset: Option<u64>,
     reader_resubscribes: u64,
+    /// Writes the broker refused and did not write.
+    refused: HashSet<Key>,
+    /// Acknowledged writes the broker said another broker wrote.
+    forwarded: u64,
+    /// The run has one writer pinned to one broker, and these count its
+    /// reconnects and the acknowledgements since the last one.
+    pinned: bool,
+    reconnects: u64,
+    acked_since_reconnect: u64,
 }
 
 /// A frozen view of the writes at one moment, to check against a full re-read.
@@ -84,6 +93,11 @@ pub(crate) struct Snapshot {
     /// First offset past every acknowledged record, when acknowledgements
     /// reported offsets.
     pub(crate) read_to: Option<u64>,
+    pub(crate) refused: HashSet<Key>,
+    pub(crate) forwarded: u64,
+    pub(crate) pinned: bool,
+    pub(crate) reconnects: u64,
+    pub(crate) acked_since_reconnect: u64,
 }
 
 /// What a re-read of the whole stream says about a snapshot.
@@ -103,6 +117,15 @@ pub(crate) struct Verdict {
     pub(crate) expected_producers: u16,
     pub(crate) started_producers: u16,
     pub(crate) dead: Vec<(u16, String)>,
+    pub(crate) refused: u64,
+    /// Refused, and in the stream anyway: the broker said no and wrote it.
+    pub(crate) refused_present: Vec<Key>,
+    /// Acknowledged and in the stream exactly once.
+    pub(crate) acked_once: u64,
+    pub(crate) forwarded: u64,
+    pub(crate) pinned: bool,
+    pub(crate) reconnects: u64,
+    pub(crate) acked_since_reconnect: u64,
 }
 
 impl Verdict {
@@ -115,8 +138,11 @@ impl Verdict {
 
     /// The data was wrong.
     pub(crate) fn violation(&self) -> Option<&'static str> {
-        (!self.gaps.is_empty() || !self.duplicates.is_empty() || self.unexpected > 0)
-            .then_some("missing, repeated or unexpected records")
+        (!self.gaps.is_empty()
+            || !self.duplicates.is_empty()
+            || !self.refused_present.is_empty()
+            || self.unexpected > 0)
+            .then_some("missing, repeated, refused-but-written or unexpected records")
     }
 
     /// The run did not test anything, or stopped testing early.
@@ -129,6 +155,14 @@ impl Verdict {
         }
         if let Some((index, why)) = self.dead.first() {
             return Some(format!("producer {index} stopped early: {why}"));
+        }
+        // A pinned writer that never lost its connection, or never got an
+        // answer after getting it back, did not test a returning leader.
+        if self.pinned && self.reconnects == 0 {
+            return Some("the pinned writer's connection never dropped".to_string());
+        }
+        if self.pinned && self.acked_since_reconnect == 0 {
+            return Some("the pinned writer got no acknowledgement after reconnecting".to_string());
         }
         (self.acked == 0).then(|| "nothing was acknowledged".to_string())
     }
@@ -169,6 +203,11 @@ impl Ledger {
             dead: Vec::new(),
             max_offset: None,
             reader_resubscribes: 0,
+            refused: HashSet::new(),
+            forwarded: 0,
+            pinned: false,
+            reconnects: 0,
+            acked_since_reconnect: 0,
         }
     }
 
@@ -197,6 +236,7 @@ impl Ledger {
             self.recovered += 1;
         }
         self.acked.insert(key, now);
+        self.acked_since_reconnect += 1;
         if !self.seen.contains_key(&key) {
             self.unread.insert(key, now);
         }
@@ -209,6 +249,35 @@ impl Ledger {
         self.last_stall_start = Some(since);
         self.stalls.push(stall.clone());
         Some(stall)
+    }
+
+    /// The broker refused `key` and wrote nothing. It is not in doubt.
+    pub(crate) fn refuse(&mut self, key: Key) {
+        self.outstanding.remove(&key);
+        self.refused.insert(key);
+    }
+
+    /// `key` got no usable answer and will not be sent again, so it stays in
+    /// doubt for good instead of waiting on anything.
+    pub(crate) fn abandon(&mut self, key: Key) {
+        self.failed(key);
+        self.outstanding.remove(&key);
+    }
+
+    /// The acknowledgement for a write said another broker wrote it.
+    pub(crate) fn was_forwarded(&mut self) {
+        self.forwarded += 1;
+    }
+
+    /// The run's writer is pinned to one broker; see `Verdict::failure`.
+    pub(crate) fn expect_pinned_writer(&mut self) {
+        self.pinned = true;
+    }
+
+    /// The pinned writer opened a new connection after losing one.
+    pub(crate) fn reconnected(&mut self) {
+        self.reconnects += 1;
+        self.acked_since_reconnect = 0;
     }
 
     /// The run is meant to have this many producers.
@@ -318,6 +387,11 @@ impl Ledger {
             started_producers: self.started_producers,
             dead: self.dead.clone(),
             read_to: self.max_offset.map(|max| max + 1),
+            refused: self.refused.clone(),
+            forwarded: self.forwarded,
+            pinned: self.pinned,
+            reconnects: self.reconnects,
+            acked_since_reconnect: self.acked_since_reconnect,
         }
     }
 
@@ -335,7 +409,10 @@ impl Ledger {
 
     /// Whether `key` is one a producer has started.
     pub(crate) fn was_sent(&self, key: Key) -> bool {
-        self.acked.contains_key(&key) || self.outstanding.contains_key(&key)
+        self.acked.contains_key(&key)
+            || self.outstanding.contains_key(&key)
+            || self.in_doubt.contains(&key)
+            || self.refused.contains(&key)
     }
 }
 
@@ -351,11 +428,23 @@ pub(crate) fn judge(snapshot: &Snapshot, counts: &HashMap<Key, u32>, unexpected:
         expected_producers: snapshot.expected_producers,
         started_producers: snapshot.started_producers,
         dead: snapshot.dead.clone(),
+        refused: snapshot.refused.len() as u64,
+        forwarded: snapshot.forwarded,
+        pinned: snapshot.pinned,
+        reconnects: snapshot.reconnects,
+        acked_since_reconnect: snapshot.acked_since_reconnect,
         ..Verdict::default()
     };
     for key in &snapshot.acked {
-        if !counts.contains_key(key) {
-            verdict.gaps.push(*key);
+        match counts.get(key) {
+            None => verdict.gaps.push(*key),
+            Some(1) => verdict.acked_once += 1,
+            Some(_) => {}
+        }
+    }
+    for key in &snapshot.refused {
+        if counts.contains_key(key) {
+            verdict.refused_present.push(*key);
         }
     }
     for (key, n) in counts {
@@ -372,6 +461,7 @@ pub(crate) fn judge(snapshot: &Snapshot, counts: &HashMap<Key, u32>, unexpected:
     }
     verdict.gaps.sort_unstable();
     verdict.duplicates.sort_unstable();
+    verdict.refused_present.sort_unstable();
     verdict
 }
 
