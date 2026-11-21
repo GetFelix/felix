@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795277858664,
+  "lastUpdate": 1795278548999,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81774,6 +81774,72 @@ window.BENCHMARK_DATA = {
             "range": "515.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 328.00\nmean: 650.40\nstdev: 515.31\ncv: 79.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "80501eaa0074d7c255d82067530d4537ca853097",
+          "message": "feat(raft): readers never see part of a conditional batch (#2751) (#2893)\n\n* feat(raft): readers never see part of a conditional batch (#2751)\n\nThe state machine holds the read bound at the first piece of an undecided\nbatch and counts a cut batch's pieces as entries holding no record. Disk\nreads resolve pages through log::conditional, the event end steps back\nover cut and undecided pieces, and a blanked batch releases all its\noffsets in the held ring.\n\nSpec-Unaffected: the read rule is log::conditional's resolve + bound, which FelixRaftCond.tla already models (#2880)\n\n* test(raft): a cut batch, a resumed batch and a blanked batch of three (#2751)\n\n* test(raft): a leader change and a lapsed lease mid-batch keep readers out of it (#2751)\n\n* docs(raft): what readers do with a conditional batch (#2751)\n\n* fix(raft): apply follows resolve for a batch whose start a log lost (#2751)\n\nReview fixes for #2893: OpenBatch tracks the next expected position, so a\nbatch applied from mid-way counts as resolve reads it; the docs say what\na resume inside a batch really does; a release-path test for a blanked\nbatch of three; read_log_from skips the rule for pages with no piece.",
+          "timestamp": "2026-11-21T08:24:07-08:00",
+          "tree_id": "742af79b91d4ee5760fbedf02660ea762e05126a",
+          "url": "https://github.com/GetFelix/felix/commit/80501eaa0074d7c255d82067530d4537ca853097"
+        },
+        "date": 1795278539391,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.20\nstdev: 0.84\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 120.80\nstdev: 1.30\ncv: 1.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 149,
+            "range": "3.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 150.60\nstdev: 3.44\ncv: 2.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.20\nstdev: 0.84\ncv: 0.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "12.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 187.40\nstdev: 12.62\ncv: 6.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "155.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 374.00\nstdev: 155.20\ncv: 41.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
