@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795282021588,
+  "lastUpdate": 1795283485944,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82038,6 +82038,72 @@ window.BENCHMARK_DATA = {
             "range": "162.56",
             "unit": "us",
             "extra": "trials: 5\nmedian: 255.00\nmean: 326.00\nstdev: 162.56\ncv: 49.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ebf736175563e5dde4ff5cd476bcb806fae805f1",
+          "message": "feat(raft): multi-record conditional publishes on Raft shards (#2751) (#2906)\n\n* test(raft): a blanked conditional batch releases every offset through the publish path (#2751)\n\n* feat(raft): report raft_conditional_batches and finalize it on a new cluster (#2751)\n\nA conditional publish of several records on a Raft shard is taken once the\nfleet finalizes raft_conditional_batches, and on a lone broker from the start.\nTests: a batch through the control stream is written or refused whole, and\nacross real brokers a leader killed as a batch lands leaves all of it or none.\n\n* docs(raft): conditional batches of several records are served on Raft (#2751)\n\nSpec-Unaffected: the read rule is unchanged; FelixRaftCond already models batches of several records (FelixRaftCondBatch.cfg), and raft_conditional_batches is a fleet gate.\n\n* fix(raft): review round for conditional batches on Raft (#2751)\n\nDocument raft_conditional_batches in the upgrade guide and the reported\nfeature list, correct publish_at's doc, and make the cluster test kill the\nleader while batches stream so a batch is likely in flight, retrying the\nfirst batch at whatever tail a refusal names.\n\n* test(cluster): bound the wait for the first batches before the leader kill (#2751)\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-21T17:46:51Z",
+          "tree_id": "141714a2735da9f233f1a44dd0d064f6fd75c3ad",
+          "url": "https://github.com/GetFelix/felix/commit/ebf736175563e5dde4ff5cd476bcb806fae805f1"
+        },
+        "date": 1795283476774,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 64.80\nstdev: 0.45\ncv: 0.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "482.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 309.20\nstdev: 482.95\ncv: 156.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 177,
+            "range": "1142.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 717.00\nstdev: 1142.33\ncv: 159.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "2.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 84.00\nstdev: 2.74\ncv: 3.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "121.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 232.80\nstdev: 121.21\ncv: 52.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 530,
+            "range": "654.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 530.00\nmean: 775.40\nstdev: 654.88\ncv: 84.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
