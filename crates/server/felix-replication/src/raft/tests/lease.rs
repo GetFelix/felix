@@ -915,6 +915,43 @@ async fn a_group_restarted_whole_has_its_leader_back_within_one_vote_round() {
     cluster.stop().await;
 }
 
+/// **Members held after a restart stand apart.** openraft's own deadline
+/// falls inside the hold, so each waits past it by its jitter; without
+/// that, every held member stands the moment its hold ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn held_members_stand_past_the_hold_by_their_jitter() {
+    let (mut cluster, _, _, followers) = stopped_whole(true).await;
+    // The old leader stays down, so nobody is let through early.
+    for broker in followers {
+        open_on(&mut cluster, broker).await;
+    }
+    let members = followers.map(|broker| cluster.runtime(broker).group(&shard(0)).expect("group"));
+    let jitters = members.each_ref().map(|member| member.hold_and_jitter().1);
+    assert!(
+        jitters[0].abs_diff(jitters[1]) >= 100,
+        "the jitters {jitters:?} are too close to tell apart"
+    );
+    let mut stood = [false; 2];
+    while stood != [true; 2] {
+        for (i, broker) in followers.iter().enumerate() {
+            let status = cluster.runtime(broker).status(&shard(0)).expect("status");
+            // Read after the status, so a tick seen happened before `now`.
+            let now = members[i].now();
+            let (until, jitter) = members[i].hold_and_jitter();
+            if status.ticks > 0 {
+                assert!(
+                    now >= until + jitter,
+                    "{broker} stood at {now}, before its hold {until} plus jitter {jitter}"
+                );
+                stood[i] = true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    cluster.elected(0).await;
+    cluster.stop().await;
+}
+
 /// **When every member restarts and the old leader opens first**, its
 /// first request finds nobody. It asks again with a pre-vote, which the
 /// held followers drop, so the group waits out their hold.
