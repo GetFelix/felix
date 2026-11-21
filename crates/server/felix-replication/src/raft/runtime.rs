@@ -117,7 +117,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             tick: Duration::from_millis(50),
-            heartbeat: Duration::from_millis(200),
+            heartbeat: std::env::var("FELIX_DIAG_HB_MS").ok().and_then(|v| v.parse().ok()).map_or(Duration::from_millis(200), Duration::from_millis),
             idle_heartbeat: Duration::from_secs(2),
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),

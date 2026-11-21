@@ -882,3 +882,44 @@ async fn a_relaxed_leader_waits_for_strict_followers_to_write() {
     acked.expect("acknowledged");
     led.cluster.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn probe_latency() {
+    let relaxed = std::env::var("PROBE_RELAXED").map_or(true, |v| v == "1");
+    let led = if relaxed {
+        led_relaxed(&["a", "b", "c"]).await
+    } else {
+        led().await
+    };
+    let led = std::sync::Arc::new(led);
+    let stop = tokio::time::Instant::now() + Duration::from_secs(4);
+    let mut tasks = Vec::new();
+    for _ in 0..32 {
+        let led = led.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut lat = Vec::new();
+            while tokio::time::Instant::now() < stop {
+                let t = std::time::Instant::now();
+                let written = led.propose().await;
+                led.acked(written, AckAt::Written).await.expect("acked");
+                lat.push(t.elapsed().as_micros() as u64);
+            }
+            lat
+        }));
+    }
+    let mut all = Vec::new();
+    for t in tasks {
+        all.extend(t.await.unwrap());
+    }
+    all.sort_unstable();
+    let p = |q: f64| all[((all.len() as f64 - 1.0) * q) as usize];
+    eprintln!(
+        "PROBE n={} p50={}us p99={}us p999={}us max={}us",
+        all.len(),
+        p(0.5),
+        p(0.99),
+        p(0.999),
+        all[all.len() - 1]
+    );
+}

@@ -377,7 +377,10 @@ impl Cluster {
                 begun.expect("a relaxed run");
                 LogConfig {
                     fsync_mode: FsyncMode::Periodic {
-                        interval: Duration::from_secs(3600),
+                        interval: std::env::var("PROBE_INTERVAL_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .map_or(Duration::from_secs(3600), Duration::from_millis),
                     },
                     ..log_config()
                 }

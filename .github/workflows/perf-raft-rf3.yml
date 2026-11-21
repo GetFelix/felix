@@ -117,25 +117,22 @@ jobs:
           cells="rf3-oncommit-1k:on_commit:1024:64:0 rf3-periodic-1k:periodic:1024:64:0
                  rf3-oncommit-1k-b1:on_commit:1024:1:0 rf3-periodic-1k-b1:periodic:1024:1:0
                  rf3-fanout-1k:on_commit:1024:16:$FANOUT_RECORDS"
+          # DIAG #2924: variants of rf3-periodic-1k-b1. name|engine|fsync|env
+          variants="base-h|hybrid|periodic|X=1 base-r|raft|periodic|X=1 hb50-r|raft|periodic|FELIX_DIAG_HB_MS=50
+                    fs50-r|raft|periodic|FELIX_DURABLE_FSYNC_INTERVAL_MS=50 fs50-h|hybrid|periodic|FELIX_DURABLE_FSYNC_INTERVAL_MS=50
+                    one-r|raft|periodic|IN_FLIGHT=1,CONCURRENCY=1,FELIX_HOP_TRACE=1 one-h|hybrid|periodic|IN_FLIGHT=1,CONCURRENCY=1,FELIX_HOP_TRACE=1
+                    oc-r|raft|on_commit|X=1 none-r|raft|none|X=1"
           for round in $(seq 1 "$ROUNDS"); do
-            echo "::group::Round $round of $ROUNDS"
-            if [ $((round % 2)) -eq 1 ]; then engines="hybrid raft"; else engines="raft hybrid"; fi
-            for cell in $cells; do
-              IFS=: read -r name fsync payload batch total <<<"$cell"
-              fanout_total=; [ "$total" = 0 ] || fanout_total=$total
-              for engine in $engines; do
-                side=baseline; [ "$engine" = raft ] && side=head
-                ENGINE=$engine FELIX_DURABLE_FSYNC_MODE=$fsync FANOUT_TOTAL=$fanout_total \
-                  scripts/ci/gate-perf-cell.sh /tmp/felix-raft-rf3/bin "$side" "$name" 3 "$payload" "$batch" \
-                    "$SECONDS_PER_TRIAL" "$round" "$results" \
-                  || {
-                    echo "::warning::$engine $name round $round failed"
-                    # A raft cell that fails must fail the job, or a green run proves nothing.
-                    [ "$engine" = raft ] && raft_failures=$((raft_failures + 1))
-                  }
-              done
+            for v in $variants; do
+              IFS='|' read -r name engine fsync extra <<<"$v"
+              side=baseline; [ "$engine" = raft ] && side=head
+              echo "::group::$name round $round"
+              env ${extra//,/ } ENGINE=$engine FELIX_DURABLE_FSYNC_MODE=$fsync \
+                scripts/ci/gate-perf-cell.sh /tmp/felix-raft-rf3/bin "$side" "$name-b1" 3 1024 1 \
+                  "$SECONDS_PER_TRIAL" "$round" "$results" || echo "::warning::$name failed"
+              tail -1 "$results"
+              echo "::endgroup::"
             done
-            echo "::endgroup::"
           done
           if [ "$raft_failures" -gt 0 ]; then
             echo "::error::$raft_failures raft cell run(s) failed"

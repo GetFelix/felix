@@ -61,7 +61,7 @@ sleep 5
 if [ -n "${FANOUT_TOTAL:-}" ]; then
   load=(--scenario pubsub --fanout "${FANOUT:-4}" --warmup 2000 --total "$FANOUT_TOTAL")
 else
-  load=(--scenario ingest --in-flight 8 --concurrency 4 --duration-secs "$secs")
+  load=(--scenario ingest --in-flight "${IN_FLIGHT:-8}" --concurrency "${CONCURRENCY:-4}" --duration-secs "$secs")
 fi
 "$bin/felix-loadgen" --brokers "$brokers" \
   --tenant "$(jq -r .tenant_id "$session")" --namespace "$(jq -r .namespace "$session")" \
@@ -69,6 +69,8 @@ fi
   --stream perf --payload-bytes "$payload" --batch "$batch" "${load[@]}" \
   --environment "gate-$side-$cell" >"$work/loadgen.out" 2>"$work/loadgen.err" \
   || { tail -20 "$work/loadgen.err"; echo "loadgen failed" >&2; exit 1; }
+
+for f in $(find "$work" -name broker.log); do echo "== $f"; grep -oE "(WARN|ERROR) [a-z_:]+: .{0,90}" "$f" | sed -E "s/[0-9]+/N/g" | sort | uniq -c | sort -rn | head -12; grep "^hop" "$f" | tail -10; done
 
 if [ -n "$engine" ]; then
   markers=$(find "$work" -type f -name engine -exec grep -lx raft {} + 2>/dev/null | wc -l | tr -d ' ')
