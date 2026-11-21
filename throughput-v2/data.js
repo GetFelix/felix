@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795248863105,
+  "lastUpdate": 1795251838642,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64168,6 +64168,58 @@ window.BENCHMARK_DATA = {
             "range": "51931.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1621996.46\nmean: 1593658.64\nstdev: 51931.48\ncv: 3.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6f71081ae9cb2a880a1d3e305f30f8584faf0948",
+          "message": "fix(raft): a copy without raft-epoch past epoch 0 reports no floor or copy id (#2690) (#2883)\n\n* fix(raft): a copy without raft-epoch past epoch 0 reports no floor or copy id (#2690)\n\ngroup_epoch now returns None for a copy with no raft-epoch instead of 0.\nThe broker reads the record's group epoch from placed.epoch in its view and\ncounts a copy only at an epoch it proves: a learner placed fresh or an old\nrestore past epoch 0 sends no floor (the control plane refused it and the\nretry stalled the floor) and no copy id, so it never enters the target and\nnever votes.\n\n* review: name the stale-view and import gaps, fix the epoch read warning (#2690)",
+          "timestamp": "2026-11-21T08:58:42Z",
+          "tree_id": "acf52b973855bcde12dc579e6edcdd3e83177f4f",
+          "url": "https://github.com/GetFelix/felix/commit/6f71081ae9cb2a880a1d3e305f30f8584faf0948"
+        },
+        "date": 1795251837849,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 515400.43,
+            "range": "24642.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515400.43\nmean: 525373.06\nstdev: 24642.39\ncv: 4.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 515400.43,
+            "range": "24642.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515400.43\nmean: 525373.06\nstdev: 24642.39\ncv: 4.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120116.83,
+            "range": "2016.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120116.83\nmean: 119893.73\nstdev: 2016.12\ncv: 1.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1201168.25,
+            "range": "20161.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1201168.25\nmean: 1198937.25\nstdev: 20161.23\ncv: 1.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
