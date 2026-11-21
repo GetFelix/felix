@@ -134,10 +134,18 @@ pub async fn read_range<L: AppendOnlyLog + ?Sized>(
         if more.next <= covered {
             break;
         }
+        // Keep only what decides the pending batch, so the page grows by at
+        // most that batch.
+        let first = &resolved.pending[0];
+        let past = match first.mark {
+            RecordMark::CondPiece(piece) => first.offset + u64::from(piece.len - piece.position),
+            _ => unreachable!("a pending record is a conditional piece"),
+        };
         let mut records = std::mem::take(&mut resolved.pending);
-        records.extend(more.records);
-        covered = more.next.min(end);
-        let rest = resolve(records, more.next, end);
+        records.extend(more.records.into_iter().take_while(|r| r.offset < past));
+        let read_to = more.next.min(past);
+        covered = read_to.min(end);
+        let rest = resolve(records, read_to, end);
         resolved.records.extend(rest.records);
         resolved.pending = rest.pending;
         resolved.next = rest.next;

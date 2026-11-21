@@ -623,13 +623,14 @@ A reader decides from the marks alone, in its own member's committed log:
   its first piece until it is decided.
 
 Raft appends a batch as one run and a log only ever loses a suffix, so
-looking forward is enough: a reader that starts inside a whole batch reads
-the rest of it. What a reader sees below the bound never changes as the
+looking forward is enough. A read resumed from where the last one stopped
+never starts inside a batch, so it gets each batch whole; a read that a
+caller starts inside a whole batch gets the rest of it. What a reader sees below the bound never changes as the
 commit grows, and the bound never falls. `docs/formal/FelixRaftCond.tla`
 checks both (`WholeBatchesOnly`, `ReadsStable`). The model's bound waits
 until the batch's last offset is committed; the code also passes a batch
-as soon as a committed entry shows it was cut, which only ever shows more
-of a log that no longer changes.
+as soon as a committed entry shows it was cut: a committed entry never
+changes, so a batch it shows as cut can never become whole.
 
 `felix_storage::log::conditional` holds the rule: `resolve` for a page of
 records, `read_range` for a read that carries on to the end of the batch
@@ -1089,7 +1090,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta, counter checkpoint and group records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log, as are group records. Conditional pieces (bits 31 and 28, an 8-byte tag), Raft logs only, not written yet. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta, counter checkpoint and group records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log, as are group records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. Conditional pieces (bits 31 and 28, an 8-byte tag), Raft logs only, not written yet. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the

@@ -321,3 +321,39 @@ async fn paged_reads_from_a_log_match_one_whole_read() {
         }
     }
 }
+
+/// A page that ends inside a batch reads on to that batch's end and no
+/// further, even when the next page would also end inside one.
+#[tokio::test]
+async fn a_page_grows_by_at_most_the_batch_it_ends_inside() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        LogConfig {
+            fsync_mode: FsyncMode::OnCommit,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("open");
+    let batch: Vec<AppendRecord> = (0..12)
+        .map(|offset| AppendRecord {
+            payload: Bytes::from_static(b"0123456789"),
+            ..append_record(piece(offset % 3, 3), offset as usize)
+        })
+        .collect();
+    log.append_v9_for_tests(&batch, 1).await.expect("append");
+    let page = read_range(
+        &log,
+        ReadRange {
+            start: 0,
+            max_bytes: 40,
+        },
+        12,
+    )
+    .await
+    .expect("read");
+    assert_eq!(offsets(&page.records), [0, 1, 2, 3, 4, 5]);
+    assert_eq!(page.next, 6);
+}
