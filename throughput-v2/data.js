@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795236765339,
+  "lastUpdate": 1795237809543,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -63960,6 +63960,58 @@ window.BENCHMARK_DATA = {
             "range": "2951.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815781.07\nmean: 814226.50\nstdev: 2951.26\ncv: 0.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16620ae788467e0f358323be6ec1d94bdf0c326c",
+          "message": "demo(failover): stale writer pinned to one broker, with a receipt block (#2876)\n\n* demo(failover): a stale writer pinned to one broker, with its own receipt block\n\nA second container from the checker binary writes one numbered record every\n250 ms to a single broker with no cluster routing, reconnects to the same\naddress after its connection drops, and is judged against a read-back of the\nstream: acked-but-missing and refused-but-present must both be 0.\nrun.sh gains pause and --stale-writer.\n\n* demo(failover): require the stale writer when asked for, pin the leader, record the freeze\n\nscenario and receipt with --stale-writer fail when the probe is missing or\npinned elsewhere, and down checks an exited probe. scenario refuses a\nfollower. pause resumes on interrupt and records which broker it froze.\nDocs: README quick start pins the leader; the laptop page covers the freeze.\n\n* demo(failover): up --stale-writer on a running cluster adds only the writer",
+          "timestamp": "2026-11-21T05:06:04Z",
+          "tree_id": "84a3e52d9b167dec297f242d38d5aee846ede1b0",
+          "url": "https://github.com/GetFelix/felix/commit/16620ae788467e0f358323be6ec1d94bdf0c326c"
+        },
+        "date": 1795237808876,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 733552.41,
+            "range": "77551.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 733552.41\nmean: 734657.50\nstdev: 77551.77\ncv: 10.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 733552.41,
+            "range": "77551.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 733552.41\nmean: 734657.50\nstdev: 77551.77\ncv: 10.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 173436.11,
+            "range": "1715.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 173436.11\nmean: 173537.32\nstdev: 1715.61\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1734361.09,
+            "range": "17156.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1734361.09\nmean: 1735373.22\nstdev: 17156.12\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
