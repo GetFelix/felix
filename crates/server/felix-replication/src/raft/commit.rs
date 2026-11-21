@@ -49,10 +49,14 @@ pub(crate) struct Commits {
 }
 
 /// A conditional batch whose pieces from `first` up to the last applied
-/// entry are applied and whose last piece is not.
+/// entry are applied and whose last piece is not. `first` need not be its
+/// first piece: a log that lost the batch's start (a purge, an install)
+/// holds only the rest, and `resolve` reads that rest from where it begins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OpenBatch {
     pub(crate) first: u64,
+    /// The position the next piece must have.
+    pub(crate) next: u32,
     pub(crate) len: u32,
 }
 
@@ -249,11 +253,12 @@ impl Commits {
         self.advance(at);
         if let Some(open) = self.batch.take() {
             match holds {
-                Holds::Piece { position, len }
-                    if len == open.len && open.first + u64::from(position) == index =>
-                {
+                Holds::Piece { position, len } if len == open.len && position == open.next => {
                     if position + 1 < len {
-                        self.batch = Some(open);
+                        self.batch = Some(OpenBatch {
+                            next: position + 1,
+                            ..open
+                        });
                         return;
                     }
                     // Whole: the run below the batch is skipped before its
@@ -278,7 +283,11 @@ impl Commits {
         let record = match holds {
             Holds::Record => true,
             Holds::Piece { position, len } if position + 1 < len => {
-                self.batch = Some(OpenBatch { first: index, len });
+                self.batch = Some(OpenBatch {
+                    first: index,
+                    next: position + 1,
+                    len,
+                });
                 return;
             }
             // A last piece with no batch below it is kept, as `resolve`

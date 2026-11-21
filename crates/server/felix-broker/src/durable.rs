@@ -748,7 +748,22 @@ impl StreamLog {
     /// below it that looks whole is whole and committed. See
     /// `log::conditional`.
     pub async fn read_log_from(&self, start: Offset, max_bytes: usize) -> Result<ReadPage> {
-        conditional::read_range(&self.log, ReadRange { start, max_bytes }, u64::MAX)
+        let range = ReadRange { start, max_bytes };
+        let page = self
+            .log
+            .read_range(range.clone())
+            .await
+            .map_err(read_error)?;
+        // Only a Raft log holds pieces, and only a page with one needs the
+        // rule, which may read past it.
+        if !page
+            .records
+            .iter()
+            .any(|record| matches!(record.mark, RecordMark::CondPiece(_)))
+        {
+            return Ok(page);
+        }
+        conditional::read_range(&self.log, range, u64::MAX)
             .await
             .map_err(read_error)
     }

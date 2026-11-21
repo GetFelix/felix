@@ -3606,7 +3606,11 @@ entry where the next piece belongs is anything else, the batch is cut: its
 pieces hold no record, the bound moves past them, and the next record's
 publisher reports them as skipped with the entry that cut them. A member
 that restarts or installs a snapshot inside a batch reads the open batch
-back from its log. Every disk read goes through `read_log_from`, which
+back from its log while the log still holds the snapshot's last entry.
+Once a purge or an install has dropped it, the member counts the rest of
+the batch the way a disk read of that log does, and its bound can sit just
+above the snapshot, inside the batch. That is harmless: the snapshot is
+below the trim floor, and no reader reads below the floor. Every disk read goes through `read_log_from`, which
 drops a cut batch's pieces like blanks and stops before an undecided one,
 so history reads, follower delivery, consumer groups, queues and Kafka
 fetches see a batch whole or not at all. A blanked batch moves the stream
@@ -3646,8 +3650,11 @@ model) lands between the guess and the append.
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_leader_change_that_cuts_a_batch_leaves_no_bound_inside_it`,
 > `a_lapsed_lease_mid_batch_keeps_readers_out_of_it`,
-> `a_batch_cut_by_the_next_leader_is_never_read_into_and_is_skipped` and
-> `a_member_resuming_inside_a_batch_reads_it_back_from_its_log`;
+> `a_batch_cut_by_the_next_leader_is_never_read_into_and_is_skipped`,
+> `a_member_resuming_inside_a_batch_reads_it_back_from_its_log` and
+> `a_batch_applied_from_mid_way_is_counted_as_resolve_reads_it`;
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_blanked_batch_of_three_is_skipped_by_the_next_record`;
 > `crates/server/felix-broker/src/durable/tests.rs`,
 > `a_read_skips_a_cut_conditional_batch_and_stops_before_an_undecided_one`;
 > `crates/server/felix-broker/src/stream/state/tests.rs`,

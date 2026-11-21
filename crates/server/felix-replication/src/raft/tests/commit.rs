@@ -553,12 +553,74 @@ fn a_cut_batch_holds_no_record_and_its_pieces_are_skipped() {
     assert_eq!(commits.read_bound(), 10);
 }
 
+/// The offsets `resolve` reads as records from `marks`, laid out from `from`.
+fn resolved(from: u64, marks: &[Holds]) -> Vec<u64> {
+    use felix_storage::log::{CondPiece, LogRecord, RecordMark, conditional};
+    let records: Vec<_> = (from..)
+        .zip(marks)
+        .map(|(offset, holds)| LogRecord {
+            offset,
+            timestamp_micros: 1,
+            checksum: 0,
+            payload: Bytes::from_static(b"r"),
+            mark: match *holds {
+                Holds::Record => RecordMark::None,
+                Holds::Piece { position, len } => {
+                    RecordMark::CondPiece(CondPiece { position, len })
+                }
+                Holds::Nothing => RecordMark::GenerationStart,
+            },
+            publisher: None,
+            headers: None,
+            generation: Some(1),
+        })
+        .collect();
+    let end = from + marks.len() as u64;
+    conditional::resolve(records, end, end)
+        .records
+        .into_iter()
+        .filter(|record| record.mark.is_data())
+        .map(|record| record.offset)
+        .collect()
+}
+
+/// **A member whose log starts inside a batch counts its rest as `resolve`
+/// reads it.** After a purge snapshot at a batch's first piece, the member
+/// applies the other three: they are records, as a disk read returns them,
+/// and nothing is skipped. The bound waits at the first piece it holds,
+/// never below the snapshot. Cut, the same rest holds no record on both
+/// sides.
+#[test]
+fn a_batch_applied_from_mid_way_is_counted_as_resolve_reads_it() {
+    let whole = [piece(1, 4), piece(2, 4), piece(3, 4), Holds::Record];
+    let mut commits = Commits::resumed(Some(at(1, 10)));
+    let mut quiet = 0..0;
+    let skipped = apply_run(&mut commits, &mut quiet, 11, &whole[..2]);
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 11, "at the first piece it holds");
+    let skipped = apply_run(&mut commits, &mut quiet, 13, &whole[2..]);
+    assert!(skipped.is_empty(), "every piece is a record: {skipped:?}");
+    assert_eq!(commits.records_end(15), 15);
+    assert_eq!(resolved(11, &whole), [11, 12, 13, 14]);
+
+    let cut = [piece(1, 4), piece(2, 4), Holds::Nothing, Holds::Record];
+    let mut commits = Commits::resumed(Some(at(1, 10)));
+    let mut quiet = 0..0;
+    let skipped = apply_run(&mut commits, &mut quiet, 11, &cut);
+    assert_eq!(skipped, [(14, 3)]);
+    assert_eq!(resolved(11, &cut), [14]);
+}
+
 /// **A member that resumes inside a batch reads the open batch back and
 /// keeps the bound at its first piece.** Its pieces are then cut or
 /// completed as on a member that applied them in one go.
 #[test]
 fn a_member_resumed_inside_a_batch_keeps_its_bound_there() {
-    let batch = super::super::commit::OpenBatch { first: 7, len: 3 };
+    let batch = super::super::commit::OpenBatch {
+        first: 7,
+        next: 2,
+        len: 3,
+    };
     let mut commits = Commits::resumed(Some(at(1, 8))).in_batch(Some(batch));
     assert_eq!(commits.read_bound(), 7);
     assert_eq!(commits.applied_end(), 9);

@@ -241,13 +241,17 @@ async fn open_batch(
         records.extend(page.into_iter().filter(|record| record.offset < end));
     }
     let resolved = conditional::resolve(records, end, end);
-    Ok(resolved.pending.first().and_then(|first| match first.mark {
+    let (Some(first), Some(last)) = (resolved.pending.first(), resolved.pending.last()) else {
+        return Ok(None);
+    };
+    Ok(match last.mark {
         RecordMark::CondPiece(piece) => Some(OpenBatch {
             first: first.offset,
+            next: piece.position + 1,
             len: piece.len,
         }),
         _ => None,
-    }))
+    })
 }
 
 /// A state machine as [`Machine::open`] opened it, and what the member's
