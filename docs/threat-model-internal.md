@@ -64,6 +64,16 @@ rather than after a `HelloOk`. A broker can therefore speak only as the name
 its certificate carries, which is what makes the catalog's node ids trustworthy
 across the peer link.
 
+Holding a certificate from the CA is not enough on its own. Every request
+before an accepted `Hello` is refused and the connection closed, so a peer
+cannot skip the identity check and act on fences, replication, Raft or
+forwards under no name (#2819). The node id is bound once per connection, and
+a Raft message that names another broker as its sender is refused. What is
+not checked yet is whether that node may send a given request: a member of a
+shard's group, a broker in its replica set, a registered broker for a forward.
+The replica's ballot and routing checks still apply to replication; the rest
+is tracked in #2909.
+
 Without mTLS, `Hello` carries a `node_id` and nothing verifies it. The check
 runs in the other direction only, `HelloOk`'s id against the node dialled,
 and an inbound peer's claimed identity is not used for any decision, which is,
@@ -203,13 +213,14 @@ the connection. Neither leaves the reader mid-frame.
 | # | Abuse case | Status | Owner |
 |---|---|---|---|
 | 1 | Publish to any tenant via forwarding | Mitigated: the owner verifies the client's credential (#503) and, when it binds subjects, the client's certificate chain (#2812); mTLS proves which broker forwarded it (#125). A compromised broker can replay a token and chain it was shown until either expires | None |
-| 2 | Inject records via replication | Mitigated under mTLS (peer identity) plus role + generation | None |
+| 2 | Inject records via replication | Peer identity mitigated under mTLS, plus role + generation. Membership authorization is open: see row 9 (#2909) | #2909 |
 | 3 | Truncate a follower via bootstrap | Mitigated | None |
 | 4 | Memory exhaustion via lengths | Mitigated | None |
 | 5 | Connection exhaustion | Mitigated: accept-side caps, total and per source (#504) | None |
 | 6 | Amplification | Low | None |
 | 7 | Replay of a forwarded publish | Mitigated for idempotent producers (`SequencedForwardPublish`, deduplicated by the owner); **unmitigated** for plain forwards | None |
 | 8 | Malformed frames | Mitigated | None |
+| 9 | A non-member broker acts on a Raft group or replica set under its own name (including the seal `sealer` copy id, which the receiver takes from the request) | Open: any broker with a certificate from the internal CA can send as itself, so an outsider's Append or Written is not refused on membership | #2909 |
 
 ## Residual risk and operating assumptions
 

@@ -69,6 +69,21 @@ laid out the way the reader assumes, so its length field means nothing.
 The first message on a connection is `Hello`, answered by `HelloOk`. Both carry
 a node id.
 
+A listener serves nothing else until a `Hello` is accepted, and closes a connection that has not said `Hello` within 10 seconds (close code 7). Any other request
+before one is refused with `Unauthorized` and the connection is closed with
+code 6. The certificate shows only that the peer holds one from the CA; the
+`Hello`, checked against that certificate, binds the connection to one node
+id, and every request after it is answered as that node's. The binding is
+fixed: a later `Hello` naming another node is refused and closes the
+connection with code 3. A frame kind the listener does not know is still
+answered `UnsupportedKind` before a `Hello`, so a newer dialler's greeting can
+fall back to an older one.
+
+Raft messages that name their sender (vote, pre-vote, append, snapshot,
+leader transfer and a written position) are refused, as unreachable, when
+the named member's broker is not the connection's node id. A read index names
+no sender.
+
 It exists for *when* a mismatch is found, not for what is found. Every frame
 already carries the version, so a mismatched peer would be rejected on its first
 request either way, but that request would be a real forwarded publish, which
@@ -260,8 +275,7 @@ it serves. One peer node, on any of its connections, holds at most 64 of those
 256, so a peer whose stores stall cannot starve the others. A stream that
 finds either limit taken also stops reading. Raising `FELIX_INTERNAL_STREAMS_PER_CONN` or
 `FELIX_INTERNAL_CONNS_PER_PEER` past 64 batches per peer meets the per-peer
-limit. Before its `Hello` a connection has a limit of its own; peers are
-trusted, and the pool always sends `Hello` first. A batch whose handler overruns this broker's peer
+limit. A connection sends no batch before its `Hello` (see "Handshake"). A batch whose handler overruns this broker's peer
 request timeout ends its stream, as an overrun request answered in turn does,
 but only for a requester that offered stream renewal; an older requester's
 stream waits for it. The overrun handler runs on and keeps its place in the
@@ -1653,7 +1667,8 @@ claims in `Hello` against the certificate it presented, so a broker holding a
 valid certificate for one name cannot speak as another. A peer without a
 certificate, with one from another CA, with an expired one, or claiming a name
 its certificate does not carry, is refused: the first three in the handshake,
-the last with `Unauthorized` and a closed connection. It follows that a node id
+the last with `Unauthorized` and a closed connection. So is a peer that sends
+any request before its `Hello`. It follows that a node id
 has to be a valid DNS name, and startup refuses one that is not.
 
 Rotation is a file swap: the certificate and key are re-read every thirty

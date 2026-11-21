@@ -90,14 +90,54 @@ where
 
 #[async_trait]
 impl RaftHandler for GroupRuntime {
-    async fn answer(&self, body: Bytes) -> Bytes {
+    async fn answer(&self, from: Option<Arc<str>>, body: Bytes) -> Bytes {
         let reply = match wire::decode_request(body) {
-            Ok(request) => self.handle(request).await,
+            Ok(request) => match impersonation(from.as_deref(), &request) {
+                Some(refused) => Err(refused),
+                None => self.handle(request).await,
+            },
             Err(err) => Err(Refused::Unreachable(format!(
                 "the message does not read: {err}"
             ))),
         };
         wire::encode_reply(&reply)
+    }
+}
+
+/// Why `request` is refused when the connection it came on is bound to
+/// `from`, or `None` when it may be answered. A vote, append, snapshot,
+/// transfer or written position names the member that sent it, and openraft
+/// acts on that name; a peer may only use its own. A read index names no
+/// sender: the group answers it to any member that asks.
+pub(crate) fn impersonation(from: Option<&str>, request: &RaftRequest) -> Option<Refused> {
+    use super::network::Request;
+    use openraft::vote::RaftLeaderId;
+    let named = match &request.body {
+        Request::Append(append) => Some(append.vote.leader_id().node_id()),
+        Request::Vote(vote) | Request::PreVote(vote) => Some(vote.vote.leader_id().node_id()),
+        Request::Snapshot { vote, .. } => Some(vote.leader_id().node_id()),
+        Request::TransferLeader(transfer) => Some(transfer.from_leader().leader_id().node_id()),
+        Request::Written { from, .. } => Some(from),
+        Request::ReadIndex => None,
+    };
+    let Some(from) = from else {
+        return Some(Refused::Unreachable(
+            "the connection has not said which broker it is".to_owned(),
+        ));
+    };
+    match named {
+        Some(named) if *named.broker != *from => {
+            tracing::warn!(
+                from,
+                named = %named,
+                group = %request.group(),
+                "refusing a Raft message sent in another broker's name",
+            );
+            Some(Refused::Unreachable(format!(
+                "broker {from} sent a message as {named}"
+            )))
+        }
+        _ => None,
     }
 }
 

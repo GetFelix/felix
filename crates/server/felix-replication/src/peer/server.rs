@@ -110,7 +110,9 @@ pub trait PeerRequestHandler: Send + Sync + 'static {
 #[async_trait::async_trait]
 pub trait RaftHandler: Send + Sync + 'static {
     /// Answer one `Raft` frame's body with the body of its `RaftAnswer`.
-    async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes;
+    /// `from` is the node id the connection's `Hello` bound; a message that
+    /// names another broker as its sender must be refused.
+    async fn answer(&self, from: Option<Arc<str>>, body: bytes::Bytes) -> bytes::Bytes;
 }
 
 /// Answers every forwarded request with `Unavailable`.
@@ -456,6 +458,21 @@ struct Offered {
 /// renewed one.
 pub(crate) const CERT_EXPIRED_CLOSE_CODE: u32 = 5;
 
+/// Internal connection close code for a peer that sent a request before its
+/// `Hello` was accepted.
+pub(crate) const HELLO_REQUIRED_CLOSE_CODE: u32 = 6;
+
+/// Close code for a connection that did not say `Hello` in time.
+pub(crate) const HELLO_TIMEOUT_CLOSE_CODE: u32 = 7;
+
+/// How long a connection may stay open without a `Hello`. A dialer greets
+/// first, so a peer that holds a certificate and stays silent is holding a
+/// connection slot for nothing.
+#[cfg(not(test))]
+pub(crate) const HELLO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+pub(crate) const HELLO_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// How far before its certificate's `notAfter` a peer connection may close.
 /// Brokers whose certificates were issued together would otherwise all drop
 /// their links in the same instant. Closing early is safe; late is not.
@@ -473,9 +490,8 @@ async fn serve_connection(
 ) {
     // Read once: the chain does not change for the life of a connection.
     let peer_certs = tls.as_ref().and_then(|_| connection.peer_certificates());
-    // Who the peer said it is, for every stream it opens after its `Hello`.
-    // The pool waits for `HelloOk` before it sends anything else, so no
-    // request on this connection arrives before this is set.
+    // Who the peer's `Hello` proved it is, for every stream it opens. Set
+    // once; every other request is refused until it is.
     let identity: Arc<parking_lot::Mutex<Option<Arc<str>>>> = Arc::default();
     let connection_batches = Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER));
     // Whether the peer replaces a stream it gets no answer on, from its
@@ -502,12 +518,27 @@ async fn serve_connection(
         }
     };
     tokio::pin!(cert_expired);
+    let hello_missing = {
+        let identity = Arc::clone(&identity);
+        async move {
+            tokio::time::sleep(HELLO_DEADLINE).await;
+            if identity.lock().is_some() {
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    tokio::pin!(hello_missing);
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
             () = &mut cert_expired => {
                 tracing::info!(node = %node_id, "closing an internal connection: the peer's certificate expired");
                 connection.close(CERT_EXPIRED_CLOSE_CODE.into(), b"peer certificate expired");
+                break;
+            }
+            () = &mut hello_missing => {
+                tracing::warn!(node = %node_id, "closing an internal connection: no Hello within the deadline");
+                connection.close(HELLO_TIMEOUT_CLOSE_CODE.into(), b"no Hello");
                 break;
             }
             accepted = connection.accept_bi() => match accepted {
@@ -581,6 +612,41 @@ async fn serve_connection(
                     },
                 };
 
+                // The one place a request meets the connection's identity. The
+                // handshake proved only that the peer holds a certificate from
+                // the CA; until a `Hello` binds it to the node id that
+                // certificate names, nothing else is served. The dialer always
+                // greets first, so a peer that does not is not one of ours.
+                let bound = identity.lock().clone();
+                let from = match &request {
+                    InternalMessage::Hello(_) => None,
+                    request => match bound {
+                        Some(from) => Some(from),
+                        None => {
+                            tracing::warn!(
+                                kind = ?request.kind(),
+                                peer = %connection.info().peer_addr,
+                                "refusing an internal peer: it sent a request before its Hello",
+                            );
+                            metrics::record_inbound_rejected("no_hello");
+                            let refusal =
+                                InternalMessage::ForwardPublishError(ForwardPublishError {
+                                    correlation_id: request.correlation_id(),
+                                    code: ErrorCode::Unauthorized,
+                                    detail: "a peer must say Hello before anything else"
+                                        .to_string(),
+                                });
+                            let mut send = send.lock().await;
+                            let _ = write_frame(&mut send, &refusal).await;
+                            let _ = send.finish();
+                            connection.close(
+                                HELLO_REQUIRED_CLOSE_CODE.into(),
+                                b"request before Hello",
+                            );
+                            return;
+                        }
+                    },
+                };
                 // Read per request: the `Hello` that sets it comes first.
                 let offered_by = PeerCapabilities::from_bits(
                     caller.load(std::sync::atomic::Ordering::Relaxed),
@@ -622,8 +688,41 @@ async fn serve_connection(
                             );
                             return;
                         }
+                        // Bound once. A certificate may name more than one
+                        // node, and a connection that could switch between
+                        // them would carry one node's state under another's.
+                        let rebound = {
+                            let mut bound = identity.lock();
+                            match bound.as_deref() {
+                                Some(was) if was != hello.node_id => Some(was.to_owned()),
+                                Some(_) => None,
+                                None => {
+                                    *bound = Some(Arc::from(hello.node_id.as_str()));
+                                    None
+                                }
+                            }
+                        };
+                        if let Some(was) = rebound {
+                            tracing::warn!(
+                                was = %was,
+                                claimed = %hello.node_id,
+                                peer = %connection.info().peer_addr,
+                                "refusing an internal peer: it greeted again as another node",
+                            );
+                            metrics::record_inbound_rejected("identity");
+                            let refusal =
+                                InternalMessage::ForwardPublishError(ForwardPublishError {
+                                    correlation_id: hello.correlation_id,
+                                    code: ErrorCode::Unauthorized,
+                                    detail: format!("this connection is already {was}"),
+                                });
+                            let mut send = send.lock().await;
+                            let _ = write_frame(&mut send, &refusal).await;
+                            let _ = send.finish();
+                            connection.close(3u32.into(), b"peer identity changed");
+                            return;
+                        }
                         tracing::debug!(peer = %hello.node_id, "internal peer connected");
-                        *identity.lock() = Some(Arc::from(hello.node_id.as_str()));
                         renews.store(
                             hello
                                 .capabilities
@@ -832,7 +931,7 @@ async fn serve_connection(
                             let _running = running;
                             let correlation_id = call.correlation_id;
                             answer_out_of_order(&send, offered_by, async move {
-                                match tokio::time::timeout(deadline, raft.answer(call.body)).await {
+                                match tokio::time::timeout(deadline, raft.answer(from, call.body)).await {
                                     Ok(body) => InternalMessage::RaftAnswer(RaftAnswer {
                                         correlation_id,
                                         body,

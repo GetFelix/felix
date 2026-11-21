@@ -294,8 +294,12 @@ async fn an_unreadable_message_is_answered_unreachable() {
         Arc::new(crate::raft::AgreeingPeers),
     )
     .expect("timers");
-    let answer =
-        crate::peer::RaftHandler::answer(&runtime, bytes::Bytes::from_static(b"\x09\x03")).await;
+    let answer = crate::peer::RaftHandler::answer(
+        &runtime,
+        Some("b".into()),
+        bytes::Bytes::from_static(b"\x09\x03"),
+    )
+    .await;
     let refused = crate::raft::wire::decode_reply(answer)
         .expect("an answer")
         .err()
@@ -434,4 +438,49 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
     for broker in brokers {
         broker.stop().await;
     }
+}
+
+/// A vote names its candidate, and openraft grants it to that member. A
+/// connection bound to one broker may not ask in another's name, nor ask at
+/// all before it is bound.
+#[test]
+fn a_raft_message_in_another_brokers_name_is_refused() {
+    let vote = vote_for(GroupId::new(shard(), 0), MemberId::new("b", 1));
+    assert!(impersonation(Some("a"), &vote).is_none());
+    let refused = impersonation(Some("c"), &vote).expect("refused");
+    assert!(matches!(refused, Refused::Unreachable(_)), "{refused}");
+    assert!(impersonation(None, &vote).is_some());
+}
+
+/// The answer path itself holds a connection to its bound broker: an append
+/// or a written position sent in another member's name is refused before the
+/// group sees it.
+#[tokio::test]
+async fn answering_refuses_an_append_or_written_in_another_brokers_name() {
+    let book = Book::default();
+    let broker = Broker::start("a", &book, true).await;
+    let group = GroupId::new(shard(), 0);
+    let to = MemberId::new("a", 1);
+    let leader = openraft::impls::leader_id_std::LeaderId::new(1, MemberId::new("b", 1));
+    let append = Request::Append(openraft::raft::AppendEntriesRequest {
+        vote: VoteOf::<ShardTypes>::from_leader_id(leader, true),
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    });
+    let written = Request::Written {
+        from: MemberId::new("b", 1),
+        at: felix_storage::raft_log::LogPoint { term: 1, index: 1 },
+    };
+    for body in [append, written] {
+        let mut request = vote_for(group.clone(), to.clone());
+        request.body = body;
+        let bytes = wire::encode_request(&request).expect("encode");
+        let reply = broker.runtime.answer(Some("c".into()), bytes).await;
+        let Err(Refused::Unreachable(why)) = wire::decode_reply(reply).expect("reply") else {
+            panic!("expected a refusal");
+        };
+        assert!(why.contains("sent a message as"), "{why}");
+    }
+    broker.stop().await;
 }

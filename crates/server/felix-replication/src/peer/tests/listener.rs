@@ -165,6 +165,7 @@ async fn a_frame_kind_this_broker_does_not_know_is_refused_without_ending_the_st
         .connect(listener.addr, "felix-internal")
         .await
         .expect("connect");
+    super::lanes::greet(&connection, None).await;
     let (mut send, mut recv) = connection.open_bi().await.expect("open");
 
     // A frame from some later build: our framing, our version, a kind that does
@@ -244,6 +245,7 @@ async fn the_listener_refuses_past_its_inbound_connection_limit() {
             .expect("within the limit");
         // Exercised, not merely established: a connection the listener has not
         // yet counted proves nothing about the limit.
+        super::lanes::greet(&connection, None).await;
         let (mut send, mut recv) = connection.open_bi().await.expect("open");
         crate::peer::codec::write_frame(&mut send, &forward())
             .await
@@ -289,6 +291,7 @@ async fn the_listener_refuses_past_its_inbound_connection_limit() {
         .connect(listener.addr, "felix-internal")
         .await
         .expect("connect after a release");
+    super::lanes::greet(&after_release, None).await;
     let (mut send, mut recv) = after_release.open_bi().await.expect("open");
     crate::peer::codec::write_frame(&mut send, &forward())
         .await
@@ -302,4 +305,108 @@ async fn the_listener_refuses_past_its_inbound_connection_limit() {
     );
 
     listener.stop().await;
+}
+
+/// A certificate from the CA says only that the peer is one of ours; its
+/// `Hello` says which. Every request before one is refused, and the
+/// connection ends, so nothing is served under no identity.
+#[tokio::test]
+async fn every_request_before_a_hello_is_refused() {
+    use felix_wire::internal::{Ping, RaftCall};
+
+    let raft = InternalMessage::Raft(RaftCall {
+        correlation_id: 9,
+        body: bytes::Bytes::from_static(b"\x01\x02"),
+    });
+    let ping = InternalMessage::Ping(Ping { correlation_id: 9 });
+    let records = InternalMessage::ReplicateRecords(felix_wire::internal::ReplicateRecords {
+        times: None,
+        correlation_id: 9,
+        shard: shard(),
+        first_offset: 0,
+        checksum: 0,
+        payloads: Vec::new(),
+        marks: Vec::new(),
+        commit_offset: None,
+        generations: None,
+        publishers: Vec::new(),
+        headers: None,
+        writers: None,
+        set_generation: None,
+    });
+    let handler = Arc::new(CountingHandler::default());
+    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config()).await;
+    for request in [ping, super::capabilities::fence(), raft, forward(), records] {
+        let connection = super::lanes::connect(&listener).await;
+        let (mut send, mut recv) = connection.open_bi().await.expect("open");
+        crate::peer::codec::write_frame(&mut send, &request)
+            .await
+            .expect("write");
+        refused_and_closed(&connection, &mut recv, server::HELLO_REQUIRED_CLOSE_CODE).await;
+    }
+    assert_eq!(
+        handler.seen.load(Ordering::SeqCst),
+        0,
+        "a request before Hello reached the handler"
+    );
+}
+
+/// A peer that connects and never says `Hello` does not hold the connection
+/// open.
+#[tokio::test]
+async fn a_connection_that_never_says_hello_is_closed() {
+    let listener = Listener::start_on(PEER, Arc::new(CountingHandler::default()), config()).await;
+    let connection = super::lanes::connect(&listener).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .expect("the connection ends");
+    let quinn::ConnectionError::ApplicationClosed(close) = closed else {
+        panic!("expected the listener to close the connection, got {closed}");
+    };
+    assert_eq!(close.error_code, server::HELLO_TIMEOUT_CLOSE_CODE.into());
+}
+
+/// The node id is bound by the first `Hello`. A second one naming another
+/// node ends the connection rather than switching who it speaks for.
+#[tokio::test]
+async fn a_second_hello_as_another_node_is_refused() {
+    use felix_wire::internal::Hello;
+
+    let listener = Listener::start_on(PEER, Arc::new(CountingHandler::default()), config()).await;
+    let connection = super::lanes::connect(&listener).await;
+    super::lanes::greet(&connection, None).await;
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+    let hello = InternalMessage::Hello(Hello {
+        correlation_id: 2,
+        node_id: "broker-z".to_string(),
+        capabilities: None,
+    });
+    crate::peer::codec::write_frame(&mut send, &hello)
+        .await
+        .expect("write");
+    refused_and_closed(&connection, &mut recv, 3).await;
+}
+
+/// The refusal may be lost to the close that follows it, so the close code
+/// is what is checked; any answer that did arrive must be the refusal.
+async fn refused_and_closed(
+    connection: &felix_transport::QuicConnection,
+    recv: &mut quinn::RecvStream,
+    code: u32,
+) {
+    if let Ok(crate::peer::codec::Incoming::Message(answer)) =
+        crate::peer::codec::read_frame(recv).await
+    {
+        let InternalMessage::ForwardPublishError(err) = answer else {
+            panic!("expected a refusal, got {:?}", answer.kind());
+        };
+        assert_eq!(err.code, ErrorCode::Unauthorized);
+    }
+    let closed = tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .expect("the connection ends");
+    let quinn::ConnectionError::ApplicationClosed(close) = closed else {
+        panic!("expected the listener to close the connection, got {closed}");
+    };
+    assert_eq!(close.error_code, code.into());
 }

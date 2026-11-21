@@ -15,7 +15,7 @@ use super::*;
 use crate::peer::codec::{Incoming, read_frame, write_frame};
 use crate::peer::{Incarnation, PeerIdentity};
 
-fn fence() -> InternalMessage {
+pub(super) fn fence() -> InternalMessage {
     InternalMessage::Fence(Fence {
         correlation_id: 0,
         shard: shard(),
@@ -582,6 +582,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
         .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
         .await
         .expect("connect");
+    super::lanes::greet(&connection, None).await;
     let (mut send, mut recv) = connection.open_bi().await.expect("open");
     write_frame(&mut send, &fence()).await.expect("write");
     let Incoming::Message(InternalMessage::ForwardPublishError(refusal)) =
@@ -810,6 +811,7 @@ async fn a_control_request_past_the_limit_is_refused_and_the_stream_reads_on() {
         .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
         .await
         .expect("connect");
+    super::lanes::greet(&connection, None).await;
     let (mut send, mut recv) = connection.open_bi().await.expect("open");
 
     let limit = server::MAX_CONTROLS_PER_STREAM as u64;
@@ -1006,6 +1008,7 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
         .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
         .await
         .expect("connect");
+    super::lanes::greet(&connection, None).await;
     let (mut send, mut recv) = connection.open_bi().await.expect("open");
     for request in [candidate, stamped, pre_vote] {
         let id = request.correlation_id();

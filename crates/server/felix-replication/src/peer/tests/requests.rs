@@ -183,7 +183,11 @@ async fn raft_calls_do_not_take_the_budget_pings_need() {
     struct Slow;
     #[async_trait::async_trait]
     impl crate::peer::RaftHandler for Slow {
-        async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes {
+        async fn answer(
+            &self,
+            _from: Option<std::sync::Arc<str>>,
+            body: bytes::Bytes,
+        ) -> bytes::Bytes {
             tokio::time::sleep(Duration::from_secs(30)).await;
             body
         }
@@ -250,7 +254,7 @@ struct StuckGroup;
 
 #[async_trait::async_trait]
 impl crate::peer::RaftHandler for StuckGroup {
-    async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes {
+    async fn answer(&self, _from: Option<std::sync::Arc<str>>, body: bytes::Bytes) -> bytes::Bytes {
         if body[6] == 0 || body[1] == crate::peer::RAFT_APPEND_ENTRIES {
             std::future::pending::<()>().await;
         }
