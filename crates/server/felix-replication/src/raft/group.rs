@@ -39,7 +39,7 @@ use super::propose::{
 };
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
-use super::runtime::{GroupStatus, OpenError, Role};
+use super::runtime::{Admission, GroupStatus, OpenError, Role};
 use super::ticker::{VoteClock, VoteSaves};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -2562,10 +2562,18 @@ impl Group {
     /// effective or committed membership, every set of a joint one
     /// included. Otherwise it is not of the group, and answering would let
     /// it raise this member's term, take its vote or truncate its log. A
-    /// copy that holds no membership yet takes the message: it is new, its
-    /// first append comes from a leader it cannot know yet, and it has
-    /// nothing acknowledged to lose. See `docs/threat-model-internal.md`.
-    pub(crate) async fn outsider(&self, from: &str, named: Option<&MemberId>) -> Option<Refused> {
+    /// copy that holds no membership yet cannot know its leader, so it
+    /// takes the message only from a broker placed in the group's epoch,
+    /// or from anyone when it was given no [`Admission`]. A member also
+    /// takes one from a broker the control plane places in the group now,
+    /// which a member that missed the change adding it does not know. See
+    /// `docs/threat-model-internal.md`.
+    pub(crate) async fn outsider(
+        &self,
+        from: &str,
+        named: Option<&MemberId>,
+        admission: Option<&Admission>,
+    ) -> Option<Refused> {
         use openraft::async_runtime::watch::WatchReceiver;
         let sends = {
             let from: Arc<str> = from.into();
@@ -2600,12 +2608,28 @@ impl Group {
                     .chain(committed.voter_ids())
                     .chain(committed.learner_ids())
                     .peekable();
-                ids.peek().is_none() || ids.any(|id| sends(&id))
+                if ids.peek().is_none() {
+                    return Known::Blank;
+                }
+                if ids.any(|id| sends(&id)) {
+                    Known::Member
+                } else {
+                    Known::Outsider
+                }
             })
             .await
-            .unwrap_or(false);
-        if known {
-            return None;
+            .unwrap_or(Known::Outsider);
+        match known {
+            Known::Member => return None,
+            Known::Blank if admission.is_none_or(|admitted| admitted.placed.contains(from)) => {
+                return None;
+            }
+            Known::Outsider
+                if admission.is_some_and(|admitted| admitted.current.contains(from)) =>
+            {
+                return None;
+            }
+            Known::Blank | Known::Outsider => {}
         }
         tracing::warn!(
             from,
@@ -2769,4 +2793,12 @@ pub(super) fn stream_installable(
         ));
     }
     Ok(())
+}
+
+/// Where a sender stands in a member's membership, for [`Group::outsider`].
+enum Known {
+    Member,
+    /// The member holds no membership.
+    Blank,
+    Outsider,
 }

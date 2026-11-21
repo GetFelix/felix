@@ -416,7 +416,10 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     assert_eq!(shards.held_copies().len(), 1);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
     assert!(
@@ -3051,3 +3054,28 @@ mod retarget;
 mod retention;
 mod short_placement;
 mod trim;
+
+/// A blank copy hears from every broker placed in the group's epoch, a
+/// removed one included: it may still lead while it moves a new member in.
+/// A broker never placed is not admitted, and a removed one is not placed
+/// now.
+#[test]
+fn a_blank_copy_admits_every_broker_placed_in_the_epoch() {
+    let mut moved = assigned(key("orders", 0), INCARNATION);
+    moved.leader = "broker-d".to_string();
+    moved.replicas = vec!["broker-b".to_string()];
+    moved.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 0,
+        brokers: ["broker-a", "broker-b", "broker-d"]
+            .map(str::to_owned)
+            .into(),
+    });
+    let (placed, current) = admitted(&moved);
+    assert!(placed.contains("broker-a"), "{placed:?}");
+    assert!(placed.contains("broker-d"), "{placed:?}");
+    assert!(!placed.contains("broker-c"), "{placed:?}");
+    let now: BTreeSet<String> = ["broker-b", "broker-d"].map(str::to_owned).into();
+    assert_eq!(current, now, "a removed broker is placed in the epoch only");
+    moved.placed = None;
+    assert_eq!(admitted(&moved), (now.clone(), now));
+}

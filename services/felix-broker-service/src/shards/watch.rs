@@ -114,11 +114,16 @@ pub struct ShardAssignment {
     pub raft_formed: Option<RaftFormed>,
 }
 
-/// The epoch half of the control plane's record of the brokers placed in
-/// a shard's group epoch. The brokers it lists are not read here.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+/// The control plane's record of the brokers placed in a shard's group
+/// epoch.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlacedEpoch {
     pub epoch: u64,
+    /// Every broker placed in the epoch, removed ones included. The record
+    /// names a broker before its leader sends it anything. Absent from a
+    /// control plane that predates it.
+    #[serde(default)]
+    pub brokers: std::collections::BTreeSet<String>,
 }
 
 /// The stream incarnation and group epoch of a Raft group the control
@@ -163,7 +168,7 @@ pub struct PendingSet {
 impl ShardAssignment {
     /// The group epoch the control plane's record is at, 0 without one.
     pub fn group_epoch(&self) -> u64 {
-        self.placed.map_or(0, |placed| placed.epoch)
+        self.placed.as_ref().map_or(0, |placed| placed.epoch)
     }
 
     /// The control plane has told the leader to stop serving at this

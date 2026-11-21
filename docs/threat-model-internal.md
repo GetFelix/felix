@@ -75,8 +75,13 @@ never in a group's membership log cannot raise a member's term, take its vote
 or truncate its log (#2909). A new member is always in that membership before
 it needs authority: it joins as a learner whose entry the leader appends first,
 and it votes or leads only after a joint change that names it. A copy with no
-membership yet takes a leader's appends, since it has nothing acknowledged to
-lose. On the hybrid path the replica's ballot and routing checks still bound
+membership yet cannot know its leader, so it takes a message only from a
+broker the control plane placed in the group's epoch (the placed-in-epoch
+record, which names a broker before its leader sends it anything). An
+outsider cannot form a group of its own on a new, wiped or re-formed copy.
+Any member also takes a message from a broker the control plane places in the
+group now, so a member that missed the change adding a new member is caught
+up by it when it leads. A broker removed from the group is in neither set. On the hybrid path the replica's ballot and routing checks still bound
 replication, fences and seals, and a seal's `sealer` copy id is not yet tied to
 the bound node.
 

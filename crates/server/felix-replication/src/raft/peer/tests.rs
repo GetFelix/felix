@@ -551,6 +551,110 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
         .expect("reply")
         .expect("a member's append is answered");
     assert_eq!(term_of(&vote()), 100, "a member's higher term is taken");
+    // A member that missed the change adding `c` hears from it once the
+    // control plane places `c` in the group, and not from the epoch's
+    // record alone.
+    let brokers = |names: &[&str]| names.iter().map(|b| b.to_string()).collect();
+    broker
+        .runtime
+        .admit(&shard(), brokers(&["a", "b", "c"]), brokers(&["a", "b"]));
+    let reply = broker
+        .runtime
+        .answer(Some("c".into()), ask("c", true))
+        .await;
+    assert!(wire::decode_reply(reply).expect("reply").is_err());
+    broker.runtime.admit(
+        &shard(),
+        brokers(&["a", "b", "c"]),
+        brokers(&["a", "b", "c"]),
+    );
+    let reply = broker
+        .runtime
+        .answer(Some("c".into()), ask("c", true))
+        .await;
+    wire::decode_reply(reply)
+        .expect("reply")
+        .expect("a broker placed now is answered");
+    broker.stop().await;
+}
+
+/// A copy with no membership cannot know its leader yet, so it takes a
+/// first message only from a broker placed in the group's epoch. An
+/// outsider racing the group's first form neither raises its term, takes
+/// its vote nor writes the membership that would make it the leader.
+#[tokio::test]
+async fn a_blank_copy_refuses_a_broker_not_placed_in_its_group() {
+    use openraft::async_runtime::watch::WatchReceiver;
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let broker = Broker::start("a", &book, true).await;
+    let group = GroupId::new(shard(), 0);
+    let to = MemberId::new("a", 1);
+    broker.runtime.admit(
+        &shard(),
+        ["a", "b"].map(str::to_owned).into(),
+        ["a", "b"].map(str::to_owned).into(),
+    );
+    broker
+        .runtime
+        .open(group.clone(), 1, open_log(&root, "a"))
+        .await
+        .expect("open");
+    let member = broker.runtime.group(&shard()).expect("group");
+    let ask = |name: &str, append: bool| {
+        let sender = MemberId::new(name, 1);
+        let leader = openraft::impls::leader_id_std::LeaderId::new(100, sender.clone());
+        let mut request = vote_for(group.clone(), to.clone());
+        request.body = if append {
+            use openraft::entry::RaftEntry;
+            use openraft::type_config::alias::{EntryOf, LogIdOf};
+            let membership = crate::raft::types::Membership::new(
+                vec![[sender.clone(), to.clone()].into()],
+                BTreeSet::new(),
+                crate::raft::TargetVersion::default(),
+            );
+            Request::Append(openraft::raft::AppendEntriesRequest {
+                vote: VoteOf::<ShardTypes>::from_leader_id(leader, true),
+                prev_log_id: None,
+                entries: vec![EntryOf::<ShardTypes>::new_membership(
+                    LogIdOf::<ShardTypes>::new(100.into(), 0),
+                    membership,
+                )],
+                leader_commit: None,
+            })
+        } else {
+            Request::Vote(VoteRequest::new(
+                VoteOf::<ShardTypes>::from_leader_id(leader, false),
+                None,
+            ))
+        };
+        wire::encode_request(&request).expect("encode")
+    };
+    for append in [false, true] {
+        let reply = broker
+            .runtime
+            .answer(Some("c".into()), ask("c", append))
+            .await;
+        let Err(Refused::Unreachable(why)) = wire::decode_reply(reply).expect("reply") else {
+            panic!("expected a refusal");
+        };
+        assert!(why.contains("not a member"), "{why}");
+        let metrics = member.raft().metrics().borrow_watched().clone();
+        assert_eq!(term_of(&metrics.vote), 0, "{:?}", metrics.vote);
+        assert!(metrics.last_log_index.is_none(), "{metrics:?}");
+        assert_eq!(
+            metrics.membership_config.membership().voter_ids().count(),
+            0,
+            "an outsider wrote the membership"
+        );
+    }
+    let reply = broker
+        .runtime
+        .answer(Some("b".into()), ask("b", true))
+        .await;
+    wire::decode_reply(reply)
+        .expect("reply")
+        .expect("a placed broker's first append is answered");
     broker.stop().await;
 }
 

@@ -452,6 +452,7 @@ impl RaftShards {
         self.claims.fetch_add(1, Ordering::AcqRel);
         let (dir, config) = claim.context("claim task")??;
         let retention_interval = config.retention_check_interval;
+        admit(&self.runtime, key, assignment);
         let opened = self
             .runtime
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
@@ -972,6 +973,34 @@ enum Durable {
 }
 
 /// The brokers placement names for a shard, lowest id first.
+/// Tells the runtime who the shard's member hears from beyond its
+/// membership. A copy with no membership hears only from a broker placed in
+/// the group's epoch, so no outsider can form a group on a new or wiped
+/// copy; the record names a broker before its leader sends it anything. Any
+/// member hears from the placement and target held now. Each set includes
+/// the placement and target, which stand in for the record from a control
+/// plane that keeps none.
+fn admit(runtime: &GroupRuntime, key: &ShardKey, assignment: &ShardAssignment) {
+    let (placed, current) = admitted(assignment);
+    runtime.admit(key, placed, current);
+}
+
+/// The (placed in epoch, placed now) brokers for [`admit`].
+fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut current: BTreeSet<String> = brokers_of(assignment)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    if let Some(target) = &assignment.target {
+        current.extend(target.members.keys().cloned());
+    }
+    let mut placed = current.clone();
+    if let Some(record) = &assignment.placed {
+        placed.extend(record.brokers.iter().cloned());
+    }
+    (placed, current)
+}
+
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
         .chain(&assignment.replicas)
@@ -1200,6 +1229,7 @@ impl EngineShards for RaftShards {
                 if self.off_placement(key, &brokers) {
                     off_placement += 1;
                 }
+                admit(&self.runtime, key, assignment);
                 // The group's leader hands it the leadership. Even the first
                 // one: the broker that forms a group wins its first term.
                 self.runtime.prefer(key, &assignment.leader);

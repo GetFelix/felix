@@ -525,6 +525,15 @@ struct Inner {
     acked: Arc<AtomicU64>,
     /// Copies a re-form stopped, by shard: no member runs on them.
     stopped: parking_lot::Mutex<BTreeMap<ShardKey, StoppedMember>>,
+    /// See [`GroupRuntime::admit`].
+    admitted: parking_lot::Mutex<BTreeMap<ShardKey, Arc<Admission>>>,
+}
+
+/// See [`GroupRuntime::admit`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Admission {
+    pub(crate) placed: BTreeSet<String>,
+    pub(crate) current: BTreeSet<String>,
 }
 
 /// A copy an open found stopped, which rejoins once a leader is heard
@@ -596,6 +605,7 @@ impl GroupRuntime {
                 placed_budget: Arc::new(placed::Budget::new(&config.placement)),
                 acked: Arc::default(),
                 stopped: parking_lot::Mutex::default(),
+                admitted: parking_lot::Mutex::default(),
                 placement: config.placement,
             }),
         })
@@ -1212,6 +1222,22 @@ impl GroupRuntime {
         self.inner.acked.fetch_max(incarnation, Ordering::AcqRel);
     }
 
+    /// Who `shard`'s member takes a message from beyond its membership.
+    /// `placed` is every broker the control plane placed in the group's
+    /// epoch: a copy with no membership cannot tell its leader from an
+    /// outsider, so it hears only from them. `current` is the placement
+    /// and target the control plane holds now, so a member that missed a
+    /// membership change still hears from a new member that leads. Set
+    /// before the copy opens; a shard never given one admits any sender to
+    /// a copy with no membership, as a library user expects.
+    pub fn admit(&self, shard: &ShardKey, placed: BTreeSet<String>, current: BTreeSet<String>) {
+        let admission = Admission { placed, current };
+        let mut admitted = self.inner.admitted.lock();
+        if admitted.get(shard).is_none_or(|held| **held != admission) {
+            admitted.insert(shard.clone(), Arc::new(admission));
+        }
+    }
+
     /// Placement names `broker` as the leader of `shard`. The member that
     /// leads the group hands it the leadership once that broker's member
     /// is a voter and has caught up, paced as [`Placement`] says. A
@@ -1351,8 +1377,12 @@ impl GroupRuntime {
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
+                let admitted =
+                    from.and_then(|_| self.inner.admitted.lock().get(&*group.shard).cloned());
                 if let Some(from) = from
-                    && let Some(refused) = member.outsider(from, super::peer::sender(&body)).await
+                    && let Some(refused) = member
+                        .outsider(from, super::peer::sender(&body), admitted.as_deref())
+                        .await
                 {
                     return Err(refused);
                 }

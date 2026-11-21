@@ -85,8 +85,11 @@ the named member's broker is not the connection's node id. A read index names
 no sender. Every Raft message is then refused, also as unreachable, unless its
 sender (for a read index, any copy of the connection's broker) is a voter or
 learner of the receiving member's effective or committed membership. A member
-that holds no membership yet, a new copy waiting for its first append, takes
-the message.
+that holds no membership yet, a new or wiped copy waiting for its first
+append, takes the message only from a broker the control plane placed in the
+group's epoch. Any member also takes one from a broker the control plane
+places in the group now, so a member that missed the change adding a new
+member still hears from it once it leads.
 
 It exists for *when* a mismatch is found, not for what is found. Every frame
 already carries the version, so a mismatched peer would be rejected on its first
