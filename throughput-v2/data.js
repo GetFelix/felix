@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795279046790,
+  "lastUpdate": 1795279436795,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64532,6 +64532,58 @@ window.BENCHMARK_DATA = {
             "range": "13375.71",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1115411.51\nmean: 1115476.23\nstdev: 13375.71\ncv: 1.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "556b046c545ef08e532f32f19f2f6e779093ddf1",
+          "message": "fix(raft): members held after a restart stand apart (#2895) (#2897)\n\n* fix(raft): members held after a restart stand apart (#2895)\n\nA restarted member with a vote on disk is held until start +\nelection_max. openraft's own random deadline falls inside that hold, so\nevery held member stood the moment the hold ended, and members of one\ngroup restarted together split their votes. Each now waits past the\nhold by the per-member jitter Pace already computes, in Group::tick and\nGroup::may_stand. Granting still resumes when the hold ends; the hold is\nnever shortened.\n\nSpec-Unaffected: liveness only. The model's hold gates granting and an\nunbounded wait before standing, and this only delays the first stand.\n\n* test(raft): bound the wait in the held-members test so a stuck member fails it\n\nSpec-Unaffected: test only.\n\n* test(raft): the held-member jitter test no longer depends on hasher values (#2895)\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-21T16:34:49Z",
+          "tree_id": "e5c2cce0beaf9c06858e62037459d26bb8f4823c",
+          "url": "https://github.com/GetFelix/felix/commit/556b046c545ef08e532f32f19f2f6e779093ddf1"
+        },
+        "date": 1795279435762,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 338660.77,
+            "range": "25490.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338660.77\nmean: 336146.85\nstdev: 25490.87\ncv: 7.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 338660.77,
+            "range": "25490.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 338660.77\nmean: 336146.85\nstdev: 25490.87\ncv: 7.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81684.17,
+            "range": "1096.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81684.17\nmean: 81501.68\nstdev: 1096.59\ncv: 1.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816841.72,
+            "range": "10965.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816841.72\nmean: 815016.83\nstdev: 10965.89\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
