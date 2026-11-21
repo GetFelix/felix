@@ -1145,6 +1145,14 @@ pub fn depends_on_level(command: &[u8]) -> bool {
     op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || op == DELETE_NODE_OP || is_gated(&op))
 }
 
+/// Whether a member may forward `command` over the peer `propose` route. An
+/// import replaces the whole store, so only the operator's route proposes
+/// one, on the leader itself. A command whose op cannot be read is refused
+/// too, so nothing reaches apply that this check read differently.
+pub fn peer_may_propose(command: &[u8]) -> bool {
+    op_of(command).is_some_and(|op| op != IMPORT_STATE_OP)
+}
+
 /// A node delete, whose report stamps go from level 37.
 const DELETE_NODE_OP: &str = "delete_node";
 

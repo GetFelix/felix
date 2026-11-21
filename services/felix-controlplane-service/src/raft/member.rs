@@ -107,6 +107,13 @@ impl RaftMember {
         listener: tokio::net::TcpListener,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<()> {
+        self.security.check_own_identity(self.id)?;
+        if self.security.tls.is_none() && self.security.token.is_some() {
+            tracing::warn!(
+                "raft peers authenticate with the shared FELIX_RAFT_PEER_TOKEN only: any holder \
+                 can speak as any member. Configure FELIX_RAFT_TLS_* with member certificates"
+            );
+        }
         let router = self.rpc_router();
         match self.security.server_tls()? {
             Some(tls) => {
