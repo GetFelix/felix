@@ -27,7 +27,7 @@ use bytes::Bytes;
 use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence, UnfinishedBatch};
 use felix_storage::log::{
     AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadPage,
-    ReadRange, RecordMark, ShardKey,
+    ReadRange, RecordMark, ShardKey, conditional,
 };
 use felix_storage::{CommitSequencer, CommitTurn, DiskLogProvider};
 
@@ -740,9 +740,15 @@ impl StreamLog {
     /// and a page can be empty below the tail: carry on from
     /// [`ReadPage::next`]. Replication, which must not have gaps, uses
     /// [`Self::read_replicated_from`].
+    ///
+    /// The pieces of a cut conditional batch are gaps too, and a page stops
+    /// before an undecided batch at the tail, with `next` at its first
+    /// piece. The tail is a safe end for that: every client reader also
+    /// stops at its read bound, which never sits inside a batch, so a batch
+    /// below it that looks whole is whole and committed. See
+    /// `log::conditional`.
     pub async fn read_log_from(&self, start: Offset, max_bytes: usize) -> Result<ReadPage> {
-        self.log
-            .read_range(ReadRange { start, max_bytes })
+        conditional::read_range(&self.log, ReadRange { start, max_bytes }, u64::MAX)
             .await
             .map_err(read_error)
     }
@@ -764,7 +770,9 @@ impl StreamLog {
 
     /// Just past the last client record below `tail`, stepping back over the
     /// records that are not data the log ends with, but never below
-    /// `floor`.
+    /// `floor`. A conditional piece that is not its batch's last is stepped
+    /// over too: what follows it here is not its next piece, so its batch
+    /// is cut, or it ends the log and is undecided.
     ///
     /// Those records hold offsets no reader is ever handed, so a reader
     /// waiting to reach `tail` itself would wait for an event that never
@@ -775,7 +783,7 @@ impl StreamLog {
         while end > floor {
             let records = self.read_replicated_from(end - 1, 1).await?;
             match records.first() {
-                Some(record) if record.offset == end - 1 && !record.mark.is_data() => {
+                Some(record) if record.offset == end - 1 && !holds_event(record.mark) => {
                     end -= 1;
                 }
                 _ => break,
@@ -1267,6 +1275,15 @@ pub fn append_time_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
+}
+
+/// Whether a record at the end of a log may be a client record, for
+/// [`StreamLog::event_end`]: data, and not a piece whose batch goes on.
+fn holds_event(mark: RecordMark) -> bool {
+    match mark {
+        RecordMark::CondPiece(piece) => piece.is_last(),
+        mark => mark.is_data(),
+    }
 }
 
 fn read_error(err: felix_storage::StorageError) -> BrokerError {

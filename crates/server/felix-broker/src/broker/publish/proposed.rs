@@ -724,7 +724,7 @@ async fn finish<E>(
         None => (None, None),
     };
     let batch = match (&committed, first_offset) {
-        (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset),
+        (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset, count),
         (Ok(at), Some(first_offset)) if let Some(trim) = trim => HeldBatch {
             payloads,
             first_offset,
@@ -746,7 +746,7 @@ async fn finish<E>(
             skipped_before: at.skipped_before,
             gap: false,
             gap_end: None,
-            blank: false,
+            blanks: 0,
         },
         (Err(failed), _) => HeldBatch::gap(failed.written_end),
         (Ok(at), None) => HeldBatch::gap(Some(at.end)),

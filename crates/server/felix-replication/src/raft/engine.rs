@@ -184,7 +184,9 @@ impl RaftEngine {
     /// One past the highest offset this broker knows committed, for every
     /// reader at every consistency level. It is the commit index plus one
     /// as this member has applied it, so it can trail the leader's and
-    /// never passes it. A follower has one too.
+    /// never passes it. A follower has one too. It never sits inside a
+    /// conditional batch: while one is undecided it stays at the batch's
+    /// first record.
     pub fn read_bound(&self, shard: &ShardKey) -> Result<u64, Unreadable> {
         let group = self.runtime.group(shard).ok_or(Unreadable::NotServed)?;
         Ok(group.read_bound())

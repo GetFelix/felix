@@ -8,7 +8,7 @@ use felix_storage::waiters::Queue;
 use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 
-use super::super::commit::{Commits, TermAt};
+use super::super::commit::{Commits, Holds, TermAt};
 use super::super::propose::{Leading, Lost};
 use super::*;
 use crate::engine::{CommitError, EngineHost, Written};
@@ -464,6 +464,116 @@ fn records_end_below_a_trailing_membership_change_and_term_blank() {
     commits.advance(at(2, 4));
     assert_eq!(commits.records_end(5), 5);
     assert_eq!(commits.records_end(4), 2);
+}
+
+/// Apply `entries` to `commits` as one run, in order from `from`, and
+/// return the skip counts it pushed.
+fn apply_run(
+    commits: &mut Commits,
+    quiet: &mut std::ops::Range<u64>,
+    from: u64,
+    entries: &[Holds],
+) -> Vec<(u64, u64)> {
+    let mut skipped = Vec::new();
+    for (index, holds) in (from..).zip(entries) {
+        commits.apply(at(1, index), *holds, quiet, &mut skipped);
+    }
+    skipped
+}
+
+fn piece(position: u32, len: u32) -> Holds {
+    Holds::Piece { position, len }
+}
+
+/// **An undecided conditional batch holds the read bound at its first
+/// piece, across runs, and a whole one releases it.** The applied index
+/// moves with every piece, so a wait on an apply is not held. The blank
+/// below the batch is skipped before its first record, as for any record.
+#[test]
+fn an_undecided_batch_holds_the_read_bound_until_it_is_whole() {
+    let mut commits = Commits::default();
+    let mut quiet = 0..0;
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        0,
+        &[Holds::Record, Holds::Nothing, piece(0, 3), piece(1, 3)],
+    );
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 2, "held at the first piece");
+    assert_eq!(commits.applied_end(), 4);
+    assert_eq!(commits.records_end(commits.read_bound()), 1);
+    // The last piece lands in a later run.
+    let skipped = apply_run(&mut commits, &mut quiet, 4, &[piece(2, 3)]);
+    assert_eq!(
+        skipped,
+        [(2, 1)],
+        "the blank at 1 is skipped before the batch"
+    );
+    assert_eq!(commits.read_bound(), 5);
+    assert_eq!(commits.records_end(5), 5);
+    let skipped = apply_run(&mut commits, &mut quiet, 5, &[Holds::Record]);
+    assert!(
+        skipped.is_empty(),
+        "nothing between the batch and the record"
+    );
+}
+
+/// **A batch cut by another entry holds no record, and its pieces count in
+/// the next record's skips.** A new leader's blank lands where the third
+/// piece belonged: the bound moves past the two pieces, which join the run
+/// below the next record with the blank before the batch and the cutter.
+#[test]
+fn a_cut_batch_holds_no_record_and_its_pieces_are_skipped() {
+    let mut commits = Commits::default();
+    let mut quiet = 0..0;
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        0,
+        &[Holds::Record, Holds::Nothing, piece(0, 3), piece(1, 3)],
+    );
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 2);
+    let skipped = apply_run(&mut commits, &mut quiet, 4, &[Holds::Nothing]);
+    assert!(skipped.is_empty());
+    assert_eq!(commits.read_bound(), 5, "the cut batch no longer holds it");
+    assert_eq!(commits.records_end(5), 1, "the pieces hold no record");
+    let skipped = apply_run(&mut commits, &mut quiet, 5, &[Holds::Record]);
+    assert_eq!(skipped, [(5, 4)], "the blank, both pieces and the cutter");
+
+    // Cut by the first piece of the next batch, which then completes.
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        6,
+        &[piece(0, 2), piece(0, 2), piece(1, 2), Holds::Record],
+    );
+    assert_eq!(skipped, [(7, 1)], "the cut piece at 6 is skipped");
+    assert_eq!(commits.read_bound(), 10);
+}
+
+/// **A member that resumes inside a batch reads the open batch back and
+/// keeps the bound at its first piece.** Its pieces are then cut or
+/// completed as on a member that applied them in one go.
+#[test]
+fn a_member_resumed_inside_a_batch_keeps_its_bound_there() {
+    let batch = super::super::commit::OpenBatch { first: 7, len: 3 };
+    let mut commits = Commits::resumed(Some(at(1, 8))).in_batch(Some(batch));
+    assert_eq!(commits.read_bound(), 7);
+    assert_eq!(commits.applied_end(), 9);
+    let mut quiet = 0..0;
+    let mut whole = commits.clone();
+    assert!(apply_run(&mut whole, &mut quiet.clone(), 9, &[piece(2, 3)]).is_empty());
+    assert_eq!(whole.read_bound(), 10);
+    let skipped = apply_run(
+        &mut commits,
+        &mut quiet,
+        9,
+        &[Holds::Nothing, Holds::Record],
+    );
+    assert_eq!(skipped, [(10, 3)]);
+    assert_eq!(commits.read_bound(), 11);
 }
 
 /// **An idle shard's term blank leaves the records where they were.** A

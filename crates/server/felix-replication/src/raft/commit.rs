@@ -43,6 +43,29 @@ pub(crate) struct Commits {
     /// Runs of applied entries that hold no record (a leader's blank entry,
     /// a membership change), as `start..end`, oldest first.
     quiet: VecDeque<std::ops::Range<u64>>,
+    /// The conditional batch the applied entries end inside, undecided until
+    /// its last piece or another entry is applied. See `log::conditional`.
+    batch: Option<OpenBatch>,
+}
+
+/// A conditional batch whose pieces from `first` up to the last applied
+/// entry are applied and whose last piece is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenBatch {
+    pub(crate) first: u64,
+    pub(crate) len: u32,
+}
+
+/// What an applied entry holds, as [`Commits::apply`] counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Holds {
+    Record,
+    /// A record of a conditional batch, at `position` of `len`.
+    Piece {
+        position: u32,
+        len: u32,
+    },
+    Nothing,
 }
 
 /// How many offsets just below each applied record hold no record, as the
@@ -172,16 +195,109 @@ impl Commits {
             applied,
             starts: applied.into_iter().collect(),
             quiet: VecDeque::new(),
+            batch: None,
         }
+    }
+
+    /// `self` with the last applied entry inside `batch`, as a member that
+    /// resumes there reads it back from its log.
+    pub(crate) fn in_batch(mut self, batch: Option<OpenBatch>) -> Self {
+        self.batch = batch;
+        self
     }
 
     pub(crate) fn applied(&self) -> Option<LogPoint> {
         self.applied
     }
 
-    /// One past the last committed offset this member knows of.
+    /// How far a reader may go: one past the last applied entry, or the
+    /// first piece of the conditional batch the applied entries end inside,
+    /// so no reader sees part of a batch. This is `log::conditional::bound`
+    /// over the applied log.
     pub(crate) fn read_bound(&self) -> u64 {
+        self.batch
+            .map_or_else(|| self.applied_end(), |batch| batch.first)
+    }
+
+    /// One past the last applied entry, for a wait on this member having
+    /// applied an index. A batch holding the read bound back must not hold
+    /// that wait.
+    pub(crate) fn applied_end(&self) -> u64 {
         self.applied.map_or(0, |applied| applied.index + 1)
+    }
+
+    /// The entry at `at`, holding `holds`, was applied, after every entry
+    /// below it. `quiet` is the run of entries holding no record that ends
+    /// at the last applied record, kept by the caller across runs; a record
+    /// with such a run just below it is pushed to `skipped` with its length.
+    ///
+    /// A piece counts as a record only once its batch is whole. A batch cut
+    /// by another entry where its next piece belongs holds no record, so its
+    /// pieces join the run below the next record. Both follow
+    /// `log::conditional::resolve`, which disk reads apply to the same log.
+    pub(crate) fn apply(
+        &mut self,
+        at: LogPoint,
+        holds: Holds,
+        quiet: &mut std::ops::Range<u64>,
+        skipped: &mut Vec<(u64, u64)>,
+    ) {
+        let index = at.index;
+        if self.applied.is_some_and(|applied| index <= applied.index) {
+            return;
+        }
+        self.advance(at);
+        if let Some(open) = self.batch.take() {
+            match holds {
+                Holds::Piece { position, len }
+                    if len == open.len && open.first + u64::from(position) == index =>
+                {
+                    if position + 1 < len {
+                        self.batch = Some(open);
+                        return;
+                    }
+                    // Whole: the run below the batch is skipped before its
+                    // first record.
+                    if quiet.end == open.first && !quiet.is_empty() {
+                        skipped.push((open.first, open.first - quiet.start));
+                    }
+                    *quiet = index + 1..index + 1;
+                    return;
+                }
+                _ => {
+                    for piece in open.first..index {
+                        self.holds_no_record(piece);
+                    }
+                    if quiet.end != open.first || quiet.is_empty() {
+                        quiet.start = open.first;
+                    }
+                    quiet.end = index;
+                }
+            }
+        }
+        let record = match holds {
+            Holds::Record => true,
+            Holds::Piece { position, len } if position + 1 < len => {
+                self.batch = Some(OpenBatch { first: index, len });
+                return;
+            }
+            // A last piece with no batch below it is kept, as `resolve`
+            // keeps it. One past its batch's length is no batch's.
+            Holds::Piece { position, len } => position < len,
+            Holds::Nothing => false,
+        };
+        if record {
+            if quiet.end == index && !quiet.is_empty() {
+                skipped.push((index, index - quiet.start));
+            }
+            *quiet = index + 1..index + 1;
+        } else {
+            self.holds_no_record(index);
+            if quiet.end != index {
+                quiet.start = index;
+            }
+            quiet.end = index + 1;
+        }
     }
 
     /// The entry at `at` was applied. Entries are applied in log order.

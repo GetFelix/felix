@@ -227,7 +227,7 @@ impl Completion {
             skipped_before: 0,
             gap: false,
             gap_end: None,
-            blank: false,
+            blanks: 0,
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -620,8 +620,8 @@ async fn release(handle: StreamHandle) {
                 state.restart_ring(gap_end(state, batch.gap_end));
                 continue;
             }
-            if batch.blank {
-                state.pass_blank(batch.first_offset);
+            if batch.blanks > 0 {
+                state.pass_blank(batch.first_offset, batch.blanks);
                 continue;
             }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
@@ -765,7 +765,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
                 skipped_before: first.offset.saturating_sub(next),
                 gap: false,
                 gap_end: None,
-                blank: false,
+                blanks: 0,
             };
             next = first.offset + 1;
             // A batch names one publisher, so a record of another starts
