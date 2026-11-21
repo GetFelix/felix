@@ -31,6 +31,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        placed: None,
     }
 }
 
@@ -107,6 +108,7 @@ fn targeted(incarnation: u64, counter: u64, withheld: bool) -> ShardAssignment {
             members: [("broker-a".to_string(), counter)].into_iter().collect(),
         }),
         targets_withheld: withheld,
+        placed: None,
         ..assignment(0, "broker-a", 3)
     }
 }
@@ -374,6 +376,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        placed: None,
     }
 }
 

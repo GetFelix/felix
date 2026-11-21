@@ -207,6 +207,7 @@ impl Owner {
                 readmitted: Default::default(),
                 target: None,
                 targets_withheld: false,
+                placed: None,
             },
         )]
         .into_iter()

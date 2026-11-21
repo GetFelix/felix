@@ -200,6 +200,7 @@ fn ingress_with_replicas(leader: &str, servable: bool, replicas: Vec<String>) ->
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        placed: None,
     };
     let assignments: HashMap<crate::shards::ShardKey, crate::shards::watch::ShardAssignment> =
         [(watch_key(), assignment)].into_iter().collect();

@@ -37,6 +37,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         readmitted: Default::default(),
         target: None,
         targets_withheld: false,
+        placed: None,
     }
 }
 
@@ -389,6 +390,50 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
     named.targets_withheld = true;
     shards.take(&mut assignments([named])).await;
     assert_eq!(shards.held_copies(), vec![held(None, true)]);
+    shards.shutdown().await;
+}
+
+/// **A copy without `raft-epoch` counts only while the group never
+/// re-formed.** Past epoch 0 it is a learner placed fresh or a restore
+/// older than the epoch: its epoch is unknown, so it sends no floor (one at
+/// epoch 0 would be refused and stall the group's) and no copy id, which
+/// would put it in the target and let it vote.
+#[tokio::test]
+async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    until("a floor at epoch 0", || {
+        shards
+            .led_floors()
+            .iter()
+            .any(|led| led.key == orders && led.epoch == 0)
+    })
+    .await;
+    assert_eq!(shards.held_copies().len(), 1);
+
+    let mut reformed = assigned(orders.clone(), INCARNATION);
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    shards.take(&mut assignments([reformed])).await;
+    assert!(shards.runtime.status(&orders).is_some(), "still open");
+    assert!(
+        shards.led_floors().is_empty(),
+        "no floor at an unknown epoch"
+    );
+    assert!(
+        shards.held_copies().is_empty(),
+        "no copy id at an unknown epoch"
+    );
+
+    // A view with no record, as from a control plane that predates it, is
+    // at epoch 0.
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert_eq!(shards.held_copies().len(), 1);
+    assert_eq!(shards.led_floors().len(), 1);
     shards.shutdown().await;
 }
 

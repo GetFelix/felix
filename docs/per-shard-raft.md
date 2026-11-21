@@ -952,6 +952,54 @@ Each leader's offset floor report names the group epoch from the copy's
 `raft-epoch`, so a floor from before a re-form is never taken for one of
 the new epoch.
 
+#### A copy's group epoch
+
+A copy counts in an epoch only when it can prove it is in that epoch. Its
+`raft-epoch` names the epoch. A copy without the file is at epoch 0 only
+while the group never re-formed. Past epoch 0, two copies have no file and
+are of an unknown epoch: a learner placed fresh into the group, and a
+directory restored from a backup older than the epoch.
+
+The broker reads the group epoch the control plane's record is at from
+`placed.epoch` in the shard assignments it watches. Absent reads as 0, the
+same as the control plane's floor check reads it. For each
+member it holds, it checks both:
+
+| The copy's `raft-epoch` | The record's epoch | Floor report | Copy id report |
+|---|---|---|---|
+| names epoch `e` | `e` | at `e` | sent |
+| names epoch `e` | another | at `e`, which the control plane refuses | not sent |
+| none | 0 | at 0 | sent |
+| none | above 0 | not sent | not sent |
+
+Without its copy id the control plane never puts the copy in the shard's
+target, so the leader never makes it a voter: an unknown-epoch copy does
+not vote, and a re-form plan does not have to mark around it. The floor
+check is a second line: the control plane already refuses a floor report
+for an epoch other than its record's (`OtherEpoch`), but a broker that
+sent one at epoch 0 would retry it forever and the group's floor would
+stay where it was.
+
+The check runs on the broker, against its own view, so two gaps remain
+until the control plane checks the epoch in the copy id report itself
+(#2882):
+
+- A view can be older than the record. A broker first named in a later
+  epoch is safe, because the write that names it also adds it to that
+  epoch's placed record. A broker named in both epochs whose directory came
+  back from an old backup can still read an epoch-0 view and send its copy
+  id.
+- An import drops every shard's placed record, so a shard restored after a
+  re-form reads as epoch 0.
+
+Neither is reachable yet: no group leaves epoch 0 until the re-form
+command ships (#2250).
+
+Such a copy stays a learner until something writes its `raft-epoch`. Only
+a re-form start writes one into a copy that has served (a rotation writes
+one into the fresh directory it makes), which is what lets a stop marker
+keyed by epoch 0 on a copy without the file hold until that start.
+
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take
 {A, B, C}. A leads term 1 and appends a record that reaches nobody. B

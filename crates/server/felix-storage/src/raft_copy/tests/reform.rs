@@ -289,6 +289,23 @@ fn only_a_log_below_its_mark_is_a_power_cut() {
     );
 }
 
+/// A copy without `raft-epoch` has no epoch of its own to report, not
+/// epoch 0: past epoch 0 it is a learner placed fresh or an old restore.
+#[test]
+fn a_copy_without_an_epoch_file_names_no_epoch() {
+    let dir = tempfile::tempdir().expect("dir");
+    assert_eq!(super::group_epoch(dir.path()).expect("read"), None);
+    let file = EpochFile {
+        incarnation: 1,
+        bases: vec![EpochBase {
+            base_last: None,
+            first_index: 3,
+        }],
+    };
+    epoch_file::store(dir.path(), &file).expect("epoch");
+    assert_eq!(super::group_epoch(dir.path()).expect("read"), Some(1));
+}
+
 /// `raft-epoch` refuses what no start writes: nonzero reserved bytes, a
 /// first index below its base's end, a base ending in a later epoch.
 #[test]
