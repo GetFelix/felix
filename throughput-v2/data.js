@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795252332216,
+  "lastUpdate": 1795267314903,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64272,6 +64272,58 @@ window.BENCHMARK_DATA = {
             "range": "148957.46",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1637272.60\nmean: 1565698.61\nstdev: 148957.46\ncv: 9.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d654ac039cbfa0db1a47005aa70b71d43b699e4f",
+          "message": "fix(controlplane): only the Raft leader's soft state takes the placement lease (#2886) (#2891)\n\n* fix(controlplane): only the Raft leader's soft state takes the placement lease (#2886)\n\nWhen the metadata leader declined soft state at its level gate (a member\nthat had not answered a probe since start counts at level 0), the asking\nstore proposed TakePlacementLease itself, and the apply takes the lease\nwithout an expiry check. That made a second holder while the first one's\nsoft-renewed lease still ran. The same fallback also let an instance\n\"renew\" from its own applied holder without asking anyone.\n\nThe leader now judges the lease at every level: its only write,\nTakePlacementLease, is a level-0 command every member applies, so the\ngate has nothing to protect there. A declined request keeps the lease\nview, so a release is not lost to a heartbeat decline. The store-side\nfallback is gone: with no leader judgement, acquire fails.\n\nSpec-Unaffected: no TLA spec models placement-lease exclusivity;\nFelixPlacementPacing already lets the lease change hands at any moment and\nkeeps writes safe by the generation check, which this does not touch.\n\n* docs(controlplane): drop the last claims of a log-path lease take (#2886)\n\nSpec-Unaffected: doc and doc-comment changes only.\n\n* docs(controlplane): the lease no longer falls back to the log (#2886)\n\nSpec-Unaffected: comment-only change.",
+          "timestamp": "2026-11-21T05:14:57-08:00",
+          "tree_id": "1eaed499303e77d17497e6fd574c655928c5327d",
+          "url": "https://github.com/GetFelix/felix/commit/d654ac039cbfa0db1a47005aa70b71d43b699e4f"
+        },
+        "date": 1795267314249,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 472399.48,
+            "range": "50508.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 472399.48\nmean: 501517.21\nstdev: 50508.81\ncv: 10.07%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 472399.48,
+            "range": "50508.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 472399.48\nmean: 501517.21\nstdev: 50508.81\ncv: 10.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120343.39,
+            "range": "973.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120343.39\nmean: 120562.19\nstdev: 973.95\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1203433.92,
+            "range": "9739.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1203433.92\nmean: 1205621.91\nstdev: 9739.50\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
