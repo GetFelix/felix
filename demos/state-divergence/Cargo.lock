@@ -1142,6 +1142,7 @@ dependencies = [
  "metrics",
  "object_store",
  "parking_lot 0.13.0",
+ "serde",
  "tokio",
  "tracing",
 ]
