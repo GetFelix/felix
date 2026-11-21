@@ -176,11 +176,13 @@ rival, and the refusal tells it where to resume. An empty batch and a stream
 with no log are refused with `error` (`invalid_request`).
 
 On a stream shard that runs on Raft (`docs/per-shard-raft.md`, "Conditional
-publishes") two things differ. The batch must hold exactly one record; a
-batch of several is refused with `error` (`invalid_request`). And a refused
-`publish_if` consumes one offset. The leader's log stores a blank entry in
-its place and followers copy it. Readers skip the blank, subscribers are
-never sent it, and the tail in `offset_mismatch` is the offset after it. Either answer comes once the entry
+publishes") two things differ. A batch of several records is taken once
+the cluster finalizes `raft_conditional_batches`, as a new cluster does, and
+refused with `error` (`invalid_request`) until then; it is written whole or
+not at all, and readers never see part of it. And a refused `publish_if`
+consumes one offset per record. The leader's log stores a blank entry in
+each record's place and followers copy them. Readers skip the blank, subscribers are
+never sent them, and the tail in `offset_mismatch` is the offset after them. Either answer comes once the entry
 is committed, whatever the stream's consistency level.
 
 Not forwarded: a broker that does not lead the shard answers `not_leader` to a

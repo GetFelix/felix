@@ -3569,7 +3569,7 @@ whatever the stream's consistency level: `publish_ok` when the record was
 kept, `offset_mismatch` otherwise, with the offset after the blank as the
 tail.
 
-So on a Raft shard **a refused `publish_if` consumes one offset**. A client
+So on a Raft shard **a refused `publish_if` consumes one offset** per record. A client
 that retries at the tail it was given asks for the offset right after the
 blank. On the hybrid a refusal consumes none.
 
@@ -3591,9 +3591,10 @@ sequenceDiagram
     L-->>C: publish_ok at 14
 ```
 
-A conditional publish carries one record. A batch of several is refused by
-name until the fleet finalizes `raft_conditional_batches`, which no build
-reports yet (#2751). Each record of such a batch is its own entry, a
+A conditional publish may carry several records. A cluster takes such a
+batch once its fleet finalizes `raft_conditional_batches`, as a new cluster
+does; until then it is refused by name. A lone broker takes it from the
+start. Each record of such a batch is its own entry, a
 conditional piece that names its place in the batch, and the leader keeps a
 piece only at the expected offset plus its place. The batch is appended as
 one run, so every piece is kept or every piece is blanked, on every member.
@@ -3614,7 +3615,7 @@ below the trim floor, and no reader reads below the floor. Every disk read goes 
 drops a cut batch's pieces like blanks and stops before an undecided one,
 so history reads, follower delivery, consumer groups, queues and Kafka
 fetches see a batch whole or not at all. A blanked batch moves the stream
-past all its offsets. The gate opens in the next change.
+past all its offsets, so a refused batch of n records consumes n offsets.
 A piece is an entry (tag 10) and a record kind an older build refuses,
 which the fleet gate also covers. A batch with no record is refused as on
 the hybrid. Like a plain Raft publish, a `publish_if` keeps the publisher id
@@ -3659,12 +3660,17 @@ model) lands between the guess and the append.
 > `a_read_skips_a_cut_conditional_batch_and_stops_before_an_undecided_one`;
 > `crates/server/felix-broker/src/stream/state/tests.rs`,
 > `a_blanked_batch_of_three_releases_three_offsets`;
+> `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
+> `a_refused_conditional_batch_releases_every_offset`;
 > `crates/server/felix-replication/src/raft/wire/tests.rs`,
 > `a_conditional_entry_is_refused_by_its_tag_on_an_older_build`;
 > `crates/server/felix-storage/src/raft_log/tests.rs`,
 > `a_command_the_codec_blanks_is_stored_as_a_blank_entry`;
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
-> `a_publish_if_to_a_raft_shard_is_written_only_at_its_offset`.
+> `a_publish_if_to_a_raft_shard_is_written_only_at_its_offset` and
+> `a_publish_if_batch_to_a_raft_shard_is_written_or_refused_whole`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all`.
 
 **Head trims.** A `trim_before` (`docs/protocol.md`) on a Raft shard is
 answered as on the hybrid. `Broker::propose_trim_at` runs the hybrid's
