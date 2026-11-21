@@ -183,6 +183,11 @@ const FIRST_FORM_LEVEL: u16 = 45;
 /// majority of (#2905).
 const FORMED_SET_LEVEL: u16 = 46;
 
+/// The metadata level whose members take a Raft group's voters only from a
+/// reporter its stored target vouches for, or a kept voter still placed
+/// while no target is stored (#2909).
+const VOUCHED_VOTERS_LEVEL: u16 = 47;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -1269,6 +1274,7 @@ impl ControlPlaneStore for RaftStore {
                 node_id: node_id.to_string(),
                 floors,
                 mark_formed: level >= FIRST_FORM_LEVEL,
+                vouched_voters: level >= VOUCHED_VOTERS_LEVEL,
             })
             .await?
         {

@@ -1796,3 +1796,4 @@
 46 snapshot.state.shards[][].raft_voters.index
 46 snapshot.state.shards[][].raft_voters.members
 46 snapshot.state.shards[][].raft_voters.members.*
+47 record_raft_floors.vouched_voters

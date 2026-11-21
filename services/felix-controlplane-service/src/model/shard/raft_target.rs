@@ -136,24 +136,56 @@ impl ShardAssignment {
         true
     }
 
+    /// Whether `node_id` may report the group's voters (#2909): a member of
+    /// the stored target under the copy it reports, or, while a set change
+    /// has cleared the target, a broker still in the set that the voters
+    /// already kept name under that copy. A broker no longer placed never
+    /// may, so a removed broker cannot name itself back into the voters a
+    /// blank copy admits.
+    pub(crate) fn may_report_voters(&self, node_id: &str, voters: &BTreeMap<String, u64>) -> bool {
+        let Some(copy) = voters.get(node_id) else {
+            return false;
+        };
+        let key = self.formed_key();
+        match &self.raft_target {
+            Some(target) => target.members.get(node_id) == Some(copy),
+            None => {
+                self.raft_set().contains(node_id)
+                    && self.raft_copy_ids.get(node_id).is_none_or(|id| id == copy)
+                    && self.raft_voters.as_ref().is_some_and(|held| {
+                        held.incarnation == key.incarnation
+                            && held.epoch == key.epoch
+                            && held.members.get(node_id) == Some(copy)
+                    })
+            }
+        }
+    }
+
     /// Note the voters a leader of the group reported at `index`, when the
     /// report is for this record's incarnation and epoch and is not older
-    /// than the floor (checked after the floor took the report) or the
-    /// voters already kept.
+    /// than the voters already kept.
+    ///
+    /// `by_floor`: also refuse one older than the floor. Below level 47
+    /// only; any broker raises the floor, so it must not decide whose
+    /// voters count.
     /// Returns whether this changed the record.
     pub(crate) fn note_raft_voters(
         &mut self,
         report: &super::RaftFloorReport,
         voters: &BTreeMap<String, u64>,
+        by_floor: bool,
     ) -> bool {
         let key = self.formed_key();
         if report.incarnation != key.incarnation || report.epoch != key.epoch {
             return false;
         }
         let older = |index: u64| index > report.index;
-        let below_floor = self.raft_floor.as_ref().is_some_and(|floor| {
-            floor.incarnation == key.incarnation && floor.epoch == key.epoch && older(floor.index)
-        });
+        let below_floor = by_floor
+            && self.raft_floor.as_ref().is_some_and(|floor| {
+                floor.incarnation == key.incarnation
+                    && floor.epoch == key.epoch
+                    && older(floor.index)
+            });
         let below_held = self.raft_voters.as_ref().is_some_and(|held| {
             held.incarnation == key.incarnation && held.epoch == key.epoch && older(held.index)
         });

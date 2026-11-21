@@ -187,6 +187,14 @@ impl MetadataStateMachine {
         carried || self.join_floor() >= super::FIRST_FORM_LEVEL
     }
 
+    /// Whether a floor entry takes voters only from a vouched reporter
+    /// (#2909): carried by the entry, or the join floor is at the level
+    /// that knows it, so every member decides the same.
+    fn vouches_voters(&self, carried: bool) -> bool {
+        use crate::raft::AppStateMachine;
+        carried || self.join_floor() >= super::VOUCHED_VOTERS_LEVEL
+    }
+
     /// The set holds an entry applies: the unformed hold as
     /// [`Self::holds_unformed`] decides, and the formed group's hold (#2905)
     /// once the join floor is at the level that knows it. Every member
@@ -555,6 +563,7 @@ impl MetadataStateMachine {
                 node_id,
                 floors,
                 mark_formed,
+                vouched_voters,
             } => Ok(MetaResponse::Count {
                 count: u64::from(
                     store
@@ -562,6 +571,7 @@ impl MetadataStateMachine {
                             &node_id,
                             &floors,
                             self.holds_unformed(mark_formed),
+                            self.vouches_voters(vouched_voters),
                         )
                         .await,
                 ),

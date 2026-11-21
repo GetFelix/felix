@@ -62,10 +62,11 @@ async fn the_floor_only_rises(store: &dyn ControlPlaneStore) {
             .await
             .expect("copy id");
     }
-    // Each report carries voters: a report the floor refuses keeps none,
-    // so a high index at a lower term cannot shut out later voters.
+    // Each report carries voters from a target member. The floor does not
+    // decide whose voters count, since any broker raises it (#2909).
+    let copy = read(store, &shard.key).await.raft_copy_ids["broker-x"];
     let entry = |index: u64, term: u64| RaftFloorReport {
-        voters: Some([("broker-x".to_string(), index)].into()),
+        voters: Some([("broker-x".to_string(), copy)].into()),
         ..entry(&shard, index, term)
     };
     assert_eq!(raise(store, vec![entry(10, 2)]).await, 1);
@@ -82,7 +83,9 @@ async fn the_floor_only_rises(store: &dyn ControlPlaneStore) {
             "{index}@{term}"
         );
     }
-    assert_eq!(read(store, &shard.key).await, held);
+    let after = read(store, &shard.key).await;
+    assert_eq!(after.raft_floor, held.raft_floor);
+    assert_eq!(after.raft_voters.map(|voters| voters.index), Some(12));
 
     assert_eq!(raise(store, vec![entry(15, 3)]).await, 1);
     assert_eq!(floor(store, &shard.key).await, Some((15, 3)));

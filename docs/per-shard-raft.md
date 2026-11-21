@@ -4249,12 +4249,17 @@ group never adds the brokers swapped in before the next swap (#2905).
 
 So every floor report a leader sends carries the group's voters, copy id
 by broker, once its membership is committed at the reported index and is
-not joint. The control plane keeps the last voters a leader reported, when
-the leader is one of them and in the stored target (or, while a set
-change has cleared the target, among the voters already kept), at the
-placed incarnation and reform epoch, and only from a report the floor takes
-(not below its index, and not above it at a lower term), so a late report
-cannot bring back older voters. It then refuses a set change on a formed group unless those
+not joint. The control plane keeps the last voters a leader reported at
+the placed incarnation and reform epoch, and never older than the voters it
+already keeps, so a late report cannot bring them back. It takes them only
+from a leader the stored target names under the copy id the leader reports
+for itself. While a set change has cleared the target, it takes them from a
+broker still in the set that the kept voters name under that copy. A broker
+moved off the set never reports voters, so it cannot name itself back into
+the voters a blank copy admits, or freeze the record with a report at a
+huge index. Any broker can raise the floor, so from metadata level 47 the
+floor does not decide whose voters count; below 47 voters count only from a
+report the floor takes. It then refuses a set change on a formed group unless those
 voters hold at least half of the new set, rounded up. With the bound on
 empty voters below, the new set keeps a copy that holds the group's log, and
 the first form, which needs every member empty, never runs on it. A chain of swaps waits at each step until the group reports

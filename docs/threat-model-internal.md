@@ -79,12 +79,17 @@ membership yet cannot know its leader, so it takes a message only from a
 broker in the group now: one the control plane's placement or target names,
 or a voter the group's leader last reported for this epoch. The voter report
 covers a leader the placement has already moved off while it adds the new
-member. An outsider cannot form a group of its own on a new, wiped or
+member. The control plane takes voters only from a leader its target names
+under that leader's own copy id, or, between a set change and its new
+target, from a broker still in the set that the kept voters name. A broker
+moved off the set cannot report itself back in. An outsider cannot form a group of its own on a new, wiped or
 re-formed copy, and a broker placed earlier in the epoch and since removed
 cannot write a new copy's first membership. Any member also takes a message
 from a broker the placement or target names now, so a member that missed the
 change adding a new member is caught up by it when it leads. A broker removed
-from the placement, the target and the reported voters is in neither set.
+from the placement and the target stays admitted to a blank copy until the
+group's membership drops it and the leader reports the new voters, not from
+the placement change; after that it is in neither set.
 Both sets come from the broker's feed of the control plane and lapse a minute
 after its last answer: while the feed is down a member hears only from its
 own membership, and a blank copy from no one. On the hybrid path the replica's ballot and routing checks still bound
