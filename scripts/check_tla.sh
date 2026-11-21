@@ -660,6 +660,7 @@ expectations=(
   "FelixRaftCondBatchAnyLast violates WholeBatchesOnly"
   "FelixRaftCondBatchReachCut violates NeverCutCommitted"
   "FelixRaftCondBatchReachRead violates NeverReadsBatch"
+  "FelixRaftCondBatchReachEarlyCut violates NeverEarlyCut"
   "FelixRaftIdempotent pass"
   "FelixRaftIdempotentTwoTerms pass"
   "FelixRaftIdempotentMemory violates NoDuplicate"

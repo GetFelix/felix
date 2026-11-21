@@ -36,15 +36,21 @@
 (*                                                                         *)
 (* What a reader on a member sees, from that member's log alone:           *)
 (*                                                                         *)
-(*   - the read bound is the commit index, except that it stops before a   *)
-(*     kept piece whose batch's last index is past the commit (the batch   *)
-(*     may still commit whole, or be cut);                                 *)
+(*   - the read bound is the commit index, except when the entry at the    *)
+(*     commit is a kept piece that is not its batch's last: then it stops  *)
+(*     before that batch's first piece (the batch may still commit whole,  *)
+(*     or be cut);                                                         *)
 (*   - below the bound, a kept piece at i with position p and length n is  *)
-(*     a record only if the entry at i + n - 1 - p is a kept last piece    *)
-(*     of the same length. Pieces only take consecutive indexes and a cut  *)
-(*     takes only a tail, so that entry is this batch's own last piece     *)
-(*     and the batch is whole. The check reads marks only, not the         *)
-(*     client: the code has no batch identity to compare.                  *)
+(*     a record only if every entry from i + 1 to i + n - 1 - p is         *)
+(*     committed and is a kept piece of length n at the next position.     *)
+(*     The first committed entry in that range that is anything else cuts  *)
+(*     the batch at once, before its last index commits, so a quiet stream *)
+(*     does not hold the bound.                                            *)
+(*     The check reads marks only, not the client: the code has no batch   *)
+(*     identity to compare.                                                *)
+(*                                                                         *)
+(* This is the rule of `resolve` and `bound` in                            *)
+(* crates/server/felix-storage/src/log/conditional.rs.                     *)
 (*                                                                         *)
 (* Checked, over each member's committed prefix:                           *)
 (*                                                                         *)
@@ -76,11 +82,10 @@
 (*                           decides a batch from its first piece's guess. *)
 (*                                                                         *)
 (*   Hide = "whole" -- the read rule above.                                *)
-(*   Hide = "kept"  -- the rule, but the entry at the last index need only *)
-(*                     be a kept piece, of any position and length.        *)
-(*   Hide = "bound" -- the read bound stops before an unfinished batch,    *)
-(*                     but a kept piece below it is a record whether or    *)
-(*                     not its batch's last piece is there.                *)
+(*   Hide = "kept"  -- the bound above, but a kept piece is a record when  *)
+(*                     the entry at its last index is any kept piece.      *)
+(*   Hide = "bound" -- the bound above, and a kept piece below it is a     *)
+(*                     record whatever follows it.                         *)
 (*   Hide = "none"  -- a reader sees every committed kept piece.           *)
 (*                                                                         *)
 (* Abstracted: disks, crashes and snapshots (FelixRaft.tla has them). A    *)
@@ -138,7 +143,6 @@ Clients == DOMAIN Expected
 
 Min(a, b) == IF a <= b THEN a ELSE b
 MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
-MinOf(S) == CHOOSE x \in S : \A y \in S : x <= y
 Quorum(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 
 NoAnswer == [r |-> "none", at |-> 0]
@@ -406,29 +410,40 @@ AnswersHold ==
 \* the piece's own mark.
 LastAt(s, k) == k + log[s][k].len - 1 - log[s][k].pos
 
-\* The entry at LastAt is committed and is a kept last piece of the same
-\* length. Marks only: no client identity.
-Finished(s, k) ==
-    LET j == LastAt(s, k) IN
-        /\ j <= commit[s]
-        /\ log[s][j].kind = "cond"
-        /\ log[s][j].kept
-        /\ \/ Hide = "kept"
-           \/ /\ log[s][j].len = log[s][k].len
-              /\ log[s][j].pos = log[s][j].len - 1
+\* The entry at j continues the batch of the kept piece at k: a kept piece
+\* of the same length at the position j - k further on.
+Continues(s, k, j) ==
+    /\ log[s][j].kind = "cond"
+    /\ log[s][j].kept
+    /\ log[s][j].len = log[s][k].len
+    /\ log[s][j].pos = log[s][k].pos + (j - k)
 
-\* Committed kept pieces whose batch may still commit whole or be cut.
-Unfinished(s) == {k \in 1..commit[s] : KeptCond(s, k) /\ LastAt(s, k) > commit[s]}
+\* Every entry up to LastAt is committed and continues the batch. One that
+\* does not, committed before LastAt is, decides the batch cut.
+Whole(s, k) ==
+    /\ LastAt(s, k) <= commit[s]
+    /\ \A j \in (k + 1)..LastAt(s, k) : Continues(s, k, j)
 
+\* The weaker check of Hide = "kept".
+LastKept(s, k) == LastAt(s, k) <= commit[s] /\ KeptCond(s, LastAt(s, k))
+
+\* Stops before the batch the committed log ends inside, found from the
+\* entry at the commit alone.
 ReadBound(s) ==
-    IF Hide = "none" \/ Unfinished(s) = {} THEN commit[s]
-    ELSE MinOf(Unfinished(s)) - 1
+    IF Hide = "none" \/ commit[s] = 0 THEN commit[s]
+    ELSE LET e == log[s][commit[s]] IN
+         IF e.kind = "cond" /\ e.kept /\ e.pos + 1 < e.len
+         THEN commit[s] - e.pos - 1
+         ELSE commit[s]
 
 \* A reader on s sees the entry at k (a record, when it is plain or a kept
 \* piece; anything else it skips).
 Visible(s, k) ==
     /\ k \in 1..ReadBound(s)
-    /\ (Hide \in {"whole", "kept"} /\ KeptCond(s, k)) => Finished(s, k)
+    /\ KeptCond(s, k) =>
+          CASE Hide = "whole" -> Whole(s, k)
+            [] Hide = "kept" -> LastKept(s, k)
+            [] OTHER -> TRUE
 
 WholeBatchesOnly ==
     \A s \in Servers : \A k \in 1..commit[s] :
@@ -457,7 +472,13 @@ NeverOkAndMismatch ==
 \* holds something else.
 NeverCutCommitted ==
     ~\E s \in Servers : \E k \in 1..commit[s] :
-        KeptCond(s, k) /\ LastAt(s, k) <= commit[s] /\ ~Finished(s, k)
+        KeptCond(s, k) /\ LastAt(s, k) <= commit[s] /\ ~Whole(s, k)
+
+\* A batch is cut before its last index commits: the bound passes a kept
+\* piece whose last index is past the commit.
+NeverEarlyCut ==
+    ~\E s \in Servers : \E k \in 1..commit[s] :
+        KeptCond(s, k) /\ LastAt(s, k) > commit[s] /\ k <= ReadBound(s)
 
 \* A reader sees a record of a batch of more than one.
 NeverReadsBatch ==
