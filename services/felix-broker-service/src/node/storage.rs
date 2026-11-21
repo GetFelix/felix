@@ -240,6 +240,8 @@ fn start_run(
             before.as_deref() == Some(prior) || rotated.iter().any(|id| id.to_hex() == prior)
         });
     let rotation = last_rotation(root, begun.id, begun.rotated, registered)?;
+    let minted_now = begun.origin != felix_storage::storage_identity::Origin::Loaded;
+    let mint = last_mint(root, begun.id, minted_now, registered)?;
     let kept = Kept {
         promises: begun.rotated && !restored && own_id && !lost,
         // A record from before storage ids cannot tell this directory from a
@@ -252,9 +254,11 @@ fn start_run(
         // without one no set can readmit it.
         readmits: registered.is_some_and(|r| r.storage_id.is_some()),
         minted: begun.rotated
-            || begun.origin != felix_storage::storage_identity::Origin::Loaded
-            || credits(rotation, registered),
+            || minted_now
+            || credits(rotation, registered)
+            || credits_mint(mint, registered),
         rotation,
+        mint,
         deferred: false,
     };
     // Before the new id registers: a set written since names that one, and
@@ -297,6 +301,59 @@ fn last_rotation(
     Ok(kept)
 }
 
+/// The record of the start that wrote the directory's id `id` new, if one
+/// did and it still counts. This start keeps the one it just wrote
+/// (`minted_now`), unbound until this run registers. Any other start removes
+/// an unbound record, since only the run that minted the id may bind it: a
+/// crash before that registration loses the credit, which costs only a
+/// readmission. A bound record is removed when it names another id or the
+/// control plane's record gives it no credit ([`credits_mint`]).
+fn last_mint(
+    root: &Path,
+    id: StorageId,
+    minted_now: bool,
+    registered: Option<&Registered>,
+) -> Result<Option<felix_storage::run_state::Mint>> {
+    let context = || format!("read the mint record under {}", root.display());
+    let recorded = felix_storage::run_state::last_mint(root).with_context(context)?;
+    let kept = recorded.filter(|mint| {
+        let checked = registered.is_some_and(|r| r.storage_id.is_some());
+        mint.id == id
+            && (minted_now
+                || (mint.bound.is_some() && (!checked || credits_mint(Some(*mint), registered))))
+    });
+    if kept.is_none() {
+        felix_storage::run_state::forget_mint(root)
+            .with_context(|| format!("remove the mint record under {}", root.display()))?;
+    }
+    Ok(kept)
+}
+
+/// Whether `mint` still says no set names the directory's id from before it
+/// was written: the control plane names the minted id under the registration
+/// the mint was bound to, or the next one, as [`credits`] reads a rotation's.
+/// An unbound mint is never credited.
+fn credits_mint(
+    mint: Option<felix_storage::run_state::Mint>,
+    registered: Option<&Registered>,
+) -> bool {
+    let Some((mint, registered)) = mint.zip(registered) else {
+        return false;
+    };
+    registered.storage_id.as_deref() == Some(mint.id.to_hex().as_str())
+        && bound_to(mint.bound, registered)
+}
+
+/// Whether the control plane's record is the registration `bound` names, or
+/// the next one under the same node record.
+fn bound_to(bound: Option<felix_storage::run_state::Binding>, registered: &Registered) -> bool {
+    bound.is_some_and(|bound| {
+        registered.registered_at_millis == Some(bound.registered_at_millis)
+            && (registered.incarnation == bound.incarnation
+                || Some(registered.incarnation) == bound.incarnation.checked_add(1))
+    })
+}
+
 /// Whether `rotation` minted the directory's id with no registration since
 /// that the directory did not record: the control plane names the id it
 /// rotated from or to, under the node record the rotation was bound to, at
@@ -320,12 +377,7 @@ fn credits(
         .storage_id
         .as_deref()
         .is_some_and(|prior| prior == rotation.to.to_hex() || prior == rotation.from.to_hex());
-    names
-        && rotation.bound.is_some_and(|bound| {
-            registered.registered_at_millis == Some(bound.registered_at_millis)
-                && (registered.incarnation == bound.incarnation
-                    || Some(registered.incarnation) == bound.incarnation.checked_add(1))
-        })
+    names && bound_to(rotation.bound, registered)
 }
 
 /// What a start found its directory kept of the ballots it took.
@@ -348,11 +400,15 @@ pub(crate) struct Kept {
     /// no set written before it names the id. A lost copy with no recorded
     /// floor is readmitted only then. A rotation during an earlier run counts
     /// while the control plane's record shows no registration since that
-    /// this directory did not record ([`credits`]).
+    /// this directory did not record ([`credits`]), and so does an id an
+    /// earlier start wrote new once that run's registration bound it
+    /// ([`credits_mint`]).
     pub(crate) minted: bool,
     /// The rotation that gave the directory its id, for the deferred restore
     /// check to decide `minted` by.
     pub(crate) rotation: Option<felix_storage::run_state::Rotation>,
+    /// The start that wrote the directory's id new, for the same.
+    pub(crate) mint: Option<felix_storage::run_state::Mint>,
     /// A start from the view that kept it: what a fence answer attests is
     /// decided by the deferred restore check ([`Self::checked`]), and is
     /// nothing until then.
@@ -385,7 +441,9 @@ impl Kept {
         Self {
             ballots: self.ballots && registered.is_none_or(|r| r.storage_id.is_some()),
             readmits: registered.is_some_and(|r| r.storage_id.is_some()),
-            minted: self.minted || credits(self.rotation, registered),
+            minted: self.minted
+                || credits(self.rotation, registered)
+                || credits_mint(self.mint, registered),
             deferred: false,
             ..self
         }
