@@ -239,14 +239,15 @@ write and can lose an acknowledged record on a crash; leave it unset.
 ## Hardening checklist
 
 Work through this before exposing a cluster. Each line names the setting and
-points at where it is explained.
+points at where it is explained. The security items are covered in more depth,
+with rotation and monitoring, in [Hardening a deployment](/security/hardening/).
 
 **Transport**
 
 - [ ] A real broker certificate: `FELIX_TLS_CERT` and `FELIX_TLS_KEY`, with
       `FELIX_TLS_REQUIRE_CERT=true` so a broker without one refuses to start. The
       default is a self-signed certificate regenerated at every start.
-      [Transport security](/features/security/#transport-security)
+      [Transport security](/security/#transport-security)
 - [ ] `FELIX_TLS_REQUIRE_ALPN=true`. Add `FELIX_TLS_CLIENT_CA` for client
       certificates only if every client can present one; the Python,
       TypeScript, C and C# clients cannot yet.
@@ -267,18 +268,18 @@ points at where it is explained.
 
 - [ ] Per-tenant identity providers registered with explicit audiences, and
       `oidc_allowed_algorithms` narrowed to what your provider signs with.
-      [Authentication](/features/security/#authentication-and-authorization)
+      [Authentication](/security/authentication/)
 - [ ] Bootstrap used once, then `FELIX_BOOTSTRAP_ENABLED` turned off. While it is
       on, bind it to loopback and put mTLS on it (`FELIX_BOOTSTRAP_TLS_*`).
       `FELIX_BOOTSTRAP_DEV_TOKENS` is never set outside a local stack.
-      [Bootstrap](/features/security/#bootstrap-mode-day-0)
+      [Bootstrap](/security/authentication/#bootstrap-mode-day-0)
 - [ ] RBAC with least privilege: publishers get `stream.publish` on their
       streams, readers get `stream.subscribe`, and `tenant.manage` goes to
       few people.
-      [RBAC](/features/security/#rbac-model-casbin)
+      [RBAC](/security/authentication/#rbac-model-casbin)
 - [ ] Revocation works end to end: alert on a stale revocation feed (the
       shipped alerts do), and know that a revoked token ends its open streams.
-      [Revocation](/features/security/#revocation)
+      [Revocation](/security/authentication/#revocation)
 
 **Network exposure**
 

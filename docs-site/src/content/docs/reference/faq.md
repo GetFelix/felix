@@ -183,7 +183,7 @@ issues tenant-scoped EdDSA tokens. The broker enforces RBAC, with delegation
 rules that prevent privilege escalation. Broker-to-broker traffic uses mTLS, bound to the
 node id, when certificates are configured. Not built: encryption at rest,
 end-to-end payload encryption, audit logging. The
-[security page](/features/security/) states each plainly.
+[security page](/security/) states each plainly.
 
 ## Can I grant stream access by IdP group instead of per-user?
 

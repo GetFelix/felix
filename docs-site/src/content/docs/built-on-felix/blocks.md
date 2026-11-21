@@ -71,7 +71,7 @@ flowchart LR
   T["blocks-tool"] -- "worlds and grants" --> CP["Control plane"]
 ```
 
-Who may change a world is decided by Felix [RBAC](/features/security/). A world
+Who may change a world is decided by Felix [RBAC](/security/authentication/). A world
 has builders, who may write its cache, and visitors, who may only read and watch
 it, so a visitor's browser cannot change a world whatever it sends. A single
 player world is a world with one builder, and opening it to a friend is a grant.

@@ -1,174 +1,14 @@
 ---
-title: "Security"
+title: "Authentication and RBAC"
+description: "How a client gets a Felix token, what the token carries, how brokers check it, and how RBAC, revocation, bootstrap and lease tokens work."
 ---
 
-What Felix secures today, how the authentication chain works, and what is not
-built yet.
-
-Every QUIC connection is TLS 1.3, because QUIC allows nothing less. A broker
-proves *who it is* to clients only once you give it a certificate. The
-control-plane REST API is plain HTTP unless you give it one too. Identity comes
-from your own IdP via OIDC token exchange, and authorization is tenant-scoped
-RBAC enforced at the broker. Brokers authenticate each other with mTLS when
-given certificates, and refuse to join a cluster without it unless told
-otherwise. Encryption at rest and audit logging are **not** built.
-
-:::note[Security Maturity]
-Felix is pre-1.0 and has not been through an external security
-review yet. This page states plainly which protections exist and which do not; the [status table](/getting-started/what-felix-is-for/) is
-kept current per capability.
-:::
-
-## Transport security
-
-What is encrypted, and what is authenticated, by default and with
-configuration:
-
-| Link | Default | With configuration |
-| --- | --- | --- |
-| Client ↔ broker (QUIC) | Encrypted (TLS 1.3). The broker serves a **self-signed `localhost` certificate generated at every start**, so clients cannot verify which broker they reached, and startup warns. | `FELIX_TLS_CERT` / `FELIX_TLS_KEY`: a real certificate, re-read on rotation. `FELIX_TLS_CLIENT_CA`: clients must also present a certificate. `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`: that certificate must be issued to the token's subject (a `felix:principal:<sub>` URI SAN, or a DNS or IP SAN), or to its actor (`act`) on a token the control plane delegated; a shard's owner checks this again on forwarded requests, so a client without a certificate (plain MQTT) is served only on shards its own broker owns. `FELIX_TLS_REQUIRE_CERT=true` refuses to start without a certificate. `FELIX_TLS_REQUIRE_ALPN=true` refuses clients that do not negotiate the `felix/1` ALPN. |
-| Client ↔ broker (Kafka listener) | TLS with the same certificate as QUIC (`FELIX_KAFKA_TLS=false` turns it off). | Same variables as QUIC, except `FELIX_TLS_REQUIRE_ALPN`. |
-| Broker ↔ broker (internal port) | Encrypted, not authenticated. A broker with a node id **refuses to start** this way unless `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`. | `FELIX_INTERNAL_TLS_CERT` / `_KEY` / `_CA`: mutual TLS, the certificate's DNS name checked against the node id in both directions. |
-| Broker / admin CLI ↔ control-plane API | **Plain HTTP**, and the control plane warns at startup. Node credentials, token exchange and tenant JWKS cross it. | `FELIX_CONTROLPLANE_TLS_CERT` / `_KEY` on the control plane, an `https://` `FELIX_CONTROLPLANE_URL` on brokers, and `FELIX_CONTROLPLANE_CA` when the certificate comes from a private CA. Add `FELIX_CONTROLPLANE_TLS_CLIENT_CA` to require a client certificate from every caller (brokers set `FELIX_CONTROLPLANE_CLIENT_CERT` / `_KEY`), and `FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT` to tie each token to that certificate. |
-| Control-plane bootstrap listener | Plain HTTP, off by default. | `FELIX_BOOTSTRAP_TLS_*`: mutual TLS, described below. |
-| Control-plane Raft peer listener (metadata backend only) | Plain HTTP, on its own port (`FELIX_RAFT_BIND_ADDR`), authenticated by a shared `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` checked on every request. | `FELIX_RAFT_TLS_CERT` / `_KEY` / `_CA`: mutual TLS on top of the token, so a connection without a certificate from the cluster CA never reaches the router. |
-
-So every QUIC connection is encrypted out of the box, the control-plane API
-is not, and "authenticated" holds only for what you configure. Without a
-configured broker certificate, a client that trusts the generated one trusts
-whoever answers on that address, and hands it a bearer token. Set `FELIX_TLS_CERT`
-for anything but development; the demos and the cluster harness distribute
-trust for the generated certificate through `FELIX_TLS_CERT_EXPORT`.
-
-Certificate and key files are re-read every 30 seconds on every listener that
-takes them, so a renewal written over the same paths (cert-manager, a
-Kubernetes Secret volume) is used by the next handshake without a restart.
-CA bundles are read at startup.
-
-An open connection does not outlive its credentials. Every stream ends when
-the token it was opened with expires, and a connection with a client
-certificate closes at that certificate's `notAfter`. Short certificate
-lifetimes therefore work as revocation: a renewed certificate is used on the
-next connection, and an unrenewed one stops working everywhere it is in use.
-Clients should refresh before expiry and reconnect. Internal broker-to-broker
-connections close the same way when a node certificate expires, each up to 30
-seconds early so they do not all drop at once. Rotate node certificates
-before they expire. Details:
-[When a credential expires](https://github.com/GetFelix/felix/blob/main/docs/auth.md#when-a-credential-expires).
-
-### Rotating the Raft peer token
-
-Control-plane members on the Raft metadata backend authenticate each other with
-`FELIX_RAFT_PEER_TOKEN`. Rotate it after a member machine is compromised, or on
-a schedule. The rotation is three rolling restarts, one member at a time, and
-the group keeps its quorum throughout.
-
-Two optional variables make that possible. `FELIX_RAFT_PEER_TOKEN_NEXT` is the
-token being rolled in and `FELIX_RAFT_PEER_TOKEN_PREVIOUS` the one being
-retired. A member accepts requests carrying either of them as well as its
-current token, but only ever sends `FELIX_RAFT_PEER_TOKEN`. So at every point in
-the roll, the token each member sends is one that every other member accepts.
-
-1. Make sure every member runs a release that knows these variables. An older
-   one ignores `FELIX_RAFT_PEER_TOKEN_NEXT` and would refuse the new token at
-   step 3. Generate the new token: `openssl rand -hex 32`.
-2. On every member, set `FELIX_RAFT_PEER_TOKEN_NEXT` to the new token and
-   restart, one member at a time. Wait for each member to rejoin before the
-   next. Members still send the old token.
-3. On every member, set `FELIX_RAFT_PEER_TOKEN` to the new token,
-   `FELIX_RAFT_PEER_TOKEN_PREVIOUS` to the old one, unset
-   `FELIX_RAFT_PEER_TOKEN_NEXT`, and restart, one at a time. Members now send
-   the new token.
-4. Watch `felix_meta_raft_peer_token_accepted_total{token="previous"}` on every
-   member. Once it stops growing, nothing sends the old token. Anything still
-   using it, such as a script that calls `waive-lost`, needs the new token.
-5. On every member, unset `FELIX_RAFT_PEER_TOKEN_PREVIOUS` and restart, one at
-   a time. The old token is now refused everywhere.
-
-Finish each roll before starting the next step: every member restarted and
-back in the group. Starting step 3 while a member is still on the old
-configuration leaves a member sending the new token to one that only accepts
-the old one.
-
-| Step | Sends | Accepts |
-| --- | --- | --- |
-| Before | old | old |
-| After step 2 | old | old, new |
-| After step 3 | new | new, old |
-| After step 5 | new | new |
-
-A member that is restarted out of order still talks to the rest: during step 2
-it sends the old token, which everyone accepts, and during step 3 it sends the
-new one, which every member that finished step 2 accepts. Skipping step 2 is the
-mistake to avoid. To back out after step 3, repeat it with the two tokens
-swapped, which is safe while `FELIX_RAFT_PEER_TOKEN_PREVIOUS` is still set. A member that sends the new token to one that only knows the
-old one is refused with `401`, counted in
-`felix_meta_raft_peer_rejected_total{reason="token"}`, and logged as
-"raft peer request with a missing or wrong peer token refused". Tokens are
-never logged.
-
-Both rotation variables must be at least 32 characters, and a member refuses to
-start if either is set without `FELIX_RAFT_PEER_TOKEN`. With the Helm chart,
-put the new token under the `next` key of the peer token Secret for step 2,
-then `token` (new) and `previous` (old) for step 3, then remove `previous`.
-After each Secret change, restart the members and wait for the roll to finish
-before the next change:
-
-```bash
-kubectl rollout restart statefulset <release>-controlplane
-kubectl rollout status statefulset <release>-controlplane
-kubectl get pods -l app.kubernetes.io/component=controlplane
-```
-
-`rollout restart` returns at once; `rollout status` waits until every member
-has restarted. Check that every pod is Ready before you edit the Secret again.
-A pod that restarts on its own reads the Secret as it is then, so changing it
-mid-roll can put that pod a step ahead of the others.
-
-Client-side, certificate verification is Quinn's:
-
-```rust
-// Production: validate against the platform trust store
-let quinn = quinn::ClientConfig::with_platform_verifier();
-let config = ClientConfig::optimized_defaults(quinn);
-
-// A private CA: trust its bundle, and dial with a name the certificate carries
-let mut roots = rustls::RootCertStore::empty();
-for cert in rustls::pki_types::CertificateDer::pem_file_iter("ca.pem")? {
-    roots.add(cert?)?;
-}
-let quinn = quinn::ClientConfig::with_root_certificates(Arc::new(roots))?;
-let client = Client::connect(&seeds, "broker.example.com", ClientConfig::optimized_defaults(quinn)).await?;
-```
-
-The Python, TypeScript, C and C# clients take the same two choices: the platform
-trust store, or a CA file, plus the server name to verify. None presents a
-client certificate yet, so they cannot connect to a broker with
-`FELIX_TLS_CLIENT_CA` set.
-
-## Multi-tenancy and isolation
-
-Everything is scoped `tenant → namespace → stream/cache`, and the scope is
-part of every wire operation, so there is no unscoped request to forget to
-check. The broker rejects unknown tenants, and a token for one tenant is
-useless against another (the `tid` claim is checked after signature
-verification, so a valid signature for the wrong tenant fails).
-
-Within a tenant, namespaces are the isolation unit for environments or teams:
-`acme/production/orders` and `acme/staging/orders` share nothing but a
-naming convention.
-
-A tenant's publish rate can be capped per broker, in bytes and in messages per
-second (`FELIX_TENANT_PUBLISH_*` in the
-[environment reference](/reference/environment-variables/#connection-limits-and-tenant-quotas)),
-and one source address can hold at most `FELIX_MAX_CONNECTIONS_PER_IP` client
-connections. Quotas on subscriptions, cache use and storage are not built, and
-publish quotas live in each broker's environment rather than the control
-plane.
-
-## Authentication and authorization
-
-Felix implements token-based authentication with upstream OIDC and tenant-scoped RBAC enforced by brokers using Felix tokens.
+Identity comes from your own identity provider. A client signs in there,
+exchanges that OIDC token at the control plane for a short-lived Felix token
+scoped to one tenant, and presents the Felix token to brokers. Brokers check
+it themselves and enforce tenant-scoped RBAC on every request. The design
+record, with every endpoint, is
+[docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md).
 
 The whole flow, end to end:
 
@@ -198,7 +38,7 @@ hours run out. `felix_jwks_oldest_age_seconds` shows how stale a broker's keys
 are. The details are in
 [Keeping tenant keys current](https://github.com/GetFelix/felix/blob/main/docs/auth.md#keeping-tenant-keys-current).
 
-### Bootstrap Mode (Day-0)
+## Bootstrap Mode (Day-0)
 
 New tenants need IdP issuers, signing keys, and initial RBAC before any admin tokens exist. Felix provides a **one-time bootstrap mode** for operators:
 
@@ -261,7 +101,7 @@ itself is a static shared secret, valid while bootstrap is enabled. The full
 threat model, replay rules, rotation procedure, and recovery steps are in
 [`docs/security/bootstrap.md`](https://github.com/GetFelix/felix/blob/main/docs/security/bootstrap.md).
 
-#### Development tokens
+### Development tokens
 
 For a local stack or a CI job, `FELIX_BOOTSTRAP_DEV_TOKENS=true` makes the
 bootstrap listener mint a Felix token for any principal of an initialized
@@ -303,7 +143,7 @@ After bootstrap, admin actions require explicit Felix permissions:
 The credential is checked before existence, so nothing about what exists can
 be learned without one: a tenant with no signing keys answers `401`, not `404`.
 
-### RBAC Object Grammar and Delegation
+## RBAC Object Grammar and Delegation
 
 Canonical RBAC object formats:
 - `tenant:{tenant_id}`
@@ -326,7 +166,7 @@ This blocks privilege escalation when delegating namespace or stream admins.
 API, and checks an object against this grammar before sending it. See
 [felixctl](/getting-started/felixctl/#rbac).
 
-#### Cluster scope
+### Cluster scope
 
 `cluster:*` covers broker membership (which brokers exist, whether they are
 alive, and whether placement can use them), the tenant catalog, and the
@@ -368,7 +208,7 @@ tenant whose policies grant the cluster actions to a role, assign the operator
 principal to it, and exchange. The same route gives a broker its
 `node.view:cluster:*`.
 
-### Supported Identity Providers
+## Supported Identity Providers
 
 Felix supports any OIDC-compliant IdP that exposes a JWKS endpoint (via discovery or direct JWKS URL) and uses an allowed upstream OIDC signing algorithm.
 
@@ -384,7 +224,7 @@ Control plane configuration:
 Common providers that work out of the box include Microsoft Entra ID, Okta,
 Auth0, Google, and Apple.
 
-### Allowing Upstream IdPs Per Tenant
+## Allowing Upstream IdPs Per Tenant
 
 IdP trust is configured per tenant in the control plane store. Each tenant has an allowlist of issuers and audiences, plus optional claim mappings.
 
@@ -396,7 +236,7 @@ The control plane validates:
   signature is checked)
 - `exp` with clock skew and `iat` not in the future
 
-### Token Exchange (OIDC → Felix)
+## Token Exchange (OIDC → Felix)
 
 Clients authenticate to the control plane with an upstream OIDC JWT and exchange it for a tenant-scoped Felix token.
 
@@ -449,7 +289,7 @@ minting full rights. A refresh keeps the pairs. With the Raft store, pairs are
 refused with `409` until every control-plane member runs a release that
 supports them.
 
-### Felix Token Claims
+## Felix Token Claims
 
 Felix tokens are JWTs minted by the control plane and validated by brokers.
 
@@ -467,7 +307,7 @@ Felix tokens are JWTs minted by the control plane and validated by brokers.
   activate, retire) through `/v1/tenants/{tenant_id}/signing-keys`, so brokers
   learn a key before any token carries it.
 
-### RBAC Model (Casbin)
+## RBAC Model (Casbin)
 
 Casbin is used with domains for tenant scoping. Policies and groupings are stored per tenant.
 
@@ -533,12 +373,12 @@ ns.manage:namespace:t1/payments
 tenant.manage:tenant:t1
 ```
 
-### Inheritance Rules
+## Inheritance Rules
 
 - `tenant.manage:tenant:{T}` implies tenant-scoped namespace/stream/cache permissions.
 - `ns.manage:namespace:{T}/{N}` implies stream/cache manage + read/write within `{N}`.
 
-### Group-Based RBAC from IdP Claims
+## Group-Based RBAC from IdP Claims
 
 If tenant issuer config sets `groups_claim`, exchange maps each incoming group
 to `group:<issuer>#<name>` (always prefixed, so `group:ops` and `ops` stay
@@ -551,7 +391,7 @@ g, <principal_id>, group:<issuer>#<name>, <tenant>
 
 This enables role assignment by group without per-user policy writes.
 
-### Broker Enforcement
+## Broker Enforcement
 
 Brokers validate Felix tokens (signature + claims) using tenant JWKS published by the control plane and enforce permissions locally using wildcard matching (`keyMatch2` semantics).
 
@@ -602,7 +442,7 @@ broker token, with its own subject and no permissions, by asking for
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#delegated-tokens).
 See [Acting for many users](/clients/rust/#acting-for-many-users).
 
-### Revocation
+## Revocation
 
 Revoking a principal ends what its tokens already opened, on every broker.
 `POST /v1/tenants/{tenant_id}/refresh-tokens/revoke` revokes the principal
@@ -660,7 +500,7 @@ next refresh and opens its streams again. Tokens for the control plane's own
 API are not revoked; they expire with the access TTL. See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#revoking-a-principal).
 
-### Lease tokens
+## Lease tokens
 
 A *lease* is a cache key that one client holds at a time: it takes the key
 with a conditional write, keeps it by rewriting it before its TTL runs out,
@@ -739,30 +579,8 @@ The lease key is a signing key for every tenant, held by every broker, so
 protect the file. Brokers accept only tokens shaped like the ones they mint:
 short-lived, with exact stream or cache key data grants and nothing wider.
 A principal that can write the lease cache can take a live lease, by writing
-at the key's current version or by deleting the entry and claiming it; the holder notices when its next renewal fails. Lease tokens are
-in the Rust client only so far.
+at the key's current version or by deleting the entry and claiming it; the holder notices when its next renewal fails. Every client can
+ask for a lease token.
 See
 [docs/auth.md](https://github.com/GetFelix/felix/blob/main/docs/auth.md#lease-tokens)
 for the template grammar, key rotation and the wire details.
-
-## Not built
-
-- **Encryption at rest.** Durable log segments are plaintext on disk. If the
-  disk needs protecting today, use filesystem or block-level encryption.
-- **End-to-end payload encryption.** The broker sees plaintext payloads. A
-  client can of course encrypt its own payloads before publishing, since the
-  broker treats them as opaque bytes, but Felix ships no key
-  management for it.
-- **Broker-to-broker authentication without certificates.** mTLS is built
-  and required by default; with `FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true`
-  peers encrypt but do not authenticate each other and the internal network
-  is trusted.
-- **Client certificates from the Python, TypeScript, C and C# clients.**
-- **Audit logging, and quotas beyond the publish rate.** Subscriptions, cache
-  use and storage are not limited per tenant.
-
-## Reporting a vulnerability
-
-Open a report through
-[GitHub Security Advisories](https://github.com/GetFelix/felix/security/advisories)
-rather than a public issue.

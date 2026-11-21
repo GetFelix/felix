@@ -114,7 +114,7 @@ felixctl rbac policy add role:lobby-members cache:acme/default/app.members.lobby
 ```
 
 Assigning a person to the `role:lobby-members` role is the other half; see
-[Security](/features/security/#rbac-model-casbin) for assignments. Then run the
+[Security](/security/authentication/#rbac-model-casbin) for assignments. Then run the
 gateway next to the cluster:
 
 ```bash
@@ -228,6 +228,6 @@ have to delegate each user's token, and the gateway does not do that yet.
 
 - [Browsers (felix-gateway)](/clients/browsers/) for every setting and message
 - [felix-canvas](/built-on-felix/canvas/), [felix-arena](/built-on-felix/arena/), [felix-metro](/built-on-felix/metro/) and [felix-blocks](/built-on-felix/blocks/)
-- [Security](/features/security/) for token exchange and narrowing
+- [Authentication and RBAC](/security/authentication/) for token exchange and narrowing
 - [QUIC transport](/features/quic-transport/)
 - [Config and feature flags](/use-cases/config-and-feature-flags/) and [Live updates at high fanout](/use-cases/live-fanout/)

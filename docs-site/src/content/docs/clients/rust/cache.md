@@ -85,7 +85,7 @@ A node that holds a lease can ask for a *lease token* with the same write: a
 short-lived token that grants what its lease templates name for the key, such
 as publishing to `wl.w7.out` while it holds lease `w7`. The broker must have a
 lease key, and the caller's token must hold the templates; see
-[Lease tokens](/features/security/#lease-tokens).
+[Lease tokens](/security/authentication/#lease-tokens).
 
 ```rust
 use bytes::Bytes;

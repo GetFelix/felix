@@ -179,4 +179,4 @@ pinned to a region, run a separate Felix cluster per jurisdiction.
 - [What Felix Is For](/getting-started/what-felix-is-for/) for the status rows
 - [Environment variables](/reference/environment-variables/) for `FELIX_REGION_ID`, `FELIX_REGION_BRIDGES` and `FELIX_NODE_ZONE`
 - [Control plane API](/api/control-plane-api/) and [Moving shards](/deployment/moving-shards/)
-- [Security](/features/security/#multi-tenancy-and-isolation) for tenant scoping
+- [Security](/security/#multi-tenancy-and-isolation) for tenant scoping

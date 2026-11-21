@@ -669,7 +669,7 @@ for the details.
 
 ### Internal Bootstrap API (Day-0)
 
-Used once per tenant to seed auth before any admin tokens exist. Disabled by default and bound to a separate internal address when enabled; the listener can additionally require mTLS (see [Security](/features/security/#bootstrap-mode-day-0)).
+Used once per tenant to seed auth before any admin tokens exist. Disabled by default and bound to a separate internal address when enabled; the listener can additionally require mTLS (see [Security](/security/authentication/#bootstrap-mode-day-0)).
 
 ```http
 POST /internal/bootstrap/tenants/{tenant_id}/initialize

@@ -738,7 +738,7 @@ Every peer request must carry:
 During a rotation a member also accepts `FELIX_RAFT_PEER_TOKEN_NEXT` and
 `FELIX_RAFT_PEER_TOKEN_PREVIOUS`, but sends only the current token, so the
 roll has no step at which two members cannot talk. The runbook is in
-`docs-site/src/content/docs/features/security.md`.
+`docs-site/src/content/docs/security/hardening.md`.
 
 The token is the cluster-admin credential. Members hold it, and so does the
 operator holding it; brokers and API clients never see it.

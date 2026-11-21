@@ -170,7 +170,7 @@ Redrive and discard change what every consumer of the group sees, so they need
 handing back and listing dead letters need `group.consume`, which
 `stream.subscribe` also grants. Either can be granted on one group
 (`group:{tenant}/{namespace}/{stream}/{group}`) to keep a principal to the
-groups it runs. See [Security](/features/security/).
+groups it runs. See [Authentication and RBAC](/security/authentication/#rbac-model-casbin).
 
 > `a_record_is_given_up_on_after_the_attempt_bound`,
 > `a_redriven_record_is_handed_out_again`,

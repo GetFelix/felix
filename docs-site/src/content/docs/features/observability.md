@@ -242,7 +242,7 @@ learn of revocations: a revoked token is still accepted for new sessions until
 it expires (at most one access TTL), and streams it already opened keep running
 until the feed is back. The broker also logs a warning when polls start
 failing and every minute after. See
-[Revocation](/features/security/#revocation).
+[Revocation](/security/authentication/#revocation).
 
 **Are Kafka clients being served?** Only when the Kafka listener is on
 (`FELIX_KAFKA_LISTEN`; see [Kafka compatibility](/features/kafka/)):

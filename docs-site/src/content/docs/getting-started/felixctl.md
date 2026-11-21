@@ -565,7 +565,7 @@ current tenant and need a control-plane token with `rbac.view`,
 A change reaches brokers in the next token the principal is issued.
 
 `policy add` checks the object against the
-[object grammar](/features/security/#rbac-object-grammar-and-delegation)
+[object grammar](/security/authentication/#rbac-object-grammar-and-delegation)
 before sending it, and stops with status 2 and the reason when it does not
 fit: an object for another tenant, a `*` over a named stream, a cache key with
 a `*` anywhere but the end, or a key object with an action other than

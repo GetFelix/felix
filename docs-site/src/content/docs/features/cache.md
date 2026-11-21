@@ -147,7 +147,7 @@ Access follows the same scopes. A token can be granted a whole cache
 cache, each credential limited to its own keys. A prefix is a plain string
 prefix, so end it with a separator when ids share leading characters. A
 prefix watch needs a prefix grant covering the whole watched prefix. See
-[Security](/features/security/#rbac-model-casbin).
+[Security](/security/authentication/#rbac-model-casbin).
 
 ### 4. Request Pipelining
 

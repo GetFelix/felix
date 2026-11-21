@@ -193,7 +193,7 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize
 ```
 
 Then exchange an IdP token for the broker principal (the
-[token exchange](/features/security/#token-exchange-oidc--felix) flow)
+[token exchange](/security/authentication/#token-exchange-oidc--felix) flow)
 and put the Felix token in a Secret:
 
 ```bash
@@ -499,4 +499,4 @@ by symptom.
 - **Control-plane HA**: [what the database must provide](/deployment/control-plane-ha/)
 - **Graceful shutdown**: [what the probes and drain do](/deployment/graceful-shutdown/)
 - **Configure fully**: [Configuration Reference](/reference/configuration/)
-- **Secure deployment**: [Security Guide](/features/security/)
+- **Secure deployment**: [Hardening a deployment](/security/hardening/)

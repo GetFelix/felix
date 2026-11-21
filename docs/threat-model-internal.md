@@ -8,6 +8,11 @@ named issue**.
 Every claim here was checked against the code. Where a control does not exist,
 that is stated plainly rather than described as future work.
 
+This is the detailed record for one boundary. The whole-system threat model,
+covering clients, the control plane, its Raft peers and disks, is
+[Threat model](https://docs.getfelix.dev/security/threat-model/) on the docs
+site.
+
 ## The surface
 
 One listener, separate from the client-facing one

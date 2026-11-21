@@ -63,7 +63,7 @@ Signing in goes like this:
 3. Its first WebSocket message is `join`, carrying the scope's value and the
    ID token.
 4. The gateway calls the control plane's
-   [token exchange](/features/security/#token-exchange-oidc--felix) and asks
+   [token exchange](/security/authentication/#token-exchange-oidc--felix) and asks
    for exactly the permissions the scope file lists on that scope's resources.
    The exchange only narrows what RBAC already grants the person, so whether
    they may open the scope is decided by Felix roles, not by the gateway.
@@ -75,7 +75,7 @@ The broker enforces the narrowing. A token for one scope cannot reach another
 scope's resources, even for someone allowed in both, so a bug in the gateway
 cannot leak across scopes. The gateway narrows by cache name, which is why each
 scope gets its own caches; Felix itself can also grant one key or key prefix of
-a cache (see [Security](/features/security/)).
+a cache (see [Authentication and RBAC](/security/authentication/#rbac-model-casbin)).
 
 The gateway never creates resources or grants. The tenant, its trust in the
 identity provider (with the gateway's client ID as audience), every scope's
