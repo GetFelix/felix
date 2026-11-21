@@ -678,11 +678,11 @@ group's members never counts them as empty or as holding the group.
 ### Restoring beyond quorum loss
 
 The state machine's snapshot format can be loaded into a group with the
-`ImportState` command, which the peer listener's `propose` route accepts. The
-group refuses it if it already holds state, unless `overwrite` is set, which
-discards what the group holds, consumers' checkpoints included. No shipped
-command or tool writes or proposes such a file, so a restore beyond quorum loss
-has no operator path today; the tests use the command.
+`ImportState` command. The peer listener's `propose` route refuses it; the
+operator path is `POST /internal/bootstrap/import-state` on the bootstrap
+listener, behind the operator token, and under Raft only the leader takes it.
+The group refuses an import if it already holds state, unless `overwrite` is
+set, which discards what the group holds, consumers' checkpoints included.
 
 - **Restore under stopped brokers.** A restore rewinds node incarnations and
   replica reports together, so an old report can again name the incarnation a
@@ -852,7 +852,8 @@ machine keeps: applying an entry whose variant or fields
 one, raises it to that level, whether or not the entry succeeds. Before any
 finalize, a delete carrying `take_shards` raises it to 10. A finalize
 proposed while the group is at 45 carries a level 45 field
-(`hold_unformed`), so it raises the mark to 45 whatever feature it names:
+(`hold_unformed`), so it raises the mark to 45 whatever feature it names, and
+one proposed at 46 also carries `hold_formed`, which raises it to 46:
 from there every member holds a Raft shard's set until its group forms
 (#2794), and a member below 45 is not added. The mark comes
 from the entries alone, so every member holds the same one, and it rides
@@ -1156,6 +1157,10 @@ the field itself, on every member alike, or refuses the command:
 | `declare_node_dead`, snapshot `declared_dead` | 42 | the declaration is refused with 409 by the store and by the leader before it reaches the log, so no member records a dead directory or refuses a registration for one |
 | an IdP issuer's `jwks`, `single_use_jti`, `max_token_lifetime_seconds` | 43 | a member that dropped them would trust an issuer by the wrong keys or accept a replayed or long-lived token, so nothing proposes a write that sets one until every member is at level 43. An issuer without them applies as before, on every member alike |
 | `patch_node` `internal`, and a node registering with the internal role, or an import carrying one | 44 | a registration with the role is refused with 409 until every member can apply it, so no leader below the level places tenant shards on an internal node; the patch is refused with 409 before it reaches the log |
+| `record_raft_floors` `mark_formed`, `record_raft_copy_id` `hold_target`, finalizing `hold_unformed`, assignment `raft_formed`, and in the snapshot | 45 | first-form hold (#2794). The proposer sets `mark_formed` for the floor report at 45 and above, and the leader's `settle_for_level` sets `hold_target` on a copy id report and `hold_unformed` on a finalize. Below it none is set, so no member holds a Raft shard's set until its group forms or records it as formed |
+| finalizing `hold_formed`, assignment `raft_voters`, floor report `voters`, and in the snapshot | 46 | formed-set voters (#2905). `settle_for_level` sets `hold_formed` on a finalize at 46 and above, and the proposer drops `voters` from each floor report below 46, so no member keeps a group's reported voters or refuses a formed group's set change they do not keep a majority of |
+| `record_raft_copy_id` `group_epoch` and `keep_seed`, assignment `raft_seed` and `raft_bases`, and in the snapshot | 47 | re-form seed and bases, and the copy id's report epoch (#2882). The proposer sets `group_epoch` (epoch 0 is left out) and refuses the report with 409 below 47 when it names an epoch; `settle_for_level` sets `keep_seed`. Below it no member keeps the epoch's seed or bases, and a copy id reported from another epoch is not refused |
+| `record_raft_floors` `vouched_voters` | 48 | vouched voters (#2909). The proposer sets it for the floor report at 48 and above. Below it voters count from any reporter, as at 46 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers
@@ -1953,7 +1958,7 @@ is the umbrella.
 | Raft core: seam, log/vote/snapshot store (redb until 0.8), HTTP transport, group lifecycle | [#337](https://github.com/GetFelix/felix/issues/337) | **Landed**: `services/felix-controlplane-service/src/raft/`. The store passes openraft's own storage conformance suite; group tests cover election, replication, restart-as-rejoin, wiped-volume rebuild by snapshot, and learner-first growth. Nothing serves metadata from it yet. |
 | Metadata state machine | [#338](https://github.com/GetFelix/felix/issues/338) | **Landed**: `store/raft/command.rs` (the versioned, API-shaped command set) and `store/raft/state_machine.rs` (`MetadataStateMachine`, the in-memory store behind the seam). The determinism harness applies a full-coverage script to two machines and requires byte-identical snapshots; a real three-node group settles eight concurrent bootstraps by log order alone with byte-identical replicas. Landing it surfaced and fixed real iteration-order leaks: multi-node expiry and cascading deletes published change events in HashMap order. Nothing serves API traffic from it yet. |
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
-| Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
+| Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) is the restore path, taken through `POST /internal/bootstrap/import-state` under the operator token. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
 | The segment store, then the only store | [#2230](https://github.com/GetFelix/felix/issues/2230), [#2236](https://github.com/GetFelix/felix/issues/2236) | **Landed in 0.8**: the group runs on `felix-storage`'s metadata store (`raft/store.rs`) with the standard leader id, snapshots streamed in one request to a file with a size cap and one install at a time ([#2364](https://github.com/GetFelix/felix/issues/2364)), and every peer route under `/internal/raft/v2`. It passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos`. redb, its chunked snapshots and the 0.9 wire forms are gone; a `raft.redb` in the data directory is refused (`tests/raft_runtime.rs` starts this build on a directory v0.7.1 wrote). `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. No conversion tool ([#2234](https://github.com/GetFelix/felix/issues/2234)). |
 | openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed, then superseded**: the move to 0.10 kept the peer and stored formats of 0.9 so a group could roll through it; the redb store and those forms left with the move to the segment store. The redb baseline for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
