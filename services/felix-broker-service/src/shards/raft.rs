@@ -972,7 +972,6 @@ enum Durable {
     Yes(Option<u32>),
 }
 
-/// The brokers placement names for a shard, lowest id first.
 /// Tells the runtime who the shard's member hears from beyond its
 /// membership. A copy with no membership hears only from a broker placed in
 /// the group's epoch, so no outsider can form a group on a new or wiped
@@ -982,7 +981,10 @@ enum Durable {
 /// plane that keeps none.
 fn admit(runtime: &GroupRuntime, key: &ShardKey, assignment: &ShardAssignment) {
     let (placed, current) = admitted(assignment);
-    runtime.admit(key, placed, current);
+    // Without a record (a shard restored by an import has none) the brokers
+    // seen placed so far stand in for it, so an old leader still moving a
+    // new member in is heard.
+    runtime.admit(key, placed, current, assignment.placed.is_none());
 }
 
 /// The (placed in epoch, placed now) brokers for [`admit`].
@@ -994,6 +996,12 @@ fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>
     if let Some(target) = &assignment.target {
         current.extend(target.members.keys().cloned());
     }
+    // As the control plane's own placed nodes: a move's successor and a
+    // pending set are placed before either is sent anything.
+    current.extend(assignment.successor.iter().cloned());
+    if let Some(pending) = &assignment.pending_set {
+        current.extend(pending.replicas.iter().cloned());
+    }
     let mut placed = current.clone();
     if let Some(record) = &assignment.placed {
         placed.extend(record.brokers.iter().cloned());
@@ -1001,6 +1009,7 @@ fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>
     (placed, current)
 }
 
+/// The brokers placement names for a shard, lowest id first.
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
         .chain(&assignment.replicas)

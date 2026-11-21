@@ -1230,9 +1230,20 @@ impl GroupRuntime {
     /// membership change still hears from a new member that leads. Set
     /// before the copy opens; a shard never given one admits any sender to
     /// a copy with no membership, as a library user expects.
-    pub fn admit(&self, shard: &ShardKey, placed: BTreeSet<String>, current: BTreeSet<String>) {
-        let admission = Admission { placed, current };
+    /// With `grow`, the brokers already held as placed are kept too: for a
+    /// shard whose control plane keeps no record of its epoch.
+    pub fn admit(
+        &self,
+        shard: &ShardKey,
+        mut placed: BTreeSet<String>,
+        current: BTreeSet<String>,
+        grow: bool,
+    ) {
         let mut admitted = self.inner.admitted.lock();
+        if grow && let Some(held) = admitted.get(shard) {
+            placed.extend(held.placed.iter().cloned());
+        }
+        let admission = Admission { placed, current };
         if admitted.get(shard).is_none_or(|held| **held != admission) {
             admitted.insert(shard.clone(), Arc::new(admission));
         }
@@ -1327,8 +1338,16 @@ impl GroupRuntime {
     /// past the copy's last entry is what lets the next open rejoin it: a
     /// majority without the copy committed it, so the group goes on without
     /// it and a re-run of the re-form needs none of its votes. A leader that
-    /// only proves an election may still need the copy.
-    fn stopped_member(&self, group: &GroupId, to: &MemberId, body: &Request) -> bool {
+    /// only proves an election may still need the copy, and one from a
+    /// broker not placed in the group's epoch proves nothing.
+    fn stopped_member(
+        &self,
+        group: &GroupId,
+        to: &MemberId,
+        body: &Request,
+        from: Option<&str>,
+        admitted: Option<&Admission>,
+    ) -> bool {
         let mut held = self.inner.stopped.lock();
         let Some(found) = held.get_mut(&*group.shard) else {
             return false;
@@ -1336,7 +1355,12 @@ impl GroupRuntime {
         if found.group != *group || found.member != *to {
             return false;
         }
-        if let Request::Append(append) = body
+        let placed = match (from, admitted) {
+            (Some(from), Some(admitted)) => admitted.placed.contains(from),
+            _ => true,
+        };
+        if placed
+            && let Request::Append(append) = body
             && append.vote.is_committed()
             && let Some(commit) = &append.leader_commit
         {
@@ -1374,11 +1398,10 @@ impl GroupRuntime {
             body,
             deadline: _,
         } = request;
+        let admitted = from.and_then(|_| self.inner.admitted.lock().get(&*group.shard).cloned());
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
-                let admitted =
-                    from.and_then(|_| self.inner.admitted.lock().get(&*group.shard).cloned());
                 if let Some(from) = from
                     && let Some(refused) = member
                         .outsider(from, super::peer::sender(&body), admitted.as_deref())
@@ -1392,10 +1415,12 @@ impl GroupRuntime {
                 let copy = member.member.copy;
                 Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
             }
-            _ if self.stopped_member(&group, &to, &body) => Err(Refused::Stopped(
-                Box::new(Addressee { group, to }),
-                "a re-form stopped this copy".to_owned(),
-            )),
+            _ if self.stopped_member(&group, &to, &body, from, admitted.as_deref()) => {
+                Err(Refused::Stopped(
+                    Box::new(Addressee { group, to }),
+                    "a re-form stopped this copy".to_owned(),
+                ))
+            }
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }
     }

@@ -3078,4 +3078,7 @@ fn a_blank_copy_admits_every_broker_placed_in_the_epoch() {
     assert_eq!(current, now, "a removed broker is placed in the epoch only");
     moved.placed = None;
     assert_eq!(admitted(&moved), (now.clone(), now));
+    // A move's successor is placed before it is sent anything.
+    moved.successor = Some("broker-e".to_string());
+    assert!(admitted(&moved).0.contains("broker-e"));
 }

@@ -224,14 +224,14 @@ the connection. Neither leaves the reader mid-frame.
 | # | Abuse case | Status | Owner |
 |---|---|---|---|
 | 1 | Publish to any tenant via forwarding | Mitigated: the owner verifies the client's credential (#503) and, when it binds subjects, the client's certificate chain (#2812); mTLS proves which broker forwarded it (#125). A compromised broker can replay a token and chain it was shown until either expires | None |
-| 2 | Inject records via replication | Peer identity mitigated under mTLS, plus role + generation. Raft messages are refused from a broker outside the group's membership (#2909); hybrid replication relies on the ballot and generation | None |
+| 2 | Inject records via replication | Peer identity mitigated under mTLS, plus role + generation. Raft messages are refused from a broker outside the group's membership (#2909); hybrid replication relies on the ballot and generation | #2920 |
 | 3 | Truncate a follower via bootstrap | Mitigated | None |
 | 4 | Memory exhaustion via lengths | Mitigated | None |
 | 5 | Connection exhaustion | Mitigated: accept-side caps, total and per source (#504) | None |
 | 6 | Amplification | Low | None |
 | 7 | Replay of a forwarded publish | Mitigated for idempotent producers (`SequencedForwardPublish`, deduplicated by the owner); **unmitigated** for plain forwards | None |
 | 8 | Malformed frames | Mitigated | None |
-| 9 | A non-member broker acts on a Raft group or replica set under its own name (including the seal `sealer` copy id, which the receiver takes from the request) | Mitigated for Raft: vote, pre-vote, append, snapshot, transfer, written and read index are refused unless the sender is in the member's effective or committed membership (#2909). The hybrid path, retired in 0.8, keeps the ballot bound on seals | None |
+| 9 | A non-member broker acts on a Raft group or replica set under its own name (including the seal `sealer` copy id, which the receiver takes from the request) | Mitigated for Raft; open for hybrid: vote, pre-vote, append, snapshot, transfer, written and read index are refused unless the sender is in the member's effective or committed membership (#2909). The hybrid path, retired in 0.8, keeps the ballot bound on seals | #2920, #2921 |
 
 ## Residual risk and operating assumptions
 

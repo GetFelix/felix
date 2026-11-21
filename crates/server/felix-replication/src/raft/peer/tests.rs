@@ -555,9 +555,12 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
     // control plane places `c` in the group, and not from the epoch's
     // record alone.
     let brokers = |names: &[&str]| names.iter().map(|b| b.to_string()).collect();
-    broker
-        .runtime
-        .admit(&shard(), brokers(&["a", "b", "c"]), brokers(&["a", "b"]));
+    broker.runtime.admit(
+        &shard(),
+        brokers(&["a", "b", "c"]),
+        brokers(&["a", "b"]),
+        false,
+    );
     let reply = broker
         .runtime
         .answer(Some("c".into()), ask("c", true))
@@ -567,6 +570,7 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
         &shard(),
         brokers(&["a", "b", "c"]),
         brokers(&["a", "b", "c"]),
+        false,
     );
     let reply = broker
         .runtime
@@ -594,6 +598,7 @@ async fn a_blank_copy_refuses_a_broker_not_placed_in_its_group() {
         &shard(),
         ["a", "b"].map(str::to_owned).into(),
         ["a", "b"].map(str::to_owned).into(),
+        false,
     );
     broker
         .runtime
