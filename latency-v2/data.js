@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795288076473,
+  "lastUpdate": 1795291040396,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82302,6 +82302,72 @@ window.BENCHMARK_DATA = {
             "range": "753.90",
             "unit": "us",
             "extra": "trials: 5\nmedian: 395.00\nmean: 718.20\nstdev: 753.90\ncv: 104.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b00d90eb9a53df05e2fdee97debce6e2a861c733",
+          "message": "fix(raft): bind control-plane Raft peers to their member certificate; operator import and waiver move to the bootstrap listener (#2913)\n\n* fix(raft): bind control-plane Raft peers to their certificate's member id (WIP)\n\nUnder peer mTLS a member's certificate must carry the URI SAN\nfelix:principal:raft-member:<cluster>:<id>; vote, append, snapshot install,\nforming and standing must speak for that id. FELIX_RAFT_TLS_REVOKED refuses\nlisted certificates. The peer propose route refuses ImportState.\n\nWIP for #2802: operator import route, docs and changelog still to come.\n\nSpec-Unaffected: transport authentication only; no change to what the log holds or how members apply it.\n\n* fix(raft): return the member refusal as an Option for clippy\n\n* fix(raft): operator import and floor waiver move to the bootstrap listener\n\nThe whole-store import and the floor waiver are the operator's: both now\nlive on the bootstrap listener behind the bootstrap token, and the peer\nlistener serves neither. Under Raft the import is written by the leader\nonly, never forwarded; a follower answers 421 naming the leader.\n\nSpec-Unaffected: transport and route authentication only; no apply or log change\n\n* docs: raft peer member certificates, revocation, bootstrap import and waiver (#2802)\n\nSpec-Unaffected: docs and transport auth only\n\n* docs: name the raft TLS variables in the env reference\n\nSpec-Unaffected: docs and transport auth only\n\n* fix: register FELIX_RAFT_TLS_REVOKED as a known variable\n\nSpec-Unaffected: docs and transport auth only\n\n* fix: per-member Raft certs in Helm, operator token for whole-store routes, outbound revocation (#2802)\n\nThe chart reads one Secret per member and copies only the pod's own\ncertificate. Import and waive-lost take an operator token members hold\nonly as a digest. A member under the wrong certificate fails startup, and\nits client refuses a peer serving a revoked certificate.\n\nSpec-Unaffected: transport and route authentication only\n\n* docs: operator token is spent on use, Helm upgrade to per-member certs, node-level key exposure (#2802)\n\nThe raft-tls init container now checks all three files before copying.\n\nSpec-Unaffected: docs and chart only\n\n* chore(demos): refresh demo lockfiles for the new dependency (#2802)\n\nSpec-Unaffected: lockfiles only.",
+          "timestamp": "2026-11-21T19:52:12Z",
+          "tree_id": "db3c9224e649450abeaaae6ab5aaf5691ee05096",
+          "url": "https://github.com/GetFelix/felix/commit/b00d90eb9a53df05e2fdee97debce6e2a861c733"
+        },
+        "date": 1795291030140,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.80\nstdev: 0.45\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "1.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 119.00\nstdev: 1.73\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 142,
+            "range": "6.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 142.00\nmean: 144.80\nstdev: 6.30\ncv: 4.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.60\nstdev: 0.55\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 176,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 175.20\nstdev: 1.10\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "18.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 265.20\nstdev: 18.42\ncv: 6.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
