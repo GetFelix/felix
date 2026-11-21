@@ -53,7 +53,11 @@ fn admitted(term: u64, payloads: &[&'static [u8]]) -> Batch {
 
 /// A formed group with one committed record, and an engine on its leader.
 async fn led() -> (Cluster, MemberId, RaftEngine, u64) {
-    let mut cluster = Cluster::new(true);
+    led_with(timers()).await
+}
+
+async fn led_with(timers: RuntimeConfig) -> (Cluster, MemberId, RaftEngine, u64) {
+    let mut cluster = Cluster::with(timers, true);
     cluster.form(0).await;
     let committed = cluster.write(0, b"committed").await;
     cluster.committed_everywhere(0, committed).await;
@@ -111,11 +115,17 @@ async fn batches_queued_together_go_to_openraft_in_one_call() {
 /// where it applies it, so nothing wakes the task to hand answers on. On
 /// one thread the task finds all 16 batches queued, makes one call, and is
 /// not polled again until every batch has committed and been applied.
-/// `led` has just committed, so the lease is fresh and no heartbeat wait
-/// adds a poll.
+/// Timers this long keep the lease fresh however slow the runner is, so
+/// no heartbeat wait adds a poll.
 #[tokio::test]
 async fn a_drain_wakes_the_publish_task_once() {
-    let (mut cluster, leader, engine, committed) = led().await;
+    let long = RuntimeConfig {
+        election_min: Duration::from_secs(30),
+        election_max: Duration::from_secs(60),
+        lease: Duration::from_secs(45),
+        ..timers()
+    };
+    let (mut cluster, leader, engine, committed) = led_with(long).await;
     let member = cluster.runtime(&leader.broker).group(&shard(0));
     let gate = Arc::clone(&member.expect("group").gate);
 
@@ -130,11 +140,19 @@ async fn a_drain_wakes_the_publish_task_once() {
             .all(|written| written.as_ref().is_ok_and(|w| w.end <= end))
     );
     cluster.committed_everywhere(0, end - 1).await;
-    // Room for any wake the applies left to run.
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
+    // Wait until the count holds still for several ticks, so a late wake
+    // is counted and a settled task is not waited on for a fixed time.
+    let mut last = gate.polls.load(Relaxed);
+    let mut still = 0;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let now = gate.polls.load(Relaxed);
+        still = if now == last { still + 1 } else { 0 };
+        last = now;
+        if still >= 5 {
+            break;
+        }
     }
-    tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(status(&cluster, &leader).client_writes, 1);
     assert_eq!(gate.polls.load(Relaxed), 1, "polls of the publish task");
     cluster.stop().await;
