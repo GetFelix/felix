@@ -48,7 +48,6 @@ fn bootstrap_state(enabled: bool, tokens: Vec<String>) -> (Arc<InMemoryStore>, A
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     (store, state)
 }

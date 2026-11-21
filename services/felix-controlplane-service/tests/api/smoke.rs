@@ -92,7 +92,6 @@ async fn harness(region_id: &str) -> Harness {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     Harness {
         app: build_router(state).into_service(),
@@ -1118,6 +1117,13 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn reform(
+        &self,
+        _request: felix_controlplane_service::store::reform::ReformRequest,
+    ) -> StoreResult<felix_controlplane_service::store::reform::ReformReply> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
         // A stream create reads the fleet gate first; let it through so the
         // create's own failure is the one that surfaces.
@@ -1625,7 +1631,6 @@ async fn system_health_reports_unavailable_on_store_failure() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -1682,7 +1687,6 @@ async fn tenant_endpoints_report_internal_error_on_store_failure() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -1766,7 +1770,6 @@ async fn stream_and_cache_endpoints_report_internal_error_after_scope_checks() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -1906,7 +1909,6 @@ async fn stream_and_cache_create_report_not_found_when_store_reports_missing_nam
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -1979,7 +1981,6 @@ async fn bootstrap_initialize_reports_internal_error_when_signing_key_ensure_fai
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_bootstrap_router(state).into_service();

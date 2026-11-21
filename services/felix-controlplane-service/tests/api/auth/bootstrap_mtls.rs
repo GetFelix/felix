@@ -86,7 +86,6 @@ fn state_with_token() -> AppState {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     }
 }
 

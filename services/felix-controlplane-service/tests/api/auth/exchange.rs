@@ -228,7 +228,6 @@ async fn exchange_returns_tenant_scoped_token() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state.clone()).into_service();
@@ -410,7 +409,6 @@ async fn stream_trim_is_minted_only_once_head_trim_is_finalized() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let exchange = || async {
         let request = Request::builder()
@@ -555,7 +553,6 @@ async fn exchange_forbidden_without_policies() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -684,7 +681,6 @@ async fn exchange_supports_group_claim_based_rbac() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -830,7 +826,6 @@ async fn exchange_group_claim_rbac_requires_groups_claim_mapping() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -958,7 +953,6 @@ async fn exchange_does_not_map_a_prefixed_group_claim_onto_the_bare_group() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     let app: axum::routing::RouterIntoService<axum::body::Body, ()> =
         build_router(state).into_service();
@@ -1067,7 +1061,6 @@ async fn a_bound_exchange_binds_the_resolved_principal() {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     // The certificate the TLS listener would have put on the request.
     let exchange_as = |san: String| {

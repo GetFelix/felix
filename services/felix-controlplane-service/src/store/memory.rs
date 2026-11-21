@@ -180,6 +180,8 @@ pub struct InMemoryStore {
     /// The engine this instance is configured for, reported where no group
     /// records one.
     shard_engine: String,
+    /// Re-form plans, when this store serves the API alone.
+    reform_plans: Arc<crate::store::reform::ReformPlans>,
 }
 
 /// The placement incarnation and what each node has acknowledged of it.
@@ -481,6 +483,7 @@ impl InMemoryStore {
             root_sequences: Default::default(),
             placement: Default::default(),
             shard_engine: "hybrid".to_string(),
+            reform_plans: Default::default(),
         }
     }
 
@@ -711,6 +714,13 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>> {
         Ok(self.nodes.read().await.dead.iter().cloned().collect())
+    }
+
+    async fn reform(
+        &self,
+        request: crate::store::reform::ReformRequest,
+    ) -> StoreResult<crate::store::reform::ReformReply> {
+        crate::store::reform::answer(&self.reform_plans, self, request).await
     }
 
     async fn finalize_fleet_feature(

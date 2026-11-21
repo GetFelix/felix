@@ -924,6 +924,10 @@ pub enum MetaResponse {
     ClusterIdentity {
         identity: crate::store::identity::ClusterIdentity,
     },
+    /// A re-form plan request's answer. Leader requests only.
+    Reform {
+        reply: crate::store::reform::ReformReply,
+    },
 }
 
 /// `StoreError`, flattened into something that serializes and compares.

@@ -93,7 +93,6 @@ impl ControlPlane {
             placement_wakes: Default::default(),
             move_policy: Default::default(),
             new_cluster: Default::default(),
-            reform_plans: Default::default(),
         };
 
         let refuse = Arc::new(AtomicBool::new(false));

@@ -79,7 +79,6 @@ pub(super) async fn build_state(
             new_cluster: Arc::new(crate::cluster::fleet::NewClusterFinalize::new(
                 api_shutdown.child_token(),
             )),
-            reform_plans: Default::default(),
         },
         raft,
     ))

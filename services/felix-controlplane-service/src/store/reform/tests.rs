@@ -13,7 +13,7 @@ fn set(nodes: &[&str]) -> BTreeSet<String> {
 
 /// A Raft shard at incarnation 3, epoch 0, formed on {a, b, c} under copy
 /// id 1 each, with no leader.
-fn shard() -> ShardAssignment {
+pub(crate) fn shard() -> ShardAssignment {
     let members: BTreeMap<String, u64> =
         ["a", "b", "c"].iter().map(|n| (n.to_string(), 1)).collect();
     ShardAssignment {
@@ -71,7 +71,7 @@ fn shard() -> ShardAssignment {
 }
 
 /// A copy with entries of these terms at `0..`, read at `probes`.
-fn copy(
+pub(crate) fn copy(
     terms: &[u64],
     committed: Option<u64>,
     vote: Option<u64>,
@@ -106,7 +106,7 @@ fn report(current: WireCopy) -> WireReport {
     }
 }
 
-fn answer(survey: &ReformSurvey, current: WireCopy) -> ReformAnswer {
+pub(crate) fn answer(survey: &ReformSurvey, current: WireCopy) -> ReformAnswer {
     ReformAnswer {
         plan_id: survey.plan_id.clone(),
         round: survey.round,
@@ -140,7 +140,7 @@ fn survey(
     asked
 }
 
-const LOG: [u64; 5] = [1, 1, 2, 2, 2];
+pub(crate) const LOG: [u64; 5] = [1, 1, 2, 2, 2];
 
 #[test]
 fn every_broker_readable_plans_an_unmarked_reform() {

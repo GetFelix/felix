@@ -77,7 +77,6 @@ pub(crate) async fn harness() -> Harness {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
-        reform_plans: Default::default(),
     };
     Harness {
         app: build_router(state).into_service(),

@@ -911,6 +911,22 @@ impl ControlPlaneStore for RaftStore {
         self.local()?.declared_dead().await
     }
 
+    async fn reform(
+        &self,
+        request: crate::store::reform::ReformRequest,
+    ) -> StoreResult<crate::store::reform::ReformReply> {
+        // Plans live on the leader, so every member's brokers reach them.
+        // A leader without this request has no plans to read: say so rather
+        // than plan on a member the brokers may never poll.
+        match self.ask_leader(LeaderRequest::Reform { request }).await? {
+            Some(MetaResponse::Reform { reply }) => Ok(reply),
+            Some(_) => Err(unexpected_shape("re-form reply")),
+            None => Err(StoreError::Conflict(
+                "the metadata Raft leader does not serve re-form plans yet".to_string(),
+            )),
+        }
+    }
+
     async fn finalize_fleet_feature(
         &self,
         feature: &str,
