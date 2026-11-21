@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795248580697,
+  "lastUpdate": 1795248859779,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81378,6 +81378,72 @@ window.BENCHMARK_DATA = {
             "range": "763.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1382.00\nmean: 1338.40\nstdev: 763.82\ncv: 57.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c9a75a0e0a33e65c7aa5e002514770dac1fb7e3",
+          "message": "feat(storage): conditional pieces and the whole-batch read rule (#2751) (#2880)\n\n* feat(storage): conditional pieces and the whole-batch read rule (#2751)\n\nA conditional batch of several records on a Raft log is one entry per\nrecord, and a leader change can commit only a prefix of it. This adds the\nstorage half: a v9 record kind for a conditional batch's records (bits 31\nand 28, an 8-byte tag with the batch's length and the record's position),\nand `log::conditional`, which reads such a log so a reader sees a batch\nwhole or not at all and the read bound stops before an undecided batch.\n\nNothing writes the kind yet; the codec, the lift and delivery come next.\n\nSpec-Unaffected: storage only; implements the read rule docs/formal/FelixRaftCond.tla already models.\n\n* fix(storage): a conditional page grows by at most the batch it ends inside (#2751)\n\n* formal(raft): the conditional read rule cuts a batch early, as the code does (#2751)\n\nFelixRaftCond.tla now reads a batch the way log::conditional does: a\ncommitted entry inside the batch's range that is not its next piece cuts\nit at once, and the read bound looks only at the entry at the commit.\nFelixRaftCondBatchReachEarlyCut shows the early cut fires.\n\n* docs(formal): measured state counts for the conditional batch configs (#2751)\n\n* docs(formal): name the tests behind the early-cut witness (#2751)\n\nSpec-Unaffected: Evidence comment only; no TLA+ action or invariant changes",
+          "timestamp": "2026-11-21T08:05:30Z",
+          "tree_id": "5f7a0bd0c43f7259465b52ffbc8cc12b02c66c1b",
+          "url": "https://github.com/GetFelix/felix/commit/4c9a75a0e0a33e65c7aa5e002514770dac1fb7e3"
+        },
+        "date": 1795248843038,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 62.80\nstdev: 1.79\ncv: 2.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 84,
+            "range": "3.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 85.40\nstdev: 3.36\ncv: 3.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 112,
+            "range": "12.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 114.20\nstdev: 12.76\ncv: 11.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 83.20\nstdev: 1.48\ncv: 1.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 179,
+            "range": "5.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 180.60\nstdev: 5.68\ncv: 3.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 315,
+            "range": "249.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 315.00\nmean: 452.00\nstdev: 249.41\ncv: 55.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
