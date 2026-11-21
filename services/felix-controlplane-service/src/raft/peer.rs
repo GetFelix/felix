@@ -4,7 +4,7 @@
 //! name the cluster. With peer mTLS the certificate is the member's identity:
 //! it must carry the URI SAN `felix:principal:raft-member:<cluster>:<id>`, and
 //! a vote, append, snapshot or forming record is refused unless the member it
-//! speaks for is that id ([`require_member`], [`PeerMember::check`]). So one
+//! speaks for is that id ([`require_member`], [`PeerMember::refusal`]). So one
 //! member's key does not let it speak as another, and one member's
 //! certificate can be revoked on its own (`FELIX_RAFT_TLS_REVOKED`).
 //!
@@ -89,8 +89,9 @@ pub const MEMBER_URI_PREFIX: &str = "felix:principal:raft-member:";
 pub(super) struct PeerMember(pub(super) super::NodeId);
 
 impl PeerMember {
-    /// Refuse a request that speaks for a member other than the caller.
-    pub(super) fn check(caller: Option<&Self>, claimed: super::NodeId) -> Result<(), Response> {
+    /// The refusal for a request that speaks for a member other than the
+    /// caller, or `None` when it may go on.
+    pub(super) fn refusal(caller: Option<&Self>, claimed: super::NodeId) -> Option<Response> {
         match caller {
             Some(Self(id)) if *id != claimed => {
                 metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "member")
@@ -100,13 +101,15 @@ impl PeerMember {
                     claimed,
                     "raft peer request speaking for another member refused"
                 );
-                Err((
-                    StatusCode::FORBIDDEN,
-                    format!("raft member {id} may not speak for member {claimed}"),
+                Some(
+                    (
+                        StatusCode::FORBIDDEN,
+                        format!("raft member {id} may not speak for member {claimed}"),
+                    )
+                        .into_response(),
                 )
-                    .into_response())
             }
-            _ => Ok(()),
+            _ => None,
         }
     }
 }

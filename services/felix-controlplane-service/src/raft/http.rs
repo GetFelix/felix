@@ -177,7 +177,7 @@ async fn append_entries(
     from: Caller,
     Json(rpc): Json<wire::AppendEntriesRequest>,
 ) -> Response {
-    if let Err(refused) = PeerMember::check(caller(&from), rpc.vote.voted_for) {
+    if let Some(refused) = PeerMember::refusal(caller(&from), rpc.vote.voted_for) {
         return refused;
     }
     if !handle.serves_leader(rpc.vote.term) {
@@ -214,7 +214,7 @@ async fn append_entries(
 /// A member withholding its vote answers like an unreachable one. openraft
 /// would grant from an empty log, which is exactly what must not happen.
 async fn vote(Node(handle): Node, from: Caller, Json(rpc): Json<wire::VoteRequest>) -> Response {
-    if let Err(refused) = PeerMember::check(caller(&from), rpc.vote.voted_for) {
+    if let Some(refused) = PeerMember::refusal(caller(&from), rpc.vote.voted_for) {
         return refused;
     }
     if !handle.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
@@ -244,7 +244,7 @@ async fn standing(
 ) -> Response {
     // The asker's level counts toward what the group can apply.
     if let Some(asker) = asker.from
-        && let Err(refused) = PeerMember::check(caller(&from), asker)
+        && let Some(refused) = PeerMember::refusal(caller(&from), asker)
     {
         return refused;
     }
@@ -265,7 +265,7 @@ async fn forming(
 ) -> Response {
     use super::join::NotRecorded;
 
-    if let Err(refused) = PeerMember::check(caller(&from), forming.member) {
+    if let Some(refused) = PeerMember::refusal(caller(&from), forming.member) {
         return refused;
     }
     match handle.record_forming(&forming).await {
@@ -298,7 +298,7 @@ async fn install_snapshot(Node(handle): Node, from: Caller, body: axum::body::Bo
     let Some(head) = wire::SnapshotHead::decode(&head.head) else {
         return (StatusCode::BAD_REQUEST, "not a snapshot head").into_response();
     };
-    if let Err(refused) = PeerMember::check(caller(&from), head.vote.voted_for) {
+    if let Some(refused) = PeerMember::refusal(caller(&from), head.vote.voted_for) {
         return refused;
     }
     if !handle.serves_leader(head.vote.term) {
