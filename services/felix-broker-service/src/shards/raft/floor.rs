@@ -9,8 +9,10 @@
 //! included, on the first tick it accepts. Every [`REFRESH`] each led group
 //! the control plane's feed does not show marked formed is owed again, idle
 //! or not: a group formed before the control plane recorded the first-form
-//! mark gets it from this report alone (#2794). A marked group is sent only
-//! when its commit moves.
+//! mark gets it from this report alone (#2794). So is one whose voters the
+//! feed does not show yet, so a group idle across the upgrade to the level
+//! that stores voters gets them recorded (#2905). A marked group with its
+//! voters shown is sent only when its commit moves.
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -52,7 +54,8 @@ pub(crate) struct Led {
     /// committed at `at` and not joint.
     pub(crate) voters: Option<BTreeMap<String, u64>>,
     /// The newest feed shows this group, at this incarnation and epoch,
-    /// marked formed, so a refresh skips it.
+    /// marked formed and with the voters this report carries, so a refresh
+    /// skips it.
     pub(crate) formed: bool,
 }
 
@@ -171,6 +174,25 @@ impl Floors {
             }
         }
     }
+}
+
+/// Whether the feed shows a led group at `incarnation` and `epoch` marked
+/// formed and with the `voters` its report carries, so a refresh skips it.
+/// A group idle across the upgrade to the level that stores voters would
+/// otherwise never have them recorded, and its set could not move (#2905).
+pub(crate) fn settled(
+    mark: Option<&crate::shards::watch::RaftFormed>,
+    fed: Option<&crate::shards::watch::RaftVoters>,
+    incarnation: u64,
+    epoch: u64,
+    voters: Option<&BTreeMap<String, u64>>,
+) -> bool {
+    mark.is_some_and(|mark| mark.incarnation == incarnation && mark.epoch == epoch)
+        && voters.is_none_or(|voters| {
+            fed.is_some_and(|fed| {
+                fed.incarnation == incarnation && fed.epoch == epoch && fed.members == *voters
+            })
+        })
 }
 
 /// One tick: observe the led groups and send what is owed. Anything but a

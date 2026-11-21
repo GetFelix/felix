@@ -6,4 +6,5 @@ the control plane refuses a set change those voters do not hold a majority
 of. A voter counts only under the copy id it was reported with, so a voter
 whose copy was wiped counts for nothing, and the same check holds the new
 set's target. A replication factor 1 move goes through a two-broker set. Needs metadata
-level 46.
+level 46. Until the finalize to level 46, formed Raft groups' sets do not move, so
+placement replacements and drains of Raft shards wait for it.

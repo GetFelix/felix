@@ -278,6 +278,7 @@ fn assignment(key: &ShardKey, state: &str) -> ShardAssignment {
         target: None,
         targets_withheld: false,
         raft_formed: None,
+        raft_voters: None,
         placed: None,
     }
 }

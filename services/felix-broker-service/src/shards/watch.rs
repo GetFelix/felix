@@ -112,6 +112,11 @@ pub struct ShardAssignment {
     /// predates it; the broker then keeps re-sending the group's floor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_formed: Option<RaftFormed>,
+    /// The voters the control plane last took from a leader's floor report.
+    /// Absent below the metadata level that stores them; a leader then
+    /// keeps re-sending a formed group's floor until they show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_voters: Option<RaftVoters>,
 }
 
 /// The epoch half of the control plane's record of the brokers placed in
@@ -127,6 +132,15 @@ pub struct PlacedEpoch {
 pub struct RaftFormed {
     pub incarnation: u64,
     pub epoch: u64,
+}
+
+/// The voters of a Raft group as the control plane last took them.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftVoters {
+    pub incarnation: u64,
+    pub epoch: u64,
+    /// Copy id by node id.
+    pub members: std::collections::BTreeMap<String, u64>,
 }
 
 /// A Raft shard's target as the control plane sends it.
@@ -250,6 +264,7 @@ impl PreviousSet {
             target: None,
             targets_withheld: false,
             raft_formed: None,
+            raft_voters: None,
             placed: None,
         }
     }

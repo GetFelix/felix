@@ -4249,13 +4249,13 @@ group never adds the brokers swapped in before the next swap (#2905).
 
 So every floor report a leader sends carries the group's voters, copy id
 by broker, once its membership is committed at the reported index and is
-not joint. The control plane keeps the last voters a target member
-reported at the placed incarnation and reform epoch, and only from a
+not joint. The control plane keeps the last voters a leader reported, when
+the leader is one of them, at the placed incarnation and reform epoch, and only from a
 report at or above the floor's log id, so a late report cannot bring back
 older voters. It then refuses a set change on a formed group unless those
-voters hold a majority of the new set (at least half of it, rounded up).
-The brokers new to the group can then never elect a leader among
-themselves. A chain of swaps waits at each step until the group reports
+voters hold at least half of the new set, rounded up. With the bound on
+empty voters below, the new set keeps a copy that holds the group's log, and
+the first form, which needs every member empty, never runs on it. A chain of swaps waits at each step until the group reports
 the last one applied; replacing a broker the group never added still goes
 ahead, since the rest of the set is unchanged.
 
@@ -4265,10 +4265,13 @@ the group counts as a voter, is gone, so two wiped voters and a new broker
 are three empty copies, not a majority of the group. The same check runs
 again when the new set's target is stored, against the copy ids it would
 name: a voter wiped after the move but before the target is stored is
-caught there. Every target a formed group gets therefore names at least one
-copy that was a voter under that id, and a copy that ever held the group's
-log is never empty under the same id. So no target names a set of empty
-copies, and none of its brokers can form it. A single wiped copy of three
+caught there. A reported voter can still be empty under its id only if it
+was in the minority the group's first membership committed without, so at
+most a minority of the voters are empty, fewer than the half a target of
+the same size must keep. A shorter set never forms: a broker forms only a set
+as large as the replica count. A copy that has held the group's log is never empty under the same id.
+So no target names a set of empty copies, and none of its brokers can form
+it. A single wiped copy of three
 still gets its target, and the leader replaces it.
 
 At replication factor 1 the set is one broker, so a direct re-placement
@@ -4281,6 +4284,11 @@ copies was wiped), no step past its last reported voters goes ahead. The way out
 epoch and is held by the first-form hold above until a leader of the new
 epoch reports. The hold applies once the metadata join floor is at level
 46; a fleet feature finalize at 46 lifts it there for a new cluster.
+Until then a formed group's set does not move at all, since no voters are
+stored below 46, so placement replacements and drains of Raft shards wait
+for the finalize. A leader re-sends a formed group's floor every 30 seconds
+until the feed shows its voters, so a group that sat idle across the upgrade
+still gets them recorded.
 Placement waits with `waiting for the group to report voters that keep a
 majority of the next set`.
 

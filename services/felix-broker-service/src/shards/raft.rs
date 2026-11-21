@@ -150,6 +150,9 @@ pub(crate) struct RaftShards {
     recorded_epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
     /// The group the newest view's record marks formed, per shard.
     formed_marks: parking_lot::Mutex<HashMap<ShardKey, super::watch::RaftFormed>>,
+    /// The voters the newest feed shows for each shard, so a leader re-sends
+    /// a formed group's floor until the control plane has taken its voters.
+    fed_voters: parking_lot::Mutex<HashMap<ShardKey, super::watch::RaftVoters>>,
     /// The copy id of each member open at the last pass's view, for the
     /// copy id report.
     held_copies: parking_lot::Mutex<Vec<copy_id::Held>>,
@@ -289,6 +292,7 @@ impl RaftShards {
             epochs: parking_lot::Mutex::default(),
             recorded_epochs: parking_lot::Mutex::default(),
             formed_marks: parking_lot::Mutex::default(),
+            fed_voters: parking_lot::Mutex::default(),
             held_copies: parking_lot::Mutex::default(),
         });
         shards
@@ -323,6 +327,7 @@ impl RaftShards {
         let epochs = self.epochs.lock();
         let recorded = self.recorded_epochs.lock();
         let marks = self.formed_marks.lock();
+        let fed_voters = self.fed_voters.lock();
         self.runtime
             .led_reports()
             .into_iter()
@@ -331,20 +336,26 @@ impl RaftShards {
                     *epochs.get(&*group.shard)?,
                     recorded.get(&*group.shard).copied(),
                 )?;
-                let formed = marks
-                    .get(&*group.shard)
-                    .is_some_and(|mark| mark.incarnation == group.epoch && mark.epoch == epoch);
+                let voters: Option<std::collections::BTreeMap<String, u64>> =
+                    voters.map(|voters| {
+                        voters
+                            .into_iter()
+                            .map(|voter| (voter.broker.to_string(), voter.copy))
+                            .collect()
+                    });
+                let formed = floor::settled(
+                    marks.get(&*group.shard),
+                    fed_voters.get(&*group.shard),
+                    group.epoch,
+                    epoch,
+                    voters.as_ref(),
+                );
                 Some(floor::Led {
                     key: (*group.shard).clone(),
                     incarnation: group.epoch,
                     epoch,
                     at,
-                    voters: voters.map(|voters| {
-                        voters
-                            .into_iter()
-                            .map(|voter| (voter.broker.to_string(), voter.copy))
-                            .collect()
-                    }),
+                    voters,
                     formed,
                 })
             })
@@ -1277,6 +1288,16 @@ impl EngineShards for RaftShards {
                 }
                 marks.retain(|key, _| open.contains_key(key));
                 drop(marks);
+                let mut voters = self.fed_voters.lock();
+                voters.clear();
+                for (key, (assignment, _)) in &fed {
+                    if let Some(fed) = &assignment.raft_voters
+                        && open.contains_key(key)
+                    {
+                        voters.insert(key.clone(), fed.clone());
+                    }
+                }
+                drop(voters);
                 let epochs = self.epochs.lock();
                 fed.iter()
                     .filter(|(_, (_, full))| *full)

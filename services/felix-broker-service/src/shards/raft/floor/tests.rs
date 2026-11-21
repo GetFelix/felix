@@ -318,3 +318,52 @@ fn a_floor_carries_the_group_epoch_and_a_new_epoch_is_owed_again() {
         [3]
     );
 }
+
+/// A marked group is settled only once the feed also shows the voters its
+/// report carries, so a group idle across the upgrade to the level that
+/// stores voters is still re-sent (#2905).
+#[test]
+fn a_marked_group_is_settled_only_with_its_voters_shown() {
+    use crate::shards::watch::{RaftFormed, RaftVoters};
+    let mark = RaftFormed {
+        incarnation: 3,
+        epoch: 1,
+    };
+    let members: BTreeMap<String, u64> = [("broker-a".to_string(), 7)].into();
+    let fed = |incarnation, epoch, copy| RaftVoters {
+        incarnation,
+        epoch,
+        members: [("broker-a".to_string(), copy)].into(),
+    };
+    assert!(!super::settled(
+        None,
+        Some(&fed(3, 1, 7)),
+        3,
+        1,
+        Some(&members)
+    ));
+    assert!(
+        super::settled(Some(&mark), None, 3, 1, None),
+        "no voters to report"
+    );
+    assert!(!super::settled(Some(&mark), None, 3, 1, Some(&members)));
+    assert!(super::settled(
+        Some(&mark),
+        Some(&fed(3, 1, 7)),
+        3,
+        1,
+        Some(&members)
+    ));
+    assert!(
+        !super::settled(Some(&mark), Some(&fed(3, 1, 8)), 3, 1, Some(&members)),
+        "other voters"
+    );
+    assert!(
+        !super::settled(Some(&mark), Some(&fed(3, 0, 7)), 3, 1, Some(&members)),
+        "another epoch"
+    );
+    assert!(
+        !super::settled(Some(&mark), Some(&fed(3, 1, 7)), 3, 0, Some(&members)),
+        "mark for another epoch"
+    );
+}
