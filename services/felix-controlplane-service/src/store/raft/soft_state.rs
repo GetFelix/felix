@@ -247,8 +247,7 @@ impl SoftState {
                 incarnation,
                 suspects,
             } => {
-                self.leading_in(term)?;
-                let mut guard = self.view.lock().expect("soft state lock");
+                let mut guard = self.view_in(term)?;
                 view_for(&mut guard, term).suspicions.insert(
                     node_id.clone(),
                     crate::model::NodeSuspicion {
@@ -371,7 +370,7 @@ impl SoftState {
         incarnation: u64,
     ) -> Result<MetaResult, NotLeader> {
         let at_millis = {
-            let _serial = self.judge(term).await?;
+            let _serial = self.serial.lock().await;
             let node = match self.machine.store().get_node(node_id).await {
                 Ok(node) => node,
                 Err(err) => return Ok(Err(err.into())),
@@ -388,7 +387,7 @@ impl SoftState {
                 return Ok(Ok(MetaResponse::Node { node }));
             }
             let now_millis = crate::clock::now_millis();
-            let mut guard = self.view.lock().expect("soft state lock");
+            let mut guard = self.view_in(term)?;
             let view = view_for(&mut guard, term);
             let beat = view.beats.entry(node_id.to_string()).or_insert(Beat {
                 incarnation,
@@ -429,7 +428,7 @@ impl SoftState {
     /// `expiry_before_millis`, counting the start of its leadership as a
     /// heartbeat from everyone.
     async fn expire(&self, term: u64, expiry_before_millis: u64) -> Result<MetaResult, NotLeader> {
-        let _serial = self.judge(term).await?;
+        let _serial = self.serial.lock().await;
         let nodes = match self.machine.store().list_nodes().await {
             Ok(nodes) => nodes,
             Err(err) => return Ok(Err(err.into())),
@@ -437,7 +436,7 @@ impl SoftState {
         let now_millis = crate::clock::now_millis();
         let now = Instant::now();
         let (stale, checkpoint) = {
-            let mut guard = self.view.lock().expect("soft state lock");
+            let mut guard = self.view_in(term)?;
             let view = view_for(&mut guard, term);
             // Aged on the monotonic clock, then expressed as the wall-clock
             // time the caller's cutoff is in.
@@ -536,13 +535,13 @@ impl SoftState {
         holder: &str,
         ttl_millis: u64,
     ) -> Result<MetaResult, NotLeader> {
-        let _serial = self.judge(term).await?;
+        let _serial = self.serial.lock().await;
         let store = self.machine.store();
         let recorded = store.placement_holder().await;
         let ttl = Duration::from_millis(ttl_millis);
         let now = Instant::now();
         let current = {
-            let mut guard = self.view.lock().expect("soft state lock");
+            let mut guard = self.view_in(term)?;
             let view = view_for(&mut guard, term);
             if view.lease.is_none()
                 && let Some(recorded) = &recorded
@@ -560,7 +559,7 @@ impl SoftState {
         };
         match current {
             Some((current, _)) if current == holder && recorded.as_deref() == Some(holder) => {
-                self.set_lease(term, holder, now + ttl);
+                self.set_lease(term, holder, now + ttl)?;
                 Ok(store
                     .placement_token()
                     .await
@@ -581,7 +580,9 @@ impl SoftState {
                     )
                     .await?;
                 if matches!(taken, Ok(MetaResponse::PlacementLease { .. })) {
-                    self.set_lease(term, holder, Instant::now() + ttl);
+                    // Committed, so answered. If the term has moved since,
+                    // the next leader judges from the holder in the log.
+                    let _ = self.set_lease(term, holder, Instant::now() + ttl);
                 }
                 Ok(taken)
             }
@@ -591,9 +592,9 @@ impl SoftState {
     /// Let the lease lapse now if `holder` has it. The holder stays named, so
     /// whoever takes it next still advances the token.
     async fn release_lease(&self, term: u64, holder: &str) -> Result<MetaResult, NotLeader> {
-        let _serial = self.judge(term).await?;
+        let _serial = self.serial.lock().await;
         let recorded = self.machine.store().placement_holder().await;
-        let mut guard = self.view.lock().expect("soft state lock");
+        let mut guard = self.view_in(term)?;
         let view = view_for(&mut guard, term);
         let holds = match &view.lease {
             Some(lease) => lease.holder == holder,
@@ -608,12 +609,13 @@ impl SoftState {
         Ok(Ok(MetaResponse::Unit))
     }
 
-    fn set_lease(&self, term: u64, holder: &str, expires: Instant) {
-        let mut guard = self.view.lock().expect("soft state lock");
+    fn set_lease(&self, term: u64, holder: &str, expires: Instant) -> Result<(), NotLeader> {
+        let mut guard = self.view_in(term)?;
         view_for(&mut guard, term).lease = Some(LeaseView {
             holder: holder.to_string(),
             expires,
         });
+        Ok(())
     }
 
     /// Still leading in `term`, the term [`Self::dispatch`] waited out the
@@ -634,13 +636,14 @@ impl SoftState {
         }
     }
 
-    /// Wait for the judging slot, then check this member still leads `term`:
-    /// a handler that waited out a term change must not judge, or write a
-    /// view, for a term it no longer leads.
-    async fn judge(&self, term: u64) -> Result<tokio::sync::MutexGuard<'_, ()>, NotLeader> {
-        let serial = self.serial.lock().await;
+    /// The view for `term`, locked, while this member still leads `term`.
+    /// Checked under the lock, so no view of an ended term is written over
+    /// a later one, and nothing is judged from it after the term moved:
+    /// any handler can reach here after an await.
+    fn view_in(&self, term: u64) -> Result<std::sync::MutexGuard<'_, Option<View>>, NotLeader> {
+        let guard = self.view.lock().expect("soft state lock");
         self.leading_in(term)?;
-        Ok(serial)
+        Ok(guard)
     }
 
     /// Append a decision made in `term`, as leader of `term` only. Never
