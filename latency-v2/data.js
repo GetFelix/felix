@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795194087203,
+  "lastUpdate": 1795236760798,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81114,6 +81114,72 @@ window.BENCHMARK_DATA = {
             "range": "834.93",
             "unit": "us",
             "extra": "trials: 5\nmedian: 512.00\nmean: 852.20\nstdev: 834.93\ncv: 97.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2370c35853b7c635d689d2c44130b5abf45902f2",
+          "message": "fix(controlplane): a new metadata leader judges nothing before its blank entry applies (#2496) (#2877)\n\n* fix(controlplane): a new metadata leader judges nothing before its blank entry applies (#2496)\n\nHeartbeats, expiry and the placement lease read the applied state on the\nleader. A leader restarted with committed entries past its saved committed\nindex could read that state before applying them, and hand the lease to a\nsecond holder. Every leader-only request now waits, once per term, for a\nread-index that covers the term's blank entry.\n\n* fix(controlplane): judge in the term the blank-entry wait covered\n\nHandlers re-read the term after dispatch awaited the level probe, so a\nlater term could be judged without its own wait. Pass dispatch's term in\nand refuse when leadership moved. The test now checks the ask was still\npending when applies resumed, so the revert check cannot pass vacuously.\n\nSpec-Unaffected: control-plane soft state is not in any docs/formal model.",
+          "timestamp": "2026-11-21T04:44:12Z",
+          "tree_id": "83b7bc63cd1b35796e617d2f789b91fbaac37a85",
+          "url": "https://github.com/GetFelix/felix/commit/2370c35853b7c635d689d2c44130b5abf45902f2"
+        },
+        "date": 1795236746862,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.40\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "7.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 206.80\nstdev: 7.89\ncv: 3.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 252,
+            "range": "648.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 252.00\nmean: 601.80\nstdev: 648.98\ncv: 107.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "6.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 201.80\nstdev: 6.94\ncv: 3.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "83.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 427.40\nstdev: 83.69\ncv: 19.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 708,
+            "range": "637.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 708.00\nmean: 1023.00\nstdev: 637.17\ncv: 62.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
