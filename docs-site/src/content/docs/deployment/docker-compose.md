@@ -137,7 +137,7 @@ the next `up` overwrites the tokens, so run `down -v` before starting again.
 ### The development credentials
 
 `felix-dev-auth` uses the control plane's
-[development tokens](/features/security/#development-tokens) through the
+[development tokens](/security/authentication/#development-tokens) through the
 ordinary bootstrap API, with no identity provider. None of this is a mode the
 control plane or broker runs in by default:
 
@@ -302,12 +302,12 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/ops/initialize
 The token exchange needs an identity provider that the tenant trusts
 (`idp_issuers`). For a development stack with no identity provider, set
 `FELIX_BOOTSTRAP_DEV_TOKENS=true` and ask the bootstrap listener for a
-[development token](/features/security/#development-tokens) for
+[development token](/security/authentication/#development-tokens) for
 `p:broker` with `"audience": "felix-controlplane"` instead. Otherwise exchange with
 `"audience": "felix-controlplane"` and write the Felix token to
 `./felix-node-token`. The
-[bootstrap flow](/features/security/#bootstrap-mode-day-0) and
-[token exchange](/features/security/#token-exchange-oidc--felix) cover
+[bootstrap flow](/security/authentication/#bootstrap-mode-day-0) and
+[token exchange](/security/authentication/#token-exchange-oidc--felix) cover
 the request bodies.
 
 The token expires like any Felix token, after 15 minutes for an exchanged one.

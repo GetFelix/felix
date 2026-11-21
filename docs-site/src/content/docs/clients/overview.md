@@ -252,7 +252,7 @@ your principal, and the body can only narrow that: `requested` keeps the listed
 actions, `resources` keeps the listed objects, and the token gets every kept
 action on every kept resource. Leave both out and it carries everything the
 principal has, which a service that only publishes to one stream should not
-hold. [Token Exchange](/features/security/#token-exchange-oidc--felix) covers
+hold. [Token Exchange](/security/authentication/#token-exchange-oidc--felix) covers
 `permissions`, for different actions on different resources, and
 [the API reference](/api/control-plane-api/) lists every field.
 
@@ -270,7 +270,7 @@ curl -sS -X POST http://127.0.0.1:9095/internal/bootstrap/tenants/t1/dev-token \
 The answer has the same shape as an exchange. It works only with bootstrap
 enabled on a loopback address, and anyone holding the bootstrap token can act
 as any principal, so never turn it on for a shared or production control plane.
-See [Development tokens](/features/security/#development-tokens).
+See [Development tokens](/security/authentication/#development-tokens).
 
 ### Lifetime and refreshing
 

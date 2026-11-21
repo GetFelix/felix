@@ -17,7 +17,7 @@ different things in different places, such as *fence*, *lease* and
 
 The top-level scope, usually one customer or organization. Every request names
 a tenant, and a token is only good for the tenant it was issued for. Nothing is
-shared between tenants. See [Security](/features/security/).
+shared between tenants. See [Security](/security/).
 
 ### Namespace
 
@@ -757,7 +757,7 @@ moment. See [Backup and Restore](/deployment/backup-and-restore/).
 
 A one-time setup mode for a new cluster that seeds the first tenant, token
 issuers and permissions before any admin token exists. See
-[Security](/features/security/).
+[Bootstrap](/security/authentication/#bootstrap-mode-day-0).
 
 ### felixctl
 
@@ -790,7 +790,7 @@ it.
 A signed token that names a tenant and a set of permissions. Brokers verify it
 themselves, so checking a request never needs a call to the control plane. A
 client usually gets one by exchanging a token from its identity provider at the
-control plane. See [Security](/features/security/).
+control plane. See [Authentication and RBAC](/security/authentication/).
 
 ### Narrowing
 
@@ -807,7 +807,7 @@ to. It contains no tenant data, and tenant permissions never reach it.
 Withdrawing a principal's access. Brokers learn of it from a feed, end the
 principal's open streams, and refuse tokens issued before it. A broker that
 cannot reach the feed keeps accepting a revoked token until the token expires.
-See [Security](/features/security/).
+See [Revocation](/security/authentication/#revocation).
 
 ## Testing and performance
 

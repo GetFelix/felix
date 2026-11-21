@@ -145,7 +145,7 @@ Today: TLS 1.3 on every connection, OIDC token exchange at the control plane,
 tenant-scoped tokens, RBAC enforced at the broker, and mutually authenticated
 broker-to-broker QUIC once `FELIX_INTERNAL_TLS_CERT`, `_KEY` and `_CA` are set.
 Not yet: end-to-end payload encryption, encryption at rest, audit logging.
-Details in [Security](/features/security/).
+Details in [Security](/security/).
 
 ## Running it
 
