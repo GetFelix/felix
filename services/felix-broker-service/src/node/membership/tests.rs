@@ -306,6 +306,7 @@ fn a_passed_deferred_check_sets_the_minted_mark() {
             from,
             bound: Some(bound),
         }),
+        mint: None,
         deferred: true,
     };
     let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
@@ -336,6 +337,7 @@ fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
         readmits: false,
         minted: false,
         rotation: None,
+        mint: None,
         deferred: true,
     };
     let check = deferred_check(&checked, own_kept, {

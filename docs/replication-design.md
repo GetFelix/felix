@@ -817,15 +817,29 @@ unkept that names it under its storage id now, as a voter, and holds that
 set's generation start, shipped by that set's leader or a later one. With no
 unkept ballot to count from, that needs a start that minted the storage id
 (a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it.
-A rotation during an earlier run, as the Raft restore gate's, counts while the
-control plane names the id it rotated from or to and the node has registered
-only from this directory since (`last-rotation` in `docs/storage-format.md`).
-An id written new, after a wipe or in place of a corrupt id file, counts for
-that run only: nothing records it, so a clean restart loses the credit. A
-directory that lost its copies under an older id, as one swapped back after
+
+Each of those three counts for the run that minted the id. After a restart:
+
+- A rotation during an earlier run, as the Raft restore gate's, counts while
+  the control plane names the id it rotated from or to and the node has
+  registered only from this directory since (`last-rotation` in
+  `docs/storage-format.md`).
+- An id written new, after a wipe or in place of a corrupt id file, counts
+  after a restart once the run that wrote it has registered: that
+  registration binds the directory's `minted-id` record, and the credit then
+  holds while the control plane names the id and the node has registered
+  only from this directory since. A run that stops before its first dated
+  registration (one the control plane gives a `registered_at_millis`) loses
+  the credit, since no later run may bind the record. That costs a
+  readmission, not safety.
+- A rotation removes `minted-id`, even when a crash keeps the old id; the new
+  id is credited through `last-rotation`.
+
+A directory that lost its copies under an older id, as one swapped back after
 the node ran under another, may be named by sets from before the loss, so
 its copies get no readmission. So does a copy not yet readmitted when the
-broker restarts cleanly on an id no rotation since the last loss gave it, until a later rotation. The broker records the set's
+broker restarts cleanly on an id that neither record credits, until a later
+rotation. The broker records the set's
 generation in the directory's `copy-trust` file (`docs/storage-format.md`)
 before the copy's promises count for that set and later ones, and marks the
 copy untrusted until a vouch after the readmission. The record holds until

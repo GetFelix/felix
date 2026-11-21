@@ -990,3 +990,97 @@ fn an_undecodable_rotation_record_reads_as_none() {
     std::fs::write(root.join(ROTATION_FILE_NAME), [0xff, 0xfe]).expect("write");
     assert_eq!(last_rotation(root).expect("read"), None);
 }
+
+/// **A start that writes the id new records the mint unbound, and the
+/// registrations after it bind it** (#2552): the first dated one binds it,
+/// and from then on only the next one rebinds it, as for a rotation. A start
+/// that loads the id writes no record, and a rotation removes it.
+#[test]
+fn a_new_id_records_a_mint_that_its_registrations_bind() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let begun = begin(root, ON_COMMIT, None, None, || false, counter(0)).expect("begin");
+    assert_eq!(begun.origin, Origin::Created);
+    let mint = || last_mint(root).expect("read");
+    assert_eq!(
+        mint(),
+        Some(Mint {
+            id: begun.id,
+            bound: None
+        })
+    );
+
+    record_registration(root, 3).expect("an undated registration");
+    assert_eq!(mint().expect("record").bound, None);
+    record_dated_registration(root, dated(70, 4)).expect("register");
+    assert_eq!(mint().expect("record").bound, Some(dated(70, 4)));
+    record_dated_registration(root, dated(70, 6)).expect("skips one");
+    assert_eq!(mint().expect("record").bound, Some(dated(70, 4)));
+    record_dated_registration(root, dated(70, 5)).expect("the next one");
+    assert_eq!(mint().expect("record").bound, Some(dated(70, 5)));
+
+    mark_clean(root, begun.id).expect("stop");
+    let loaded = begin(root, ON_COMMIT, Some(5), None, || false, counter(20)).expect("loaded");
+    assert_eq!(loaded.id, begun.id);
+    assert_eq!(
+        mint().expect("record").bound,
+        Some(dated(70, 5)),
+        "a loaded id writes none"
+    );
+
+    // A rotation ends the mint's credit, and the record goes before the new id.
+    rotate(root, 9);
+    assert_eq!(mint(), None);
+}
+
+/// **A corrupt id file replaced is a mint too**, and its record replaces
+/// one an earlier mint left.
+#[test]
+fn a_replaced_corrupt_id_records_a_mint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let first = begin(root, ON_COMMIT, None, None, || false, counter(0)).expect("begin");
+    record_dated_registration(root, dated(70, 1)).expect("register");
+    std::fs::write(root.join(storage_identity::FILE_NAME), b"garbage").expect("damage");
+    let second = begin(root, ON_COMMIT, Some(1), None, || false, counter(10)).expect("begin");
+    assert_eq!(second.origin, Origin::ReplacedCorrupt);
+    assert_ne!(second.id, first.id);
+    assert_eq!(
+        last_mint(root).expect("read"),
+        Some(Mint {
+            id: second.id,
+            bound: None
+        })
+    );
+}
+
+/// **A mint record that does not decode reads as none.**
+#[test]
+fn an_undecodable_mint_record_reads_as_none() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let id = StorageId::from_bytes([3; 16]);
+    let read = |body: &str| {
+        std::fs::write(root.join(MINT_FILE_NAME), body).expect("write");
+        last_mint(root).expect("read")
+    };
+    let whole = format!(
+        "minted_id\n{}\nregistered_at=70\nincarnation=4\n",
+        id.to_hex()
+    );
+    assert_eq!(
+        read(&whole),
+        Some(Mint {
+            id,
+            bound: Some(dated(70, 4))
+        })
+    );
+    for damaged in [
+        "minted_id\n".to_owned(),
+        format!("minted_id\n{}\nregistered_at=70\n", id.to_hex()),
+        format!("{whole}more\n"),
+        whole.replacen("minted_id", "minted", 1),
+    ] {
+        assert_eq!(read(&damaged), None, "{damaged:?}");
+    }
+}

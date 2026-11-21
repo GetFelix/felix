@@ -470,7 +470,7 @@ async fn a_failed_node_record_sync_is_not_retried() {
     use crate::storage_identity::StorageId;
 
     type Write = fn(&std::path::Path) -> Result<()>;
-    let records: [(&str, Write); 14] = [
+    let records: [(&str, Write); 15] = [
         ("registration", |root| {
             run_state::record_registration(root, 7)
         }),
@@ -490,6 +490,15 @@ async fn a_failed_node_record_sync_is_not_retried() {
                 run_state::Rotation {
                     to: StorageId::from_bytes([3; 16]),
                     from: StorageId::from_bytes([2; 16]),
+                    bound: None,
+                },
+            )
+        }),
+        ("minted-id", |root| {
+            run_state::record_mint(
+                root,
+                run_state::Mint {
+                    id: StorageId::from_bytes([3; 16]),
                     bound: None,
                 },
             )
