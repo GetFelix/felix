@@ -211,7 +211,8 @@ async fn a_kafka_epoch_bump_on_a_raft_shard_survives_failover() {
 
     let first = super::raft::leader_among(&cluster, &nodes).await;
     let mut producer = Producer::connect(&cluster, &first, &topic).await;
-    producer.send_until_served(0).await;
+    let (error, _) = producer.send_until_served(0).await;
+    assert_eq!(error, 0, "the first send was never served");
     producer.send_ok(1).await;
     let mut producer = producer.with_epoch(1);
     let bumped = producer.send_ok(0).await;
@@ -363,7 +364,7 @@ impl Producer {
     }
 
     async fn send_ok(&mut self, sequence: i32) -> i64 {
-        let (error, offset) = self.send(sequence).await;
+        let (error, offset) = self.send_until_served(sequence).await;
         assert_eq!(error, 0, "sequence {sequence}");
         offset
     }
