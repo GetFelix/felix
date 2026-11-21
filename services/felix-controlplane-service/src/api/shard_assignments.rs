@@ -415,6 +415,7 @@ fn routed(
     // `placed` stays: a broker reads the group epoch from it.
     // No broker reads the floor or the ordered targets yet.
     assignment.raft_floor = None;
+    assignment.raft_formed = None;
     assignment.raft_ordered = None;
     let target = assignment
         .raft_target

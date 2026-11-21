@@ -79,6 +79,7 @@ impl Fixture {
                 raft_copy_ids: Default::default(),
                 raft_target: None,
                 raft_floor: None,
+                raft_formed: None,
                 raft_ordered: None,
             })
             .await

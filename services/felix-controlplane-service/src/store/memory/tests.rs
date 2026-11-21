@@ -561,6 +561,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     raft_copy_ids: Default::default(),
                     raft_target: None,
                     raft_floor: None,
+                    raft_formed: None,
                     raft_ordered: None,
                 })
                 .await

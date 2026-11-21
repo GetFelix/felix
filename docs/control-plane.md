@@ -1495,7 +1495,10 @@ constraint, ahead of every preference:
 - A shard it already holds, from before the role was set, is moved off the
   way a drain moves it. A Raft shard's leader moves to a member that is not
   internal, and each of its followers on an internal node is replaced through
-  the group's membership change (see [Raft shards](#raft-shards)). With no
+  the group's membership change (see [Raft shards](#raft-shards)), once the
+  group has formed: until a leader of the group has sent a floor report, the
+  set is held and the shard shows as waiting for its group to form (#2794).
+  With no
   live node outside the set to take a copy, the set is left as it is, the
   shard shows as waiting (as it does while another member is down), the warning "a shard's copy is on an internal node
   and no live node can take its place" is logged each pass, and the gauge

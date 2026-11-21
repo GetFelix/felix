@@ -484,6 +484,7 @@ fn a_floor_report_is_refused_below_level_38() {
             index: 1,
             term: 1,
         }],
+        mark_formed: false,
     });
     let level = super::super::RAFT_FLOOR_LEVEL;
     assert!(METADATA_VERSION >= level);

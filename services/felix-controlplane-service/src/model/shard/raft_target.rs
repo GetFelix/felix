@@ -79,6 +79,43 @@ impl ShardAssignment {
         }
     }
 
+    /// Whether this record's set must stay as it is: its group's first
+    /// target is stored and no leader of the group has reported from this
+    /// incarnation yet. A broker cut off from the control plane can
+    /// still form the stored target, so a second set with its own target
+    /// would let both form a group (#2794). Once a leader has reported, the
+    /// group exists and moves to a new set by changing its membership.
+    pub(crate) fn holds_unformed_set(&self) -> bool {
+        self.raft_target.is_some() && self.raft_formed != Some(self.incarnation)
+    }
+
+    /// Note that a leader of the group at `incarnation` reported, which
+    /// releases the held set. Returns whether this changed the record.
+    pub(crate) fn mark_raft_formed(&mut self, incarnation: u64) -> bool {
+        if incarnation != self.incarnation || self.raft_formed == Some(incarnation) {
+            return false;
+        }
+        self.raft_formed = Some(incarnation);
+        true
+    }
+
+    /// Keep `previous`'s formed mark when this write is at the same stream
+    /// incarnation. A new incarnation is a new group, not yet formed.
+    pub(crate) fn carry_raft_formed(&mut self, previous: Option<&ShardAssignment>) {
+        self.raft_formed = previous
+            .and_then(|previous| previous.raft_formed)
+            .filter(|formed| *formed == self.incarnation);
+    }
+
+    /// Whether `next` would put this record's held set
+    /// ([`Self::holds_unformed_set`]) on other brokers. A write at another
+    /// incarnation is a new group and holds nothing.
+    pub(crate) fn moves_unformed_set(&self, next: &ShardAssignment, incarnation: u64) -> bool {
+        self.incarnation == incarnation
+            && self.holds_unformed_set()
+            && self.raft_set() != next.raft_set()
+    }
+
     fn raft_set(&self) -> BTreeSet<String> {
         std::iter::once(&self.leader)
             .chain(&self.replicas)

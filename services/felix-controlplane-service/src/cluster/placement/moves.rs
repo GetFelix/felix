@@ -821,6 +821,7 @@ pub(super) fn move_step<'a>(
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         };
         return Decision::Move(
@@ -1203,6 +1204,7 @@ pub(super) fn start(
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {

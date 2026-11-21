@@ -39,6 +39,7 @@ pub(crate) async fn run_raft_native_target_contract(store: Arc<dyn ControlPlaneS
         a_native_report_names_the_streams_incarnation(store).await;
         a_native_set_short_of_the_replica_count_takes_no_copy_id(store).await;
         a_cache_shard_started_on_raft_gets_its_target(store).await;
+        a_set_holds_until_its_group_forms(store).await;
     })
     .await;
 }
@@ -63,6 +64,78 @@ async fn try_native_report(
             shard_incarnation,
         )
         .await
+}
+
+/// A broker cut off from the control plane keeps forming the first target
+/// it read. A second set with its own target would let another broker form
+/// a second group beside it (#2794), so the set holds until a leader the
+/// target names reports, and only then moves.
+async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
+    let shard = active(store, 0).await;
+    let at = Some(shard.incarnation);
+    store
+        .register_node(super::nodes::node("broker-z", 7598))
+        .await
+        .expect("register");
+    let current = store.placement_incarnation().await.expect("incarnation");
+    for node in ["broker-x", "broker-y", "broker-z"] {
+        let heard = PlacementAck {
+            incarnation: current,
+            node_incarnation: store.get_node(node).await.expect("node").status.incarnation,
+        };
+        store.record_placement_ack(node, heard).await.expect("ack");
+    }
+    try_native_report(store, &shard, "broker-x", 41, at)
+        .await
+        .expect("x");
+    try_native_report(store, &shard, "broker-y", 42, at)
+        .await
+        .expect("y");
+    // What the cut-off broker-x will keep reading.
+    let stale = read(store, &shard.key).await;
+    let first = stale.raft_target.clone().expect("first target");
+
+    let mut moved = stale.clone();
+    moved.replicas = vec!["broker-z".to_string()];
+    let refused = store.put_shard_assignment(moved.clone()).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "a set change before the group forms: {refused:?}"
+    );
+    let _ = try_native_report(store, &shard, "broker-z", 43, at).await;
+    // A broker outside the target leads no group of it.
+    let report = super::raft_floors::entry(&shard, 1, 1);
+    let floor = |node: &'static str| {
+        let report = report.clone();
+        async move {
+            store
+                .record_raft_floors(node, vec![report])
+                .await
+                .expect("floors")
+        }
+    };
+    floor("broker-z").await;
+    assert!(store.put_shard_assignment(moved.clone()).await.is_err());
+    let held = read(store, &shard.key).await;
+    assert_eq!(held.raft_target, Some(first), "every view names one target");
+
+    floor("broker-x").await;
+    store
+        .put_shard_assignment(moved)
+        .await
+        .expect("the group formed, so its set moves");
+    for (node, id) in [("broker-x", 41), ("broker-z", 43)] {
+        try_native_report(store, &shard, node, id, at)
+            .await
+            .expect(node);
+    }
+    let target = read(store, &shard.key).await.raft_target.expect("retarget");
+    assert_eq!(
+        target.members.keys().collect::<Vec<_>>(),
+        ["broker-x", "broker-z"]
+    );
+    clear(store).await;
+    store.delete_node("broker-z").await.expect("deregister");
 }
 
 async fn a_shard_started_on_raft_gets_its_target(store: &dyn ControlPlaneStore) {

@@ -883,6 +883,7 @@ async fn shard_renewal_waits_for_every_member() {
                     raft_copy_ids: Default::default(),
                     raft_target: None,
                     raft_floor: None,
+                    raft_formed: None,
                     raft_ordered: None,
                 })
                 .await
@@ -977,6 +978,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     raft_copy_ids: Default::default(),
                     raft_target: None,
                     raft_floor: None,
+                    raft_formed: None,
                     raft_ordered: None,
                 })
                 .await
@@ -1183,6 +1185,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -1309,6 +1312,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1449,6 +1453,7 @@ async fn a_previous_generation_waits_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1550,6 +1555,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -1687,6 +1693,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let first = |shard: u32| {
@@ -1939,6 +1946,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2055,6 +2063,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
 
@@ -2140,6 +2149,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2276,6 +2286,7 @@ async fn pending_sets_wait_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2451,6 +2462,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2560,6 +2572,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2670,6 +2683,7 @@ async fn inherited_storage_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2793,6 +2807,7 @@ async fn learners_wait_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2946,6 +2961,7 @@ async fn a_refusal_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -3088,6 +3104,7 @@ async fn storage_ids_wait_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -3420,6 +3437,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -4340,6 +4358,7 @@ async fn adoption_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -5094,6 +5113,7 @@ async fn raft_floors_wait_for_every_member_known_at_level_38() {
         let raw = crate::store::raft::command::encode_command(&MetaCommand::RecordRaftFloors {
             node_id: "broker-x".to_string(),
             floors: floors.clone(),
+            mark_formed: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");

@@ -19,6 +19,7 @@ fn raise(shard: &crate::model::ShardAssignment, index: u64) -> MetaCommand {
     MetaCommand::RecordRaftFloors {
         node_id: "broker-x".to_string(),
         floors: vec![entry(shard, index, 1)],
+        mark_formed: false,
     }
 }
 

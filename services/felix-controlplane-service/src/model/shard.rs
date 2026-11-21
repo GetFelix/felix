@@ -315,6 +315,14 @@ pub struct ShardAssignment {
     /// Under Raft it needs metadata level 38.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_floor: Option<RaftFloor>,
+    /// The stream incarnation whose Raft group a leader of the shard has
+    /// reported from, so the group formed: see
+    /// [`ShardAssignment::holds_unformed_set`]. Store-owned like
+    /// `generation`: only a floor report sets it, a write at the same
+    /// incarnation keeps it, and whatever a caller passes is replaced.
+    /// Under Raft it needs metadata level 45.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_formed: Option<u64>,
     /// Every target ordered in the group's current epoch: see
     /// [`RaftOrdered`]. Store-owned like `generation`: started when the
     /// switch to Raft is recorded, appended with each new target, kept by a

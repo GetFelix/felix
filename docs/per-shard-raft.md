@@ -4100,9 +4100,19 @@ later by no report a Raft shard sends:
   it initializes, the broker checks, under the lock the routing pass holds,
   that the last pass still fed the same full set and the same stored target,
   and otherwise forms nothing and asks again on a later pass.
-  The check compares against this broker's own view of placement, so a
-  broker cut off from the control plane can still form the old set while
-  another forms the new one (#2794).
+  That check is only as fresh as the broker's feed, so a broker cut off
+  from the control plane could still form the old set while another forms
+  the new one. The control plane closes that (#2794): once it stores a
+  target for a set, it refuses any write that changes the set until a
+  leader the target names has sent it a floor report, which marks the group
+  formed at that stream incarnation (`raft_formed`). Every broker that can
+  form therefore reads the same set and target, and only the lowest broker
+  of that set forms it. Placement waits for the mark too, showing "waiting
+  for the group to form before changing its set". A member that dies before
+  the first form holds the form, and so the set, until it is back: no group
+  formed, so nothing was acknowledged, and deleting the stream is the way
+  out. The hold is on from metadata level 45; below it a set change before
+  the first form applies as before on every member.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4159,12 +4169,9 @@ placement names, which is wrong once placement and the group differ, so do
 not remove a broker that holds Raft shards. `docs/control-plane.md`, "Raft
 shards", has the placement side.
 
-Two cases this does not cover. If placement changes a full set while it is
-forming, two brokers can each be the lowest of their own set and form two
-groups that share members. And if placement replaces every member of a
+One case this does not cover. If placement replaces every member of a
 formed group, the new set finds no member the group reached and forms a
-second one. Nothing stops either, so operators must not make these
-changes. At replication factor 1 the set is one broker, so any
+second one. Nothing stops it, so operators must not make this change. At replication factor 1 the set is one broker, so any
 re-placement replaces every member.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
@@ -4178,7 +4185,11 @@ re-placement replaces every member.
 > `crates/server/felix-replication/src/raft/tests.rs`,
 > `a_vote_or_an_entry_alone_is_not_blank`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
-> `a_short_placement_acknowledges_nothing`.
+> `a_short_placement_acknowledges_nothing`;
+> `services/felix-controlplane-service/src/store/contract/raft_targets.rs`,
+> `a_set_holds_until_its_group_forms`;
+> `docs/formal/FelixRaftFirstForm.tla`, where `FelixRaftFirstFormNoHold.cfg`
+> finds two leaders without the hold.
 
 **Every broker that holds a shard must run it on the same engine.** A
 hybrid broker placed in a Raft shard would keep a log of its own that no

@@ -675,8 +675,9 @@ impl RaftShards {
     /// newer set may be asking the same blank members. So it initializes
     /// only if the last pass still fed this set, with this broker lowest,
     /// and this stored target, and puts the form off otherwise.
-    /// That is this broker's own view, so one with a stale control-plane
-    /// feed can still form the old set (#2794).
+    /// That is this broker's own view, which may be stale. The control
+    /// plane keeps it safe: it holds a set with a stored target until the
+    /// group has formed, so no second set gets a target (#2794).
     fn form(
         &self,
         key: ShardKey,

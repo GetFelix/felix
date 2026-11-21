@@ -258,6 +258,9 @@ pub enum Blocked {
     /// plane has stored the group's target for its current set: one set
     /// change at a time.
     TargetUnsettled,
+    /// A Raft shard's set stays until a leader of its group has reported:
+    /// a second set with its own target could form beside the first (#2794).
+    Unformed,
 }
 
 impl std::fmt::Display for Blocked {
@@ -314,6 +317,7 @@ impl std::fmt::Display for Blocked {
                 f,
                 "waiting for the group's membership target for its current set before changing it"
             ),
+            Self::Unformed => write!(f, "waiting for the group to form before changing its set"),
         }
     }
 }

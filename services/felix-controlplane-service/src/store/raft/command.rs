@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 44;
+pub const METADATA_VERSION: u16 = 45;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -238,6 +238,10 @@ pub enum MetaCommand {
         /// in the epoch (`ShardAssignment::placed`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         start_placed: bool,
+        /// Level 45: a set change is refused while the shard's Raft group
+        /// has not formed (`ShardAssignment::holds_unformed_set`, #2794).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hold_unformed: bool,
     },
     /// Write only if the shard is at `expected_generation` (`None`: has no
     /// assignment), checked as the command applies.
@@ -278,6 +282,9 @@ pub enum MetaCommand {
         /// Level 31: as for `PutShardAssignment`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         start_placed: bool,
+        /// Level 45: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hold_unformed: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
@@ -294,6 +301,9 @@ pub enum MetaCommand {
         /// instead of only its generation being taken (#1929).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         own_leader_set: bool,
+        /// Level 45: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hold_unformed: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
@@ -555,6 +565,10 @@ pub enum MetaCommand {
     RecordRaftFloors {
         node_id: String,
         floors: Vec<crate::model::RaftFloorReport>,
+        /// Level 45: each report also marks its shard's group formed at the
+        /// reported incarnation (`ShardAssignment::raft_formed`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_formed: bool,
     },
     /// Declare a node's data directory dead under the storage id its record
     /// holds as this applies

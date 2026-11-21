@@ -204,6 +204,11 @@ fn replace_internal<'a>(
     if !settled {
         return Some(Decision::Waiting(Blocked::TargetUnsettled));
     }
+    // The store refuses the write too; waiting here keeps it from being
+    // proposed every pass.
+    if existing.holds_unformed_set() {
+        return Some(Decision::Waiting(Blocked::Unformed));
+    }
     if moves.paused() {
         return Some(Decision::Waiting(Blocked::Paused));
     }

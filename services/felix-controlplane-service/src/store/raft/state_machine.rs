@@ -383,8 +383,9 @@ impl MetadataStateMachine {
                 assignment,
                 seq_generation,
                 start_placed,
+                hold_unformed,
             } => store
-                .apply_put_shard_assignment(assignment, seq_generation, start_placed)
+                .apply_put_shard_assignment(assignment, seq_generation, start_placed, hold_unformed)
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
                 .map_err(Into::into),
@@ -405,6 +406,7 @@ impl MetadataStateMachine {
                 at_least,
                 record_previous,
                 start_placed,
+                hold_unformed,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
@@ -414,6 +416,7 @@ impl MetadataStateMachine {
                     at_least,
                     record_previous,
                     start_placed,
+                    hold_unformed,
                 )
                 .await
                 .map(assignment_written)
@@ -424,6 +427,7 @@ impl MetadataStateMachine {
                 elected,
                 elected_set,
                 own_leader_set,
+                hold_unformed,
             } => store
                 .apply_adopt_elected_leader(
                     &key,
@@ -431,6 +435,7 @@ impl MetadataStateMachine {
                     &elected,
                     elected_set,
                     own_leader_set,
+                    hold_unformed,
                 )
                 .await
                 .map(assignment_written)
@@ -505,8 +510,16 @@ impl MetadataStateMachine {
                 .await
                 .map(|declared| MetaResponse::DeclaredDead { declared })
                 .map_err(Into::into),
-            MetaCommand::RecordRaftFloors { node_id, floors } => Ok(MetaResponse::Count {
-                count: u64::from(store.apply_record_raft_floors(&node_id, &floors).await),
+            MetaCommand::RecordRaftFloors {
+                node_id,
+                floors,
+                mark_formed,
+            } => Ok(MetaResponse::Count {
+                count: u64::from(
+                    store
+                        .apply_record_raft_floors(&node_id, &floors, mark_formed)
+                        .await,
+                ),
             }),
             MetaCommand::RecordRaftCopyId {
                 key,
