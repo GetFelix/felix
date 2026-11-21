@@ -6,11 +6,19 @@ use crate::shards::raft::tests as fixture;
 use crate::shards::routing::{EngineShards, StreamEngine};
 
 fn publish_if(request_id: u64, payload: &[u8], expected_offset: u64) -> Result<Option<Frame>> {
+    publish_if_batch(request_id, &[payload], expected_offset)
+}
+
+fn publish_if_batch(
+    request_id: u64,
+    payloads: &[&[u8]],
+    expected_offset: u64,
+) -> Result<Option<Frame>> {
     Ok(Some(frame_from_message(Message::PublishIf {
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
         stream: "orders".to_string(),
-        payloads: vec![payload.to_vec()],
+        payloads: payloads.iter().map(|payload| payload.to_vec()).collect(),
         key: None,
         shard: Some(0),
         expected_offset,
@@ -141,6 +149,99 @@ async fn a_publish_if_to_a_raft_shard_is_written_only_at_its_offset() -> Result<
             .await
             .is_err(),
         "a refused publish was delivered"
+    );
+    EngineShards::shutdown(&*shards).await;
+    Ok(())
+}
+
+/// **A `publish_if` of several records to a Raft shard is written whole at
+/// its expected offset, and refused whole off it.** Each record is a piece
+/// the leader keeps only at the expected offset plus its place, so a refused
+/// batch leaves blanks at every offset it took and a subscriber gets none of
+/// it.
+#[tokio::test]
+async fn a_publish_if_batch_to_a_raft_shard_is_written_or_refused_whole() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let broker = fixture::broker_at(
+        root.path(),
+        1,
+        fixture::INCARNATION,
+        felix_broker::ConsistencyLevel::Quorum,
+        felix_storage::log::FsyncMode::None,
+    )
+    .await;
+    broker.allow_raft_conditional_batches_when(|| true);
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    fixture::take_formed(&shards, assigned).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
+    engine.set_raft(Arc::clone(&shards));
+    let config = BrokerConfig::default();
+    let cluster = ClusterContext {
+        engine,
+        ..ClusterContext::default()
+    };
+    let (mut receiver, _guard) = broker
+        .subscribe("t1", "ns", "orders", 0)
+        .await?
+        .into_parts();
+    let auth = auth_fixture("t1", default_perms());
+    let run = |frames: Vec<Result<Option<Frame>>>| {
+        let mut frames_with_auth = vec![Ok(Some(frame_from_message(auth_message(&auth))))];
+        frames_with_auth.extend(frames);
+        run_control_loop_on(
+            Arc::clone(&broker),
+            Arc::clone(&auth.auth),
+            frames_with_auth,
+            config.clone(),
+            crate::serving::quic::handlers::publish::build_publish_context(
+                Arc::clone(&broker),
+                &config,
+                cluster.clone(),
+            ),
+            Default::default(),
+        )
+    };
+
+    let (_, first) = run(vec![publish_if_batch(1, &[b"far", b"away"], 1_000_000)]).await?;
+    let tail = refused_tail(answer(&first, 1));
+    let (_, next) = run(vec![
+        publish_if_batch(2, &[b"a", b"b", b"c"], tail),
+        publish_if_batch(3, &[b"x", b"y"], tail),
+    ])
+    .await?;
+    match answer(&next, 2) {
+        Message::PublishOk { offset, .. } => assert_eq!(*offset, Some(tail)),
+        other => panic!("the batch at the tail was not written: {other:?}"),
+    }
+    assert_eq!(
+        refused_tail(answer(&next, 3)),
+        tail + 5,
+        "a refused batch takes an offset per record"
+    );
+
+    let mut delivered = Vec::new();
+    while delivered.len() < 3 {
+        let envelope = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+            .await
+            .expect("delivered in time")
+            .expect("subscription open");
+        let base = envelope.base_offset().expect("an offset");
+        for (at, payload) in (base..).zip(envelope.payloads()) {
+            delivered.push((at, payload.clone()));
+        }
+    }
+    let written: Vec<_> = (tail..)
+        .zip([&b"a"[..], b"b", b"c"].map(Bytes::from_static))
+        .collect();
+    assert_eq!(delivered, written);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .is_err(),
+        "part of a refused batch was delivered"
     );
     EngineShards::shutdown(&*shards).await;
     Ok(())

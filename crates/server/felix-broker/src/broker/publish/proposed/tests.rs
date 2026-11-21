@@ -431,6 +431,84 @@ async fn a_refused_conditional_publish_keeps_the_ring() {
     );
 }
 
+/// **A refused conditional publish of three records releases all three
+/// offsets in its turn.** The engine stores the batch as three blanks, so the
+/// stream's sequence moves past all of them while the ring stays. Moved past
+/// only one, the stream would expect the next record two offsets too low.
+#[tokio::test]
+async fn a_refused_conditional_batch_releases_every_offset() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    broker.allow_raft_conditional_batches_when(|| true);
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    let first = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"a")],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
+            .expect("handed over")
+    };
+    let first = tokio::spawn(first.complete());
+    engine.commit(0, Ok(()));
+    first.await.expect("joined").expect("committed");
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
+    let next_seq = || handle.state.log_state.lock().next_seq;
+    assert_eq!(next_seq(), 1);
+
+    let refused = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish_at(
+                &handle,
+                vec![Bytes::from_static(b"x"); 3],
+                crate::Attribution::default(),
+                0,
+                Duration::MAX,
+                |_| "offset mismatch",
+                move |_| engine.propose(3),
+            )
+            .expect("handed over")
+    };
+    let refused = tokio::spawn(refused.complete());
+    engine.commit(1, Ok(()));
+    assert_eq!(
+        refused.await.expect("joined").err(),
+        Some("offset mismatch")
+    );
+    // The release runs on its own task and moves the sequence in one step.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while next_seq() == 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the blank released");
+    assert_eq!(next_seq(), 4, "every offset of the blanked batch");
+    assert_eq!(handle.state.oldest_seq(), 0, "the ring stays");
+
+    let last = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"b")],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
+            .expect("handed over")
+    };
+    let last = tokio::spawn(last.complete());
+    engine.commit(2, Ok(()));
+    last.await.expect("joined").expect("committed");
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(4));
+    assert_eq!(next_seq(), 5);
+    assert_eq!(handle.state.oldest_seq(), 0);
+}
+
 /// **A reader resuming right after a batch the engine gave up on starts
 /// above it.** The ring is empty then, so the reader joins live at the
 /// stream's sequence. Left at the batch before, it would read history only
