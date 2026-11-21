@@ -242,3 +242,132 @@ fn the_read_stops_past_the_highest_acknowledged_offset() {
     ledger.landed_at(3);
     assert_eq!(ledger.snapshot().read_to, Some(8));
 }
+
+/// A pinned writer that has lost its connection once.
+fn pinned_ledger(t0: Instant) -> Ledger {
+    let mut ledger = Ledger::new(t0);
+    ledger.expect_pinned_writer();
+    ledger.reconnected();
+    ledger
+}
+
+#[test]
+fn an_acked_write_missing_from_the_stream_is_a_violation_for_a_pinned_writer() {
+    let t0 = Instant::now();
+    let mut ledger = pinned_ledger(t0);
+    ledger.begin((0, 0), t0);
+    ledger.ack((0, 0), at(t0, 1));
+    let verdict = judge(&ledger.snapshot(), &HashMap::new(), 0);
+    assert_eq!(verdict.gaps, vec![(0, 0)]);
+    assert!(verdict.violation().is_some());
+    assert!(!verdict.holds());
+}
+
+#[test]
+fn a_refused_write_that_is_in_the_stream_is_a_violation() {
+    let t0 = Instant::now();
+    let mut ledger = pinned_ledger(t0);
+    ledger.begin((0, 0), t0);
+    ledger.refuse((0, 0));
+    ledger.begin((0, 1), t0);
+    ledger.ack((0, 1), at(t0, 1));
+    let counts = HashMap::from([((0, 0), 1), ((0, 1), 1)]);
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert_eq!(verdict.refused_present, vec![(0, 0)]);
+    assert!(verdict.violation().is_some());
+    assert!(!verdict.holds());
+}
+
+#[test]
+fn a_refused_write_absent_from_the_stream_is_clean() {
+    let t0 = Instant::now();
+    let mut ledger = pinned_ledger(t0);
+    ledger.begin((0, 0), t0);
+    ledger.refuse((0, 0));
+    ledger.begin((0, 1), t0);
+    ledger.ack((0, 1), at(t0, 1));
+    let counts = HashMap::from([((0, 1), 1)]);
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert_eq!((verdict.refused, verdict.refused_present.len()), (1, 0));
+    assert_eq!((verdict.acked, verdict.acked_once), (1, 1));
+    assert!(verdict.holds());
+}
+
+#[test]
+fn an_indeterminate_write_is_clean_whether_it_landed_or_not() {
+    let t0 = Instant::now();
+    for landed in [true, false] {
+        let mut ledger = pinned_ledger(t0);
+        ledger.begin((0, 0), t0);
+        ledger.abandon((0, 0));
+        ledger.begin((0, 1), t0);
+        ledger.ack((0, 1), at(t0, 1));
+        let mut counts = HashMap::from([((0, 1), 1)]);
+        if landed {
+            counts.insert((0, 0), 1);
+        }
+        let verdict = judge(&ledger.snapshot(), &counts, 0);
+        assert_eq!(
+            (verdict.in_doubt_landed, verdict.in_doubt_absent),
+            (u64::from(landed), u64::from(!landed))
+        );
+        assert!(verdict.holds());
+    }
+}
+
+#[test]
+fn an_abandoned_write_is_no_longer_waiting_but_is_still_known() {
+    let t0 = Instant::now();
+    let mut ledger = pinned_ledger(t0);
+    ledger.begin((0, 0), t0);
+    ledger.abandon((0, 0));
+    assert_eq!(ledger.watch(at(t0, 60_000)), None);
+    assert!(ledger.was_sent((0, 0)));
+    ledger.begin((0, 1), t0);
+    ledger.refuse((0, 1));
+    assert!(ledger.was_sent((0, 1)));
+}
+
+#[test]
+fn an_acked_write_present_twice_is_not_counted_as_once() {
+    let t0 = Instant::now();
+    let mut ledger = pinned_ledger(t0);
+    ledger.begin((0, 0), t0);
+    ledger.ack((0, 0), at(t0, 1));
+    let counts = HashMap::from([((0, 0), 2)]);
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert_eq!((verdict.acked_once, verdict.duplicates.len()), (0, 1));
+    assert!(!verdict.holds());
+}
+
+#[test]
+fn a_pinned_run_that_never_reconnected_or_never_heard_back_proves_nothing() {
+    let t0 = Instant::now();
+    let mut ledger = Ledger::new(t0);
+    ledger.expect_pinned_writer();
+    ledger.begin((0, 0), t0);
+    ledger.ack((0, 0), at(t0, 1));
+    let counts = HashMap::from([((0, 0), 1)]);
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert!(verdict.failure().unwrap().contains("never dropped"));
+
+    ledger.reconnected();
+    let verdict = judge(&ledger.snapshot(), &counts, 0);
+    assert!(verdict.failure().unwrap().contains("no acknowledgement"));
+
+    ledger.begin((0, 1), t0);
+    ledger.ack((0, 1), at(t0, 2));
+    let counts = HashMap::from([((0, 0), 1), ((0, 1), 1)]);
+    assert!(judge(&ledger.snapshot(), &counts, 0).holds());
+}
+
+#[test]
+fn forwarded_writes_are_counted_and_still_acked() {
+    let t0 = Instant::now();
+    let mut ledger = pinned_ledger(t0);
+    ledger.begin((0, 0), t0);
+    ledger.was_forwarded();
+    ledger.ack((0, 0), at(t0, 1));
+    let verdict = judge(&ledger.snapshot(), &HashMap::from([((0, 0), 1)]), 0);
+    assert_eq!((verdict.forwarded, verdict.acked), (1, 1));
+}

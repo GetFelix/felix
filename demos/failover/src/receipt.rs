@@ -106,37 +106,53 @@ fn render(
     for (index, why) in &verdict.dead {
         let _ = writeln!(out, "  producer {index} stopped: {why}");
     }
-    let _ = writeln!(
-        out,
-        "producers            {} idempotent producers x {}/s, {}-byte payloads",
-        args.producers, args.rate, args.payload_bytes
-    );
+    match args.stale_writer {
+        Some(addr) => {
+            let _ = writeln!(
+                out,
+                "stale writer         pinned to {addr}, one write every 250 ms, no routing and no re-send, {}-byte payloads",
+                args.payload_bytes
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "producers            {} idempotent producers x {}/s, {}-byte payloads",
+                args.producers, args.rate, args.payload_bytes
+            );
+        }
+    }
     if !args.config_note.is_empty() {
         let _ = writeln!(out, "cluster              {}", args.config_note);
     }
-    let _ = writeln!(out, "sent                 {}", snapshot.sent);
-    let _ = writeln!(out, "acknowledged         {}", verdict.acked);
-    let _ = writeln!(
-        out,
-        "in flight            {} (sent, no answer yet)",
-        snapshot.in_flight
-    );
-    let _ = writeln!(
-        out,
-        "indeterminate        {} (errors that reached the checker; {} found in the stream, {} not. The SDK retries inside a publish and does not count that, so 0 here does not show the re-send path ran)",
-        snapshot.in_doubt.len(),
-        verdict.in_doubt_landed,
-        verdict.in_doubt_absent
-    );
-    let _ = writeln!(
-        out,
-        "recovered by resend  {} (errored at least once, then acknowledged under the same sequence)",
-        snapshot.recovered
-    );
+    if !verdict.pinned {
+        let _ = writeln!(out, "sent                 {}", snapshot.sent);
+        let _ = writeln!(out, "acknowledged         {}", verdict.acked);
+        let _ = writeln!(
+            out,
+            "in flight            {} (sent, no answer yet)",
+            snapshot.in_flight
+        );
+        let _ = writeln!(
+            out,
+            "indeterminate        {} (errors that reached the checker; {} found in the stream, {} not. The SDK retries inside a publish and does not count that, so 0 here does not show the re-send path ran)",
+            snapshot.in_doubt.len(),
+            verdict.in_doubt_landed,
+            verdict.in_doubt_absent
+        );
+        let _ = writeln!(
+            out,
+            "recovered by resend  {} (errored at least once, then acknowledged under the same sequence)",
+            snapshot.recovered
+        );
+    }
     let _ = writeln!(
         out,
         "records read back    {records} (whole stream, from the oldest, after the snapshot)"
     );
+    if verdict.pinned {
+        stale_block(&mut out, snapshot, verdict);
+    }
     let _ = writeln!(out, "GAPS                 {}", verdict.gaps.len());
     let _ = writeln!(out, "DUPLICATES           {}", verdict.duplicates.len());
     if verdict.unexpected > 0 {
@@ -148,6 +164,9 @@ fn render(
     }
     for key in verdict.gaps.iter().take(10) {
         let _ = writeln!(out, "  missing   producer {} seq {}", key.0, key.1);
+    }
+    for key in verdict.refused_present.iter().take(10) {
+        let _ = writeln!(out, "  refused but written  seq {}", key.1);
     }
     for key in verdict.duplicates.iter().take(10) {
         let _ = writeln!(out, "  repeated  producer {} seq {}", key.0, key.1);
@@ -174,10 +193,59 @@ fn render(
     let verdict_line = if let Some(why) = verdict.failure() {
         format!("FAILED: {why}; this run proves nothing")
     } else if verdict.violation().is_some() {
-        "VIOLATED: see the missing, repeated or unexpected records above".to_string()
+        "VIOLATED: see the missing, repeated, refused-but-written or unexpected records above"
+            .to_string()
     } else {
         "every acknowledged write is in the stream exactly once; nothing extra".to_string()
     };
     let _ = writeln!(out, "verdict              {verdict_line}");
     out
+}
+
+/// The stale writer's part of the receipt. Each write got one answer, so
+/// every count is of writes, not attempts.
+fn stale_block(out: &mut String, snapshot: &crate::ledger::Snapshot, verdict: &Verdict) {
+    let _ = writeln!(out, "---- the stale writer ----");
+    let _ = writeln!(out, "sent                 {}", snapshot.sent);
+    let _ = writeln!(out, "acked                {}", verdict.acked);
+    let _ = writeln!(
+        out,
+        "refused              {} (a typed refusal; nothing written)",
+        verdict.refused
+    );
+    let _ = writeln!(
+        out,
+        "forwarded            {} (acked, and written by another broker)",
+        verdict.forwarded
+    );
+    let _ = writeln!(
+        out,
+        "indeterminate        {} (the broker may have written it, or gave no answer)",
+        snapshot.in_doubt.len()
+    );
+    let _ = writeln!(
+        out,
+        "reconnects           {}, {} acked since the last",
+        verdict.reconnects, verdict.acked_since_reconnect
+    );
+    let _ = writeln!(
+        out,
+        "acked, present once  {} of {}",
+        verdict.acked_once, verdict.acked
+    );
+    let _ = writeln!(
+        out,
+        "ACKED BUT MISSING    {} (must be 0)",
+        verdict.gaps.len()
+    );
+    let _ = writeln!(
+        out,
+        "REFUSED BUT PRESENT  {} (must be 0)",
+        verdict.refused_present.len()
+    );
+    let _ = writeln!(
+        out,
+        "indeterminate found  {} present, {} absent (neither is a violation)",
+        verdict.in_doubt_landed, verdict.in_doubt_absent
+    );
 }

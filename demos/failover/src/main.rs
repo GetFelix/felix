@@ -10,6 +10,7 @@ mod payload;
 mod producer;
 mod reader;
 mod receipt;
+mod stale;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -65,6 +66,11 @@ pub(crate) struct Args {
     /// Stream settings to print in the receipt, as given by the compose file
     #[arg(long, env = "FAILOVER_CONFIG", default_value = "")]
     config_note: String,
+    /// Run the stale writer instead of the producers: one write every 250 ms
+    /// to this one broker (host:port), with no routing. `--brokers` is still
+    /// used for the reader and the read-back
+    #[arg(long, env = "FAILOVER_STALE_WRITER")]
+    stale_writer: Option<std::net::SocketAddr>,
 }
 
 #[tokio::main]
@@ -79,17 +85,36 @@ async fn run(args: Args) -> Result<()> {
     anyhow::ensure!(!args.brokers.is_empty(), "no brokers given");
     let cluster = Arc::new(connect(&args).await?);
     let started = Instant::now();
-    let run_id = payload::run_id();
+    // The run id is the start second, so a writer started beside the checker
+    // would share it and its records would be read as the producers' own.
+    let run_id = match args.stale_writer {
+        Some(_) => format!("{}s", payload::run_id()),
+        None => payload::run_id(),
+    };
     let ledger = Arc::new(Mutex::new(Ledger::new(started)));
-    ledger
-        .lock()
-        .expect("ledger")
-        .expect_producers(args.producers);
+    let producer_count = if args.stale_writer.is_some() {
+        0
+    } else {
+        args.producers
+    };
+    {
+        let mut book = ledger.lock().expect("ledger");
+        book.expect_producers(producer_count);
+        if args.stale_writer.is_some() {
+            book.expect_pinned_writer();
+        }
+    }
     let args = Arc::new(args);
-    println!(
-        "run {run_id}: {} producers x {}/s, stream {}/{}",
-        args.producers, args.rate, args.namespace, args.stream
-    );
+    match args.stale_writer {
+        Some(addr) => println!(
+            "run {run_id}: stale writer pinned to {addr}, stream {}/{}",
+            args.namespace, args.stream
+        ),
+        None => println!(
+            "run {run_id}: {} producers x {}/s, stream {}/{}",
+            args.producers, args.rate, args.namespace, args.stream
+        ),
+    }
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let reader = tokio::spawn(reader::follow(
@@ -99,7 +124,16 @@ async fn run(args: Args) -> Result<()> {
         Arc::clone(&ledger),
     ));
     let mut producers = Vec::new();
-    for index in 0..args.producers {
+    if let Some(addr) = args.stale_writer {
+        producers.push(tokio::spawn(stale::run(
+            addr,
+            Arc::clone(&args),
+            run_id.clone(),
+            Arc::clone(&ledger),
+            stop_rx.clone(),
+        )));
+    }
+    for index in 0..producer_count {
         producers.push(tokio::spawn(producer::run(
             index,
             Arc::clone(&cluster),
@@ -159,7 +193,8 @@ async fn run(args: Args) -> Result<()> {
     std::process::exit(if holds { 0 } else { 1 });
 }
 
-async fn connect(args: &Args) -> Result<Client> {
+/// The client settings both the cluster client and the pinned writer use.
+fn client_config(args: &Args) -> Result<ClientConfig> {
     let roots = felix_client::root_store_from_pem_file(&args.ca_file)?;
     let quinn = felix_client::quic_client_config(Some(Arc::new(roots)), false)?;
     let mut config = ClientConfig::from_env_or_yaml(quinn, None)?;
@@ -170,6 +205,11 @@ async fn connect(args: &Args) -> Result<Client> {
             .trim()
             .to_string(),
     );
+    Ok(config)
+}
+
+async fn connect(args: &Args) -> Result<Client> {
+    let config = client_config(args)?;
     let seeds = args
         .brokers
         .iter()
