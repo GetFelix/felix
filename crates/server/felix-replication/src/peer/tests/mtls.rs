@@ -188,7 +188,7 @@ async fn an_expired_certificate_is_refused() {
     // Valid at load, which refuses an expired one, and expired by the dial.
     let expiring = pki.issue_with("a", "broker-a", expiring_in(2));
     let pool = pool_as("broker-a", Some(tls(&expiring)));
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
 
     let err = pool
         .request(PEER, server.addr, forward())
