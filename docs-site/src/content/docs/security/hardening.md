@@ -156,9 +156,12 @@ metrics, bootstrap or Raft peer ports behind a public load balancer.
 
 | What | How | Restart? |
 | --- | --- | --- |
-| Broker client certificate (QUIC, Kafka, MQTT), broker internal certificate, control-plane API certificate | Write the new pair over the same paths. Re-read every 30 s. | No |
-| Control-plane Raft certificate, bootstrap certificate, broker's `FELIX_CONTROLPLANE_CLIENT_CERT` | Replace the files, restart one member or broker at a time. To retire a Raft member's certificate early, list its fingerprint in `FELIX_RAFT_TLS_REVOKED` on every member ([#2815](https://github.com/GetFelix/felix/issues/2815), [#2837](https://github.com/GetFelix/felix/issues/2837)). | Yes |
-| Any CA bundle | Put the old and new roots in one bundle and restart everything, move every leaf to the new root, then drop the old root and restart again ([#2816](https://github.com/GetFelix/felix/issues/2816)). | Yes |
+| Broker client certificate (QUIC, Kafka, MQTT), broker internal certificate, control-plane API, bootstrap and Raft certificates | Write the new pair over the same paths. Re-read every 30 s; the next handshake uses it, and open connections keep the one they started with. | No |
+| Control-plane Raft member certificate | As above. The new certificate must name the same member (its URI SAN) and not be revoked. One that fails is refused with an error log and the member keeps serving the current one. | No |
+| Control-plane CA bundles (`FELIX_RAFT_TLS_CA`, `FELIX_BOOTSTRAP_TLS_CLIENT_CA`, `FELIX_CONTROLPLANE_TLS_CLIENT_CA`) | Write the new bundle over the same path. Re-read every 30 s. To move to a new root, ship a bundle with both roots, move every leaf, then drop the old root. | No |
+| Retiring a Raft member's certificate | Add its fingerprint to `FELIX_RAFT_TLS_REVOKED_FILE` on every member; re-read every 30 s, and requests under it are refused from then on. `FELIX_RAFT_TLS_REVOKED` works too but needs a restart. | No |
+| Broker's `FELIX_CONTROLPLANE_CLIENT_CERT` | Replace the files, restart one broker at a time ([#2837](https://github.com/GetFelix/felix/issues/2837)). | Yes |
+| Broker CA bundles (`FELIX_TLS_CLIENT_CA`, `FELIX_INTERNAL_TLS_CA`) | Put the old and new roots in one bundle and restart everything, move every leaf to the new root, then drop the old root and restart again ([#2816](https://github.com/GetFelix/felix/issues/2816)). | Yes |
 | Tenant signing key | Stage, activate, retire through `/v1/tenants/{tenant_id}/signing-keys`. See [Rotating signing keys](https://github.com/GetFelix/felix/blob/main/docs/auth.md#rotating-signing-keys). | No |
 | Raft peer token | Three rolling restarts, below. | Rolling |
 | Bootstrap token | Deploy with `FELIX_BOOTSTRAP_TOKEN` (new) and `FELIX_BOOTSTRAP_TOKEN_PREVIOUS` (old), move callers, then drop the previous one. | Rolling |
@@ -167,9 +170,10 @@ metrics, bootstrap or Raft peer ports behind a public load balancer.
 | A user's access | Revoke the principal (`POST /v1/tenants/{tenant_id}/refresh-tokens/revoke`) or remove the RBAC rule. Its open streams end on every broker. | No |
 
 Short certificate lifetimes work as revocation on brokers: a client or
-internal-port connection closes at its certificate's `notAfter`. The control
-plane's REST and Raft listeners do not yet close an open keep-alive connection
-then ([#2899](https://github.com/GetFelix/felix/issues/2899)). Brokers and
+internal-port connection closes at its certificate's `notAfter`, and so does a
+control-plane Raft peer connection, spread over the 30 s before it. The control
+plane's API and bootstrap listeners do not yet close an open keep-alive
+connection then ([#2899](https://github.com/GetFelix/felix/issues/2899)). Brokers and
 the control plane check certificates against the CA only, with no CRL or OCSP;
 `FELIX_RAFT_TLS_REVOKED` is the one exception.
 

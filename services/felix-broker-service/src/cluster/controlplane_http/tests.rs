@@ -179,6 +179,7 @@ async fn mtls_control_plane(dir: &std::path::Path, client_ca: &str) -> (String, 
         listener,
         router,
         server_config,
+        None,
         tokio_util::sync::CancellationToken::new(),
     ));
     (format!("https://localhost:{port}/"), server_ca)

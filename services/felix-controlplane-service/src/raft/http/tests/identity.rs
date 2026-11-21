@@ -52,12 +52,7 @@ fn pki(ids: &[u64]) -> Pki {
     std::fs::write(path("ca.pem"), ca_cert.pem()).expect("write ca");
     std::fs::write(path("peer.pem"), cert).expect("write cert");
     std::fs::write(path("peer.key"), key).expect("write key");
-    let tls = PeerTls {
-        cert_path: path("peer.pem"),
-        key_path: path("peer.key"),
-        ca_path: path("ca.pem"),
-        revoked: Default::default(),
-    };
+    let tls = PeerTls::new(path("peer.pem"), path("peer.key"), path("ca.pem"));
     Pki {
         _dir: dir,
         tls,
@@ -198,9 +193,10 @@ fn pki_without_member_uri() -> CertificateDer<'static> {
 #[tokio::test]
 async fn a_revoked_members_certificate_is_refused() {
     let pki = pki(&[1, 2]);
-    let mut tls = pki.tls.clone();
-    tls.revoked
-        .insert(crate::raft::peer::fingerprint(&pki.members[1]));
+    let tls = pki
+        .tls
+        .clone()
+        .with_revoked([crate::raft::peer::fingerprint(&pki.members[1])].into());
     let (_dir, handle) = member(tls, Arc::new(NullApp)).await;
     let router = handle.rpc_router();
     assert_eq!(

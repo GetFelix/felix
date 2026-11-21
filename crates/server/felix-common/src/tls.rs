@@ -7,8 +7,10 @@
 //! that is already up. A file that is missing or mid-write keeps the current
 //! identity in place; the next check tries again.
 //!
-//! CA bundles are read once, by [`load_roots`]: trust roots change at a
-//! restart.
+//! A service can attach an [`IdentityCheck`], which a rotated certificate
+//! must pass just as the startup one did.
+//!
+//! [`load_roots`] reads a CA bundle; callers that reload trust call it again.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,12 +30,18 @@ pub use expiry::{
 /// How often services check their certificate files for a rotation.
 pub const RELOAD_INTERVAL: Duration = Duration::from_secs(30);
 
+/// A rule every certificate must pass before it is presented, at startup and
+/// on each reload: an `Err` says why it is refused.
+pub type IdentityCheck =
+    Arc<dyn Fn(&[CertificateDer<'static>]) -> Result<(), String> + Send + Sync>;
+
 /// A certificate chain and key read from PEM files, swapped whole when the
 /// files change.
 pub struct ReloadingIdentity {
     files: IdentityFiles,
     provider: Arc<CryptoProvider>,
     current: ArcSwap<Loaded>,
+    check: Option<IdentityCheck>,
 }
 
 impl ReloadingIdentity {
@@ -43,11 +51,23 @@ impl ReloadingIdentity {
     /// unreadable key material is a misconfiguration, not a runtime condition
     /// to retry.
     pub fn load(files: IdentityFiles, provider: Arc<CryptoProvider>) -> Result<Self, TlsFileError> {
-        let loaded = load(&files, &provider)?;
+        Self::load_checked(files, provider, None)
+    }
+
+    /// [`load`](Self::load), with `check` applied to the startup certificate
+    /// and to every rotated one. A rotated certificate that fails it is not
+    /// presented; the current one stays.
+    pub fn load_checked(
+        files: IdentityFiles,
+        provider: Arc<CryptoProvider>,
+        check: Option<IdentityCheck>,
+    ) -> Result<Self, TlsFileError> {
+        let loaded = load(&files, &provider, check.as_ref())?;
         Ok(Self {
             files,
             provider,
             current: ArcSwap::from_pointee(loaded),
+            check,
         })
     }
 
@@ -64,7 +84,7 @@ impl ReloadingIdentity {
     /// Re-read the files. `Ok(true)` when the certificate changed and the new
     /// one is now presented; an error leaves the current one in place.
     pub fn reload(&self) -> Result<bool, TlsFileError> {
-        let fresh = load(&self.files, &self.provider)?;
+        let fresh = load(&self.files, &self.provider, self.check.as_ref())?;
         let changed = fresh.cert != self.current.load().cert;
         if changed {
             self.current.store(Arc::new(fresh));
@@ -87,6 +107,12 @@ impl ReloadingIdentity {
                     "{what} TLS certificate rotated; new connections use it",
                 ),
                 Ok(false) => {}
+                // A certificate that reads fine but fails the checks will
+                // not fix itself on the next tick, unlike a half-written one.
+                Err(err @ TlsFileError::Refused { .. }) => tracing::error!(
+                    error = %err,
+                    "refused the rotated {what} TLS certificate; keeping the current one",
+                ),
                 Err(err) => tracing::warn!(
                     error = %err,
                     "could not reload the {what} TLS certificate; keeping the current one",
@@ -156,6 +182,12 @@ pub enum TlsFileError {
         path: String,
         source: rustls::Error,
     },
+    #[error("{var} {path}: {why}")]
+    Refused {
+        var: &'static str,
+        path: String,
+        why: String,
+    },
     #[error("the key in {key_path} does not match the certificate in {cert_path}: {source}")]
     Mismatch {
         cert_path: String,
@@ -207,8 +239,19 @@ struct Loaded {
     key: Arc<CertifiedKey>,
 }
 
-fn load(files: &IdentityFiles, provider: &CryptoProvider) -> Result<Loaded, TlsFileError> {
+fn load(
+    files: &IdentityFiles,
+    provider: &CryptoProvider,
+    check: Option<&IdentityCheck>,
+) -> Result<Loaded, TlsFileError> {
     let cert = load_pem_certs(files.cert_var, &files.cert_path)?;
+    if let Some(check) = check {
+        check(&cert).map_err(|why| TlsFileError::Refused {
+            var: files.cert_var,
+            path: files.cert_path.clone(),
+            why,
+        })?;
+    }
     let key =
         PrivateKeyDer::from_pem_file(&files.key_path).map_err(|source| TlsFileError::Read {
             var: files.key_var,

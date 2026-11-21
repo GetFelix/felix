@@ -261,7 +261,7 @@ a new tenant before any admin token exists.
 - **An open connection outlives its client certificate.** The REST listener
   does not close a keep-alive connection at the certificate's `notAfter`
   ([#2899](https://github.com/GetFelix/felix/issues/2899)).
-- **Certificate rotation needs restarts** for CA bundles
+- **Certificate rotation needs restarts** for the broker's CA bundles
   ([#2816](https://github.com/GetFelix/felix/issues/2816)) and for the broker's
   control-plane client certificate
   ([#2837](https://github.com/GetFelix/felix/issues/2837)).

@@ -82,3 +82,33 @@ fn an_empty_bundle_is_an_error_not_an_empty_trust_store() {
     let err = load_roots("TEST_CA", &path.display().to_string()).expect_err("empty bundle");
     assert!(matches!(err, TlsFileError::Empty { .. }), "{err}");
 }
+
+#[test]
+fn a_rotated_certificate_that_fails_the_check_is_refused_and_the_old_one_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let files = write_pair(dir.path(), "a", "good.test");
+    let check: IdentityCheck = Arc::new(|chain| {
+        let (_, cert) =
+            x509_parser::parse_x509_certificate(&chain[0]).map_err(|e| e.to_string())?;
+        let names = format!("{:?}", cert.subject_alternative_name());
+        if names.contains("good.test") {
+            Ok(())
+        } else {
+            Err("not good.test".to_string())
+        }
+    });
+    let identity =
+        ReloadingIdentity::load_checked(files.clone(), provider(), Some(Arc::clone(&check)))
+            .expect("load");
+    let before = identity.chain();
+
+    let bad = write_pair(dir.path(), "b", "bad.test");
+    std::fs::copy(&bad.cert_path, &files.cert_path).expect("swap cert");
+    std::fs::copy(&bad.key_path, &files.key_path).expect("swap key");
+    let err = identity.reload().expect_err("the check refuses it");
+    assert!(matches!(err, TlsFileError::Refused { .. }), "{err}");
+    assert_eq!(identity.chain(), before, "the old certificate stays");
+
+    // The same check fails startup.
+    assert!(ReloadingIdentity::load_checked(files, provider(), Some(check)).is_err());
+}
