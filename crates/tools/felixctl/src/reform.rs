@@ -46,10 +46,18 @@ pub(crate) async fn run(
         tokio::time::sleep(POLL).await;
     };
     if out.json {
-        out.json_value(&plan)
+        out.json_value(&plan)?;
     } else {
-        out.text(&render_plan(&plan))
+        out.text(&render_plan(&plan))?;
     }
+    // A script must not take an unfinished plan for a finished one.
+    if plan["state"] == "surveying" {
+        return Err(fail(
+            Exit::Server,
+            "the survey did not finish in time; read the plan again or plan again",
+        ));
+    }
+    Ok(())
 }
 
 /// The create request for `--scope`.

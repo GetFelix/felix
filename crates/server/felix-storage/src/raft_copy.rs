@@ -22,20 +22,12 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod copy_file;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the re-form command, not built yet, calls it")
-)]
 mod epoch_file;
 mod gate;
 mod judge;
 mod marks;
 mod placement_ack;
 mod reclaim;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the re-form command, not built yet, calls it")
-)]
 mod reform;
 mod report;
 mod rotated_by;
@@ -47,10 +39,6 @@ mod start;
 mod stop_file;
 #[cfg(test)]
 pub(crate) mod tests;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the re-form command, not built yet, calls it")
-)]
 mod vouch;
 mod wire;
 

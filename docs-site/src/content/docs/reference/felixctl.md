@@ -1590,7 +1590,7 @@ felixctl raft reform plan --scope node broker-2
 
 #### `felixctl raft reform plan`
 
-Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again.
+Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again. A survey still running after 5 minutes prints what it has and exits with an error.
 
 ```text
 felixctl raft reform plan [OPTIONS]

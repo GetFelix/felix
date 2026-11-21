@@ -1494,7 +1494,8 @@ pub(crate) enum ReformCommand {
                       still has a leader. A plan that could lose acknowledged records says \
                       so and names them. The plan changes nothing on any broker or in the \
                       control plane. It is kept by the control-plane leader only, so after \
-                      a leader change, plan again.",
+                      a leader change, plan again. A survey still running after 5 minutes \
+                      prints what it has and exits with an error.",
         after_long_help = "Examples:
   felixctl raft reform plan
   felixctl raft reform plan --scope cluster

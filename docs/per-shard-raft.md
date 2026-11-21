@@ -6474,7 +6474,8 @@ not a weaker flush.
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
-- The re-form rule, pure and not yet called (`raft_copy::plan_reform`, with
+- The re-form rule, pure and called by the plan survey through
+  `raft_copy::wire::survey_step` (`raft_copy::plan_reform`, with
   `read_copies` for the survey and `probes` for the indexes it needs): per
   copy, current and kept, it reads the epoch (`raft-epoch`), last log id,
   vote, saved commit, reservation and `rotated-by`, which every rotation

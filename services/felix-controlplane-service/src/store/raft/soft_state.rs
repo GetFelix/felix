@@ -241,14 +241,14 @@ impl SoftState {
         // `TakePlacementLease`, is one every member applies, and the log
         // holds no renewals to judge a take by.
         // Re-form plans write nothing, so need no level either.
-        let lease = matches!(
+        let exempt = matches!(
             request,
             LeaderRequest::AcquirePlacementLease { .. }
                 | LeaderRequest::ReleasePlacementLease { .. }
                 | LeaderRequest::Reform { .. }
         );
         let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
-        if !lease && self.handle.cluster_version().await < needs {
+        if !exempt && self.handle.cluster_version().await < needs {
             // A deposed leader's answer would send the caller to the log
             // path: let it ask the new leader instead.
             let mut view = self.view_in(term)?;
@@ -678,10 +678,6 @@ impl SoftState {
         }
     }
 
-    /// The view for `term`, locked, while this member still leads `term`.
-    /// Checked under the lock, so no view of an ended term is written over
-    /// a later one, and nothing is judged from it after the term moved:
-    /// any handler can reach here after an await.
     /// This term's re-form plans, started empty when the term moved.
     fn reform_plans(&self, term: u64) -> Arc<crate::store::reform::ReformPlans> {
         let mut held = self.reform.lock().expect("soft state lock");
@@ -691,6 +687,10 @@ impl SoftState {
         Arc::clone(&held.1)
     }
 
+    /// The view for `term`, locked, while this member still leads `term`.
+    /// Checked under the lock, so no view of an ended term is written over
+    /// a later one, and nothing is judged from it after the term moved:
+    /// any handler can reach here after an await.
     fn view_in(&self, term: u64) -> Result<std::sync::MutexGuard<'_, Option<View>>, NotLeader> {
         let guard = self.view.lock().expect("soft state lock");
         self.leading_in(term)?;

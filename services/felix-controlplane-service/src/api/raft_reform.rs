@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::AppState;
-use super::error::{ApiError, api_internal, api_not_found, api_validation_error};
+use super::error::{ApiError, api_conflict, api_internal, api_not_found, api_validation_error};
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
+use crate::store::StoreError;
 use crate::store::reform::{MAX_BATCH, ReformReply, ReformRequest};
 
 #[utoipa::path(
@@ -164,14 +165,21 @@ pub struct ReformReportsResponse {
 fn unexpected() -> ApiError {
     api_internal(
         "answer the re-form request",
-        &crate::store::StoreError::Unexpected(anyhow::anyhow!("a reply of another kind")),
+        &StoreError::Unexpected(anyhow::anyhow!("a reply of another kind")),
     )
 }
 
-async fn ask(state: &AppState, request: ReformRequest) -> Result<ReformReply, ApiError> {
-    state
-        .store
-        .reform(request)
-        .await
-        .map_err(|err| api_internal("answer the re-form request", &err))
+/// A metadata leader of a version without plans is a 409, not a fault.
+fn refused(err: StoreError) -> ApiError {
+    match err {
+        StoreError::Conflict(ref message) => api_conflict("conflict", message),
+        ref other => api_internal("answer the re-form request", other),
+    }
 }
+
+async fn ask(state: &AppState, request: ReformRequest) -> Result<ReformReply, ApiError> {
+    state.store.reform(request).await.map_err(refused)
+}
+
+#[cfg(test)]
+mod tests;
