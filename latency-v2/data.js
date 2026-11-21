@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795267311325,
+  "lastUpdate": 1795268212374,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -81642,6 +81642,72 @@ window.BENCHMARK_DATA = {
             "range": "546.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 384.00\nmean: 649.20\nstdev: 546.49\ncv: 84.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "580bd3e276d5481d77bf23323184cbaf4fab2477",
+          "message": "feat(raft): conditional pieces for multi-record conditional batches, behind a fleet gate (#2751) (#2892)\n\n* feat(raft): conditional pieces for multi-record conditional batches, behind raft_conditional_batches (#2751)\n\nA conditional batch of several records on a Raft shard is one run of\nentries, each a conditional piece naming its place, kept only at the\nexpected offset plus its place, so every member keeps or blanks the whole\nbatch. Pieces are stored with the CondPiece mark and cross the wire as\nentry tag 10. propose_publish_at takes such a batch only once\nraft_conditional_batches is allowed; the feature is not reported by any\nbuild until every Raft read path applies the whole-batch rule.\n\nSpec-Unaffected: FelixRaftCond.tla already keeps a piece iff index = expected + pos; this implements that write rule.\n\nPart of #2751.\n\n* fix(raft): leave cond out of a command's message when unset (#2751)\n\nA peer then sees the same message an older build sends.\n\nSpec-Unaffected: serialization only; FelixRaftCond models the read rule.\n\n* fix(raft): describe a piece's refusal and publisher exactly, refuse a no-batch piece at encode\n\nSpec-Unaffected: docs and encode-side check only.",
+          "timestamp": "2026-11-21T05:30:38-08:00",
+          "tree_id": "db89d220550991ede82c66c79028309cfd4d2539",
+          "url": "https://github.com/GetFelix/felix/commit/580bd3e276d5481d77bf23323184cbaf4fab2477"
+        },
+        "date": 1795268199250,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.00\nstdev: 1.58\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "7.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 218.80\nstdev: 7.85\ncv: 3.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 899,
+            "range": "1213.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 899.00\nmean: 1449.40\nstdev: 1213.27\ncv: 83.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.40\nstdev: 1.52\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 399,
+            "range": "13.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 399.00\nmean: 396.00\nstdev: 13.60\ncv: 3.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 834,
+            "range": "631.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 834.00\nmean: 977.40\nstdev: 631.18\ncv: 64.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
