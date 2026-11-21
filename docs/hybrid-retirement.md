@@ -216,7 +216,7 @@ writes the new pages.
 | `FelixShardMoveGiveUp.tla` | 445 | 13 | Deleted after its liveness check has a Raft twin (Gaps, 3) |
 | `FelixShardFigure8.tla` | 145 | 8 | Deleted. `FelixRaft` has the current-term commit rule |
 | `FelixShardWalkElectStaleSetReplay.tla`, `FelixShardWalkSparesSeatEarlyReplay.tla` | 966 | 2 | Deleted with `.github/workflows/tla-walk.yml` |
-| `FelixShardReads.tla`, `FelixShardSessions.tla` | 304 | 8 | Re-based on `FelixRaft`, then the old files are deleted (Gaps, 1) |
+| `FelixShardReads.tla`, `FelixShardSessions.tla` | 304 | 8 | Re-based on `FelixRaft` as `FelixRaftReads.tla` and `FelixRaftSessions.tla`; the old files are deleted (Gaps, 1) |
 | `FelixHeadTrim.tla`, `FelixPlacementPacing.tla` | 614 | 16 | Kept. Their fence and promotion steps are restated (Gaps, 3) |
 | `FelixGroups.tla`, `FelixAtomicCommit.tla` | 450 | 10 | Kept unchanged |
 
@@ -387,7 +387,7 @@ it stood.
 | `EventuallyServes`, `ElectionSettles` | Election liveness |
 | Ballot, kept-set, adoption, rename, reissue, report-order and control-plane-down configs (`AdoptedMatchesOpened`, `CpLeaderServes`, `OwnBallotCaughtUp`, `NeverRename*`, `CpDown*` and the rest) | Retired. Each guards a step between the control plane and a broker that no longer exists: the control plane does not name leaders |
 | `Counters*` | Retired. A cache shard has one log and one commit index |
-| `NoStaleRead`, `NoStaleGroupCommit`, `NoLostDelivery` | Gap 1 |
+| `NoStaleRead`, `NoStaleGroupCommit`, `NoLostDelivery` | The same properties in `FelixRaftReads.cfg`, `FelixRaftReadsWritten.cfg`, `FelixRaftSessionsSubscriber.cfg` and `FelixRaftSessionsGroup.cfg`, each with a twin that drops the rule and fails (#2266) |
 | `NoDuplicate` (idempotent failover and handoff) | `NoDuplicate` in `FelixRaftIdempotent.cfg`, with the in-memory twin `FelixRaftIdempotentMemory.cfg` (#2267). A handoff is a change of leader under Raft |
 | `EventuallyAtFactor`, the move give-up configs | Gap 3 |
 
@@ -395,10 +395,12 @@ it stood.
 
 Each has an issue and blocks what is named.
 
-1. **Reads and sessions have no Raft model.** `FelixShardReads.tla` and
-   `FelixShardSessions.tla` extend `FelixShard`. Their properties are about
-   clients, not the hybrid, so they are re-based on `FelixRaft` with a
-   read-index round, not retired. Blocks the bridge release, and so PR 3:
+1. **Reads and sessions on Raft.** Closed by `FelixRaftReads.tla` and
+   `FelixRaftSessions.tla`, which extend `FelixRaft` with a read-index round
+   and the blank-entry barrier in place of the fence round and the lease.
+   `FelixShardReads.tla` and `FelixShardSessions.tla` extend `FelixShard`.
+   Their properties are about clients, not the hybrid, so they are re-based
+   on `FelixRaft`, not retired. Needed before the bridge release, and so PR 3:
    from PR 3 Raft is the only engine and from PR 4 the code `FelixShard`
    models is gone, so nothing else would hold `NoStaleRead`,
    `NoStaleGroupCommit` or `NoLostDelivery`. Issue #2266.

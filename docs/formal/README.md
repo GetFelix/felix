@@ -740,6 +740,16 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftIdempotentRewrite.cfg` | the re-send of a cut batch written whole, over the pieces the next leader holds | violate `NoDuplicate`: the held piece is committed twice |
 | `FelixRaftIdempotentReachFinish.cfg` | witness: a batch of two records cut by a change of leader is finished by the re-send and acknowledged | violate `NeverFinishesACut` |
 | `FelixRaftIdempotentReachHeld.cfg` | witness: a re-send to the next leader is answered as held from the earlier leader's entries | violate `NeverHeldByLaterLeader` |
+| `FelixRaftReads.cfg` | `FelixRaftReads.tla`: `FelixRaft.tla` with one `Quorum` read, three brokers, two terms, one write, one crash; the read takes the open term, a read-index round fixes its bound at max(the term's blank entry, the commit index), the broker applies the bound, then takes its value | pass `NoStaleRead`, `LeaderCompleteness`, `StateMachineSafety` |
+| `FelixRaftReadsWritten.cfg` | the same with writes answered on a written majority before their commit, no crash; the read bound also covers the newest answered write | pass `NoStaleRead` |
+| `FelixRaftReadsNoRound.cfg` | the round skipped | violate `NoStaleRead`: a deposed leader answers without its successor's write |
+| `FelixRaftReadsNoBlankBarrier.cfg` | a read served before the term opened, its bound the commit index alone | violate `NoStaleRead`: a new leader reads before it learned what its predecessor committed |
+| `FelixRaftReadsSkipsAnswered.cfg` | written-majority answers, the bound left at the read index; one term | violate `NoStaleRead`: an answered write above the commit index is missed |
+| `FelixRaftSessionsSubscriber.cfg` | `FelixRaftSessions.tla`: a subscriber reading up to what any broker that believes it leads applied, resuming by offset; two terms, two writes, one crash | pass `NoLostDelivery`, `OffsetNeverReused` |
+| `FelixRaftSessionsPastCommit.cfg` | the subscriber reads past the commit index | violate `NoLostDelivery` |
+| `FelixRaftSessionsGroup.cfg` | one group commit, proposed in the term its coordinator has open and answered once applied as the entry that term wrote; two terms, one crash | pass `NoStaleGroupCommit` |
+| `FelixRaftSessionsGroupAckOnWrite.cfg` | the commit answered once in the coordinator's own log | violate `NoStaleGroupCommit` |
+| `FelixRaftSessionsGroupIgnoresTerm.cfg` | the commit answered once applied past its index, whatever entry holds it | violate `NoStaleGroupCommit`: the next leader's entry took the offset |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityBatched.cfg` | the same faults plus the relaxed-fsync crash, with the batched log mark the broker ships; no restore, so the mark never moves | pass the same (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
@@ -4358,6 +4368,29 @@ code's, on a Raft log:
    `"refuse"` choice of `AtPurge`). A cut batch whose records are all purged
    is kept as a forgotten entry in `producers.forgotten`, so its re-send,
    sequence 0 included, is refused with `sequence_expired`.
+
+### Reads and sessions on a Raft shard
+
+`FelixRaftReads.tla` and `FelixRaftSessions.tla` extend `FelixRaft.tla` with
+the client-facing properties `FelixShardReads.tla` and `FelixShardSessions.tla`
+check on the hybrid (#2266): a `Quorum` read is never stale (`NoStaleRead`), a
+group commit is never answered by a coordinator a newer one replaced
+(`NoStaleGroupCommit`), and nothing delivered is taken back
+(`NoLostDelivery`). The fence round and the lease are replaced by openraft's
+read index. Each spec's header maps its steps to the code, file and line.
+
+What is abstracted:
+
+- The read is one read in flight, and its value is the set of records the
+  broker applied. The answered bound is read when the read begins, before the
+  round, where the code reads it after: a smaller bound, so the check is at
+  least as strict.
+- The lease read, which skips the round, is not here. It rests on a clock
+  drift bound and `FelixRaftLease.tla` checks it.
+- Written-majority answers are checked without crashes. What a crash does to
+  an unsynced majority is `FelixRaftWritten.tla`'s question.
+- A group commit is a record entry. What it does to group state is
+  `FelixRaftGroups.tla`'s question; this model asks only when it is answered.
 
 ### Consumer groups on a Raft shard
 
