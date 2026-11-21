@@ -118,6 +118,8 @@ module_of() {
     FelixRaftGroups*) echo FelixRaftGroups ;;
     FelixRaftCond*) echo FelixRaftCond ;;
     FelixRaftIdempotent*) echo FelixRaftIdempotent ;;
+    FelixRaftReads*) echo FelixRaftReads ;;
+    FelixRaftSessions*) echo FelixRaftSessions ;;
     FelixRaftStreamPurge*) echo FelixRaftStreamPurge ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
@@ -663,6 +665,16 @@ expectations=(
   "FelixRaftCondBatchReachCut violates NeverCutCommitted"
   "FelixRaftCondBatchReachRead violates NeverReadsBatch"
   "FelixRaftCondBatchReachEarlyCut violates NeverEarlyCut"
+  "FelixRaftReads pass"
+  "FelixRaftReadsWritten pass"
+  "FelixRaftReadsNoRound violates NoStaleRead"
+  "FelixRaftReadsNoBlankBarrier violates NoStaleRead"
+  "FelixRaftReadsSkipsAnswered violates NoStaleRead"
+  "FelixRaftSessionsSubscriber pass"
+  "FelixRaftSessionsPastCommit violates NoLostDelivery"
+  "FelixRaftSessionsGroup pass"
+  "FelixRaftSessionsGroupAckOnWrite violates NoStaleGroupCommit"
+  "FelixRaftSessionsGroupIgnoresTerm violates NoStaleGroupCommit"
   "FelixRaftIdempotent pass"
   "FelixRaftIdempotentTwoTerms pass"
   "FelixRaftIdempotentMemory violates NoDuplicate"
@@ -1484,6 +1496,10 @@ weights=(
   "FelixRaftCondLeaderDecidesNoMembers 200"
   "FelixRaftCondBatch 20"
   "FelixRaftIdempotent 20"
+  "FelixRaftReads 8"
+  "FelixRaftReadsWritten 1"
+  "FelixRaftSessionsSubscriber 25"
+  "FelixRaftSessionsGroup 2"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
