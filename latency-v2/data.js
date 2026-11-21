@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795291040396,
+  "lastUpdate": 1795292054619,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82368,6 +82368,72 @@ window.BENCHMARK_DATA = {
             "range": "18.42",
             "unit": "us",
             "extra": "trials: 5\nmedian: 264.00\nmean: 265.20\nstdev: 18.42\ncv: 6.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e560a7e65cbec92994d6159206a8b297299d5a97",
+          "message": "fix(raft): a formed group's set changes only by steps its reported voters keep a majority of (#2905) (#2915)\n\n* fix(raft): a formed group's set changes only by steps its reported voters keep a majority of (#2905)\n\nA swapped-in broker stores a copy id as soon as it opens an empty member,\nso a chain of one-member swaps a slow or dead leader never applied could\nplace a set the group never reached, and those brokers form a second\ngroup. The leader's floor report now carries the group's committed voters,\nand the control plane refuses a set change on a formed group unless those\nvoters keep a majority of the new set. Behind metadata level 46.\n\n* test(raft): swap chain and replication factor 1 tests, docs for the formed-set hold (#2905)\n\n* fix(raft): count a formed group's voters by copy id and hold the target too (#2905)\n\nA voter that reopened empty has a new copy id, so counting brokers let two\nwiped voters and a new broker make an all-empty set. The move check counts\ncurrent-set brokers under their reported copy, and the target check holds a\nformed group's target whose copies the reported voters do not keep half of.\nFelixRaftFormedSet.tla models joins, wipes, lagging reports and swap chains.\n\n* fix(raft): re-send a formed group's floor until the feed shows its voters (#2905)\n\nA group idle across the finalize to level 46 had its voters stripped below\n46 and never reported again, so its set could never move. Docs state the\nempty-voter bound the hold relies on and the rollout wait.\n\n* fix(raft): voters only from the target, an RF 1 set does not move, blank voters in the model (#2905)\n\nVoters count only from a leader in the stored target and only in a report\nthe floor takes. An RF 1 Raft shard's set does not move; the hand-off is\n#2916. FelixRaftFormedSet gets empty voters, an even set, and a keep-one\nrule that violates OneGroup.\n\n* fix(raft): a kept voter reports while a set change has cleared the target (#2905)\n\nThe target-member gate left no reporter between a set change and its new\ntarget, so a target held by lagging voters could never be released.",
+          "timestamp": "2026-11-21T20:06:58Z",
+          "tree_id": "110cb77b797900feaa6862d3dc8bb0f1a946b863",
+          "url": "https://github.com/GetFelix/felix/commit/e560a7e65cbec92994d6159206a8b297299d5a97"
+        },
+        "date": 1795292043178,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 131,
+            "range": "2.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 130.20\nstdev: 2.05\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 174,
+            "range": "180.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 279.20\nstdev: 180.56\ncv: 64.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.60\nstdev: 0.89\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 265,
+            "range": "9.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 265.00\nmean: 265.60\nstdev: 9.91\ncv: 3.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 368,
+            "range": "880.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 368.00\nmean: 758.60\nstdev: 880.62\ncv: 116.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
