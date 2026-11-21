@@ -1617,7 +1617,10 @@ async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
         })
     };
     for _ in 0..3 {
-        landed_rx.recv().await.expect("a batch landed");
+        tokio::time::timeout(ELECTED_WITHIN, landed_rx.recv())
+            .await
+            .expect("a batch landed in time")
+            .expect("a batch landed");
     }
     cluster.kill_node(&leader).expect("kill the leader");
     let acknowledged = flights.await.expect("joined");
