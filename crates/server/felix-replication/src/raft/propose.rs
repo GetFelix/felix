@@ -155,7 +155,7 @@ const EMPTY: &str = "the batch held no record";
 const WRONG_KIND: &str = "the shard's group does not take this kind of write";
 const NOT_THE_REST: &str =
     "the records are not the rest of the producer's batch, so nothing was written";
-const CONDITIONAL_SHAPE: &str = "a conditional publish on Raft names no producer's batch and a trim is one record, so nothing was written";
+const CONDITIONAL_SHAPE: &str = "a conditional publish or a trim cannot carry a producer, and a trim or a commit is one record, so nothing was written";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {

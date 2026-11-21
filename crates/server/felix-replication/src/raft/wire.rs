@@ -635,6 +635,12 @@ fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> 
                                 .to_string(),
                         ));
                     }
+                    if cond.len < 2 || cond.position >= cond.len {
+                        return Err(invalid(format!(
+                            "piece {} of {} is no conditional batch's",
+                            cond.position, cond.len
+                        )));
+                    }
                     buf.put_u8(ENTRY_COND_PIECE);
                     match command.expected {
                         Some(expected) => {

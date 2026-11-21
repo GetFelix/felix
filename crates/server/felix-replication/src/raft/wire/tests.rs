@@ -1182,14 +1182,13 @@ fn a_conditional_piece_keeps_its_place_and_offset_on_the_wire() {
     }
 }
 
-/// **A piece no conditional batch has is refused at decode.** The log's
+/// **A piece no conditional batch has is refused at encode.** The log's
 /// codec would refuse it at the follower's append, holding replication there.
 #[test]
 fn a_piece_of_no_batch_is_refused_on_the_wire() {
     for (position, len) in [(0, 1), (3, 3), (0, 0)] {
         let sent = request(piece_entry(Some(10), position, len));
-        let bytes = encode_request(&sent).expect("encode");
-        let refused = decode_request(bytes).expect_err("refused");
+        let refused = encode_request(&sent).expect_err("refused");
         assert!(
             refused.to_string().contains("no conditional batch"),
             "{refused}"

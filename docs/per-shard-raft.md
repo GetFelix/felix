@@ -3599,8 +3599,9 @@ must apply the whole-batch rule (`docs/storage-format.md`, "Conditional
 batches") before showing one; the gate waits for every read path to do so.
 A piece is an entry (tag 10) and a record kind an older build refuses,
 which the fleet gate also covers. A batch with no record is refused as on
-the hybrid. Like a plain Raft publish, a `publish_if` on Raft does not keep the
-publisher id.
+the hybrid. Like a plain Raft publish, a `publish_if` keeps the publisher id
+on every piece when the publisher features are finalized, and stores none
+otherwise ("Publishers and record headers").
 
 A conditional publish of one record needs no fleet setting. On disk the
 leader writes only
