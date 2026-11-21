@@ -1549,8 +1549,8 @@ impl ControlPlaneStore for RaftStore {
 
     /// Written as leader of the term this member leads when asked, or not at
     /// all. Never forwarded: the peer `propose` route refuses an import, so
-    /// no member relays one, and a leader change mid-import cannot carry it
-    /// into a later term.
+    /// no member relays one. A leader change mid-import answers 503: the next
+    /// leader may still commit the entry, so read before retrying.
     async fn import_state(
         &self,
         state: crate::store::export::ExportedState,

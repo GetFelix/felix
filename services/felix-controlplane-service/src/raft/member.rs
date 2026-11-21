@@ -100,6 +100,15 @@ impl RaftMember {
         http::router(self.clone())
     }
 
+    /// Check that this member can serve its peers: under mTLS its certificate
+    /// must load, name this member, and not be revoked. A member that fails
+    /// this must not start, since every peer would refuse what it sends.
+    pub fn check_peer_security(&self) -> Result<()> {
+        self.security.check_own_identity(self.id)?;
+        self.security.server_tls()?;
+        Ok(())
+    }
+
     /// Serve the peer routes on `listener` until `shutdown` fires, over mTLS
     /// when the peer security says so.
     pub async fn serve_peers(

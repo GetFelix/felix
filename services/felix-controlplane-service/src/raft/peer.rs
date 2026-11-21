@@ -152,6 +152,112 @@ pub(super) fn fingerprint(der: &[u8]) -> String {
     hex::encode(Sha256::digest(der))
 }
 
+/// The client side of peer mTLS: this member's certificate, and a verifier
+/// that trusts only the cluster CA and refuses a revoked member's server.
+fn client_tls(tls: &PeerTls, cluster_id: &str) -> Result<rustls::ClientConfig> {
+    use rustls::pki_types::pem::PemObject;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let read = |path: &str, what: &str| {
+        std::fs::read(path).with_context(|| format!("read raft peer {what} {path}"))
+    };
+    // Only the cluster CA: a peer certificate from a public CA must not be
+    // enough to receive the log.
+    let mut roots = rustls::RootCertStore::empty();
+    for ca in CertificateDer::pem_slice_iter(&read(&tls.ca_path, "CA")?) {
+        roots
+            .add(ca.context("parse raft peer CA")?)
+            .context("add raft peer CA")?;
+    }
+    let chain = CertificateDer::pem_slice_iter(&read(&tls.cert_path, "certificate")?)
+        .collect::<Result<Vec<_>, _>>()
+        .context("parse raft peer certificate")?;
+    let key = PrivateKeyDer::from_pem_slice(&read(&tls.key_path, "key")?)
+        .context("parse raft peer key")?;
+    let provider = std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        std::sync::Arc::new(roots),
+        provider.clone(),
+    )
+    .build()
+    .context("raft peer server verifier")?;
+    let verifier = MemberServerVerifier {
+        inner,
+        cluster_id: cluster_id.to_string(),
+        revoked: tls.revoked.clone(),
+    };
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .context("raft peer TLS versions")?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(verifier))
+        .with_client_auth_cert(chain, key)
+        .context("raft peer client identity")?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
+/// Verifies a peer's server certificate as the CA does, then refuses one
+/// that is revoked or names no member of this cluster, so a wiped member's
+/// old key cannot answer for it. Which member it names is not checked
+/// against the target yet (#2912).
+#[derive(Debug)]
+struct MemberServerVerifier {
+    inner: std::sync::Arc<rustls::client::WebPkiServerVerifier>,
+    cluster_id: String,
+    revoked: std::collections::BTreeSet<String>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for MemberServerVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let verified = self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        )?;
+        if self.revoked.contains(&fingerprint(end_entity)) {
+            metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "revoked_server")
+                .increment(1);
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::Revoked,
+            ));
+        }
+        member_of(end_entity, &self.cluster_id)
+            .map_err(|why| rustls::Error::General(format!("raft peer server: {why}")))?;
+        Ok(verified)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.inner.supported_verify_schemes()
+    }
+}
+
 impl PeerSecurity {
     /// URL scheme for reaching a peer.
     pub fn scheme(&self) -> &'static str {
@@ -164,23 +270,7 @@ impl PeerSecurity {
             .timeout(timeout)
             .default_headers(self.peer_headers()?);
         if let Some(tls) = &self.tls {
-            let ca = std::fs::read(&tls.ca_path)
-                .with_context(|| format!("read raft peer CA {}", tls.ca_path))?;
-            let mut identity = std::fs::read(&tls.cert_path)
-                .with_context(|| format!("read raft peer certificate {}", tls.cert_path))?;
-            identity.push(b'\n');
-            identity.extend(
-                std::fs::read(&tls.key_path)
-                    .with_context(|| format!("read raft peer key {}", tls.key_path))?,
-            );
-            // Only the cluster CA: a peer certificate from a public CA must not
-            // be enough to receive the log.
-            builder = builder.tls_certs_only(
-                reqwest::Certificate::from_pem_bundle(&ca).context("parse raft peer CA")?,
-            );
-            builder = builder.identity(
-                reqwest::Identity::from_pem(&identity).context("parse raft peer identity")?,
-            );
+            builder = builder.tls_backend_preconfigured(client_tls(tls, &self.cluster_id)?);
         }
         builder.build().context("build raft peer client")
     }

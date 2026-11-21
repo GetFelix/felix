@@ -1038,3 +1038,17 @@ fn a_quoted_empty_cert_path_still_parses() {
         .is_ok()
     );
 }
+
+#[test]
+fn operator_token_digests_must_be_sha256_hex() {
+    use super::bootstrap::parse_operator_token_digests;
+    let digest = "ab".repeat(32);
+    let parsed = parse_operator_token_digests(&format!("{digest}, {digest}")).expect("two");
+    assert_eq!(parsed, vec![[0xab; 32], [0xab; 32]]);
+    assert!(parse_operator_token_digests("").expect("empty").is_empty());
+    assert!(parse_operator_token_digests("abcd").is_err(), "too short");
+    assert!(
+        parse_operator_token_digests(&"zz".repeat(32)).is_err(),
+        "not hex"
+    );
+}

@@ -77,10 +77,15 @@ as that member, and one member's certificate can be revoked on its own.
 
 To revoke a certificate, put its SHA-256 fingerprint in
 `FELIX_RAFT_TLS_REVOKED` on every member (comma-separated, hex, colons
-allowed) and restart them. A revoked certificate is refused on each request,
-counted in `felix_meta_raft_peer_rejected_total{reason="revoked"}`. After you
+allowed) and restart them. The list is read only at startup, and the restart
+also closes any connection the revoked certificate already had. A member then
+refuses a request carrying that certificate
+(`felix_meta_raft_peer_rejected_total{reason="revoked"}`) and refuses to
+connect to a server presenting it (`reason="revoked_server"`). After you
 wipe a member, issue a new certificate for the new incarnation and revoke the
-old one, so the old machine's key cannot speak for the new member.
+old one, so the old machine's key can neither call nor answer for the new
+member. A member's client checks that the server's certificate names a member
+of this cluster, but not yet that it names the member it dialed (#2912).
 
 With TLS set, `FELIX_RAFT_PEER_TOKEN` is optional. A group with only the
 token still starts, but the token says only that the caller is some member,
@@ -88,11 +93,30 @@ so any holder can speak as any member, and the member logs a warning at
 startup. Treat it as a fallback for groups you have not yet moved to
 certificates.
 
+### Operator routes
+
+The restore import (`POST /internal/bootstrap/import-state`) and the Raft
+floor waiver (`POST /internal/bootstrap/raft/waive-lost`) can replace the
+whole store or accept lost data, so they do not take the bootstrap token,
+which every member holds. They take the operator token in the
+`X-Felix-Operator-Token` header, and members are configured with only its
+SHA-256 digest, so reading a member's environment does not give it away:
+
+```bash
+token="$(openssl rand -hex 32)"           # keep it outside the cluster
+printf %s "$token" | sha256sum | cut -d' ' -f1
+# set the digest as FELIX_OPERATOR_TOKEN_SHA256 on each member and restart it
+```
+
+Without `FELIX_OPERATOR_TOKEN_SHA256` the routes answer `403`. Leave it unset
+until you need one, and comma-separate two digests while you rotate.
+
 Upgrading is breaking. Reissue every member's certificate with its URI SAN
 first: builds before this check only verify the CA, so they accept the new
-certificates. Then roll the new build one member at a time. A member started
-under the wrong certificate refuses to start, and the others keep their
-quorum. No metadata level changes.
+certificates. Then roll the new build one member at a time, keeping
+`FELIX_RAFT_PEER_TOKEN` set until every member runs it: older members still
+require the token. A member started under the wrong certificate exits at
+startup, and the others keep their quorum. No metadata level changes.
 
 The member does not record an incarnation in its vote record, so one
 certificate per incarnation plus revocation stands in for it, and a member's

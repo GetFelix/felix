@@ -18,6 +18,14 @@ const CLUSTER_ID: &str = "runtime-cluster";
 const PEER_TOKEN: &str = "runtime-peer-token-runtime-peer-token";
 const BOOTSTRAP_TOKEN: &str = "runtime-bootstrap-token-runtime-bootstrap";
 
+/// The operator token, and the digest members are configured with.
+const OPERATOR_TOKEN: &str = "runtime-operator-token-runtime-operator";
+
+fn operator_token_digest() -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(OPERATOR_TOKEN.as_bytes()))
+}
+
 fn http(
     addr: SocketAddr,
     method: &str,
@@ -143,6 +151,7 @@ fn spawn(
         .env("FELIX_BOOTSTRAP_ENABLED", "true")
         .env("FELIX_BOOTSTRAP_BIND_ADDR", bootstrap.to_string())
         .env("FELIX_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+        .env("FELIX_OPERATOR_TOKEN_SHA256", operator_token_digest())
         .spawn()
         .expect("spawn controlplane")
 }
@@ -299,13 +308,26 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr, bootstrap: SocketAddr) -> S
     let route = "/internal/bootstrap/import-state";
     let (status, _) =
         http(bootstrap, "POST", route, None, Some(&operator_import)).expect("bootstrap port");
-    assert_eq!(status, 401, "an import without the bootstrap token");
-    let (status, body) = http_with_headers(
+    assert_eq!(status, 401, "an import without the operator token");
+    let (status, _) = http_with_headers(
         bootstrap,
         "POST",
         route,
         None,
         &[("X-Felix-Bootstrap-Token", BOOTSTRAP_TOKEN)],
+        Some(&operator_import),
+    )
+    .expect("bootstrap port");
+    assert_eq!(
+        status, 401,
+        "the bootstrap token every member holds is not enough"
+    );
+    let (status, body) = http_with_headers(
+        bootstrap,
+        "POST",
+        route,
+        None,
+        &[("X-Felix-Operator-Token", OPERATOR_TOKEN)],
         Some(&operator_import),
     )
     .expect("operator import");

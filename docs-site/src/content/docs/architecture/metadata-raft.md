@@ -116,8 +116,9 @@ only.
 Under peer mTLS the certificate is the member's identity. Each member's leaf
 certificate carries one URI SAN, `felix:principal:raft-member:<cluster_id>:<member_id>`,
 and a vote, append, snapshot or forming record that speaks for another member
-is refused with 403. A member refuses to start under a certificate that names
-another member or is listed in `FELIX_RAFT_TLS_REVOKED`. See
+is refused with 403. A member exits at startup under a certificate that names
+another member or is listed in `FELIX_RAFT_TLS_REVOKED`, and refuses to
+connect to a peer serving a revoked certificate. See
 [Security](/features/security/#raft-member-certificates) for revocation and the
 upgrade order.
 
@@ -190,13 +191,13 @@ catching up):
 ```bash
 curl --fail-with-body -X POST \
   "http://cp-0:9095/internal/bootstrap/raft/waive-lost" \
-  -H "X-Felix-Bootstrap-Token: $FELIX_BOOTSTRAP_TOKEN" \
+  -H "X-Felix-Operator-Token: $OPERATOR_TOKEN" \
   -H "content-type: application/json" \
   -d '{"members": [2], "reason": "cp-1 volume destroyed"}'
 ```
 
 This is the bootstrap listener (`FELIX_BOOTSTRAP_ENABLED`,
-`FELIX_BOOTSTRAP_BIND_ADDR`, `FELIX_BOOTSTRAP_TOKEN`), not the peer port. Send
+`FELIX_BOOTSTRAP_BIND_ADDR`, `FELIX_OPERATOR_TOKEN_SHA256`), not the peer port. Send
 it to each blocked member, and use `https://` with the client certificate
 if you set `FELIX_BOOTSTRAP_TLS_*`. The member logs the waiver with its
 reason and goes on. Writes that only the lost members held may be gone;
@@ -355,15 +356,18 @@ recorded that in a ConfigMap; every start after that is `existing`.
 
 If the group cannot form a quorum again, an operator can load an exported
 state with `POST /internal/bootstrap/import-state` on the bootstrap listener
-(`FELIX_BOOTSTRAP_ENABLED`, `FELIX_BOOTSTRAP_BIND_ADDR`, header
-`X-Felix-Bootstrap-Token`). The body is `{"state": <exported state>, "overwrite": false}`.
+(`FELIX_BOOTSTRAP_ENABLED`, `FELIX_BOOTSTRAP_BIND_ADDR`) with the operator
+token in `X-Felix-Operator-Token`. Members hold only its digest
+(`FELIX_OPERATOR_TOKEN_SHA256`); see
+[operator routes](/features/security/#operator-routes). The body is `{"state": <exported state>, "overwrite": false}`.
 The peer `propose` route refuses this command, so it never comes from a peer.
 
 Under Raft only the leader takes it. A follower answers `421` with code
 `not_leader`, naming the leader's member id, and writes nothing; send it
 there. The route answers `409` when the store holds state and `overwrite` is
 not `true`. A `503` means the write may still have committed, so read the
-store before you retry. Bringing members back is still the first thing to try.
+store before you retry, above all with `overwrite`: a second import would
+wipe whatever was written after the first. Bringing members back is still the first thing to try.
 
 A broker kept running across a restore to an earlier point refuses a stream
 whose restored incarnation is below the one it holds, since it never moves a

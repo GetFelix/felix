@@ -20,6 +20,11 @@ pub struct BootstrapConfig {
     /// initialized tenant with no identity provider. For local development
     /// only: refused unless the bootstrap listener is on loopback.
     pub dev_tokens: bool,
+    /// SHA-256 digests of the operator tokens (`FELIX_OPERATOR_TOKEN_SHA256`)
+    /// that the whole-store routes, import and floor waiver, require. Members
+    /// hold only the digest, so a compromised member cannot present the
+    /// token. Empty turns those routes off.
+    pub operator_token_digests: Vec<[u8; 32]>,
 }
 
 /// Whether each token is set, never the token.
@@ -33,8 +38,26 @@ impl std::fmt::Debug for BootstrapConfig {
             .field("previous_token", &shown(&self.previous_token))
             .field("tls", &self.tls)
             .field("dev_tokens", &self.dev_tokens)
+            .field("operator_tokens", &self.operator_token_digests.len())
             .finish()
     }
+}
+
+/// Parse `FELIX_OPERATOR_TOKEN_SHA256`: comma-separated SHA-256 digests in
+/// hex, more than one while the token is rotated.
+pub(crate) fn parse_operator_token_digests(value: &str) -> Result<Vec<[u8; 32]>> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|digest| !digest.is_empty())
+        .map(|digest| {
+            let bytes = hex::decode(digest)
+                .map_err(|_| anyhow!("FELIX_OPERATOR_TOKEN_SHA256: {digest:?} is not hex"))?;
+            <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                anyhow!("FELIX_OPERATOR_TOKEN_SHA256: {digest:?} is not a SHA-256 digest")
+            })
+        })
+        .collect()
 }
 
 impl BootstrapConfig {

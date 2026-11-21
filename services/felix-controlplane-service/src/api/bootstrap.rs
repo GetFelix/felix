@@ -311,7 +311,7 @@ pub struct ImportStateRequest {
     pub overwrite: bool,
 }
 
-/// Replace the whole store with an export, behind the bootstrap token.
+/// Replace the whole store with an export, behind the operator token.
 ///
 /// Under Raft only the leader takes it: a follower answers 421
 /// `not_leader` naming the leader's member id and writes nothing, since the
@@ -325,7 +325,7 @@ pub async fn import_state(
     if !state.bootstrap_enabled {
         return Err(api_not_enabled("bootstrap not enabled"));
     }
-    ensure_bootstrap_authorized(&state, &headers, OPERATOR_SCOPE)?;
+    ensure_operator_authorized(&state, &headers)?;
     match state.store.import_state(body.state, body.overwrite).await {
         Ok(ImportOutcome::Imported) => {
             tracing::warn!(
@@ -348,7 +348,7 @@ pub struct WaiveLostRequest {
 }
 
 /// Accept lost members for this member's Raft floor block, behind the
-/// bootstrap token. The waiver is this member's own, so it is sent to each
+/// operator token. The waiver is this member's own, so it is sent to each
 /// blocked member. 409 with the reason when it is refused.
 pub async fn waive_lost(
     State(state): State<AppState>,
@@ -358,7 +358,7 @@ pub async fn waive_lost(
     if !state.bootstrap_enabled {
         return Err(api_not_enabled("bootstrap not enabled"));
     }
-    ensure_bootstrap_authorized(&state, &headers, OPERATOR_SCOPE)?;
+    ensure_operator_authorized(&state, &headers)?;
     match state.store.waive_lost(body.members, body.reason).await {
         Ok(()) => Ok(Json(serde_json::json!({ "status": "waiver recorded" }))),
         Err(crate::store::StoreError::Conflict(why)) => Err(api_conflict("conflict", &why)),
@@ -369,6 +369,45 @@ pub async fn waive_lost(
 /// What the audit log names for an operation on the whole cluster rather
 /// than one tenant.
 const OPERATOR_SCOPE: &str = "*";
+
+/// Require the operator token for a route that replaces the store or accepts
+/// a loss.
+///
+/// Not the bootstrap token: every member holds that one, and these routes
+/// must stay out of reach of a compromised member. Members are configured
+/// with only the token's SHA-256 digest, so reading a member's environment
+/// does not yield it.
+fn ensure_operator_authorized(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    use sha2::{Digest, Sha256};
+    if state.operator_token_digests.is_empty() {
+        audit_rejected(OPERATOR_SCOPE, "no_operator_token_configured");
+        return Err(api_error(
+            StatusCode::FORBIDDEN,
+            "operator_routes_off",
+            "set FELIX_OPERATOR_TOKEN_SHA256 to enable operator routes",
+        ));
+    }
+    let Some(offered) = headers
+        .get(OPERATOR_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        audit_rejected(OPERATOR_SCOPE, "missing_operator_token");
+        return Err(api_unauthorized("missing operator token"));
+    };
+    let offered = Sha256::digest(offered.as_bytes());
+    let mut matched = false;
+    for expected in &state.operator_token_digests {
+        matched |= constant_time_eq(&offered, expected);
+    }
+    if !matched {
+        audit_rejected(OPERATOR_SCOPE, "invalid_operator_token");
+        return Err(api_unauthorized("invalid operator token"));
+    }
+    Ok(())
+}
+
+/// The header carrying the operator token.
+pub const OPERATOR_TOKEN_HEADER: &str = "X-Felix-Operator-Token";
 
 fn not_leader(leader: Option<u64>) -> ApiError {
     let message = match leader {

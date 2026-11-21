@@ -1963,6 +1963,59 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     }
 }
 
+/// A member does not talk to a peer whose server certificate is revoked: a
+/// wiped member's old key must not answer, or vote, in its place.
+#[tokio::test]
+async fn a_member_refuses_a_peer_serving_a_revoked_certificate() {
+    use rustls::pki_types::pem::PemObject;
+    let pki_dir = tempfile::tempdir().expect("tempdir");
+    let tls = peer_pki(pki_dir.path(), 2);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut second = settings(2, dir.path().into());
+    second.security.tls = Some(tls[1].clone());
+    let handle = RaftHandle::start(second, Arc::new(KvApp::default()))
+        .await
+        .expect("start raft node");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let server = {
+        let (handle, shutdown) = (handle.clone(), shutdown.clone());
+        tokio::spawn(async move { handle.serve_peers(listener, shutdown).await })
+    };
+    let pem = std::fs::read(&tls[1].cert_path).expect("read cert");
+    let der = rustls::pki_types::CertificateDer::from_pem_slice(&pem).expect("parse cert");
+    let fingerprint = {
+        use sha2::Digest;
+        hex::encode(sha2::Sha256::digest(&der))
+    };
+    let url = format!(
+        "https://localhost:{port}{}",
+        felix_controlplane_service::raft::peer_route("standing")
+    );
+    let ask = |revoked: bool| {
+        let mut first = settings(1, dir.path().into()).security;
+        let mut own = tls[0].clone();
+        if revoked {
+            own.revoked.insert(fingerprint.clone());
+        }
+        first.tls = Some(own);
+        let client = first.client(Duration::from_secs(5)).expect("client");
+        let url = url.clone();
+        async move { client.get(url).send().await }
+    };
+    let answered = ask(false).await.expect("an unrevoked peer answers");
+    assert!(answered.status().is_success(), "{answered:?}");
+    let refused = ask(true).await;
+    assert!(refused.is_err(), "a revoked peer answered: {refused:?}");
+
+    let _ = handle.shutdown().await;
+    shutdown.cancel();
+    server.abort();
+}
+
 /// A CA and, for each of `members` members, a certificate for `localhost`
 /// naming that member, used as both server and client.
 fn peer_pki(dir: &std::path::Path, members: u64) -> Vec<felix_controlplane_service::raft::PeerTls> {

@@ -616,7 +616,8 @@ A block ends one of two ways:
    `felix_meta_raft_floor_blocked` to 1, and its readiness answer says it
    is blocked. Only then does it take a waiver: a POST to
    `/internal/bootstrap/raft/waive-lost` on the bootstrap listener, which
-   needs the bootstrap token and goes to each blocked member (it is not a
+   needs the operator token (`FELIX_OPERATOR_TOKEN_SHA256`, which members
+   hold only as a digest) and goes to each blocked member (it is not a
    peer route, so a peer cannot send it),
    names every withheld member the block waits on, and gives a reason. The
    waiver must name each of them, even one that is healthy and only
@@ -748,7 +749,8 @@ when it is the only credential. A member refuses to start with neither TLS nor
 a token of at least 32 characters unless `FELIX_RAFT_INSECURE_PEERS=true`
 says otherwise, which is for throwaway local groups. The `propose` route
 refuses an `ImportState` command; the operator import is
-`POST /internal/bootstrap/import-state` on the bootstrap listener, and under
+`POST /internal/bootstrap/import-state` on the bootstrap listener, behind the
+operator token rather than the bootstrap token every member holds, and under
 Raft only the leader takes it.
 
 A member that refuses a connection, times out, or answers with any non-2xx
@@ -768,9 +770,11 @@ is bound to a member id: the leaf carries one URI SAN
 snapshot, forming record or standing `from` that speaks for another member is
 refused with 403. A member refuses to start under a certificate naming another
 member, and `FELIX_RAFT_TLS_REVOKED` lists SHA-256 fingerprints of certificates
-refused per request. The voter record holds no member incarnation, so one
-certificate per incarnation plus revocation approximates it, and the client
-side checks only the CA on the server certificate.
+refused on inbound requests and, on the client side, on the server a member
+connects to. The list is read at startup only. The voter record holds no
+member incarnation, so one certificate per incarnation plus revocation
+approximates it. The client checks that the server certificate names some
+member of this cluster, not that it names the member it meant to reach (#2912).
 
 The network layer resolves a member's address from `FELIX_RAFT_PEERS` by
 id before falling back to the address recorded in the membership, so moving

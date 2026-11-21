@@ -5327,7 +5327,10 @@ async fn a_member_that_does_not_lead_refuses_an_import() {
     // Through the bootstrap listener: 421, naming no leader.
     let mut state = crate::test_support::app_state_ready(store);
     state.bootstrap_enabled = true;
-    state.bootstrap_tokens = vec!["operator-token".to_string()];
+    state.operator_token_digests = vec![{
+        use sha2::Digest;
+        sha2::Sha256::digest(b"operator-token").into()
+    }];
     let body = serde_json::to_vec(&serde_json::json!({
         "state": one_tenant_export().await,
         "overwrite": false,
@@ -5339,7 +5342,7 @@ async fn a_member_that_does_not_lead_refuses_an_import() {
             .uri("/internal/bootstrap/import-state")
             .header("content-type", "application/json");
         if let Some(token) = token {
-            request = request.header("X-Felix-Bootstrap-Token", token);
+            request = request.header(crate::api::bootstrap::OPERATOR_TOKEN_HEADER, token);
         }
         request
             .body(axum::body::Body::from(body.clone()))

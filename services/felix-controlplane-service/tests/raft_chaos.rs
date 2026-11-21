@@ -41,6 +41,14 @@ const CLUSTER_ID: &str = "chaos-cluster";
 const PEER_TOKEN: &str = "chaos-peer-token-chaos-peer-token-chaos";
 const BOOTSTRAP_TOKEN: &str = "chaos-bootstrap-token-chaos-bootstrap";
 
+/// The operator token, and the digest members are configured with.
+const OPERATOR_TOKEN: &str = "chaos-operator-token-chaos-operator";
+
+fn operator_token_digest() -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(OPERATOR_TOKEN.as_bytes()))
+}
+
 fn http(
     addr: SocketAddr,
     method: &str,
@@ -79,6 +87,7 @@ fn http_with_timeout(
     ));
     // Only the bootstrap listener reads it.
     request.push_str(&format!("X-Felix-Bootstrap-Token: {BOOTSTRAP_TOKEN}\r\n"));
+    request.push_str(&format!("X-Felix-Operator-Token: {OPERATOR_TOKEN}\r\n"));
     match body {
         Some(body) => {
             request.push_str(&format!(
@@ -152,7 +161,8 @@ fn spawn_with_state(
         command
             .env("FELIX_BOOTSTRAP_ENABLED", "true")
             .env("FELIX_BOOTSTRAP_BIND_ADDR", bootstrap.to_string())
-            .env("FELIX_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN);
+            .env("FELIX_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
+            .env("FELIX_OPERATOR_TOKEN_SHA256", operator_token_digest());
     }
     command
         .env("FELIX_CONTROLPLANE_BIND", api.to_string())

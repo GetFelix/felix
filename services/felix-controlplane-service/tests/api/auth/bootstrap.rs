@@ -39,6 +39,7 @@ fn bootstrap_state(enabled: bool, tokens: Vec<String>) -> (Arc<InMemoryStore>, A
         oidc_validator: UpstreamOidcValidator::default(),
         bootstrap_enabled: enabled,
         bootstrap_tokens: tokens,
+        operator_token_digests: Vec::new(),
         node_liveness: Default::default(),
         readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
             std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
@@ -819,18 +820,90 @@ async fn a_dev_token_narrowed_by_pairs_keeps_them_across_a_refresh() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
-fn operator_post(path: &str, token: Option<&str>, body: serde_json::Value) -> Request<Body> {
+const OPERATOR_TOKEN: &str = "operator-only-secret";
+
+/// A POST carrying `credential` as (header, token), if any.
+fn operator_post(
+    path: &str,
+    credential: Option<(&str, &str)>,
+    body: serde_json::Value,
+) -> Request<Body> {
     let mut request = Request::builder()
         .method("POST")
         .uri(path)
         .header("content-type", "application/json");
-    if let Some(token) = token {
-        request = request.header("X-Felix-Bootstrap-Token", token);
+    if let Some((header, token)) = credential {
+        request = request.header(header, token);
     }
     request.body(Body::from(body.to_string())).expect("request")
 }
 
-/// The operator's import is on the bootstrap listener, behind its token, and
+fn as_operator() -> Option<(&'static str, &'static str)> {
+    Some(("X-Felix-Operator-Token", OPERATOR_TOKEN))
+}
+
+/// Bootstrap state whose operator routes take `OPERATOR_TOKEN`.
+fn operator_state() -> (Arc<InMemoryStore>, AppState) {
+    use sha2::{Digest, Sha256};
+    let (store, mut state) = bootstrap_state(true, vec!["secret".to_string()]);
+    state.operator_token_digests = vec![Sha256::digest(OPERATOR_TOKEN.as_bytes()).into()];
+    (store, state)
+}
+
+/// What every member holds must not reach the whole-store routes: the
+/// bootstrap token is refused there, in either header, and with no operator
+/// token configured the routes are off.
+#[tokio::test]
+async fn the_bootstrap_token_alone_cannot_import_or_waive() {
+    let (seed, _) = bootstrap_state(true, Vec::new());
+    let export = serde_json::to_value(seed.export_state().await).expect("export");
+    let body = |path: &str| {
+        if path.ends_with("import-state") {
+            json!({ "state": export, "overwrite": true })
+        } else {
+            json!({ "members": [3], "reason": "volume destroyed" })
+        }
+    };
+    for path in [
+        "/internal/bootstrap/import-state",
+        "/internal/bootstrap/raft/waive-lost",
+    ] {
+        let (_store, state) = operator_state();
+        let app = build_bootstrap_router(state);
+        for credential in [
+            ("X-Felix-Bootstrap-Token", "secret"),
+            ("X-Felix-Operator-Token", "secret"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(operator_post(path, Some(credential), body(path)))
+                .await
+                .expect("response");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{path} took the bootstrap token as {}",
+                credential.0
+            );
+        }
+        let (_store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+        let response = build_bootstrap_router(state)
+            .oneshot(operator_post(
+                path,
+                Some(("X-Felix-Bootstrap-Token", "secret")),
+                body(path),
+            ))
+            .await
+            .expect("response");
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "{path} served with no operator token configured"
+        );
+    }
+}
+
+/// The operator's import is on the bootstrap listener, behind the operator token, and
 /// refused over a store that holds state unless it says `overwrite`.
 #[tokio::test]
 async fn the_operator_imports_through_the_bootstrap_listener() {
@@ -845,7 +918,7 @@ async fn the_operator_imports_through_the_bootstrap_listener() {
     .await
     .expect("tenant");
     let export = serde_json::to_value(seed.export_state().await).expect("export");
-    let (store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+    let (store, state) = operator_state();
     let app = build_bootstrap_router(state);
     let path = "/internal/bootstrap/import-state";
 
@@ -858,7 +931,11 @@ async fn the_operator_imports_through_the_bootstrap_listener() {
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     let wrong = app
         .clone()
-        .oneshot(operator_post(path, Some("guess"), body.clone()))
+        .oneshot(operator_post(
+            path,
+            Some(("X-Felix-Operator-Token", "guess")),
+            body.clone(),
+        ))
         .await
         .expect("response");
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
@@ -866,7 +943,7 @@ async fn the_operator_imports_through_the_bootstrap_listener() {
 
     let imported = app
         .clone()
-        .oneshot(operator_post(path, Some("secret"), body.clone()))
+        .oneshot(operator_post(path, as_operator(), body.clone()))
         .await
         .expect("response");
     assert_eq!(imported.status(), StatusCode::OK);
@@ -874,14 +951,14 @@ async fn the_operator_imports_through_the_bootstrap_listener() {
 
     let again = app
         .clone()
-        .oneshot(operator_post(path, Some("secret"), body))
+        .oneshot(operator_post(path, as_operator(), body))
         .await
         .expect("response");
     assert_eq!(again.status(), StatusCode::CONFLICT);
     let overwrite = app
         .oneshot(operator_post(
             path,
-            Some("secret"),
+            as_operator(),
             json!({ "state": export, "overwrite": true }),
         ))
         .await
@@ -892,8 +969,8 @@ async fn the_operator_imports_through_the_bootstrap_listener() {
 /// The floor waiver is on the bootstrap listener too. A store with no Raft
 /// floor refuses it.
 #[tokio::test]
-async fn the_floor_waiver_needs_the_bootstrap_token() {
-    let (_store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+async fn the_floor_waiver_needs_the_operator_token() {
+    let (_store, state) = operator_state();
     let app = build_bootstrap_router(state);
     let path = "/internal/bootstrap/raft/waive-lost";
     let body = json!({ "members": [3], "reason": "volume destroyed" });
@@ -904,7 +981,7 @@ async fn the_floor_waiver_needs_the_bootstrap_token() {
         .expect("response");
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     let refused = app
-        .oneshot(operator_post(path, Some("secret"), body))
+        .oneshot(operator_post(path, as_operator(), body))
         .await
         .expect("response");
     assert_eq!(refused.status(), StatusCode::CONFLICT);

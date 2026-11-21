@@ -140,6 +140,29 @@ async fn a_member_presenting_another_members_id_is_refused() {
         send(&router, Some(two), "forming", Some(forming)).await,
         StatusCode::FORBIDDEN
     );
+    // Replicating, or installing a snapshot, as leader member 3 or 1.
+    let append = serde_json::json!({
+        "vote": {"term": 7, "voted_for": 3, "committed": true},
+        "prev_log_id": null,
+        "entries": [],
+        "leader_commit": null,
+    });
+    assert_eq!(
+        send(&router, Some(two), "append-entries", Some(append)).await,
+        StatusCode::FORBIDDEN
+    );
+    let pieces = super::snapshot::whole(7, 5, b"state");
+    let mut request = Request::post(format!("{PEER_PREFIX}/install-snapshot"))
+        .header(CLUSTER_ID_HEADER, "test-cluster")
+        .body(Body::from_stream(futures_util::stream::iter(
+            pieces.into_iter().map(Ok::<_, std::io::Error>),
+        )))
+        .expect("request");
+    request
+        .extensions_mut()
+        .insert(PeerCertificates(Arc::from(vec![two.clone()])));
+    let installed = router.clone().oneshot(request).await.expect("response");
+    assert_eq!(installed.status(), StatusCode::FORBIDDEN);
     // Speaking for itself is served.
     assert_eq!(
         send(&router, Some(two), "standing?from=2", None).await,
