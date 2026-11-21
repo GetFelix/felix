@@ -740,14 +740,14 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftIdempotentRewrite.cfg` | the re-send of a cut batch written whole, over the pieces the next leader holds | violate `NoDuplicate`: the held piece is committed twice |
 | `FelixRaftIdempotentReachFinish.cfg` | witness: a batch of two records cut by a change of leader is finished by the re-send and acknowledged | violate `NeverFinishesACut` |
 | `FelixRaftIdempotentReachHeld.cfg` | witness: a re-send to the next leader is answered as held from the earlier leader's entries | violate `NeverHeldByLaterLeader` |
-| `FelixRaftReads.cfg` | `FelixRaftReads.tla`: `FelixRaft.tla` with one `Quorum` read, three brokers, two terms, one write, one crash; the read takes the open term, a read-index round fixes its bound at max(the term's blank entry, the commit index), the broker applies the bound, then takes its value | pass `NoStaleRead`, `LeaderCompleteness`, `StateMachineSafety` |
-| `FelixRaftReadsWritten.cfg` | the same with writes answered on a written majority before their commit, no crash; the read bound also covers the newest answered write | pass `NoStaleRead` |
+| `FelixRaftReads.cfg` | `FelixRaftReads.tla`: `FelixRaft.tla` with one `Quorum` read, three brokers, two terms, one write, one crash; the read takes the open term, a read-index round fixes its bound at max(the term's blank entry, the commit index), the broker applies the bound, then takes its value | pass `NoStaleRead`, `LeaderCompleteness`, `StateMachineSafety` (5.7M distinct states, 8 min) |
+| `FelixRaftReadsWritten.cfg` | the same with writes answered on a written majority before their commit, no crash, one term (two terms passed 83M distinct states without finishing); the read bound also covers the newest answered write | pass `NoStaleRead` (0.1M distinct states, 9 s) |
 | `FelixRaftReadsNoRound.cfg` | the round skipped | violate `NoStaleRead`: a deposed leader answers without its successor's write |
 | `FelixRaftReadsNoBlankBarrier.cfg` | a read served before the term opened, its bound the commit index alone | violate `NoStaleRead`: a new leader reads before it learned what its predecessor committed |
 | `FelixRaftReadsSkipsAnswered.cfg` | written-majority answers, the bound left at the read index; one term | violate `NoStaleRead`: an answered write above the commit index is missed |
-| `FelixRaftSessionsSubscriber.cfg` | `FelixRaftSessions.tla`: a subscriber reading up to what any broker that believes it leads applied, resuming by offset; checked against the open leader no broker has outvoted; two terms, two writes, one crash | pass `NoLostDelivery`, `OffsetNeverReused` |
+| `FelixRaftSessionsSubscriber.cfg` | `FelixRaftSessions.tla`: a subscriber reading up to what any broker that believes it leads applied, resuming by offset; checked against the open leader no broker has outvoted; two terms, two writes, one crash | pass `NoLostDelivery`, `OffsetNeverReused` (16.1M distinct states, 24 min) |
 | `FelixRaftSessionsPastCommit.cfg` | the subscriber reads past the commit index | violate `NoLostDelivery` |
-| `FelixRaftSessionsGroup.cfg` | one group commit, proposed in the term its coordinator has open and answered once applied as the entry that term wrote; two terms, one crash | pass `NoStaleGroupCommit` |
+| `FelixRaftSessionsGroup.cfg` | one group commit, proposed in the term its coordinator has open and answered once applied as the entry that term wrote; two terms, one crash | pass `NoStaleGroupCommit` (1.7M distinct states, 2 min) |
 | `FelixRaftSessionsGroupAckOnWrite.cfg` | the commit answered once in the coordinator's own log | violate `NoStaleGroupCommit` |
 | `FelixRaftSessionsGroupIgnoresTerm.cfg` | the commit answered once applied past its index, whatever entry holds it | violate `NoStaleGroupCommit`: the next leader's entry took the offset |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
@@ -4388,7 +4388,8 @@ What is abstracted:
 - Both state reads always run the round. The lease read, which skips it, is
   reached only before a read that could start below a head trim, and
   `FelixRaftLease.tla` checks it.
-- Written-majority answers are checked without crashes. What a crash does to
+- Written-majority answers are checked without crashes and in one term; with
+  two terms the state space passed 83M distinct states without finishing. What a crash does to
   an unsynced majority is `FelixRaftWritten.tla`'s question.
 - A group commit is a record entry. What it does to group state is
   `FelixRaftGroups.tla`'s question; this model asks only when it is answered.
