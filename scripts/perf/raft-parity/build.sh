@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build felix-broker (with the raft feature), felix-controlplane and felix-loadgen
-# in release on felix-build-3, then install the same three binaries in
+# in release on box 3, then install the same three binaries in
 # /mnt/build/raft-parity/bin on every box in BOXES (default 1 2 3). One binary serves both sides
 # of the A/B: FELIX_SHARD_ENGINE picks the engine at start.
 #
@@ -19,12 +19,10 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 top="$(git -C "$here" rev-parse --show-toplevel)"
 lane="$(basename "$top")"
-RSSH=/Volumes/External/worktrees/.build/remote-ssh
-REMOTE=/Volumes/External/worktrees/.build/remote.sh
-user=hello_getfelix_dev
+# shellcheck source=hosts.sh
+. "$here/hosts.sh"
 BOXES=${BOXES:-"1 2 3"}
-export CLOUDSDK_PYTHON=/Volumes/External/worktrees/.build/gcloud-venv/bin/python
-on() { local b=$1; shift; "$RSSH" "$user@felix-build-$b" "$@"; }
+on() { host_raw "$@"; }
 
 BIN=/mnt/build/raft-parity/bin
 if [ -n "${BASELINE_REF:-}" ]; then
@@ -41,15 +39,15 @@ fi
 rev="$(git -C "$top" rev-parse HEAD)"
 if [ -n "${BASELINE_REF:-}" ]; then
   if [ "${SKIP_BUILD:-0}" != 1 ]; then
-    (cd "$top" && FELIX_BOX=3 "$REMOTE" cargo build --release \
-      -p felix-controlplane-service --bin felix-controlplane -p felix-broker-service --bin felix-broker)
+    host_build "$top" cargo build --release \
+      -p felix-controlplane-service --bin felix-controlplane -p felix-broker-service --bin felix-broker
   fi
 elif [ "${SKIP_BUILD:-0}" != 1 ]; then
   # The broker gets its own invocation: next to the other packages,
   # `--features felix-broker-service/raft` left the Raft engine out of the binary.
-  (cd "$top" && FELIX_BOX=3 "$REMOTE" cargo build --release \
-    -p felix-controlplane-service --bin felix-controlplane -p felix-loadgen --bin felix-loadgen)
-  (cd "$top" && FELIX_BOX=3 "$REMOTE" cargo build --release -p felix-broker-service --features raft --bin felix-broker)
+  host_build "$top" cargo build --release \
+    -p felix-controlplane-service --bin felix-controlplane -p felix-loadgen --bin felix-loadgen
+  host_build "$top" cargo build --release -p felix-broker-service --features raft --bin felix-broker
 fi
 if [ -z "${BASELINE_REF:-}" ]; then
   on 3 "strings /mnt/build/$lane/target/release/felix-broker | grep -q openraft" \
@@ -71,7 +69,7 @@ echo ${BASELINE_REF:+$BASELINE_REF }$rev > REV; sha256sum felix-broker felix-con
 # Box to box over the internal network: the IAP tunnel from the laptop is ~150 KB/s.
 others=""; for b in $BOXES; do [ "$b" = 3 ] || others="$others $b"; done
 if [ -n "$others" ]; then
-ip3=$(gcloud compute instances describe felix-build-3 --zone=us-central1-a --format='value(networkInterfaces[0].networkIP)')
+read -r _ ip3 _ < <(host_info 3)
 pid=$(on 3 "cd $BIN && { setsid nohup python3 -m http.server 18999 --bind $ip3 >/dev/null 2>&1 < /dev/null & echo \$!; }")
 trap 'on 3 "kill $pid 2>/dev/null || true"' EXIT
 sleep 2
@@ -81,4 +79,4 @@ for f in felix-broker felix-controlplane felix-loadgen REV SHA256SUMS; do curl -
 chmod +x felix-broker felix-controlplane felix-loadgen; sha256sum -c SHA256SUMS"
 done
 fi
-echo "installed rev $rev on felix-build-$BOXES:$BIN"
+echo "installed rev $rev on boxes $BOXES: $BIN"

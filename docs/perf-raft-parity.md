@@ -3,9 +3,110 @@
 Raft becomes the default shard engine only if it is at least as fast as the hybrid on every
 cell below, measured the same way on the same machines ([#2646](https://github.com/GetFelix/felix/issues/2646)).
 This page covers how to run the matrix and how to read what it writes. The harness lives in
-`scripts/perf/raft-parity/`.
+`scripts/perf/raft-parity/`. It runs on three Azure VMs (next section) or, as before, on the
+three GCP build boxes (the section after).
 
-## Run it
+## Run it on Azure
+
+`scripts/perf/raft-parity/azure.sh` is the one entry point. Every step is one command, logs to
+`.scratch/raft-parity-azure/<NAME>/logs/`, and is safe to run again. It needs the `az` CLI
+logged in (`AZ_SUBSCRIPTION` to pick a subscription), `jq`, and an ssh key
+(`~/.ssh/id_ed25519.pub`, or `SSH_KEY_FILE`). Nothing in it uses `az vm run-command`.
+
+```bash
+scripts/perf/raft-parity/azure.sh provision        # 3 VMs, ~10 min
+scripts/perf/raft-parity/azure.sh build            # once per revision, 20-40 min the first time
+scripts/perf/raft-parity/azure.sh smoke            # ~15 min; read it before the full run
+ROUNDS=2 scripts/perf/raft-parity/azure.sh run     # the matrix; ROUNDS defaults to 2
+scripts/perf/raft-parity/azure.sh fetch-results    # results.md, results.json and box logs in one archive
+scripts/perf/raft-parity/azure.sh teardown         # deletes the resource group; always do this last
+```
+
+`azure.sh all` runs the six in order and tears the group down even when a step fails
+(`KEEP=1` leaves it up). `azure.sh status` lists what exists and `azure.sh ssh 2` opens a shell.
+Add the release as a third side with `BASELINE_REF=v0.7.2 azure.sh build` after the normal
+build, then `BASELINE_REF=v0.7.2 azure.sh run` (see "Against the last release").
+
+What the steps do:
+
+- `provision` creates the resource group `felix-perf-parity-<NAME>` (the same naming as
+  `scripts/perf/cloud/`, so its `teardown.sh` also works with `SESSION=parity-<NAME>`),
+  a network that allows ssh only from your address, and three VMs in a proximity placement
+  group. Cloud-init installs the build tools, Java for the Kafka cells and rustup, and mounts
+  one ext4 volume (`noatime`) at `/mnt/build`, which is where every path in the harness
+  already points and where both engines keep their data. The volume is the VM's local NVMe on
+  L-series sizes and otherwise a Premium SSD v2 data disk made by `provision`. It records an
+  `fsync` baseline (4 KiB write plus fsync) per box. If your network resets outbound port 22, set `SSH_PORT=443`
+  and the VMs listen there too.
+- `build` copies the committed tree to VM 3, builds there and installs the same binaries on all
+  three, refusing a tree with uncommitted changes. `smoke`, `run` and `fetch-results` check that
+  the installed build is the revision in your tree.
+- `smoke` is one round of `single-oncommit-lat`, `rf3-oncommit-lat` and `rf3-oncommit-tput`
+  on both engines, 15 s each. It exercises the whole path (cluster start, engine marker check,
+  loadgen placement, CPU reads, summary) for a few dollars.
+- `run` first stops anything an earlier run left under `/mnt/build/raft-parity/run`, deletes
+  those directories and refuses to start if a broker, control plane, loadgen or Java process
+  is still alive. Then it holds the load check the matrix always had: every box idle (load
+  under 1, nothing building) before the first cell and between cells. The orchestrator runs on
+  your machine over ssh, so keep it awake (`caffeinate` is used when present) and on the
+  network for the whole run. Ctrl-C stops the cell, wipes it and exits.
+- `ROUNDS` defaults to 2 for this campaign. The generator box rotates over the three VMs and
+  the side order alternates by round, so a multiple of 6 balances both; with other values
+  `results.md` carries "generator placement not balanced" and the ratios carry that bias.
+
+Settings (environment): `NAME` (default `parity`), `LOCATION` (`centralus`), `VM_SIZE`
+(`Standard_D16ls_v6`), `ZONE` (`1`, all three VMs and disks), `DATA_DISK` (`auto`, or `local` or
+`premiumv2`), `DISK_GIB`, `DISK_IOPS` and `DISK_MBPS` (256, 12000, 500), `MAX_HOURS` (backstop,
+below), `PLACEMENT=ppg` to add a proximity group (off by default; one zone is already close), `CELLS`, `SIDES`, and every other setting `run.sh` reads.
+
+### Which VM
+
+`Standard_D16ls_v6` in `centralus`: 16 vCPU, 32 GiB, three of them filling a 48 vCPU
+`standardDlsv6Family` quota (the region's total cores must also have 48 free). The size has no
+local disk, so each VM gets one Premium SSD v2 data disk, 256 GiB, 12000 IOPS and 500 MB/s,
+identical on all three, mounted at `/mnt/build`. Premium SSD v2 is zonal, so the VMs and disks
+all sit in `ZONE` (1). A box runs a broker and often the load generator too, which sixteen
+vCPUs cover with room to spare.
+
+The cells measure `fsync`, and here it goes to a managed disk over the network, a
+millisecond-class write instead of a local NVMe's tens of microseconds. Absolute numbers in the
+fsync-bound cells therefore differ from local NVMe runs (earlier Azure L-series runs and the GCP
+boxes). The comparison the gate reads, Raft against hybrid, still runs both engines on the
+same hardware, and the per-box `fio-fsync.json` records what an fsync cost. Sizes with local
+NVMe still work: `VM_SIZE=Standard_L8as_v4 LOCATION=eastus2 ZONE= azure.sh provision` uses
+the local volume (`DATA_DISK=auto` picks it for `Standard_L*`).
+
+Quota: `provision` reads the size's family (`StandardDlsv6Family` here) and the region's
+total cores, and stops with the shortfall if either has fewer than 3 x vCPUs free. Raise the
+quota (Portal, Quotas, Compute) or use `VM_SIZE=Standard_D8ls_v6` (24 vCPUs).
+
+### Cost
+
+Estimates at approximate pay-as-you-go list prices in `centralus` (D16ls_v6 about $0.81/h
+each, $2.42/h for the three; each Premium SSD v2 disk at 256 GiB, 12000 IOPS and 500 MB/s
+about $0.11/h, $0.33/h for the three; about $0.3/h for OS disks and addresses; roughly
+$3.1/h in all). They assume one
+revision. Time estimates for the matrix come from the cell list (22 cells, two sides, a fresh
+cluster per cell and side) and not from a measured Azure run, so treat them as the planning
+figure and check the first one.
+
+| phase | time | cost |
+|---|---|---|
+| provision and cloud-init | 10-15 min | under $1 |
+| build, first time (later revisions reuse the target dir) | 20-40 min | $1-3 |
+| smoke | 15 min | under $1 |
+| full matrix, `ROUNDS=2`, hybrid and raft | about 4-5 h | $12-16 |
+| full matrix, `ROUNDS=2`, plus the v0.7.2 baseline | about 6-7 h | $19-22 |
+| full matrix, `ROUNDS=6` (balanced), hybrid and raft | about 12-15 h | $37-47 |
+
+A whole campaign (provision, build, smoke, one full run, teardown) is about $16-21, or $23-28
+with the baseline. Time is the cost driver, so run `teardown` the moment `fetch-results` has
+written the archive. Two backstops cover a forgotten group: each VM is set to deallocate
+`MAX_HOURS` (12) after provisioning, which stops compute billing but leaves the disks, and
+the group carries an `autoTeardownAfter` tag for finding it. `azure.sh status` shows what is
+left; `teardown` deletes the whole group, data disks included, and only a group tagged `felix-perf=parity-<NAME>`.
+
+## Run it on GCP
 
 ```bash
 task perf:raft-parity                 # build, then the whole matrix, 3 rounds
@@ -98,6 +199,15 @@ and a missing or backwards sample (a restarted broker) fails the cell. The repor
 CPU per cell and the ratio in its own table. The per category CPU profiles that explain a
 failing ratio are captured separately and are not part of this harness.
 
+## Against a branch, without Azure
+
+`perf-raft-pr.yml` (Actions, dispatched by hand) compares a branch with main on the Raft engine,
+three brokers on one runner, in one job: `rf3-oncommit-1k` (batch 64) and `rf3-oncommit-1k-b1`
+(batch 1), six rounds of 15 s by default, about 15 minutes after the build. It is a report and
+not a gate; a shared runner is too noisy for that. Use it to see whether a Raft-side change like
+[#2532](https://github.com/GetFelix/felix/pull/2532) moved the numbers before spending Azure
+time. `perf-raft-rf3.yml` is the same cells with the engine, not the revision, as the variable.
+
 ## Against the last release
 
 The gate also asks that no cell regresses against the last release (v0.7.2). Add the release
@@ -153,5 +263,5 @@ The gate is that Raft is at least as fast within noise on every cell. A remainin
 only if its root cause is measured and it is an inherent safety cost, documented with these
 numbers. Run the matrix before the default switch and again on every release candidate.
 
-The boxes are shared build machines, not release hardware, so read the ratios and not the
+On GCP the boxes are shared build machines, not release hardware, so read the ratios and not the
 absolute numbers. To check the gate arithmetic itself, `task perf:raft-parity:test`.

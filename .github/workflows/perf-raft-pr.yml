@@ -1,0 +1,181 @@
+name: Perf - Raft RF 3, a branch against main
+
+# Part of #2646. gate-perf.yml skips the Raft engine and perf-raft-rf3.yml compares
+# engines, so neither answers "did this change slow Raft down?". This runs the same
+# RF 3 cells as perf-raft-rf3.yml with FELIX_SHARD_ENGINE=raft on both sides, three
+# brokers on one runner, the branch (head) against main (baseline) in one job.
+# Trials alternate sides and the side that goes first flips each round, so runner
+# drift lands on both.
+#
+# A report, not a gate: one shared runner is too noisy to block a PR. Read the
+# ratios with that in mind; the paired rule in scripts/ci/gate_perf.py prints its
+# interval. Defaults finish in about 15 minutes. The Azure matrix
+# (docs/perf-raft-parity.md) is the measurement of record.
+
+on:
+  # A change to this file runs a short check of it (two rounds, 10 s trials).
+  pull_request:
+    paths:
+      - .github/workflows/perf-raft-pr.yml
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit under test (default: the ref this run was dispatched on)"
+        type: string
+        default: ""
+      base:
+        description: "Branch, tag or commit to compare against"
+        type: string
+        default: "main"
+      seconds:
+        description: "Seconds each trial publishes"
+        type: string
+        default: "15"
+      rounds:
+        description: "Rounds; each runs every cell once per side"
+        type: string
+        default: "6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-raft-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR_BASELINE: /tmp/felix-raft-pr-target-baseline
+  CARGO_TARGET_DIR_HEAD: /tmp/felix-raft-pr-target-head
+
+jobs:
+  ab:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - name: Check the inputs
+        env:
+          REF: ${{ inputs.ref }}
+          BASE: ${{ inputs.base || 'main' }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds || '10' }}
+          ROUNDS: ${{ inputs.rounds || '2' }}
+        run: |
+          set -euo pipefail
+          [ -z "$REF" ] || [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "bad ref"; exit 1; }
+          [[ "$BASE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] || { echo "bad base"; exit 1; }
+          [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
+          [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
+
+      - name: Checkout head
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> /tmp/felix-raft-pr-target-baseline
+            . -> /tmp/felix-raft-pr-target-head
+
+      - name: Add the baseline worktree
+        env:
+          BASE: ${{ inputs.base || 'main' }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet origin
+          # A branch name resolves to the remote one; a tag or commit resolves as given.
+          rev=$(git rev-parse --verify --quiet "origin/$BASE^{commit}" || git rev-parse --verify "$BASE^{commit}")
+          git worktree add --detach /tmp/felix-raft-pr-baseline "$rev"
+          echo "Baseline $BASE is $(git -C /tmp/felix-raft-pr-baseline rev-parse --short HEAD); head is $(git rev-parse --short HEAD)." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Both are built before any trial. The broker needs the raft feature for
+      # FELIX_SHARD_ENGINE=raft to mean anything, in its own invocation: next to
+      # other packages the feature flag left the engine out of the binary.
+      - name: Build both sides
+        run: |
+          set -euo pipefail
+          (cd /tmp/felix-raft-pr-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
+            cargo build --locked --release -p felix-broker-service --features raft --bin felix-broker)
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --locked --release \
+            -p felix-broker-service --features raft --bin felix-broker
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --locked --release \
+            -p felix-cluster --bin felix-cluster -p felix-loadgen --bin felix-loadgen
+          for side in baseline head; do
+            mkdir -p "/tmp/felix-raft-pr/$side"
+            cp "$CARGO_TARGET_DIR_HEAD/release/felix-cluster" "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" "/tmp/felix-raft-pr/$side/"
+          done
+          cp "$CARGO_TARGET_DIR_BASELINE/release/felix-broker" /tmp/felix-raft-pr/baseline/
+          cp "$CARGO_TARGET_DIR_HEAD/release/felix-broker" /tmp/felix-raft-pr/head/
+          for side in baseline head; do
+            strings "/tmp/felix-raft-pr/$side/felix-broker" | grep -q openraft \
+              || { echo "::error::the $side broker was built without the Raft engine"; exit 1; }
+          done
+
+      - name: Run the cells, alternating sides
+        env:
+          SECONDS_PER_TRIAL: ${{ inputs.seconds || '10' }}
+          ROUNDS: ${{ inputs.rounds || '2' }}
+        run: |
+          set -euo pipefail
+          results=/tmp/felix-raft-pr/results.jsonl
+          : > "$results"
+          failures=0
+          # name, fsync mode, payload bytes, batch. All RF 3, all Raft. gate_perf.py
+          # reads a -b1 suffix as a latency cell.
+          cells="rf3-oncommit-1k:on_commit:1024:64 rf3-oncommit-1k-b1:on_commit:1024:1"
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            if [ $((round % 2)) -eq 1 ]; then sides="baseline head"; else sides="head baseline"; fi
+            for cell in $cells; do
+              IFS=: read -r name fsync payload batch <<<"$cell"
+              for side in $sides; do
+                ENGINE=raft FELIX_DURABLE_FSYNC_MODE=$fsync \
+                  scripts/ci/gate-perf-cell.sh "/tmp/felix-raft-pr/$side" "$side" "$name" 3 "$payload" "$batch" \
+                    "$SECONDS_PER_TRIAL" "$round" "$results" \
+                  || { echo "::warning::$side $name round $round failed"; failures=$((failures + 1)); }
+              done
+            done
+            echo "::endgroup::"
+          done
+          # A lost trial leaves a hole in the pairing; a green run must mean every one ran.
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::$failures trial(s) failed"
+            exit 1
+          fi
+
+      - name: Report
+        if: always()
+        run: |
+          set -uo pipefail
+          out=/tmp/felix-raft-pr
+          [ -s "$out/results.jsonl" ] || { echo "No trials completed." | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
+          python3 scripts/ci/gate_perf.py compare "$out/results.jsonl" \
+            --expect-cells rf3-oncommit-1k,rf3-oncommit-1k-b1 \
+            --md "$out/table.md" --json "$out/verdict.json" || true
+          {
+            echo "### Raft RF 3, head against main (informational)"
+            echo
+            echo "Baseline is main (or the chosen base), head is the branch; both run the Raft engine on three brokers on this runner."
+            echo
+            cat "$out/table.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-raft-pr
+          path: |
+            /tmp/felix-raft-pr/results.jsonl
+            /tmp/felix-raft-pr/table.md
+            /tmp/felix-raft-pr/verdict.json
+          if-no-files-found: ignore
+          retention-days: 30
