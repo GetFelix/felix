@@ -57,6 +57,11 @@
 #   BASELINE_NA="..."   cell ids the baseline cannot run; recorded as n/a, not failed (default none)
 #   ONLY_SIDE=hybrid|raft|baseline   one engine only (a harness check, not a comparison)
 #   SLOT_WAIT_SECS=3600 QUIET_WAIT_SECS=300
+#   PROFILE=1     also record each broker with `perf record -g` over the measured window and
+#                 keep the folded stacks as perf-box<N>.folded in the cell directory
+#                 (`profile.py top` summarizes them). Sampling costs CPU, so a profiled run's
+#                 CPU and latency numbers are not comparable with an unprofiled one. Build with
+#                 FRAME_POINTERS=1 first.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -77,7 +82,7 @@ fi
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
 : "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
 : "${SIDES:=hybrid raft}" "${BASELINE_REF:=v0.7.2}" "${BASELINE_NA:=}"
-: "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
+: "${PROFILE:=0}" "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
   for topo in single rf3; do for mode in oncommit quorum leader; do
@@ -119,6 +124,7 @@ done
 # --- the binary, the same on every box -------------------------------------------
 for b in "${BOXES[@]}"; do
   raw "$b" "mkdir -p $R/hold $R/run && cat > $R/node.sh" < "$here/node.sh"
+  raw "$b" "cat > $R/profile.py" < "$here/profile.py"
 done
 # Nothing from an earlier run may survive into this one: stop what its pid files name, delete
 # its run directories, and refuse to start if a perf process is still alive. CLEAN_RUNS=0 skips it; on by default only on Azure.
@@ -273,12 +279,16 @@ cpu_before() { # [unix-secs]
     else
       on "$b" cpu "$dir" > "$loc/cpu-before-box$b.txt" 2>&1 || true
     fi
+    [ "$PROFILE" != 1 ] || on "$b" perf-start "$dir" > "$loc/perf-start-box$b.txt" 2>&1 || true
   done
 }
 cpu_after() {
   [ "${#CPU_PIDS[@]}" -eq 0 ] || wait "${CPU_PIDS[@]}" || true
   CPU_PIDS=()
-  for b in "${brokers[@]}"; do on "$b" cpu "$dir" > "$loc/cpu-after-box$b.txt" 2>&1 || true; done
+  for b in "${brokers[@]}"; do
+    on "$b" cpu "$dir" > "$loc/cpu-after-box$b.txt" 2>&1 || true
+    [ "$PROFILE" != 1 ] || on "$b" perf-stop "$dir" > "$loc/perf-box$b.folded" 2>/dev/null || true
+  done
 }
 
 pick() { # <n> <fallback>: the n-th box of BOXES, or the fallback box
