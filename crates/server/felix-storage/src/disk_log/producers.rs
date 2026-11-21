@@ -470,6 +470,7 @@ impl ProducerState {
             }
             RecordMark::Piece(piece) => self.observe_piece(offset, piece, record),
             RecordMark::None
+            | RecordMark::CondPiece(_)
             | RecordMark::GenerationStart
             | RecordMark::Commit
             | RecordMark::Trim { .. }
@@ -1310,6 +1311,7 @@ pub(super) fn rebuild(
 pub(crate) fn marked_digest(mark: RecordMark, payload: &[u8]) -> u64 {
     match mark {
         RecordMark::None
+        | RecordMark::CondPiece(_)
         | RecordMark::GenerationStart
         | RecordMark::Commit
         | RecordMark::Trim { .. }

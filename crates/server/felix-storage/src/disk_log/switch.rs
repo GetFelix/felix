@@ -324,6 +324,7 @@ fn hash_mark(hash: &mut Sha256, mark: RecordMark) {
             (u64::from(piece.position) << 32) | u64::from(piece.len),
         ),
         RecordMark::Group => (10, 0, 0, 0),
+        RecordMark::CondPiece(piece) => (11, u64::from(piece.position), u64::from(piece.len), 0),
     };
     hash.update([kind]);
     for word in [a, b, c] {

@@ -31,4 +31,11 @@ fn only_client_records_are_data() {
         assert!(!mark.is_data(), "{mark:?}");
         assert!(mark.needs_generation(), "{mark:?}");
     }
+    // Data, but only once its batch is whole: see `conditional`.
+    let piece = RecordMark::CondPiece(CondPiece {
+        position: 0,
+        len: 2,
+    });
+    assert!(piece.is_data());
+    assert!(piece.needs_generation());
 }
