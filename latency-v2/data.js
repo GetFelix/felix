@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795298362465,
+  "lastUpdate": 1795301020643,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82566,6 +82566,72 @@ window.BENCHMARK_DATA = {
             "range": "86.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 514.00\nmean: 545.80\nstdev: 86.67\ncv: 15.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa45495ab2f35004482365a7be0460c06f204996",
+          "message": "formal(raft): reads and sessions on FelixRaft (NoStaleRead, NoStaleGroupCommit, NoLostDelivery) (#2929)\n\n* formal(raft): reads and sessions on FelixRaft (NoStaleRead, NoStaleGroupCommit, NoLostDelivery) (#2266)\n\nFelixRaftReads.tla and FelixRaftSessions.tla extend FelixRaft with the\nclient-facing properties of FelixShardReads and FelixShardSessions. A read\ntakes the open term, runs openraft's read-index round, raises its bound to\nthe newest write answered on a written majority, applies it and checks the\nterm is still open. A group commit is answered once applied as the entry\nits term wrote. Each rule has a twin that drops it and fails.\n\n* formal(raft): check NoLostDelivery against the leader no broker outvoted (#2266)\n\nReview: with the newest open term as the reference, a crash of the real\nleader made a deposed one the reference and failed the check spuriously.\nAlso state that both state reads always run the round.\n\n* formal: ReadsWritten runs one term, the twin of ReadsSkipsAnswered (#2266)\n\n* formal: measured weights and state counts for the reads and sessions configs (#2266)",
+          "timestamp": "2026-11-21T22:37:10Z",
+          "tree_id": "9cb8d948f60e26837f4f8dd9b6a0cb0d9880ae83",
+          "url": "https://github.com/GetFelix/felix/commit/fa45495ab2f35004482365a7be0460c06f204996"
+        },
+        "date": 1795301006124,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 156,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 156.00\nmean: 155.80\nstdev: 2.17\ncv: 1.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 217,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 217.00\nstdev: 1.58\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 285,
+            "range": "104.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 285.00\nmean: 332.80\nstdev: 104.97\ncv: 31.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 204,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 203.60\nstdev: 2.30\ncv: 1.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 401,
+            "range": "5.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 401.00\nmean: 402.40\nstdev: 5.73\ncv: 1.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 575,
+            "range": "65.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 575.00\nmean: 597.60\nstdev: 65.79\ncv: 11.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
