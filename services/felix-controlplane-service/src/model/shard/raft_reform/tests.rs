@@ -63,6 +63,7 @@ fn assignment() -> ShardAssignment {
             index: 40,
             term: 5,
         }),
+        raft_formed: None,
         raft_ordered: Some(RaftOrdered {
             incarnation: 3,
             epoch: 0,

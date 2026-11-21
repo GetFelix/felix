@@ -24,6 +24,7 @@ impl From<(ShardKey, u64, LogPoint)> for Led {
             incarnation,
             epoch: 0,
             at,
+            formed: false,
         }
     }
 }
@@ -135,6 +136,68 @@ async fn only_the_groups_that_moved_are_sent_again() {
     );
 }
 
+#[tokio::test]
+async fn a_refresh_sends_every_idle_group_again() {
+    let link = accepting();
+    let mut floors = Floors::default();
+    let led = || vec![(key("a"), 1, at(1, 5)), (key("b"), 1, at(1, 9))];
+
+    tick(&mut floors, led(), &link, "n1", None).await;
+    tick(&mut floors, led(), &link, "n1", None).await;
+    floors.owe_unformed();
+    tick(&mut floors, led(), &link, "n1", None).await;
+    tick(&mut floors, led(), &link, "n1", None).await;
+
+    let both = vec![("a".into(), 1, 5), ("b".into(), 1, 9)];
+    assert_eq!(sent(&link), [both.clone(), both]);
+}
+
+/// A group the feed shows marked formed is not re-sent by a refresh, so the
+/// refresh costs nothing once every led group is marked. It is still sent
+/// when its commit moves, and a refresh sends it again once the mark is
+/// gone from the feed.
+#[tokio::test]
+async fn a_refresh_skips_a_group_marked_formed() {
+    let link = accepting();
+    let mut floors = Floors::default();
+    let led = |a_formed, a_index| {
+        vec![
+            Led {
+                key: key("a"),
+                incarnation: 1,
+                epoch: 0,
+                at: at(1, a_index),
+                formed: a_formed,
+            },
+            Led::from((key("b"), 1, at(1, 9))),
+        ]
+    };
+
+    tick(&mut floors, led(true, 5), &link, "n1", None).await;
+    floors.owe_unformed();
+    tick(&mut floors, led(true, 5), &link, "n1", None).await;
+    tick(&mut floors, led(true, 6), &link, "n1", None).await;
+    floors.owe_unformed();
+    tick(&mut floors, led(false, 6), &link, "n1", None).await;
+
+    assert_eq!(
+        sent(&link),
+        [
+            vec![("a".into(), 1, 5), ("b".into(), 1, 9)],
+            vec![("b".into(), 1, 9)],
+            vec![("a".into(), 1, 6)],
+            vec![("b".into(), 1, 9)],
+        ]
+    );
+    floors.owe_unformed();
+    tick(&mut floors, led(false, 6), &link, "n1", None).await;
+    assert_eq!(
+        sent(&link).last(),
+        Some(&vec![("a".into(), 1, 6), ("b".into(), 1, 9)]),
+        "a mark gone from the feed is owed again"
+    );
+}
+
 #[test]
 fn a_group_that_moved_after_its_batch_was_cut_stays_owed() {
     let mut floors = Floors::default();
@@ -229,6 +292,7 @@ fn a_floor_carries_the_group_epoch_and_a_new_epoch_is_owed_again() {
         incarnation: 1,
         epoch,
         at: at(1, 5),
+        formed: false,
     };
     floors.observe([led(2)]);
     let batch = floors.batch();

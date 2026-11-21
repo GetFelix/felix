@@ -4142,9 +4142,47 @@ later by no report a Raft shard sends:
   it initializes, the broker checks, under the lock the routing pass holds,
   that the last pass still fed the same full set and the same stored target,
   and otherwise forms nothing and asks again on a later pass.
-  The check compares against this broker's own view of placement, so a
-  broker cut off from the control plane can still form the old set while
-  another forms the new one (#2794).
+  That check is only as fresh as the broker's feed, so a broker cut off
+  from the control plane could still form the old set while another forms
+  the new one. The control plane closes that (#2794): once it stores a
+  target for a set, it refuses any write that changes the set until a
+  leader the target names has sent it a floor report at the record's
+  reform epoch, which marks the group formed at that stream incarnation
+  and epoch (`raft_formed`). A leader of an older epoch marks nothing, and
+  a re-form starts a new group whose first target is held again: the old
+  epoch's mark releases nothing. Every broker that can
+  form therefore reads the same set and target, and only the lowest broker
+  of that set forms it. Placement waits for the mark too, showing "waiting
+  for the group to form before changing its set". A member that dies before
+  the first form holds the form, and so the set, until it is back: no group
+  formed, so nothing was acknowledged, and deleting the stream is the way
+  out. The same goes for a former whose copy is wiped after a member voted
+  for it: the voter is no longer blank, the wiped former has no group, so
+  no leader reports and the set stays held until the stream is deleted
+  (the same class as #2235). A shard restored from an export has no
+  recorded epoch, so the control plane reads it as epoch 0; if its group
+  had re-formed, its leader reports a later epoch, which marks nothing,
+  and a stored target holds the set until a re-form records the epoch.
+  The hold is on from metadata level 45; below it a set change before
+  the first form applies as before on every member. Once any entry at
+  level 45 is in the log, every member holds unformed sets whatever the
+  proposer saw, so a control-plane member that is down, and counted at a
+  lower level, cannot lift the hold. The copy-id report that stores a
+  target carries a level 45 field for exactly this reason, and so does a
+  fleet feature finalize. A new cluster finalizes its features once every
+  control-plane member answers at this build, so it is at 45 before its
+  first stream. What is left is a group whose log has no level 45 entry yet,
+  with a control-plane member that has not answered the leader since the
+  leader started: a new cluster with a member down from the start, or one
+  upgraded from before 45. Floor reports come only from a member that
+  leads its group and has a committed log id. Every 30 s a leader sends
+  again each group it leads that the shard feed does not show marked
+  formed at the group's incarnation and epoch, so an idle group formed
+  before the upgrade gets its mark without a publish. A marked group is
+  sent only when its commit moves, so once every group is marked the
+  refresh sends nothing. A mark the broker has not seen, from a control
+  plane that predates the field or a feed that has not caught up, leaves
+  the group in the refresh.
 - Leaders follow placement. Placement names one broker as each shard's
   leader, and the member that leads the group hands the leadership to that
   broker's member when nothing else is going on. See "Leaders follow
@@ -4201,13 +4239,13 @@ placement names, which is wrong once placement and the group differ, so do
 not remove a broker that holds Raft shards. `docs/control-plane.md`, "Raft
 shards", has the placement side.
 
-Two cases this does not cover. If placement changes a full set while it is
-forming, two brokers can each be the lowest of their own set and form two
-groups that share members. And if placement replaces every member of a
+One case this does not cover. If placement replaces every member of a
 formed group, the new set finds no member the group reached and forms a
-second one. Nothing stops either, so operators must not make these
-changes. At replication factor 1 the set is one broker, so any
-re-placement replaces every member.
+second one. That can happen in one write or one swap at a time, when the
+group never adds the brokers swapped in before the next swap. Nothing stops
+it, so operators must not make this change. At replication factor 1 the set is one broker, so any
+re-placement replaces every member. The first-form hold (#2794) does not
+cover this: it only holds a set until its group forms (#2905).
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,
@@ -4220,7 +4258,23 @@ re-placement replaces every member.
 > `crates/server/felix-replication/src/raft/tests.rs`,
 > `a_vote_or_an_entry_alone_is_not_blank`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
-> `a_short_placement_acknowledges_nothing`.
+> `a_short_placement_acknowledges_nothing`;
+> `services/felix-controlplane-service/src/store/contract/raft_targets.rs`,
+> `a_set_holds_until_its_group_forms`;
+> `services/felix-controlplane-service/src/store/raft/state_machine/tests/raft_targets.rs`,
+> `a_held_set_stays_held_when_a_proposer_sees_a_lower_level` and
+> `a_finalize_at_level_45_holds_later_sets`;
+> `services/felix-broker-service/src/shards/raft/floor/tests/control_plane.rs`,
+> `a_refresh_marks_an_idle_group_formed`;
+> `services/felix-broker-service/src/shards/raft/floor/tests.rs`,
+> `a_refresh_skips_a_group_marked_formed`;
+> `services/felix-controlplane-service/src/model/shard/raft_target/tests.rs`,
+> `a_reform_holds_the_new_epochs_first_target`;
+> `docs/formal/FelixRaftFirstForm.tla`, where `FelixRaftFirstFormNoHold.cfg`
+> finds two leaders without the hold, `FelixRaftFirstFormNoEpoch.cfg` finds
+> two in a re-form's epoch with a mark that ignores the epoch, and
+> `FelixRaftFirstFormDisjoint.cfg` and `FelixRaftFirstFormSingle.cfg` check
+> sets that share no broker.
 
 **Every broker that holds a shard must run it on the same engine.** A
 hybrid broker placed in a Raft shard would keep a log of its own that no

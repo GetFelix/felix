@@ -883,6 +883,7 @@ async fn shard_renewal_waits_for_every_member() {
                     raft_copy_ids: Default::default(),
                     raft_target: None,
                     raft_floor: None,
+                    raft_formed: None,
                     raft_ordered: None,
                 })
                 .await
@@ -977,6 +978,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     raft_copy_ids: Default::default(),
                     raft_target: None,
                     raft_floor: None,
+                    raft_formed: None,
                     raft_ordered: None,
                 })
                 .await
@@ -1183,6 +1185,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -1309,6 +1312,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1449,6 +1453,7 @@ async fn a_previous_generation_waits_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1550,6 +1555,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -1687,6 +1693,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let first = |shard: u32| {
@@ -1725,7 +1732,8 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert_eq!(store.machine.join_floor(), PLACED_LEVEL);
+    // Every assignment write at the current level carries the hold.
+    assert_eq!(store.machine.join_floor(), FIRST_FORM_LEVEL);
 
     let moved = store
         .put_shard_assignment(set(shard, &["broker-z"]))
@@ -1760,7 +1768,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
             .brokers,
         brokers
     );
-    assert_eq!(restored.join_floor(), PLACED_LEVEL);
+    assert_eq!(restored.join_floor(), FIRST_FORM_LEVEL);
 }
 
 /// An import marks the streams and caches it restores, so every member
@@ -1939,6 +1947,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2055,6 +2064,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
 
@@ -2140,6 +2150,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2276,6 +2287,7 @@ async fn pending_sets_wait_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2391,12 +2403,12 @@ async fn pending_sets_wait_for_every_member() {
             .contains(election)
     );
 
-    // The log now holds the finalize, a level 26 entry, which a member
-    // below would refuse.
+    // The log now holds the finalize, a level 26 entry, and assignment
+    // writes that carry the level 45 hold, which a member below refuses.
     let old = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(20))).await;
     let refused = store.handle.add_learner_without_waiting(3, old).await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 26")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 45")),
         "a member below level 21 joined: {refused:?}"
     );
 }
@@ -2451,6 +2463,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2560,6 +2573,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2670,6 +2684,7 @@ async fn inherited_storage_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -2793,6 +2808,7 @@ async fn learners_wait_for_every_member() {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_formed: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2946,6 +2962,7 @@ async fn a_refusal_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -3088,6 +3105,7 @@ async fn storage_ids_wait_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -3420,6 +3438,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -3654,7 +3673,9 @@ async fn an_older_member_joins_a_group_with_nothing_finalized() {
 /// Once `stream_incarnations` is finalized, a member below level 10 would
 /// refuse the incarnated entries the others apply, so it is refused before
 /// the membership changes: at a lower level, without a reported level, and
-/// without an answer. One at the group's level joins.
+/// without an answer. One at the group's level joins. The finalize, proposed
+/// in a group at this build, also carries the level 45 hold (#2794), so the
+/// group is at 45.
 #[tokio::test]
 async fn a_member_below_a_finalized_level_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3675,11 +3696,11 @@ async fn a_member_below_a_finalized_level_is_refused() {
     let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
     let addr = stub_member(Arc::clone(&version)).await;
     for (level, expected) in [
-        (8, "supports metadata version 8, but the group is at 10"),
-        (0, "supports metadata version 0, but the group is at 10"),
+        (8, "supports metadata version 8, but the group is at 45"),
+        (0, "supports metadata version 0, but the group is at 45"),
         (
             SILENT,
-            "did not report its metadata version, and the group is at 10",
+            "did not report its metadata version, and the group is at 45",
         ),
     ] {
         version.store(level, std::sync::atomic::Ordering::SeqCst);
@@ -4340,6 +4361,7 @@ async fn adoption_waits_for_every_member() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_formed: None,
             raft_ordered: None,
         })
         .await
@@ -4920,6 +4942,7 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
             copy_id: 2,
             keep_ordered: false,
             shard_incarnation: None,
+            hold_target: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
@@ -5094,6 +5117,7 @@ async fn raft_floors_wait_for_every_member_known_at_level_38() {
         let raw = crate::store::raft::command::encode_command(&MetaCommand::RecordRaftFloors {
             node_id: "broker-x".to_string(),
             floors: floors.clone(),
+            mark_formed: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");

@@ -165,9 +165,25 @@ impl MetadataStateMachine {
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|feature| MetaCommand::FinalizeFleetFeature { feature }.version())
+            .map(|feature| {
+                MetaCommand::FinalizeFleetFeature {
+                    feature,
+                    hold_unformed: false,
+                }
+                .version()
+            })
             .fold(self.levels_used(), u16::max);
         self.floor.store(floor, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether an entry holds an unformed set and marks a group formed
+    /// (#2794): when it says so, or once the join floor is at the level
+    /// that knows the hold. The floor only rises and is the same on every
+    /// member at each entry, so a proposer that counted a down member low
+    /// cannot lift a hold the group has already relied on.
+    fn holds_unformed(&self, carried: bool) -> bool {
+        use crate::raft::AppStateMachine;
+        carried || self.join_floor() >= super::FIRST_FORM_LEVEL
     }
 
     fn raise_floor(&self, level: u16) {
@@ -336,9 +352,10 @@ impl MetadataStateMachine {
                     })
                     .map_err(Into::into)
             }
-            MetaCommand::FinalizeFleetFeature { feature } => {
+            MetaCommand::FinalizeFleetFeature { feature, .. } => {
                 let level = MetaCommand::FinalizeFleetFeature {
                     feature: feature.clone(),
+                    hold_unformed: false,
                 }
                 .version();
                 let enabled = store.finalize_fleet_feature(&feature).await?;
@@ -383,8 +400,14 @@ impl MetadataStateMachine {
                 assignment,
                 seq_generation,
                 start_placed,
+                hold_unformed,
             } => store
-                .apply_put_shard_assignment(assignment, seq_generation, start_placed)
+                .apply_put_shard_assignment(
+                    assignment,
+                    seq_generation,
+                    start_placed,
+                    self.holds_unformed(hold_unformed),
+                )
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
                 .map_err(Into::into),
@@ -393,7 +416,12 @@ impl MetadataStateMachine {
                 expected_generation,
                 seq_generation,
             } => store
-                .put_shard_assignment_unfenced_if(assignment, expected_generation, seq_generation)
+                .put_shard_assignment_unfenced_if(
+                    assignment,
+                    expected_generation,
+                    seq_generation,
+                    self.holds_unformed(false),
+                )
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
@@ -405,6 +433,7 @@ impl MetadataStateMachine {
                 at_least,
                 record_previous,
                 start_placed,
+                hold_unformed,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
@@ -414,6 +443,7 @@ impl MetadataStateMachine {
                     at_least,
                     record_previous,
                     start_placed,
+                    self.holds_unformed(hold_unformed),
                 )
                 .await
                 .map(assignment_written)
@@ -424,6 +454,7 @@ impl MetadataStateMachine {
                 elected,
                 elected_set,
                 own_leader_set,
+                hold_unformed,
             } => store
                 .apply_adopt_elected_leader(
                     &key,
@@ -431,6 +462,7 @@ impl MetadataStateMachine {
                     &elected,
                     elected_set,
                     own_leader_set,
+                    self.holds_unformed(hold_unformed),
                 )
                 .await
                 .map(assignment_written)
@@ -505,8 +537,20 @@ impl MetadataStateMachine {
                 .await
                 .map(|declared| MetaResponse::DeclaredDead { declared })
                 .map_err(Into::into),
-            MetaCommand::RecordRaftFloors { node_id, floors } => Ok(MetaResponse::Count {
-                count: u64::from(store.apply_record_raft_floors(&node_id, &floors).await),
+            MetaCommand::RecordRaftFloors {
+                node_id,
+                floors,
+                mark_formed,
+            } => Ok(MetaResponse::Count {
+                count: u64::from(
+                    store
+                        .apply_record_raft_floors(
+                            &node_id,
+                            &floors,
+                            self.holds_unformed(mark_formed),
+                        )
+                        .await,
+                ),
             }),
             MetaCommand::RecordRaftCopyId {
                 key,
@@ -516,6 +560,7 @@ impl MetadataStateMachine {
                 copy_id,
                 keep_ordered,
                 shard_incarnation,
+                hold_target: _,
             } => store
                 .apply_record_raft_copy_id(
                     &key,

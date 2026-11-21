@@ -53,6 +53,8 @@ async fn rewrite(
         0,
         false,
         false,
+        // The current set again, which a held set allows.
+        false,
         switch,
     )
     .await
@@ -273,10 +275,15 @@ pub(super) async fn record_raft_copy_id(
 /// A raise is written in place and records no change: leaders report every
 /// second, and a change per report would push placement's changes out of the
 /// feed's window. Nothing that watches the feed reads the floor.
+///
+/// `mark_formed`: a report from a broker the stored target names also marks
+/// the group formed, also in place; false for a Raft entry proposed below
+/// the level that knows the mark.
 pub(super) async fn record_raft_floors(
     store: &InMemoryStore,
     node_id: &str,
     floors: &[crate::model::RaftFloorReport],
+    mark_formed: bool,
 ) -> u32 {
     let mut state = store.shards.write().await;
     let mut raised = 0;
@@ -290,6 +297,17 @@ pub(super) async fn record_raft_floors(
             );
             continue;
         };
+        // Only a leader reports, so a member of the target leads a group at
+        // this incarnation and epoch. Before the floor, which a shard started
+        // on Raft does not keep.
+        if mark_formed
+            && record
+                .raft_target
+                .as_ref()
+                .is_some_and(|target| target.members.contains_key(node_id))
+        {
+            record.mark_raft_formed(report.incarnation, report.epoch);
+        }
         match record.raise_raft_floor(report) {
             Ok(true) => raised += 1,
             Ok(false) => {}
@@ -300,6 +318,15 @@ pub(super) async fn record_raft_floors(
                 name = %report.key.stream,
                 shard = report.key.shard,
                 "skipped a Raft floor report for a shard not on Raft",
+            ),
+            // A leader cut off before a re-form reports its old epoch again
+            // on every refresh; the floor check already shuts it out.
+            Err(err @ crate::model::RaftFloorError::OtherEpoch { .. }) => tracing::debug!(
+                node_id,
+                name = %report.key.stream,
+                shard = report.key.shard,
+                error = %err,
+                "skipped a Raft floor report from another reform epoch",
             ),
             Err(err) => tracing::warn!(
                 node_id,
@@ -367,8 +394,9 @@ impl InMemoryStore {
         &self,
         node_id: &str,
         floors: &[crate::model::RaftFloorReport],
+        mark_formed: bool,
     ) -> u32 {
-        record_raft_floors(self, node_id, floors).await
+        record_raft_floors(self, node_id, floors, mark_formed).await
     }
 
     pub(crate) async fn apply_accept_seal_report(

@@ -221,6 +221,7 @@ use crate::model::{
         crate::api::types::RaftTargetView,
         crate::api::types::RaftTargetVersion,
         crate::model::RaftTarget,
+        crate::model::RaftFormed,
         ShardAssignmentListResponse,
         ShardAssignmentSnapshotResponse,
         ShardAssignmentChangesResponse,

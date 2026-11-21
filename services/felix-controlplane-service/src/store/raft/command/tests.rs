@@ -333,13 +333,14 @@ fn a_shard_switch_needs_level_34() {
     assert_eq!(ops, SWITCH_OPS);
     let finalize = MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
+        hold_unformed: false,
     };
     for command in [seal, report, give_up, finalize] {
         assert_eq!(command.version(), 34, "{command:?}");
         // The leader refuses it below the level, however it was proposed.
         let raw = encode_command(&command);
         let switch = !matches!(command, MetaCommand::FinalizeFleetFeature { .. });
-        assert_eq!(depends_on_level(&raw), switch, "{command:?}");
+        assert!(depends_on_level(&raw), "{command:?}");
         if switch {
             assert!(settle_for_level(&raw, 33).is_err(), "{command:?}");
             assert_eq!(settle_for_level(&raw, 34), Ok(None), "{command:?}");
@@ -354,6 +355,7 @@ fn a_shard_switch_needs_level_34() {
         copy_id: 1,
         keep_ordered: false,
         shard_incarnation: None,
+        hold_target: false,
     });
     // Matched by name too.
     assert_eq!(op_of(&copy_id).as_deref(), Some(COPY_ID_OP));
@@ -370,6 +372,7 @@ fn a_shard_switch_needs_level_34() {
 fn joint_fence_waits_for_the_level_that_keeps_refusals() {
     let finalize = MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
+        hold_unformed: false,
     };
     assert_eq!(finalize.version(), 25);
 }
@@ -484,6 +487,7 @@ fn a_floor_report_is_refused_below_level_38() {
             index: 1,
             term: 1,
         }],
+        mark_formed: false,
     });
     let level = super::super::RAFT_FLOOR_LEVEL;
     assert!(METADATA_VERSION >= level);
@@ -522,4 +526,32 @@ fn ordered_targets_are_kept_from_level_39() {
             "{op}"
         );
     }
+}
+
+/// A finalize settled at level 45 carries `hold_unformed`, so the entry
+/// lifts the join floor to 45 (#2794); below it the field is left off.
+#[test]
+fn a_finalize_carries_the_hold_from_level_45() {
+    let raw = encode_command(&MetaCommand::FinalizeFleetFeature {
+        feature: felix_common::fleet::MAJORITY_ACK.name().to_string(),
+        hold_unformed: false,
+    });
+    assert!(depends_on_level(&raw));
+    assert_eq!(settle_for_level(&raw, 44), Ok(None));
+    let settled = settle_for_level(&raw, 45)
+        .expect("settled")
+        .expect("edited");
+    let (command, level) = decode_command_with_level(&settled).expect("decode");
+    assert!(matches!(
+        command,
+        MetaCommand::FinalizeFleetFeature {
+            hold_unformed: true,
+            ..
+        }
+    ));
+    assert_eq!(level, 45);
+    let unsettled = settle_for_level(&settled, 44)
+        .expect("settled")
+        .expect("edited");
+    assert_eq!(decode_command_with_level(&unsettled).expect("decode").1, 2);
 }

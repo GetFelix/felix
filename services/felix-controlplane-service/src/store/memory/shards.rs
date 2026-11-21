@@ -9,12 +9,13 @@ use crate::store::{
 };
 
 /// `seq_generation`: see [`crate::model::first_generation`].
-/// `start_placed`: see [`put_shard_assignment_if`].
+/// `start_placed`, `hold_unformed`: see [`put_shard_assignment_if`].
 pub(super) async fn put_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
     seq_generation: bool,
     start_placed: bool,
+    hold_unformed: bool,
 ) -> StoreResult<ShardAssignment> {
     match write_shard_assignment(
         store,
@@ -26,6 +27,7 @@ pub(super) async fn put_shard_assignment(
         0,
         false,
         start_placed,
+        hold_unformed,
         SwitchWrite::Drop,
     )
     .await?
@@ -44,7 +46,9 @@ pub(super) async fn put_shard_assignment(
 /// one it replaced ([`ShardAssignment::previous_generation`]); false for a
 /// Raft entry proposed below the level that stores it. `start_placed`: a
 /// first assignment starts [`ShardAssignment::placed`]; false for a Raft
-/// entry proposed below the level that stores it.
+/// entry proposed below the level that stores it. `hold_unformed`: refuse
+/// a set change while [`ShardAssignment::holds_unformed_set`]; false for a
+/// Raft entry proposed below the level that knows it.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn put_shard_assignment_if(
     store: &InMemoryStore,
@@ -55,6 +59,7 @@ pub(super) async fn put_shard_assignment_if(
     at_least: u64,
     record_previous: bool,
     start_placed: bool,
+    hold_unformed: bool,
 ) -> StoreResult<AssignmentWrite> {
     write_shard_assignment(
         store,
@@ -66,6 +71,7 @@ pub(super) async fn put_shard_assignment_if(
         at_least,
         record_previous,
         start_placed,
+        hold_unformed,
         SwitchWrite::Drop,
     )
     .await
@@ -83,6 +89,7 @@ pub(super) async fn adopt_elected_leader(
     elected: &ElectedLeader,
     elected_set: bool,
     own_leader_set: bool,
+    hold_unformed: bool,
 ) -> StoreResult<AssignmentWrite> {
     let current = get_shard_assignment(store, key).await?;
     if current.generation != expected_generation {
@@ -128,6 +135,7 @@ pub(super) async fn adopt_elected_leader(
         0,
         false,
         false,
+        hold_unformed,
         SwitchWrite::Drop,
     )
     .await
@@ -151,8 +159,8 @@ pub(super) enum SwitchWrite<'a> {
 /// that generation (`Some(None)`: only where there is no assignment).
 /// `elected`: an adoption's generation, written in place of the next one;
 /// only over an assignment below it. `at_least`: written there when it is
-/// above the next one. `record_previous`, `start_placed`: see
-/// [`put_shard_assignment_if`].
+/// above the next one. `record_previous`, `start_placed`, `hold_unformed`:
+/// see [`put_shard_assignment_if`].
 ///
 /// No write lands on a shard that switched to Raft: its hybrid generation
 /// is the base every voter started from, and a later one would open the
@@ -168,6 +176,7 @@ pub(super) async fn write_shard_assignment(
     at_least: u64,
     record_previous: bool,
     start_placed: bool,
+    hold_unformed: bool,
     switch: SwitchWrite<'_>,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
@@ -229,6 +238,21 @@ pub(super) async fn write_shard_assignment(
         && expected != current
     {
         return Ok(AssignmentWrite::Stale { current });
+    }
+    // The single place a shard's set changes. A Raft group's first target
+    // holds its set until a leader of the group reports, so no second set
+    // gets a target a broker could form beside the first (#2794).
+    if hold_unformed
+        && state
+            .records
+            .get(&assignment.key)
+            .is_some_and(|existing| existing.moves_unformed_set(&assignment, incarnation))
+    {
+        return Err(StoreError::Conflict(
+            "the shard's Raft group has not formed yet: its set changes once a leader \
+             has reported to the control plane"
+                .into(),
+        ));
     }
     let mut previous_generation = None;
     let (op, generation) = match state.records.get(&assignment.key) {
@@ -314,6 +338,7 @@ pub(super) async fn write_shard_assignment(
     let existing = state.records.get(&stored.key);
     stored.carry_raft_target(existing);
     stored.carry_raft_floor(existing);
+    stored.carry_raft_formed(existing);
     stored.carry_raft_ordered(existing);
     let held = existing
         .map(|existing| existing.readmitted.clone())
@@ -615,12 +640,14 @@ impl InMemoryStore {
         self.shards.read().await.placement.holder.clone()
     }
 
-    /// A conditional write from a Raft log entry that predates fencing.
+    /// A conditional write from a Raft log entry that predates fencing. It
+    /// carries no hold of its own; the apply passes the join floor's.
     pub(crate) async fn put_shard_assignment_unfenced_if(
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         seq_generation: bool,
+        hold_unformed: bool,
     ) -> StoreResult<AssignmentWrite> {
         put_shard_assignment_if(
             self,
@@ -631,6 +658,7 @@ impl InMemoryStore {
             0,
             false,
             false,
+            hold_unformed,
         )
         .await
     }
@@ -642,8 +670,16 @@ impl InMemoryStore {
         assignment: ShardAssignment,
         seq_generation: bool,
         start_placed: bool,
+        hold_unformed: bool,
     ) -> StoreResult<ShardAssignment> {
-        put_shard_assignment(self, assignment, seq_generation, start_placed).await
+        put_shard_assignment(
+            self,
+            assignment,
+            seq_generation,
+            start_placed,
+            hold_unformed,
+        )
+        .await
     }
 
     /// [`ControlPlaneStore::put_shard_assignment_if`] from a Raft entry, as
@@ -658,6 +694,7 @@ impl InMemoryStore {
         at_least: u64,
         record_previous: bool,
         start_placed: bool,
+        hold_unformed: bool,
     ) -> StoreResult<AssignmentWrite> {
         put_shard_assignment_if(
             self,
@@ -668,6 +705,7 @@ impl InMemoryStore {
             at_least,
             record_previous,
             start_placed,
+            hold_unformed,
         )
         .await
     }
