@@ -52,6 +52,8 @@ mod correlation {
             InternalMessage::LeaseForwardCacheOk(m) => m.correlation_id,
             InternalMessage::Raft(m) => m.correlation_id,
             InternalMessage::RaftAnswer(m) => m.correlation_id,
+            InternalMessage::RaftBeats(m) => m.correlation_id,
+            InternalMessage::RaftBeatsAnswer(m) => m.correlation_id,
         }
     }
 

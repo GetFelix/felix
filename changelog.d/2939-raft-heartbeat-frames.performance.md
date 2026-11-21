@@ -1,0 +1,1 @@
+Raft heartbeats bound for the same peer broker now travel together in one `RaftBeats` frame, gathered for up to 1 ms, with one answer per heartbeat in order. Each heartbeat is still admitted and answered for its own group. A peer that has not offered the new `RAFT_BEATS` capability is sent one frame per heartbeat as before.

@@ -88,6 +88,19 @@ jobs:
           ulimit -n "$(ulimit -Hn)"
           cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
             -- --ignored --nocapture 2>&1 | tee raft-idle-transport.log
+      # The same run with every heartbeat in its own frame, as before
+      # heartbeat frames: the A side of the comparison.
+      - name: Real peer transport, heartbeats alone
+        if: always()
+        env:
+          RAFT_IDLE_GROUPS: ${{ inputs.transport_groups || '1700' }}
+          RAFT_IDLE_PEERS: transport
+          RAFT_IDLE_COALESCE: "0"
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
+            -- --ignored --nocapture 2>&1 | tee raft-idle-transport-alone.log
       # What members keep resident after they were busy (#2415), as RSS, not
       # live heap. Fewer groups: every log holds its newest records in memory
       # after a burst.
@@ -110,7 +123,7 @@ jobs:
           {
             echo "### Raft idle groups"
             echo
-            grep -hE 'idle groups|groups after|test result' raft-idle-stub.log raft-idle-transport.log raft-idle-burst.log || echo "no result"
+            grep -E 'idle groups|groups after|test result' raft-idle-stub.log raft-idle-transport.log raft-idle-transport-alone.log raft-idle-burst.log || echo "no result"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # What a publisher waits for on a three-broker Raft shard, at each level,

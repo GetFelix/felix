@@ -18,6 +18,10 @@
 //!     -p felix-replication --test raft_idle_cpu -- --ignored --nocapture
 //! ```
 //!
+//! With `transport` peers the run also prints the Raft frames each broker
+//! sends a second; `RAFT_IDLE_COALESCE=0` sends every heartbeat in its own
+//! frame, for comparing.
+//!
 //! `RAFT_IDLE_HEARTBEAT_MS` sets the idle heartbeat and
 //! `RAFT_IDLE_WINDOW_SECS` how long the measurement runs (30 s).
 //!
@@ -148,20 +152,31 @@ impl RaftTransport for Net {
 }
 
 /// Three runtimes joined by real peer pools and listeners on loopback.
-async fn over_the_transport(timers: &RuntimeConfig, stop: &CancellationToken) -> Vec<GroupRuntime> {
+type Transports = Vec<Arc<PeerTransport<Arc<PeerPool>>>>;
+
+async fn over_the_transport(
+    timers: &RuntimeConfig,
+    stop: &CancellationToken,
+) -> (Vec<GroupRuntime>, Transports) {
     let config = PeerTransportConfig {
         bind: "127.0.0.1:0".parse().expect("addr"),
         ..Default::default()
     };
     let book: Arc<parking_lot::Mutex<HashMap<String, SocketAddr>>> = Arc::default();
     let mut runtimes = Vec::new();
+    let mut transports = Vec::new();
     for broker in BROKERS {
         let pool = PeerPool::new(broker.into(), config.clone(), stop.clone()).expect("pool");
         let addresses: Arc<dyn PeerAddresses> = {
             let book = Arc::clone(&book);
             Arc::new(move |broker: &str| book.lock().get(broker).copied())
         };
-        let transport = Arc::new(PeerTransport::new(pool, addresses));
+        let mut transport = PeerTransport::new(pool, addresses);
+        if env::<u8>("RAFT_IDLE_COALESCE") == Some(0) {
+            transport = transport.without_coalescing();
+        }
+        let transport = Arc::new(transport);
+        transports.push(Arc::clone(&transport));
         let runtime = GroupRuntime::start(broker, timers.clone(), transport).expect("timers");
         let server = PeerServer::bind(broker.into(), &config, Arc::new(UnavailableHandler))
             .expect("bind")
@@ -171,7 +186,7 @@ async fn over_the_transport(timers: &RuntimeConfig, stop: &CancellationToken) ->
         tokio::spawn(server.serve(stop.clone()));
         runtimes.push(runtime);
     }
-    runtimes
+    (runtimes, transports)
 }
 
 /// How long one burst write may take. A write that never answers would
@@ -330,10 +345,10 @@ async fn idle_groups_cost_little_cpu() {
     let net = Arc::new(Net::default());
     let brokers: &[&str] = if real { &BROKERS } else { &BROKERS[..1] };
     let stop = CancellationToken::new();
-    let runtimes: Vec<GroupRuntime> = if transport {
+    let (runtimes, transports): (Vec<GroupRuntime>, Transports) = if transport {
         over_the_transport(&timers, &stop).await
     } else {
-        brokers
+        let runtimes = brokers
             .iter()
             .map(|broker| {
                 let transport: Arc<dyn RaftTransport> = match real {
@@ -345,7 +360,8 @@ async fn idle_groups_cost_little_cpu() {
                 net.brokers.lock().insert((*broker).into(), runtime.clone());
                 runtime
             })
-            .collect()
+            .collect();
+        (runtimes, Vec::new())
     };
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
@@ -408,7 +424,14 @@ async fn idle_groups_cost_little_cpu() {
             .map(|status| status.term)
             .sum()
     };
+    let frames = || -> (u64, u64, u64) {
+        transports
+            .iter()
+            .map(|t| t.frames_sent())
+            .fold((0, 0, 0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+    };
     let before = leading();
+    let frames_before = frames();
     let (cpu_before, ticks_before, terms_before) = (cpu(), ticks(), terms());
     let resident_before = resident_mb();
     tokio::time::sleep(window).await;
@@ -429,6 +452,17 @@ async fn idle_groups_cost_little_cpu() {
         100.0 * used.as_secs_f64() / window.as_secs_f64() / each,
         sent as f64 / window.as_secs_f64() / each,
     );
+    if transport {
+        let after = frames();
+        let rate = |n: u64| n as f64 / window.as_secs_f64() / each;
+        println!(
+            "{groups} idle groups: {:.0} Raft frames a second per broker, of which {:.0} \
+             heartbeat frames carrying {:.0} heartbeats",
+            rate(after.0 - frames_before.0 + after.1 - frames_before.1),
+            rate(after.1 - frames_before.1),
+            rate(after.2 - frames_before.2),
+        );
+    }
     if let (Some(start), Some(end)) = (resident_before, resident_mb()) {
         println!(
             "{groups} idle groups: {:.0} MB resident per broker, {:.0} MB {window:?} earlier",

@@ -295,6 +295,14 @@ impl InternalMessage {
             | Self::RaftAnswer(RaftAnswer {
                 correlation_id,
                 body: raft,
+            })
+            | Self::RaftBeats(RaftCall {
+                correlation_id,
+                body: raft,
+            })
+            | Self::RaftBeatsAnswer(RaftAnswer {
+                correlation_id,
+                body: raft,
             }) => {
                 body.put_u64(*correlation_id);
                 body.extend_from_slice(raft);
@@ -1065,18 +1073,25 @@ impl InternalMessage {
             }
             // The rest of the frame is the replication crate's to read, and
             // stays a slice of it.
-            Kind::Raft | Kind::RaftAnswer => {
+            Kind::Raft | Kind::RaftAnswer | Kind::RaftBeats | Kind::RaftBeatsAnswer => {
                 let correlation_id = take_u64(&mut body)?;
-                Ok(if kind == Kind::Raft {
-                    Self::Raft(RaftCall {
+                Ok(match kind {
+                    Kind::Raft => Self::Raft(RaftCall {
                         correlation_id,
                         body,
-                    })
-                } else {
-                    Self::RaftAnswer(RaftAnswer {
+                    }),
+                    Kind::RaftBeats => Self::RaftBeats(RaftCall {
                         correlation_id,
                         body,
-                    })
+                    }),
+                    Kind::RaftAnswer => Self::RaftAnswer(RaftAnswer {
+                        correlation_id,
+                        body,
+                    }),
+                    _ => Self::RaftBeatsAnswer(RaftAnswer {
+                        correlation_id,
+                        body,
+                    }),
                 })
             }
             Kind::Ping | Kind::Pong => {

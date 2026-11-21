@@ -13,7 +13,20 @@ fn raft_messages_match_their_golden_vectors() {
         correlation_id: 9,
         body: Bytes::from_static(b"\x01\x02\x03"),
     });
-    for (message, kind) in [(call(), 57u8), (answer, 58u8)] {
+    let beats = InternalMessage::RaftBeats(RaftCall {
+        correlation_id: 9,
+        body: Bytes::from_static(b"\x01\x02\x03"),
+    });
+    let beats_answer = InternalMessage::RaftBeatsAnswer(RaftAnswer {
+        correlation_id: 9,
+        body: Bytes::from_static(b"\x01\x02\x03"),
+    });
+    for (message, kind) in [
+        (call(), 57u8),
+        (answer, 58u8),
+        (beats, 67u8),
+        (beats_answer, 68u8),
+    ] {
         let expected: Vec<u8> = [
             &[0x46, 0x4C, 0x58, 0x49][..],
             &[0x00, 0x01][..],
@@ -65,4 +78,16 @@ fn frame(kind: Kind, body: &[u8]) -> Bytes {
     .encode(&mut frame);
     frame.extend_from_slice(body);
     frame.freeze()
+}
+
+#[test]
+fn heartbeats_in_one_frame_need_both_raft_capabilities() {
+    let beats = InternalMessage::RaftBeats(RaftCall {
+        correlation_id: 1,
+        body: Bytes::new(),
+    });
+    let needed = beats.required_capability().expect("a capability");
+    assert!(needed.contains(PeerCapabilities::RAFT));
+    assert!(needed.contains(PeerCapabilities::RAFT_BEATS));
+    assert!(!PeerCapabilities::RAFT.contains(needed));
 }

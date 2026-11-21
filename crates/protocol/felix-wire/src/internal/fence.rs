@@ -176,6 +176,10 @@ impl PeerCapabilities {
     /// and checks the client's chain against its own client CA. Offered only
     /// by a broker that binds token subjects to client certificates.
     pub const CLIENT_CERTS: Self = Self(1 << 27);
+    /// Answers `RaftBeats`: several Raft heartbeats (appends without
+    /// entries) for different groups in one frame, one answer each. Offered
+    /// with `RAFT`; a peer without it is sent each heartbeat on its own.
+    pub const RAFT_BEATS: Self = Self(1 << 28);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

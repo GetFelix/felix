@@ -152,6 +152,7 @@ never have dialled the one that shipped to it.
 | `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 | `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | reads `RecordSequencedForwardPublish`, a sequenced forward whose records each take their own sequence from the one named (see "A forward that names its producer"). A Raft leader proposes them together in one proposal and answers once all commit. An MQTT listener on a member of the shard's group sends a batch that way only to a leader that offered it, and record by record otherwise |
 | `1 << 27` | `CLIENT_CERTS` | reads a forward wrapped in `ClientCertified` and checks the client's certificate chain against its own client CA (see "Client certificates across a forward"). Offered only by a broker with `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`; a forward goes in the envelope only to a peer that offered it |
+| `1 << 28` | `RAFT_BEATS` | answers `RaftBeats`, several Raft heartbeats in one frame (see "Raft heartbeats in one frame"). Offered with `RAFT`; a peer without it is sent each heartbeat as its own `Raft` |
 
 #### Storage identity
 
@@ -1446,6 +1447,60 @@ answering `ReplicateError` `Unavailable`. The sender has given up by then, so a
 member stuck on storage cannot hold the stream's permits.
 
 
+#### Raft heartbeats in one frame
+
+A leader heartbeats each follower with an append that carries no entries.
+At a few thousand groups per broker, one frame per heartbeat is most of
+what idle groups cost. So heartbeats for one broker travel together in
+**`RaftBeats`** (kind 67), answered by **`RaftBeatsAnswer`** (kind 68), when
+that broker offered `RAFT_BEATS`. An append with entries, and every other
+Raft message, keeps its own `Raft` frame.
+
+A `RaftBeats` body after the correlation id:
+
+| Field | Layout |
+| --- | --- |
+| Layout | `u8`, the same as a `Raft` body |
+| Kind | `u8` 9 |
+| Deadline | `u32` milliseconds, the longest of the heartbeats' own, at the place a `Raft` body has its deadline |
+| Count | `u16`, at most 512 |
+| Heartbeats | each a `u32` length and a whole `Raft` request body |
+
+A `RaftBeatsAnswer` body after the correlation id:
+
+| Field | Layout |
+| --- | --- |
+| Layout | `u8` |
+| Kind | `u8` 7 |
+| Count | `u16`, exactly the request's count |
+| Answers | each a `u8` 1 followed by a `u32` length and a whole `RaftAnswer` body, or a `u8` 2 for a heartbeat that was late |
+
+What a frame guarantees:
+
+- **Each heartbeat is answered as if it came alone.** The listener decodes
+  each one, checks it against the connection's bound broker and the group's
+  admission rule, and hands it to its group, exactly as for a `Raft` frame.
+  One heartbeat's refusal says nothing about the others. A frame may carry
+  only appends without entries; anything else in it is refused on its own.
+- **Answers are in request order**, one per heartbeat. A sender that gets
+  another count fails every heartbeat in the frame rather than give one
+  heartbeat another's answer.
+- **A slow group holds up only itself.** Heartbeats for different members
+  run at once. The listener answers the frame by half its deadline at the
+  latest, and marks any heartbeat not answered by then as late. The sender
+  sends a late heartbeat again as its own `Raft` frame, with what is left of
+  its deadline.
+- **Order per member is kept.** Heartbeats for the same member in one frame
+  run in the order sent. A sender has at most one frame in flight per
+  broker, so a later frame cannot overtake an earlier one.
+
+A sender gathers heartbeats for one broker for up to 1 ms after the first.
+A frame whose answer does not arrive, or does not read, fails each of its
+heartbeats the way a lost `Raft` frame fails its one request. A sender that
+predates `RAFT_BEATS` never sends the kind, and no sender sends it to a peer
+that did not offer it, so mixed versions fall back to one frame per
+heartbeat.
+
 ### Sealing a shard for the switch to Raft
 
 Moving a shard from the hybrid protocol to Raft starts with a seal: the
@@ -1570,7 +1625,8 @@ back to the detail whenever the fields are absent.
 `ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
 `SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62, `FromCopy` 63 and
 `PlainSequencedForwardPublish` 64,
-`RecordSequencedForwardPublish` 65 and `ClientCertified` 66. A peer
+`RecordSequencedForwardPublish` 65, `ClientCertified` 66, `RaftBeats` 67
+and `RaftBeatsAnswer` 68. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

@@ -72,6 +72,9 @@ pub enum InternalMessage {
     LeaseForwardCacheOk(LeaseForwardCacheOk),
     Raft(RaftCall),
     RaftAnswer(RaftAnswer),
+    /// Heartbeats for several groups, answered by one `RaftBeatsAnswer`.
+    RaftBeats(RaftCall),
+    RaftBeatsAnswer(RaftAnswer),
     SealFence(SealFence),
     SealFenceOk(SealFenceOk),
     SealAck(SealAck),
@@ -208,6 +211,8 @@ impl InternalMessage {
             Self::LeaseForwardCacheOk(_) => Kind::LeaseForwardCacheOk,
             Self::Raft(_) => Kind::Raft,
             Self::RaftAnswer(_) => Kind::RaftAnswer,
+            Self::RaftBeats(_) => Kind::RaftBeats,
+            Self::RaftBeatsAnswer(_) => Kind::RaftBeatsAnswer,
             Self::SealFence(_) => Kind::SealFence,
             Self::SealFenceOk(_) => Kind::SealFenceOk,
             Self::SealAck(_) => Kind::SealAck,
@@ -249,6 +254,9 @@ impl InternalMessage {
             Self::Fence(m) if m.election.is_some() => Some(PeerCapabilities::ELECTION),
             Self::PreVote(_) | Self::PreVoteAnswer(_) => Some(PeerCapabilities::ELECTION),
             Self::Raft(_) | Self::RaftAnswer(_) => Some(PeerCapabilities::RAFT),
+            Self::RaftBeats(_) | Self::RaftBeatsAnswer(_) => {
+                Some(PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS))
+            }
             _ if self.set_generation().is_some() => Some(PeerCapabilities::ELECTION),
             _ => None,
         };
@@ -412,6 +420,8 @@ impl InternalMessage {
             Self::LeaseForwardCacheOk(m) => m.correlation_id,
             Self::Raft(m) => m.correlation_id,
             Self::RaftAnswer(m) => m.correlation_id,
+            Self::RaftBeats(m) => m.correlation_id,
+            Self::RaftBeatsAnswer(m) => m.correlation_id,
             Self::SealFence(m) => m.fence.correlation_id,
             Self::SealFenceOk(m) => m.ok.correlation_id,
             Self::SealAck(m) => m.correlation_id,

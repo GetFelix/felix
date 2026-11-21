@@ -870,3 +870,266 @@ async fn joint_add(off_placement: bool) {
         broker.stop().await;
     }
 }
+
+/// Wraps a pool as a broker that predates `RAFT_BEATS` sees it: the peers
+/// never offered it.
+struct Older(Arc<PeerPool>);
+
+impl PeerRequester for Older {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        assert!(
+            !matches!(message, InternalMessage::RaftBeats(_)),
+            "a peer without RAFT_BEATS was sent heartbeats in one frame"
+        );
+        self.0.request(node_id, addr, message).await
+    }
+
+    async fn capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> Result<PeerCapabilities, PeerError> {
+        let offered = self.0.capabilities(node_id, addr).await?;
+        Ok(PeerCapabilities::from_bits(
+            offered.bits() & !PeerCapabilities::RAFT_BEATS.bits(),
+        ))
+    }
+}
+
+/// Three brokers with `groups` groups, each led by whichever wins, once
+/// every group has a leader its followers know. `older` brokers send as a
+/// build without heartbeat frames.
+async fn form(
+    root: &TempDir,
+    book: &Book,
+    groups: u32,
+    older: &[&str],
+) -> (
+    Vec<Broker>,
+    Vec<Arc<PeerTransport<Arc<PeerPool>>>>,
+    Vec<Arc<PeerTransport<Older>>>,
+) {
+    let mut brokers = Vec::new();
+    let mut newer = Vec::new();
+    let mut old = Vec::new();
+    for name in BROKERS {
+        let stop = CancellationToken::new();
+        let pool = PeerPool::new(name.into(), config(), stop.clone()).expect("pool");
+        let transport: Arc<dyn RaftTransport> = if older.contains(&name) {
+            let transport = Arc::new(PeerTransport::new(
+                Older(Arc::clone(&pool)),
+                self::book(book),
+            ));
+            old.push(Arc::clone(&transport));
+            transport
+        } else {
+            let transport = Arc::new(PeerTransport::new(Arc::clone(&pool), self::book(book)));
+            newer.push(Arc::clone(&transport));
+            transport
+        };
+        let runtime =
+            GroupRuntime::start(name, RuntimeConfig::default(), transport).expect("timers");
+        let server = PeerServer::bind(name.into(), &config(), Arc::new(UnavailableHandler))
+            .expect("bind")
+            .with_raft(Arc::new(runtime.clone()));
+        book.lock()
+            .insert(name.into(), server.local_addr().expect("addr"));
+        tokio::spawn(server.serve(stop.clone()));
+        brokers.push(Broker {
+            runtime,
+            pool,
+            stop,
+        });
+    }
+    let members: BTreeSet<MemberId> = BROKERS.map(|b| MemberId::new(b, 1)).into();
+    for n in 0..groups {
+        let shard = ShardKey {
+            shard: n,
+            ..shard()
+        };
+        for (name, broker) in BROKERS.iter().zip(&brokers) {
+            broker.admit(&shard, &BROKERS, &BROKERS);
+            let dir = root.path().join(format!("{name}-{n}"));
+            std::fs::create_dir_all(&dir).expect("dir");
+            let config = LogConfig {
+                fsync_mode: FsyncMode::OnCommit,
+                preallocate_segments: false,
+                raft_log: true,
+                ..LogConfig::default()
+            };
+            let log = DiskLog::open(dir, format!("t/ns/orders/{n}"), config).expect("open");
+            broker
+                .runtime
+                .open(GroupId::new(shard.clone(), 0), 1, log)
+                .await
+                .expect("open");
+        }
+        for broker in &brokers {
+            broker
+                .runtime
+                .initialize(&shard, members.clone())
+                .await
+                .expect("initialize");
+        }
+    }
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while leaders(&brokers, groups).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the groups did not form"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    (brokers, newer, old)
+}
+
+/// Each group's leader and term, when every member of every group agrees.
+fn leaders(brokers: &[Broker], groups: u32) -> Option<Vec<(usize, u64)>> {
+    (0..groups)
+        .map(|n| {
+            let shard = ShardKey {
+                shard: n,
+                ..shard()
+            };
+            let statuses: Vec<_> = brokers
+                .iter()
+                .map(|broker| broker.runtime.status(&shard).expect("open"))
+                .collect();
+            let at = statuses.iter().position(|s| s.role == Role::Leader)?;
+            let leader = &statuses[at];
+            statuses
+                .iter()
+                .all(|s| s.leader.as_ref() == Some(&leader.member) && s.term == leader.term)
+                .then_some((at, leader.term))
+        })
+        .collect()
+}
+
+/// Heartbeats share frames while every leader also sends appends with
+/// entries to the same followers, and no group changes leader or term.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leaders_hold_while_heartbeats_share_frames_beside_writes() {
+    const GROUPS: u32 = 12;
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let (brokers, transports, _) = form(&root, &book, GROUPS, &[]).await;
+    let before = leaders(&brokers, GROUPS).expect("formed");
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut written = 0u64;
+    while tokio::time::Instant::now() < until {
+        for (n, (at, _)) in before.iter().enumerate() {
+            let shard = ShardKey {
+                shard: n as u32,
+                ..shard()
+            };
+            let record = (bytes::Bytes::from_static(b"record"), None);
+            let offsets = brokers[*at]
+                .runtime
+                .write_unchecked(&shard, vec![record])
+                .await;
+            assert!(offsets.is_some(), "group {n} lost its leader");
+            written += 1;
+        }
+    }
+    assert!(written > u64::from(GROUPS));
+    assert_eq!(leaders(&brokers, GROUPS), Some(before));
+    let (frames, beats) = transports
+        .iter()
+        .fold((0, 0), |(frames, beats), transport| {
+            let (_, f, b) = transport.frames_sent();
+            (frames + f, beats + b)
+        });
+    assert!(
+        frames > 0 && beats > frames,
+        "{beats} heartbeats in {frames} frames"
+    );
+    for broker in brokers {
+        broker.stop().await;
+    }
+}
+
+/// A broker sending as an older build, to which no peer offered
+/// `RAFT_BEATS`, sends every heartbeat in its own frame, and its groups
+/// still form beside brokers that coalesce theirs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_without_heartbeat_frames_is_sent_each_heartbeat_alone() {
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let (brokers, _, old) = form(&root, &book, 4, &["a"]).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (single, frames, beats) = old[0].frames_sent();
+    assert!(single > 0);
+    assert_eq!((frames, beats), (0, 0));
+    for broker in brokers {
+        broker.stop().await;
+    }
+}
+
+/// Every heartbeat in a frame passes the admission a lone request does: a
+/// member's is answered, and an outsider's or one in another broker's name
+/// is refused, in the same frame.
+#[tokio::test]
+async fn each_heartbeat_in_a_frame_is_admitted_on_its_own() {
+    use openraft::async_runtime::watch::WatchReceiver;
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let broker = Broker::start("a", &book, true).await;
+    let group = GroupId::new(shard(), 0);
+    let to = MemberId::new("a", 1);
+    broker
+        .runtime
+        .open(group.clone(), 1, open_log(&root, "a"))
+        .await
+        .expect("open");
+    let members: BTreeSet<MemberId> = ["a", "b"].map(|b| MemberId::new(b, 1)).into();
+    broker
+        .runtime
+        .initialize(&shard(), members)
+        .await
+        .expect("initialize");
+    let member = broker.runtime.group(&shard()).expect("group");
+    let heartbeat = |name: &str, term: u64| {
+        let leader = openraft::impls::leader_id_std::LeaderId::new(term, MemberId::new(name, 1));
+        let mut request = vote_for(group.clone(), to.clone());
+        request.body = Request::Append(openraft::raft::AppendEntriesRequest {
+            vote: VoteOf::<ShardTypes>::from_leader_id(leader, true),
+            prev_log_id: None,
+            entries: Vec::new(),
+            leader_commit: None,
+        });
+        wire::encode_request(&request).expect("encode")
+    };
+    let answers = |from: &str, beats: &[bytes::Bytes]| {
+        let frame = wire::beats::encode(Duration::from_secs(1), beats).expect("encode");
+        let runtime = broker.runtime.clone();
+        let from: Arc<str> = from.into();
+        let count = beats.len();
+        async move {
+            let body = runtime.answer_beats(Some(from), frame).await;
+            wire::beats::decode_answers(body, count)
+                .expect("one answer each")
+                .into_iter()
+                .map(|answer| wire::decode_reply(answer.expect("on time")).expect("reply"))
+                .collect::<Vec<_>>()
+        }
+    };
+    // From the outsider c: its own heartbeat, and one in b's name.
+    let refused = answers("c", &[heartbeat("c", 100), heartbeat("b", 100)]).await;
+    for answer in refused {
+        assert!(matches!(answer, Err(Refused::Unreachable(_))), "admitted");
+    }
+    assert!(term_of(&member.raft().metrics().borrow_watched().vote) < 100);
+    // From b: its own, answered, beside one in c's name, refused.
+    let mixed = answers("b", &[heartbeat("b", 100), heartbeat("c", 101)]).await;
+    assert!(mixed[0].is_ok(), "the member's heartbeat is answered");
+    assert!(
+        matches!(&mixed[1], Err(Refused::Unreachable(why)) if why.contains("sent a message as"))
+    );
+    assert_eq!(term_of(&member.raft().metrics().borrow_watched().vote), 100);
+    broker.stop().await;
+}

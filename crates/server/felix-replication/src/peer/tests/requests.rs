@@ -191,6 +191,14 @@ async fn raft_calls_do_not_take_the_budget_pings_need() {
             tokio::time::sleep(Duration::from_secs(30)).await;
             body
         }
+
+        async fn answer_beats(
+            &self,
+            from: Option<std::sync::Arc<str>>,
+            body: bytes::Bytes,
+        ) -> bytes::Bytes {
+            self.answer(from, body).await
+        }
     }
     let config = PeerTransportConfig {
         max_inflight_per_peer: 2,
@@ -259,6 +267,14 @@ impl crate::peer::RaftHandler for StuckGroup {
             std::future::pending::<()>().await;
         }
         body
+    }
+
+    async fn answer_beats(
+        &self,
+        from: Option<std::sync::Arc<str>>,
+        body: bytes::Bytes,
+    ) -> bytes::Bytes {
+        self.answer(from, body).await
     }
 }
 

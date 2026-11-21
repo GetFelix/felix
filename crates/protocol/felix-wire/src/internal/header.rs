@@ -306,6 +306,14 @@ pub enum Kind {
     ///
     /// [`PeerCapabilities::CLIENT_CERTS`]: super::PeerCapabilities::CLIENT_CERTS
     ClientCertified = 66,
+    /// Several Raft appends without entries, each for its own group, laid
+    /// out like `Raft`. Sent only to a peer that offered
+    /// [`PeerCapabilities::RAFT_BEATS`].
+    ///
+    /// [`PeerCapabilities::RAFT_BEATS`]: super::PeerCapabilities::RAFT_BEATS
+    RaftBeats = 67,
+    /// The answer to `RaftBeats`, laid out the same way.
+    RaftBeatsAnswer = 68,
 }
 
 impl Kind {
@@ -379,6 +387,8 @@ impl Kind {
             64 => Ok(Kind::PlainSequencedForwardPublish),
             65 => Ok(Kind::RecordSequencedForwardPublish),
             66 => Ok(Kind::ClientCertified),
+            67 => Ok(Kind::RaftBeats),
+            68 => Ok(Kind::RaftBeatsAnswer),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

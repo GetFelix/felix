@@ -305,7 +305,9 @@ impl PeerPool {
         let class = LaneClass::of(&message);
         let budget = match (&message, class) {
             (InternalMessage::Raft(_), LaneClass::Replication) => &peer.raft_entries_inflight,
-            (InternalMessage::Raft(_), _) => &peer.raft_control_inflight,
+            (InternalMessage::Raft(_) | InternalMessage::RaftBeats(_), _) => {
+                &peer.raft_control_inflight
+            }
             (_, LaneClass::Forward) => &peer.inflight,
             _ => &peer.replication_inflight,
         };

@@ -1695,6 +1695,30 @@ runs on it. See Questions, 15.
 Timer values are in Questions, 4. The hybrid suspects a leader after 5
 seconds, so Raft does not need 50 ms heartbeats to match its failover time.
 
+### Heartbeats share a frame per peer
+
+Because one ticker drives every group, the heartbeats of many groups come
+due at the same moment. The broker's Raft transport gathers the heartbeats
+(appends with no entries) bound for one peer broker for up to 1 ms and sends
+them as one `RaftBeats` frame. The peer answers each heartbeat for its own
+group and returns the answers in order, so each group's leader sees exactly
+the answer it would have had alone. Appends with entries, votes and every
+other message go on their own as before.
+
+Why 1 ms: it is small next to the 200 ms busy heartbeat and the 1 s
+shortest election timeout, and the leader lease counts from before the
+wait, so the wait can only shorten a lease, never stretch it. A frame holds
+at most 512 heartbeats, and each peer broker has one frame in flight at a
+time: while it is out, the next heartbeats gather behind it. That keeps one
+member's heartbeats in order and means a slow broker holds up only its own
+heartbeats. A peer that is slow to answer one group answers the rest of the
+frame on time and marks that heartbeat late; the leader sends it again on
+its own.
+
+Coalescing needs the peer to offer `RAFT_BEATS` in its handshake. A peer
+that does not is sent one frame per heartbeat. The wire format is in
+`docs/internal-protocol.md`, "Raft heartbeats in one frame".
+
 A member told its group's first members may stand at the first tick, once
 it has a place. If several members are told at the same moment their votes
 can split, and the next election waits for a timeout like any other.

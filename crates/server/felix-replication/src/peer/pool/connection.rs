@@ -519,7 +519,7 @@ impl LaneClass {
             {
                 Self::Replication
             }
-            InternalMessage::Raft(_) => Self::Control,
+            InternalMessage::Raft(_) | InternalMessage::RaftBeats(_) => Self::Control,
             InternalMessage::ForwardPublish(_)
             | InternalMessage::ForwardCacheOp(_)
             | InternalMessage::LeaseForwardCacheOp(_)
@@ -726,6 +726,14 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
             ..m
         }),
         InternalMessage::RaftAnswer(m) => InternalMessage::RaftAnswer(RaftAnswer {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::RaftBeats(m) => InternalMessage::RaftBeats(RaftCall {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::RaftBeatsAnswer(m) => InternalMessage::RaftBeatsAnswer(RaftAnswer {
             correlation_id,
             ..m
         }),

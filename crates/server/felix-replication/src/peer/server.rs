@@ -113,6 +113,11 @@ pub trait RaftHandler: Send + Sync + 'static {
     /// `from` is the node id the connection's `Hello` bound; a message that
     /// names another broker as its sender must be refused.
     async fn answer(&self, from: Option<Arc<str>>, body: bytes::Bytes) -> bytes::Bytes;
+
+    /// Answer one `RaftBeats` frame's body with the body of its
+    /// `RaftBeatsAnswer`: each heartbeat in it answered as [`Self::answer`]
+    /// would answer it alone, refused for the same reasons.
+    async fn answer_beats(&self, from: Option<Arc<str>>, body: bytes::Bytes) -> bytes::Bytes;
 }
 
 /// Answers every forwarded request with `Unavailable`.
@@ -325,7 +330,10 @@ impl PeerServer {
     /// Answer peers' Raft messages with `raft`, and offer
     /// [`PeerCapabilities::RAFT`] so they send them.
     pub fn with_raft(mut self, raft: Arc<dyn RaftHandler>) -> Self {
-        self.capabilities = self.capabilities.union(PeerCapabilities::RAFT);
+        self.capabilities = self
+            .capabilities
+            .union(PeerCapabilities::RAFT)
+            .union(PeerCapabilities::RAFT_BEATS);
         self.raft = Some(raft);
         self
     }
@@ -902,7 +910,12 @@ async fn serve_connection(
                     // matches each answer to its own call and never relies
                     // on a stream's order, and an append can wait out an
                     // fsync that a vote or heartbeat behind it should not.
-                    InternalMessage::Raft(call) => {
+                    request @ (InternalMessage::Raft(_) | InternalMessage::RaftBeats(_)) => {
+                        let (beats, call) = match request {
+                            InternalMessage::RaftBeats(call) => (true, call),
+                            InternalMessage::Raft(call) => (false, call),
+                            _ => unreachable!("matched above"),
+                        };
                         let (Some(raft), Ok(running)) =
                             (offered.raft.clone(), Arc::clone(&rafts).try_acquire_owned())
                         else {
@@ -931,7 +944,16 @@ async fn serve_connection(
                             let _running = running;
                             let correlation_id = call.correlation_id;
                             answer_out_of_order(&send, offered_by, async move {
-                                match tokio::time::timeout(deadline, raft.answer(from, call.body)).await {
+                                let answered = if beats {
+                                    tokio::time::timeout(deadline, raft.answer_beats(from, call.body)).await
+                                } else {
+                                    tokio::time::timeout(deadline, raft.answer(from, call.body)).await
+                                };
+                                match answered {
+                                    Ok(body) if beats => InternalMessage::RaftBeatsAnswer(RaftAnswer {
+                                        correlation_id,
+                                        body,
+                                    }),
                                     Ok(body) => InternalMessage::RaftAnswer(RaftAnswer {
                                         correlation_id,
                                         body,

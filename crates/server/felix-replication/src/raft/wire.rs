@@ -28,6 +28,8 @@ use super::network::{Addressee, Ask, Beat, RaftReply, RaftRequest, Refused, Repl
 use super::types::{Command, CondPlace, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
+pub(crate) mod beats;
+
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
