@@ -464,4 +464,5 @@ openraft::declare_raft_types!(
         AsyncRuntime = super::draws::ShardRuntime,
         Membership = Membership,
         MembershipEdit = MembershipEdit,
+        Responder<T> = super::propose::Respond<T>,
 );

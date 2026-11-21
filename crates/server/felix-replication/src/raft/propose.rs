@@ -15,11 +15,11 @@ use bytes::Bytes;
 use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, LogPositions, WrittenAt, WrittenToken};
 use felix_storage::waiters::Waiters;
-use futures::stream::{BoxStream, FuturesUnordered};
-use futures::{Future, StreamExt};
+use futures::Future;
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
-use openraft::raft::{WriteOption, WriteResult};
+use openraft::raft::{ClientWriteResult, WriteOption};
 use openraft::{Raft, ServerState};
+use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -307,6 +307,28 @@ pub(crate) struct Gate {
     pub(crate) stamped: AtomicU64,
     /// Answer every group write as not known to be written.
     pub(crate) unknown_groups: std::sync::atomic::AtomicBool,
+    /// Times the shard's publish task has been polled: one per wake.
+    pub(crate) polls: AtomicU64,
+}
+
+/// The publish task, counting its polls into [`Gate::polls`].
+#[cfg(test)]
+pub(crate) struct Polled<F> {
+    pub(crate) run: std::pin::Pin<Box<F>>,
+    pub(crate) gate: Arc<Gate>,
+}
+
+#[cfg(test)]
+impl<F: Future> Future for Polled<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        self.gate.polls.fetch_add(1, Ordering::Relaxed);
+        self.run.as_mut().poll(cx)
+    }
 }
 
 /// A write this member cannot say whether it appended.
@@ -606,7 +628,9 @@ pub(super) fn drain(
 /// the drain bounds, so batches that arrive while an append runs share
 /// the next one. The task does not wait for a
 /// call's entries to commit before it makes the next: openraft takes calls
-/// in the order they are made.
+/// in the order they are made. It does not hand on answers either: each
+/// batch is answered by its [`Respond`]ers, on the task that applies it, so
+/// a drain wakes this task once.
 pub(crate) async fn run(
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
@@ -616,7 +640,6 @@ pub(crate) async fn run(
     lease: Lease,
     mut stamper: Option<Stamper>,
 ) {
-    let mut answering = FuturesUnordered::new();
     let mut held = None;
     loop {
         let first = match held.take() {
@@ -624,7 +647,6 @@ pub(crate) async fn run(
             None => tokio::select! {
                 biased;
                 () = stop.cancelled() => return,
-                Some(()) = answering.next(), if !answering.is_empty() => continue,
                 next = queue.recv() => match next {
                     Some(proposal) => proposal,
                     None => return,
@@ -657,10 +679,7 @@ pub(crate) async fn run(
         if leads(&raft) {
             pace.wrote();
         }
-        if alongside(lease.renew(&raft), &mut answering, &stop)
-            .await
-            .is_none()
-        {
+        if until_stopped(lease.renew(&raft), &stop).await.is_none() {
             return;
         }
         // Stamped after the renewal, which can take a whole lease.
@@ -682,24 +701,24 @@ pub(crate) async fn run(
             drop(stamper.gate.shut.lock().await);
         }
         calls.fetch_add(1, Ordering::Relaxed);
-        let sent = alongside(write(&raft, commands, term), &mut answering, &stop).await;
-        let Some(sent) = sent else {
+        let responders = respond(answers, term.is_some());
+        // A write cut short by `stop` drops its responders, which answer
+        // their batches as stopped.
+        let Some(sent) = until_stopped(write(&raft, commands, responders, term), &stop).await
+        else {
             return;
         };
         felix_storage::hops::mark(felix_storage::hops::Stage::Proposed);
-        match sent {
-            Ok(results) => answering.push(answer(results, answers, term.is_some())),
-            Err(fatal) => {
-                tracing::warn!(error = %fatal, "a stopped Raft group took no write");
-                for (_, to) in answers {
-                    let _ = to.send(Err(stopped().into()));
-                }
-            }
+        if let Err(fatal) = sent {
+            // openraft dropped the call, and with it the responders, which
+            // answer every batch as stopped.
+            tracing::warn!(error = %fatal, "a stopped Raft group took no write");
         }
     }
 }
 
-/// Hand `commands` to openraft, in order, as one write. With a term, the
+/// Hand `commands` to openraft, in order, as one write, each with the
+/// responder at its place. With a term, the
 /// write is appended only if this member still leads that term, which
 /// openraft checks as it appends: what was stamped or admitted at one term
 /// never lands in another. openraft admits or refuses the write whole, for
@@ -707,32 +726,24 @@ pub(crate) async fn run(
 pub(super) async fn write(
     raft: &Raft<ShardTypes, Machine>,
     commands: Vec<Command>,
+    responders: Vec<Respond<ClientWriteResult<ShardTypes>>>,
     term: Option<u64>,
-) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
-{
+) -> Result<(), Fatal<ShardTypes>> {
+    debug_assert_eq!(commands.len(), responders.len());
     let option = match term {
         Some(term) => WriteOption::expect_leader(term),
         None => WriteOption::default(),
     };
-    raft.client_write_many(commands, option).await
+    let writes = commands.into_iter().zip(responders.into_iter().map(Some));
+    raft.write_many(writes).with_option(option).await
 }
 
-/// Run `work` until it ends or `stop`, and meanwhile hand on the answers of
-/// calls already made. A publisher whose call openraft has answered is not
-/// held for the next call's lease renewal, which can take a whole lease.
-async fn alongside<T>(
-    work: impl Future<Output = T>,
-    answering: &mut FuturesUnordered<impl Future<Output = ()>>,
-    stop: &CancellationToken,
-) -> Option<T> {
-    let mut work = std::pin::pin!(work);
-    loop {
-        tokio::select! {
-            biased;
-            () = stop.cancelled() => return None,
-            done = &mut work => return Some(done),
-            Some(()) = answering.next(), if !answering.is_empty() => {}
-        }
+/// Run `work` until it ends, or return `None` on `stop`.
+async fn until_stopped<T>(work: impl Future<Output = T>, stop: &CancellationToken) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => None,
+        done = work => Some(done),
     }
 }
 
@@ -801,72 +812,147 @@ fn leads(raft: &Raft<ShardTypes, Machine>) -> bool {
     raft.metrics().borrow_watched().state == ServerState::Leader
 }
 
-/// Tell each batch of one call how openraft answered its records. The
-/// answers come in the order the records went in. `bound` says the call
-/// named a term.
-pub(super) async fn answer(
-    results: BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>,
+/// One responder per record of a call, in order, each batch's tied to
+/// its answer. `bound` says the call names a term.
+pub(super) fn respond(
     answers: Vec<(usize, oneshot::Sender<Result<Span, Unacknowledged>>)>,
     bound: bool,
-) {
-    // A group that stops ends the stream early, and openraft's stream must
-    // not be polled past its end. The records left are answered as stopped.
-    let mut results = results.fuse();
+) -> Vec<Respond<ClientWriteResult<ShardTypes>>> {
+    let mut responders = Vec::with_capacity(answers.iter().map(|(records, _)| records).sum());
     for (records, to) in answers {
-        let mut span: Result<Option<Span>, CommitError> = Ok(None);
-        // One past the last record of the batch openraft applied.
-        let mut written_end = None;
-        for _ in 0..records {
-            let applied = match results.next().await {
-                Some(Ok(Ok(applied))) => Ok(LogPoint {
-                    term: **applied.log_id.committed_leader_id(),
-                    index: applied.log_id.index,
-                }),
-                // Refused before anything was appended: openraft answers
-                // an appended entry only when it is applied, or with
-                // `LogEntryDiscarded` when it is cut or purged, never on
-                // a step-down.
-                Some(Ok(Err(ClientWriteError::ForwardToLeader(forward)))) => {
-                    Err(lost(match forward.reason {
-                        ForwardReason::LeaseExpired => LEASE_LAPSED,
-                        _ if bound => OTHER_TERM,
-                        _ => NOT_LEADING,
-                    }))
-                }
-                Some(Ok(Err(_))) => Err(lost(DISCARDED)),
-                Some(Err(_)) | None => Err(stopped()),
-            };
-            if let Ok(at) = applied {
-                felix_storage::hops::mark(felix_storage::hops::Stage::Applied);
-                written_end = Some(at.index + 1);
-            }
-            span = match (span, applied) {
-                (Err(err), _) | (Ok(_), Err(err)) => Err(err),
-                (Ok(None), Ok(at)) => Ok(Some(Span {
-                    first: at,
-                    last: at,
-                })),
-                (Ok(Some(span)), Ok(at)) => Ok(Some(Span {
-                    first: span.first,
-                    last: at,
-                })),
-            };
+        // `queued` refuses an empty batch; one here would get no responder
+        // and be told it stopped.
+        debug_assert!(records > 0);
+        let tally = Arc::new(Mutex::new(Tally {
+            entries: (0..records).map(|_| None).collect(),
+            left: records,
+            bound,
+            to: Some(to),
+        }));
+        responders.extend((0..records).map(|at| Respond {
+            tally: Arc::clone(&tally),
+            at,
+            settle: settle_write,
+            done: false,
+        }));
+    }
+    responders
+}
+
+/// openraft's answer for one record of a call. It goes straight to the
+/// record's batch, on whatever task openraft answers on, which is the
+/// task that applies the entry. A responder dropped unanswered, as a
+/// stopped group drops them, answers its record as stopped.
+pub(crate) struct Respond<T> {
+    tally: Arc<Mutex<Tally>>,
+    /// The record's place in its batch.
+    at: usize,
+    settle: fn(&Mutex<Tally>, usize, Option<T>),
+    done: bool,
+}
+
+impl<T> openraft::raft::responder::Responder<ShardTypes, T> for Respond<T>
+where
+    T: Send + 'static,
+{
+    fn on_complete(mut self, result: T) {
+        self.done = true;
+        (self.settle)(&self.tally, self.at, Some(result));
+    }
+}
+
+impl<T> Drop for Respond<T> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.done = true;
+            (self.settle)(&self.tally, self.at, None);
         }
-        // openraft admits a call whole, but a leader that stops before the
-        // call commits can leave the next leader only its start: the rest
-        // is discarded. Some of a batch is then in the log when the rest
-        // is not. No refusal's "nothing was written" holds for it, and the
-        // records that were applied are committed.
-        let span = match (span, written_end) {
-            (Ok(span), _) => span.ok_or_else(|| lost(EMPTY).into()),
-            (Err(_), Some(end)) => Err(Unacknowledged {
-                error: lost(IN_PART),
-                written_end: Some(end),
-            }),
-            (Err(err), None) => Err(err.into()),
+    }
+}
+
+/// What a batch's records have been answered so far.
+struct Tally {
+    entries: Vec<Option<Result<LogPoint, CommitError>>>,
+    left: usize,
+    bound: bool,
+    to: Option<oneshot::Sender<Result<Span, Unacknowledged>>>,
+}
+
+/// Note one record's answer, and once every record of the batch has one,
+/// tell the batch.
+fn settle_write(tally: &Mutex<Tally>, at: usize, result: Option<ClientWriteResult<ShardTypes>>) {
+    let mut tally = tally.lock();
+    let applied = match result {
+        Some(Ok(applied)) => {
+            felix_storage::hops::mark(felix_storage::hops::Stage::Applied);
+            Ok(LogPoint {
+                term: **applied.log_id.committed_leader_id(),
+                index: applied.log_id.index,
+            })
+        }
+        // Refused before anything was appended: openraft answers an
+        // appended entry only when it is applied, or with
+        // `LogEntryDiscarded` when it is cut or purged, never on a
+        // step-down.
+        Some(Err(ClientWriteError::ForwardToLeader(forward))) => Err(lost(match forward.reason {
+            ForwardReason::LeaseExpired => LEASE_LAPSED,
+            _ if tally.bound => OTHER_TERM,
+            _ => NOT_LEADING,
+        })),
+        Some(Err(_)) => Err(lost(DISCARDED)),
+        None => Err(stopped()),
+    };
+    let Some(slot @ None) = tally.entries.get_mut(at) else {
+        return;
+    };
+    *slot = Some(applied);
+    tally.left -= 1;
+    if tally.left > 0 {
+        return;
+    }
+    let Some(to) = tally.to.take() else {
+        return;
+    };
+    let told = told(tally.entries.drain(..).flatten());
+    // The publisher may have stopped waiting.
+    let _ = to.send(told);
+}
+
+/// A batch's answer from its records', in the order they went in.
+fn told(
+    entries: impl Iterator<Item = Result<LogPoint, CommitError>>,
+) -> Result<Span, Unacknowledged> {
+    let mut span: Result<Option<Span>, CommitError> = Ok(None);
+    // One past the last record of the batch openraft applied.
+    let mut written_end = None;
+    for applied in entries {
+        if let Ok(at) = &applied {
+            written_end = Some(at.index + 1);
+        }
+        span = match (span, applied) {
+            (Err(err), _) | (Ok(_), Err(err)) => Err(err),
+            (Ok(None), Ok(at)) => Ok(Some(Span {
+                first: at,
+                last: at,
+            })),
+            (Ok(Some(span)), Ok(at)) => Ok(Some(Span {
+                first: span.first,
+                last: at,
+            })),
         };
-        // The publisher may have stopped waiting.
-        let _ = to.send(span);
+    }
+    // openraft admits a call whole, but a leader that stops before the
+    // call commits can leave the next leader only its start: the rest
+    // is discarded. Some of a batch is then in the log when the rest
+    // is not. No refusal's "nothing was written" holds for it, and the
+    // records that were applied are committed.
+    match (span, written_end) {
+        (Ok(span), _) => span.ok_or_else(|| lost(EMPTY).into()),
+        (Err(_), Some(end)) => Err(Unacknowledged {
+            error: lost(IN_PART),
+            written_end: Some(end),
+        }),
+        (Err(err), None) => Err(err.into()),
     }
 }
 
@@ -949,7 +1035,7 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     };
     let Some(span) = span else {
         // No append reported the batch: refused, dropped, or its append
-        // failed. openraft says which, and its task answers every batch.
+        // failed. openraft says which, through the batch's responders.
         return tokio::select! {
             biased;
             answered = &mut answer => committed(answered),
