@@ -1669,10 +1669,11 @@ An instance that stops gives it up on the way out and another takes it on its
 next tick. One that dies holds it until it expires, and meanwhile no timed
 pass runs: moves already started carry on, since brokers act on assignments,
 but nothing new is started, stepped on the timer or failed over until the
-lease moves. Under Raft the lease is leadership: only the confirmed leader
-places, and it takes the lease the moment it is confirmed rather than
-waiting for the old leader's to expire. The in-memory store is one instance
-and trivially holds it.
+lease moves. Under Raft only the confirmed leader places, and the metadata
+leader judges the lease by its own clock: renewals stay in its memory, and
+only a change of holder is written. A new leader counts the recorded holder
+as renewed when it took over, so it waits out a full lease before another
+instance takes it. The in-memory store is one instance and trivially holds it.
 
 A pass also runs wherever it is woken: a replica report a move waits on, or
 an operator's request, runs one on the instance that received it, so a

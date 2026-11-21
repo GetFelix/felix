@@ -324,6 +324,51 @@ async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
     addr
 }
 
+/// With a member that has never answered, the leader declines its other
+/// soft state, but still judges the lease: a second holder is refused while
+/// the first one's lease runs, and a release still hands it over at once.
+#[tokio::test]
+async fn the_lease_is_judged_by_the_leader_below_the_soft_state_level() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    let addr = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(SILENT))).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add silent member");
+
+    let first = store
+        .acquire_placement_lease("instance-a", 60_000)
+        .await
+        .expect("acquire")
+        .expect("granted");
+    assert!(first.taken);
+    let second = store
+        .acquire_placement_lease("instance-b", 60_000)
+        .await
+        .expect("acquire");
+    assert!(
+        second.is_none(),
+        "a second holder took the lease while the first one's ran: {second:?}"
+    );
+
+    store
+        .release_placement_lease("instance-a")
+        .await
+        .expect("release");
+    // Declined soft state, which must not lose the release.
+    let now = store.now_millis().await.expect("now");
+    store.expire_stale_nodes(now).await.expect("sweep");
+    let after = store
+        .acquire_placement_lease("instance-b", 60_000)
+        .await
+        .expect("acquire")
+        .expect("granted after the release");
+    assert!(after.taken);
+    assert!(after.token > first.token);
+}
+
 /// A learner that answers every append with an error is retried with a
 /// backoff, not in a loop: a dead member must not cost the leader a busy
 /// stream of failed RPCs.

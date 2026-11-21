@@ -225,17 +225,32 @@ impl SoftState {
         self.await_own_blank(term).await?;
         // Judging here ends in `ExpireNodes` and `CheckpointHeartbeats`,
         // which a member at an older level cannot apply. Until every member
-        // can, decline all of it, so the caller keeps heartbeats, expiry and
-        // the lease on the log as the older build does; mixing the two would
+        // can, decline it, so the caller keeps heartbeats and expiry on the
+        // log as the older build does; mixing the two would
         // expire brokers whose heartbeats only this leader has seen.
+        // The lease is judged here at every level: its only write,
+        // `TakePlacementLease`, is one every member applies, and the log
+        // holds no renewals to judge a take by.
+        let lease = matches!(
+            request,
+            LeaderRequest::AcquirePlacementLease { .. }
+                | LeaderRequest::ReleasePlacementLease { .. }
+        );
         let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
-        if self.handle.cluster_version().await < needs {
+        if !lease && self.handle.cluster_version().await < needs {
             // A deposed leader's answer would send the caller to the log
             // path: let it ask the new leader instead.
             let mut view = self.view_in(term)?;
             // Whatever was seen before is not carried into the next time
-            // this is enabled: that starts a fresh window.
-            *view = None;
+            // this is enabled: that starts a fresh window. The lease is
+            // still judged, so its view stays.
+            let kept = view
+                .take()
+                .filter(|view| view.term == term)
+                .and_then(|view| view.lease);
+            if kept.is_some() {
+                view_for(&mut view, term).lease = kept;
+            }
             return Ok(Err(MetaError::Unsupported(format!(
                 "leader soft state needs every member at metadata version {needs}"
             ))));

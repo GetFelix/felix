@@ -758,8 +758,8 @@ pub trait ControlPlaneStore: Send + Sync {
     /// what keeps them safe: the token is. A new holder advances it, so an
     /// ex-holder that paused past its lease finds its next write fenced.
     ///
-    /// Under Raft the confirmed leader is the holder and takes the lease at
-    /// once; `ttl_millis` is not used.
+    /// Under Raft the metadata leader judges expiry by its own clock, and a
+    /// new leader waits out a full `ttl_millis` for the recorded holder.
     async fn acquire_placement_lease(
         &self,
         holder: &str,

@@ -204,11 +204,11 @@ keep an old term's judgement out of a new one:
   lease a second holder. The caller gets "not leader" and asks again.
 
 Other proposals forward, because what they do is decided when they apply, on
-the state every member shares. The exception is the log-path fallback a
-follower uses when the leader declines soft state (an older build, or a
-member it has not heard a level from yet): its `TakePlacementLease` takes the
-lease at apply without checking expiry, as builds before soft state did
-(#2886).
+the state every member shares. `TakePlacementLease` is not one of them: its
+apply takes the lease without checking expiry, because expiry lives only in
+the leader's soft state. So only the leader's own judgement proposes it, and
+no store proposes it on its own, even when the leader declines other soft
+state.
 
 ### Reads: local, because the contract already allows it
 
@@ -932,11 +932,15 @@ Level 1 is rule removal and signing-key rotation (`remove_rbac_policy`,
 
 - the routes that remove RBAC rules or stage, activate or retire signing
   keys answer 409 saying the group is not yet at the version they need;
-- the leader declines leader-only requests, so heartbeats, expiry and the
-  placement lease go through the log (`record_node_heartbeat`,
-  `expire_stale_nodes`, `take_placement_lease`) as on the older build.
-  When the group reaches level 1 the leader starts a fresh soft-state
-  window, so nothing is expired at the switch.
+- the leader declines leader-only heartbeats and expiry, so those go
+  through the log (`record_node_heartbeat`, `expire_stale_nodes`) as on the
+  older build. When the group reaches level 1 the leader starts a fresh
+  soft-state window, so nothing is expired at the switch.
+- the leader still judges the placement lease. Its only write,
+  `TakePlacementLease`, applies at every level, and the log holds no
+  renewals, so a take decided anywhere but the leader's soft state could
+  name a second holder while the first one's lease runs. No store proposes
+  that take on its own.
 
 Level 2 is fleet features (see [Fleet features](control-plane.md#fleet-features)):
 `register_node_in_fleet`, a registration that keeps the broker's features

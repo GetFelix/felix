@@ -594,8 +594,9 @@ pub(super) async fn release_placement_lease(store: &InMemoryStore, holder: &str,
 }
 
 impl InMemoryStore {
-    /// The Raft leader taking the lease: whatever the expiry, since
-    /// leadership is the lease there. Deterministic, as a Raft apply must be.
+    /// A take the Raft leader judged: the expiry is the leader's soft state,
+    /// never the log, so the apply takes whatever this store last recorded.
+    /// Deterministic, as a Raft apply must be.
     pub(crate) async fn take_placement_lease(&self, holder: &str) -> PlacementLease {
         let placement = &mut self.shards.write().await.placement;
         let taken = placement.holder.as_deref() != Some(holder);

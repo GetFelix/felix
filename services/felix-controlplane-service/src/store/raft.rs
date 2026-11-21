@@ -438,7 +438,8 @@ impl RaftStore {
     /// Ask the leader, wherever it is. `None` when the leader predates
     /// leader-only requests, or declines them because some member predates
     /// the commands they propose; both only happen part-way through a rolling
-    /// upgrade, and the caller then falls back to the log.
+    /// upgrade. Heartbeats and expiry then fall back to the log; the
+    /// placement lease does not, since the log cannot judge its expiry.
     async fn ask_leader(&self, request: LeaderRequest) -> StoreResult<Option<MetaResponse>> {
         let bytes = serde_json::to_vec(&request)?;
         match self.handle.ask_leader(bytes).await {
@@ -1707,30 +1708,15 @@ impl ControlPlaneStore for RaftStore {
             .await?
         {
             Some(MetaResponse::PlacementLease { token, taken }) => {
-                return Ok(Some(PlacementLease { token, taken }));
-            }
-            Some(MetaResponse::NoPlacementLease) => return Ok(None),
-            Some(_) => return Err(unexpected_shape("placement lease")),
-            None => {}
-        }
-        // A leader from before leader-only requests: it takes the lease at
-        // once, as that build did.
-        if self.local()?.placement_holder().await.as_deref() == Some(holder) {
-            return Ok(Some(PlacementLease {
-                token: self.local()?.placement_token().await?,
-                taken: false,
-            }));
-        }
-        match self
-            .propose(MetaCommand::TakePlacementLease {
-                holder: holder.to_string(),
-            })
-            .await?
-        {
-            MetaResponse::PlacementLease { token, taken } => {
                 Ok(Some(PlacementLease { token, taken }))
             }
-            _ => Err(unexpected_shape("placement lease")),
+            Some(MetaResponse::NoPlacementLease) => Ok(None),
+            Some(_) => Err(unexpected_shape("placement lease")),
+            // Only the leader can judge expiry: the log holds no renewals, so
+            // a take proposed from here could make a second holder.
+            None => Err(StoreError::Unexpected(anyhow::anyhow!(
+                "the raft leader does not judge the placement lease"
+            ))),
         }
     }
 
