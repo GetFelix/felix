@@ -298,15 +298,15 @@ pub(super) async fn record_raft_floors(
             continue;
         };
         // Only a leader reports, so a member of the target leads a group at
-        // this incarnation. Before the floor, which a shard started on Raft
-        // does not keep.
+        // this incarnation and epoch. Before the floor, which a shard started
+        // on Raft does not keep.
         if mark_formed
             && record
                 .raft_target
                 .as_ref()
                 .is_some_and(|target| target.members.contains_key(node_id))
         {
-            record.mark_raft_formed(report.incarnation);
+            record.mark_raft_formed(report.incarnation, report.epoch);
         }
         match record.raise_raft_floor(report) {
             Ok(true) => raised += 1,
@@ -318,6 +318,15 @@ pub(super) async fn record_raft_floors(
                 name = %report.key.stream,
                 shard = report.key.shard,
                 "skipped a Raft floor report for a shard not on Raft",
+            ),
+            // A leader cut off before a re-form reports its old epoch again
+            // on every refresh; the floor check already shuts it out.
+            Err(err @ crate::model::RaftFloorError::OtherEpoch { .. }) => tracing::debug!(
+                node_id,
+                name = %report.key.stream,
+                shard = report.key.shard,
+                error = %err,
+                "skipped a Raft floor report from another reform epoch",
             ),
             Err(err) => tracing::warn!(
                 node_id,

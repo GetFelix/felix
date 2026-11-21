@@ -89,10 +89,16 @@ impl ShardAssignment {
         self.raft_target.is_some() && self.raft_formed != Some(self.incarnation)
     }
 
-    /// Note that a leader of the group at `incarnation` reported, which
-    /// releases the held set. Returns whether this changed the record.
-    pub(crate) fn mark_raft_formed(&mut self, incarnation: u64) -> bool {
-        if incarnation != self.incarnation || self.raft_formed == Some(incarnation) {
+    /// Note that a leader of the group at `incarnation` and reform `epoch`
+    /// reported, which releases the held set. A report from another epoch is
+    /// an old group's leader, cut off before a re-form, and marks nothing.
+    /// Returns whether this changed the record.
+    pub(crate) fn mark_raft_formed(&mut self, incarnation: u64, epoch: u64) -> bool {
+        let placed_epoch = self.placed.as_ref().map_or(0, |placed| placed.epoch);
+        if incarnation != self.incarnation
+            || epoch != placed_epoch
+            || self.raft_formed == Some(incarnation)
+        {
             return false;
         }
         self.raft_formed = Some(incarnation);

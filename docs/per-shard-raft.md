@@ -4104,8 +4104,9 @@ later by no report a Raft shard sends:
   from the control plane could still form the old set while another forms
   the new one. The control plane closes that (#2794): once it stores a
   target for a set, it refuses any write that changes the set until a
-  leader the target names has sent it a floor report, which marks the group
-  formed at that stream incarnation (`raft_formed`). Every broker that can
+  leader the target names has sent it a floor report at the record's
+  reform epoch, which marks the group formed at that stream incarnation
+  (`raft_formed`). A leader of an older epoch marks nothing. Every broker that can
   form therefore reads the same set and target, and only the lowest broker
   of that set forms it. Placement waits for the mark too, showing "waiting
   for the group to form before changing its set". A member that dies before
