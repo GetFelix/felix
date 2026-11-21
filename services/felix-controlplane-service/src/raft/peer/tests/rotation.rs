@@ -302,8 +302,9 @@ async fn a_connection_closes_when_its_client_certificate_ends() {
     assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
 }
 
-/// Member 1 serves under `a1`, then each bad file is written in turn and
-/// reloaded; member 2 must still see `a1`.
+/// After a reload of member 1, member 2 still sees `a1` and is still
+/// answered: TLS 1.3 finishes the client's handshake before the server
+/// checks the client certificate, so only a request shows a refusal.
 async fn assert_still_serving(
     live: &super::super::live::LivePeerTls,
     two: &PeerSecurity,
@@ -312,7 +313,9 @@ async fn assert_still_serving(
     why: &str,
 ) {
     live.reload();
-    assert_eq!(connect(two, port).await.expect("connect").1, a1, "{why}");
+    let (mut stream, server) = connect(two, port).await.expect("connect");
+    assert_eq!(server, a1, "{why}");
+    who(&mut stream).await;
 }
 
 #[tokio::test]
