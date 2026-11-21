@@ -16,6 +16,7 @@ use felix_controlplane_service::store::{AuthStore, ControlPlaneStore, StoreConfi
 
 const CLUSTER_ID: &str = "runtime-cluster";
 const PEER_TOKEN: &str = "runtime-peer-token-runtime-peer-token";
+const BOOTSTRAP_TOKEN: &str = "runtime-bootstrap-token-runtime-bootstrap";
 
 fn http(
     addr: SocketAddr,
@@ -128,15 +129,20 @@ fn command(addr: SocketAddr, peer: SocketAddr, data_dir: &std::path::Path) -> Co
 }
 
 /// `initial` is `FELIX_RAFT_INITIAL_CLUSTER_STATE`: `new` on the first
-/// start of an empty data dir, `existing` after.
+/// start of an empty data dir, `existing` after. The bootstrap listener, where
+/// the operator imports, is on `bootstrap`.
 fn spawn(
     addr: SocketAddr,
     peer: SocketAddr,
+    bootstrap: SocketAddr,
     data_dir: &std::path::Path,
     initial: &str,
 ) -> std::process::Child {
     command(addr, peer, data_dir)
         .env("FELIX_RAFT_INITIAL_CLUSTER_STATE", initial)
+        .env("FELIX_BOOTSTRAP_ENABLED", "true")
+        .env("FELIX_BOOTSTRAP_BIND_ADDR", bootstrap.to_string())
+        .env("FELIX_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN)
         .spawn()
         .expect("spawn controlplane")
 }
@@ -173,15 +179,16 @@ fn stop(child: &mut std::process::Child) {
 fn the_binary_serves_and_survives_a_restart_with_no_database() {
     let addr = common::reserve_port();
     let peer = common::reserve_port();
+    let bootstrap = common::reserve_port();
     let data_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut first = Reaped(spawn(addr, peer, data_dir.path(), "new"));
+    let mut first = Reaped(spawn(addr, peer, bootstrap, data_dir.path(), "new"));
     wait_ready(&mut first, addr);
 
     // The catalog API needs an operator credential, and a fresh binary has no
     // tenant to mint one from. Seed one through the import path, the same
     // way a migration would, then mint against the keys it was given.
-    let bearer = seed_operator(addr, peer);
+    let bearer = seed_operator(addr, peer, bootstrap);
 
     let (status, _) = http(
         addr,
@@ -197,7 +204,7 @@ fn the_binary_serves_and_survives_a_restart_with_no_database() {
 
     // Same data directory: the metadata must come back from the Raft log
     // and snapshot — there is no database holding it.
-    let mut second = Reaped(spawn(addr, peer, data_dir.path(), "existing"));
+    let mut second = Reaped(spawn(addr, peer, bootstrap, data_dir.path(), "existing"));
     wait_ready(&mut second, addr);
     let (status, body) =
         http(addr, "GET", "/v1/tenants", Some(&bearer), None).expect("list tenants");
@@ -212,10 +219,11 @@ fn the_binary_serves_and_survives_a_restart_with_no_database() {
 
 /// Import an `ops` tenant with known keys and return an operator bearer.
 ///
-/// On the way, checks that only a peer can do this: the public API port has
-/// no Raft routes at all, and the peer port refuses anyone without the
-/// cluster id and peer token.
-fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
+/// On the way, checks that only the operator can do this: the public API port
+/// has no Raft routes at all, the peer port refuses anyone without the cluster
+/// id and peer token and refuses an import even from a peer, and the bootstrap
+/// listener takes it only with the bootstrap token.
+fn seed_operator(addr: SocketAddr, peer: SocketAddr, bootstrap: SocketAddr) -> String {
     let private = [3u8; 32];
     let signing = ed25519_dalek::SigningKey::from_bytes(&private);
     let keys = felix_controlplane_service::auth::felix_token::TenantSigningKeys {
@@ -248,6 +256,9 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
             .expect("keys");
         export_state_from(&seed).await.expect("export")
     });
+    let operator_import =
+        serde_json::to_vec(&serde_json::json!({ "state": &exported, "overwrite": false }))
+            .expect("encode import");
     let import = encode_command(&MetaCommand::ImportState {
         state: Box::new(exported),
         overwrite: false,
@@ -283,6 +294,21 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
         &import,
     )
     .expect("propose import");
+    assert_eq!(status, 403, "no peer may propose an import: {body}");
+
+    let route = "/internal/bootstrap/import-state";
+    let (status, _) =
+        http(bootstrap, "POST", route, None, Some(&operator_import)).expect("bootstrap port");
+    assert_eq!(status, 401, "an import without the bootstrap token");
+    let (status, body) = http_with_headers(
+        bootstrap,
+        "POST",
+        route,
+        None,
+        &[("X-Felix-Bootstrap-Token", BOOTSTRAP_TOKEN)],
+        Some(&operator_import),
+    )
+    .expect("operator import");
     assert_eq!(status, 200, "import the operator tenant: {body}");
 
     felix_controlplane_service::auth::felix_token::mint_token_for(

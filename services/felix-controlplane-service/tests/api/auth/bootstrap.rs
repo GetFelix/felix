@@ -818,3 +818,94 @@ async fn a_dev_token_narrowed_by_pairs_keeps_them_across_a_refresh() {
     .expect("dev token");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+fn operator_post(path: &str, token: Option<&str>, body: serde_json::Value) -> Request<Body> {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json");
+    if let Some(token) = token {
+        request = request.header("X-Felix-Bootstrap-Token", token);
+    }
+    request.body(Body::from(body.to_string())).expect("request")
+}
+
+/// The operator's import is on the bootstrap listener, behind its token, and
+/// refused over a store that holds state unless it says `overwrite`.
+#[tokio::test]
+async fn the_operator_imports_through_the_bootstrap_listener() {
+    let seed = InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    });
+    seed.create_tenant(felix_controlplane_service::model::Tenant {
+        tenant_id: "restored".to_string(),
+        display_name: "Restored".to_string(),
+    })
+    .await
+    .expect("tenant");
+    let export = serde_json::to_value(seed.export_state().await).expect("export");
+    let (store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+    let app = build_bootstrap_router(state);
+    let path = "/internal/bootstrap/import-state";
+
+    let body = json!({ "state": export, "overwrite": false });
+    let anonymous = app
+        .clone()
+        .oneshot(operator_post(path, None, body.clone()))
+        .await
+        .expect("response");
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let wrong = app
+        .clone()
+        .oneshot(operator_post(path, Some("guess"), body.clone()))
+        .await
+        .expect("response");
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    assert!(!store.tenant_exists("restored").await.expect("read"));
+
+    let imported = app
+        .clone()
+        .oneshot(operator_post(path, Some("secret"), body.clone()))
+        .await
+        .expect("response");
+    assert_eq!(imported.status(), StatusCode::OK);
+    assert!(store.tenant_exists("restored").await.expect("read"));
+
+    let again = app
+        .clone()
+        .oneshot(operator_post(path, Some("secret"), body))
+        .await
+        .expect("response");
+    assert_eq!(again.status(), StatusCode::CONFLICT);
+    let overwrite = app
+        .oneshot(operator_post(
+            path,
+            Some("secret"),
+            json!({ "state": export, "overwrite": true }),
+        ))
+        .await
+        .expect("response");
+    assert_eq!(overwrite.status(), StatusCode::OK);
+}
+
+/// The floor waiver is on the bootstrap listener too. A store with no Raft
+/// floor refuses it.
+#[tokio::test]
+async fn the_floor_waiver_needs_the_bootstrap_token() {
+    let (_store, state) = bootstrap_state(true, vec!["secret".to_string()]);
+    let app = build_bootstrap_router(state);
+    let path = "/internal/bootstrap/raft/waive-lost";
+    let body = json!({ "members": [3], "reason": "volume destroyed" });
+    let anonymous = app
+        .clone()
+        .oneshot(operator_post(path, None, body.clone()))
+        .await
+        .expect("response");
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let refused = app
+        .oneshot(operator_post(path, Some("secret"), body))
+        .await
+        .expect("response");
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+}

@@ -4,19 +4,20 @@
 //! RBAC policies, and signing keys for a newly created tenant.
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use casbin::function_map::key_match2;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::api::AppState;
 use crate::api::error::{
-    ApiError, api_conflict, api_internal, api_internal_message, api_not_enabled, api_unauthorized,
-    api_validation_error,
+    ApiError, api_conflict, api_error, api_internal, api_internal_message, api_not_enabled,
+    api_unauthorized, api_validation_error,
 };
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
 use crate::model::Tenant;
+use crate::store::ImportOutcome;
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, Clone)]
 pub struct BootstrapInitializeRequest {
@@ -299,6 +300,82 @@ pub async fn dev_token(
     )
     .await
     .map(Json)
+}
+
+/// An operator's restore: the exported state, and whether it may replace a
+/// store that already holds something.
+#[derive(Debug, Deserialize)]
+pub struct ImportStateRequest {
+    pub state: crate::store::export::ExportedState,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Replace the whole store with an export, behind the bootstrap token.
+///
+/// Under Raft only the leader takes it: a follower answers 421
+/// `not_leader` naming the leader's member id and writes nothing, since the
+/// peer route that would forward it refuses imports. 503 when the write ran
+/// out its budget, in which case it may still have committed.
+pub async fn import_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ImportStateRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.bootstrap_enabled {
+        return Err(api_not_enabled("bootstrap not enabled"));
+    }
+    ensure_bootstrap_authorized(&state, &headers, OPERATOR_SCOPE)?;
+    match state.store.import_state(body.state, body.overwrite).await {
+        Ok(ImportOutcome::Imported) => {
+            tracing::warn!(
+                overwrite = body.overwrite,
+                "the metadata store was replaced by an operator import",
+            );
+            Ok(Json(serde_json::json!({ "status": "imported" })))
+        }
+        Ok(ImportOutcome::NotLeader { leader }) => Err(not_leader(leader)),
+        Err(crate::store::StoreError::Conflict(why)) => Err(api_conflict("conflict", &why)),
+        Err(err) => Err(api_internal("import failed", &err)),
+    }
+}
+
+/// An operator's word that Raft members lost their volumes for good.
+#[derive(Debug, Deserialize)]
+pub struct WaiveLostRequest {
+    pub members: std::collections::BTreeSet<u64>,
+    pub reason: String,
+}
+
+/// Accept lost members for this member's Raft floor block, behind the
+/// bootstrap token. The waiver is this member's own, so it is sent to each
+/// blocked member. 409 with the reason when it is refused.
+pub async fn waive_lost(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<WaiveLostRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.bootstrap_enabled {
+        return Err(api_not_enabled("bootstrap not enabled"));
+    }
+    ensure_bootstrap_authorized(&state, &headers, OPERATOR_SCOPE)?;
+    match state.store.waive_lost(body.members, body.reason).await {
+        Ok(()) => Ok(Json(serde_json::json!({ "status": "waiver recorded" }))),
+        Err(crate::store::StoreError::Conflict(why)) => Err(api_conflict("conflict", &why)),
+        Err(err) => Err(api_internal("waiver failed", &err)),
+    }
+}
+
+/// What the audit log names for an operation on the whole cluster rather
+/// than one tenant.
+const OPERATOR_SCOPE: &str = "*";
+
+fn not_leader(leader: Option<u64>) -> ApiError {
+    let message = match leader {
+        Some(id) => format!("this member does not lead; send it to member {id}"),
+        None => "this member does not lead and knows no leader; retry".to_string(),
+    };
+    api_error(StatusCode::MISDIRECTED_REQUEST, "not_leader", &message)
 }
 
 /// The bootstrap credential check: a shared token, with room for two.

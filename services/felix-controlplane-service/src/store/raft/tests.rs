@@ -5242,3 +5242,120 @@ async fn a_dead_declaration_waits_for_level_42_and_travels_in_snapshots() {
         Err(StoreError::Conflict(_))
     ));
 }
+
+/// An export holding one tenant, as an operator would restore it.
+async fn one_tenant_export() -> crate::store::export::ExportedState {
+    let seed = InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    });
+    seed.create_tenant(Tenant {
+        tenant_id: "restored".to_string(),
+        display_name: "Restored".to_string(),
+    })
+    .await
+    .expect("tenant");
+    seed.export_state().await
+}
+
+/// The operator's import is written by the leader and refused over a store
+/// that holds state unless it says `overwrite`.
+#[tokio::test]
+async fn the_leader_takes_an_operator_import() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    let state = one_tenant_export().await;
+    assert_eq!(
+        ControlPlaneStore::import_state(&*store, state.clone(), false)
+            .await
+            .expect("import"),
+        crate::store::ImportOutcome::Imported
+    );
+    assert!(store.tenant_exists("restored").await.expect("read"));
+    assert!(matches!(
+        ControlPlaneStore::import_state(&*store, state.clone(), false).await,
+        Err(StoreError::Conflict(_))
+    ));
+    assert_eq!(
+        ControlPlaneStore::import_state(&*store, state, true)
+            .await
+            .expect("overwrite"),
+        crate::store::ImportOutcome::Imported
+    );
+}
+
+/// A member that does not lead writes nothing and says so. It must not
+/// forward: the peer route that would carry it refuses imports, so a member
+/// never relays a whole-store replacement for the operator.
+#[tokio::test]
+async fn a_member_that_does_not_lead_refuses_an_import() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let inner = Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    }));
+    let machine = Arc::new(MetadataStateMachine::new(Arc::clone(&inner)));
+    let settings = RaftSettings::new(
+        1,
+        dir.path().into(),
+        crate::raft::PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: Some("0123456789abcdef0123456789abcdef".to_string()),
+            previous_token: None,
+            next_token: None,
+            tls: None,
+        },
+    );
+    // Never initialized, so it leads nothing.
+    let handle = RaftHandle::start(settings, Arc::clone(&machine) as Arc<dyn AppStateMachine>)
+        .await
+        .expect("start raft");
+    let store = Arc::new(RaftStore::new(handle, machine));
+    let started = std::time::Instant::now();
+    assert_eq!(
+        ControlPlaneStore::import_state(&*store, one_tenant_export().await, false)
+            .await
+            .expect("answered"),
+        crate::store::ImportOutcome::NotLeader { leader: None }
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "waited on a write it must not make"
+    );
+    assert!(inner.is_unused().await, "a follower wrote the import");
+
+    // Through the bootstrap listener: 421, naming no leader.
+    let mut state = crate::test_support::app_state_ready(store);
+    state.bootstrap_enabled = true;
+    state.bootstrap_tokens = vec!["operator-token".to_string()];
+    let body = serde_json::to_vec(&serde_json::json!({
+        "state": one_tenant_export().await,
+        "overwrite": false,
+    }))
+    .expect("body");
+    let request = |token: Option<&str>| {
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/internal/bootstrap/import-state")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            request = request.header("X-Felix-Bootstrap-Token", token);
+        }
+        request
+            .body(axum::body::Body::from(body.clone()))
+            .expect("request")
+    };
+    let router = crate::api::build_bootstrap_router(state);
+    let anonymous = tower::ServiceExt::oneshot(router.clone(), request(None))
+        .await
+        .expect("serve");
+    assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
+    let answered = tower::ServiceExt::oneshot(router, request(Some("operator-token")))
+        .await
+        .expect("serve");
+    assert_eq!(
+        answered.status(),
+        axum::http::StatusCode::MISDIRECTED_REQUEST
+    );
+    assert!(inner.is_unused().await, "a follower wrote the import");
+}

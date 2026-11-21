@@ -21,10 +21,8 @@
 //! that returned 201 is present on every member.
 //!
 //! Seeding exercises #340's path too: the signing keys and tenant arrive by
-//! proposing an `ImportState` command over the real propose route, which is
-//! also what lets this test mint operator tokens locally. That route is on
-//! the peer listener and needs the cluster id and peer token, so the test
-//! proposes as a peer would.
+//! an operator import on the leader's bootstrap listener, which is also what
+//! lets this test mint operator tokens locally.
 mod common;
 
 use std::io::{Read, Write};
@@ -37,13 +35,11 @@ use std::time::{Duration, Instant};
 
 use felix_controlplane_service::store::export::export_state_from;
 use felix_controlplane_service::store::memory::InMemoryStore;
-use felix_controlplane_service::store::raft::command::{
-    MetaCommand, decode_result, encode_command,
-};
 use felix_controlplane_service::store::{AuthStore, ControlPlaneStore, StoreConfig};
 
 const CLUSTER_ID: &str = "chaos-cluster";
 const PEER_TOKEN: &str = "chaos-peer-token-chaos-peer-token-chaos";
+const BOOTSTRAP_TOKEN: &str = "chaos-bootstrap-token-chaos-bootstrap";
 
 fn http(
     addr: SocketAddr,
@@ -81,6 +77,8 @@ fn http_with_timeout(
         "{}: {CLUSTER_ID}\r\n",
         felix_controlplane_service::raft::CLUSTER_ID_HEADER
     ));
+    // Only the bootstrap listener reads it.
+    request.push_str(&format!("X-Felix-Bootstrap-Token: {BOOTSTRAP_TOKEN}\r\n"));
     match body {
         Some(body) => {
             request.push_str(&format!(
@@ -118,12 +116,13 @@ fn spawn_instance(
     data_dir: &PathBuf,
     peers: &str,
 ) -> std::process::Child {
-    spawn_with_state(id, api, metrics, data_dir, peers, "existing")
+    spawn_with_state(id, api, metrics, data_dir, peers, "existing", None)
 }
 
 /// Start a member for the first time; `initial` is
 /// `FELIX_RAFT_INITIAL_CLUSTER_STATE`. The member's peer listener is its own
-/// entry in `peers`.
+/// entry in `peers`; its bootstrap listener, for the operator import, is on
+/// `bootstrap` when given.
 fn spawn_with_state(
     id: u64,
     api: SocketAddr,
@@ -131,6 +130,7 @@ fn spawn_with_state(
     data_dir: &PathBuf,
     peers: &str,
     initial: &str,
+    bootstrap: Option<SocketAddr>,
 ) -> std::process::Child {
     let peer_bind = peers
         .split(',')
@@ -147,7 +147,14 @@ fn spawn_with_state(
                 .join(format!("cp-{id}.log")),
         )
         .expect("open instance log");
-    Command::new(env!("CARGO_BIN_EXE_felix-controlplane"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_felix-controlplane"));
+    if let Some(bootstrap) = bootstrap {
+        command
+            .env("FELIX_BOOTSTRAP_ENABLED", "true")
+            .env("FELIX_BOOTSTRAP_BIND_ADDR", bootstrap.to_string())
+            .env("FELIX_BOOTSTRAP_TOKEN", BOOTSTRAP_TOKEN);
+    }
+    command
         .env("FELIX_CONTROLPLANE_BIND", api.to_string())
         .env("FELIX_CONTROLPLANE_METRICS_BIND", metrics.to_string())
         .env("FELIX_RAFT_NODE_ID", id.to_string())
@@ -558,6 +565,7 @@ fn start_group() -> Group {
     let apis: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
     let peer_addrs: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
     let metrics: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
+    let bootstraps: Vec<SocketAddr> = (0..3).map(|_| common::reserve_port()).collect();
     // One root per group: each member's log sits next to its volume, as
     // `cp-<id>.log`, and the two tests in this binary must not share them.
     let root = tempfile::tempdir().expect("tempdir");
@@ -581,7 +589,15 @@ fn start_group() -> Group {
             api: apis[i],
             metrics: metrics[i],
             data_dir: dirs[i].clone(),
-            child: spawn_with_state((i + 1) as u64, apis[i], metrics[i], &dirs[i], &peers, "new"),
+            child: spawn_with_state(
+                (i + 1) as u64,
+                apis[i],
+                metrics[i],
+                &dirs[i],
+                &peers,
+                "new",
+                Some(bootstraps[i]),
+            ),
         })
         .collect();
     for instance in &mut instances {
@@ -612,26 +628,33 @@ fn start_group() -> Group {
             .expect("keys");
         export_state_from(&seed_store).await.expect("export")
     });
-    let import = encode_command(&MetaCommand::ImportState {
-        state: Box::new(exported),
-        overwrite: false,
-        mark_unplaced: false,
-        raise_incarnation: false,
-        lose_ordered: false,
-    });
-    let (status, body) = http(
-        peer_addrs[0],
-        "POST",
-        &felix_controlplane_service::raft::peer_route("propose"),
-        Some(PEER_TOKEN),
-        Some(&import),
-    )
-    .expect("propose import");
-    assert_eq!(status, 200, "import proposal: {body}");
-    let payload_start = body.find("\r\n\r\n").expect("body split") + 4;
-    decode_result(&body.as_bytes()[payload_start..])
-        .expect("decodes")
-        .expect("import succeeds");
+    // Only the leader takes an import; a follower answers 421 and writes
+    // nothing, so ask each member until the leader does.
+    let import = serde_json::to_vec(&serde_json::json!({ "state": exported, "overwrite": false }))
+        .expect("encode import");
+    // An unanswered attempt may still have committed, and then a retry is
+    // refused as a second import.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut unanswered = false;
+    'import: loop {
+        for bootstrap in &bootstraps {
+            match http(
+                *bootstrap,
+                "POST",
+                "/internal/bootstrap/import-state",
+                None,
+                Some(&import),
+            ) {
+                Some((200, _)) => break 'import,
+                Some((409, _)) if unanswered => break 'import,
+                Some((421, _)) => {}
+                None | Some((503, _)) => unanswered = true,
+                Some((status, body)) => panic!("import answered {status}: {body}"),
+            }
+        }
+        assert!(Instant::now() < deadline, "no member took the import");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     let bearer = felix_controlplane_service::auth::felix_token::mint_token_for(
         &keys,
