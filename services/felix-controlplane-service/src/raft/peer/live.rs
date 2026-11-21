@@ -6,9 +6,11 @@
 //! the cluster CA now as both client and server, covers every name the
 //! current one does, names the same member of the same cluster, and is not
 //! revoked. A rotated CA bundle must verify this member's own certificate or
-//! the one waiting on disk, and a revocation file that lists nothing clears
-//! the list only with an explicit marker line. Whatever fails is refused with an error log and the current
-//! material stays, so a bad file never takes a member off the group.
+//! the one waiting on disk (then that one must be taken too, or the bundle
+//! is put back), and a revocation file that lists nothing clears the list
+//! only with an explicit marker line. Whatever fails is refused with an
+//! error log and the current material stays, so a bad file never takes a
+//! member off the group.
 //!
 //! A reload changes only the next handshake; connections already up close
 //! when the certificate they were opened under ends (see
