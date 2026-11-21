@@ -559,6 +559,11 @@ struct Hold {
     /// On the runtime's clock: until then this member takes no vote or
     /// pre-vote request, but for the one below.
     until: u64,
+    /// On the runtime's clock: when a member that does not campaign may
+    /// first stand. Past `until` by its [`Pace`] jitter, since openraft's
+    /// own random deadline falls inside the hold and members held together
+    /// would otherwise all stand the moment it ends.
+    stands: u64,
     /// Whether the member is ticked inside the hold, so it campaigns at
     /// once: it promised nobody, or no other voter can have taken its
     /// promise. It still grants nobody else until `until`.
@@ -813,9 +818,11 @@ impl Group {
             })
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
+        let until = timers.now() + timers.election_max;
         let hold = match stored {
             Some(vote) => Hold {
-                until: timers.now() + timers.election_max,
+                until,
+                stands: until + pace.jitter,
                 campaigns: led || sole_voter,
                 follows: parking_lot::Mutex::new(Some(vote).filter(|vote| vote.is_committed())),
             },
@@ -999,8 +1006,8 @@ impl Group {
         // promised nobody. One handed the leadership meanwhile is ticked
         // too: its first tick as leader comes once `Pace::wrote` or
         // `Pace::unanswered` lowers `due` below the hold's end.
-        if self.holds_votes() && !self.hold.campaigns && !self.leads() {
-            self.pace.due.store(self.hold.until, Ordering::Relaxed);
+        if self.waits_to_stand() && !self.leads() {
+            self.pace.due.store(self.hold.stands, Ordering::Relaxed);
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
@@ -1048,7 +1055,7 @@ impl Group {
         if self.stopped.load(Ordering::Relaxed)
             || *self.elections.lock()
             || self.pace.heard.load(Ordering::Relaxed) >= since
-            || (self.holds_votes() && !self.hold.campaigns)
+            || self.waits_to_stand()
         {
             return false;
         }
@@ -1148,6 +1155,23 @@ impl Group {
     /// grants no vote at first".
     pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
+    }
+
+    /// Whether this member is held from standing: it may have promised
+    /// another voter, and `Hold::stands` has not come.
+    fn waits_to_stand(&self) -> bool {
+        !self.hold.campaigns && self.pace.timers.now() < self.hold.stands
+    }
+
+    /// When the vote hold ends, and this member's jitter.
+    #[cfg(test)]
+    pub(super) fn hold_and_jitter(&self) -> (u64, u64) {
+        (self.hold.until, self.pace.jitter)
+    }
+
+    #[cfg(test)]
+    pub(super) fn now(&self) -> u64 {
+        self.pace.timers.now()
     }
 
     /// Mark this member as one a group reached an earlier copy of. Called

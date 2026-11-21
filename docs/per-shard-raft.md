@@ -2638,7 +2638,13 @@ they reach openraft, until `election_timeout_max` has passed on the
 monotonic clock since that member started, not since the process started.
 The member started after the last message the old one took, so the wait
 covers the promise. A held member is not ticked, unless it stands at
-once (below). One request is let through (below).
+once (below). One request is let through (below). A held member's first
+election waits past the hold by a fixed per-member jitter, under
+`election_timeout_max - election_timeout_min`. openraft's own random
+deadline falls inside the hold, so without it every held member of a
+group whose leader did not come back would stand the moment its hold
+ended, and the votes would split. The jitter only delays standing: the
+member grants votes again once the hold ends.
 Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
