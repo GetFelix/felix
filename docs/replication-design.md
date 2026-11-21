@@ -818,7 +818,7 @@ set's generation start, shipped by that set's leader or a later one. With no
 unkept ballot to count from, that needs a start that minted the storage id
 (a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it.
 
-Which of those still count after a restart:
+Each of those three counts for the run that minted the id. After a restart:
 
 - A rotation during an earlier run, as the Raft restore gate's, counts while
   the control plane names the id it rotated from or to and the node has
@@ -829,10 +829,11 @@ Which of those still count after a restart:
   registration binds the directory's `minted-id` record, and the credit then
   holds while the control plane names the id and the node has registered
   only from this directory since. A run that stops before its first dated
-  registration loses the credit, since no later run may bind the record. That
-  costs a readmission, not safety.
-- A later rotation of the id ends the credit for the id written new, even if
-  a crash keeps that id.
+  registration (one the control plane gives a `registered_at_millis`) loses
+  the credit, since no later run may bind the record. That costs a
+  readmission, not safety.
+- A rotation removes `minted-id`, even when a crash keeps the old id; the new
+  id is credited through `last-rotation`.
 
 A directory that lost its copies under an older id, as one swapped back after
 the node ran under another, may be named by sets from before the loss, so

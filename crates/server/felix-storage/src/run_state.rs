@@ -681,7 +681,12 @@ pub struct Mint {
     pub bound: Option<Binding>,
 }
 
-fn record_mint(root: &Path, mint: Mint) -> Result<()> {
+/// Held across a registration's rebinding and a rotation, so a rebinding that
+/// read the mint record before a rotation removed it cannot write it back
+/// under the old id a crash may keep.
+pub(crate) static ID_RECORDS: Mutex<()> = Mutex::new(());
+
+pub(crate) fn record_mint(root: &Path, mint: Mint) -> Result<()> {
     let body = format!(
         "{MINT_HEADER}{}\n{}",
         mint.id.to_hex(),
@@ -723,6 +728,7 @@ pub fn forget_mint(root: &Path) -> Result<()> {
 /// record leaves the directory reading as older than its registration, which
 /// rotates it again.
 pub fn record_dated_registration(root: &Path, registration: Binding) -> Result<()> {
+    let _rotation = ID_RECORDS.lock();
     let current = storage_identity::load(root)?;
     let follows = |bound: Binding| {
         bound.registered_at_millis == registration.registered_at_millis
