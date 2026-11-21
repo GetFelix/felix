@@ -100,6 +100,14 @@ impl PeerTls {
         })
     }
 
+    /// When a chain a peer presented stops being valid, against these roots.
+    pub(crate) fn chain_expiry(
+        &self,
+        presenter: felix_common::tls::Presenter,
+    ) -> felix_common::tls::ChainExpiry {
+        felix_common::tls::ChainExpiry::new(Arc::clone(&self.roots), &provider(), presenter)
+    }
+
     /// The name `peer_certs` is valid for must be `node_id`.
     ///
     /// The chain was verified at the handshake; this is the binding between

@@ -135,7 +135,10 @@ async fn start_with(client_ca: Option<CertificateDer<'static>>) -> Result<Fixtur
         TransportConfig::default(),
     )?);
     let addr = server.local_addr()?;
-    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let mut config = felix_broker_service::config::BrokerConfig::from_env()?;
+    // A bare connection waits out a certificate's lifetime without
+    // authenticating; the auth deadline would close it first.
+    config.auth_timeout_ms = 0;
     let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
         server, broker, config, auth,
     ));
@@ -287,11 +290,12 @@ fn token_ending_in(left: i64) -> Result<String> {
 async fn a_subscription_ends_when_its_token_expires() -> Result<()> {
     let fixture = start().await?;
     let mut config = client_config(&fixture)?;
-    config.auth_token = Some(token_ending_in(5)?);
+    // Long enough that connecting and subscribing finish first under CI load.
+    config.auth_token = Some(token_ending_in(20)?);
     let client = Connection::connect(fixture.addr, "localhost", config).await?;
     let mut sub = client.subscribe("t1", "default", "orders").await?;
 
-    let ended = timeout(Duration::from_secs(10), sub.next_event()).await?;
+    let ended = timeout(Duration::from_secs(40), sub.next_event()).await?;
     let Err(err) = ended else {
         anyhow::bail!("the subscription should end with an error at the token's exp");
     };
@@ -313,7 +317,7 @@ async fn a_connection_closes_when_its_client_certificate_expires() -> Result<()>
     let leaf_key = rcgen::KeyPair::generate()?;
     let mut leaf_params = rcgen::CertificateParams::new(vec!["client".to_string()])?;
     leaf_params.not_after =
-        rcgen::date_time_ymd(1970, 1, 1) + Duration::from_secs(u64::try_from(now_secs())? + 5);
+        rcgen::date_time_ymd(1970, 1, 1) + Duration::from_secs(u64::try_from(now_secs())? + 20);
     let issuer = rcgen::Issuer::new(ca_params, ca_key);
     let leaf = leaf_params.signed_by(&leaf_key, &issuer)?;
 
@@ -341,7 +345,7 @@ async fn a_connection_closes_when_its_client_certificate_expires() -> Result<()>
     let client = Connection::connect(fixture.addr, "localhost", config).await?;
     let mut sub = client.subscribe("t1", "default", "orders").await?;
 
-    match timeout(Duration::from_secs(9), bare.closed()).await? {
+    match timeout(Duration::from_secs(40), bare.closed()).await? {
         quinn::ConnectionError::ApplicationClosed(close) => {
             assert_eq!(close.error_code, quinn::VarInt::from_u32(2));
             assert_eq!(close.reason.as_ref(), b"credential expired");

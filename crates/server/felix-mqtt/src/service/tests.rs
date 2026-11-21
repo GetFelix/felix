@@ -631,24 +631,26 @@ async fn a_second_connect_is_a_protocol_error() {
     assert!(h.client.closed().await);
 }
 
-#[tokio::test(start_paused = true)]
+// Real time: the end is read from the wall clock, which a paused runtime does
+// not move.
+#[tokio::test]
 async fn connection_ends_when_the_token_expires() {
     let soon = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
-        + 20;
+        + 3;
     let mut h = start(Settings::default(), Some(soon));
     h.client.version = Some(Version::V5);
     let mut c = connect(Version::V5);
     c.keep_alive = 600;
     h.client.send(Packet::Connect(c), Version::V5).await;
     assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(!h.client.ended.load(Ordering::SeqCst));
     assert!(matches!(
-        h.client.recv().await,
-        Some(Packet::Disconnect(d)) if d.reason == ReasonCode::NotAuthorized
+        tokio::time::timeout(Duration::from_secs(30), h.client.recv()).await,
+        Ok(Some(Packet::Disconnect(d))) if d.reason == ReasonCode::NotAuthorized
     ));
 }
 

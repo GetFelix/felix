@@ -96,6 +96,8 @@ pub(crate) struct Session {
     throttle: Duration,
     /// The TLS client's certificate chain, DER, leaf first. Empty without one.
     peer_certs: Vec<Vec<u8>>,
+    /// The end of a principal set since the connection last took it.
+    ended: Option<BoxFuture<'static, ()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +120,21 @@ impl Session {
             closing: false,
             throttle: Duration::ZERO,
             peer_certs,
+            ended: None,
         }
+    }
+
+    /// Become `principal`, whose credential's end the connection then waits
+    /// on.
+    pub(crate) fn authenticated_as(&mut self, principal: Principal) {
+        self.ended = Some(principal.ended());
+        self.principal = Some(principal);
+    }
+
+    /// When the current principal's credential ends, if it changed since the
+    /// last call.
+    pub(crate) fn take_end(&mut self) -> Option<BoxFuture<'static, ()>> {
+        self.ended.take()
     }
 
     /// Whether the connection should close once the last answer is written.

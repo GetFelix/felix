@@ -190,3 +190,29 @@ async fn sasl_hands_the_client_certificate_to_the_cluster() {
         "the certificate did not reach the cluster"
     );
 }
+
+/// A connection closes when its credential ends, whether it is idle or
+/// waiting in a long-poll fetch, without waiting for its next request.
+#[tokio::test]
+async fn a_connection_closes_when_its_credential_ends() {
+    for long_poll in [false, true] {
+        let fixture = Fixture::secured(&[READ_ORDERS]).await;
+        fixture.stream("orders", "created", 1, true).await;
+        let mut client = fixture.connect();
+        assert_eq!(client.login(TENANT, TOKEN).await, 0);
+        if long_poll {
+            client
+                .send(
+                    &super::fetch::request(&[("orders.created", 0, 0)], 1, 60_000),
+                    11,
+                )
+                .await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        fixture.cluster.credential_ended.send_replace(true);
+        let next = tokio::time::timeout(std::time::Duration::from_secs(10), client.read_frame())
+            .await
+            .expect("closed promptly");
+        assert!(next.is_none(), "long_poll={long_poll}: still answering");
+    }
+}

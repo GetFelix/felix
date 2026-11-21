@@ -297,9 +297,10 @@ pub(crate) async fn handle_connection_with_shutdown(
     let mut awaiting_auth = auth_deadline.is_some();
     // The handshake checked the client certificate once; the connection must
     // not outlive it. Each stream's credential also ends by then (`auth.rs`).
+    // A leaf that does not parse has no known end: close at once.
     let cert_expiry = connection
         .peer_certificates()
-        .and_then(|chain| felix_common::tls::chain_not_after(&chain));
+        .and_then(|chain| auth.client_chain_ends(&chain).unwrap_or(Some(0)));
     let cert_expired = async move {
         match cert_expiry {
             Some(at) => felix_common::tls::sleep_until_unix(at).await,

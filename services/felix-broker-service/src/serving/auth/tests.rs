@@ -796,3 +796,22 @@ fn a_client_certificate_ends_what_its_token_opens_when_it_expires_first() {
     let mut later = context_ending_at(now - 1);
     bound_by_certificate(&mut later, now + 3_600).expect_err("the token already ended");
 }
+
+/// A leaf that does not parse has no known end, so it is refused rather than
+/// left unbounded.
+#[tokio::test]
+async fn a_client_certificate_that_does_not_parse_is_refused() {
+    let demo = crate::serving::auth::demo::demo_auth_for_tenant("t1").expect("demo auth");
+    let junk = [rustls::pki_types::CertificateDer::from(&b"junk"[..])];
+    let err = demo
+        .auth
+        .authenticate_peer("t1", &demo.token, Some(&junk))
+        .await
+        .err()
+        .expect("an unreadable certificate was accepted");
+    assert!(err.is::<CredentialRefused>(), "{err:#}");
+    demo.auth
+        .authenticate_peer("t1", &demo.token, None)
+        .await
+        .expect("no certificate");
+}

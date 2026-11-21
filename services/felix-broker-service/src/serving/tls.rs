@@ -143,6 +143,12 @@ impl ClientTls {
             .transpose()
     }
 
+    /// The roots client certificates are verified against, when clients must
+    /// present one.
+    pub(crate) fn client_roots(&self) -> Option<Arc<rustls::RootCertStore>> {
+        self.client_roots.clone()
+    }
+
     fn generated(export: Option<&str>) -> Result<Self> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
             .context("generate the development certificate")?;
@@ -209,7 +215,7 @@ fn client_verifier(
 }
 
 /// Same provider as the peer transport; see `peer::tls::provider`.
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+pub(crate) fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     felix_replication::peer::tls::provider()
 }
 

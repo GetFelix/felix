@@ -441,13 +441,16 @@ No stream outlives the credentials it was opened with. Every stream a token
 opened, on every listener, ends when the token expires: at its `exp` plus the
 60 seconds of clock-skew leeway it was accepted under (2 seconds for a lease
 token). MQTT is stricter and disconnects at the bare `exp` (`token_expired`). A stream on a connection with a client certificate also ends at the
-certificate's `notAfter`, the earliest one in the chain the client presented,
-if that comes first.
+certificate's `notAfter`, if that comes first: the earliest of the leaf and
+the intermediates on its verified path to a trusted CA. The CA itself and any
+extra certificate the client sent that is not on that path do not count, and
+a client certificate the broker cannot parse is refused.
 
 The stream ends as a revoked one does: the broker sends code `revoked` as the
 last frame of a subscription, cache watch or control stream, closes a publish
 stream, disconnects an MQTT client with `Not authorized`, and refuses the next
-Kafka request. The broker also closes a QUIC client connection at its
+Kafka request. A Kafka connection closes then too, idle or in a long-poll
+fetch. The broker also closes a QUIC client connection at its
 certificate's `notAfter`, with application close code `2` and reason
 `credential expired`, and refuses any stream opened on it after that.
 
@@ -465,7 +468,12 @@ than its token lives should expect it to end and reconnect.
 Broker-to-broker connections on the internal port follow the same rule: each
 side closes the connection when the other side's certificate passes
 `notAfter` (close code `5`, `peer certificate expired`), and the next dial
-presents the renewed certificate.
+presents the renewed certificate. Each connection closes at a random time in
+the last 30 seconds before `notAfter` (at most a quarter of the time it has
+left), so brokers whose certificates were issued together do not all drop
+their links at once. Rotate node certificates well before `notAfter`. The
+Raft peer transport does not yet re-read its certificate without a restart
+([#2815](https://github.com/GetFelix/felix/issues/2815)).
 
 ### Revoking a principal
 
@@ -983,8 +991,7 @@ A lease token is a Felix token with a few differences:
 Every stream a lease token opened, on every listener, ends 2 seconds after
 its `exp`, the same way a revocation ends it (code `revoked`). Otherwise a
 node could keep writing over an open stream long after it lost the lease.
-The Kafka listener checks the same end time at each request and closes the
-connection after it. Other tokens end the same way, with their own 60 second
+The Kafka listener closes the connection at the same end time. Other tokens end the same way, with their own 60 second
 leeway (see [When a credential expires](#when-a-credential-expires)).
 
 ### The lease key

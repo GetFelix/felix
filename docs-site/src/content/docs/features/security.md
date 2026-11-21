@@ -51,7 +51,9 @@ certificate closes at that certificate's `notAfter`. Short certificate
 lifetimes therefore work as revocation: a renewed certificate is used on the
 next connection, and an unrenewed one stops working everywhere it is in use.
 Clients should refresh before expiry and reconnect. Internal broker-to-broker
-connections close the same way when a node certificate expires. Details:
+connections close the same way when a node certificate expires, each up to 30
+seconds early so they do not all drop at once. Rotate node certificates
+before they expire. Details:
 [When a credential expires](https://github.com/GetFelix/felix/blob/main/docs/auth.md#when-a-credential-expires).
 
 ### Rotating the Raft peer token

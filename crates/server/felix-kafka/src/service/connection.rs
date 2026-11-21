@@ -81,12 +81,19 @@ where
     let auth_deadline = Instant::now() + shared.settings.auth_timeout;
     // Whether a produce was queued since the writer last drained.
     let mut pipelined = false;
+    // Watched while idle and while a request is handled, so neither an idle
+    // connection nor a long-poll fetch outlives the credential.
+    let mut ended: BoxFuture<'static, ()> = Box::pin(std::future::pending());
     loop {
+        if let Some(next) = session.take_end() {
+            ended = next;
+        }
         let authenticated = session.authenticated();
         let mut size = [0u8; 4];
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => return Ok(()),
+            () = &mut ended => return credential_ended(&queue).await,
             _ = tokio::time::sleep_until(auth_deadline), if !authenticated => {
                 return Err(auth_timed_out(shared));
             }
@@ -137,7 +144,12 @@ where
         if !parsed.pipelines() && std::mem::take(&mut pipelined) {
             drain(&queue).await?;
         }
-        match api::handle(shared, &mut session, parsed, shutdown).await? {
+        let handled = tokio::select! {
+            biased;
+            () = &mut ended => return credential_ended(&queue).await,
+            handled = api::handle(shared, &mut session, parsed, shutdown) => handled?,
+        };
+        match handled {
             Handled::Later(answer) => {
                 pipelined = true;
                 send(
@@ -170,6 +182,14 @@ where
             }
         }
     }
+}
+
+/// Close a connection whose credential was revoked or reached its end time,
+/// once the answers already queued are written.
+async fn credential_ended(queue: &mpsc::Sender<Queued<'_>>) -> Result<()> {
+    tracing::info!("closing a kafka connection: its credential ended");
+    drain(queue).await?;
+    bail!("closing the connection: credential ended");
 }
 
 /// Queue an answer, waiting while the pipeline is full: the connection stops

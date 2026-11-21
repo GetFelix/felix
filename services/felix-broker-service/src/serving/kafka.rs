@@ -127,8 +127,13 @@ impl Cluster for BrokerCluster {
         match self.auth.authenticate_peer(tenant_id, token, peer).await {
             Ok(context) => {
                 let revocable = context.revocable;
+                let watched = revocable.clone();
                 Ok(Principal::with_permissions(tenant_id, context.matcher)
-                    .with_revocation(move || revocable.is_revoked()))
+                    .with_revocation(move || revocable.is_revoked())
+                    .with_end(move || {
+                        let watched = watched.clone();
+                        Box::pin(async move { watched.revoked().await })
+                    }))
             }
             Err(err) if err.is::<crate::serving::revocation::Revoked>() => {
                 Err("token rejected: credential revoked".to_string())

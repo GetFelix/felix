@@ -21,7 +21,9 @@ use rustls::sign::CertifiedKey;
 mod binding;
 pub use binding::{PRINCIPAL_URI_PREFIX, check_subject_binding};
 mod expiry;
-pub use expiry::{chain_not_after, sleep_until_unix, until_unix};
+pub use expiry::{
+    ChainExpiry, Presenter, UnreadableCertificate, sleep_until_unix, spread_before, until_unix,
+};
 
 /// How often services check their certificate files for a rotation.
 pub const RELOAD_INTERVAL: Duration = Duration::from_secs(30);

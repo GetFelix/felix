@@ -62,7 +62,7 @@ pub(super) async fn authenticate(
     let response = match outcome {
         Ok(principal) => {
             tracing::debug!(tenant = principal.tenant_id(), "kafka client authenticated");
-            session.principal = Some(principal);
+            session.authenticated_as(principal);
             SaslAuthenticateResponse::default()
         }
         Err((error, reason)) => {

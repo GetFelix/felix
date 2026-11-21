@@ -70,6 +70,8 @@ pub(super) struct FakeCluster {
     pub(super) gated: Mutex<Option<Gated>>,
     /// Fence permits `admit_write` handed out and not yet dropped.
     pub(super) live_permits: Arc<AtomicUsize>,
+    /// Set to end every credential `authenticate` handed out.
+    pub(super) credential_ended: tokio::sync::watch::Sender<bool>,
 }
 
 /// Counts itself in [`FakeCluster::live_permits`] while alive.
@@ -121,7 +123,15 @@ impl Cluster for FakeCluster {
     async fn authenticate(&self, tenant_id: &str, token: &str) -> Result<Principal, String> {
         if tenant_id == TENANT && token == TOKEN {
             let matcher = PermissionMatcher::from_strings(&self.permissions).expect("perms");
-            Ok(Principal::with_permissions(tenant_id, matcher))
+            let ended = self.credential_ended.clone();
+            Ok(
+                Principal::with_permissions(tenant_id, matcher).with_end(move || {
+                    let mut ended = ended.subscribe();
+                    Box::pin(async move {
+                        let _ = ended.wait_for(|ended| *ended).await;
+                    })
+                }),
+            )
         } else {
             Err("token rejected".to_string())
         }
@@ -409,6 +419,7 @@ impl Fixture {
             peer_certs_seen: Mutex::new(Vec::new()),
             gated: Mutex::new(None),
             live_permits: Arc::new(AtomicUsize::new(0)),
+            credential_ended: tokio::sync::watch::channel(false).0,
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);
