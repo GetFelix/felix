@@ -69,7 +69,7 @@ laid out the way the reader assumes, so its length field means nothing.
 The first message on a connection is `Hello`, answered by `HelloOk`. Both carry
 a node id.
 
-A listener serves nothing else until a `Hello` is accepted. Any other request
+A listener serves nothing else until a `Hello` is accepted, and closes a connection that has not said `Hello` within 10 seconds (close code 7). Any other request
 before one is refused with `Unauthorized` and the connection is closed with
 code 6. The certificate shows only that the peer holds one from the CA; the
 `Hello`, checked against that certificate, binds the connection to one node

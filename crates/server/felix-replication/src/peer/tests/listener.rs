@@ -351,6 +351,21 @@ async fn every_request_before_a_hello_is_refused() {
     );
 }
 
+/// A peer that connects and never says `Hello` does not hold the connection
+/// open.
+#[tokio::test]
+async fn a_connection_that_never_says_hello_is_closed() {
+    let listener = Listener::start_on(PEER, Arc::new(CountingHandler::default()), config()).await;
+    let connection = super::lanes::connect(&listener).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .expect("the connection ends");
+    let quinn::ConnectionError::ApplicationClosed(close) = closed else {
+        panic!("expected the listener to close the connection, got {closed}");
+    };
+    assert_eq!(close.error_code, server::HELLO_TIMEOUT_CLOSE_CODE.into());
+}
+
 /// The node id is bound by the first `Hello`. A second one naming another
 /// node ends the connection rather than switching who it speaks for.
 #[tokio::test]

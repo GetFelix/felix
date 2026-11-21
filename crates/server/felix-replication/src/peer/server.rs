@@ -462,6 +462,17 @@ pub(crate) const CERT_EXPIRED_CLOSE_CODE: u32 = 5;
 /// `Hello` was accepted.
 pub(crate) const HELLO_REQUIRED_CLOSE_CODE: u32 = 6;
 
+/// Close code for a connection that did not say `Hello` in time.
+pub(crate) const HELLO_TIMEOUT_CLOSE_CODE: u32 = 7;
+
+/// How long a connection may stay open without a `Hello`. A dialer greets
+/// first, so a peer that holds a certificate and stays silent is holding a
+/// connection slot for nothing.
+#[cfg(not(test))]
+pub(crate) const HELLO_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+pub(crate) const HELLO_DEADLINE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// How far before its certificate's `notAfter` a peer connection may close.
 /// Brokers whose certificates were issued together would otherwise all drop
 /// their links in the same instant. Closing early is safe; late is not.
@@ -507,12 +518,27 @@ async fn serve_connection(
         }
     };
     tokio::pin!(cert_expired);
+    let hello_missing = {
+        let identity = Arc::clone(&identity);
+        async move {
+            tokio::time::sleep(HELLO_DEADLINE).await;
+            if identity.lock().is_some() {
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    tokio::pin!(hello_missing);
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
             () = &mut cert_expired => {
                 tracing::info!(node = %node_id, "closing an internal connection: the peer's certificate expired");
                 connection.close(CERT_EXPIRED_CLOSE_CODE.into(), b"peer certificate expired");
+                break;
+            }
+            () = &mut hello_missing => {
+                tracing::warn!(node = %node_id, "closing an internal connection: no Hello within the deadline");
+                connection.close(HELLO_TIMEOUT_CLOSE_CODE.into(), b"no Hello");
                 break;
             }
             accepted = connection.accept_bi() => match accepted {
