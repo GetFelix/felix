@@ -785,7 +785,7 @@ impl Group {
         pace.saving = own_saves;
         let pace = Arc::new(pace);
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
-        let reports = Arc::new(Reports::new(log.written_commit()));
+        let reports = Arc::new(Reports::new());
         let refusals = Arc::new(Refusals::new(id.clone()));
         let network = Network {
             router: Router::new(
@@ -1432,20 +1432,16 @@ impl Group {
     }
 
     /// Answer `body`. When it is an append whose leader asked for a report,
-    /// the report goes out as soon as the entries are written, while
-    /// openraft's answer waits for their fsync. An answer that is ready
-    /// first says more, and the report is dropped. A written-commit log
-    /// answers at the write, so it skips a relaxed leader's ask ([`Ask`]).
-    async fn answer(&self, body: Request, report: Ask) -> Result<Reply, Refused> {
+    /// the report goes out as soon as the entries are written. On a log
+    /// that fsyncs before it answers, an answer that is ready first says
+    /// more, and the report is dropped. A written-commit log answers at the
+    /// write, and the report follows a successful answer: the leader acks
+    /// on it without waiting for its commit to be applied.
+    async fn answer(self: &Arc<Self>, body: Request, report: Ask) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
-        let report = match report {
-            Ask::Nothing => false,
-            Ask::Written => true,
-            Ask::WrittenIfStrict => !self.log.written_commit(),
-        };
         let asked = match &body {
-            Request::Append(rpc) if report => rpc.entries.last().map(|last| {
+            Request::Append(rpc) if report == Ask::Written => rpc.entries.last().map(|last| {
                 let last = last.log_id();
                 let at = LogPoint {
                     term: last.leader_id.term,
@@ -1458,6 +1454,20 @@ impl Group {
         let Some((leader, last)) = asked else {
             return self.dispatch(body).await;
         };
+        if self.log.written_commit() {
+            let reply = self.dispatch(body).await;
+            if matches!(&reply, Ok(Reply::Append(Ok(_)))) {
+                // Spawned, so the answer does not wait on the report's round
+                // trip. The written position already holds `last`, so the
+                // wait inside is immediate; the bound covers a stopped log.
+                let group = Arc::clone(self);
+                let within = Duration::from_millis(2 * self.pace.timers.heartbeat);
+                self.runtime.spawn(async move {
+                    let _ = tokio::time::timeout(within, group.tell_written(leader, last)).await;
+                });
+            }
+            return reply;
+        }
         let answer = self.dispatch(body);
         let tell = self.tell_written(leader, last);
         tokio::pin!(answer, tell);

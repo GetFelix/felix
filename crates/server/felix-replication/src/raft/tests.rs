@@ -1242,7 +1242,7 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
         Arc::new(Stalls),
         Arc::clone(&pace),
         Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
-        Arc::new(super::written::Reports::new(false)),
+        Arc::new(super::written::Reports::new()),
         Arc::new(super::reach::Reach::new(
             tokio::time::Instant::now(),
             Duration::from_secs(1),
@@ -2453,7 +2453,7 @@ async fn a_failed_vote_does_not_replace_the_scout() {
             Arc::new(Net::default()),
             Arc::new(pace),
             Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
-            Arc::new(super::written::Reports::new(false)),
+            Arc::new(super::written::Reports::new()),
             Arc::clone(&reach),
             Arc::new(super::reach::Refusals::new(id)),
             Arc::clone(&config),

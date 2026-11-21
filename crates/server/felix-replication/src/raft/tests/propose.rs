@@ -606,7 +606,7 @@ async fn a_token_does_not_leave_with_an_append() {
     let wire = Arc::new(Wire::default());
     let transport: Arc<dyn RaftTransport> = wire.clone();
     let lease = super::super::lease::Lease::new(timers().lease);
-    let reports = Arc::new(super::super::written::Reports::new(false));
+    let reports = Arc::new(super::super::written::Reports::new());
     let router = Router::new(
         transport,
         Arc::new(pace().0),
@@ -732,7 +732,7 @@ async fn a_record_past_the_heartbeat_gets_the_time_it_needs() {
     let wire = Arc::new(Gigabit::default());
     let transport: Arc<dyn RaftTransport> = wire.clone();
     let lease = super::super::lease::Lease::new(timers().lease);
-    let reports = Arc::new(super::super::written::Reports::new(false));
+    let reports = Arc::new(super::super::written::Reports::new());
     let router = Router::new(
         transport,
         Arc::new(pace().0),
