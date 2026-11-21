@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The on-box half of the Raft-vs-hybrid parity matrix. run.sh copies it to
-# /mnt/build/raft-parity/node.sh on each build box and calls one subcommand per ssh.
+# /mnt/build/raft-parity/node.sh on each box and calls one subcommand per ssh.
 # Everything it creates or deletes is under /mnt/build/raft-parity, and it only
 # ever signals PIDs it wrote to a pid file itself.
 set -euo pipefail
@@ -356,6 +356,19 @@ print("LOADGEN_JSON " + json.dumps({"scenario": "kafka-tail", "consumed_records"
   "consumed_throughput_mb_s": consumed * size / elapsed / 1e6, "produced_records": sent, "window_s": window,
   "publish_throughput_msg_s": rate, "publish_target_msg_s": target, "failed_sends": 0}))' \
       "$cons" "$dir/kafka-tail-producer.log" "$rate" "$bytes"
+    ;;
+
+  # clean-runs: before a run. Stop what earlier runs left (only the PIDs in their pid files),
+  # delete their run directories and stale holds, then fail if a perf process is still alive.
+  clean-runs)
+    for d in "$R"/run/*/*/; do
+      [ -d "$d" ] || continue
+      bash "$R/node.sh" stop "${d%/}" || true
+    done
+    for d in "$R"/run/*; do [ -e "$d" ] && { in_run "$d"; rm -rf "$d"; }; done
+    rm -f "$R"/hold/*
+    left=$(pgrep -x -l 'felix-broker|felix-controlplane|felix-loadgen|java' || true)
+    [ -z "$left" ] || die "perf processes still running: $(echo "$left" | tr '\n' ' ')"
     ;;
 
   wipe) in_run "$1"; rm -rf "$1" ;;

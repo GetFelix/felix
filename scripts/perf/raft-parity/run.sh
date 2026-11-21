@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Raft vs hybrid parity matrix on the GCP build boxes (felix-build-1..3,
-# us-central1-a, internal network). One binary on both sides; FELIX_SHARD_ENGINE
+# Raft vs hybrid parity matrix on three boxes: the GCP build boxes (felix-build-1..3,
+# us-central1-a) by default, or three Azure VMs with PARITY_PROVIDER=azure (see hosts.sh and
+# azure.sh, which sets that up). One binary on both sides; FELIX_SHARD_ENGINE
 # picks the engine. See docs/perf-raft-parity.md for how to read the result.
 #
 # Every cell, on each side, in each round gets a fresh cluster: a control plane
@@ -14,7 +15,7 @@
 # box 2 and its generator on box 3. While it runs it holds all four build slots
 # on every box, and refuses to start unless every box is quiet.
 #
-#   scripts/perf/raft-parity/build.sh       # once per revision
+#   scripts/perf/raft-parity/build.sh       # once per revision (on Azure: azure.sh build)
 #   scripts/perf/raft-parity/run.sh         # the whole matrix
 #   scripts/perf/raft-parity/run.sh --smoke # one round, one cheap cell, one box
 #
@@ -59,9 +60,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-RSSH=/Volumes/External/worktrees/.build/remote-ssh
-user=hello_getfelix_dev
-export CLOUDSDK_PYTHON=/Volumes/External/worktrees/.build/gcloud-venv/bin/python
+# shellcheck source=hosts.sh
+. "$here/hosts.sh"
 R=/mnt/build/raft-parity
 
 SMOKE=0
@@ -88,7 +88,7 @@ fi
 MAX_HOLD_SECS=$(( 3600 + ROUNDS * 40 * 600 ))
 
 RUNID=$(date -u +%Y%m%dT%H%M%SZ)$([ "$SMOKE" = 1 ] && echo -smoke || true)
-OUT=${OUT:-/Volumes/External/worktrees/.scratch/raft-parity/runs/$RUNID}
+OUT=${OUT:-${PARITY_STATE:-/Volumes/External/worktrees/.scratch/raft-parity}/runs/$RUNID}
 mkdir -p "$OUT/cells"
 exec > >(tee -a "$OUT/run.log") 2>&1 < /dev/null
 
@@ -100,13 +100,12 @@ for sd in "${SIDE_LIST[@]}"; do
 done
 CP_BOX=${BOXES[0]}
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
-raw() { local b=$1; shift; "$RSSH" "$user@felix-build-$b" "$@"; }
+raw() { host_raw "$@"; }
 on() { local b=$1; shift; raw "$b" "bash $R/node.sh $*"; }
 IP=(); MT=()
 for b in "${BOXES[@]}"; do
-  read -r st ip mt < <(gcloud compute instances describe "felix-build-$b" --zone=us-central1-a \
-    --format='value(status,networkInterfaces[0].networkIP,machineType.basename())')
-  [ "$st" = RUNNING ] || { echo "!! felix-build-$b is not running; start it with remote.sh first" >&2; exit 1; }
+  read -r st ip mt < <(host_info "$b")
+  [ "$st" = RUNNING ] || { echo "!! $(host_name "$b") is not running; start it first" >&2; exit 1; }
   IP[$b]=$ip; MT[$b]=$mt
   # A box that just (re)started can answer ssh before its disk is mounted writable.
   ok=0
@@ -114,26 +113,31 @@ for b in "${BOXES[@]}"; do
     raw "$b" "test -w /mnt/build" 2>/dev/null && { ok=1; break; }
     sleep 5
   done
-  [ "$ok" = 1 ] || { echo "!! felix-build-$b: /mnt/build is not writable after 5 min" >&2; exit 1; }
+  [ "$ok" = 1 ] || { echo "!! $(host_name "$b"): /mnt/build is not writable after 5 min" >&2; exit 1; }
 done
 
 # --- the binary, the same on every box -------------------------------------------
 for b in "${BOXES[@]}"; do
   raw "$b" "mkdir -p $R/hold $R/run && cat > $R/node.sh" < "$here/node.sh"
 done
+# Nothing from an earlier run may survive into this one: stop what its pid files name, delete
+# its run directories, and refuse to start if a perf process is still alive. CLEAN_RUNS=0 skips it.
+if [ "${CLEAN_RUNS:-1}" = 1 ]; then
+  for b in "${BOXES[@]}"; do on "$b" clean-runs || { echo "!! $(host_name "$b") is not clean" >&2; exit 1; }; done
+fi
 sums=""
 for b in "${BOXES[@]}"; do
   s=$(raw "$b" "cd $R/bin 2>/dev/null && sha256sum -c --quiet SHA256SUMS >&2 && cat REV SHA256SUMS") \
-    || { echo "!! felix-build-$b has no intact $R/bin; run build.sh" >&2; exit 1; }
-  [ -z "$sums" ] || [ "$s" = "$sums" ] || { echo "!! felix-build-$b has different binaries; run build.sh" >&2; exit 1; }
+    || { echo "!! $(host_name "$b") has no intact $R/bin; run build.sh" >&2; exit 1; }
+  [ -z "$sums" ] || [ "$s" = "$sums" ] || { echo "!! $(host_name "$b") has different binaries; run build.sh" >&2; exit 1; }
   sums=$s
 done
 bsums=""
 if [ "$WANT_BASELINE" = 1 ]; then
   for b in "${BOXES[@]}"; do
     s=$(raw "$b" "cd $R/bin-baseline 2>/dev/null && sha256sum -c --quiet SHA256SUMS >&2 && cat REV SHA256SUMS") \
-      || { echo "!! felix-build-$b has no intact $R/bin-baseline; run BASELINE_REF=$BASELINE_REF build.sh" >&2; exit 1; }
-    [ -z "$bsums" ] || [ "$s" = "$bsums" ] || { echo "!! felix-build-$b has different baseline binaries; run build.sh" >&2; exit 1; }
+      || { echo "!! $(host_name "$b") has no intact $R/bin-baseline; run BASELINE_REF=$BASELINE_REF build.sh" >&2; exit 1; }
+    [ -z "$bsums" ] || [ "$s" = "$bsums" ] || { echo "!! $(host_name "$b") has different baseline binaries; run build.sh" >&2; exit 1; }
     bsums=$s
   done
   case "$(echo "$bsums" | head -1)" in "$BASELINE_REF "*) ;; *) echo "!! $R/bin-baseline holds $(echo "$bsums" | head -1), not $BASELINE_REF" >&2; exit 1 ;; esac
@@ -167,7 +171,7 @@ case " $CELLS " in *-kafka*)
   for b in "${BOXES[@]}"; do
     echo "box$b ${IP[$b]} ${MT[$b]} $(on "$b" sysinfo)"
   done
-  echo "control plane on felix-build-$CP_BOX"
+  echo "control plane on $(host_name "$CP_BOX")"
   echo "config SIDES=\"${ONLY_SIDE:-$SIDES}\" ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE MQTT_TAIL_RATE=$MQTT_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
 } | tee "$OUT/run.env"
 
@@ -291,7 +295,7 @@ run_cell() {
   else
     brokers=("${BOXES[@]}"); lg=${BOXES[$(( (r - 1) % ${#BOXES[@]} ))]}
   fi
-  log "== $name: $KIND, $CONS, fsync $FSYNC, rf $RF, brokers on ${brokers[*]}, loadgen on felix-build-$lg"
+  log "== $name: $KIND, $CONS, fsync $FSYNC, rf $RF, brokers on ${brokers[*]}, loadgen on $(host_name "$lg")"
   for b in "${BOXES[@]}"; do on "$b" touch "$RUNID"; done
   wait_quiet cell || exit 3
   echo "$report" > "$loc/quiet.txt"
@@ -363,7 +367,7 @@ run_cell() {
       lgbrokers="$lgbrokers,${IP[$b]}:15000"; kafka_boot="$kafka_boot,${IP[$b]}:19092"; mqtt_addrs="$mqtt_addrs,${IP[$b]}:11883"
     done
     lgbrokers=${lgbrokers#,}; kafka_boot=${kafka_boot#,}; mqtt_addrs=${mqtt_addrs#,}
-    local common="--brokers $lgbrokers --environment gcp-build-$side --stream $STREAM_NAME"
+    local common="--brokers $lgbrokers --environment $PARITY_ENV-$side --stream $STREAM_NAME"
     case "$KIND" in
       ingest-tput)
         args="--scenario ingest --payload-bytes $PAYLOAD --batch $BATCH --concurrency $PUBLISHERS --in-flight $IN_FLIGHT --duration-secs $SECS --keys $KEYS --shards $NSHARDS --cluster"
@@ -418,7 +422,7 @@ run_cell() {
         else
           args="--scenario resume --concurrency $RESUME_WORKERS --resume-span $RESUME_SPAN --resume-history $RESUME_HISTORY --duration-secs $TAIL_SECS"
         fi
-        fg_common="--brokers $fb --environment gcp-build-$side --stream $STREAM_NAME"
+        fg_common="--brokers $fb --environment $PARITY_ENV-$side --stream $STREAM_NAME"
         if [ "$KIND" = mqtt-tail ]; then
           bg_args="--scenario mqtt-publish --payload-bytes $PAYLOAD --concurrency $TAIL_PUBLISHERS --in-flight $TAIL_IN_FLIGHT --rate $tail_rate --duration-secs $TAIL_SECS --mqtt-addrs $mqtt_addrs --mqtt-topic-prefix bench/"
         else
