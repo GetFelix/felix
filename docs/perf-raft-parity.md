@@ -32,10 +32,11 @@ What the steps do:
 - `provision` creates the resource group `felix-perf-parity-<NAME>` (the same naming as
   `scripts/perf/cloud/`, so its `teardown.sh` also works with `SESSION=parity-<NAME>`),
   a network that allows ssh only from your address, and three VMs in a proximity placement
-  group. Cloud-init installs the build tools, Java for the Kafka cells and rustup, and puts the
-  VM's local NVMe disks in one ext4 volume at `/mnt/build`, which is where every path in the
-  harness already points. It stops if the VM has no local NVMe, and records an `fsync` baseline
-  (4 KiB write plus fsync) per box. If your network resets outbound port 22, set `SSH_PORT=443`
+  group. Cloud-init installs the build tools, Java for the Kafka cells and rustup, and mounts
+  one ext4 volume (`noatime`) at `/mnt/build`, which is where every path in the harness
+  already points and where both engines keep their data. The volume is the VM's local NVMe on
+  L-series sizes and otherwise a Premium SSD v2 data disk made by `provision`. It records an
+  `fsync` baseline (4 KiB write plus fsync) per box. If your network resets outbound port 22, set `SSH_PORT=443`
   and the VMs listen there too.
 - `build` copies the committed tree to VM 3, builds there and installs the same binaries on all
   three, refusing a tree with uncommitted changes. `smoke`, `run` and `fetch-results` check that
@@ -53,31 +54,38 @@ What the steps do:
   the side order alternates by round, so a multiple of 6 balances both; with other values
   `results.md` carries "generator placement not balanced" and the ratios carry that bias.
 
-Settings (environment): `NAME` (default `parity`), `LOCATION` (`eastus2`), `VM_SIZE`,
-`MAX_HOURS` (backstop, below), `PLACEMENT=none` to skip the proximity group if allocation
-fails, `CELLS`, `SIDES`, and every other setting `run.sh` reads.
+Settings (environment): `NAME` (default `parity`), `LOCATION` (`centralus`), `VM_SIZE`
+(`Standard_D16ls_v6`), `ZONE` (`1`, all three VMs and disks), `DATA_DISK` (`auto`, or `local` or
+`premiumv2`), `DISK_GIB`, `DISK_IOPS` and `DISK_MBPS` (256, 12000, 500), `MAX_HOURS` (backstop,
+below), `PLACEMENT=ppg` to add a proximity group (off by default; one zone is already close), `CELLS`, `SIDES`, and every other setting `run.sh` reads.
 
 ### Which VM
 
-`Standard_L8as_v4`: 8 vCPU AMD, 64 GiB, four local NVMe disks striped into one volume. The
-cells measure `fsync`, and a managed disk's `fsync` (a network write) would swamp the
-engines' differences, so local NVMe is the requirement and the L series is Azure's local NVMe
-family. Between the two generations on offer, v4 has the newer disks and costs 10% more per
-hour than v3 (about $0.69 against $0.62 in East US 2); the earlier Azure campaigns ran
-on it, so the numbers stay comparable. A box runs a broker and often the load generator too, so
-eight vCPUs leave more headroom than four (the GCP boxes had 32); `Standard_L4as_v4` is the
-fallback, not the choice. The ratios are what the gate
-reads; absolute numbers are not comparable with the GCP ones.
+`Standard_D16ls_v6` in `centralus`: 16 vCPU, 32 GiB, three of them filling a 48 vCPU
+`standardDlsv6Family` quota (the region's total cores must also have 48 free). The size has no
+local disk, so each VM gets one Premium SSD v2 data disk, 256 GiB, 12000 IOPS and 500 MB/s,
+identical on all three, mounted at `/mnt/build`. Premium SSD v2 is zonal, so the VMs and disks
+all sit in `ZONE` (1). A box runs a broker and often the load generator too, which sixteen
+vCPUs cover with room to spare.
 
-Quota: three L8as_v4 need 24 vCPUs in the `standardLasv4Family` and in the region's total.
-A subscription with the default 20 per family cannot start them. `provision` checks this first
-and prints the options: raise the family quota to at least 24 (Portal, Quotas, Compute; it is
-usually approved in minutes), or `VM_SIZE=Standard_L4as_v4` (12 vCPUs) to run now.
+The cells measure `fsync`, and here it goes to a managed disk over the network, a
+millisecond-class write instead of a local NVMe's tens of microseconds. Absolute numbers in the
+fsync-bound cells therefore differ from local NVMe runs (earlier Azure L-series runs and the GCP
+boxes). The comparison the gate reads, Raft against hybrid, still runs both engines on the
+same hardware, and the per-box `fio-fsync.json` records what an fsync cost. Sizes with local
+NVMe still work: `VM_SIZE=Standard_L8as_v4 LOCATION=eastus2 ZONE= azure.sh provision` uses
+the local volume (`DATA_DISK=auto` picks it for `Standard_L*`).
+
+Quota: `provision` reads the size's family (`StandardDlsv6Family` here) and the region's
+total cores, and stops with the shortfall if either has fewer than 3 x vCPUs free. Raise the
+quota (Portal, Quotas, Compute) or use `VM_SIZE=Standard_D8ls_v6` (24 vCPUs).
 
 ### Cost
 
-Estimates at pay-as-you-go prices (L8as_v4 about $0.69/h each, $2.06/h for the three, plus
-about $0.5/h of disks, addresses and ssh for the whole group at idle). They assume one
+Estimates at approximate pay-as-you-go list prices in `centralus` (D16ls_v6 about $0.81/h
+each, $2.42/h for the three; each Premium SSD v2 disk at 256 GiB, 12000 IOPS and 500 MB/s
+about $0.11/h, $0.33/h for the three; about $0.3/h for OS disks and addresses; roughly
+$3.1/h in all). They assume one
 revision. Time estimates for the matrix come from the cell list (22 cells, two sides, a fresh
 cluster per cell and side) and not from a measured Azure run, so treat them as the planning
 figure and check the first one.
@@ -85,18 +93,18 @@ figure and check the first one.
 | phase | time | cost |
 |---|---|---|
 | provision and cloud-init | 10-15 min | under $1 |
-| build, first time (later revisions reuse the target dir) | 20-40 min | $1-2 |
+| build, first time (later revisions reuse the target dir) | 20-40 min | $1-3 |
 | smoke | 15 min | under $1 |
-| full matrix, `ROUNDS=2`, hybrid and raft | about 4-5 h | $9-12 |
-| full matrix, `ROUNDS=2`, plus the v0.7.2 baseline | about 6-7 h | $13-17 |
-| full matrix, `ROUNDS=6` (balanced), hybrid and raft | about 12-15 h | $27-36 |
+| full matrix, `ROUNDS=2`, hybrid and raft | about 4-5 h | $12-16 |
+| full matrix, `ROUNDS=2`, plus the v0.7.2 baseline | about 6-7 h | $19-22 |
+| full matrix, `ROUNDS=6` (balanced), hybrid and raft | about 12-15 h | $37-47 |
 
-A whole campaign (provision, build, smoke, one full run, teardown) is about $12-16, or $17-22
+A whole campaign (provision, build, smoke, one full run, teardown) is about $16-21, or $23-28
 with the baseline. Time is the cost driver, so run `teardown` the moment `fetch-results` has
 written the archive. Two backstops cover a forgotten group: each VM is set to deallocate
 `MAX_HOURS` (12) after provisioning, which stops compute billing but leaves the disks, and
 the group carries an `autoTeardownAfter` tag for finding it. `azure.sh status` shows what is
-left; `teardown` deletes only a group tagged `felix-perf=parity-<NAME>`.
+left; `teardown` deletes the whole group, data disks included, and only a group tagged `felix-perf=parity-<NAME>`.
 
 ## Run it on GCP
 

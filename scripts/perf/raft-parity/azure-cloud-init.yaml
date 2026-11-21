@@ -1,6 +1,6 @@
 #cloud-config
-# One parity box: build tools, Java (Kafka's own perf tools), and the local NVMe disks
-# formatted as one ext4 volume at /mnt/build, where run.sh and node.sh keep everything.
+# One parity box: build tools, Java (Kafka's own perf tools), and one ext4 volume at
+# /mnt/build (local NVMe or a managed data disk), where run.sh and node.sh keep everything.
 # azure.sh renders this file: __SSH_PORT_STANZA__ becomes extra sshd Port lines.
 package_update: true
 packages:
@@ -34,17 +34,32 @@ write_files:
     permissions: "0755"
     content: |
       #!/bin/sh
-      # The local NVMe disks are the only place fsync is honest enough to measure. Azure lists
-      # them (and never the OS disk) under /dev/disk/azure/local; refuse to fall back to a
-      # managed disk, whose fsync numbers would make the parity cells meaningless.
+      # One volume at /mnt/build, from the local NVMe disks (L series) or the one managed data
+      # disk (DATA_DISK=premiumv2). Never the OS disk. azure.sh fills in the mode and size.
       set -e
+      MODE=__DATA_DISK__
       umount /mnt 2>/dev/null || true
       LOCAL=""
-      for l in /dev/disk/azure/local/by-index/*; do
-        [ -e "$l" ] && LOCAL="$LOCAL $(readlink -f "$l")"
-      done
+      if [ "$MODE" = local ]; then
+        for l in /dev/disk/azure/local/by-index/*; do
+          [ -e "$l" ] && LOCAL="$LOCAL $(readlink -f "$l")"
+        done
+      else
+        # The agent's udev rules name the data disk by LUN; without them, take the one whole
+        # disk of the expected size that nothing is mounted on.
+        for i in $(seq 1 30); do
+          for l in /dev/disk/azure/data/by-lun/0; do
+            [ -e "$l" ] && LOCAL="$(readlink -f "$l")"
+          done
+          [ -n "$LOCAL" ] && break
+          want=$((__DISK_GIB__ * 1073741824))
+          LOCAL=$(lsblk -bdnpo NAME,SIZE,TYPE,MOUNTPOINTS | awk -v w="$want" '$3 == "disk" && $2 == w && $4 == "" {print $1; exit}')
+          [ -n "$LOCAL" ] && break
+          sleep 2
+        done
+      fi
       if [ -z "$LOCAL" ]; then
-        echo "no local NVMe disk under /dev/disk/azure/local" > /var/lib/parity-failed
+        echo "no $MODE data disk found" > /var/lib/parity-failed
         exit 1
       fi
       set -- $LOCAL
@@ -57,7 +72,8 @@ write_files:
       wipefs -a "$DEV"
       mkfs.ext4 -F -m 0 "$DEV"
       mkdir -p /mnt/build
-      grep -q ' /mnt/build ' /etc/fstab || echo "$DEV /mnt/build ext4 defaults,nofail,noatime 0 2" >> /etc/fstab
+      UUID=$(blkid -s UUID -o value "$DEV")
+      grep -q ' /mnt/build ' /etc/fstab || echo "UUID=$UUID /mnt/build ext4 defaults,nofail,noatime 0 2" >> /etc/fstab
       mount /mnt/build
       chown felix:felix /mnt/build
       echo "$DEV $LOCAL" > /var/lib/parity-disk

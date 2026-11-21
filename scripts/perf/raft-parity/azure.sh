@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # The Raft vs hybrid parity matrix on three Azure VMs. One entry point, one command per step:
 #
-#   azure.sh provision       three L-series VMs (local NVMe at /mnt/build) in one resource group
+#   azure.sh provision       three VMs in one resource group, one volume at /mnt/build on each
+#                            (local NVMe on L series, else one Premium SSD v2 data disk)
 #   azure.sh build           build the current revision on VM 3 and install it on all three
 #   azure.sh smoke           one round, three cheap cells, both engines (~15 min)
 #   azure.sh run             the matrix; ROUNDS defaults to 2 (a multiple of 6 also balances
 #                            the generator box and the side order)
 #   azure.sh fetch-results   collect the run's results and each VM's logs into one archive
-#   azure.sh teardown        delete the resource group and everything in it
+#   azure.sh teardown        delete the resource group, which holds the VMs, data disks and IPs
 #   azure.sh all             provision, build, smoke, run, fetch-results, then teardown even on failure
 #   azure.sh status | ssh <1-3> [cmd]   what exists; a shell on a VM
 #
@@ -17,8 +18,11 @@
 # Settings (environment):
 #   NAME=parity           names the resource group, felix-perf-parity-<NAME>, which is also what
 #                         scripts/perf/cloud/teardown.sh takes as SESSION=parity-<NAME>
-#   LOCATION=eastus2      VM_SIZE=Standard_L8as_v4   MAX_HOURS=12 (see below)
-#   PLACEMENT=ppg|none    proximity placement group (default ppg); none if allocation fails
+#   LOCATION=centralus    VM_SIZE=Standard_D16ls_v6   ZONE=1   MAX_HOURS=12 (see below)
+#                         3 x 16 vCPUs; all three VMs and their disks sit in one zone
+#   DATA_DISK=auto        auto: local NVMe for Standard_L* sizes, else premiumv2; or local|premiumv2
+#   DISK_GIB=256 DISK_IOPS=12000 DISK_MBPS=500   the Premium SSD v2 disk, the same on all three
+#   PLACEMENT=none|ppg    proximity placement group (default none: one zone is close enough)
 #   SSH_PORT=22           443 also listens there, for networks that reset outbound :22
 #   SSH_KEY_FILE=~/.ssh/id_ed25519.pub   OPERATOR_CIDR=<your ip>/32 (default: looked up)
 #   AZ_SUBSCRIPTION=...   ROUNDS=2 CELLS SIDES ...  anything run.sh reads passes through
@@ -35,11 +39,22 @@ here="$(cd "$(dirname "$0")" && pwd)"
 top="$(git -C "$here" rev-parse --show-toplevel)"
 cloud="$top/scripts/perf/cloud"
 
-: "${NAME:=parity}" "${LOCATION:=eastus2}" "${VM_SIZE:=Standard_L8as_v4}" "${MAX_HOURS:=12}"
-: "${PLACEMENT:=ppg}" "${SSH_PORT:=22}" "${SSH_KEY_FILE:=$HOME/.ssh/id_ed25519.pub}"
+: "${NAME:=parity}" "${LOCATION:=centralus}" "${VM_SIZE:=Standard_D16ls_v6}" "${MAX_HOURS:=12}"
+: "${ZONE:=1}" "${DATA_DISK:=auto}" "${DISK_GIB:=256}" "${DISK_IOPS:=12000}" "${DISK_MBPS:=500}"
+: "${PLACEMENT:=none}" "${SSH_PORT:=22}" "${SSH_KEY_FILE:=$HOME/.ssh/id_ed25519.pub}"
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || { echo "!! NAME must be lowercase letters, digits and dashes" >&2; exit 2; }
 [[ "$SSH_PORT" =~ ^[0-9]{1,5}$ ]] || { echo "!! SSH_PORT must be a number" >&2; exit 2; }
 [[ "$MAX_HOURS" =~ ^[0-9]{1,3}$ ]] || { echo "!! MAX_HOURS must be a number" >&2; exit 2; }
+[[ "$DISK_GIB" =~ ^[0-9]{1,5}$ && "$DISK_IOPS" =~ ^[0-9]{1,6}$ && "$DISK_MBPS" =~ ^[0-9]{1,5}$ ]] \
+  || { echo "!! DISK_GIB, DISK_IOPS and DISK_MBPS must be numbers" >&2; exit 2; }
+[[ "$ZONE" =~ ^[1-3]?$ ]] || { echo "!! ZONE must be 1, 2, 3 or empty" >&2; exit 2; }
+case "$DATA_DISK" in
+  auto) case "$VM_SIZE" in Standard_L[0-9]*) DATA_DISK=local ;; *) DATA_DISK=premiumv2 ;; esac ;;
+  local|premiumv2) ;;
+  *) echo "!! DATA_DISK must be auto, local or premiumv2" >&2; exit 2 ;;
+esac
+# Premium SSD v2 exists only in a zone, and the disk must be in its VM's zone.
+[ "$DATA_DISK" != premiumv2 ] || [ -n "$ZONE" ] || { echo "!! DATA_DISK=premiumv2 needs a ZONE" >&2; exit 2; }
 
 GROUP="felix-perf-parity-$NAME"
 TAG="parity-$NAME"
@@ -105,7 +120,7 @@ preflight() {
 !! not enough vCPU quota for 3 x $VM_SIZE ($need_cores vCPUs).
    Either raise the "$fam" and total regional cores quota in $LOCATION to at least $need_cores
    (Portal: Quotas > Compute; usually approved within minutes), or use a smaller size that fits:
-     VM_SIZE=Standard_L4as_v4 $0 provision    # 12 vCPUs; slower per box, still local NVMe
+     VM_SIZE=Standard_D8ls_v6 $0 provision    # 24 vCPUs; slower per box, same disk setup
 EOF
     exit 1
   fi
@@ -114,15 +129,25 @@ EOF
 render_cloud_init() {
   local out="$STATE/cloud-init.yaml" stanza=""
   [ "$SSH_PORT" = 22 ] || stanza="Port $SSH_PORT"
-  sed "s|__SSH_PORT_STANZA__|$stanza|" "$here/azure-cloud-init.yaml" > "$out"
+  sed -e "s|__SSH_PORT_STANZA__|$stanza|" -e "s|__DATA_DISK__|$DATA_DISK|" -e "s|__DISK_GIB__|$DISK_GIB|" \
+    "$here/azure-cloud-init.yaml" > "$out"
   echo "$out"
 }
 
 create_vm() { # <i> <ci-file> <vnet> <subnet> <nsg>
   local i=$1 ci=$2 vm="felixperf-parity-$1"
   if az vm show -g "$GROUP" -n "$vm" -o none 2>/dev/null; then log "$vm already exists"; return 0; fi
-  local ppg=()
+  local ppg=() zone=() disk=()
   [ "$PLACEMENT" != ppg ] || ppg=(--ppg felixperf-parity-ppg)
+  [ -z "$ZONE" ] || zone=(--zone "$ZONE")
+  if [ "$DATA_DISK" = premiumv2 ]; then
+    # Created first and named at VM creation; both live in the group, so teardown takes them.
+    # Premium SSD v2 has no host caching and the v6 sizes attach remote disks over NVMe.
+    cli az disk create -g "$GROUP" -n "$vm-data" -l "$LOCATION" --zone "$ZONE" --sku PremiumV2_LRS \
+      --size-gb "$DISK_GIB" --disk-iops-read-write "$DISK_IOPS" --disk-mbps-read-write "$DISK_MBPS" \
+      --logical-sector-size 4096 --tags "felix-perf=$TAG" -o none
+    disk=(--attach-data-disks "$vm-data" --disk-controller-type NVMe)
+  fi
   # ${ppg[@]+...}: an empty array is an unset variable to bash 3.2 under set -u.
   cli az vm create -g "$GROUP" -n "$vm" -l "$LOCATION" --size "$VM_SIZE" \
     --image Canonical:ubuntu-24_04-lts:server:latest \
@@ -130,7 +155,7 @@ create_vm() { # <i> <ci-file> <vnet> <subnet> <nsg>
     --custom-data "$ci" --os-disk-size-gb 128 --storage-sku Premium_LRS \
     --vnet-name felixperf-parity-vnet --subnet nodes --nsg felixperf-parity-nsg --nsg-rule NONE \
     --public-ip-sku Standard --public-ip-address "$vm-ip" --accelerated-networking true \
-    --tags "felix-perf=$TAG" ${ppg[@]+"${ppg[@]}"} -o none
+    --tags "felix-perf=$TAG" ${ppg[@]+"${ppg[@]}"} ${zone[@]+"${zone[@]}"} ${disk[@]+"${disk[@]}"} -o none
 }
 
 cmd_provision() {
@@ -146,7 +171,9 @@ cmd_provision() {
       || die "$GROUP exists and was not made by this script; pick another NAME"
     [ "${FRESH_ONLY:-0}" != 1 ] || die "$GROUP already exists (a KEEP=1 leftover?); run teardown first"
   fi
-  log "provisioning 3 x $VM_SIZE in $LOCATION as $GROUP (ssh from $cidr)"
+  local dd="$DATA_DISK"
+  [ "$DATA_DISK" != premiumv2 ] || dd="premiumv2 ($DISK_GIB GiB, $DISK_IOPS IOPS, $DISK_MBPS MB/s)"
+  log "provisioning 3 x $VM_SIZE in $LOCATION${ZONE:+ zone $ZONE} as $GROUP, data on $dd, ssh from $cidr"
   log "if this fails part way, run: $0 teardown"
   cli az group create -n "$GROUP" -l "$LOCATION" --tags "felix-perf=$TAG" "autoTeardownAfter=$stop" -o none
   [ "$PLACEMENT" != ppg ] || cli az ppg create -g "$GROUP" -n felixperf-parity-ppg -l "$LOCATION" --type Standard -o none
@@ -200,7 +227,7 @@ wait_ready() {
   load_hosts
   local b deadline=$(( $(date +%s) + 1200 ))
   for b in 1 2 3; do
-    log "waiting for box $b (cloud-init: packages, NVMe volume, rustup)"
+    log "waiting for box $b (cloud-init: packages, data volume, rustup)"
     until ssh_box "$b" "test -e /var/lib/parity-ready || test -e /var/lib/parity-failed" 2>/dev/null; do
       [ "$(date +%s)" -lt "$deadline" ] || die "box $b not ready after 20 min; check: $0 ssh $b 'cloud-init status --long'"
       sleep 15
@@ -212,7 +239,7 @@ wait_ready() {
 set -e
 mountpoint -q /mnt/build && test -w /mnt/build || { echo "/mnt/build is not a writable mount" >&2; exit 1; }
 echo "$(nproc) cpus, $(awk '/MemTotal/{printf "%d GiB", $2/1048576}' /proc/meminfo), volume $(cat /var/lib/parity-disk), $(df -h --output=size /mnt/build | tail -1 | xargs)"
-# What an fsync costs here, kept with the run. A managed disk would show milliseconds.
+# What an fsync costs here, kept with the run. A managed disk shows about a millisecond.
 mkdir -p /mnt/build/raft-parity
 fio --name=fsync --filename=/mnt/build/fio.tmp --size=256M --bs=4k --rw=write --fsync=1 \
   --runtime=10 --time_based --output-format=json > /mnt/build/raft-parity/fio-fsync.json

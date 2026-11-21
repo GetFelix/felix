@@ -10,7 +10,7 @@
 #
 # gcp:   the felix-build-1..3 boxes, reached through the lanes' remote-ssh wrapper.
 # azure: three VMs made by azure.sh provision, listed in $PARITY_STATE/hosts.env.
-#        /mnt/build there is the local NVMe, so every path in node.sh and run.sh is the same.
+#        /mnt/build there is the local NVMe or the managed data disk, so every path in node.sh and run.sh is the same.
 
 : "${PARITY_PROVIDER:=gcp}"
 case "$PARITY_PROVIDER" in
