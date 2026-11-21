@@ -159,10 +159,15 @@ async fn a_certificate_from_another_ca_is_refused() {
     let pki = Pki::new();
     let other = Pki::new();
     let server = listener(PEER, Some(tls(&pki.issue("b", PEER)))).await;
-    // Trusts the right CA, so the *server* verifies; presents a certificate
-    // the server's CA never issued.
+    // Trusts both CAs, so it verifies the server and its own certificate
+    // loads; presents a certificate the server's CA never issued.
     let mut paths = other.issue("a", "broker-a");
-    paths.ca_path = pki.ca_path.display().to_string();
+    let both = other.path().join("both.pem");
+    let bundle = [&pki.ca_path, &other.ca_path]
+        .map(|path| std::fs::read_to_string(path).expect("read ca"))
+        .concat();
+    std::fs::write(&both, bundle).expect("write bundle");
+    paths.ca_path = both.display().to_string();
     let pool = pool_as("broker-a", Some(tls(&paths)));
 
     let err = pool
@@ -180,11 +185,10 @@ async fn a_certificate_from_another_ca_is_refused() {
 async fn an_expired_certificate_is_refused() {
     let pki = Pki::new();
     let server = listener(PEER, Some(tls(&pki.issue("b", PEER)))).await;
-    let expired = pki.issue_with("a", "broker-a", |params| {
-        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
-        params.not_after = rcgen::date_time_ymd(2020, 1, 2);
-    });
-    let pool = pool_as("broker-a", Some(tls(&expired)));
+    // Valid at load, which refuses an expired one, and expired by the dial.
+    let expiring = pki.issue_with("a", "broker-a", expiring_in(2));
+    let pool = pool_as("broker-a", Some(tls(&expiring)));
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let err = pool
         .request(PEER, server.addr, forward())
@@ -346,6 +350,32 @@ async fn a_rotated_certificate_is_used_by_new_connections_without_dropping_old_o
     pool.shutdown().await;
     server.stop().await;
     let _ = pki.path();
+}
+
+/// A rotated certificate from a CA the peers do not trust is refused, and
+/// the next handshake still presents the old one.
+#[tokio::test]
+async fn a_rotated_certificate_from_another_ca_is_refused_and_the_old_one_kept() {
+    let pki = Pki::new();
+    let server = listener(PEER, Some(tls(&pki.issue("b", PEER)))).await;
+    let paths = pki.issue("a", "broker-a");
+    let dialler_tls = tls(&paths);
+
+    let other = Pki::new();
+    let stranger = other.issue("a", "broker-a");
+    std::fs::copy(&stranger.cert_path, &paths.cert_path).expect("copy cert");
+    std::fs::copy(&stranger.key_path, &paths.key_path).expect("copy key");
+    let err = dialler_tls
+        .reload()
+        .expect_err("a certificate from another CA was taken");
+    assert!(format!("{err:#}").contains("against the CA"), "{err:#}");
+
+    let pool = pool_as("broker-a", Some(dialler_tls));
+    pool.request(PEER, server.addr, forward())
+        .await
+        .expect("the old certificate is still presented");
+    pool.shutdown().await;
+    server.stop().await;
 }
 
 /// Missing or mismatched material is refused at load, before anything
