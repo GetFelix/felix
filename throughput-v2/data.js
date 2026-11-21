@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795237809543,
+  "lastUpdate": 1795240530434,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -64012,6 +64012,58 @@ window.BENCHMARK_DATA = {
             "range": "17156.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1734361.09\nmean: 1735373.22\nstdev: 17156.12\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9af5d0deed57a3fd8cc4460de6b4af91668994cb",
+          "message": "fix(storage): a wiped directory's new storage id keeps its readmission credit once registered (#2879)\n\n* fix(storage): a wiped directory's new storage id keeps its readmission credit once registered (#2552)\n\nA start that writes the storage id new records it in `minted-id`. The run\nthat wrote it binds the record at its first dated registration, and later\nstarts credit a bound record while the control plane names the id at that\nregistration or the next one. Any other start removes an unbound record, and\na rotation removes it before its own record, so a mint is never credited\nwithout its run's registration.\n\n* fix(storage): serialize mint rebinding with rotation; review follow-ups (#2552)\n\n* chore: record that no spec models readmission credit (#2552)\n\nFelixShardUnified takes a set written after the loss as given; the\nminted-id record is the code's evidence for it and no TLA+ action changes.\n\nSpec-Unaffected: no TLA+ config models readmission credit; FelixShardUnified assumes the post-loss set this record evidences",
+          "timestamp": "2026-11-21T05:50:25Z",
+          "tree_id": "c0dd211d8dc9b4b3b4c7048919870c5a8b12c58e",
+          "url": "https://github.com/GetFelix/felix/commit/9af5d0deed57a3fd8cc4460de6b4af91668994cb"
+        },
+        "date": 1795240529685,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 568137.08,
+            "range": "27862.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 568137.08\nmean: 579799.79\nstdev: 27862.56\ncv: 4.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 568137.08,
+            "range": "27862.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 568137.08\nmean: 579799.79\nstdev: 27862.56\ncv: 4.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127225.87,
+            "range": "681.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127225.87\nmean: 127263.32\nstdev: 681.04\ncv: 0.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1272258.75,
+            "range": "6810.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1272258.75\nmean: 1272633.23\nstdev: 6810.44\ncv: 0.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
