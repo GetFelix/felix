@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795313367857,
+  "lastUpdate": 1795334087694,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65364,6 +65364,58 @@ window.BENCHMARK_DATA = {
             "range": "16919.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 974476.91\nmean: 968959.09\nstdev: 16919.74\ncv: 1.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "28f24a53f9d3374478ad54c790b0aa266dc051e4",
+          "message": "refactor(tls): one credential-expiry close, wall clock in felix_common::clock, one URI SAN reader (#2942)\n\n* refactor: one expiry close, one wall-clock module, one URI SAN reader\n\n* refactor(tls): no jitter draw at zero spread; admission wording per copy kind\n\n* chore: spec pairing note\n\nSpec-Unaffected: moves credential-expiry, wall-clock and URI SAN helpers into felix-common with no behaviour change; no lease, quorum, report, promotion or handoff logic is touched.\n\n* chore(demos): lockfiles pick up felix-mqtt's felix-common dependency",
+          "timestamp": "2026-11-22T07:46:08Z",
+          "tree_id": "b5a2f595261ce4a171dc684047dcff04b9ce0872",
+          "url": "https://github.com/GetFelix/felix/commit/28f24a53f9d3374478ad54c790b0aa266dc051e4"
+        },
+        "date": 1795334086901,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358164.42,
+            "range": "7474.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358164.42\nmean: 363211.39\nstdev: 7474.83\ncv: 2.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358164.42,
+            "range": "7474.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358164.42\nmean: 363211.39\nstdev: 7474.83\ncv: 2.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80885.7,
+            "range": "742.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80885.70\nmean: 81029.82\nstdev: 742.97\ncv: 0.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808857,
+            "range": "7429.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808857.00\nmean: 810298.16\nstdev: 7429.76\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
