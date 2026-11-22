@@ -1200,10 +1200,31 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     log.fail_flush_past(log.tail_offset().await.expect("tail"));
     cluster.net.cut.lock().insert(other.into());
     cluster.net.muted.lock().insert(other.into());
+    // The failing flush would answer the append with an error at once, and
+    // the answer beats the written report, which is then dropped. Hold the
+    // flush until the report has left.
+    let reported = |net: &Net| {
+        net.written_reports
+            .lock()
+            .iter()
+            .filter(|from| from.as_str() == failing)
+            .count()
+    };
+    let before_r = reported(&cluster.net);
+    let held = log.hold_flushes().await;
     let r = engine
         .propose(&shard(0), batch(b"R"))
         .await
         .expect("written");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while reported(&cluster.net) == before_r {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never reported R written"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    drop(held);
     engine
         .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
         .await
