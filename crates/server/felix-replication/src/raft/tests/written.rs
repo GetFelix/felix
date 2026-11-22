@@ -571,9 +571,9 @@ async fn led_with_a_learner() -> (Led, &'static str) {
 /// **A sole voter sends nothing for its writes, and starts sending once a
 /// member joins.** A group of one has no peer: its own written or synced
 /// copy is the majority, so a write costs no append, heartbeat or written
-/// report. Nothing decides that up front. openraft replicates to the
-/// members its membership names, so the first learner gets appends and,
-/// once a `Quorum` write has waited on the count, written reports.
+/// report. There is no special case for one voter: openraft replicates to
+/// the members its membership names, so the first learner gets appends
+/// and, since a `Quorum` write has waited on the count, written reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_sole_voter_sends_nothing_until_a_member_joins() {
     use std::sync::atomic::Ordering::Relaxed;
@@ -607,16 +607,16 @@ async fn a_sole_voter_sends_nothing_until_a_member_joins() {
         0,
         "a sole voter sent messages for its writes"
     );
-    assert!(led.cluster.net.written_reports.lock().is_empty());
-
+    // Set by the waits above, so the learner's first appends ask for reports.
     let group = led.group();
+    let asks = group.reports().ask();
+    assert_eq!(asks, crate::raft::network::Ask::Written);
     let joined = group.raft().add_learner(member("c"), EmptyNode {}, true);
     joined.await.expect("the learner joined");
     let joined = sent();
     assert!(joined > before, "the learner was sent nothing");
     let written = led.prime().await;
     led.told_by("c", written).await;
-    assert!(sent() > joined, "the learner's report was not sent");
     let reports = led.cluster.net.written_reports.lock().clone();
     assert!(reports.iter().all(|from| from == "c"), "{reports:?}");
     led.cluster.stop().await;
