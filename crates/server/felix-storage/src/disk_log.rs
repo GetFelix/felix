@@ -1538,7 +1538,14 @@ impl DiskLog {
             roll_task: Mutex::new(None),
             pending_seal: Mutex::new(None),
             mark,
-            appender: LogThread::spinning("felix-append", APPEND_SPIN),
+            appender: LogThread::spinning(
+                "felix-append",
+                // Measurement only: FELIX_MEASURE_APPEND_SPIN_US overrides the window.
+                std::env::var("FELIX_MEASURE_APPEND_SPIN_US")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .map_or(APPEND_SPIN, std::time::Duration::from_micros),
+            ),
             flusher: LogThread::new("felix-flush"),
         });
 
