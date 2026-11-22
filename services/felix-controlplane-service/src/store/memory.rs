@@ -1124,6 +1124,10 @@ impl ControlPlaneStore for InMemoryStore {
                 "store already holds state; import requires overwrite".to_string(),
             ));
         }
+        // An operator's import replaces the store, never its record of who
+        // did what (the Raft apply keeps the group's the same way).
+        let mut state = state;
+        state.audit = self.audit_log().await;
         InMemoryStore::import_state(self, state).await?;
         Ok(crate::store::ImportOutcome::Imported)
     }

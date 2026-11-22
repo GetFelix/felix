@@ -848,3 +848,69 @@ async fn a_consistency_change_fences_placement_only_when_its_entry_says_so() {
         assert_eq!(after, before + u64::from(fence), "fence: {fence}");
     }
 }
+
+fn audit_entry(path: &str) -> crate::audit::AuditEntry {
+    crate::audit::AuditEntry {
+        at_ms: 1,
+        member: "1".to_string(),
+        listener: "api".to_string(),
+        peer: None,
+        method: "POST".to_string(),
+        route: path.to_string(),
+        path: path.to_string(),
+        tenant: None,
+        subject: None,
+        actor: None,
+        cert_sha256: None,
+        credential: "none".to_string(),
+        status: 204,
+        refusal: None,
+        suppressed: 0,
+    }
+}
+
+/// An import replaces the store but never the group's audit records, so an
+/// operator cannot erase them with an export that has none, or other ones.
+/// Applying a record marks level 49 as used, so a member rolled back below it
+/// refuses the snapshot rather than dropping the records.
+#[tokio::test]
+async fn an_import_keeps_the_audit_records() {
+    let machine = machine();
+    let response = machine
+        .apply(&encode_command(&MetaCommand::RecordAudit {
+            entries: vec![audit_entry("/v1/kept")],
+        }))
+        .await;
+    assert!(decode_result(&response).expect("result").is_ok());
+    assert_eq!(machine.levels_used(), 49);
+
+    let source = machine_with(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    });
+    source
+        .dispatch(MetaCommand::RecordAudit {
+            entries: vec![audit_entry("/v1/forged"), audit_entry("/v1/forged")],
+        })
+        .await
+        .expect("record");
+    let exported = crate::store::export::export_state_from(
+        source.store().as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
+    )
+    .await
+    .expect("export");
+    machine
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(exported),
+            overwrite: true,
+            mark_unplaced: false,
+            raise_incarnation: false,
+            lose_ordered: false,
+        })
+        .await
+        .expect("import");
+    let page = machine.store().audit_records(0, 10).await.expect("records");
+    assert_eq!(page.last_seq, 1);
+    assert_eq!(page.records.len(), 1);
+    assert_eq!(page.records[0].entry.route, "/v1/kept");
+}
