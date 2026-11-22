@@ -32,6 +32,10 @@ const IDLE: Duration = Duration::from_secs(10);
 /// finished.
 type Job = Box<dyn FnOnce(&AtomicUsize) + Send>;
 
+/// A job and when it was sent, which tells the thread how soon it came after
+/// the job before, whatever the thread's own wake-up cost.
+type Sent = (Instant, Job);
+
 /// Runs one log's jobs of one kind on a dedicated thread, one at a time, in
 /// the order they were submitted.
 pub(crate) struct LogThread {
@@ -45,7 +49,7 @@ pub(crate) struct LogThread {
     /// The running thread's queue, if there is a thread. Jobs are only sent
     /// under this lock, and the thread clears it under the same lock before
     /// exiting, so no job can be left behind in a queue nobody reads.
-    queue: Arc<Mutex<Option<mpsc::Sender<Job>>>>,
+    queue: Arc<Mutex<Option<mpsc::Sender<Sent>>>>,
     /// The thread's polls, by how they ended.
     #[cfg(test)]
     polls: Arc<PollCounts>,
@@ -166,9 +170,9 @@ impl LogThread {
     fn submit(&self, job: Job) -> Result<(), Job> {
         let mut queue = self.queue.lock();
         let job = match queue.as_ref() {
-            Some(sender) => match sender.send(job) {
+            Some(sender) => match sender.send((Instant::now(), job)) {
                 Ok(()) => return Ok(()),
-                Err(mpsc::SendError(job)) => job,
+                Err(mpsc::SendError((_, job))) => job,
             },
             None => job,
         };
@@ -187,7 +191,9 @@ impl LogThread {
         match started {
             Ok(_) => {
                 // The thread cannot exit before it takes the lock held here.
-                let result = sender.send(job).map_err(|mpsc::SendError(job)| job);
+                let result = sender
+                    .send((Instant::now(), job))
+                    .map_err(|mpsc::SendError((_, job))| job);
                 *queue = Some(sender);
                 result
             }
@@ -258,20 +264,22 @@ struct PollCounts {
 /// The thread body. Returns when the log is dropped, or after `IDLE` with
 /// nothing to do.
 fn serve(
-    queue: mpsc::Receiver<Job>,
-    slot: Weak<Mutex<Option<mpsc::Sender<Job>>>>,
+    queue: mpsc::Receiver<Sent>,
+    slot: Weak<Mutex<Option<mpsc::Sender<Sent>>>>,
     pending: &AtomicUsize,
     idle: Duration,
     spin: &Spin,
 ) {
-    // Whether the last job came within the window. A job that came later
-    // says the log is not that busy, and the next one will likely be late
-    // too: polling for it would burn the whole window for nothing.
+    // Whether the last job was sent within the window after the one before
+    // it finished. A job that came later says the log is not that busy, and
+    // the next one will likely be late too: polling for it would burn the
+    // whole window for nothing. Measured from the send, so a slow wake-up
+    // does not keep a busy log parking.
     let mut busy = false;
+    let mut finished = Instant::now();
     loop {
-        let waiting = Instant::now();
         let polled = if busy { poll(&queue, spin) } else { None };
-        let job = match polled.map_or_else(|| queue.recv_timeout(idle), Ok) {
+        let (sent, job) = match polled.map_or_else(|| queue.recv_timeout(idle), Ok) {
             Ok(job) => job,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -289,15 +297,16 @@ fn serve(
                 }
             }
         };
-        busy = waiting.elapsed() < spin.window;
+        busy = sent.saturating_duration_since(finished) < spin.window;
         // A panic is this job's failure, not the thread's: if it took the
         // thread down, jobs already queued behind it would fail with it.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(pending)));
+        finished = Instant::now();
     }
 }
 
 /// The next job, if one arrives within the spin window.
-fn poll(queue: &mpsc::Receiver<Job>, spin: &Spin) -> Option<Job> {
+fn poll(queue: &mpsc::Receiver<Sent>, spin: &Spin) -> Option<Sent> {
     let started = Instant::now();
     loop {
         match queue.try_recv() {
