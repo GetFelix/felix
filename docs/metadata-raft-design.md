@@ -198,9 +198,11 @@ store write that reads the level and then settles a level-dependent command
 reuses the level it confirmed while the term lasts, so it pays one read-index.
 
 If a write's read-index cannot pass within one attempt (2 s), the attempt is
-forwarded and retried inside the write budget, like any refused proposal. Only
-a store call that reads the level directly (`RaftStore::group_level`) fails
-outright, with a retryable 503 `unavailable`.
+forwarded and retried inside the write budget, like any refused proposal, but
+only for callers of `RaftHandle::write` directly. Every `RaftStore` write on a
+leader that has not confirmed answers a retryable 503 `unavailable`: its
+proposal reads the level through `leader_level`, and the other path goes
+through `group_level`.
 
 A follower's own join floor can lag its log just as a new leader's can, and
 what a follower strips from a command before forwarding it the leader appends
@@ -208,7 +210,7 @@ as sent. So when a member that has not answered would be counted at the
 follower's floor, and that floor is below what the other members answered,
 the follower asks the leader for its confirmed level (`LeaderRequest::ProposalLevel`)
 instead of settling on its own. A leader that predates the request answers
-nothing, and the follower falls back to its own floor, as that leader does.
+Unsupported (404 if it predates the leader route), and the follower falls back to its own floor, as that leader does.
 
 The first heartbeat of a term pays for two read-indexes, so a leader with many
 entries left to apply fails forwarded heartbeats until it catches up, and

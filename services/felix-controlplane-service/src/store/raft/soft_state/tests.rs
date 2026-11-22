@@ -546,8 +546,8 @@ async fn two_member_group() -> Vec<Member> {
                 tls: None,
             },
         );
-        settings.heartbeat_interval = Duration::from_millis(50);
-        settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
+        settings.heartbeat_interval = Duration::from_millis(100);
+        settings.election_timeout = (Duration::from_secs(1), Duration::from_secs(2));
         let handle = RaftHandle::start(
             settings,
             std::sync::Arc::clone(&machine) as std::sync::Arc<dyn AppStateMachine>,
@@ -578,19 +578,37 @@ async fn two_member_group() -> Vec<Member> {
         })
         .collect();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !members.iter().all(|member| {
-        let status = member.store.handle.status();
-        status.leader.is_some() && status.last_applied_index.is_some()
-    }) {
+    let leader = loop {
+        let first = members[0].store.handle.status().leader;
+        let agreed = first.is_some()
+            && members.iter().all(|member| {
+                let status = member.store.handle.status();
+                status.leader == first && status.last_applied_index.is_some()
+            });
+        if agreed {
+            break first.expect("agreed leader");
+        }
         assert!(std::time::Instant::now() < deadline, "no committed leader");
         tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    };
+    let leader = members
+        .iter()
+        .find(|member| member.store.handle.status().id == leader)
+        .expect("leader is a member");
+    assert!(
+        leader
+            .store
+            .handle
+            .confirm_leadership_within(Duration::from_secs(2))
+            .await,
+        "leader confirms"
+    );
     members
 }
 
 /// A deposed leader's decision is not forwarded to the leader that replaced
 /// it: the new leader has not seen what the old one judged from.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
     let members = two_member_group().await;
     let leader = members
@@ -655,7 +673,7 @@ async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
 
 /// Re-form plans live on the leader: a plan made, polled and answered
 /// through a follower is the leader's plan, read from the leader's state.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reform_plan_asked_through_a_follower_is_the_leaders() {
     use crate::store::reform::tests::{LOG, answer, copy, shard};
     use crate::store::reform::{ReformReply, ReformRequest, ReformScope};
@@ -747,7 +765,7 @@ async fn a_reform_plan_asked_through_a_follower_is_the_leaders() {
 /// never heard from counts at that floor, and the floor can lag the log)
 /// takes the leader's confirmed level instead. What it strips, the leader
 /// appends as sent, so fields the group can store survive (#2878).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_follower_strips_nothing_on_its_own_lagging_floor() {
     use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
     use crate::raft::AppStateMachine;

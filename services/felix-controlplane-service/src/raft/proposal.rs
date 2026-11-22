@@ -71,7 +71,11 @@ impl RaftHandle {
         self.write_with(command, Some((term, level))).await
     }
 
-    async fn write_with(&self, command: Vec<u8>, confirmed: Option<(u64, u16)>) -> Result<Vec<u8>> {
+    async fn write_with(
+        &self,
+        command: Vec<u8>,
+        mut confirmed: Option<(u64, u16)>,
+    ) -> Result<Vec<u8>> {
         const RETRY_DELAY: Duration = Duration::from_millis(250);
         let deadline = tokio::time::Instant::now() + self.write_timeout;
 
@@ -105,7 +109,10 @@ impl RaftHandle {
             // Bounded per attempt too: a leader that lost quorum queues
             // proposals forever, and that must become this instance's error,
             // not its hang.
-            let proposal = match self.proposal_bytes(&command, attempt, confirmed).await {
+            let proposal = match self
+                .proposal_bytes(&command, attempt, confirmed.take())
+                .await
+            {
                 Proposal::Append(bytes) => bytes,
                 Proposal::Answer(bytes) => return Ok(bytes),
                 Proposal::Forward => {
