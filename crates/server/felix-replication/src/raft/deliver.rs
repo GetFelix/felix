@@ -718,10 +718,15 @@ impl RaftEngine {
                     let flipped = stream.lead_changed().notified();
                     let mut flipped = std::pin::pin!(flipped);
                     flipped.as_mut().enable();
-                    if stream.leads_engine_log() {
-                        if commits.is_closed() {
-                            return;
-                        }
+                    let leads = stream.leads_engine_log();
+                    // Read after the flag: a commit published during the
+                    // pass, before the flip, was served by nobody and gets
+                    // another pass. One after it is served inline.
+                    let unseen = match commits.has_changed() {
+                        Ok(unseen) => unseen,
+                        Err(_) => return,
+                    };
+                    if leads && !unseen {
                         tokio::select! {
                             () = flipped => {}
                             () = following.woken() => {}
