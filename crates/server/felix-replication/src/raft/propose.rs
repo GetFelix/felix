@@ -660,6 +660,7 @@ pub(super) fn drain(
 /// in the order they are made. It does not hand on answers either: each
 /// batch is answered by its [`Respond`]ers, on the task that applies it, so
 /// a drain wakes this task once.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run(
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
@@ -809,8 +810,10 @@ async fn settled_tail(raft: &Raft<ShardTypes, Machine>) -> (u64, u64) {
                 m.last_applied.map(|id| id.index),
             )
         };
-        if last.is_some() && last == applied {
-            return (term, last.expect("some") + 1);
+        if let Some(last) = last
+            && Some(last) == applied
+        {
+            return (term, last + 1);
         }
         let _ = metrics.changed().await;
     }
