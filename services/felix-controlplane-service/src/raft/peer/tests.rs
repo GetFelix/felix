@@ -237,3 +237,5 @@ fn accepted_requests_are_counted_by_the_token_they_carried() {
     assert_eq!(count("previous"), 2);
     assert_eq!(count("next"), 0);
 }
+
+mod rotation;

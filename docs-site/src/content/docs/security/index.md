@@ -74,17 +74,21 @@ moved off.
 
 ### Certificate renewal
 
-The broker's client certificate (QUIC, Kafka and MQTT), its internal-port
-certificate, and the control plane's API certificate are re-read every 30
-seconds, so a renewal written over the same paths (cert-manager, a Kubernetes
-Secret volume) is used by the next handshake without a restart. These are
+Every TLS listener re-reads its certificate and key every 30 seconds: the
+broker's client listeners (QUIC, Kafka and MQTT), its internal port, and the
+control plane's API, bootstrap and Raft listeners. The Raft peer client
+re-reads its certificate too. A renewal written over the same paths
+(cert-manager, a Kubernetes Secret volume) is used by the next handshake
+without a restart, and open connections keep the certificate they started
+with. A rotated Raft certificate must still name the same member and not be
+revoked, or it is refused and the old one kept. The control plane's CA bundles
+and `FELIX_RAFT_TLS_REVOKED_FILE` are re-read on the same timer. These are
 still read once, at startup:
 
-- CA bundles, everywhere ([#2816](https://github.com/GetFelix/felix/issues/2816)).
-- The control-plane Raft certificate and key ([#2815](https://github.com/GetFelix/felix/issues/2815)).
+- The broker's CA bundles ([#2816](https://github.com/GetFelix/felix/issues/2816)).
 - The broker's control-plane client certificate, `FELIX_CONTROLPLANE_CLIENT_CERT`
   and `_KEY` ([#2837](https://github.com/GetFelix/felix/issues/2837)).
-- The bootstrap listener's certificate.
+- `FELIX_RAFT_TLS_REVOKED`, an environment variable.
 
 ### When a credential expires
 

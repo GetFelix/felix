@@ -55,6 +55,7 @@ pub use handle::RaftHandle;
 pub use health::Replaying;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use member::RaftMember;
+pub(crate) use peer::parse_fingerprints;
 pub use peer::{CLUSTER_ID_HEADER, MEMBER_URI_PREFIX, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;

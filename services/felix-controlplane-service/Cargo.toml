@@ -18,6 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+arc-swap = { workspace = true }
 axum = { workspace = true }
 felix-common = { path = "../../crates/server/felix-common", version = "0.8.0-preview.2", features = ["hasher", "lifecycle", "logging", "openapi", "tls", "yaml"] }
 felix-router = { path = "../../crates/server/felix-router", version = "0.8.0-preview.2" }

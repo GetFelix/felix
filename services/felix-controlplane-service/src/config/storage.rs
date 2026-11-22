@@ -146,12 +146,17 @@ fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
     let ca = std::env::var("FELIX_RAFT_TLS_CA").ok();
     let tls = match (cert, key, ca) {
         (None, None, None) => None,
-        (Some(cert_path), Some(key_path), Some(ca_path)) => Some(crate::raft::PeerTls {
-            cert_path,
-            key_path,
-            ca_path,
-            revoked: revoked_from_env()?,
-        }),
+        (Some(cert_path), Some(key_path), Some(ca_path)) => {
+            let revoked = crate::raft::parse_fingerprints(
+                "FELIX_RAFT_TLS_REVOKED",
+                &std::env::var("FELIX_RAFT_TLS_REVOKED").unwrap_or_default(),
+            )?;
+            Some(
+                crate::raft::PeerTls::new(cert_path, key_path, ca_path)
+                    .with_revoked(revoked)
+                    .with_revoked_file(non_empty_env("FELIX_RAFT_TLS_REVOKED_FILE")),
+            )
+        }
         _ => {
             return Err(anyhow!(
                 "raft peer TLS needs all of FELIX_RAFT_TLS_CERT, FELIX_RAFT_TLS_KEY, and \
@@ -166,25 +171,6 @@ fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
         next_token: non_empty_env("FELIX_RAFT_PEER_TOKEN_NEXT"),
         tls,
     })
-}
-
-/// `FELIX_RAFT_TLS_REVOKED`: comma-separated SHA-256 fingerprints of member
-/// certificates to refuse. Colons and case are ignored, as tools print both.
-fn revoked_from_env() -> Result<std::collections::BTreeSet<String>> {
-    let raw = std::env::var("FELIX_RAFT_TLS_REVOKED").unwrap_or_default();
-    raw.split(',')
-        .map(|entry| entry.trim().replace(':', "").to_ascii_lowercase())
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| {
-            if entry.len() == 64 && entry.bytes().all(|b| b.is_ascii_hexdigit()) {
-                Ok(entry)
-            } else {
-                Err(anyhow!(
-                    "FELIX_RAFT_TLS_REVOKED holds `{entry}`, which is not a SHA-256 fingerprint"
-                ))
-            }
-        })
-        .collect()
 }
 
 /// An empty value counts as unset, so a templated `VAR=` stays harmless.
