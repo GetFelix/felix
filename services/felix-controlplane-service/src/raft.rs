@@ -248,9 +248,11 @@ pub trait AppStateMachine: Send + Sync + 'static {
     /// Whether a member may send `command` for another to commit (the peer
     /// `propose` route). A command only an operator may give, such as one
     /// replacing the whole store, must answer false: every member holds peer
-    /// credentials, so the peer route is no proof of an operator.
-    fn peer_may_propose(&self, command: &[u8]) -> bool {
-        let _ = command;
+    /// credentials, so the peer route is no proof of an operator. `caller` is
+    /// the member the peer's certificate names, under peer mTLS; a command
+    /// that speaks for a member must speak for that one.
+    fn peer_may_propose(&self, command: &[u8], caller: Option<NodeId>) -> bool {
+        let _ = (command, caller);
         true
     }
 

@@ -21,6 +21,7 @@ use sha2::Digest;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_internal};
 use crate::auth::cert_binding::PeerCertificates;
+use crate::store::ControlPlaneAuthStore;
 
 /// How many records every member keeps. A constant, not a setting, so every
 /// member trims at the same record.
@@ -28,10 +29,6 @@ pub const AUDIT_RETAIN: usize = 10_000;
 
 /// The largest page `GET /v1/audit` answers.
 const MAX_PAGE: usize = 1_000;
-
-/// Records proposed and not yet committed, per member. Past it a record is
-/// logged and dropped rather than queued without bound.
-const MAX_IN_FLIGHT: usize = 64;
 
 /// Refusals recorded per second, and the burst, per member. Refusals need no
 /// credential, so without a bound a flood of bad requests is a flood of Raft
@@ -257,11 +254,21 @@ pub(crate) fn note_refusal(reason: &'static str) {
     note(|noted| noted.refusal = Some(reason));
 }
 
+/// Record the requests `router` serves on the listener `name` (`api` or
+/// `bootstrap`). Apply it last, outside every other layer, so a refusal any
+/// of them answers is recorded too.
+pub fn audited(router: axum::Router, state: AppState, name: &'static str) -> axum::Router {
+    router.layer(axum::middleware::from_fn_with_state(
+        Listener { state, name },
+        record,
+    ))
+}
+
 /// Which listener a router serves, for [`record`].
 #[derive(Clone)]
-pub(crate) struct Listener {
-    pub(crate) state: AppState,
-    pub(crate) name: &'static str,
+struct Listener {
+    state: AppState,
+    name: &'static str,
 }
 
 /// Broker reports that run every few seconds per broker. A success there is
@@ -280,11 +287,7 @@ const TELEMETRY_ROUTES: &[&str] = &[
 
 /// Record the request once it is answered, or as unfinished if it is dropped
 /// first.
-pub(crate) async fn record(
-    State(listener): State<Listener>,
-    request: Request,
-    next: Next,
-) -> Response {
+async fn record(State(listener): State<Listener>, request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let route = request
         .extensions()
@@ -297,7 +300,7 @@ pub(crate) async fn record(
     };
     let entry = AuditEntry {
         at_ms: now_ms(),
-        member: listener.state.audit.member.clone(),
+        member: listener.state.audit.member().to_string(),
         listener: listener.name.to_string(),
         peer: request
             .extensions()
@@ -336,7 +339,7 @@ pub(crate) async fn record(
 /// in with status 0, since the action may have been done anyway.
 struct Pending {
     sink: AuditSink,
-    store: Arc<dyn crate::store::ControlPlaneAuthStore + Send + Sync>,
+    store: Arc<dyn ControlPlaneAuthStore + Send + Sync>,
     entry: Option<AuditEntry>,
     noted: Arc<Mutex<Noted>>,
     write: bool,
@@ -376,7 +379,7 @@ impl Pending {
         if refused && !self.sink.admit_refusal(&mut entry) {
             return;
         }
-        self.sink.submit(Arc::clone(&self.store), entry);
+        self.sink.submit(&self.store, entry);
     }
 }
 
@@ -388,14 +391,29 @@ impl Drop for Pending {
     }
 }
 
-/// Where a member's records go: proposed in the background, bounded, and
-/// counted when dropped. The request has already been answered by then: a
-/// record never holds up or refuses the action it describes.
+/// Where a member's records go: queued, then committed in batches by one
+/// task, so a burst of requests is a few Raft writes rather than one each.
+/// The request has already been answered by then: a record never holds up or
+/// refuses the action it describes. Past the queue bound a record is logged
+/// and counted, not kept.
 #[derive(Clone)]
 pub struct AuditSink {
+    inner: Arc<SinkInner>,
+}
+
+struct SinkInner {
     member: String,
-    in_flight: Arc<tokio::sync::Semaphore>,
-    refusals: Arc<Mutex<RefusalBucket>>,
+    /// `None` once closed. The worker starts with the first record, on the
+    /// store that record's request was served from.
+    queue: Mutex<Queue>,
+    refusals: Mutex<RefusalBucket>,
+}
+
+#[derive(Default)]
+struct Queue {
+    sender: Option<tokio::sync::mpsc::Sender<AuditEntry>>,
+    worker: Option<tokio::task::JoinHandle<()>>,
+    closed: bool,
 }
 
 struct RefusalBucket {
@@ -408,20 +426,44 @@ impl AuditSink {
     /// A sink for the member named `member` in its records.
     pub fn new(member: impl Into<String>) -> Self {
         Self {
-            member: member.into(),
-            in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT)),
-            refusals: Arc::new(Mutex::new(RefusalBucket {
-                tokens: REFUSAL_BURST,
-                at: Instant::now(),
-                suppressed: 0,
-            })),
+            inner: Arc::new(SinkInner {
+                member: member.into(),
+                queue: Mutex::new(Queue::default()),
+                refusals: Mutex::new(RefusalBucket {
+                    tokens: REFUSAL_BURST,
+                    at: Instant::now(),
+                    suppressed: 0,
+                }),
+            }),
+        }
+    }
+
+    /// The member id this sink writes into its records.
+    pub(crate) fn member(&self) -> &str {
+        &self.inner.member
+    }
+
+    /// Stop taking records and wait until the queued ones are committed or
+    /// dropped. Called before the Raft node stops, so a member that drains
+    /// does not lose the records of the requests it just answered.
+    pub async fn close(&self) {
+        let worker = {
+            let Ok(mut queue) = self.inner.queue.lock() else {
+                return;
+            };
+            queue.closed = true;
+            queue.sender = None;
+            queue.worker.take()
+        };
+        if let Some(worker) = worker {
+            let _ = worker.await;
         }
     }
 
     /// Take a refusal under the rate limit, carrying the count suppressed
     /// since the last one taken.
     fn admit_refusal(&self, entry: &mut AuditEntry) -> bool {
-        let Ok(mut bucket) = self.refusals.lock() else {
+        let Ok(mut bucket) = self.inner.refusals.lock() else {
             return true;
         };
         let now = Instant::now();
@@ -438,37 +480,31 @@ impl AuditSink {
         true
     }
 
-    fn submit(
-        &self,
-        store: Arc<dyn crate::store::ControlPlaneAuthStore + Send + Sync>,
-        entry: AuditEntry,
-    ) {
-        let line = serde_json::to_string(&entry).unwrap_or_default();
-        let Ok(permit) = Arc::clone(&self.in_flight).try_acquire_owned() else {
-            dropped("busy", &line);
+    fn submit(&self, store: &Arc<dyn ControlPlaneAuthStore + Send + Sync>, entry: AuditEntry) {
+        let Ok(mut queue) = self.inner.queue.lock() else {
+            dropped("closed", &entry);
             return;
         };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            dropped("no_runtime", &line);
+        if queue.closed {
+            drop(queue);
+            dropped("closed", &entry);
             return;
-        };
-        runtime.spawn(async move {
-            let _permit = permit;
-            match store.record_audit(vec![entry]).await {
-                Ok(true) => {}
-                // Below the metadata level that carries records: the local
-                // line is the only copy, as on a build without them.
-                Ok(false) => {
-                    metrics::counter!(AUDIT_DROPPED_TOTAL, "reason" => "level_pending")
-                        .increment(1);
-                    tracing::info!(target: AUDIT_TARGET, entry = %line, "audit entry, not replicated");
-                }
-                Err(err) => {
-                    tracing::error!(target: AUDIT_TARGET, error = %err, entry = %line, "audit entry not committed");
-                    metrics::counter!(AUDIT_DROPPED_TOTAL, "reason" => "store").increment(1);
-                }
-            }
-        });
+        }
+        if queue.sender.is_none() {
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                drop(queue);
+                dropped("no_runtime", &entry);
+                return;
+            };
+            let (sender, receiver) = tokio::sync::mpsc::channel(MAX_QUEUED);
+            queue.worker = Some(runtime.spawn(commit_batches(Arc::clone(store), receiver)));
+            queue.sender = Some(sender);
+        }
+        let sent = queue.sender.as_ref().map(|sender| sender.try_send(entry));
+        drop(queue);
+        if let Some(Err(err)) = sent {
+            dropped("busy", &err.into_inner());
+        }
     }
 }
 
@@ -478,8 +514,55 @@ impl Default for AuditSink {
     }
 }
 
-fn dropped(reason: &'static str, line: &str) {
+/// Records queued and not yet committed, per member.
+const MAX_QUEUED: usize = 4_096;
+
+/// The most records one Raft entry carries.
+const MAX_BATCH: usize = 256;
+
+/// Commit queued records, a batch at a time, until the sink closes and the
+/// queue is empty. One batch in flight bounds the Raft writes records cost,
+/// however many requests arrive. A failed batch is not retried here: the
+/// store's write already retries across a leader change under one request
+/// id, and a second id could commit the same records twice.
+async fn commit_batches(
+    store: Arc<dyn ControlPlaneAuthStore + Send + Sync>,
+    mut receiver: tokio::sync::mpsc::Receiver<AuditEntry>,
+) {
+    let mut batch = Vec::with_capacity(MAX_BATCH);
+    while receiver.recv_many(&mut batch, MAX_BATCH).await > 0 {
+        let entries = std::mem::take(&mut batch);
+        let count = entries.len() as u64;
+        // Kept for the log line if the batch does not commit; moved into the
+        // proposal otherwise.
+        let lines: Vec<String> = entries
+            .iter()
+            .map(|entry| serde_json::to_string(entry).unwrap_or_default())
+            .collect();
+        match store.record_audit(entries).await {
+            Ok(true) => {}
+            // Below the metadata level that carries records: the local line
+            // is the only copy, as on a build without them.
+            Ok(false) => {
+                metrics::counter!(AUDIT_DROPPED_TOTAL, "reason" => "level_pending")
+                    .increment(count);
+                for line in &lines {
+                    tracing::info!(target: AUDIT_TARGET, entry = %line, "audit entry, not replicated");
+                }
+            }
+            Err(err) => {
+                metrics::counter!(AUDIT_DROPPED_TOTAL, "reason" => "store").increment(count);
+                for line in &lines {
+                    tracing::error!(target: AUDIT_TARGET, error = %err, entry = %line, "audit entry not committed");
+                }
+            }
+        }
+    }
+}
+
+fn dropped(reason: &'static str, entry: &AuditEntry) {
     metrics::counter!(AUDIT_DROPPED_TOTAL, "reason" => reason).increment(1);
+    let line = serde_json::to_string(entry).unwrap_or_default();
     tracing::error!(target: AUDIT_TARGET, reason, entry = %line, "audit entry dropped");
 }
 

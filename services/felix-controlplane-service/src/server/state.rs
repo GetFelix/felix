@@ -35,6 +35,12 @@ pub(super) async fn build_state(
     api_shutdown: &CancellationToken,
 ) -> anyhow::Result<(AppState, Option<RaftParts>)> {
     let (store, raft) = open_store(&config, api_shutdown).await?;
+    // The id a member's peers know it by, which is what the leader checks a
+    // forwarded record's `member` against.
+    let member = config
+        .raft
+        .as_ref()
+        .map_or_else(|| "local".to_string(), |raft| raft.node_id.to_string());
 
     let readiness = Arc::new(crate::api::readiness::Readiness::with_lifecycle(
         // The same flag the metrics endpoint reads, so a drain is visible on
@@ -79,6 +85,7 @@ pub(super) async fn build_state(
             new_cluster: Arc::new(crate::cluster::fleet::NewClusterFinalize::new(
                 api_shutdown.child_token(),
             )),
+            audit: crate::audit::AuditSink::new(member),
         },
         raft,
     ))

@@ -1255,8 +1255,28 @@ pub fn depends_on_level(command: &[u8]) -> bool {
 /// import replaces the whole store, so only the operator's route proposes
 /// one, on the leader itself. A command whose op cannot be read is refused
 /// too, so nothing reaches apply that this check read differently.
-pub fn peer_may_propose(command: &[u8]) -> bool {
-    op_of(command).is_some_and(|op| op != IMPORT_STATE_OP)
+///
+/// Audit entries name the member that served each request. When the peer's
+/// certificate names it (`caller`), every entry must name that member, so a
+/// member cannot pass its records off as another's. Without peer mTLS the
+/// name is the sender's word.
+pub fn peer_may_propose(command: &[u8], caller: Option<u64>) -> bool {
+    let Some(op) = op_of(command) else {
+        return false;
+    };
+    if op == IMPORT_STATE_OP {
+        return false;
+    }
+    match caller {
+        Some(caller) if op == RECORD_AUDIT_OP => match decode_command_with_level(command) {
+            Ok((MetaCommand::RecordAudit { entries }, _)) => {
+                let caller = caller.to_string();
+                entries.iter().all(|entry| entry.member == caller)
+            }
+            _ => false,
+        },
+        _ => true,
+    }
 }
 
 /// A fleet feature finalize, which carries `hold_unformed` from level 45.

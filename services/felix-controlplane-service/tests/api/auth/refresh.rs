@@ -117,6 +117,7 @@ async fn fixture() -> (AppState, Arc<InMemoryStore>) {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        audit: Default::default(),
     };
     (state, store)
 }
