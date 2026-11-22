@@ -500,9 +500,11 @@ impl AuditSink {
             queue.worker = Some(runtime.spawn(commit_batches(Arc::clone(store), receiver)));
             queue.sender = Some(sender);
         }
-        let sent = queue.sender.as_ref().map(|sender| sender.try_send(entry));
+        let sender = queue.sender.clone();
         drop(queue);
-        if let Some(Err(err)) = sent {
+        if let Some(sender) = sender
+            && let Err(err) = sender.try_send(entry)
+        {
             dropped("busy", &err.into_inner());
         }
     }

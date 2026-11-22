@@ -223,6 +223,7 @@ impl SimControlPlane {
             placement_wakes: Arc::clone(&wakes),
             move_policy: config.moves.clone(),
             new_cluster: Default::default(),
+            audit: Default::default(),
         };
         let sweep = Sweep {
             watch: SilenceWatch::default(),
