@@ -2306,10 +2306,12 @@ one wake-up of the thread runs every ready task of every group on it.
   stay on the broker runtime, and log IO on the log's own thread. A write
   still crosses threads where it enters a group (publisher to publish task,
   peer to core) and where it leaves (answers, fanout, network sends).
-- A group thread never waits on disk. Log work goes to the log thread or a
-  blocking task and is awaited. A caller of the log thread on a group
-  thread does not poll for its answer, since other groups' tasks are
-  waiting behind it.
+- A group thread does not wait on disk in normal operation. Log work goes
+  to the log thread or a blocking task and is awaited. A caller of the log
+  thread on a group thread does not poll for its answer, since other
+  groups' tasks are waiting behind it. One rare case remains: a flush
+  capture that runs inline can wait for a segment roll another thread
+  started ([#2947](https://github.com/GetFelix/felix/issues/2947)).
 - A hot group shares its thread: the thread runs ready tasks in turn, and
   tokio makes a task that keeps finding work on channels give the thread up
   after a bounded number of steps. The state machine gives it up the same
@@ -2318,7 +2320,7 @@ one wake-up of the thread runs every ready task of every group on it.
 - The peer transport never runs on a group thread. A connection's quinn
   driver and its stream pumps run on the dedicated QUIC I/O runtime when
   there is one, and otherwise on the runtime the peer endpoint was bound on,
-  whichever thread dials first. A group thread only hands frames to them.
+  whatever thread dials. A group thread only hands frames to them.
 - A panic in a group task ends only that task, as on the broker runtime.
   The thread and its other groups keep running.
 
