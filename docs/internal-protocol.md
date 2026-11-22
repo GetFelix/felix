@@ -1486,17 +1486,21 @@ What a frame guarantees:
   another count fails every heartbeat in the frame rather than give one
   heartbeat another's answer.
 - **A slow group holds up only itself.** Heartbeats for different members
-  run at once. The listener answers the frame by half its deadline at the
-  latest, and marks any heartbeat not answered by then as late. The sender
+  run at once. The listener answers the frame within 20 ms (or half its
+  deadline, if shorter), and marks any heartbeat not answered by then as
+  late. The sender
   sends a late heartbeat again as its own `Raft` frame, with what is left of
   its deadline.
-- **Order per member is kept.** Heartbeats for the same member in one frame
-  run in the order sent. A sender has at most one frame in flight per
-  broker, so a later frame cannot overtake an earlier one.
+- **Order per member is kept within frames.** Heartbeats for the same
+  member in one frame run in the order sent, and a sender has at most one
+  frame in flight per broker. A late heartbeat sent again on its own can
+  arrive after a later frame; a follower already takes heartbeats in any
+  order, since each carries its send number.
 
 A sender gathers heartbeats for one broker for up to 1 ms after the first.
 A frame whose answer does not arrive, or does not read, fails each of its
-heartbeats the way a lost `Raft` frame fails its one request. A sender that
+heartbeats the way a lost `Raft` frame fails its one request. A frame the
+listener refuses whole, for overload, sends each heartbeat again on its own. A sender that
 predates `RAFT_BEATS` never sends the kind, and no sender sends it to a peer
 that did not offer it, so mixed versions fall back to one frame per
 heartbeat.

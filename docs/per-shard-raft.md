@@ -1712,8 +1712,8 @@ at most 512 heartbeats, and each peer broker has one frame in flight at a
 time: while it is out, the next heartbeats gather behind it. That keeps one
 member's heartbeats in order and means a slow broker holds up only its own
 heartbeats. A peer that is slow to answer one group answers the rest of the
-frame on time and marks that heartbeat late; the leader sends it again on
-its own.
+frame within 20 ms and marks that heartbeat late; the leader sends it again
+on its own, so a busy group costs the others in its frame at most that.
 
 Coalescing needs the peer to offer `RAFT_BEATS` in its handshake. A peer
 that does not is sent one frame per heartbeat. The wire format is in

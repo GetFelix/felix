@@ -213,8 +213,10 @@ where
                 wire::beats::decode_answers(answer.body, frame.len())
                     .map_err(|err| format!("its answer does not read: {err}"))
             }
-            // Overloaded, most likely. Raft sends again later.
-            Ok(Ok(other)) => Err(format!("it answered {:?}", other.kind())),
+            // Refused whole, most likely for overload: each heartbeat goes
+            // again on its own, and is refused or answered as it would be
+            // alone, rather than all of them counting as lost at once.
+            Ok(Ok(_)) => Ok(vec![None; frame.len()]),
             Ok(Err(err)) => Err(err.to_string()),
             Err(_) => Err("the heartbeats were not answered in time".to_owned()),
         }

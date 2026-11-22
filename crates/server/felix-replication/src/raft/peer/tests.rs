@@ -1108,14 +1108,21 @@ async fn each_heartbeat_in_a_frame_is_admitted_on_its_own() {
         let frame = wire::beats::encode(Duration::from_secs(1), beats).expect("encode");
         let runtime = broker.runtime.clone();
         let from: Arc<str> = from.into();
-        let count = beats.len();
+        let beats = beats.to_vec();
         async move {
-            let body = runtime.answer_beats(Some(from), frame).await;
-            wire::beats::decode_answers(body, count)
-                .expect("one answer each")
-                .into_iter()
-                .map(|answer| wire::decode_reply(answer.expect("on time")).expect("reply"))
-                .collect::<Vec<_>>()
+            let body = runtime.answer_beats(Some(Arc::clone(&from)), frame).await;
+            let mut replies = Vec::new();
+            let answers = wire::beats::decode_answers(body, beats.len()).expect("one answer each");
+            for (answer, beat) in answers.into_iter().zip(beats) {
+                // A heartbeat that raises the term waits on a vote's fsync
+                // and can be late; its sender then sends it on its own.
+                let answer = match answer {
+                    Some(answer) => answer,
+                    None => runtime.answer(Some(Arc::clone(&from)), beat).await,
+                };
+                replies.push(wire::decode_reply(answer).expect("reply"));
+            }
+            replies
         }
     };
     // From the outsider c: its own heartbeat, and one in b's name.

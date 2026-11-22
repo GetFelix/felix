@@ -8,8 +8,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use felix_wire::internal::{InternalMessage, PeerCapabilities, RaftCall};
 
-use felix_common::random::HashMap;
 use std::sync::atomic::Ordering;
+
+use felix_common::random::HashMap;
 
 use super::network::{RaftReply, RaftRequest, RaftTransport, Refused, Request};
 use super::runtime::GroupRuntime;
@@ -19,6 +20,12 @@ use crate::peer::{PeerRequester, RaftHandler};
 use beats::Beats;
 
 mod beats;
+
+/// The longest a listener holds a heartbeat frame's answer for its slowest
+/// member. A heartbeat answers in well under a millisecond; one that has not
+/// by then is marked late, so a busy group costs the others in its frame
+/// this much at most, far inside the heartbeat deadline.
+const BEATS_CUT: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Where each broker's internal listener is.
 pub trait PeerAddresses: Send + Sync + 'static {
@@ -143,20 +150,20 @@ impl RaftHandler for GroupRuntime {
     async fn answer(&self, from: Option<Arc<str>>, body: Bytes) -> Bytes {
         let request = wire::decode_request(body)
             .map_err(|err| Refused::Unreachable(format!("the message does not read: {err}")));
-        wire::encode_reply(&self.answer_request(from.as_deref(), request).await)
+        wire::encode_reply(&answer_request(self, from.as_deref(), request).await)
     }
 
     /// Each heartbeat is admitted and answered as it would be alone. Those
     /// for one member run in the order sent; the rest run at once. The
-    /// frame is answered at half its deadline at the latest, so a member
-    /// that is slow to answer holds up only its own heartbeat, which its
-    /// sender then sends on its own.
+    /// frame is answered within [`BEATS_CUT`] (or half its deadline, if
+    /// shorter), so a member that is slow to answer holds up only its own
+    /// heartbeat, which its sender then sends on its own.
     async fn answer_beats(&self, from: Option<Arc<str>>, body: Bytes) -> Bytes {
         let Ok((deadline, beats)) = wire::beats::decode(body) else {
             // No answers: the sender fails every heartbeat in the frame.
             return wire::beats::encode_answers(&[]);
         };
-        let cut = tokio::time::Instant::now() + deadline / 2;
+        let cut = tokio::time::Instant::now() + (deadline / 2).min(BEATS_CUT);
         let count = beats.len();
         let mut lanes: HashMap<(GroupId, MemberId), Vec<(usize, Result<RaftRequest, Refused>)>> =
             HashMap::default();
@@ -175,7 +182,8 @@ impl RaftHandler for GroupRuntime {
         let lanes = lanes.into_values().map(|lane| async move {
             let mut answered = Vec::with_capacity(lane.len());
             for (at, request) in lane {
-                let answer = tokio::time::timeout_at(cut, self.answer_request(from, request)).await;
+                let answer =
+                    tokio::time::timeout_at(cut, answer_request(self, from, request)).await;
                 let Ok(answer) = answer else {
                     // Late, and so is every later one for this member.
                     break;
@@ -195,23 +203,21 @@ impl RaftHandler for GroupRuntime {
     }
 }
 
-impl GroupRuntime {
-    /// One request off the wire, admitted for the broker the connection is
-    /// bound to and then handled.
-    async fn answer_request(
-        &self,
-        from: Option<&str>,
-        request: Result<RaftRequest, Refused>,
-    ) -> Result<RaftReply, Refused> {
-        let request = request?;
-        match (impersonation(from, &request), from) {
-            (Some(refused), _) => Err(refused),
-            (None, Some(from)) => self.handle_from(from, request).await,
-            // `impersonation` refuses an unbound connection already.
-            (None, None) => Err(Refused::Unreachable(
-                "the connection has not said which broker it is".to_owned(),
-            )),
-        }
+/// One request off the wire, admitted for the broker the connection is
+/// bound to and then handled: the same path alone or in a frame.
+async fn answer_request(
+    runtime: &GroupRuntime,
+    from: Option<&str>,
+    request: Result<RaftRequest, Refused>,
+) -> Result<RaftReply, Refused> {
+    let request = request?;
+    match (impersonation(from, &request), from) {
+        (Some(refused), _) => Err(refused),
+        (None, Some(from)) => runtime.handle_from(from, request).await,
+        // `impersonation` refuses an unbound connection already.
+        (None, None) => Err(Refused::Unreachable(
+            "the connection has not said which broker it is".to_owned(),
+        )),
     }
 }
 
