@@ -59,7 +59,8 @@
 #   SLOT_WAIT_SECS=3600 QUIET_WAIT_SECS=300
 #   PROFILE=1     also record each broker with `perf record -g` over the measured window and
 #                 keep the folded stacks as perf-box<N>.folded in the cell directory
-#                 (`profile.py top` summarizes them). Sampling costs CPU, so a profiled run's
+#                 (`profile.py top` summarizes them) and system-wide syscall counts as
+#                 syscalls-box<N>.csv. Sampling costs CPU, so a profiled run's
 #                 CPU and latency numbers are not comparable with an unprofiled one. Build with
 #                 FRAME_POINTERS=1 first.
 set -euo pipefail
@@ -288,6 +289,7 @@ cpu_after() {
   for b in "${brokers[@]}"; do
     on "$b" cpu "$dir" > "$loc/cpu-after-box$b.txt" 2>&1 || true
     [ "$PROFILE" != 1 ] || on "$b" perf-stop "$dir" > "$loc/perf-box$b.folded" 2>/dev/null || true
+    [ "$PROFILE" != 1 ] || on "$b" perf-syscalls "$dir" > "$loc/syscalls-box$b.csv" 2>/dev/null || true
   done
 }
 
