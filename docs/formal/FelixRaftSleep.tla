@@ -346,7 +346,9 @@ PreCampaign(c) ==
 \* log and one with the higher term refuse each other forever. The
 \* candidate reads the refusal's vote uncommitted before it compares
 \* (network.rs `pre_vote_answer`), so a leader's committed vote that the
-\* candidate already holds uncommitted does not end the round (#2889).
+\* candidate already holds uncommitted does not end the round (#2889), and a
+\* committed vote of one leader is never adopted over another leader's
+\* uncommitted vote of the same term, which openraft refuses as incomparable.
 PreVoteReq(s, c) ==
     LET wakes == ~awake[s]
         seen == [vote[s] EXCEPT !.committed = FALSE]

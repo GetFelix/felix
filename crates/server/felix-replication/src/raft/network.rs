@@ -430,13 +430,8 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
 }
 
 /// A pre-vote answer as the candidate takes it: a refusal names its vote
-/// uncommitted. openraft adopts a refusal's vote when it is above the
-/// candidate's own, and adopting it ends the round, but it compares the vote
-/// committed and adopts it uncommitted. A candidate that voted for a leader it
-/// never heard from holds that leader's vote uncommitted, so the leader's
-/// refusal ended its round without changing its vote, and could do so on every
-/// retry (#2889). Read uncommitted, only a vote that is really higher ends the
-/// round. See `docs/per-shard-raft.md`, "Idle groups".
+/// uncommitted, so only a really higher vote ends the round (#2889). See
+/// `docs/per-shard-raft.md`, "Idle groups".
 pub(crate) fn pre_vote_answer(mut answer: VoteResponse<ShardTypes>) -> VoteResponse<ShardTypes> {
     use openraft::vote::RaftVote;
     if !answer.vote_granted && answer.vote.is_committed() {
