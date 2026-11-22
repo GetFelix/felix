@@ -126,6 +126,16 @@ async fn a_retry_after_a_failed_fsync_is_not_trusted() {
             failed = true;
             break;
         }
+        // Acked: either the control-plane flush took the fault, and a
+        // second publish succeeds, or the stream's flush took it and the
+        // log must have refused the ack.
+        assert!(
+            cluster
+                .publish_via(&owner, STREAM, format!("probe-{attempt}").into_bytes())
+                .await
+                .is_ok(),
+            "a publish was acknowledged by a log whose fsync had failed",
+        );
     }
     assert!(failed, "no publish saw the injected fsync failure");
     // The failure has been used up: the disk would now flush fine.
