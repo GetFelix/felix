@@ -290,7 +290,7 @@ impl RaftTransport for Net {
         };
         let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
         let answer = match runtime {
-            Some(runtime) => runtime.handle(request).await,
+            Some(runtime) => runtime.handle_unchecked(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
         if unheard {
@@ -2136,7 +2136,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
             data: Bytes::new(),
         },
     };
-    let answer = cluster.runtime(behind).handle(request).await;
+    let answer = cluster.runtime(behind).handle_unchecked(request).await;
     assert!(matches!(answer, Err(Refused::NoSnapshots(_))));
     let tail = log.tail_offset().await.expect("tail");
     assert_eq!((log.base_offset(), tail), (0, held));
@@ -2312,20 +2312,23 @@ async fn a_message_for_another_member_is_refused() {
     let unopened = request(group(3), MemberId::new("a", 1));
     // Another copy of the group is refused with the copy that is here.
     assert!(matches!(
-        runtime.handle(wiped).await,
+        runtime.handle_unchecked(wiped).await,
         Err(Refused::OtherCopy(_, 1))
     ));
     for other in [reformed, unopened] {
         let what = format!("{other:?}");
         assert!(
-            matches!(runtime.handle(other).await, Err(Refused::NoSuchMember(_))),
+            matches!(
+                runtime.handle_unchecked(other).await,
+                Err(Refused::NoSuchMember(_))
+            ),
             "{what}"
         );
     }
     assert_eq!(runtime.status(&shard(0)).expect("status").term, 0);
 
     runtime
-        .handle(request(group(0), MemberId::new("a", 1)))
+        .handle_unchecked(request(group(0), MemberId::new("a", 1)))
         .await
         .expect("handled");
     eventually(|| (runtime.status(&shard(0))?.term == 5).then_some(())).await;
@@ -2361,7 +2364,8 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
         deadline: Duration::from_millis(50),
         body: Request::Vote(VoteRequest::new(vote, None)),
     };
-    let answered = tokio::time::timeout(Duration::from_millis(50), runtime.handle(request)).await;
+    let answered =
+        tokio::time::timeout(Duration::from_millis(50), runtime.handle_unchecked(request)).await;
     assert!(answered.is_err(), "the parked member answered");
 
     release.send(()).expect("release");
@@ -2693,7 +2697,10 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
     };
     // Each refusal must hold while the age read after the answer is still
     // inside the wait, about 3 s after the checks start.
-    let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+    let answer = cluster
+        .runtime(follower)
+        .handle_unchecked(pre_vote(follower))
+        .await;
     let (age, wait) = following.led_age();
     assert!(
         age < wait,
@@ -2705,7 +2712,7 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
     );
     let answer = cluster
         .runtime(&leader.broker)
-        .handle(pre_vote(&leader.broker))
+        .handle_unchecked(pre_vote(&leader.broker))
         .await;
     let age = acked();
     assert!(
@@ -2721,7 +2728,10 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
     // own election timer runs on.
     let heard = following.heard();
     loop {
-        let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+        let answer = cluster
+            .runtime(follower)
+            .handle_unchecked(pre_vote(follower))
+            .await;
         if matches!(
             answer,
             Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted
@@ -2787,7 +2797,7 @@ async fn an_idle_group_elects_soon_after_a_transfer_to_a_dead_target() {
     };
     let asked = tokio::time::Instant::now();
     loop {
-        let answer = cluster.runtime(other).handle(pre_vote()).await;
+        let answer = cluster.runtime(other).handle_unchecked(pre_vote()).await;
         if matches!(
             answer,
             Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted

@@ -210,7 +210,8 @@ async fn an_append_of_a_higher_term_voids_the_lease_before_openraft_sees_it() {
         leader_commit: None,
     };
     let request = to(&led.leader.broker, Request::Append(append));
-    let answered = tokio::time::timeout(Duration::from_millis(50), runtime.handle(request)).await;
+    let answered =
+        tokio::time::timeout(Duration::from_millis(50), runtime.handle_unchecked(request)).await;
     assert!(answered.is_err(), "the parked member answered");
 
     assert_eq!(led.status().role, Role::Leader);
@@ -254,7 +255,9 @@ async fn a_snapshot_of_a_higher_term_voids_the_lease() {
         offset: 0,
         data: bytes::Bytes::new(),
     };
-    let answer = runtime.handle(to(&led.leader.broker, snapshot)).await;
+    let answer = runtime
+        .handle_unchecked(to(&led.leader.broker, snapshot))
+        .await;
     assert!(matches!(answer, Err(Refused::NoSnapshots(_))));
     assert_eq!(led.member().lease().void(), led.term + 2);
     assert_eq!(lost(&led.admit()), lease::VOID);
@@ -333,10 +336,16 @@ async fn a_granted_vote_voids_the_lease_and_a_granted_pre_vote_does_not() {
     let member = runtime.group(&shard(0)).expect("group");
 
     assert!(granted(
-        runtime.handle(to("a", pre_vote_request(5, "b"))).await
+        runtime
+            .handle_unchecked(to("a", pre_vote_request(5, "b")))
+            .await
     ));
     assert_eq!(member.lease().void(), 0);
-    assert!(granted(runtime.handle(to("a", vote_request(5, "b"))).await));
+    assert!(granted(
+        runtime
+            .handle_unchecked(to("a", vote_request(5, "b")))
+            .await
+    ));
     assert_eq!(member.lease().void(), 4);
     cluster.stop().await;
 }
@@ -350,7 +359,7 @@ async fn a_refused_vote_request_costs_the_leader_nothing() {
     let from = led.followers().next().expect("a follower");
     for request in [vote_request, pre_vote_request] {
         let request = to(&led.leader.broker, request(led.term + 5, &from));
-        assert!(!granted(runtime.handle(request).await));
+        assert!(!granted(runtime.handle_unchecked(request).await));
     }
     assert_eq!(led.member().lease().void(), 0);
     assert_eq!(led.status().term, led.term);
@@ -607,7 +616,9 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     for broker in followers.clone() {
         let runtime = cluster.runtime(broker);
         for request in [vote_request, pre_vote_request] {
-            let dropped = runtime.handle(to(broker, request(term + 9, "x"))).await;
+            let dropped = runtime
+                .handle_unchecked(to(broker, request(term + 9, "x")))
+                .await;
             assert!(
                 matches!(dropped, Err(Refused::Unreachable(_))),
                 "{broker} took a vote request just after it started"
@@ -625,14 +636,14 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     };
     soon("the old leader did not stand", stood).await;
     for request in [vote_request, pre_vote_request] {
-        let answer = runtime.handle(to(&leader.broker, request(term + 9, "x")));
+        let answer = runtime.handle_unchecked(to(&leader.broker, request(term + 9, "x")));
         assert!(dropped(&answer.await), "the old leader granted another");
     }
 
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
     for broker in BROKERS {
         let runtime = cluster.runtime(broker);
-        let answer = runtime.handle(to(broker, vote_request(term + 9, "x")));
+        let answer = runtime.handle_unchecked(to(broker, vote_request(term + 9, "x")));
         assert!(answer.await.is_ok(), "{broker} still takes no vote");
     }
     cluster.stop().await;
@@ -660,7 +671,7 @@ async fn a_restarted_leader_grants_no_other_candidate() {
     let runtime = cluster.runtime(&leader.broker);
     let member = runtime.group(&shard(0)).expect("group");
     for request in [vote_request, pre_vote_request] {
-        let asked = runtime.handle(to(&leader.broker, request(term + 9, other)));
+        let asked = runtime.handle_unchecked(to(&leader.broker, request(term + 9, other)));
         assert!(
             dropped(&asked.await),
             "the old leader took {other}'s request"
@@ -728,7 +739,7 @@ async fn a_restarted_sole_voter_stands_at_once() {
     };
     let taken = cluster
         .runtime("a")
-        .handle(to("a", Request::Append(heartbeat)))
+        .handle_unchecked(to("a", Request::Append(heartbeat)))
         .await;
     assert!(taken.is_ok());
     // The status is read from openraft's metrics, which trail the append.
@@ -741,7 +752,7 @@ async fn a_restarted_sole_voter_stands_at_once() {
     for request in [vote_request, pre_vote_request] {
         let answer = cluster
             .runtime("a")
-            .handle(to("a", request(term + 9, "y")))
+            .handle_unchecked(to("a", request(term + 9, "y")))
             .await;
         assert!(dropped(&answer), "a sole voter granted y inside its hold");
     }
@@ -793,7 +804,7 @@ async fn a_restarted_learner_beside_a_sole_voter_is_held() {
     restart(&mut cluster, "b").await;
     for request in [vote_request, pre_vote_request] {
         let b = cluster.runtime("b");
-        let asked = b.handle(to("b", request(term + 9, "x"))).await;
+        let asked = b.handle_unchecked(to("b", request(term + 9, "x"))).await;
         assert!(dropped(&asked), "the learner took a vote request");
     }
     quiet_through_hold(&cluster, "b", term).await;
@@ -824,12 +835,14 @@ async fn a_restarted_member_alone_in_a_set_not_committed_is_held() {
         leader_commit: None,
     };
     let runtime = led.cluster.runtime(&b);
-    let taken = runtime.handle(to(&b, Request::Append(change))).await;
+    let taken = runtime
+        .handle_unchecked(to(&b, Request::Append(change)))
+        .await;
     assert!(matches!(taken, Ok(RaftReply(Reply::Append(Ok(_))))));
 
     restart(&mut led.cluster, &b).await;
     let asked = runtime
-        .handle(to(&b, vote_request(led.term + 9, "x")))
+        .handle_unchecked(to(&b, vote_request(led.term + 9, "x")))
         .await;
     assert!(dropped(&asked), "{b} took a vote request");
     quiet_through_hold(&led.cluster, &b, led.term).await;
@@ -850,7 +863,7 @@ async fn a_held_member_grants_the_leader_its_stored_vote_names() {
     let old = &*leader.broker;
     for (broker, other) in [(followers[0], followers[1]), (followers[1], followers[0])] {
         let runtime = cluster.runtime(broker);
-        let ask = |request| runtime.handle(to(broker, request));
+        let ask = |request| runtime.handle_unchecked(to(broker, request));
         let asked = ask(stands(term + 1, other)).await;
         assert!(dropped(&asked), "{broker} took {other}'s request");
         let asked = ask(pre_vote_request(term + 1, old)).await;
@@ -879,15 +892,17 @@ async fn a_later_leaders_append_ends_what_the_stored_vote_lets_through() {
 
     let runtime = cluster.runtime(kept);
     let same = heartbeat(vote_of(term, old, true));
-    assert!(runtime.handle(to(kept, same)).await.is_ok());
+    assert!(runtime.handle_unchecked(to(kept, same)).await.is_ok());
     assert!(granted(
-        runtime.handle(to(kept, stands(term + 1, old))).await
+        runtime
+            .handle_unchecked(to(kept, stands(term + 1, old)))
+            .await
     ));
 
     let runtime = cluster.runtime(replaced);
     let later = heartbeat(vote_of(term + 5, kept, true));
-    assert!(runtime.handle(to(replaced, later)).await.is_ok());
-    let asked = runtime.handle(to(replaced, stands(term + 9, old)));
+    assert!(runtime.handle_unchecked(to(replaced, later)).await.is_ok());
+    let asked = runtime.handle_unchecked(to(replaced, stands(term + 9, old)));
     assert!(dropped(&asked.await), "the old leader was let through");
     cluster.stop().await;
 }
@@ -1005,7 +1020,7 @@ async fn a_held_member_handed_the_leadership_stands_and_is_ticked() {
     restart(&mut cluster, target).await;
     let runtime = cluster.runtime(target);
     let member = runtime.group(&shard(0)).expect("group");
-    let dropped_one = runtime.handle(to(target, vote_request(term + 9, "x")));
+    let dropped_one = runtime.handle_unchecked(to(target, vote_request(term + 9, "x")));
     assert!(dropped(&dropped_one.await), "{target} is not held");
     // openraft hands over only to a target that has taken an append
     // since it started.
@@ -1022,7 +1037,7 @@ async fn a_held_member_handed_the_leadership_stands_and_is_ticked() {
         (status.role == Role::Leader && status.term == term + 1).then_some(())
     })
     .await;
-    let asked = runtime.handle(to(target, stands(term + 9, &leader.broker)));
+    let asked = runtime.handle_unchecked(to(target, stands(term + 9, &leader.broker)));
     assert!(dropped(&asked.await), "the old leader was let through");
     soon("the new leader was not ticked", || {
         runtime.status(&shard(0)).is_some_and(|now| now.ticks > 0)
@@ -1045,7 +1060,7 @@ async fn a_restarted_member_holds_its_vote_after_an_election_nobody_won() {
     assert!(granted(
         cluster
             .runtime("a")
-            .handle(to("a", vote_request(5, "b")))
+            .handle_unchecked(to("a", vote_request(5, "b")))
             .await
     ));
     let stood = cluster.runtime("b");
@@ -1059,7 +1074,7 @@ async fn a_restarted_member_holds_its_vote_after_an_election_nobody_won() {
     for broker in ["a", "b"] {
         let runtime = cluster.runtime(broker);
         for request in [vote_request, pre_vote_request] {
-            let dropped = runtime.handle(to(broker, request(9, "c"))).await;
+            let dropped = runtime.handle_unchecked(to(broker, request(9, "c"))).await;
             assert!(
                 matches!(dropped, Err(Refused::Unreachable(_))),
                 "{broker} took a vote request just after it started"
@@ -1069,19 +1084,19 @@ async fn a_restarted_member_holds_its_vote_after_an_election_nobody_won() {
     // a's stored vote names b and is not committed: b never led, so the
     // promise a may have made was to somebody else.
     let a = cluster.runtime("a");
-    let asked = a.handle(to("a", vote_request(6, "b"))).await;
+    let asked = a.handle_unchecked(to("a", vote_request(6, "b"))).await;
     assert!(dropped(&asked), "a vote nobody won let b through");
     assert!(granted(
         cluster
             .runtime("c")
-            .handle(to("c", vote_request(9, "a")))
+            .handle_unchecked(to("c", vote_request(9, "a")))
             .await
     ));
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
     assert!(granted(
         cluster
             .runtime("a")
-            .handle(to("a", vote_request(9, "c")))
+            .handle_unchecked(to("a", vote_request(9, "c")))
             .await
     ));
     cluster.net.cut.lock().clear();

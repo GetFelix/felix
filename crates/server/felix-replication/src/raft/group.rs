@@ -2592,8 +2592,9 @@ impl Group {
     /// takes the message only from a broker its [`Admission`] says is in
     /// the group now, and from no one without one. A member also takes one
     /// from a broker the control plane places in the group now, which a
-    /// member that missed the change adding it does not know. See
-    /// `docs/threat-model-internal.md`.
+    /// member that missed the change adding it does not know. The
+    /// membership half of the runtime's admission check, its only caller.
+    /// See `docs/threat-model-internal.md`.
     pub(crate) async fn outsider(
         &self,
         from: &str,

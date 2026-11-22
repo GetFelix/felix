@@ -475,7 +475,7 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
         },
     };
     assert!(matches!(
-        cluster.runtime("c").handle(request).await,
+        cluster.runtime("c").handle_unchecked(request).await,
         Err(Refused::OtherCopy(_, copy)) if copy == new.copy
     ));
 
@@ -1329,7 +1329,7 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
         },
     };
     assert!(matches!(
-        cluster.runtime(failing).handle(request).await,
+        cluster.runtime(failing).handle_unchecked(request).await,
         Err(Refused::OtherCopy(_, copy)) if copy == new.copy
     ));
     let member = cluster
@@ -1570,7 +1570,7 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
         },
     };
     assert!(matches!(
-        a.handle(ask_vote()).await,
+        a.handle_unchecked(ask_vote()).await,
         Err(Refused::Stopped(..))
     ));
 
@@ -1593,7 +1593,7 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
     };
     for commit in [None, before.last_index] {
         assert!(matches!(
-            a.handle(at_own(commit)).await,
+            a.handle_unchecked(at_own(commit)).await,
             Err(Refused::Stopped(..))
         ));
         assert!(matches!(reopen().await, Err(OpenError::Stopped(_))));
