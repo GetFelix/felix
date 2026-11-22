@@ -157,6 +157,13 @@ jobs:
 
       # No rust-cache here or in the rebuild: a cache restored from another
       # path or run is exactly what the byte comparison below must not trust.
+      - name: Record the runner image
+        run: |
+          out="${GITHUB_WORKSPACE}/dist"
+          mkdir -p "$out"
+          { echo "ImageVersion=${ImageVersion:-unknown}"; echo "ImageOS=${ImageOS:-unknown}"
+            cat /etc/os-release; } | tee "$out/felix-${RELEASE_TAG}-linux-x86_64.build.build-env.txt" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build the release archive
         run: scripts/build_server_archive.sh "${RELEASE_TAG}" dist
 
@@ -164,7 +171,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: felix-${{ env.RELEASE_TAG }}-linux-x86_64
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.build-env.txt
           if-no-files-found: error
 
       # A tag and a version that disagree ship artifacts labelled with neither,
@@ -233,6 +242,13 @@ jobs:
         with:
           toolchain: "1.99.1"
 
+      - name: Record the runner image
+        run: |
+          out="${GITHUB_WORKSPACE}/rebuild/dist"
+          mkdir -p "$out"
+          { echo "ImageVersion=${ImageVersion:-unknown}"; echo "ImageOS=${ImageOS:-unknown}"
+            cat /etc/os-release; } | tee "$out/felix-${RELEASE_TAG}-linux-x86_64.rebuild.build-env.txt" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build the release archive
         working-directory: rebuild/src
         run: scripts/build_server_archive.sh "${RELEASE_TAG}" ../dist
@@ -241,7 +257,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: rebuild-felix-${{ env.RELEASE_TAG }}-linux-x86_64
-          path: rebuild/dist/*.tar.gz
+          path: |
+            rebuild/dist/*.tar.gz
+            rebuild/dist/*.build-env.txt
           if-no-files-found: error
 
   reproducible-check:
@@ -266,6 +284,8 @@ jobs:
           b=$(sha256sum "builds/rebuild-felix-${RELEASE_TAG}-linux-x86_64/${name}" | cut -d' ' -f1)
           echo "build:   $a"
           echo "rebuild: $b"
+          # A floating runner image rolling out between the two jobs shows here.
+          grep -H . builds/*/*.build-env.txt | grep -E "ImageVersion|PRETTY_NAME" || true
           if [ "$a" != "$b" ]; then
             echo "::error::two builds of ${RELEASE_TAG} differ; the archive is not reproducible"
             exit 1
