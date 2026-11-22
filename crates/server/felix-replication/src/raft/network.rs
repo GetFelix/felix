@@ -64,9 +64,10 @@ pub(crate) struct Beat {
 pub(crate) enum Ask {
     /// No report: not an append with entries, or no write waits on reports.
     Nothing,
-    /// Report once written. Every follower does, whatever its log's mode:
-    /// the report lets a `Quorum` write go without waiting for the commit
-    /// to reach the leader's state machine.
+    /// Report once written. The report lets a `Quorum` write go without
+    /// waiting for the commit to reach the leader's state machine. A
+    /// follower whose log answers at the write sends none: the leader
+    /// counts its answer instead.
     Written,
 }
 
@@ -334,6 +335,10 @@ impl Router {
             self.pace.asking_at(term_of(&vote.vote));
         }
         let deadline = super::wire::append_deadline(option.hard_ttl(), &body);
+        let report = match &body {
+            Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
+            _ => Ask::Nothing,
+        };
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -341,10 +346,7 @@ impl Router {
                 gap: sent.gap,
                 seq: sent.seq,
             }),
-            report: match &body {
-                Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
-                _ => Ask::Nothing,
-            },
+            report,
             deadline,
             body,
         };
@@ -355,6 +357,11 @@ impl Router {
                 Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, &sent),
                 _ => self.pace.unanswered(&to),
             }
+        }
+        if report == Ask::Written
+            && let Ok(Ok(RaftReply(Reply::Append(Ok(Some(last)))))) = &answer
+        {
+            self.reports.answered(&to, last);
         }
         // Before openraft sees the answer: it adopts the vote and may grant
         // that candidate at once.

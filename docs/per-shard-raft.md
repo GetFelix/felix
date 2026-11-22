@@ -1329,7 +1329,9 @@ What the acknowledgement promises, and what it does not
   saw, because subscribers are fed committed records only.
 - Raft closes that case the way 0.7 does (issue #2423). A copy syncs a
   marker in its data root before its first written report leaves, and
-  before it counts its own unsynced write as leader. A root with the
+  before it counts its own unsynced write as leader. A copy on a
+  written-commit log sends no report, because its answer is one: its root's
+  run is already relaxed, or the log would not open that way. A root with the
   marker records every run as relaxed, so after a power cut it comes
   back under a new storage identity, and its copies under new copy ids.
   The old identity no longer votes or counts, so the shard stays closed
@@ -6224,16 +6226,25 @@ Each follower answers an append by its own mode. Every leader asks for
 the written report (`await_quorum_ack`, `Request::Written`) once a
 `Quorum` write waits on it:
 
-- **A relaxed follower** answers at the write and sends the written
-  report right after a successful answer. The answer commits, but the
-  commit only acknowledges once the leader's state machine has applied
-  the entry. The report lets the leader acknowledge at the written
-  majority without that wait, as the hybrid does.
+- **A relaxed follower** answers at the write and sends no separate
+  report: its answer is the report. The answer commits, but the commit
+  only acknowledges once the leader's state machine has applied the
+  entry. So the leader also counts each successful answer to an append it
+  asked about as a written report for the answer's last log id
+  (`Reports::answered`). That lets it acknowledge at the written majority
+  without the apply wait, as the hybrid does, at no extra message or task
+  per append.
 - **A strict follower** answers after its fsync, and sends the written
-  report first, at the write.
+  report first, at the write. Its answer is counted too; it says more.
 - **Every leader asks** once a `Quorum` write has waited on reports, and
-  counts them the same way: the leader's own term only, voters only, a
-  majority of each set.
+  counts reports and answers the same way: the leader's own term only,
+  voters only, a majority of each set.
+
+openraft answers an append only once the log id it names is through the
+follower's log (`IOFlushed` above), so a counted answer never names an
+entry the follower has not written. In the model it is a `Report` of a
+point in the sender's last term at or below its last entry, which
+`FelixRaftWritten.tla` allows.
 
 A group can have members on both kinds of broker. The argument is meant
 to hold member by member: a strict copy answers after its fsync, and a
@@ -6440,11 +6451,11 @@ not a weaker flush.
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
 - The written report follows "What each signal means": every leader asks
-  with `Ask::Written` and every follower answers it. A follower on a
-  written-commit log sends its report after its answer, from a task of its
-  own, so the answer does not wait on the report's round trip. The ask
-  byte 2 that older builds send reads as `Ask::Written`. A lost report can
-  only make a `Quorum` write wait for the commit.
+  with `Ask::Written`. A strict follower reports at the write. A follower
+  on a written-commit log sends nothing extra, and the leader counts its
+  answer to the append instead. The ask byte 2 that older builds send
+  reads as `Ask::Written`. A lost report can only make a `Quorum` write
+  wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`read_copies`, `kept_logs`): every reservation in the shard directory and
   its kept directories, from which the plan's first index is set
@@ -6516,7 +6527,7 @@ before `save_vote` returns in every mode.
 | Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
 | The reservation: a synced file per shard directory, raised before the write and at open, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
 | Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
-| The written report: every leader asks and every follower reports, after its marker sync; a strict follower reports at the write, a relaxed follower right after its answer at the write | Built: `Ask` in `felix-replication/src/raft/network.rs`, `Reports::ask` in `raft/written.rs`, `Group::answer` in `raft/group.rs` | `raft/tests/written.rs`: `a_relaxed_leader_acknowledges_on_relaxed_followers_reports`, `a_relaxed_leader_counts_only_reports_of_its_term`, `a_relaxed_leader_acknowledges_on_strict_followers_reports` |
+| The written report: every leader asks; a strict follower reports at the write, after its marker sync; a relaxed follower's answer at the write is its report, counted by the leader | Built: `Ask` and `Router::call` in `felix-replication/src/raft/network.rs`, `Reports::ask` and `Reports::answered` in `raft/written.rs`, `Group::answer` in `raft/group.rs` | `raft/tests/written.rs`: `a_relaxed_leader_acknowledges_on_relaxed_followers_reports`, `relaxed_followers_answer_with_their_written_position`, `a_relaxed_leader_counts_only_reports_of_its_term`, `a_relaxed_leader_acknowledges_on_strict_followers_reports` |
 | A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (item 6 above) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
 | A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (item 8 above) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |

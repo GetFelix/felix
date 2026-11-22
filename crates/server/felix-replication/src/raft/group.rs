@@ -1435,8 +1435,8 @@ impl Group {
     /// the report goes out as soon as the entries are written. On a log
     /// that fsyncs before it answers, an answer that is ready first says
     /// more, and the report is dropped. A written-commit log answers at the
-    /// write, and the report follows a successful answer: the leader acks
-    /// on it without waiting for its commit to be applied.
+    /// write, so its answer is the report and nothing else is sent: the
+    /// leader counts it ([`Reports::answered`]).
     async fn answer(self: &Arc<Self>, body: Request, report: Ask) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
@@ -1451,23 +1451,9 @@ impl Group {
             }),
             _ => None,
         };
-        let Some((leader, last)) = asked else {
+        let Some((leader, last)) = asked.filter(|_| !self.log.written_commit()) else {
             return self.dispatch(body).await;
         };
-        if self.log.written_commit() {
-            let reply = self.dispatch(body).await;
-            if matches!(&reply, Ok(Reply::Append(Ok(_)))) {
-                // Spawned, so the answer does not wait on the report's round
-                // trip. The written position already holds `last`, so the
-                // wait inside is immediate; the bound covers a stopped log.
-                let group = Arc::clone(self);
-                let within = Duration::from_millis(2 * self.pace.timers.heartbeat);
-                self.runtime.spawn(async move {
-                    let _ = tokio::time::timeout(within, group.tell_written(leader, last)).await;
-                });
-            }
-            return reply;
-        }
         let answer = self.dispatch(body);
         let tell = self.tell_written(leader, last);
         tokio::pin!(answer, tell);

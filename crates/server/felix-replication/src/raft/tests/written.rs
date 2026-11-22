@@ -985,3 +985,33 @@ async fn a_relaxed_leader_waits_for_strict_followers_to_write() {
     acked.expect("acknowledged");
     led.cluster.stop().await;
 }
+
+/// **Followers on written-commit logs send no written report.** Their
+/// answer to an append comes once its entries are written, so the leader
+/// counts the answer, and a `Quorum` write costs no extra message or task
+/// per append.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relaxed_followers_answer_with_their_written_position() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const WRITES: u64 = 50;
+    let mut led = led_relaxed(&BROKERS).await;
+    let primed = led.prime().await;
+    led.cluster.committed_everywhere(0, primed.end - 1).await;
+    let reports = || led.cluster.net.written_reports.lock().len() as u64;
+    let (reported, appended) = (reports(), led.cluster.net.appends.load(Relaxed));
+    let mut last = primed;
+    for _ in 0..WRITES {
+        last = led.propose().await;
+        let acked = led.acked(last, AckAt::Written).await;
+        acked.expect("acknowledged");
+    }
+    led.told_by(led.others()[0], last).await;
+    led.told_by(led.others()[1], last).await;
+    let appends = led.cluster.net.appends.load(Relaxed) - appended;
+    let sent = reports() - reported;
+    assert_eq!(
+        sent, 0,
+        "{sent} written reports for {WRITES} writes and {appends} appends"
+    );
+    led.cluster.stop().await;
+}
