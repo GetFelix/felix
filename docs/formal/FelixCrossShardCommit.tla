@@ -198,8 +198,11 @@ HomeVote(m) ==
               /\ UNCHANGED hgrant
     /\ UNCHANGED << hlog, hterm, hconf, htrim, hlw, partVars, started, pre, writes, msgs >>
 
-\* Every participant granted: home proposes the commit.
+\* Every participant granted: home proposes the commit. Never at or below
+\* the mark: first record wins needs the first record, and a trimmed abort
+\* is answered by the mark alone.
 HomeDecide(t) ==
+    /\ t > hlw
     /\ hgrant[t] = Parts
     /\ Winner(t) = None
     /\ ~PendingDecision(t)

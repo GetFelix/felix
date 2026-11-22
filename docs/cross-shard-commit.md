@@ -187,7 +187,11 @@ Home answers an ask from its log. With a decision, it sends the apply or the
 release. With none, it appends an abort decision and then sends the release.
 A commit at or below home's low-water mark (below) with no decision left in
 the log was aborted and trimmed, so home sends the release and appends
-nothing.
+nothing. For the same reason home never appends a decision, commit or abort,
+for a commit at or below the mark: first record wins needs the first record,
+and once retention trims an abort the mark is what answers for it. Without
+that rule, grants collected before the trim let home commit an aborted
+commit; TLC found this in the model.
 
 **First record wins.** The abort home appends for an ask can race a commit
 decision that home's leader proposed a moment earlier and that has not
