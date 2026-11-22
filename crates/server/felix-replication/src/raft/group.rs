@@ -84,7 +84,7 @@ pub(crate) struct Group {
     /// which a confirmed read must wait to have applied.
     answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
     /// The data root's mark log, when the member has one. Its
-    /// vouched-unsynced marker is synced before this member's unsynced write
+    /// vouched-unsynced marker is synced before a strict log's unsynced write
     /// is told to a leader or counted here, so a power cut rotates the copy.
     root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.

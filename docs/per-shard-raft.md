@@ -185,8 +185,9 @@ cases:
   is relaxed when the broker's own `FELIX_DURABLE_FSYNC_MODE` is `periodic`
   or `none`, or when a copy in the root has ever vouched for a record
   before its fsync: told a leader it had written one, or, as leader,
-  counted its own unsynced write toward an acknowledgement. Before the
-  first of either, the copy syncs a marker in the data root
+  counted its own unsynced write toward an acknowledgement. (A copy on a
+  written-commit log answers at the write without a marker: its root's run
+  is relaxed already.) Before the first of either, the copy syncs a marker in the data root
   (`vouched-unsynced`), and the marker is never removed, since a leader
   may still count what the copy said. A copy under `on_commit` that
   never vouched was only ever counted for records it had synced, so it
@@ -6243,7 +6244,7 @@ the written report (`await_quorum_ack`, `Request::Written`) once a
 openraft answers an append only once the log id it names is through the
 follower's log (`IOFlushed` above), so a counted answer never names an
 entry the follower has not written. In the model it is a `Report` of a
-point in the sender's last term at or below its last entry, which
+entry the sender holds, named by that entry's own log id, which
 `FelixRaftWritten.tla` allows.
 
 A group can have members on both kinds of broker. The argument is meant
@@ -6455,7 +6456,8 @@ not a weaker flush.
   on a written-commit log sends nothing extra, and the leader counts its
   answer to the append instead. The ask byte 2 that older builds send
   reads as `Ask::Written`. A lost report can only make a `Quorum` write
-  wait for the commit.
+  wait for the commit, and so can a leader from a build that does not
+  count answers, while its written-commit followers send no report.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`read_copies`, `kept_logs`): every reservation in the shard directory and
   its kept directories, from which the plan's first index is set
