@@ -181,8 +181,15 @@ impl LogThread {
     pub(crate) fn spawn(&self, work: impl FnOnce() + Send + 'static) {
         self.pending.fetch_add(1, Ordering::AcqRel);
         let job: Job = Box::new(move |pending: &AtomicUsize| {
+            // On drop, so a panic does not leave the thread looking busy.
+            struct Done<'a>(&'a AtomicUsize);
+            impl Drop for Done<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            let _done = Done(pending);
             work();
-            pending.fetch_sub(1, Ordering::AcqRel);
         });
         let submitted = if felix_common::blocking::on_runtime() {
             Err(job)
