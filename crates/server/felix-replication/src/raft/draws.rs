@@ -15,7 +15,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-use openraft::rt::{AsyncRuntime, Instant, OptionalSend, Select2, Select3, Select4};
+use openraft::rt::{AsyncRuntime, OptionalSend, Select2, Select3, Select4};
 use openraft_rt_tokio::TokioRuntime;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
