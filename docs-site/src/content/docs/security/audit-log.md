@@ -64,7 +64,7 @@ recorded. A refused request, and any request without a verified credential,
 records only its route template as its path, since the caller chose the path
 and could use it to fill the log. A request that names a subject but fails to
 verify records no subject: an unverified name proves nothing. Every text
-field is cut to 256 bytes, so a record stays a few KiB.
+field is cut to 256 bytes and ends in `…` when cut, so a record stays a few KiB and a cut value never reads as a shorter one.
 
 ## Where it is kept
 

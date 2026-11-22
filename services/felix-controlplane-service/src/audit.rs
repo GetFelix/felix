@@ -613,12 +613,15 @@ fn bounded(mut entry: AuditEntry) -> AuditEntry {
     entry
 }
 
+/// Cut to at most `max` bytes, ending in `…` so a cut subject or path never
+/// reads as a shorter, real one.
 fn truncate(text: &str, max: usize) -> String {
-    let mut end = text.len().min(max);
+    const MARK: &str = "…";
+    let mut end = max.saturating_sub(MARK.len()).min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    text[..end].to_string()
+    format!("{}{MARK}", &text[..end])
 }
 
 fn hex(bytes: &[u8]) -> String {

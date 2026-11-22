@@ -336,6 +336,9 @@ fn every_string_field_is_bounded() {
     for (field, value) in json.as_object().expect("object") {
         if let Some(text) = value.as_str() {
             assert!(text.len() <= MAX_FIELD, "{field} is {} bytes", text.len());
+            if text.starts_with('x') {
+                assert!(text.ends_with('…'), "{field} is cut without a mark");
+            }
         }
     }
 }
