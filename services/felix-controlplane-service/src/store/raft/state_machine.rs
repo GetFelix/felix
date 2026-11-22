@@ -165,14 +165,7 @@ impl MetadataStateMachine {
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|feature| {
-                MetaCommand::FinalizeFleetFeature {
-                    feature,
-                    hold_unformed: false,
-                    hold_formed: false,
-                }
-                .version()
-            })
+            .map(finalized_level)
             .fold(self.levels_used(), u16::max);
         self.floor.store(floor, std::sync::atomic::Ordering::SeqCst);
     }
@@ -382,12 +375,7 @@ impl MetadataStateMachine {
                     .map_err(Into::into)
             }
             MetaCommand::FinalizeFleetFeature { feature, .. } => {
-                let level = MetaCommand::FinalizeFleetFeature {
-                    feature: feature.clone(),
-                    hold_unformed: false,
-                    hold_formed: false,
-                }
-                .version();
+                let level = finalized_level(feature.clone());
                 let enabled = store.finalize_fleet_feature(&feature).await?;
                 self.raise_floor(level);
                 Ok(MetaResponse::FleetFeatures { enabled })
@@ -975,6 +963,43 @@ impl AppStateMachine for MetadataStateMachine {
     fn join_floor(&self) -> u16 {
         self.floor.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// What [`Self::apply`] raises the floor to for `command`.
+    fn floor_of(&self, command: &[u8]) -> u16 {
+        floor_of(command)
+    }
+}
+
+/// The join floor applying `command` raises: its level above
+/// [`RELEASED_LEVEL`], or the level a finalized feature needs, including
+/// each feature an import brings. An entry this build cannot decode raises
+/// nothing here, as in apply.
+fn floor_of(command: &[u8]) -> u16 {
+    let Ok((command, level)) = decode_command_with_level(command) else {
+        return 0;
+    };
+    let used = if level > RELEASED_LEVEL { level } else { 0 };
+    match command {
+        MetaCommand::FinalizeFleetFeature { feature, .. } => used.max(finalized_level(feature)),
+        MetaCommand::ImportState { state, .. } => state
+            .fleet_enabled
+            .iter()
+            .cloned()
+            .map(finalized_level)
+            .fold(used, u16::max),
+        _ => used,
+    }
+}
+
+/// The floor a finalized `feature` sets, as apply and
+/// [`MetadataStateMachine::recompute_floor`] work it out.
+fn finalized_level(feature: String) -> u16 {
+    MetaCommand::FinalizeFleetFeature {
+        feature,
+        hold_unformed: false,
+        hold_formed: false,
+    }
+    .version()
 }
 
 /// Panics if the snapshot carries fields this build would drop.

@@ -7,6 +7,7 @@
 //! reaching a follower is forwarded to the leader over the peer listener, the
 //! same way a proposal is. Requests stay opaque bytes here, like commands.
 use openraft::async_runtime::WatchReceiver;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -125,6 +126,42 @@ impl RaftHandle {
         tokio::time::timeout(within, self.confirm_leadership())
             .await
             .unwrap_or(false)
+    }
+
+    /// Whether this member leads in `term` and has applied the blank entry
+    /// that opened it, so its applied state, the join floor included, holds
+    /// everything earlier terms committed. Only the first call of a term
+    /// pays for the read-index; see `docs/metadata-raft-design.md`
+    /// ("Liveness is leader soft state").
+    pub(crate) async fn await_own_blank(&self, term: u64, within: Duration) -> bool {
+        if self.blank_applied.load(Ordering::Acquire) == term {
+            return true;
+        }
+        // A read-index from a later term proves nothing about this one.
+        if !self.confirm_leadership_within(within).await || self.current_term() != term {
+            return false;
+        }
+        self.blank_applied.fetch_max(term, Ordering::AcqRel);
+        true
+    }
+
+    /// The level proposals are settled at: the group's level with members
+    /// that have not answered counted at the join floor. On the leader the
+    /// floor is read only after [`Self::await_own_blank`], so a new leader
+    /// does not settle a write below what the committed log already needs;
+    /// `None` if it cannot confirm that.
+    pub(crate) async fn proposal_level(&self) -> Option<u16> {
+        if self.is_leader()
+            && !self
+                .await_own_blank(self.current_term(), self.write_timeout)
+                .await
+        {
+            return None;
+        }
+        Some(
+            self.cluster_version_with_unknown_at(self.app.join_floor())
+                .await,
+        )
     }
 
     /// The leader this member knows of, with the address its membership

@@ -238,9 +238,10 @@ impl RaftHandle {
         if !depends_on_level {
             return Proposal::Append(command.to_vec());
         }
-        let level = self
-            .cluster_version_with_unknown_at(self.app.join_floor())
-            .await;
+        // Not confirmed as leader of this term: the next attempt finds out who is.
+        let Some(level) = self.proposal_level().await else {
+            return Proposal::Forward;
+        };
         match self.app.settle_for_level(command, level) {
             Ok(Some(settled)) => Proposal::Append(settled),
             Ok(None) => Proposal::Append(command.to_vec()),

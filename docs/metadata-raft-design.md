@@ -182,7 +182,12 @@ a node that had just registered again. So the first leader-only request of a
 term runs a read-index, which waits for the blank entry to apply, and only
 then is the request answered. Every leader-only request goes through that one
 check (`SoftState::dispatch` in `store/raft/soft_state.rs`), and later
-requests in the same term skip it. The first heartbeat of a term pays for
+requests in the same term skip it. The same per-term barrier
+(`RaftHandle::await_own_blank` in `raft/leader.rs`) guards the other
+leader decisions read from applied state: admitting a member against the
+join floor, and the level a proposal is settled at, which counts a member
+that has not answered at the join floor. Settled below what the committed log
+already needs, a write could drop a field a finalized feature relies on. The first heartbeat of a term pays for
 two read-indexes, so a leader with many entries left to apply fails
 forwarded heartbeats until it catches up, and brokers retry.
 
@@ -863,7 +868,10 @@ field it does not know; it never sees the mark, because the mark is only
 set by entries it could not apply either. Once the floor is above 0, the
 leader asks a new member its level on the `standing` route before adding it
 as a learner, and refuses the join when it is below the floor, reports
-none, or does not answer, naming both versions. At floor 0 any build may
+none, or does not answer, naming both versions. It reads the floor only
+after the term's barrier (see "Liveness is leader soft state"), so a newly
+elected leader judges the join by the committed log, not by what it had
+applied when it won. At floor 0 any build may
 join: the group's level drops to the newcomer's, as during a rolling
 upgrade.
 
@@ -885,7 +893,13 @@ a higher vote and depose the leader. That is one extra election per long
 hold. The check reads only
 cached state, the floor from an atomic the state machine updates on apply
 and restore and each member's last reported level; a send never waits on a
-probe. The leader keeps those levels fresh in the background
+probe. A new leader applies what earlier terms committed only after its
+blank entry commits, and that needs these very sends, so its applied floor
+can lag the log it sends from. For a member that reported a level below the
+leader's, or that is marked as described below, the check therefore raises
+the floor to what the entries in the append need, the level each would raise
+the mark to once applied. A snapshot is built from applied state, so the
+applied floor covers it. The leader keeps those levels fresh in the background
 (`watch_versions` in `raft/version.rs`): it asks every member on the
 `standing` route when it takes the lead, every 10 seconds after that, and
 every 500 ms while a member is held. An answer that names another member is

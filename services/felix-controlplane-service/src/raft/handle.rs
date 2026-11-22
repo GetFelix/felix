@@ -68,6 +68,9 @@ pub struct RaftHandle {
     /// Holds reads and readiness after a restart until the node has applied
     /// its whole log tail ([`RaftHandle::caught_up`]).
     pub(super) replay_gate: Arc<super::health::ReplayGate>,
+    /// The latest term in which this member, leading, saw its own blank
+    /// entry applied ([`RaftHandle::await_own_blank`]). Zero until then.
+    pub(super) blank_applied: Arc<AtomicU64>,
 }
 
 /// How long a failed start waits for the node to stop. Short under test so
@@ -238,6 +241,7 @@ impl RaftHandle {
             data_dir: Arc::new(settings.data_dir),
             configured: Arc::default(),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
+            blank_applied: Arc::new(AtomicU64::new(0)),
             floor: Arc::new(AtomicU64::new(super::join::NO_FLOOR)),
             floor_gate: Arc::default(),
             floor_report_after: settings.floor_report_after,

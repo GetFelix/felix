@@ -259,11 +259,20 @@ impl RaftStore {
     /// build that joined still holds newer commands back. Counted at 0, a
     /// restarted member with a peer down dropped what the group had been
     /// storing, such as a node's storage identity.
+    ///
+    /// A leader that cannot confirm its term falls back to the applied
+    /// floor: the proposal then goes through `proposal_bytes`, which settles
+    /// it again behind the barrier or forwards it.
     async fn group_level(&self) -> u16 {
         use crate::raft::AppStateMachine;
-        self.handle
-            .cluster_version_with_unknown_at(self.machine.join_floor())
-            .await
+        match self.handle.proposal_level().await {
+            Some(level) => level,
+            None => {
+                self.handle
+                    .cluster_version_with_unknown_at(self.machine.join_floor())
+                    .await
+            }
+        }
     }
 
     /// Whether a create at `level` must carry the identity mark, so the
