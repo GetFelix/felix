@@ -453,9 +453,10 @@ Crash(s) ==
 \* starts with an empty log and no vote. It never votes, campaigns or
 \* answers as that seat again; adding the new copy needs a membership
 \* change, which this model does not make. The leader keeps whatever it
-\* already heard from the old copy. The broker rotates only a copy that
-\* vouched for an unsynced record, and rotates it even when the cut took
-\* nothing; this model rotates every cut copy and cuts only unsynced tails.
+\* already heard from the old copy. The broker rotates a copy whose root's
+\* run is relaxed, as every written-commit copy's is, or that vouched for an
+\* unsynced record, and rotates it even when the cut took nothing; this
+\* model rotates every cut copy and cuts only unsynced tails.
 PowerCut(s) ==
     /\ used.cuts < MaxPowerCuts
     /\ s \notin gone

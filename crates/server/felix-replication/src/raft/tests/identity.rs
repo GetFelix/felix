@@ -611,17 +611,57 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
         !reported(silent),
         "a copy whose marker did not sync reported"
     );
-    let synced = cluster
+    // Its answers still count, but only once its fsync is through: with the
+    // next flush failing, a write it holds is never counted.
+    let positions = cluster
         .runtime(silent)
         .group(&shard(0))
         .expect("group")
-        .positions()
-        .borrow()
-        .flushed;
-    let counted = group.reports().from(&member_of(silent));
+        .positions();
+    let counted = || group.reports().from(&member_of(silent));
     assert!(
-        counted.is_none_or(|counted| synced.is_some_and(|synced| counted.index <= synced.index)),
-        "an unmarked copy counted at {counted:?}, past its fsync at {synced:?}"
+        counted().is_some(),
+        "the unmarked copy's answers were not counted"
+    );
+    let log = &logs[BROKERS
+        .iter()
+        .position(|broker| *broker == silent)
+        .expect("silent")];
+    log.fail_flush_past(log.tail_offset().await.expect("tail"));
+    let held = positions.borrow().written.expect("written").index;
+    let batch = Batch {
+        expected: None,
+        trim: None,
+        commit: false,
+        records: vec![Record {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(b"unsynced"),
+            headers: None,
+        }],
+        ack: AckAt::Written,
+        term: None,
+        producer: None,
+        publisher: None,
+    };
+    let written = engine.propose(&shard(0), batch).await.expect("written");
+    engine
+        .await_quorum_ack(&shard(0), written, AckAt::Written, PATIENCE)
+        .await
+        .expect("acknowledged by the leader and the marked copy");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while positions.borrow().written.is_none_or(|at| at.index <= held) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unmarked copy never wrote the entry"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Long enough for an answer at the write to have been counted.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let counted = counted().expect("counted");
+    assert!(
+        counted.index <= held,
+        "an unmarked copy counted at {counted:?}, past its fsync at index {held}"
     );
 
     cluster.stop().await;
