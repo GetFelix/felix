@@ -2220,6 +2220,18 @@ request CI with the rest of the `raft` feature's tests. Run it by hand with
 `RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
 allocations of at least that size.
 
+openraft runs on tokio through `ShardRuntime`
+(`crates/server/felix-replication/src/raft/draws.rs`), which changes two
+things. Election timeouts come from a seedable random stream, so a
+simulation run repeats. And a sleep whose deadline is under a millisecond
+away yields instead of arming a timer (`raft/sleep.rs`). Tokio's timer
+fires on whole milliseconds, and openraft's IO completion forwarder sleeps
+1 us whenever a second write completes right after the first, so with
+tokio's sleep that write was answered up to a millisecond late. The sleep
+yields at most 32 times, then arms the timer, and it never ends before its
+deadline. Longer sleeps (elections, heartbeats, backoff) use the timer as
+before.
+
 ## Heartbeat coalescing
 
 Without coalescing, each leader sends each follower one empty

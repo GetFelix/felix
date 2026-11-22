@@ -5,7 +5,7 @@
 //! so two simulation runs of one seed would elect at different times.
 //! [`ShardRuntime`] is that runtime with one change: while a thread holds a
 //! `TimerSeed` (test builds only), its draws come from a stream derived
-//! from the seed.
+//! from the seed. Its sleeps are [`ShardSleep`]s.
 
 #[cfg(any(test, feature = "testing"))]
 use std::cell::Cell;
@@ -15,10 +15,12 @@ use std::io;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-use openraft::rt::{AsyncRuntime, OptionalSend, Select2, Select3, Select4};
+use openraft::rt::{AsyncRuntime, Instant, OptionalSend, Select2, Select3, Select4};
 use openraft_rt_tokio::TokioRuntime;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
+
+use super::sleep::ShardSleep;
 
 #[cfg(test)]
 mod tests;
@@ -66,14 +68,15 @@ fn next(state: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Tokio's runtime for openraft, with draws a simulation can seed.
+/// Tokio's runtime for openraft, with draws a simulation can seed and
+/// sleeps that do not wait a timer tick for a deadline already close.
 #[derive(Debug)]
 pub(crate) struct ShardRuntime(TokioRuntime);
 
 impl AsyncRuntime for ShardRuntime {
     type JoinError = <TokioRuntime as AsyncRuntime>::JoinError;
     type JoinHandle<T: OptionalSend + 'static> = <TokioRuntime as AsyncRuntime>::JoinHandle<T>;
-    type Sleep = <TokioRuntime as AsyncRuntime>::Sleep;
+    type Sleep = ShardSleep;
     type Instant = <TokioRuntime as AsyncRuntime>::Instant;
     type TimeoutError = <TokioRuntime as AsyncRuntime>::TimeoutError;
     type Timeout<R, T: Future<Output = R> + OptionalSend> =
@@ -93,11 +96,11 @@ impl AsyncRuntime for ShardRuntime {
     }
 
     fn sleep(duration: Duration) -> Self::Sleep {
-        TokioRuntime::sleep(duration)
+        ShardSleep::until(Self::Instant::now() + duration)
     }
 
     fn sleep_until(deadline: Self::Instant) -> Self::Sleep {
-        TokioRuntime::sleep_until(deadline)
+        ShardSleep::until(deadline)
     }
 
     fn timeout<R, F>(duration: Duration, future: F) -> Self::Timeout<R, F>
