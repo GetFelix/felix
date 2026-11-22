@@ -22,15 +22,18 @@ ALLOC = re.compile(r"malloc|^free$|cfree|realloc|_int_|__rust_(alloc|dealloc|rea
 # that matches several takes the first listed.
 CATEGORIES = [
     ("allocator (malloc, free, clones)", ALLOC),
-    ("tracing / metrics", re.compile(r"^(tracing|metrics|prometheus|opentelemetry)")),
-    ("fsync / IO", re.compile(r"fsync|fdatasync|pwrite|pread|io_uring|felix_storage::io|ext4|xfs_|blk_|nvme|jbd2")),
-    ("peer encode and RPC", re.compile(r"felix_replication::(peer|raft::(network|wire|peer))")),
-    ("apply / state machine", re.compile(r"raft::machine|Machine|apply", re.I)),
-    ("log append and codec", re.compile(r"felix_storage|raft::codec|raft_log|disk_log")),
-    ("release / fanout / wakes", re.compile(r"completion|deliver|fanout|release|felix_broker::stream|wake|futex")),
-    ("openraft core", re.compile(r"^openraft::")),
-    ("client QUIC / TLS", re.compile(r"^(quinn|rustls|ring|aws_lc)|udp|sendmsg|recvmsg", re.I)),
-    ("tokio scheduling", re.compile(r"^tokio::|epoll|schedule|park")),
+    ("tracing / metrics", re.compile(r"^<?(tracing|metrics|prometheus|opentelemetry)")),
+    ("fsync / IO", re.compile(r"fsync|fdatasync|pwrite|pread|io_uring|^<?felix_storage::io|ext4|xfs_|blk_|nvme|jbd2")),
+    ("kernel wake / context switch", re.compile(r"finish_task_switch|__schedule|try_to_wake_up|futex|_raw_spin_unlock_irq")),
+    ("peer encode and RPC", re.compile(r"^<?felix_replication::(peer|raft::(network|wire|peer))")),
+    ("apply / state machine", re.compile(r"^<?felix_replication::raft::(machine|commit)")),
+    ("log append and codec", re.compile(r"^<?felix_storage|^<?felix_replication::raft::(codec|written)")),
+    ("raft propose / deliver (felix)", re.compile(r"^<?felix_replication::raft::")),
+    ("release / fanout", re.compile(r"^<?felix_broker::|completion|fanout")),
+    ("openraft core", re.compile(r"^<?openraft::")),
+    ("client QUIC / TLS", re.compile(r"^<?(quinn|rustls|ring|aws_lc)|udp|sendmsg|recvmsg", re.I)),
+    ("tokio scheduling", re.compile(r"^<?tokio::|epoll|park")),
+    ("clock (vdso, Instant)", re.compile(r"vdso|clock_gettime|Timespec|Instant")),
 ]
 
 
