@@ -23,7 +23,7 @@ What makes the output the same:
   Rust (`--remap-path-prefix`) and in C code (`-ffile-prefix-map`).
 - The archive has sorted entries, root ownership, a fixed mode, and an mtime of
   the commit time. gzip runs with `-n`, so its header carries no name or time.
-- Nothing in the build reads the clock or the host name.
+- The shipped crates have no build script or `env!` that records a date or host. The check is the byte comparison above.
 
 ## Reproduce it
 
@@ -40,15 +40,20 @@ scripts/build_server_archive.sh "$tag" out
 sha256sum out/felix-"$tag"-linux-x86_64.tar.gz
 ```
 
-Download `SHA256SUMS` from the release and compare:
+Download `SHA256SUMS` from the release into `out/` and check:
 
 ```bash
-grep linux-x86_64 SHA256SUMS
+cd out
+grep linux-x86_64 SHA256SUMS | sha256sum -c
 ```
 
-The two hashes should be identical. If they are not, check the tool versions
+It should print `OK`. If they are not, check the tool versions
 in the release's build log against `rustc -vV`, `cc --version`, `ld --version`
 and `gzip --version` on your machine before suspecting the archive.
+
+The script sets `RUSTFLAGS` itself, so a `RUSTFLAGS` of your own is replaced, and it refuses to run with `CARGO_ENCODED_RUSTFLAGS` set. Keep `CARGO_HOME` and the rustup toolchain outside the checkout, or the path rewriting changes and the bytes differ.
+
+Releases before the first one carrying this change are not reproducible.
 
 Only the x86_64 server archive is checked this way. The aarch64 archive and
 the container images are not yet.

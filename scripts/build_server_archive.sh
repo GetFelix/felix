@@ -25,6 +25,10 @@ export LC_ALL=C TZ=UTC
 # Rewrite the checkout, the cargo home and the toolchain to fixed names.
 cargo_home=${CARGO_HOME:-$HOME/.cargo}
 sysroot=$(rustc --print sysroot)
+if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+  echo "CARGO_ENCODED_RUSTFLAGS is set and takes precedence over the flags this script needs; unset it" >&2
+  exit 1
+fi
 export RUSTFLAGS="--remap-path-prefix=${root}=/build/felix --remap-path-prefix=${cargo_home}=/build/cargo --remap-path-prefix=${sysroot}=/build/rustc"
 export CFLAGS="-ffile-prefix-map=${root}=/build/felix -ffile-prefix-map=${cargo_home}=/build/cargo"
 export CXXFLAGS="$CFLAGS"
