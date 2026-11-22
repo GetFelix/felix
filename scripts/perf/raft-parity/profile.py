@@ -55,12 +55,15 @@ def fold():
     for line in sys.stdin:
         line = line.rstrip("\n")
         if not line.strip():
-            if frames:
-                stacks[";".join(reversed(frames))] += 1
+            if len(frames) > 1:
+                stacks[";".join([frames[0]] + frames[:0:-1])] += 1
             frames = []
             continue
         if not line[0].isspace():
-            frames = []  # the sample header: comm pid time event
+            # The sample header (comm pid/tid time: event): the thread name is the root frame,
+            # with its number dropped so a pool's threads add up.
+            comm = re.sub(r"[-_]?\d+$", "", line.split(None, 1)[0])
+            frames = ["[thread %s]" % comm]
             continue
         parts = line.split(None, 1)
         if len(parts) < 2:
@@ -70,14 +73,14 @@ def fold():
             m = re.search(r"\(([^()]*)\)$", parts[1])
             sym = "[%s]" % (m.group(1).rsplit("/", 1)[-1] if m else "unknown")
         frames.append(clean(sym).replace(";", ":"))
-    if frames:
-        stacks[";".join(reversed(frames))] += 1
+    if len(frames) > 1:
+        stacks[";".join([frames[0]] + frames[:0:-1])] += 1
     for s, n in stacks.items():
         print("%s %d" % (s, n))
 
 
 def top(paths, limit):
-    self_c, incl_c, cat_c, alloc_c = Counter(), Counter(), Counter(), Counter()
+    self_c, incl_c, cat_c, alloc_c, thread_c = Counter(), Counter(), Counter(), Counter(), Counter()
     total = 0
     for path in paths:
         with open(path) as f:
@@ -89,6 +92,7 @@ def top(paths, limit):
                 frames = stack.split(";")
                 total += n
                 self_c[frames[-1]] += n
+                thread_c[frames[0]] += n
                 # An allocator leaf is charged to the nearest caller outside the allocator.
                 if ALLOC.search(frames[-1]):
                     caller = next((fr for fr in reversed(frames) if not ALLOC.search(fr)), "?")
@@ -107,6 +111,7 @@ def top(paths, limit):
         print()
 
     table("Category", cat_c, len(cat_c))
+    table("Thread", thread_c, 12)
     print("Allocator and copy leaves: %.1f%% of samples\n" % (100.0 * sum(alloc_c.values()) / total))
     table("Allocator and copy leaves by caller", alloc_c, 15)
     table("Self", self_c, limit)

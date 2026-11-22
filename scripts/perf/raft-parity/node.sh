@@ -201,7 +201,9 @@ PY
   # (build.sh FRAME_POINTERS=1), or the stacks stop at the first frame.
   perf-start)
     dir=$1; in_run "$dir"
-    start "$dir" perf perf record -F 499 -g -p "$(cat "$dir/broker.pid")" -o "$dir/perf.data"
+    # System wide, filtered to the broker when folded: following a pid misses threads a pool
+    # starts after the recording does.
+    start "$dir" perf perf record -a -F 499 -g -o "$dir/perf.data"
     ;;
 
   # perf-stop <dir>: end the recording and print its stacks folded (profile.py fold).
@@ -211,7 +213,7 @@ PY
     safe_pid "$pid" && kill -INT "$pid" 2>/dev/null || true
     for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
     rm -f "$dir/perf.pid"
-    perf script -i "$dir/perf.data" 2>/dev/null | python3 "$R/profile.py" fold
+    perf script -i "$dir/perf.data" --pid "$(cat "$dir/broker.pid")" 2>/dev/null | python3 "$R/profile.py" fold
     rm -f "$dir/perf.data"
     ;;
 
