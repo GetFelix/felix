@@ -762,8 +762,8 @@ pub(crate) fn parse_shard_raft_elections_at_once(value: Option<&str>) -> Result<
 
 /// `FELIX_TEST_RAFT_GROUP_THREADS`: how many threads run the Raft groups'
 /// tasks, for tests and A/B runs. Unset keeps the count derived from the
-/// machine, and `0` runs the groups on the broker runtime. Not an operator
-/// setting.
+/// machine, and `0` runs the groups on the broker runtime. An unsupported
+/// override, read in release builds so perf runs can compare.
 pub(crate) fn parse_raft_group_threads(value: Option<&str>) -> Result<Option<usize>> {
     parse_count("FELIX_TEST_RAFT_GROUP_THREADS", value)
 }

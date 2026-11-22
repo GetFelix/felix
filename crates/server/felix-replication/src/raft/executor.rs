@@ -76,6 +76,11 @@ impl GroupThreads {
         }
     }
 
+    /// Stop every thread. Tasks still on them are dropped.
+    pub(crate) fn stop(&self) {
+        self.stop.cancel();
+    }
+
     /// Groups placed on each thread.
     #[cfg(test)]
     pub(crate) fn placed(&self) -> Vec<usize> {

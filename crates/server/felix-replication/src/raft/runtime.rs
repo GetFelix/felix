@@ -1388,6 +1388,11 @@ impl GroupRuntime {
             }
             Err(_) => tracing::warn!("the last batched log marks timed out"),
         }
+        // Not left to Drop: a broker's leading host holds this runtime, so
+        // Inner may never drop.
+        if let Some(threads) = &inner.threads {
+            threads.stop();
+        }
     }
 
     /// Whether a leader was heard committing past the stopped copy's last

@@ -2246,7 +2246,7 @@ thread, which costs a scheduler pass and a kernel wake-up.
 So a broker runs every group's tasks on a few group threads instead
 (`raft/executor.rs`): one per four cores it may use, at most 8. Under four
 cores it runs none, because a group thread would take half the machine or
-more from the broker runtime. There is no setting for it. Each thread is a single-threaded tokio runtime, and a
+more from the broker runtime. Operators have no setting for it. Each thread is a single-threaded tokio runtime, and a
 group is placed on the thread with the fewest groups when it opens. It
 stays there until it closes, since a task cannot move between runtimes.
 openraft spawns its tasks on the runtime it is started from, so starting a
@@ -2281,8 +2281,9 @@ message by 12-33% in every cell, with throughput within a few points of
 running without them.
 
 The simulator never uses group threads: it runs every broker on one
-simulated runtime. `FELIX_TEST_RAFT_GROUP_THREADS=<n>` sets the count for
-tests and A/B runs, on a broker or for the `raft::` unit tests. `0` runs
+simulated runtime. `FELIX_TEST_RAFT_GROUP_THREADS=<n>` overrides the count
+for tests and A/B runs, on a broker or for the `raft::` unit tests. It is
+not supported in production. `0` runs
 the groups without group threads, which keeps that path tested.
 
 ## Heartbeat coalescing

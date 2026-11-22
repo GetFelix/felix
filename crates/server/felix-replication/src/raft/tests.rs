@@ -51,7 +51,8 @@ const PATIENCE: Duration = Duration::from_secs(120);
 ///
 /// Group threads are the shipped count for this machine.
 /// `FELIX_TEST_RAFT_GROUP_THREADS=<n>` sets it, so `0` runs the suite with
-/// the groups on the test's runtime.
+/// the groups on the test's runtime. A test that pauses tokio's clock and
+/// opens groups needs `group_threads: 0`: a group thread keeps real time.
 fn timers() -> RuntimeConfig {
     RuntimeConfig {
         group_threads: test_group_threads(),
@@ -1713,11 +1714,20 @@ async fn a_groups_core_runs_on_its_group_thread() {
             "ran on {on:?}"
         );
     }
+    let thread = group.runtime().clone();
     drop(group);
     let index = cluster.write(0, b"record").await;
     cluster.committed_everywhere(0, index).await;
     cluster.stop().await;
     assert_eq!(runtime.group_thread_loads(), vec![0, 0]);
+    // Shutdown stops the threads, though `runtime` is still held.
+    eventually(|| {
+        let spawned = thread.spawn(async {});
+        futures::FutureExt::now_or_never(spawned)
+            .is_some_and(|ran| ran.is_err())
+            .then_some(())
+    })
+    .await;
 }
 
 /// A proposer's token comes back from the leader's own append with the
