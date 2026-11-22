@@ -57,6 +57,8 @@ pub(crate) struct Tree {
 struct FlushFault {
     fail_in: Option<u64>,
     failed: bool,
+    /// Segment flushes succeed and keep nothing. See [`Tree::ignore_segment_flushes`].
+    ignored: bool,
 }
 
 thread_local! {
@@ -383,15 +385,27 @@ impl Tree {
     /// Fail one flush of a file or directory with `EIO`, after `skip` more
     /// have succeeded. The failed flush makes nothing durable.
     pub(crate) fn fail_flush(&self, skip: u64) {
-        *self.flush_fault.lock() = FlushFault {
-            fail_in: Some(skip),
-            failed: false,
-        };
+        let mut fault = self.flush_fault.lock();
+        fault.fail_in = Some(skip);
+        fault.failed = false;
     }
 
     /// Disarm [`Self::fail_flush`], and say whether its flush had failed.
     pub(crate) fn flush_failed(&self) -> bool {
-        std::mem::take(&mut *self.flush_fault.lock()).failed
+        let mut fault = self.flush_fault.lock();
+        fault.fail_in = None;
+        std::mem::take(&mut fault.failed)
+    }
+
+    /// From now on a flush of a log segment succeeds without making
+    /// anything durable, as a drive whose write cache ignores flushes. A
+    /// log on it acknowledges what a power cut can still take.
+    pub(crate) fn ignore_segment_flushes(&self) {
+        self.flush_fault.lock().ignored = true;
+    }
+
+    pub(super) fn ignores_segment_flushes(&self) -> bool {
+        self.flush_fault.lock().ignored
     }
 
     /// The armed failure, if this flush is the one it was waiting for.

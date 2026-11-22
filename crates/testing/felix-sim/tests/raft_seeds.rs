@@ -8,8 +8,9 @@
 //! `FELIX_SIM_SEEDS` pick the seeds and `FELIX_SIM_CLOCKS=bounded` skews the
 //! members' timers. `FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1` add disk
 //! faults: a member stopped, a shard directory or data root wiped or put
-//! back, and the member started again. `each_raft_seed_runs_the_same_twice`
-//! takes the same variables.
+//! back, and the member started again. `FELIX_SIM_POWER_LOSS=1` or
+//! `relaxed`, alone or with `FELIX_SIM_MAJORITY_CUT=1`, cut members' power
+//! instead. `each_raft_seed_runs_the_same_twice` takes the same variables.
 
 use std::time::Duration;
 
@@ -53,7 +54,8 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
         .faults
         .iter()
         .filter(|f| f.what.starts_with("wipe ") || f.what.starts_with("restore "))
-        .count();
+        .count()
+        + outcome.power.cuts;
     if outcome.terms_led <= shards as usize {
         Some(format!(
             "leadership never moved ({} terms led)",
@@ -67,6 +69,8 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
         Some(format!("{reads} reads"))
     } else if faults < MIN_FAULTS {
         Some(format!("{faults} faults"))
+    } else if disks.together() && outcome.power.together == 0 {
+        Some("no members lost power together".into())
     } else if disks != Disks::Off && replaced == 0 {
         let skipped: Vec<&str> = history
             .faults
@@ -239,12 +243,27 @@ fn clocks() -> Clocks {
     }
 }
 
+/// The disk faults the environment asks for, with the variables of the
+/// hybrid's modes: `FELIX_SIM_POWER_LOSS=1` or `relaxed`, and
+/// `FELIX_SIM_MAJORITY_CUT=1`, alone on fsync on commit.
 fn disks() -> Disks {
     let set = |name: &str| std::env::var(name).is_ok_and(|value| value == "1");
+    let power = std::env::var("FELIX_SIM_POWER_LOSS").ok();
+    let relaxed = power.as_deref() == Some("relaxed");
     if set("FELIX_SIM_RESTORE") {
         Disks::Restore
     } else if set("FELIX_SIM_WIPE") {
         Disks::Wipe
+    } else if set("FELIX_SIM_MAJORITY_CUT") {
+        if relaxed {
+            Disks::MajorityCutRelaxed
+        } else {
+            Disks::MajorityCut
+        }
+    } else if relaxed {
+        Disks::RelaxedPowerLoss
+    } else if power.as_deref() == Some("1") {
+        Disks::PowerLoss
     } else {
         Disks::Off
     }
