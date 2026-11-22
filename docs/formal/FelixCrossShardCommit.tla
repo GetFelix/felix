@@ -92,7 +92,8 @@ homeVars == << hlog, hpend, hterm, hgrant, hconf, htrim, hlw >>
 partVars == << plog, ppend, pterm, forgot >>
 
 ------------------------------------------------------------------------------
-Max(S) == CHOOSE x \in S : \A y \in S : y <= x
+\* 0 for an empty set: every index and term here is at least 1.
+Max(S) == IF S = {} THEN 0 ELSE CHOOSE x \in S : \A y \in S : y <= x
 Min(S) == CHOOSE x \in S : \A y \in S : x <= y
 
 Msg(ty, t, p, ht, ok, auth, d) ==
@@ -123,9 +124,7 @@ Propose(k, t) == hpend' = Append(hpend, [k |-> k, t |-> t])
 \* A participant's log.
 PIdx(p, ks, t) == { i \in 1..Len(plog[p]) : plog[p][i].k \in ks /\ plog[p][i].t = t }
 Holds(p, t) ==
-    LET l == { i \in PIdx(p, {"lock"}, t) : plog[p][i].ok }
-        r == PIdx(p, {"apply", "release"}, t)
-    IN l /= {} /\ (r = {} \/ Max(r) < Max(l))
+    Max({ i \in PIdx(p, {"lock"}, t) : plog[p][i].ok }) > Max(PIdx(p, {"apply", "release"}, t))
 Locked(p) == \E t \in Txns : Holds(p, t)
 Applied(p, t)  == PIdx(p, {"apply"}, t) /= {}
 Released(p, t) == PIdx(p, {"release"}, t) /= {}
@@ -133,7 +132,7 @@ Ver(p) == Cardinality({ i \in 1..Len(plog[p]) : plog[p][i].k \in {"write", "appl
 Known(p, t) == t \notin forgot[p] /\ PIdx(p, {"lock"}, t) /= {}
 LastLock(p, t) == plog[p][Max(PIdx(p, {"lock"}, t))]
 FenceIdx(p) == { i \in 1..Len(plog[p]) : plog[p][i].k = "fence" }
-Lw(p) == IF FenceIdx(p) = {} THEN 0 ELSE Max({ plog[p][i].t : i \in FenceIdx(p) })
+Lw(p) == Max({ plog[p][i].t : i \in FenceIdx(p) })
 SeenTerm(p) == Max({0} \cup { plog[p][i].ht : i \in
                     { j \in 1..Len(plog[p]) : plog[p][j].k \in {"lock", "fence"} } })
 
