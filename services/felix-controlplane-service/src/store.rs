@@ -213,6 +213,12 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn declare_node_dead(&self, node_id: &str) -> StoreResult<crate::model::DeclaredDead>;
     /// Every data directory declared dead, in (node, storage id) order.
     async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>>;
+    /// Commit audit entries in order. `false` when the group is below the
+    /// metadata level that carries them, and nothing was recorded.
+    async fn record_audit(&self, entries: Vec<crate::audit::AuditEntry>) -> StoreResult<bool>;
+    /// The committed audit records after `after`, at most `limit`.
+    async fn audit_records(&self, after: u64, limit: usize)
+    -> StoreResult<crate::audit::AuditPage>;
     /// The nodes whose registered storage id was declared dead, and those
     /// declared dead and since deleted: the dead set a re-form plans with
     /// ([`ShardAssignment::reform_record`]). A node that registered again

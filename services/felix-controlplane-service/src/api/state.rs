@@ -34,4 +34,6 @@ pub struct AppState {
     pub move_policy: crate::cluster::placement::MovePolicy,
     /// A new cluster's fleet-feature finalize still being retried.
     pub new_cluster: Arc<crate::cluster::fleet::NewClusterFinalize>,
+    /// Where this member's audit records go.
+    pub audit: crate::audit::AuditSink,
 }

@@ -29,7 +29,7 @@ as the project's own account, not an audit.
 | Another tenant | A valid token for a different tenant. | To read or disturb your tenant. |
 | A compromised broker or storage machine | Everything on that machine: its node token, internal-port certificate, lease key file, segments on disk, and the tokens of clients connected to it. | To forge records, act as other brokers, or widen its reach to tenants or shards it does not serve. |
 | A compromised control-plane member | Its Raft store (signing keys, RBAC), its member certificate, and the Raft peer token if one is set. | To mint tokens, rewrite metadata, or take over the group. |
-| An operator | Bootstrap and Raft peer tokens, cluster-scope grants, shell access. | Mistakes are the usual risk. A malicious operator is out of scope: Felix has no audit log yet ([#2806](https://github.com/GetFelix/felix/issues/2806)). |
+| An operator | Bootstrap and Raft peer tokens, cluster-scope grants, shell access. | Mistakes are the usual risk. Every control-plane change is in the [audit log](/security/audit-log/), committed through the metadata Raft log so one member cannot rewrite it. An operator with shell access to a majority of members can still change it. |
 
 ## Trust boundaries
 

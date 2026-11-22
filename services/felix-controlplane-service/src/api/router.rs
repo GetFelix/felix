@@ -330,6 +330,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/tenants/{tenant_id}/signing-keys/{kid}/activate",
             axum::routing::post(auth::signing_keys::activate_signing_key),
         )
+        .route("/v1/audit", axum::routing::get(crate::audit::list_audit))
         .route("/v1/openapi.json", axum::routing::get(openapi_json))
         .layer(trace_layer)
         .layer(axum::middleware::from_fn_with_state(

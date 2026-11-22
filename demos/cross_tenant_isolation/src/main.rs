@@ -372,6 +372,7 @@ async fn spawn_controlplane(store: Arc<InMemoryStore>) -> Result<(SocketAddr, Jo
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        audit: Default::default(),
     };
 
     let app = build_router(state.clone()).merge(build_bootstrap_router(state));

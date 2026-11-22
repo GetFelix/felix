@@ -166,6 +166,10 @@ const RAFT_FLOOR_LEVEL: u16 = 38;
 /// and refuse their registrations (`MetaCommand::DeclareNodeDead`).
 const DECLARE_DEAD_LEVEL: u16 = 42;
 
+/// The metadata level whose members keep audit records
+/// (`MetaCommand::RecordAudit`).
+const AUDIT_LEVEL: u16 = 49;
+
 /// The metadata level whose members keep every Raft target ordered in a
 /// shard's epoch (`ShardAssignment::raft_ordered`).
 const RAFT_ORDERED_LEVEL: u16 = 39;
@@ -945,6 +949,29 @@ impl ControlPlaneStore for RaftStore {
 
     async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>> {
         self.local()?.declared_dead().await
+    }
+
+    async fn record_audit(&self, entries: Vec<crate::audit::AuditEntry>) -> StoreResult<bool> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < AUDIT_LEVEL)
+        {
+            return Ok(false);
+        }
+        match self.propose(MetaCommand::RecordAudit { entries }).await? {
+            MetaResponse::Unit => Ok(true),
+            _ => Err(unexpected_shape("audit record")),
+        }
+    }
+
+    async fn audit_records(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> StoreResult<crate::audit::AuditPage> {
+        self.local()?.audit_records(after, limit).await
     }
 
     async fn reform(

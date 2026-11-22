@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 48;
+pub const METADATA_VERSION: u16 = 49;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -609,6 +609,11 @@ pub enum MetaCommand {
     DeclareNodeDead {
         node_id: String,
     },
+    /// Append audit entries to the log every member keeps (`crate::audit`).
+    /// Level 49.
+    RecordAudit {
+        entries: Vec<crate::audit::AuditEntry>,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -756,6 +761,8 @@ impl MetaCommand {
             // A member before level 42 would refuse the command, then take
             // a registration the others refuse.
             Self::DeclareNodeDead { .. } => 42,
+            // A member before level 49 would refuse the entry as unknown.
+            Self::RecordAudit { .. } => 49,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -1133,6 +1140,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             "a Raft offset floor report"
         } else if gated == DECLARE_DEAD_OP {
             "declaring a node dead"
+        } else if gated == RECORD_AUDIT_OP {
+            "an audit record"
         } else {
             "a shard's switch to Raft"
         };
@@ -1246,8 +1255,28 @@ pub fn depends_on_level(command: &[u8]) -> bool {
 /// import replaces the whole store, so only the operator's route proposes
 /// one, on the leader itself. A command whose op cannot be read is refused
 /// too, so nothing reaches apply that this check read differently.
-pub fn peer_may_propose(command: &[u8]) -> bool {
-    op_of(command).is_some_and(|op| op != IMPORT_STATE_OP)
+///
+/// Audit entries name the member that served each request. When the peer's
+/// certificate names it (`caller`), every entry must name that member, so a
+/// member cannot pass its records off as another's. Without peer mTLS the
+/// name is the sender's word.
+pub fn peer_may_propose(command: &[u8], caller: Option<u64>) -> bool {
+    let Some(op) = op_of(command) else {
+        return false;
+    };
+    if op == IMPORT_STATE_OP {
+        return false;
+    }
+    match caller {
+        Some(caller) if op == RECORD_AUDIT_OP => match decode_command_with_level(command) {
+            Ok((MetaCommand::RecordAudit { entries }, _)) => {
+                let caller = caller.to_string();
+                entries.iter().all(|entry| entry.member == caller)
+            }
+            _ => false,
+        },
+        _ => true,
+    }
 }
 
 /// A fleet feature finalize, which carries `hold_unformed` from level 45.
@@ -1271,9 +1300,16 @@ const FLOORS_OP: &str = "record_raft_floors";
 /// An operator's dead declaration, by op.
 const DECLARE_DEAD_OP: &str = "declare_node_dead";
 
+/// Audit entries, by op.
+const RECORD_AUDIT_OP: &str = "record_audit";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
-    SWITCH_OPS.contains(&op) || op == COPY_ID_OP || op == FLOORS_OP || op == DECLARE_DEAD_OP
+    SWITCH_OPS.contains(&op)
+        || op == COPY_ID_OP
+        || op == FLOORS_OP
+        || op == DECLARE_DEAD_OP
+        || op == RECORD_AUDIT_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.

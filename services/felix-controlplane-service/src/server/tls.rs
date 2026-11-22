@@ -226,6 +226,7 @@ pub async fn serve_tls(
                         Some(certs) => app.layer(axum::Extension(certs)),
                         None => app,
                     };
+                    let app = app.layer(axum::Extension(axum::extract::ConnectInfo(peer)));
                     let service = hyper_util::service::TowerToHyperService::new(app);
                     let builder =
                         hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());

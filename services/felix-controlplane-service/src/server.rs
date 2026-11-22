@@ -116,6 +116,8 @@ where
     if config.api_tls.as_ref().is_some_and(|tls| tls.bind_subject) {
         app = crate::auth::cert_binding::bind_subjects(app);
     }
+    // Outside the subject binding, so its refusals are recorded too.
+    let app = crate::audit::audited(app, state.clone(), "api");
 
     let bootstrap_task = if config.bootstrap.enabled {
         let bootstrap_addr = config.bootstrap.bind_addr;
@@ -129,6 +131,7 @@ where
         } else {
             build_bootstrap_router(state.clone())
         };
+        let bootstrap_app = crate::audit::audited(bootstrap_app, state.clone(), "bootstrap");
         let api_shutdown = api_shutdown.clone();
         // Loaded before the task spawns: unreadable key material is a
         // misconfiguration that must fail startup, not a log line inside a
@@ -163,11 +166,13 @@ where
                             .await;
                         }
                         None => {
-                            let _ = axum::serve(listener, bootstrap_app.into_make_service())
-                                .with_graceful_shutdown(
-                                    async move { api_shutdown.cancelled().await },
-                                )
-                                .await;
+                            let _ = axum::serve(
+                                listener,
+                                bootstrap_app
+                                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                            )
+                            .with_graceful_shutdown(async move { api_shutdown.cancelled().await })
+                            .await;
                         }
                     }
                 }
@@ -224,9 +229,12 @@ where
                 Ok(())
             }),
             None => tokio::spawn(
-                axum::serve(listener, app.into_make_service())
-                    .with_graceful_shutdown(async move { api_shutdown.cancelled().await })
-                    .into_future(),
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async move { api_shutdown.cancelled().await })
+                .into_future(),
             ),
         }
     };
@@ -265,6 +273,7 @@ where
         peer_shutdown,
         metrics_task,
         second_signal,
+        audit: state.audit.clone(),
     }
     .drain()
     .await

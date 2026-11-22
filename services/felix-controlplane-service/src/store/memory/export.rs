@@ -121,6 +121,7 @@ impl InMemoryStore {
             moves_paused: *self.moves_paused.read().await,
             fleet_enabled,
             declared_dead,
+            audit: self.audit.read().await.clone(),
             replica_reports: super::shards::sorted_replica_reports(self).await,
             placement_token,
             placement_holder,
@@ -167,6 +168,7 @@ impl InMemoryStore {
         }
         let capacity = self.config.change_window();
 
+        *self.audit.write().await = state.audit;
         *self.tenants.write().await = state.tenants.into_iter().collect();
         *self.namespaces.write().await = state.namespaces.into_iter().collect();
         *self.streams.write().await = state.streams.into_iter().collect();
