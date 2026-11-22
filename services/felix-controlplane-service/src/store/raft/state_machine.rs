@@ -550,6 +550,10 @@ impl MetadataStateMachine {
                 .await
                 .map(|_| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::RecordAudit { entries } => {
+                store.apply_record_audit(entries).await;
+                Ok(MetaResponse::Unit)
+            }
             MetaCommand::DeclareNodeDead { node_id } => store
                 .apply_declare_node_dead(&node_id)
                 .await
@@ -830,6 +834,9 @@ impl MetadataStateMachine {
                             )
                         })?;
                 }
+                // An import replaces what the group holds, never its record
+                // of who did what, the import included.
+                state.audit = store.audit_log().await;
                 store.import_state(state).await?;
                 if let Some(identity) = kept {
                     let adopts_existing = store.held_data_catalog().await;

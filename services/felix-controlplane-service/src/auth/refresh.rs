@@ -227,6 +227,9 @@ pub async fn refresh_token_handler(
     else {
         return Err(unusable());
     };
+    // The refresh token was found, so whose it is is known even if it is
+    // then refused; a refusal clears it from the record.
+    crate::audit::note_verified("refresh_token", &tenant_id, &found.principal_id, None);
     let cutoff = state
         .store
         .principal_revoked_at(&tenant_id, &found.principal_id)

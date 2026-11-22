@@ -37,6 +37,9 @@ pub const ACTION_NODE_MANAGE: &str = "node.manage";
 /// (`/token/delegate`). Granted over `tenant:{tenant_id}`, and never implied
 /// by `tenant.manage`: acting for a tenant's users is a separate decision.
 pub const ACTION_TOKEN_DELEGATE: &str = "token.delegate";
+/// Read the audit log (`GET /v1/audit`). Cluster-scoped, and not implied by
+/// `node.view` or `node.manage`, so a broker's credential cannot read it.
+pub const ACTION_AUDIT_VIEW: &str = "audit.view";
 
 /// Validate and normalize RBAC action names.
 pub fn canonical_action(action: &str) -> Option<&'static str> {
@@ -58,6 +61,7 @@ pub fn canonical_action(action: &str) -> Option<&'static str> {
         ACTION_NODE_VIEW => Some(ACTION_NODE_VIEW),
         ACTION_NODE_MANAGE => Some(ACTION_NODE_MANAGE),
         ACTION_TOKEN_DELEGATE => Some(ACTION_TOKEN_DELEGATE),
+        ACTION_AUDIT_VIEW => Some(ACTION_AUDIT_VIEW),
         _ => None,
     }
 }

@@ -403,6 +403,7 @@ fn ensure_operator_authorized(state: &AppState, headers: &HeaderMap) -> Result<(
         audit_rejected(OPERATOR_SCOPE, "invalid_operator_token");
         return Err(api_unauthorized("invalid operator token"));
     }
+    crate::audit::note_credential("operator_token");
     Ok(())
 }
 
@@ -459,7 +460,7 @@ fn ensure_bootstrap_authorized(
         audit_rejected(tenant_id, "invalid_token");
         return Err(api_unauthorized("invalid bootstrap token"));
     }
-
+    crate::audit::note_credential("bootstrap_token");
     Ok(())
 }
 
@@ -478,6 +479,7 @@ const ATTEMPTS: &str = "felix_bootstrap_attempts_total";
 /// can group it, and a near-miss token is not written to a log that is shipped
 /// somewhere less protected than the token is.
 fn audit_rejected(tenant_id: &str, reason: &'static str) {
+    crate::audit::note_refusal(reason);
     tracing::warn!(
         tenant_id = %tenant_id,
         reason,

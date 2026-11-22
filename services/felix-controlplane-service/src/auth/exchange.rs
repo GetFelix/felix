@@ -184,6 +184,7 @@ pub async fn exchange_token(
         .map(|group| scoped_group(&validated.issuer, group))
         .collect();
     let principal = principal::from_claims(&validated.issuer, &validated.subject, scoped);
+    crate::audit::note_verified("idp_token", &tenant_id, &principal.principal_id, None);
     mint_for_principal(
         &state,
         &tenant_id,
