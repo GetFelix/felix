@@ -2328,6 +2328,57 @@ the wrapper is carried in the tree as an exact copy of the upstream pull
 request and deleted when the release that has it is pinned. See Questions,
 3.
 
+## A commit goes on the next append
+
+Right after a leader commits, openraft sends each follower an AppendEntries
+with no entries whose only news is the new commit index. When writes come
+one at a time, that is one extra message and one extra answer per follower
+per write. And openraft
+sends one append at a time to a follower, so the next write's append waited
+for the answer to it.
+
+Felix's client to each follower (`raft/network/client.rs`) holds such an
+append for up to `RuntimeConfig::commit_hold`, 1 ms by default and always
+shorter than the heartbeat. If the leader's next append to that follower comes
+in that time, it goes instead, and the held one is never sent. Otherwise the
+held one goes as it was.
+
+```mermaid
+sequenceDiagram
+    participant L as Leader
+    participant F as Follower
+    L->>F: append entry 6, commit 5
+    F-->>L: ok through 6
+    Note over L: 6 commits. The commit-only append is held.
+    Note over L: The next write arrives within 1 ms.
+    L->>F: append entry 7, commit 6
+    F-->>L: ok through 7, which answers both
+```
+
+The next append replaces the held one only when the follower's answer to
+it is also its answer to the held one: the same vote, the same previous
+entry to check, and a commit index no lower. openraft needs no answer per
+request. An answer "ok through 7" acknowledges every request up to entry 7,
+the held one included, and the lease counts from the later request's send
+time, which openraft takes before the request leaves. A held append that goes
+out alone is credited from when openraft built it, which is earlier than it
+left, so the lease errs short.
+
+What waits on it. A follower learns a commit up to the hold later when no
+write follows it; tokio's timer fires on whole milliseconds, so the default
+hold lasts 1 to 2 ms. Applying on a follower, delivering to a follower's subscribers
+and serving a read on a follower wait for that. Under load the next append
+follows at once, and it no longer waits behind a commit-only append's round
+trip. A write that comes just after the hold ends does wait: the held append
+has gone out, and openraft sends one append at a time, so that write can
+take up to one follower round trip longer than without the hold. The leader's acknowledgement to a publisher, written reports, lease
+reads, elections and heartbeats do not wait on it, and heartbeats do not go
+through this path. No member applies or decides anything differently:
+followers apply what the leader committed, only later, and Raft's safety
+never rests on how soon they hear of it. The models agree: in
+`docs/formal/FelixRaft.tla` a follower learns the commit in a step of its
+own that may come at any time.
+
 ## Write fence, leases and read bound under Raft
 
 ### When a leader opens

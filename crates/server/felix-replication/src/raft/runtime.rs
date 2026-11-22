@@ -117,6 +117,12 @@ pub struct RuntimeConfig {
     /// on the runtime each group is opened on. See docs/per-shard-raft.md,
     /// "Group threads".
     pub group_threads: usize,
+    /// How long a leader holds an append that carries only a new commit
+    /// index, for the next append to carry it instead. With no write after
+    /// a commit, followers learn it this much later. Shorter than
+    /// `heartbeat`. See docs/per-shard-raft.md, "A commit goes on the next
+    /// append".
+    pub commit_hold: Duration,
 }
 
 impl Default for RuntimeConfig {
@@ -142,6 +148,7 @@ impl Default for RuntimeConfig {
             placement: Placement::default(),
             max_elections_at_once: 64,
             group_threads: 0,
+            commit_hold: Duration::from_millis(1),
         }
     }
 }
@@ -195,6 +202,11 @@ impl RuntimeConfig {
     pub(crate) fn raft(&self, kind: ShardKind) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
+        }
+        if self.commit_hold >= self.heartbeat {
+            return Err(InvalidTimers(
+                "the commit hold is not shorter than the heartbeat".into(),
+            ));
         }
         if self.idle_heartbeat < self.heartbeat {
             return Err(InvalidTimers(
@@ -612,6 +624,7 @@ impl GroupRuntime {
                     election_max: config.election_max.as_millis() as u64,
                     lease: config.lease.as_millis() as u64,
                     max_elections_at_once: config.max_elections_at_once,
+                    commit_hold: config.commit_hold,
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),

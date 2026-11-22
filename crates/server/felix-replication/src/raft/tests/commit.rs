@@ -1510,3 +1510,39 @@ async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
     assert!(inside.is_empty(), "bounds inside the batch: {inside:?}");
     led.cluster.stop().await;
 }
+
+/// **A commit goes to the followers on the next append.** Without the
+/// ticker no heartbeat goes out, so every entry-less append here carries a
+/// commit and nothing else. openraft would send one per follower per write;
+/// held for the write after it, nearly none go. The hold is long so a
+/// loaded machine still writes within it. The last commit, with no write
+/// after it, reaches every follower once the hold ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commit_goes_to_the_followers_on_the_next_append() {
+    const WRITES: u64 = 50;
+    let config = RuntimeConfig {
+        commit_hold: Duration::from_millis(150),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(config, false);
+    cluster.open(0).await;
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members())
+        .await
+        .expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"first").await;
+    let before = cluster.net.empty_appends.load(Relaxed);
+    let mut last = 0;
+    for _ in 0..WRITES {
+        last = cluster.write(0, b"record").await;
+    }
+    let empty = cluster.net.empty_appends.load(Relaxed) - before;
+    assert!(
+        empty < WRITES / 5,
+        "{empty} entry-less appends for {WRITES} writes"
+    );
+    cluster.committed_everywhere(0, last).await;
+    cluster.stop().await;
+}
