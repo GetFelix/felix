@@ -1,7 +1,6 @@
 # Tenant signing-key custody: design
 
-Status: proposed, waiting on the maintainer's decisions at the end. Nothing
-here is built. Tracks [#2801](https://github.com/GetFelix/felix/issues/2801),
+Status: decided, not built. The decisions are at the end. Tracks [#2801](https://github.com/GetFelix/felix/issues/2801),
 threat T24 in the NineLives threat model, and the "Every control-plane member
 holds every tenant's signing keys" gap on the
 [threat model page](../docs-site/src/content/docs/security/threat-model.md).
@@ -103,7 +102,7 @@ workload, which is the minimum #2801 asks for.
 What it does not protect: a compromised signer member has the KEK and every
 seed. A compromised non-signer member can still forward exchange requests
 and rewrite RBAC through Raft. Seeds written before the change stay in
-plaintext in old log entries, snapshots and backups (see Migration).
+plaintext in old log entries, snapshots and backups (see Rotation).
 
 ## Design B: an external signer, no seeds in Felix
 
@@ -186,68 +185,56 @@ Token exchange is per session and per refresh, not per message, so a few
 milliseconds per mint is acceptable. The case to watch is a reconnect storm,
 where every client refreshes at once and a remote signer or KMS may rate-limit.
 
-## Migration
+## Rotation
 
 None of the designs change a token, the JWKS or a broker, so clients and
 brokers are not touched and there is no wire negotiation.
 
 The control plane needs new commands at a new metadata level. A group with a
 member below that level keeps writing plaintext keys, as today. Once the
-level is reached, new stages write wrapped keys (A) or key references (B),
-and bootstrap's candidate keys go through the same path.
+level is reached, new stages write wrapped keys, and bootstrap's candidate
+keys go through the same path.
 
-The plaintext seeds already written are still in old log entries, every
-snapshot taken before the change, and every backup and export. Turning the
-feature on does not make them safe. The migration therefore has to rotate
-every tenant's key (stage, activate, retire, with the usual waits from
-`docs/auth.md`), and then purge the log and take a fresh snapshot. A
-`felixctl` command that does this for every tenant would make it one step.
-Old backups stay a credential until the retired keys' tokens have all
-expired, after which the seeds in them verify nothing.
+Plaintext seeds already written stay in old log entries, earlier snapshots,
+backups and exports, so turning the feature on does not make them safe.
+Rotating them is a `felixctl` step the operator runs: stage, activate and
+retire every tenant's key (with the usual waits from `docs/auth.md`), then
+purge the log and take a fresh snapshot. Old backups stay a credential until
+the retired keys' tokens have all expired. 0.8 needs no such step, because
+there is no 0.7 to 0.8 upgrade and a 0.8 cluster starts fresh.
 
-Exports would carry wrapped keys or references. An export can only be
-imported into a cluster that has the same KEK or signer, which the import
-should check and refuse with a clear error.
+Exports carry wrapped keys. An export can only be imported into a cluster
+that has the same KEK, which the import checks and refuses with a clear
+error. The in-memory store, used for development and tests, keeps plaintext
+seeds.
 
-The in-memory store, used for development and tests, keeps plaintext seeds.
+## Decisions
 
-## Not in scope
+Build Design A behind the `TokenSigner` seam from Design B. Design C is not
+practical for an alpha: every mint costs two rounds among members, and nonce
+and resharing mistakes leak keys silently.
 
-The broker-side lease key (`FELIX_LEASE_TOKEN_KEY_FILE`, see
-`docs/auth.md`, "The lease key") has the same shape of problem on the
-brokers: one key file that signs for every tenant. The `TokenSigner` seam
-from Design B would fit it too, but it is a separate decision.
+- **Signer members are the NineLives M2 design.** Checked against the
+  NineLives threat model (T24, and the core row of its roles table): it
+  closes the offline half of T24 and stops a non-signer core machine from
+  minting. One gap: the model wants signing keys held somewhere other than a
+  machine that also runs a broker and workloads. Until signer members run on
+  machines of their own, a signer that is also a core machine still holds
+  the KEK and every seed, and still holds the shared Raft peer token (T25).
+  NineLives should put signers on dedicated machines to get the benefit.
+- **Rotating keys stored before wrapping is a `felixctl` step.** It is
+  explicit, can be scheduled, and is unneeded on 0.8 (see Rotation).
+- **The signer applies no policy of its own in the first cut.** A
+  compromised member can rewrite RBAC anyway, so a policy there buys little.
+- **OpenBao transit is the first external signer, PKCS#11 later.** Both
+  plug into the seam without another store change.
+- **The lease key gets its own issue.** It has the same shape of problem on
+  the brokers.
 
-## Recommendation
+## Next steps
 
-Build Design A behind the `TokenSigner` seam from Design B.
-
-Design A closes the key-theft half of T24 for the store, its snapshots,
-exports and backups on every member, and lets an operator keep all signing on
-machines that run nothing else. It needs no new process, keeps Raft as the
-way keys replicate between signer members, and changes no token or broker.
-The main cost is operator burden: a KEK to make, place and protect, and at
-least two signer members to keep exchange available. Its built-in signer is
-"unwrap with the KEK and sign locally".
-
-Putting it behind the seam means an OpenBao transit or PKCS#11 adapter can
-follow later without another store change. Those are worth doing for
-deployments that already run one, and can wait until someone asks.
-
-Design C is not practical for an alpha. It is the strongest on paper, it
-costs every mint two rounds among members, and nonce and resharing mistakes
-leak keys silently.
-
-## Questions for the maintainer
-
-1. Is "signer members" (a configured subset of members with the KEK, others
-   forwarding exchange, refresh and delegation to them) acceptable as the
-   minimum for NineLives M2?
-2. Should the upgrade force the full tenant key rotation and log purge, or
-   ship it as a documented `felixctl` step the operator runs?
-3. Should the built-in signer apply its own policy (a lifetime cap, no
-   `cluster:*` unless the caller is allowed), or leave all policy to RBAC?
-4. Which external adapter comes first when one is wanted: OpenBao transit or
-   PKCS#11?
-5. Does the lease key get its own issue under the same seam, or stay as it
-   is for 0.8?
+- [#2963](https://github.com/GetFelix/felix/issues/2963): wrapped seeds and signer members behind a `TokenSigner` seam (0.8.0)
+- [#2964](https://github.com/GetFelix/felix/issues/2964): `felixctl` rotation step (0.8.0)
+- [#2965](https://github.com/GetFelix/felix/issues/2965): lease key custody (0.8.0)
+- [#2966](https://github.com/GetFelix/felix/issues/2966): OpenBao transit signer (0.9.0)
+- [#2967](https://github.com/GetFelix/felix/issues/2967): PKCS#11 signer (0.9.0)

@@ -1,7 +1,6 @@
 # Producer signatures on records: design
 
-Status: proposed, waiting on the maintainer's decisions at the end. Nothing
-here is built. Tracks [#2803](https://github.com/GetFelix/felix/issues/2803),
+Status: decided, not built. The decisions are at the end. Tracks [#2803](https://github.com/GetFelix/felix/issues/2803),
 threat T26 in the NineLives threat model, and the "Records are not signed" and
 "Checksums are not signatures" gaps on the
 [threat model page](../docs-site/src/content/docs/security/threat-model.md).
@@ -233,37 +232,35 @@ if they did not negotiate them. Design B follows the usual order for a format
 change: the fleet feature finalizes, then v10 segments may be written, then
 a stream may be set to `required`.
 
-## Recommendation
+## Decisions
 
-Build Design A, with application-supplied keys first, in the Rust client.
+Build Design A, with application-supplied keys, in the Rust client first. It
+answers the injection half of T26 for every reader that checks: without the
+producer's key, a compromised leader cannot get a forged record past a
+checking reader, and no broker, format or negotiation change is needed. Add
+the control-plane producer key registry once #2801's custody work is in,
+since its strength depends on it, and move consumer groups to carry headers
+so group consumers can verify. Design B stays the follow-up if brokers must
+refuse unsigned writes. Do not build Design C.
 
-It answers the injection half of T26 for every reader that checks: without
-the producer's key, a compromised leader cannot get a forged record past a
-checking reader. It does this with no broker, format or negotiation change. The main cost is bytes: about 55 bytes per
-record plus 64 per batch, which is heavy for small records. The CPU cost lands
-on producers and readers, not brokers, and amortizes over the batch.
-
-Add the control-plane producer key registry next, once #2801's custody
-design is settled, since its strength depends on it. Move consumer groups to
-carry headers so group consumers can verify.
-
-Keep Design B as the follow-up if NineLives needs brokers to refuse unsigned
-writes or honest replicas to raise the alarm. It reuses Design A's signed
-statement, so producers would not change. Do not build Design C.
+- **Reader-side detection is enough for the first cut.** Brokers refusing
+  unsigned writes (Design B) needs a format version and a fleet feature, and
+  can follow without changing producers.
+- **Keys are supplied by the application.** The registry comes after #2801.
+- **Signed batches require idempotent producers.** The producer sequence is
+  what stops a replayed batch.
+- **About 55 bytes per record is acceptable.** Signing is opt-in, so only
+  producers that want it pay.
+- **The `felix.` header prefix is reserved.** The broker refuses client
+  publishes that set it.
 
 Be clear in the docs about what this buys. Signatures make injected and
 altered records detectable. They do not make a compromised broker unable to
 hide records, serve stale data, or read payloads.
 
-## Questions for the maintainer
+## Next steps
 
-1. Is reader-side detection (Design A) enough for NineLives M2, or does M2
-   need brokers to refuse unsigned writes (Design B)?
-2. Are application-supplied keys acceptable for the first cut, with the
-   control-plane registry after #2801?
-3. Is requiring the idempotent producer path for signed batches acceptable?
-4. Is about 55 bytes per record acceptable, or should the per-record header
-   shrink (for example, the position and count only on the last record) at
-   the cost of readers needing more bookkeeping?
-5. May the header prefix `felix.` be reserved for Felix's own use, with
-   publishes that set it without signing refused?
+- [#2968](https://github.com/GetFelix/felix/issues/2968): reserve the `felix.` header prefix (0.8.0)
+- [#2969](https://github.com/GetFelix/felix/issues/2969): Rust client signing and reader verification on idempotent producers (0.8.0)
+- [#2970](https://github.com/GetFelix/felix/issues/2970): other clients and consumer-group headers (0.9.0)
+- [#2971](https://github.com/GetFelix/felix/issues/2971): broker-side checks with storage v10 (0.9.0)
