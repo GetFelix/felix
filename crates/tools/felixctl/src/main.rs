@@ -17,6 +17,7 @@
 //! - `placement`: the moves, plan and replication views over placement.
 //! - `reform`: planning the re-form of Raft groups that lost their majority.
 //! - `features`: listing and finalizing fleet features.
+//! - `audit`: reading the control plane's audit log.
 //! - `backup_point`: recording every shard's committed offsets.
 //! - `rbac`: listing, granting and revoking RBAC policies and role
 //!   assignments.
@@ -27,6 +28,7 @@
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
 
+mod audit;
 mod backup_point;
 mod bench;
 mod cache;
@@ -121,6 +123,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Placement(command) => placement::run(command, &settings, out).await,
         Command::Raft(command) => reform::run(command, &settings, out).await,
         Command::Features(command) => features::run(command, &settings, out).await,
+        Command::Audit(command) => audit::run(command, &settings, out).await,
         Command::BackupPoint(args) => backup_point::run(args, &settings, out).await,
         Command::Rbac(command) => rbac::run(command, &settings, out).await,
         Command::Inspect(command) => inspect::run(command, &settings, out).await,

@@ -37,6 +37,7 @@ felixctl stream ls --json
 | [`felixctl placement`](#felixctl-placement) | See what placement will do, and pause or resume its moves (control plane) |
 | [`felixctl raft`](#felixctl-raft) | Plan re-forming Raft groups that lost their majority (control plane) |
 | [`felixctl features`](#felixctl-features) | List fleet features and finalize them (control plane) |
+| [`felixctl audit`](#felixctl-audit) | Read the control plane's audit log of who did what (control plane) |
 | [`felixctl backup-point`](#felixctl-backup-point) | Record every shard's committed offsets as a backup point (control plane) |
 | [`felixctl rbac`](#felixctl-rbac) | List, grant and revoke RBAC policies and role assignments (control plane) |
 | [`felixctl inspect`](#felixctl-inspect) | Look at a cluster's live state, read-only (operators) |
@@ -1661,6 +1662,44 @@ Examples:
 ```bash
 felixctl features finalize jump_hash_routing --dry-run
 felixctl features finalize jump_hash_routing --yes
+```
+
+## `felixctl audit`
+
+The control plane records every change made through its API and every refused request: who asked, from where, what, and the answer. Records are committed through the control plane's Raft log and numbered without gaps; it keeps the newest 10,000. Reading needs a control-plane token allowed audit.view on the cluster.
+
+```text
+felixctl audit [OPTIONS] <COMMAND>
+```
+
+Examples:
+
+```bash
+felixctl audit ls
+felixctl audit ls --after 1200 --limit 50
+felixctl audit ls --follow --json
+```
+
+### `felixctl audit ls`
+
+List audit records after a sequence number, oldest first. With --follow, keep polling for new records; with --json, print one record per line, ready to ship to a log store. A warning on stderr says when records were trimmed before they were read.
+
+```text
+felixctl audit ls [OPTIONS]
+```
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--after` | `<AFTER>` | `0` | Start after this sequence number (0 lists from the oldest kept) |
+| `--limit` | `<LIMIT>` | `100` | Records per request, up to 1000 |
+| `--follow` | - | - | Keep polling for new records until interrupted |
+
+Examples:
+
+```bash
+felixctl audit ls
+felixctl audit ls --after 1200 --limit 50
+felixctl audit ls --follow --json
 ```
 
 ## `felixctl backup-point`
