@@ -778,3 +778,24 @@ fn a_failed_fleet_read_leaves_off_stream_trim_and_mints_the_rest() {
     assert_eq!(minted, ["stream.publish:stream:t1/payments/ledger"]);
     assert!(finalized_or_closed(Ok(true)));
 }
+
+/// Only the control plane checks `stream.create`, and a broker refuses a token
+/// naming an action it cannot parse.
+#[test]
+fn stream_create_stays_off_broker_tokens() {
+    let perms = vec![
+        "stream.create:stream:t1/payments/*".to_string(),
+        "stream.publish:stream:t1/payments/*".to_string(),
+    ];
+    assert_eq!(
+        for_audience(perms.clone(), BROKER_AUDIENCE),
+        vec!["stream.publish:stream:t1/payments/*".to_string()]
+    );
+    assert_eq!(
+        for_audience(
+            perms.clone(),
+            crate::auth::felix_token::CONTROLPLANE_AUDIENCE
+        ),
+        perms
+    );
+}

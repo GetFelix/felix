@@ -770,7 +770,7 @@ and a request against it answers `401` whatever the token says.
 | --- | --- | --- |
 | `GET/POST /v1/tenants`, `DELETE /v1/tenants/{id}` | `tenant.manage:cluster:*` | any tenant; the `tid` only picks the keys |
 | `/v1/tenants/{t}/namespaces[/{ns}]` | `ns.manage` over `namespace:{t}/{ns}` | tenant `t` |
-| `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}` | tenant `t` |
+| `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}`; a create also takes `stream.create` when it sets no `mount` | tenant `t` |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}` | tenant `t` |
 | `POST /v1/tenants/{t}/namespaces/{ns}/resources` | both of the above, over every item in the batch | tenant `t` |
 | `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}`, `GET /v1/principal-revocations/changes` | `node.view:cluster:*` | any tenant |
@@ -822,8 +822,9 @@ Each item has the body its single create endpoint takes. The checks run in
 this order, and any failure creates nothing:
 
 1. The batch holds 1 to 256 items, or `400`.
-2. The token carries `stream.manage` or `cache.manage` over every item, or
-   `403`. This runs before anything is read, so a refusal says nothing about
+2. The token carries `stream.manage` or `stream.create` over every stream
+   (`stream.manage` for one with a `mount`) and `cache.manage` over every
+   cache, or `403`. This runs before anything is read, so a refusal says nothing about
    what exists.
 3. Every item is valid and no name appears twice, or `400`.
 4. The namespace exists, or `404`.

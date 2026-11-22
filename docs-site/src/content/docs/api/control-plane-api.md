@@ -480,9 +480,9 @@ tenant exists.
 | --- | --- |
 | `GET`/`POST /v1/tenants`, `DELETE /v1/tenants/{id}` | `tenant.manage:cluster:*` |
 | `/v1/tenants/{t}/namespaces[/{ns}]` | `ns.manage` over `namespace:{t}/{ns}`, from a `t` token |
-| `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}`, from a `t` token |
+| `/v1/tenants/{t}/namespaces/{ns}/streams[/{s}]` | `stream.manage` over `stream:{t}/{ns}/{s}`, from a `t` token. A create without a `mount` also takes `stream.create` |
 | `/v1/tenants/{t}/namespaces/{ns}/caches[/{c}]` | `cache.manage` over `cache:{t}/{ns}/{c}`, from a `t` token |
-| `POST /v1/tenants/{t}/namespaces/{ns}/resources` | `stream.manage` and `cache.manage` over every item in the batch, from a `t` token |
+| `POST /v1/tenants/{t}/namespaces/{ns}/resources` | `stream.manage` or `stream.create` over every stream (`stream.manage` for a `mount`) and `cache.manage` over every cache, from a `t` token |
 | `/v1/{tenants,namespaces,streams,caches}/{snapshot,changes}` | `node.view:cluster:*` |
 
 ```http
