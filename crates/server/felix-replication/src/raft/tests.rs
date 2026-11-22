@@ -1863,6 +1863,44 @@ async fn closing_one_group_leaves_the_others() {
     cluster.stop().await;
 }
 
+/// `holds` and `hears_leader` answer as the status would, for a member that
+/// is missing, running, stopped in place, or closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn holds_and_hears_leader_agree_with_status() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    cluster.form(1).await;
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let agrees = |n| {
+        let status = runtime.status(&shard(n));
+        runtime.holds(&shard(n)) == status.is_some()
+            && runtime.hears_leader(&shard(n)) == status.map(|status| status.leader.is_some())
+    };
+
+    assert!(!runtime.holds(&shard(7)));
+    assert_eq!(runtime.hears_leader(&shard(7)), None);
+    assert!(runtime.holds(&shard(0)));
+    eventually(|| (runtime.hears_leader(&shard(0)) == Some(true)).then_some(())).await;
+    assert!(agrees(0));
+
+    // Stopped under the registry: still held, as the status still says.
+    let stopped = runtime.group(&shard(1)).expect("group");
+    stopped.raft().shutdown().await.expect("shutdown");
+    eventually(|| (stopped.status().role == Role::Stopped).then_some(())).await;
+    assert!(runtime.holds(&shard(1)));
+    // Whether it still hears a leader is time-based, so only its presence is checked.
+    assert!(runtime.status(&shard(1)).is_some());
+    assert!(runtime.hears_leader(&shard(1)).is_some());
+
+    assert!(runtime.close(&shard(0)).await);
+    assert!(!runtime.holds(&shard(0)));
+    assert_eq!(runtime.hears_leader(&shard(0)), None);
+    assert!(agrees(0));
+    drop(stopped);
+    cluster.stop().await;
+}
+
 /// A close holds the shard until its member has stopped. An open that
 /// races it is refused, so two members never run on one log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1890,6 +1928,7 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
         async move { runtime.close(&shard(0)).await }
     });
     eventually(|| runtime.status(&shard(0)).is_none().then_some(())).await;
+    assert!(!runtime.holds(&shard(0)), "a closing member is not held");
 
     let log = cluster.logs[&("a".to_string(), 0)].clone();
     for _ in 0..20 {

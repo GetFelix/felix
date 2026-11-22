@@ -2511,13 +2511,7 @@ impl Group {
         // an append that publishes in between, and that append behind the
         // first: the caller and the member's log would both stop for good.
         let positions = *self.positions.borrow();
-        // Pre-vote keeps a cut-off member at its term, so openraft names the
-        // last leader forever. A follower counts on it only as long as it
-        // would refuse a pre-vote for it.
-        let live = match metrics.state {
-            ServerState::Leader => self.leads_heard(&metrics),
-            _ => self.pace.follows_live_leader(self.pace.timers.now()),
-        };
+        let live = self.leader_live(&metrics);
         let leader_hint = metrics.current_leader.clone();
         GroupStatus {
             member: self.member.clone(),
@@ -2534,6 +2528,26 @@ impl Group {
             client_writes: self.client_writes.load(Ordering::Relaxed),
             membership: self.membership_progress(),
         }
+    }
+
+    /// Whether the leader openraft names is one this member counts on now.
+    /// Pre-vote keeps a cut-off member at its term, so openraft names the
+    /// last leader forever. A follower counts on it only as long as it
+    /// would refuse a pre-vote for it.
+    fn leader_live(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
+        match metrics.state {
+            ServerState::Leader => self.leads_heard(metrics),
+            _ => self.pace.follows_live_leader(self.pace.timers.now()),
+        }
+    }
+
+    /// [`GroupStatus::leader`]`.is_some()`, read without cloning the metrics.
+    pub(crate) fn hears_leader(&self) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let live = self.leader_live(&metrics);
+        live && metrics.current_leader.is_some()
     }
 
     /// The committed log id, while this member leads its group.
