@@ -140,12 +140,9 @@ impl Revocable {
         // the check and the wait still wakes it.
         let mut changed = self.revocations.changed.subscribe();
         let ended = async {
-            match self.ends_at {
-                // On the wall clock, re-checked, so a suspended host or a
-                // stepped clock moves the end with the clock that checks it.
-                Some(ends_at) => felix_common::tls::sleep_until_unix(ends_at).await,
-                None => std::future::pending().await,
-            }
+            // On the wall clock, re-checked, so a suspended host or a
+            // stepped clock moves the end with the clock that checks it.
+            felix_common::clock::sleep_until_unix_or_never(self.ends_at).await
         };
         tokio::pin!(ended);
         loop {

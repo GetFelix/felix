@@ -190,14 +190,16 @@ impl PeerConnection {
         // The handshake checked the peer's certificate once; a connection to
         // it must not outlive it. The next dial checks the renewed one.
         // A leaf that does not parse has no known end: close at once.
-        if let Some(at) = cert_expiry
-            .zip(connection.peer_certificates())
-            .and_then(|(expiry, chain)| expiry.not_after(&chain).unwrap_or(Some(0)))
-            .map(|at| felix_common::tls::spread_before(at, crate::peer::server::CERT_CLOSE_SPREAD))
+        if let Some(at) =
+            cert_expiry
+                .zip(connection.peer_certificates())
+                .and_then(|(expiry, chain)| {
+                    expiry.close_at(&chain, crate::peer::server::CERT_CLOSE_SPREAD)
+                })
         {
             let closer = connection.clone();
             tasks.push(tokio::spawn(async move {
-                felix_common::tls::sleep_until_unix(at).await;
+                felix_common::clock::sleep_until_unix(at).await;
                 closer.close(
                     crate::peer::server::CERT_EXPIRED_CLOSE_CODE.into(),
                     b"peer certificate expired",

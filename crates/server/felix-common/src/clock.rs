@@ -41,6 +41,44 @@ pub fn wall_millis() -> u64 {
     skewed(source_wall()).as_millis() as u64
 }
 
+/// Time since the Unix epoch on the wall clock, as [`system_time`] has it.
+pub fn unix_now() -> Duration {
+    system_time()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+}
+
+/// How long until `at` (seconds since the epoch); zero once it has passed.
+pub fn until_unix(at: i64) -> Duration {
+    Duration::from_secs(u64::try_from(at).unwrap_or(0)).saturating_sub(unix_now())
+}
+
+#[cfg(feature = "wall-sleep")]
+/// Sleep until `at` (seconds since the epoch) on the wall clock; returns at
+/// once if it has passed. Checked against the clock again on wake, so a
+/// suspended host or a stepped clock cannot end it early or keep it past `at`
+/// by more than the re-check interval.
+pub async fn sleep_until_unix(at: i64) {
+    loop {
+        let left = until_unix(at);
+        if left.is_zero() {
+            return;
+        }
+        // Monotonic sleeps drift from the wall clock across a suspend, so
+        // wake at least once a minute to look again.
+        tokio::time::sleep(left.min(Duration::from_secs(60))).await;
+    }
+}
+
+#[cfg(feature = "wall-sleep")]
+/// [`sleep_until_unix`] for an optional end; with none it never returns.
+pub async fn sleep_until_unix_or_never(at: Option<i64>) {
+    match at {
+        Some(at) => sleep_until_unix(at).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// `raw` as this process's clock fault has it.
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 fn skewed(raw: Duration) -> Duration {

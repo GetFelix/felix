@@ -69,7 +69,10 @@ tls = [
     "dep:x509-parser",
     "dep:tokio",
     "dep:tracing",
+    "wall-sleep",
 ]
+# `clock::sleep_until_unix`, a wall-clock sleep that re-checks as it goes.
+wall-sleep = ["dep:tokio"]
 # The test-only clock faults in `clock::fault`. Debug builds have them
 # regardless; this puts them in an optimised build for a fault-testing run.
 fault-injection = []

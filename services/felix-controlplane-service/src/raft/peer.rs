@@ -185,21 +185,10 @@ impl PeerMember {
 
 /// The member ids `leaf` is issued to in `cluster_id`, from its URI SANs.
 fn members_named(leaf: &[u8], cluster_id: &str) -> Result<Vec<super::NodeId>, String> {
-    let (_, cert) = x509_parser::parse_x509_certificate(leaf)
-        .map_err(|err| format!("the peer certificate does not parse: {err}"))?;
-    let sans = cert
-        .subject_alternative_name()
-        .map_err(|err| format!("the peer certificate's SANs do not parse: {err}"))?;
     let prefix = format!("{MEMBER_URI_PREFIX}{cluster_id}:");
-    Ok(sans
-        .into_iter()
-        .flat_map(|sans| sans.value.general_names.iter())
-        .filter_map(|name| match name {
-            x509_parser::extensions::GeneralName::URI(uri) => uri.strip_prefix(prefix.as_str()),
-            _ => None,
-        })
-        .filter_map(|id| id.parse().ok())
-        .collect())
+    let names =
+        felix_common::tls::uri_sans_after(leaf, &prefix).map_err(|err| err.describe("peer"))?;
+    Ok(names.iter().filter_map(|id| id.parse().ok()).collect())
 }
 
 /// The one member `leaf` is issued to. A certificate naming none, or more

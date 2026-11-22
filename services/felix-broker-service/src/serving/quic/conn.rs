@@ -300,13 +300,8 @@ pub(crate) async fn handle_connection_with_shutdown(
     // A leaf that does not parse has no known end: close at once.
     let cert_expiry = connection
         .peer_certificates()
-        .and_then(|chain| auth.client_chain_ends(&chain).unwrap_or(Some(0)));
-    let cert_expired = async move {
-        match cert_expiry {
-            Some(at) => felix_common::tls::sleep_until_unix(at).await,
-            None => std::future::pending().await,
-        }
-    };
+        .and_then(|chain| auth.client_chain_close_at(&chain));
+    let cert_expired = felix_common::clock::sleep_until_unix_or_never(cert_expiry);
     tokio::pin!(cert_expired);
     loop {
         // Accept both bidirectional control streams and uni-directional publish streams.

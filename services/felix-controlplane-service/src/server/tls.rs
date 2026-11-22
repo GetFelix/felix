@@ -260,10 +260,7 @@ pub async fn serve_tls(
 }
 
 async fn sleep_until(at: Option<i64>) {
-    match at {
-        Some(at) => felix_common::tls::sleep_until_unix(at).await,
-        None => std::future::pending().await,
-    }
+    felix_common::clock::sleep_until_unix_or_never(at).await
 }
 
 #[cfg(test)]

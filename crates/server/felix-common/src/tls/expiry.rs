@@ -74,6 +74,22 @@ impl ChainExpiry {
         ))
     }
 
+    /// When a connection opened under `chain` must close: [`Self::not_after`]
+    /// moved earlier by up to `spread` (see [`spread_before`]). A leaf that
+    /// does not parse has no known end, so it closes at once; `None` for an
+    /// empty chain.
+    pub fn close_at(&self, chain: &[CertificateDer<'_>], spread: Duration) -> Option<i64> {
+        // A zero spread skips the jitter draw, so the simulator's seeded
+        // jitter stream is unchanged by callers that ask for no spread.
+        self.not_after(chain).unwrap_or(Some(0)).map(|at| {
+            if spread.is_zero() {
+                at
+            } else {
+                spread_before(at, spread)
+            }
+        })
+    }
+
     fn intermediates_end(
         &self,
         leaf: &CertificateDer<'_>,
@@ -82,11 +98,7 @@ impl ChainExpiry {
         if rest.is_empty() {
             return None;
         }
-        let now = UnixTime::since_unix_epoch(
-            crate::clock::system_time()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default(),
-        );
+        let now = UnixTime::since_unix_epoch(crate::clock::unix_now());
         // Build the path again the way the handshake did.
         if let Ok(end_entity) = webpki::EndEntityCert::try_from(leaf)
             && let Ok(path) = end_entity.verify_for_usage(
@@ -140,33 +152,9 @@ fn not_after(cert: &CertificateDer<'_>) -> Option<i64> {
 /// so a connection made just before its certificate ends is not closed at
 /// once.
 pub fn spread_before(not_after: i64, spread: Duration) -> i64 {
-    let quarter_left = until_unix(not_after).as_secs() / 4;
+    let quarter_left = crate::clock::until_unix(not_after).as_secs() / 4;
     let back = crate::jitter::up_to(spread.as_secs().min(quarter_left));
     not_after.saturating_sub(i64::try_from(back).unwrap_or(i64::MAX))
-}
-
-/// Sleep until `at` (seconds since the epoch) on the wall clock; returns at
-/// once if it has passed. Checked against the clock again on wake, so a
-/// suspended host or a stepped clock cannot end it early or keep it past `at`
-/// by more than the re-check interval.
-pub async fn sleep_until_unix(at: i64) {
-    loop {
-        let left = until_unix(at);
-        if left.is_zero() {
-            return;
-        }
-        // Monotonic sleeps drift from the wall clock across a suspend, so
-        // wake at least once a minute to look again.
-        tokio::time::sleep(left.min(Duration::from_secs(60))).await;
-    }
-}
-
-/// How long until `at` (seconds since the epoch); zero once it has passed.
-pub fn until_unix(at: i64) -> Duration {
-    let now = crate::clock::system_time()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    Duration::from_secs(u64::try_from(at).unwrap_or(0)).saturating_sub(now)
 }
 
 #[cfg(test)]

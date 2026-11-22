@@ -1070,6 +1070,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "felix-authz",
+ "felix-common",
  "felix-mqtt-wire",
  "felix-wire",
  "metrics",

@@ -533,16 +533,9 @@ async fn serve_connection(
         .zip(peer_certs.as_deref())
         .and_then(|(tls, chain)| {
             tls.chain_expiry(felix_common::tls::Presenter::Client)
-                .not_after(chain)
-                .unwrap_or(Some(0))
-                .map(|at| felix_common::tls::spread_before(at, CERT_CLOSE_SPREAD))
+                .close_at(chain, CERT_CLOSE_SPREAD)
         });
-    let cert_expired = async move {
-        match cert_expiry {
-            Some(at) => felix_common::tls::sleep_until_unix(at).await,
-            None => std::future::pending().await,
-        }
-    };
+    let cert_expired = felix_common::clock::sleep_until_unix_or_never(cert_expiry);
     tokio::pin!(cert_expired);
     let hello_missing = {
         let identity = Arc::clone(&identity);
