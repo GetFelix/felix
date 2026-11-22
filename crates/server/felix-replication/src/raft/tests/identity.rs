@@ -512,8 +512,10 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
 
 /// A copy syncs its root's vouched-unsynced marker before its written
 /// position reaches a leader, and the leader does before it counts its own
-/// unsynced write. A copy whose marker does not sync says nothing, so its
-/// root still shows every record it was counted for as synced.
+/// unsynced write. A copy whose marker does not sync sends no written
+/// report. The leader still counts its answers to appends, which on this
+/// fsync-on-commit log come after the fsync, so it is never counted past
+/// what it has synced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
     let mut cluster = Cluster::new(true);
@@ -568,8 +570,12 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
         .group(&shard(0))
         .expect("group");
     let deadline = tokio::time::Instant::now() + PATIENCE;
+    let reported = |broker: &str| {
+        let reports = cluster.net.written_reports.lock();
+        reports.iter().any(|from| from == broker)
+    };
     // The first wait makes the leader ask; later appends carry the ask.
-    while group.reports().from(&member_of(telling)).is_none() {
+    while !reported(telling) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "no written report arrived"
@@ -601,10 +607,61 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
         "the leader counted its own unsynced write before its marker"
     );
     assert!(!vouched(silent));
-    assert_eq!(
-        group.reports().from(&member_of(silent)),
-        None,
+    assert!(
+        !reported(silent),
         "a copy whose marker did not sync reported"
+    );
+    // Its answers still count, but only once its fsync is through: with the
+    // next flush failing, a write it holds is never counted.
+    let positions = cluster
+        .runtime(silent)
+        .group(&shard(0))
+        .expect("group")
+        .positions();
+    let counted = || group.reports().from(&member_of(silent));
+    assert!(
+        counted().is_some(),
+        "the unmarked copy's answers were not counted"
+    );
+    let log = &logs[BROKERS
+        .iter()
+        .position(|broker| *broker == silent)
+        .expect("silent")];
+    log.fail_flush_past(log.tail_offset().await.expect("tail"));
+    let held = positions.borrow().written.expect("written").index;
+    let batch = Batch {
+        expected: None,
+        trim: None,
+        commit: false,
+        records: vec![Record {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(b"unsynced"),
+            headers: None,
+        }],
+        ack: AckAt::Written,
+        term: None,
+        producer: None,
+        publisher: None,
+    };
+    let written = engine.propose(&shard(0), batch).await.expect("written");
+    engine
+        .await_quorum_ack(&shard(0), written, AckAt::Written, PATIENCE)
+        .await
+        .expect("acknowledged by the leader and the marked copy");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while positions.borrow().written.is_none_or(|at| at.index <= held) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unmarked copy never wrote the entry"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Long enough for an answer at the write to have been counted.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let counted = counted().expect("counted");
+    assert!(
+        counted.index <= held,
+        "an unmarked copy counted at {counted:?}, past its fsync at index {held}"
     );
 
     cluster.stop().await;

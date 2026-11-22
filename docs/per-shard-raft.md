@@ -6282,13 +6282,16 @@ the written report (`await_quorum_ack`, `Request::Written`) once a
   per append.
 - **A strict follower** answers after its fsync, and sends the written
   report first, at the write. Its answer is counted too; it says more.
+  Only the report waits on the `vouched-unsynced` marker: the answer
+  names synced entries, so it needs none, and a follower whose marker
+  fails is still counted up to its fsync.
 - **Every leader asks** once a `Quorum` write has waited on reports, and
   counts reports and answers the same way: the leader's own term only,
   voters only, a majority of each set.
 
 openraft answers an append only once the log id it names is through the
 follower's log (`IOFlushed` above), so a counted answer never names an
-entry the follower has not written. In the model it is a `Report` of a
+entry the follower has not written. In the model it is a `Report` of an
 entry the sender holds, named by that entry's own log id, which
 `FelixRaftWritten.tla` allows.
 
