@@ -147,8 +147,11 @@ impl LogThread {
                 .await
                 .map_err(io::Error::other)?;
         }
+        // A current-thread runtime (a Raft group thread) has other groups'
+        // tasks to run, and polling here would hold them up.
         if alone
             && !self.spin.is_zero()
+            && !on_current_thread_runtime()
             && let Some(_spinning) = Spinning::enter()
         {
             let started = Instant::now();
@@ -212,6 +215,12 @@ impl std::fmt::Debug for LogThread {
             .field("name", &self.name)
             .finish_non_exhaustive()
     }
+}
+
+fn on_current_thread_runtime() -> bool {
+    tokio::runtime::Handle::try_current().is_ok_and(|runtime| {
+        runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
+    })
 }
 
 /// Callers polling for a result right now, across every log.

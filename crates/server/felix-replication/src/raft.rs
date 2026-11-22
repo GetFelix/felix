@@ -27,6 +27,7 @@ mod commit;
 mod deliver;
 mod draws;
 mod engine;
+mod executor;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;

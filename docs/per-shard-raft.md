@@ -2235,6 +2235,51 @@ yields at most 32 times, then arms the timer, and it never ends before its
 deadline. Longer sleeps use the timer as before. Election and heartbeat
 deadlines are timeouts, not sleeps, and are unchanged.
 
+### Group threads
+
+A write wakes several tasks in turn: the publish task, openraft's core, its
+state machine worker, its IO forwarder, the replication streams and the
+task that serves committed records (`follow_commits`). On the broker's
+multi-thread runtime each of those wakes can be a hop to another worker
+thread, which costs a scheduler pass and a kernel wake-up.
+
+`FELIX_SHARD_RAFT_GROUP_THREADS=<n>` (or `RuntimeConfig::group_threads`)
+runs every group's tasks on one of `n` group threads instead
+(`raft/executor.rs`). Each thread is a single-threaded tokio runtime, and a
+group is placed on the thread with the fewest groups when it opens. It
+stays there until it closes, since a task cannot move between runtimes.
+openraft spawns its tasks on the runtime it is started from, so starting a
+group's `Raft` on its thread puts all of them there without changing
+openraft. A wake between them is then a push onto that thread's queue, and
+one wake-up of the thread runs every ready task of every group on it.
+
+- On the group thread: openraft's tasks, the publish task, the membership
+  driver and the group's other tasks, and `follow_commits`.
+- Elsewhere: publishers, subscribers, the peer transport and the ticker
+  stay on the broker runtime, and log IO on the log's own thread. A write
+  still crosses threads where it enters a group (publisher to publish task,
+  peer to core) and where it leaves (answers, fanout, network sends).
+- A group thread never waits on disk. Log work goes to the log thread or a
+  blocking task and is awaited. A caller of the log thread on a group
+  thread does not poll for its answer, since other groups' tasks are
+  waiting behind it.
+- A hot group shares its thread: the thread runs ready tasks in turn, and
+  tokio makes a task that keeps finding work on channels give the thread up
+  after a bounded number of steps. The state machine gives it up the same
+  way while it applies a long run of entries. A single step that takes long
+  (a large snapshot cut, say) still delays the thread's other groups.
+- The peer transport's tasks run on the broker's IO runtimes. With those
+  turned off (`FELIX_PUMP_COLOCATE=0`), a connection dialled from a group
+  thread runs its pumps there.
+- A panic in a group task ends only that task, as on the broker runtime.
+  The thread and its other groups keep running.
+
+Unset or `0` keeps every group on the broker runtime, the default until
+the A/B on the perf hosts. The simulator never uses group threads. Tests
+that pause tokio's clock cannot either, because a group thread keeps time
+on its own clock. `FELIX_TEST_RAFT_GROUP_THREADS=<n>` runs the `raft::`
+unit tests on group threads.
+
 ## Heartbeat coalescing
 
 Without coalescing, each leader sends each follower one empty

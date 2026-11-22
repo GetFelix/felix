@@ -48,8 +48,18 @@ const PATIENCE: Duration = Duration::from_secs(120);
 
 /// The shipped timers. Shorter ones churn on a loaded machine, where an
 /// fsync can outlast a short election timeout.
+///
+/// `FELIX_TEST_RAFT_GROUP_THREADS` runs the suite on group threads. Tests
+/// that pause tokio's clock cannot run that way: a group thread keeps time
+/// on its own clock.
 fn timers() -> RuntimeConfig {
-    RuntimeConfig::default()
+    RuntimeConfig {
+        group_threads: std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
+            .ok()
+            .and_then(|threads| threads.parse().ok())
+            .unwrap_or(0),
+        ..RuntimeConfig::default()
+    }
 }
 
 fn shard(n: u32) -> ShardKey {
@@ -1636,6 +1646,46 @@ async fn a_write_is_reported_written_and_flushed() {
         assert_eq!(status.flushed, status.written, "{}", status.member);
     }
     cluster.stop().await;
+}
+
+/// With group threads, each group's openraft core and the tasks it spawns
+/// run on the group's thread, and a write still commits everywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_groups_core_runs_on_its_group_thread() {
+    let threads = RuntimeConfig {
+        group_threads: 2,
+        ..timers()
+    };
+    let mut cluster = Cluster::with(threads, true);
+    for n in 0..3 {
+        cluster.form(n).await;
+    }
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    assert_eq!(runtime.group_thread_loads(), vec![2, 1]);
+    let group = runtime.group(&shard(0)).expect("group");
+    let core = group
+        .raft()
+        .with_raft_state(|_| std::thread::current().name().map(str::to_owned))
+        .await
+        .expect("core");
+    let task = group
+        .runtime()
+        .spawn(async { std::thread::current().name().map(str::to_owned) })
+        .await
+        .expect("task");
+    for on in [core, task] {
+        assert!(
+            on.as_deref()
+                .is_some_and(|name| name.starts_with("felix-raft-group-")),
+            "ran on {on:?}"
+        );
+    }
+    drop(group);
+    let index = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, index).await;
+    cluster.stop().await;
+    assert_eq!(runtime.group_thread_loads(), vec![0, 0]);
 }
 
 /// A proposer's token comes back from the leader's own append with the
