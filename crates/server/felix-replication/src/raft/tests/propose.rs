@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use super::super::network::Router;
 use super::super::propose::{
     DRAIN_BYTES, DRAIN_RECORDS, Heard, Leading, Lost, Span, Unacknowledged, Waiting, acknowledged,
-    drain, respond, split,
+    drain, respond, split, stopped,
 };
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -91,9 +91,12 @@ fn lost(result: &Result<Written, CommitError>) -> &'static str {
 
 /// Perf item a. On one thread nothing else runs until the test waits, so
 /// the task finds every batch queued and makes one call for all of them.
+/// Publishers are kept from draining, which would make one call each.
 #[tokio::test]
 async fn batches_queued_together_go_to_openraft_in_one_call() {
     let (mut cluster, leader, engine, committed) = led().await;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    member.expect("group").gate.task_only.store(true, Relaxed);
     assert_eq!(status(&cluster, &leader).client_writes, 0);
 
     let queued: Vec<_> = (0..16)
@@ -128,6 +131,7 @@ async fn a_drain_wakes_the_publish_task_once() {
     let (mut cluster, leader, engine, committed) = led_with(long).await;
     let member = cluster.runtime(&leader.broker).group(&shard(0));
     let gate = Arc::clone(&member.expect("group").gate);
+    gate.task_only.store(true, Relaxed);
 
     let queued: Vec<_> = (0..16)
         .map(|_| engine.propose(&shard(0), batch(&[b"one", b"two"], AckAt::Flushed)))
@@ -155,6 +159,104 @@ async fn a_drain_wakes_the_publish_task_once() {
     }
     assert_eq!(status(&cluster, &leader).client_writes, 1);
     assert_eq!(gate.polls.load(Relaxed), 1, "polls of the publish task");
+    cluster.stop().await;
+}
+
+/// Wait until the publish task's poll count holds still, and return it.
+async fn settled_polls(gate: &super::super::propose::Gate) -> u64 {
+    let mut last = gate.polls.load(Relaxed);
+    let mut still = 0;
+    for _ in 0..200 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let now = gate.polls.load(Relaxed);
+        still = if now == last { still + 1 } else { 0 };
+        last = now;
+        if still >= 5 {
+            break;
+        }
+    }
+    last
+}
+
+/// A publisher that finds the queue idle makes the call itself, so the
+/// publish task is not woken for it.
+#[tokio::test]
+async fn an_idle_queue_is_drained_by_its_publisher() {
+    let long = RuntimeConfig {
+        election_min: Duration::from_secs(30),
+        election_max: Duration::from_secs(60),
+        lease: Duration::from_secs(45),
+        ..timers()
+    };
+    let (mut cluster, leader, engine, committed) = led_with(long).await;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let gate = Arc::clone(&member.expect("group").gate);
+    // The first propose spawns the task, which is polled once.
+    let first = engine.propose(&shard(0), batch(&[b"one"], AckAt::Flushed));
+    assert_eq!(first.await.map(|w| w.end), Ok(committed + 2));
+    let before = settled_polls(&gate).await;
+    let calls = status(&cluster, &leader).client_writes;
+
+    for place in 0..4u64 {
+        let written = engine
+            .propose(&shard(0), batch(&[b"one"], AckAt::Flushed))
+            .await;
+        assert_eq!(written.map(|w| w.end), Ok(committed + 3 + place));
+    }
+    assert_eq!(status(&cluster, &leader).client_writes, calls + 4);
+    assert_eq!(
+        settled_polls(&gate).await,
+        before,
+        "polls of the publish task"
+    );
+    cluster.stop().await;
+}
+
+/// A publisher's call that cannot be sent at once is finished by the task,
+/// even when the publisher goes away, and nothing queued behind it goes to
+/// openraft first, whoever drains it.
+#[tokio::test]
+async fn a_pending_call_keeps_its_place_ahead_of_later_ones() {
+    let (mut cluster, leader, engine, committed) = led().await;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let gate = Arc::clone(&member.expect("group").gate);
+
+    gate.pend_here.store(true, Relaxed);
+    let stalled = engine.propose(&shard(0), batch(&[b"a0", b"a1"], AckAt::Flushed));
+    gate.pend_here.store(false, Relaxed);
+    drop(stalled);
+    // The task has not run: these find the stalled call and queue behind it.
+    let next = engine.propose(&shard(0), batch(&[b"b0"], AckAt::Flushed));
+    let last = engine.propose(&shard(0), batch(&[b"c0"], AckAt::Flushed));
+
+    assert_eq!(next.await.map(|w| w.end), Ok(committed + 1 + 3));
+    let written = last.await.expect("written");
+    assert_eq!(written.end, committed + 1 + 4);
+    cluster.committed_everywhere(0, written.end - 1).await;
+    let expected: [&[u8]; 4] = [b"a0", b"a1", b"b0", b"c0"];
+    assert_eq!(
+        payloads(&cluster, &leader.broker, committed + 1).await,
+        expected
+    );
+    cluster.stop().await;
+}
+
+/// A group stopped while a publisher hands its pending call over: the task
+/// drops the call as it ends, so its batch is answered stopped and nothing
+/// is left holding it.
+#[tokio::test]
+async fn a_call_handed_over_as_the_group_stops_is_dropped() {
+    let (mut cluster, leader, engine, _) = led().await;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let member = member.expect("group");
+
+    member.gate.pend_here.store(true, Relaxed);
+    member.gate.stop_at_stash.store(true, Relaxed);
+    let stalled = engine.propose(&shard(0), batch(&[b"a0"], AckAt::Flushed));
+    assert!(member.stalled_call(), "the call was handed to the task");
+    let told = stalled.await;
+    assert_eq!(told, Err(stopped()));
+    eventually(|| (!member.stalled_call()).then_some(())).await;
     cluster.stop().await;
 }
 

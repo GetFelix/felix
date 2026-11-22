@@ -17,7 +17,6 @@ use openraft::storage::{RaftLogReader, Snapshot};
 use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use bytes::Bytes;
@@ -167,7 +166,7 @@ pub(crate) struct Group {
     stopped: AtomicBool,
     /// The shard's publish queue, in commit order. Its task starts with the
     /// first publish, so a group that takes none has none.
-    proposals: OnceLock<mpsc::UnboundedSender<Proposal>>,
+    proposals: OnceLock<propose::Proposer>,
     /// Calls made to openraft for publishes. One carries every batch that
     /// was queued when it was made.
     client_writes: Arc<AtomicU64>,
@@ -1779,10 +1778,7 @@ impl Group {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
-            split.and_then(|(proposal, waiting)| {
-                let queued = self.proposer().send(proposal);
-                queued.map(|()| waiting).map_err(|_| propose::stopped())
-            })
+            split.and_then(|(proposal, waiting)| self.proposer().send(proposal).map(|()| waiting))
         };
         let positions = self.positions.clone();
         let flushed = self.flushed_waiters.clone();
@@ -2233,21 +2229,30 @@ impl Group {
         self.leadership.looks.load(Ordering::Relaxed)
     }
 
-    fn proposer(&self) -> &mpsc::UnboundedSender<Proposal> {
+    #[cfg(test)]
+    pub(crate) fn stalled_call(&self) -> bool {
+        self.proposals.get().is_some_and(propose::Proposer::stalled)
+    }
+
+    fn proposer(&self) -> &propose::Proposer {
         let timers = self.pace.timers;
         self.proposals.get_or_init(|| {
-            let (queue, queued) = mpsc::unbounded_channel();
-            // Ends on `stop`, or when this group and its queue are dropped.
-            let run = propose::run(
+            let (proposer, drainer) = propose::Drainer::new(
                 self.raft.clone(),
                 Arc::clone(&self.pace),
-                queued,
                 self.stop.clone(),
                 Arc::clone(&self.client_writes),
                 propose::Lease {
                     length: Duration::from_millis(timers.election_max),
                     again: Duration::from_millis(timers.heartbeat),
                 },
+                self.cache.is_none(),
+                #[cfg(test)]
+                Arc::clone(&self.gate),
+            );
+            // Ends on `stop`, or when this group and its queue are dropped.
+            let run = propose::run(
+                drainer,
                 self.cache.clone().map(|cache| Stamper {
                     #[cfg(test)]
                     gate: Arc::clone(&self.gate),
@@ -2263,7 +2268,7 @@ impl Group {
                 gate: Arc::clone(&self.gate),
             };
             self.runtime.spawn(run);
-            queue
+            proposer
         })
     }
 

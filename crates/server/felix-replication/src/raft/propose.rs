@@ -320,6 +320,12 @@ pub(crate) struct Gate {
     pub(crate) unknown_groups: std::sync::atomic::AtomicBool,
     /// Times the shard's publish task has been polled: one per wake.
     pub(crate) polls: AtomicU64,
+    /// Publishers never drain: every batch goes through the task.
+    pub(crate) task_only: std::sync::atomic::AtomicBool,
+    /// A publisher's call pends as a full API channel would make it.
+    pub(crate) pend_here: std::sync::atomic::AtomicBool,
+    /// Stop the group as a publisher's pending call is handed over.
+    pub(crate) stop_at_stash: std::sync::atomic::AtomicBool,
 }
 
 /// The publish task, counting its polls into [`Gate::polls`].
@@ -647,8 +653,271 @@ pub(super) fn drain(
     }
 }
 
+/// A shard's publish queue: the one order its batches take, and whoever
+/// hands them to the group. That is the publish task, or a publisher that
+/// finds the queue idle and makes the call itself, which saves the task's
+/// wake. See `docs/per-shard-raft.md`, "Writing through openraft".
+pub(crate) struct Proposer {
+    queue: mpsc::UnboundedSender<Proposal>,
+    drainer: Arc<Drainer>,
+}
+
+impl Proposer {
+    /// Queue `proposal` and hand it on.
+    pub(crate) fn send(&self, proposal: Proposal) -> Result<(), CommitError> {
+        self.queue.send(proposal).map_err(|_| stopped())?;
+        self.drainer.offer();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Proposer {
+    /// A publisher's call is waiting for the task.
+    pub(crate) fn stalled(&self) -> bool {
+        self.drainer.state.lock().stalled.is_some()
+    }
+}
+
+impl Drop for Proposer {
+    fn drop(&mut self) {
+        // The sender goes first, so the task woken here finds the queue
+        // disconnected and ends.
+        drop(std::mem::replace(
+            &mut self.queue,
+            mpsc::unbounded_channel().0,
+        ));
+        self.drainer.wake.notify_one();
+    }
+}
+
+/// What the publish task and a publisher share to drain the queue. Only
+/// the holder of `state` with `busy` clear makes a call, so calls reach
+/// openraft in queue order.
+pub(crate) struct Drainer {
+    state: Mutex<DrainState>,
+    /// The task's wake. A permit is kept when it is not waiting.
+    wake: tokio::sync::Notify,
+    raft: Raft<ShardTypes, Machine>,
+    pace: Arc<Pace>,
+    stop: CancellationToken,
+    calls: Arc<AtomicU64>,
+    lease: Lease,
+    /// A cache shard's writes are stamped, which the task does: only a
+    /// stream shard's publishers drain.
+    publishers_drain: bool,
+    #[cfg(test)]
+    gate: Arc<Gate>,
+}
+
+struct DrainState {
+    queue: mpsc::UnboundedReceiver<Proposal>,
+    held: Option<Proposal>,
+    /// The task has drained batches it has not finished sending.
+    busy: bool,
+    /// A publisher's call whose send to openraft did not finish at once.
+    /// Dropping it would drop the whole call, so the task finishes it.
+    stalled: Option<Sending>,
+    /// The task has ended: nothing will finish a stalled call.
+    closed: bool,
+}
+
+type Sending = std::pin::Pin<Box<dyn Future<Output = Result<(), Fatal<ShardTypes>>> + Send>>;
+
+/// What the task found to do.
+enum Work {
+    Idle,
+    Send(Sending),
+    Drain(Drain),
+    End,
+}
+
+impl Drainer {
+    pub(crate) fn new(
+        raft: Raft<ShardTypes, Machine>,
+        pace: Arc<Pace>,
+        stop: CancellationToken,
+        calls: Arc<AtomicU64>,
+        lease: Lease,
+        publishers_drain: bool,
+        #[cfg(test)] gate: Arc<Gate>,
+    ) -> (Proposer, Arc<Self>) {
+        let (queue, queued) = mpsc::unbounded_channel();
+        let drainer = Arc::new(Self {
+            state: Mutex::new(DrainState {
+                queue: queued,
+                held: None,
+                busy: false,
+                stalled: None,
+                closed: false,
+            }),
+            wake: tokio::sync::Notify::new(),
+            raft,
+            pace,
+            stop,
+            calls,
+            lease,
+            publishers_drain,
+            #[cfg(test)]
+            gate,
+        });
+        let proposer = Proposer {
+            queue,
+            drainer: Arc::clone(&drainer),
+        };
+        (proposer, drainer)
+    }
+
+    /// Drain once on the caller's thread if nobody else is and nothing has
+    /// to wait, else wake the task. Never awaits and never blocks, so a
+    /// publisher dropped after this cannot drop a call half sent.
+    fn offer(&self) {
+        let left = !self.publishers_drain || self.drain_here();
+        if left {
+            self.wake.notify_one();
+        }
+    }
+
+    /// One drain and one call, if the queue is free. Returns whether the
+    /// task has work left.
+    fn drain_here(&self) -> bool {
+        #[cfg(test)]
+        if self.gate.task_only.load(Ordering::Relaxed) {
+            return true;
+        }
+        let Some(mut state) = self.state.try_lock() else {
+            return true;
+        };
+        // A stale lease needs `Lease::renew`, which waits: the task's.
+        if state.busy || state.closed || self.stop.is_cancelled() || self.lease.stale(&self.raft) {
+            return true;
+        }
+        let first = match state.held.take() {
+            Some(first) => first,
+            // Taken by whoever drained since this publisher queued.
+            None => match state.queue.try_recv() {
+                Ok(first) => first,
+                Err(_) => return false,
+            },
+        };
+        let state = &mut *state;
+        let Drain {
+            commands,
+            unstamped,
+            term,
+            answers,
+        } = drain(first, &mut state.queue, &mut state.held);
+        felix_storage::hops::mark(felix_storage::hops::Stage::Dequeued);
+        let left = state.held.is_some() || !state.queue.is_empty();
+        if !unstamped.is_empty() {
+            refuse_mixed(commands.len(), unstamped.len(), answers);
+            return left;
+        }
+        if leads(&self.raft) {
+            self.pace.wrote();
+        }
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let responders = respond(answers, term.is_some());
+        let raft = self.raft.clone();
+        let mut sending: Sending =
+            Box::pin(async move { write(&raft, commands, responders, term).await });
+        // Unconstrained: a spent coop budget would pend a send the channel
+        // has room for, and hand the call back to the task.
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let polled = {
+            #[cfg(test)]
+            let polled = match self.gate.pend_here.load(Ordering::Relaxed) {
+                true => std::task::Poll::Pending,
+                false => std::pin::pin!(tokio::task::unconstrained(sending.as_mut())).poll(&mut cx),
+            };
+            #[cfg(not(test))]
+            let polled = std::pin::pin!(tokio::task::unconstrained(sending.as_mut())).poll(&mut cx);
+            polled
+        };
+        match polled {
+            std::task::Poll::Ready(sent) => {
+                felix_storage::hops::mark(felix_storage::hops::Stage::Proposed);
+                if let Err(fatal) = sent {
+                    tracing::warn!(error = %fatal, "a stopped Raft group took no write");
+                }
+                left
+            }
+            std::task::Poll::Pending => {
+                #[cfg(test)]
+                if self.gate.stop_at_stash.load(Ordering::Relaxed) {
+                    self.stop.cancel();
+                }
+                // `closed` is set under this lock, which is still held: the
+                // task cannot have ended, and it finishes or drops this.
+                state.stalled = Some(sending);
+                state.busy = true;
+                true
+            }
+        }
+    }
+
+    /// The task's next step, under the lock.
+    fn next(&self) -> Work {
+        let mut state = self.state.lock();
+        if self.stop.is_cancelled() {
+            return Work::End;
+        }
+        if let Some(sending) = state.stalled.take() {
+            return Work::Send(sending);
+        }
+        let first = match state.held.take() {
+            Some(first) => first,
+            None => match state.queue.try_recv() {
+                Ok(first) => first,
+                Err(mpsc::error::TryRecvError::Empty) => return Work::Idle,
+                Err(mpsc::error::TryRecvError::Disconnected) => return Work::End,
+            },
+        };
+        state.busy = true;
+        let state = &mut *state;
+        Work::Drain(drain(first, &mut state.queue, &mut state.held))
+    }
+
+    fn done(&self) {
+        self.state.lock().busy = false;
+    }
+
+    /// The task is ending: what it leaves is dropped, which answers it as
+    /// stopped, and later sends fail as they would to a dropped queue.
+    fn close(&self) {
+        let left = {
+            let mut state = self.state.lock();
+            state.closed = true;
+            state.queue.close();
+            let mut left = Vec::new();
+            while let Ok(proposal) = state.queue.try_recv() {
+                left.push(proposal);
+            }
+            (state.stalled.take(), state.held.take(), left)
+        };
+        // Outside the lock: dropping answers wakes publishers.
+        drop(left);
+    }
+}
+
+fn refuse_mixed(
+    entries: usize,
+    cache_writes: usize,
+    answers: Vec<(usize, oneshot::Sender<Result<Span, Unacknowledged>>)>,
+) {
+    tracing::error!(
+        entries,
+        cache_writes,
+        "a drain mixed stream and cache writes"
+    );
+    for (_, to) in answers {
+        let _ = to.send(Err(not_a_stream().into()));
+    }
+}
+
 /// Hand a shard's queued batches to its group, in the order they were
-/// queued, until `stop` or until the queue's sender is gone.
+/// queued, until `stop` or until the queue's sender is gone, whenever no
+/// publisher did it first.
 ///
 /// Everything queued when the task looks goes down in one call, up to
 /// the drain bounds, so batches that arrive while an append runs share
@@ -657,92 +926,106 @@ pub(super) fn drain(
 /// in the order they are made. It does not hand on answers either: each
 /// batch is answered by its [`Respond`]ers, on the task that applies it, so
 /// a drain wakes this task once.
-pub(crate) async fn run(
-    raft: Raft<ShardTypes, Machine>,
-    pace: Arc<Pace>,
-    mut queue: mpsc::UnboundedReceiver<Proposal>,
-    stop: CancellationToken,
-    calls: Arc<AtomicU64>,
-    lease: Lease,
-    mut stamper: Option<Stamper>,
-) {
-    let mut held = None;
+pub(crate) async fn run(drainer: Arc<Drainer>, mut stamper: Option<Stamper>) {
     loop {
-        let first = match held.take() {
-            Some(first) => first,
-            None => tokio::select! {
-                biased;
-                () = stop.cancelled() => return,
-                next = queue.recv() => match next {
-                    Some(proposal) => proposal,
-                    None => return,
-                },
-            },
-        };
-        let Drain {
-            mut commands,
-            unstamped,
-            term,
-            answers,
-        } = drain(first, &mut queue, &mut held);
-        felix_storage::hops::mark(felix_storage::hops::Stage::Dequeued);
-        // Every entry of a cache shard is a stamped command, and a stream's
-        // are raw records. A mix would stamp the wrong entries and append
-        // ones no member can apply. A cache write names no term: it is
-        // written in the one its stamp is for.
-        let stamped = if stamper.is_some() { commands.len() } else { 0 };
-        if unstamped.len() != stamped || (stamper.is_some() && term.is_some()) {
-            tracing::error!(
-                entries = commands.len(),
-                cache_writes = unstamped.len(),
-                "a drain mixed stream and cache writes"
-            );
-            for (_, to) in answers {
-                let _ = to.send(Err(not_a_stream().into()));
+        let notified = drainer.wake.notified();
+        let ran = match drainer.next() {
+            Work::End => None,
+            Work::Idle => {
+                tokio::select! {
+                    biased;
+                    () = drainer.stop.cancelled() => None,
+                    () = notified => Some(()),
+                }
             }
-            continue;
-        }
-        if leads(&raft) {
-            pace.wrote();
-        }
-        if until_stopped(lease.renew(&raft), &stop).await.is_none() {
-            return;
-        }
-        // Stamped after the renewal, which can take a whole lease.
-        let term = match &mut stamper {
-            None => term,
-            Some(stamper) => match stamper.stamp(&mut commands, unstamped) {
-                Some(term) => Some(term),
-                None => {
-                    for (_, to) in answers {
-                        let _ = to.send(Err(lost(NOT_LEADING).into()));
+            // A publisher's call: `busy` stays set until its send is done.
+            Work::Send(sending) => match until_stopped(sending, &drainer.stop).await {
+                None => None,
+                Some(sent) => {
+                    felix_storage::hops::mark(felix_storage::hops::Stage::Proposed);
+                    if let Err(fatal) = sent {
+                        tracing::warn!(error = %fatal, "a stopped Raft group took no write");
                     }
-                    continue;
+                    drainer.done();
+                    Some(())
                 }
             },
+            Work::Drain(drained) => {
+                let sent = propose(&drainer, drained, &mut stamper).await;
+                if sent.is_some() {
+                    drainer.done();
+                }
+                sent
+            }
         };
-        #[cfg(test)]
-        if let Some(stamper) = &stamper {
-            stamper.gate.stamped.fetch_add(1, Ordering::Relaxed);
-            drop(stamper.gate.shut.lock().await);
-        }
-        calls.fetch_add(1, Ordering::Relaxed);
-        let responders = respond(answers, term.is_some());
-        // A write cut short by `stop` drops its responders, which answer
-        // their batches as stopped.
-        let Some(sent) = until_stopped(write(&raft, commands, responders, term), &stop).await
-        else {
+        if ran.is_none() {
+            drainer.close();
             return;
-        };
-        felix_storage::hops::mark(felix_storage::hops::Stage::Proposed);
-        if let Err(fatal) = sent {
-            // openraft dropped the call, and with it the responders, which
-            // answer every batch as stopped.
-            tracing::warn!(error = %fatal, "a stopped Raft group took no write");
         }
     }
 }
 
+/// The task's call for one drain. `None` on `stop`.
+async fn propose(drainer: &Drainer, drained: Drain, stamper: &mut Option<Stamper>) -> Option<()> {
+    let Drainer {
+        raft,
+        pace,
+        stop,
+        calls,
+        lease,
+        ..
+    } = drainer;
+    let Drain {
+        mut commands,
+        unstamped,
+        term,
+        answers,
+    } = drained;
+    felix_storage::hops::mark(felix_storage::hops::Stage::Dequeued);
+    // Every entry of a cache shard is a stamped command, and a stream's
+    // are raw records. A mix would stamp the wrong entries and append
+    // ones no member can apply. A cache write names no term: it is
+    // written in the one its stamp is for.
+    let stamped = if stamper.is_some() { commands.len() } else { 0 };
+    if unstamped.len() != stamped || (stamper.is_some() && term.is_some()) {
+        refuse_mixed(commands.len(), unstamped.len(), answers);
+        return Some(());
+    }
+    if leads(raft) {
+        pace.wrote();
+    }
+    until_stopped(lease.renew(raft), stop).await?;
+    // Stamped after the renewal, which can take a whole lease.
+    let term = match stamper {
+        None => term,
+        Some(stamper) => match stamper.stamp(&mut commands, unstamped) {
+            Some(term) => Some(term),
+            None => {
+                for (_, to) in answers {
+                    let _ = to.send(Err(lost(NOT_LEADING).into()));
+                }
+                return Some(());
+            }
+        },
+    };
+    #[cfg(test)]
+    if let Some(stamper) = &stamper {
+        stamper.gate.stamped.fetch_add(1, Ordering::Relaxed);
+        drop(stamper.gate.shut.lock().await);
+    }
+    calls.fetch_add(1, Ordering::Relaxed);
+    let responders = respond(answers, term.is_some());
+    // A write cut short by `stop` drops its responders, which answer
+    // their batches as stopped.
+    let sent = until_stopped(write(raft, commands, responders, term), stop).await?;
+    felix_storage::hops::mark(felix_storage::hops::Stage::Proposed);
+    if let Err(fatal) = sent {
+        // openraft dropped the call, and with it the responders, which
+        // answer every batch as stopped.
+        tracing::warn!(error = %fatal, "a stopped Raft group took no write");
+    }
+    Some(())
+}
 /// Hand `commands` to openraft, in order, as one write, each with the
 /// responder at its place. With a term, the
 /// write is appended only if this member still leads that term, which
