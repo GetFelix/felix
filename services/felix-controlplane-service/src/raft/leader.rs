@@ -147,12 +147,12 @@ impl RaftHandle {
 
     /// The level proposals are settled at: the group's level with members
     /// that have not answered counted at the join floor. On the leader the
-    /// floor is read only after [`Self::await_own_blank`], so a new leader
-    /// does not settle a write below what the committed log already needs;
-    /// [`super::NoQuorum`], which callers retry, if it cannot confirm that
-    /// `within`.
+    /// floor is read behind a fresh read-index, so a write is not settled
+    /// below any level the log committed, this term's included. These
+    /// writes are rare, so each pays one. [`super::NoQuorum`], which callers
+    /// retry, if it cannot confirm that `within`.
     pub(crate) async fn proposal_level(&self, within: Duration) -> Result<u16, super::NoQuorum> {
-        if self.is_leader() && !self.await_own_blank(self.current_term(), within).await {
+        if self.is_leader() && !self.confirm_leadership_within(within).await {
             return Err(super::NoQuorum::new(
                 within,
                 &anyhow::anyhow!("no quorum confirmed this term's leader"),

@@ -923,6 +923,27 @@ async fn a_write_is_settled_at_the_floor_its_leaders_log_committed() {
     gated.handle.shutdown().await.expect("shutdown");
 }
 
+/// The term's barrier passed before a raise this term committed must not
+/// let a write settle at the floor from before it (#2878).
+#[tokio::test]
+async fn a_write_waits_for_a_raise_committed_after_the_terms_barrier() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gated = gated_leader(dir.path()).await;
+    let handle = &gated.handle;
+    assert!(
+        handle
+            .await_own_blank(handle.current_term(), Duration::from_secs(10))
+            .await
+    );
+    let raise = commit_unapplied_raise(handle).await;
+    let opener = open_later(Arc::clone(&gated.gate));
+    handle.write(b"lvl".to_vec()).await.expect("write");
+    assert_eq!(*gated.settled.lock().expect("settled"), [12]);
+    opener.await.expect("opener");
+    raise.await.expect("raise task").expect("raise");
+    handle.shutdown().await.expect("shutdown");
+}
+
 /// A leader that cannot pass its barrier settles nothing.
 #[tokio::test]
 async fn a_write_is_not_settled_while_the_barrier_cannot_pass() {
