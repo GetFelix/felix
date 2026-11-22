@@ -252,7 +252,9 @@ fn push(raft: &RaftLog<Types, Codec>, log: &DiskLog, pending: PendingAppend) -> 
 /// thread itself, with no task in between, and only once its fsync is
 /// done: held before the fsync, the callback has not fired and nothing is
 /// durable.
-#[tokio::test]
+// Multi-threaded: the test blocks its thread on the pause, and a flush
+// on the task path still has to run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_flush_thread_answers_an_append_only_after_its_fsync() {
     let dir = tempdir().expect("dir");
     let raft = open(&dir);
@@ -278,7 +280,7 @@ async fn the_flush_thread_answers_an_append_only_after_its_fsync() {
 
 /// An append queued behind a flush the flush thread is answering goes to
 /// the task, and is answered after the one ahead of it.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_append_behind_a_flush_thread_answer_is_answered_after_it() {
     let dir = tempdir().expect("dir");
     let raft = open(&dir);
@@ -308,7 +310,7 @@ async fn an_append_behind_a_flush_thread_answer_is_answered_after_it() {
 }
 
 /// A truncation waits for an append the flush thread is still answering.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_truncation_waits_for_a_flush_thread_answer() {
     let dir = tempdir().expect("dir");
     let mut raft = open(&dir);
