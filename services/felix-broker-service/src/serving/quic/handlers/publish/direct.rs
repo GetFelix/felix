@@ -131,6 +131,7 @@ pub async fn publish_direct(
         generation,
         fenced,
     } = target;
+    felix_storage::hops::mark(felix_storage::hops::Stage::Handed);
     if let Some(shard) = &shard
         && let Some(proposed) = engine.publish_on_raft(
             broker,
@@ -147,10 +148,12 @@ pub async fn publish_direct(
     {
         let proposed =
             proposed.map_err(|refused| DirectPublishError::NotWritten(refused.into_anyhow()))?;
-        return proposed
+        let answered = proposed
             .complete()
             .await
             .map_err(|err| DirectPublishError::OutcomeUnknown(err.into()));
+        felix_storage::hops::mark(felix_storage::hops::Stage::Answered);
+        return answered;
     }
     let mut held = fenced;
     let fences = fence::enter_or_keep(&mut held, ingress, shard.as_ref(), generation)
@@ -159,6 +162,7 @@ pub async fn publish_direct(
         .claim_publish(&handle, payloads, publisher, None)
         .await
         .map_err(|err| DirectPublishError::NotWritten(err.into()))?;
+    felix_storage::hops::mark(felix_storage::hops::Stage::Written);
     let mut answer = None;
     finish_claimed(
         broker,
@@ -172,6 +176,7 @@ pub async fn publish_direct(
         |result| answer = Some(result),
     )
     .await;
+    felix_storage::hops::mark(felix_storage::hops::Stage::Answered);
     match answer {
         Some(Ok(first)) => Ok(first),
         Some(Err(err)) => Err(DirectPublishError::OutcomeUnknown(err)),
@@ -214,6 +219,7 @@ pub(crate) async fn finish_claimed(
         return;
     }
     let completed = broker.complete_publish(claimed).await;
+    felix_storage::hops::mark(felix_storage::hops::Stage::Durable);
     drop(fences);
     let result = match completed {
         // One wait for the last offset: the mark is monotonic, so it covers
@@ -221,6 +227,7 @@ pub(crate) async fn finish_claimed(
         Ok(outcome) => engine
             .await_commit(handle, shard, &outcome, generation, quorum_timeout)
             .await
+            .inspect(|()| felix_storage::hops::mark(felix_storage::hops::Stage::Committed))
             .map(|()| first_offset(&outcome)),
         Err(err) => Err(err.into()),
     };

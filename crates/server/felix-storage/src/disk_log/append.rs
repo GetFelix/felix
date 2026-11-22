@@ -98,6 +98,7 @@ impl DiskLog {
                 // `gone` turns true once this future is dropped: a batch the
                 // thread has not started on is then skipped.
                 move |gone| {
+                    crate::hops::mark(crate::hops::Stage::LogJobStart);
                     let kept = appender.append_now(
                         &records,
                         &digests,
@@ -106,6 +107,7 @@ impl DiskLog {
                         &writers,
                         gone,
                     );
+                    crate::hops::mark(crate::hops::Stage::LogJobEnd);
                     let (reply, index) = match kept {
                         Ok(Ok(kept)) => (
                             Ok(Ok((kept.written, kept.prepare_roll, kept.extension))),
@@ -128,6 +130,7 @@ impl DiskLog {
             )
             .await
             .map_err(StorageError::Io)?;
+        crate::hops::mark(crate::hops::Stage::LogReplied);
         // Back here rather than dropped on the append thread, so neither the
         // batch's memory nor the log's reference count changes hands per
         // append.

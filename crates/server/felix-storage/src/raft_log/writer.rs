@@ -314,6 +314,7 @@ where
             // Raft counts the entries from here; the reservation already
             // covers them.
             callback.io_completed(Ok(()));
+            crate::hops::mark(crate::hops::Stage::IoCallback);
             // `flushed` still waits for the log's own fsync.
             let positions = Arc::clone(shared);
             let raise = move |flushed: io::Result<()>| match flushed {

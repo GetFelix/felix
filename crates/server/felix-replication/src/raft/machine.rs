@@ -795,6 +795,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
             // A long run gives the thread up now and then: on a group
             // thread the other groups' tasks wait behind it.
             tokio::task::consume_budget().await;
+            felix_storage::hops::mark(felix_storage::hops::Stage::ApplyBegin);
             let (entry, responder) = match next {
                 Ok(next) => next,
                 Err(err) => {

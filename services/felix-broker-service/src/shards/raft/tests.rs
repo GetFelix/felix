@@ -3102,3 +3102,179 @@ fn a_blank_copy_admits_only_the_brokers_in_the_group_now() {
     assert!(admitted(&moved).0.contains("broker-e"));
     assert!(admitted(&moved).1.contains("broker-e"));
 }
+
+// MEASURE ONLY (H12, never merge). Per-hop latency of one b1 `Quorum`
+// publish, hybrid against a Raft group of one on written commit, both on a
+// periodic broker whose fsync never runs during the run. Run with
+// FELIX_HOP_TRACE=1 FELIX_HOP_TRACE_QUIET=1, HOPS_N, HOPS_GROUP_THREADS.
+fn hops_summary(engine: &str, total: &mut [Duration]) {
+    total.sort();
+    let q = |v: &[u32], f: f64| v[((v.len() - 1) as f64 * f) as usize] as f64 / 10.0;
+    let mut line = format!(
+        "HOPS {engine}: total p50 {:.1} p99 {:.1} |",
+        total[total.len() / 2].as_secs_f64() * 1e6,
+        total[total.len() * 99 / 100].as_secs_f64() * 1e6
+    );
+    for (name, mut samples) in felix_storage::hops::take() {
+        if samples.is_empty() {
+            continue;
+        }
+        samples.sort_unstable();
+        line.push_str(&format!(
+            " {name} n={} p50={:.1} p99={:.1};",
+            samples.len(),
+            q(&samples, 0.5),
+            q(&samples, 0.99)
+        ));
+    }
+    eprintln!("{line}");
+}
+
+async fn hops_hybrid(n: usize, payload: &bytes::Bytes) {
+    use crate::serving::direct_publish::publish_direct;
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::Periodic {
+            interval: Duration::from_secs(3600),
+        },
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let storage = felix_broker::DurableStorage::open(root.path(), config).expect("storage");
+    let broker =
+        Broker::new(felix_storage::EphemeralCache::new().into()).with_durable_storage(storage);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker.register_namespace("t1", "ns").await.expect("ns");
+    let metadata = StreamMetadata {
+        durable: true,
+        incarnation: INCARNATION,
+        replication_factor: Some(1),
+        consistency: ConsistencyLevel::Quorum,
+        ..StreamMetadata::default()
+    };
+    broker
+        .register_stream("t1", "ns", "orders", metadata)
+        .await
+        .expect("orders");
+    let broker = Arc::new(broker);
+    let engine = crate::shards::routing::StreamEngine::default();
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    let mut total = Vec::with_capacity(n);
+    for i in 0..(n + 200) {
+        if i == 200 {
+            felix_storage::hops::take();
+            total.clear();
+        }
+        let target = crate::serving::direct_publish::LocalTarget {
+            handle: handle.clone(),
+            shard: None,
+            generation: 0,
+            fenced: None,
+        };
+        let began = std::time::Instant::now();
+        felix_storage::hops::start();
+        publish_direct(
+            &broker,
+            None,
+            &engine,
+            target,
+            std::slice::from_ref(payload),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("published");
+        total.push(began.elapsed());
+    }
+    hops_summary("hybrid", &mut total);
+}
+
+async fn hops_raft(n: usize, payload: &bytes::Bytes, group_threads: usize) {
+    use crate::serving::direct_publish::publish_direct;
+    let root = tempfile::tempdir().expect("tempdir");
+    let fsync = FsyncMode::Periodic {
+        interval: Duration::from_secs(3600),
+    };
+    let broker = broker_at(root.path(), 1, INCARNATION, ConsistencyLevel::Quorum, fsync).await;
+    felix_storage::run_state::begin(
+        root.path(),
+        true,
+        None,
+        None,
+        || false,
+        || felix_common::random::uuid_v4().into_bytes(),
+    )
+    .expect("begin the run");
+    let reported = felix_common::fleet::FleetGate::for_this_build().reported();
+    let feature = [felix_common::fleet::RAFT_WRITTEN_COMMIT.name()];
+    let fleet = Arc::new(felix_common::fleet::FleetGate::seeded(reported, feature));
+    let config = RuntimeConfig {
+        group_threads,
+        ..timers()
+    };
+    let runtime =
+        GroupRuntime::start("broker-a", config, Arc::new(AgreeingPeers)).expect("runtime");
+    let shards = RaftShards::new(Arc::clone(&broker), runtime, "broker-a".to_string(), fleet);
+    open_root(&broker, &shards);
+    let engine = Arc::new(engine(&shards));
+    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        Arc::clone(&engine),
+    )));
+    let orders = key("orders", 0);
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    let mut total = Vec::with_capacity(n);
+    for i in 0..(n + 200) {
+        if i == 200 {
+            felix_storage::hops::take();
+            total.clear();
+        }
+        let began = std::time::Instant::now();
+        felix_storage::hops::start();
+        publish_direct(
+            &broker,
+            None,
+            &engine,
+            target(handle.clone(), &orders, term),
+            std::slice::from_ref(payload),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("published");
+        total.push(began.elapsed());
+    }
+    hops_summary(&format!("raft gt={group_threads}"), &mut total);
+    EngineShards::shutdown(&*shards).await;
+}
+
+#[test]
+#[ignore = "measurement only"]
+fn measure_single_hops() {
+    let n: usize = std::env::var("HOPS_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3000);
+    let group_threads: usize = std::env::var("HOPS_GROUP_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let payload = bytes::Bytes::from(vec![7u8; 1024]);
+    rt.block_on(async {
+        hops_hybrid(n, &payload).await;
+        hops_raft(n, &payload, group_threads).await;
+    });
+}

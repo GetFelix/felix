@@ -838,6 +838,8 @@ pub(super) async fn settled(
                 .await
                 .is_ok()
         {
+            // MEASURE ONLY: the majority ack, under the hybrid's name.
+            felix_storage::hops::mark(felix_storage::hops::Stage::Committed);
             let _ = on_majority.send(written.end);
         }
         std::future::pending::<()>().await;

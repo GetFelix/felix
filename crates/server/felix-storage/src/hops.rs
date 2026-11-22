@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
-/// A point on a publish's way, in the order a single-voter Raft publish
-/// passes them. Not every engine passes every one.
+/// A point on a publish's way, in path order. Not every engine passes
+/// every one. MEASURE ONLY: the extra stages are for the H12 breakdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Stage {
@@ -27,27 +27,48 @@ pub enum Stage {
     Proposed,
     /// The log's append began, on openraft's core.
     AppendBegin,
+    /// The log thread started the append job.
+    LogJobStart,
+    /// The log thread finished writing the batch.
+    LogJobEnd,
+    /// The appender's caller resumed with the reply.
+    LogReplied,
     /// The batch is written to the log (not yet fsynced).
     Written,
+    /// The written-commit callback told openraft the entries count.
+    IoCallback,
     /// The publisher's task saw the batch written.
     WrittenSeen,
+    /// The state machine's apply took the entry.
+    ApplyBegin,
     /// openraft applied the batch: it is committed.
     Applied,
+    /// The hybrid's complete_publish returned (durable per mode).
+    Durable,
+    /// The hybrid's quorum wait returned.
+    Committed,
     /// The publisher has its answer.
     Answered,
     /// The ack frame was queued for the client.
     AckSent,
 }
 
-const STAGES: usize = 9;
+const STAGES: usize = 16;
 const NAMES: [&str; STAGES] = [
     "handed",
     "dequeued",
     "proposed",
     "append_begin",
+    "log_job_start",
+    "log_job_end",
+    "log_replied",
     "written",
+    "io_callback",
     "written_seen",
+    "apply_begin",
     "applied",
+    "durable",
+    "committed",
     "answered",
     "ack_sent",
 ];
@@ -56,6 +77,9 @@ struct Clock {
     epoch: Instant,
     started: AtomicU64,
     samples: [Mutex<Vec<u32>>; STAGES],
+    /// The start each stage last recorded for, so a stage passed twice in
+    /// one publish counts once.
+    seen: [AtomicU64; STAGES],
 }
 
 fn clock() -> Option<&'static Clock> {
@@ -69,6 +93,7 @@ fn clock() -> Option<&'static Clock> {
                     epoch: Instant::now(),
                     started: AtomicU64::new(0),
                     samples: Default::default(),
+                    seen: Default::default(),
                 }
             })
         })
@@ -78,7 +103,7 @@ fn clock() -> Option<&'static Clock> {
 /// Start the clock for a publish just decoded.
 pub fn start() {
     if let Some(clock) = clock() {
-        let now = clock.epoch.elapsed().as_nanos() as u64;
+        let now = clock.epoch.elapsed().as_nanos() as u64 + 1;
         clock.started.store(now, Ordering::Relaxed);
     }
 }
@@ -87,14 +112,34 @@ pub fn start() {
 pub fn mark(stage: Stage) {
     if let Some(clock) = clock() {
         let now = clock.epoch.elapsed().as_nanos() as u64;
-        let since = now.saturating_sub(clock.started.load(Ordering::Relaxed)) / 1000;
+        let started = clock.started.load(Ordering::Relaxed);
+        if clock.seen[stage as usize].swap(started, Ordering::Relaxed) == started {
+            return;
+        }
+        let since = now.saturating_sub(started) / 100;
         clock.samples[stage as usize]
             .lock()
             .push(u32::try_from(since).unwrap_or(u32::MAX));
     }
 }
 
+/// Each stage's samples so far, in tenths of a microsecond since the
+/// start, emptied. For an in-process harness. MEASURE ONLY.
+pub fn take() -> Vec<(&'static str, Vec<u32>)> {
+    let Some(clock) = clock() else {
+        return Vec::new();
+    };
+    NAMES
+        .iter()
+        .zip(&clock.samples)
+        .map(|(name, samples)| (*name, std::mem::take(&mut *samples.lock())))
+        .collect()
+}
+
 fn report() {
+    if std::env::var("FELIX_HOP_TRACE_QUIET").is_ok() {
+        return;
+    }
     loop {
         std::thread::sleep(Duration::from_secs(5));
         let Some(clock) = clock() else { return };
@@ -108,8 +153,8 @@ fn report() {
             eprintln!(
                 "hop {name:<13} n={:<7} p50={:>5}us p99={:>5}us",
                 taken.len(),
-                at(0.5),
-                at(0.99)
+                at(0.5) / 10,
+                at(0.99) / 10
             );
         }
     }
