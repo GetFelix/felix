@@ -24,9 +24,13 @@ use crate::api::types::{
     StreamChangesResponse, StreamCreateRequest, StreamCreateResponse, StreamListResponse,
     StreamSnapshotResponse,
 };
-use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_scopes_for};
+use crate::auth::bearer::{
+    Refusal, refused, require_cluster_action, require_tenant_action, tenant_permissions,
+    tenant_scopes_for,
+};
 use crate::auth::rbac::authorize::{
-    ACTION_NODE_VIEW, ACTION_STREAM_MANAGE, ParsedObject, Segment, object_within_scope,
+    ACTION_NODE_VIEW, ACTION_STREAM_CREATE, ACTION_STREAM_MANAGE, ParsedObject, Segment,
+    object_within_scope,
 };
 use crate::model::{
     NodeLifecycle, Stream, StreamKey, StreamPatchRequest, StreamRouting, validate_identifier,
@@ -101,7 +105,9 @@ pub(crate) async fn create_stream(
     headers: HeaderMap,
     Json(body): Json<StreamCreateRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_stream_manage(&state, &tenant_id, &headers, &namespace, &body.stream).await?;
+    StreamCreators::of(&state, &tenant_id, &headers)
+        .await?
+        .check(&tenant_id, &namespace, &body)?;
     validate_stream_request(&body)?;
     ensure_tenant_namespace(&state, &tenant_id, &namespace).await?;
     let asked = body.routing;
@@ -469,6 +475,75 @@ pub(crate) fn stream_object(tenant_id: &str, namespace: &str, stream: &str) -> P
         tenant_id: tenant_id.to_string(),
         namespace: Segment::Exact(namespace.to_string()),
         stream: Segment::Exact(stream.to_string()),
+    }
+}
+
+/// What the caller may create: `stream.manage` scopes, which also allow a
+/// `mount`, and `stream.create` scopes, which do not.
+pub(crate) struct StreamCreators {
+    manage: Vec<ParsedObject>,
+    create: Vec<ParsedObject>,
+}
+
+impl StreamCreators {
+    /// The caller's scopes within `tenant_id`; 403 when it holds neither action.
+    pub(crate) async fn of(
+        state: &AppState,
+        tenant_id: &str,
+        headers: &HeaderMap,
+    ) -> Result<Self, ApiError> {
+        let mut creators = Self {
+            manage: Vec::new(),
+            create: Vec::new(),
+        };
+        for perm in tenant_permissions(state, tenant_id, headers).await? {
+            match perm.action.as_str() {
+                ACTION_STREAM_MANAGE => creators.manage.push(perm.object),
+                // Policy writes take it over stream objects only, but a
+                // bootstrap policy is not checked, and a tenant or namespace
+                // object would contain every stream under it.
+                ACTION_STREAM_CREATE if matches!(perm.object, ParsedObject::Stream { .. }) => {
+                    creators.create.push(perm.object)
+                }
+                _ => {}
+            }
+        }
+        if creators.manage.is_empty() && creators.create.is_empty() {
+            return Err(refused(Refusal::Forbidden, "missing required permission"));
+        }
+        Ok(creators)
+    }
+
+    /// 403 unless the caller may create `body` in `namespace`. A mount claims a
+    /// topic prefix across the whole tenant, so it needs `stream.manage`.
+    pub(crate) fn check(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        body: &StreamCreateRequest,
+    ) -> Result<(), ApiError> {
+        let target = stream_object(tenant_id, namespace, &body.stream);
+        let within = |scopes: &[ParsedObject]| {
+            scopes
+                .iter()
+                .any(|scope| object_within_scope(scope, &target))
+        };
+        if within(&self.manage) {
+            return Ok(());
+        }
+        if !within(&self.create) {
+            return Err(refused(
+                Refusal::Forbidden,
+                &format!("insufficient scope for stream {}", body.stream),
+            ));
+        }
+        if body.mount.is_some() {
+            return Err(refused(
+                Refusal::Forbidden,
+                &format!("a mount on stream {} needs stream.manage", body.stream),
+            ));
+        }
+        Ok(())
     }
 }
 

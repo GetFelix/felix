@@ -132,9 +132,11 @@ MQTT as the `CONNECT` password.
   ([#2903](https://github.com/GetFelix/felix/issues/2903)).
 - No storage quota per tenant: a tenant with publish rights can fill a
   broker's disk ([#2804](https://github.com/GetFelix/felix/issues/2804)).
-- `stream.manage` is needed to create a stream and also allows deleting and
-  trimming it. There is no create-only grant
-  ([#2805](https://github.com/GetFelix/felix/issues/2805)).
+- `stream.create` lets a component make streams without being able to read,
+  change, delete or trim them. It can still take a name first, bring back a
+  deleted one, and create as many streams and shards as its scope allows: no
+  cap bounds the shard count of one stream or the streams of a tenant
+  ([#2948](https://github.com/GetFelix/felix/issues/2948)).
 
 ## 2. Broker to broker
 

@@ -112,8 +112,8 @@ The broader production checklist (sizing, durability, limits) is
 - [ ] **Least privilege.** Publishers get `stream.publish` on their streams,
       readers `stream.subscribe`, and `stream.manage`, `ns.manage` and
       `tenant.manage` go to few principals. `stream.manage` also allows delete
-      and trim; there is no create-only grant yet
-      ([#2805](https://github.com/GetFelix/felix/issues/2805)).
+      and trim, so a component that only makes streams gets `stream.create`
+      over the names it should make.
 - [ ] **Cluster scope for operators only.** `tenant.manage:cluster:*` creates
       tenants and re-points an issuer's keys; `node.manage:cluster:*` changes
       any broker's membership. Brokers get `node.view:cluster:*` and

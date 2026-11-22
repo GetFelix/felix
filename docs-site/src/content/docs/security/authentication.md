@@ -321,7 +321,7 @@ Casbin is used with domains for tenant scoping. Policies and groupings are store
 
 **Actions**:
 - `rbac.view`, `rbac.policy.manage`, `rbac.assignment.manage`
-- `tenant.manage`, `ns.manage`, `stream.manage`, `cache.manage`
+- `tenant.manage`, `ns.manage`, `stream.manage`, `stream.create`, `cache.manage`
 - `stream.publish`, `stream.subscribe`, `stream.trim`
 - `cache.read`, `cache.write`
 - `group.consume`, `group.manage`
@@ -332,6 +332,13 @@ and `tenant.manage` through the `stream.manage` they expand to. Publishing or
 reading does not. The control plane puts `stream.trim` in a broker token only
 once the fleet has finalized `head_trim`, because a broker that predates the
 action refuses a token naming it.
+
+`stream.create`, over a stream object, allows creating the streams it covers
+and nothing else: no reading, listing, changing or deleting them, including
+the ones its holder made, and no `mount`, which needs `stream.manage`. Give it
+to a component that makes streams for others and should not remove them. It
+stays off broker tokens. Upgrade every control-plane member before granting
+it; see [Create-only grants](https://github.com/GetFelix/felix/blob/main/docs/security/rbac.md#create-only-grants).
 
 Consumer-group operations are split in two, over the stream's object:
 

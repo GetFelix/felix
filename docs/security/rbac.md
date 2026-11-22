@@ -18,6 +18,8 @@ Canonical actions:
 - `tenant.manage`
 - `ns.manage`
 - `stream.manage`
+- `stream.create`: create streams and nothing else; see
+  [Create-only grants](#create-only-grants)
 - `cache.manage`
 - `stream.publish`
 - `stream.subscribe`
@@ -104,6 +106,38 @@ has finalized `head_trim`. Before that a broker that predates the action
 could be serving, and it would refuse the whole token. A grant written early
 is kept and reaches tokens from the first exchange or refresh after the
 finalize. See [Head trims](../auth.md#head-trims).
+
+### Create-only grants
+
+`stream.create`, over a stream object, allows creating the streams it covers:
+`POST .../streams` and the stream items of `POST .../resources`. It is for a
+component that makes streams on someone's behalf, such as an admission
+service, and should not be able to remove them. It does not allow reading,
+listing, changing or deleting a stream, including one its holder created, and
+it does not allow a `mount`: a mount claims a topic prefix across the whole
+tenant, so it needs `stream.manage`. Sending a create that already matches an
+existing stream answers `200`, as for `stream.manage`.
+
+- It takes a stream object only: `stream:t1/payments/*`, `stream:t1/*/*` or one
+  stream. A policy write over any other object is a `400`, and the control
+  plane ignores it over anything else at create time too.
+- `stream.manage` keeps allowing creates. It is not expanded into
+  `stream.create`, so narrowing a token to `requested: ["stream.create"]` needs
+  an explicit `stream.create` grant.
+- It is never put in a broker token. Brokers have no create path.
+- Its holder can take a name first. A later create of that name by its owner
+  answers `409` if the configuration differs, and once stream incarnations are
+  finalized a holder can also bring back a name that was deleted on purpose,
+  where existing publish and subscribe grants on that name apply again. Scope
+  the grant to the names its holder should make.
+- It caps nothing: its holder can create as many streams and shards as its
+  scope allows.
+
+Upgrade every control-plane member before writing a `stream.create` policy. An
+older member refuses the write and does not know the action, so it leaves the
+grant out of the tokens it mints. A refresh at such a member whose result is
+left with no permissions is refused and ends that refresh chain, and the
+holder has to exchange again.
 
 ### Granting one group
 

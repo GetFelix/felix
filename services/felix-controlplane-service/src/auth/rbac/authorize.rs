@@ -11,6 +11,10 @@ pub const ACTION_RBAC_ASSIGNMENT_MANAGE: &str = "rbac.assignment.manage";
 pub const ACTION_TENANT_MANAGE: &str = "tenant.manage";
 pub const ACTION_NS_MANAGE: &str = "ns.manage";
 pub const ACTION_STREAM_MANAGE: &str = "stream.manage";
+/// Create streams, and nothing else: no read, change, delete, trim or mount.
+/// Granted over stream objects only. Checked by the control plane alone, so it
+/// is never put in a broker token; see `exchange::for_audience`.
+pub const ACTION_STREAM_CREATE: &str = "stream.create";
 pub const ACTION_CACHE_MANAGE: &str = "cache.manage";
 pub const ACTION_STREAM_PUBLISH: &str = "stream.publish";
 pub const ACTION_STREAM_SUBSCRIBE: &str = "stream.subscribe";
@@ -47,6 +51,7 @@ pub fn canonical_action(action: &str) -> Option<&'static str> {
         ACTION_TENANT_MANAGE => Some(ACTION_TENANT_MANAGE),
         ACTION_NS_MANAGE => Some(ACTION_NS_MANAGE),
         ACTION_STREAM_MANAGE => Some(ACTION_STREAM_MANAGE),
+        ACTION_STREAM_CREATE => Some(ACTION_STREAM_CREATE),
         ACTION_CACHE_MANAGE => Some(ACTION_CACHE_MANAGE),
         ACTION_STREAM_PUBLISH => Some(ACTION_STREAM_PUBLISH),
         ACTION_STREAM_SUBSCRIBE => Some(ACTION_STREAM_SUBSCRIBE),
@@ -557,6 +562,9 @@ pub fn validate_new_rule_allowed(
         && !matches!(action, ACTION_CACHE_READ | ACTION_CACHE_WRITE)
     {
         return Err("a cache key object only takes cache.read or cache.write".to_string());
+    }
+    if action == ACTION_STREAM_CREATE && !matches!(parsed, ParsedObject::Stream { .. }) {
+        return Err("stream.create takes a stream object".to_string());
     }
     if is_lease_template(&parsed) && !lease_template_takes(&rule.object, action) {
         return Err(

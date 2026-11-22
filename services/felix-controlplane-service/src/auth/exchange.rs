@@ -25,8 +25,8 @@ use crate::auth::felix_token::{BROKER_AUDIENCE, CONTROLPLANE_AUDIENCE, mint_toke
 use crate::auth::oidc::OidcError;
 use crate::auth::principal;
 use crate::auth::rbac::authorize::{
-    ACTION_STREAM_TRIM, ACTION_TOKEN_DELEGATE, ParsedObject, format_object, narrow_object,
-    parse_object, parse_permission,
+    ACTION_STREAM_CREATE, ACTION_STREAM_TRIM, ACTION_TOKEN_DELEGATE, ParsedObject, format_object,
+    narrow_object, parse_object, parse_permission,
 };
 use crate::auth::rbac::enforcer::build_enforcer;
 use crate::auth::rbac::permissions::effective_permissions;
@@ -396,13 +396,14 @@ fn narrowing_for(
 
 /// `perms` without what only the control plane enforces, on a broker token.
 ///
-/// `token.delegate` is checked here and nowhere else, and a broker that
-/// predates it would refuse a token naming an action it cannot parse.
+/// `token.delegate` and `stream.create` are checked here and nowhere else,
+/// and a broker refuses a token naming an action it cannot parse.
 pub(crate) fn for_audience(mut perms: Vec<String>, audience: &str) -> Vec<String> {
     if audience == BROKER_AUDIENCE {
         perms.retain(|perm| {
-            perm.split_once(':')
-                .is_none_or(|(action, _)| action != ACTION_TOKEN_DELEGATE)
+            perm.split_once(':').is_none_or(|(action, _)| {
+                action != ACTION_TOKEN_DELEGATE && action != ACTION_STREAM_CREATE
+            })
         });
     }
     perms

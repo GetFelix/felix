@@ -139,6 +139,13 @@ release that predates this is not counted, and the others log
 `its answer does not say which member it is`. A group that already runs is
 not affected here either.
 
+**`stream.create` grants.** Write a policy with the create-only action only
+once every control-plane member runs a release that has it. An older member
+answers the policy write with `400`, leaves the action out of the tokens it
+mints, and refuses a create from a token that carries only it. A refresh at an
+older member that leaves a token with no permissions ends that refresh chain,
+so a create-only component has to exchange again.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,
