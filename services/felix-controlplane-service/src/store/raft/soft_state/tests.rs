@@ -743,6 +743,111 @@ async fn a_reform_plan_asked_through_a_follower_is_the_leaders() {
     }
 }
 
+/// A follower whose own join floor would decide its level (a member it has
+/// never heard from counts at that floor, and the floor can lag the log)
+/// takes the leader's confirmed level instead. What it strips, the leader
+/// appends as sent, so fields the group can store survive (#2878).
+#[tokio::test]
+async fn a_follower_strips_nothing_on_its_own_lagging_floor() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    use crate::raft::AppStateMachine;
+    use crate::store::raft::command::METADATA_VERSION;
+    use crate::store::raft::tests::{SILENT, stub_member};
+    use std::sync::atomic::{AtomicU16, Ordering};
+    let members = two_member_group().await;
+    let leader = members
+        .iter()
+        .position(|member| member.store.handle.is_leader())
+        .expect("a leader");
+    let (leader, follower) = (&members[leader].store, &members[1 - leader].store);
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    // On each member's applied state rather than through the log, as the
+    // re-form test does: a create entry would raise the join floor past
+    // every level put_shard_assignment strips at.
+    for member in &members {
+        let local = member.store.machine.store();
+        catalog(local.as_ref(), &key).await;
+        for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+            local.register_node(node(id, port)).await.expect("register");
+        }
+    }
+    // A third member the leader hears from once, and the follower never.
+    let version = std::sync::Arc::new(AtomicU16::new(METADATA_VERSION));
+    let addr = stub_member(std::sync::Arc::clone(&version)).await;
+    leader
+        .handle
+        .add_learner_without_waiting(3, addr)
+        .await
+        .expect("add member");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while leader.handle.cluster_version_if_known().await != Some(METADATA_VERSION) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the leader never heard"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    version.store(SILENT, Ordering::SeqCst);
+    while follower.handle.cluster_version_if_known().await.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follower never counted the member"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let floor = follower.machine.join_floor();
+    assert!(
+        follower.handle.cluster_version_with_unknown_at(floor).await < super::super::LEARNER_LEVEL,
+        "the follower's own floor {floor} would not strip learners"
+    );
+
+    let assignment = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: [("broker-y".to_string(), "b".repeat(32))].into(),
+        member_storage_ids: [("broker-y".to_string(), "c".repeat(32))].into(),
+        learners: ["broker-y".to_string()].into(),
+        pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
+        placed: None,
+        switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
+        raft_floor: None,
+        raft_formed: None,
+        raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
+        raft_ordered: None,
+    };
+    let written = follower
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    assert_eq!(written.fence_storage_ids, assignment.fence_storage_ids);
+    assert_eq!(written.member_storage_ids, assignment.member_storage_ids);
+    assert_eq!(written.learners, assignment.learners);
+    for member in &members {
+        member.store.handle.shutdown().await.expect("shutdown");
+        member.server.abort();
+    }
+}
+
 /// The tenant, namespace and three-replica stream `key` names.
 async fn catalog(store: &dyn ControlPlaneStore, key: &crate::model::ShardKey) {
     use crate::model::*;

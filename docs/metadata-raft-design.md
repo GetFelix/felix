@@ -182,16 +182,37 @@ a node that had just registered again. So the first leader-only request of a
 term runs a read-index, which waits for the blank entry to apply, and only
 then is the request answered. Every leader-only request goes through that one
 check (`SoftState::dispatch` in `store/raft/soft_state.rs`), and later
-requests in the same term skip it. The same per-term barrier
-(`RaftHandle::await_own_blank` in `raft/leader.rs`) guards the other
-leader decisions read from applied state: admitting a member against the
-join floor, and the level a proposal is settled at, which counts a member
-that has not answered at the join floor. Settled below what the committed log
-already needs, a write could drop a field a finalized feature relies on.
-If the barrier cannot be confirmed within one write attempt, the leader
-refuses the write and the caller retries. The first heartbeat of a term pays for
-two read-indexes, so a leader with many entries left to apply fails
-forwarded heartbeats until it catches up, and brokers retry.
+requests in the same term skip it. Leader soft state is the only reader of
+that cached per-term barrier (`RaftHandle::await_own_blank` in
+`raft/leader.rs`).
+
+The other leader decisions read from applied state run a fresh read-index on
+every call instead, so a floor raised later in the same term is not missed:
+admitting a member against the join floor (`RaftHandle::admit` in
+`raft/join.rs`), and the level a proposal is settled at
+(`RaftHandle::proposal_level` in `raft/leader.rs`), which counts a member that
+has not answered at the join floor. Settled below what the committed log
+already needs, a write could drop a field a finalized feature relies on. Joins
+and level-dependent writes are rare, so the extra read-index costs little. A
+store write that reads the level and then settles a level-dependent command
+reuses the level it confirmed while the term lasts, so it pays one read-index.
+
+If a write's read-index cannot pass within one attempt (2 s), the attempt is
+forwarded and retried inside the write budget, like any refused proposal. Only
+a store call that reads the level directly (`RaftStore::group_level`) fails
+outright, with a retryable 503 `unavailable`.
+
+A follower's own join floor can lag its log just as a new leader's can, and
+what a follower strips from a command before forwarding it the leader appends
+as sent. So when a member that has not answered would be counted at the
+follower's floor, and that floor is below what the other members answered,
+the follower asks the leader for its confirmed level (`LeaderRequest::ProposalLevel`)
+instead of settling on its own. A leader that predates the request answers
+nothing, and the follower falls back to its own floor, as that leader does.
+
+The first heartbeat of a term pays for two read-indexes, so a leader with many
+entries left to apply fails forwarded heartbeats until it catches up, and
+brokers retry.
 
 A judgement belongs to the term it was made in, and so does what it writes.
 A request can wait for the judging slot, or for the store, while the term

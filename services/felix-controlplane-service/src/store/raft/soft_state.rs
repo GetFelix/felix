@@ -102,6 +102,10 @@ pub(crate) enum LeaderRequest {
     Reform {
         request: crate::store::reform::ReformRequest,
     },
+    /// The level the leader settles proposals at, behind a fresh read-index,
+    /// for a follower whose own lagging join floor would decide it. A leader
+    /// that predates it fails to read it, and the asker uses its own level.
+    ProposalLevel,
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -235,12 +239,14 @@ impl SoftState {
         // The lease is judged here at every level: its only write,
         // `TakePlacementLease`, is one every member applies, and the log
         // holds no renewals to judge a take by.
-        // Re-form plans write nothing, so need no level either.
+        // Re-form plans and the proposal level write nothing, so need no
+        // level either.
         let exempt = matches!(
             request,
             LeaderRequest::AcquirePlacementLease { .. }
                 | LeaderRequest::ReleasePlacementLease { .. }
                 | LeaderRequest::Reform { .. }
+                | LeaderRequest::ProposalLevel
         );
         let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
         if !exempt && self.handle.cluster_version().await < needs {
@@ -353,6 +359,14 @@ impl SoftState {
                     }
                 }
                 Ok(Ok(MetaResponse::Assignments { assignments }))
+            }
+            LeaderRequest::ProposalLevel => {
+                let (_, level) = self
+                    .handle
+                    .leader_level(CONFIRM_WITHIN)
+                    .await
+                    .map_err(|_| NotLeader)?;
+                Ok(Ok(MetaResponse::Level { level }))
             }
             LeaderRequest::ShardAssignmentHead => {
                 self.confirm_read().await?;

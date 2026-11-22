@@ -142,7 +142,14 @@ pub(crate) async fn create_resources(
         if plan.new_streams.is_empty() && plan.new_caches.is_empty() {
             return Ok((StatusCode::OK, Json(plan.response)));
         }
-        if !state.store.create_resources_ready().await {
+        // A level that cannot be read is the store's retryable 503
+        // `unavailable`, not an upgrade.
+        let ready = state
+            .store
+            .create_resources_ready()
+            .await
+            .map_err(|err| api_internal("create resources", &err))?;
+        if !ready {
             return Err(api_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "upgrade_in_progress",

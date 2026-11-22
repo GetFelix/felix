@@ -944,18 +944,53 @@ async fn a_write_waits_for_a_raise_committed_after_the_terms_barrier() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A leader that cannot pass its barrier settles nothing.
+/// A leader that cannot pass its barrier settles nothing, and gives up
+/// within the attempt's bound rather than the whole write budget.
 #[tokio::test]
 async fn a_write_is_not_settled_while_the_barrier_cannot_pass() {
     let dir = tempfile::tempdir().expect("tempdir");
     let gated = gated_leader(dir.path()).await;
     let raise = commit_unapplied_raise(&gated.handle).await;
+    let within = Duration::from_millis(300);
+    let started = std::time::Instant::now();
+    let proposal = gated.handle.proposal_bytes(b"lvl", within, None).await;
+    let elapsed = started.elapsed();
+    assert!(matches!(proposal, crate::raft::proposal::Proposal::Forward));
+    // The write budget is 10 s; slack covers a loaded runner.
+    assert!(
+        elapsed < within + Duration::from_secs(1),
+        "waited {elapsed:?} for a {within:?} attempt"
+    );
+    assert!(gated.settled.lock().expect("settled").is_empty());
+    gated.gate.add_permits(1);
+    raise.await.expect("raise task").expect("raise");
+    gated.handle.shutdown().await.expect("shutdown");
+}
+
+/// A level the store confirmed in this term settles the append without a
+/// second read-index, which here could not pass; one from another term does
+/// not.
+#[tokio::test]
+async fn a_level_confirmed_in_this_term_settles_without_another_barrier() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gated = gated_leader(dir.path()).await;
+    let term = gated.handle.current_term();
+    let raise = commit_unapplied_raise(&gated.handle).await;
+    let within = Duration::from_millis(300);
+    let stale = gated
+        .handle
+        .proposal_bytes(b"lvl", within, Some((term - 1, 7)))
+        .await;
+    assert!(matches!(stale, crate::raft::proposal::Proposal::Forward));
     let proposal = gated
         .handle
-        .proposal_bytes(b"lvl", Duration::from_millis(300))
+        .proposal_bytes(b"lvl", within, Some((term, 7)))
         .await;
-    assert!(matches!(proposal, crate::raft::proposal::Proposal::Forward));
-    assert!(gated.settled.lock().expect("settled").is_empty());
+    assert!(matches!(
+        proposal,
+        crate::raft::proposal::Proposal::Append(_)
+    ));
+    assert_eq!(*gated.settled.lock().expect("settled"), [7]);
     gated.gate.add_permits(1);
     raise.await.expect("raise task").expect("raise");
     gated.handle.shutdown().await.expect("shutdown");

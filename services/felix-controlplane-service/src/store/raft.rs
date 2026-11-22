@@ -42,6 +42,10 @@ use crate::raft::{AskLeaderError, RaftHandle};
 /// The metadata level whose members store a stream's incarnation.
 const INCARNATION_LEVEL: u16 = 10;
 
+/// How long a leader waits to confirm its term before reading the level:
+/// one write attempt. The caller retries.
+const BARRIER_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The metadata level whose members store a node's storage identity and the
 /// identities a replica report names.
 const STORAGE_IDENTITY_LEVEL: u16 = 12;
@@ -260,13 +264,24 @@ impl RaftStore {
     /// restarted member with a peer down dropped what the group had been
     /// storing, such as a node's storage identity.
     ///
-    ///
-    /// On the leader the floor is read behind its term's barrier. If that
+    /// On the leader the floor is read behind a fresh read-index. If that
     /// cannot be confirmed in time this errs rather than settle on a floor
-    /// older than the committed log.
+    /// older than the committed log. A follower whose own floor would decide
+    /// the level asks the leader for its confirmed one: the follower's floor
+    /// can lag, and what it strips here the leader appends as sent.
     async fn group_level(&self) -> StoreResult<u16> {
-        /// As long as one write attempt waits; the caller retries.
-        const BARRIER_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+        if !self.handle.is_leader() {
+            if let Some(level) = self.handle.level_without_own_floor().await {
+                return Ok(level);
+            }
+            match self.ask_leader(LeaderRequest::ProposalLevel).await? {
+                Some(MetaResponse::Level { level }) => return Ok(level),
+                Some(_) => return Err(unexpected_shape("level")),
+                // A leader that predates the request settles on its own
+                // floor as well; this member does the same.
+                None => {}
+            }
+        }
         self.handle
             .proposal_level(BARRIER_WAIT)
             .await
@@ -415,12 +430,30 @@ impl RaftStore {
     /// Propose one command and decode its outcome. A command newer than
     /// some member can apply is refused here, before it reaches the log.
     async fn propose(&self, command: MetaCommand) -> StoreResult<MetaResponse> {
+        let bytes = encode_command(&command);
+        // The append settles these again (`settle_for_level`). On the leader
+        // it reuses the level confirmed here, so the write pays one
+        // read-index, not two.
+        if self.handle.is_leader() && command::depends_on_level(&bytes) {
+            let (term, level) = self
+                .handle
+                .leader_level(BARRIER_WAIT)
+                .await
+                .map_err(|err| StoreError::Unexpected(anyhow::Error::new(err)))?;
+            Self::require_level(level, &command)?;
+            return Self::decode(self.handle.write_at_level(bytes, term, level).await);
+        }
         self.propose_at(self.group_level().await?, command).await
     }
 
     /// [`Self::propose`] at a level the caller already read and built the
     /// command from, so a refresh in between cannot gate it on another.
     async fn propose_at(&self, level: u16, command: MetaCommand) -> StoreResult<MetaResponse> {
+        Self::require_level(level, &command)?;
+        Self::decode(self.handle.write(encode_command(&command)).await)
+    }
+
+    fn require_level(level: u16, command: &MetaCommand) -> StoreResult<()> {
         let needs = command.version();
         if needs > 0 && level < needs {
             return Err(StoreError::Conflict(format!(
@@ -429,11 +462,11 @@ impl RaftStore {
                 crate::store::UPGRADE_HINT
             )));
         }
-        let bytes = self
-            .handle
-            .write(encode_command(&command))
-            .await
-            .map_err(StoreError::Unexpected)?;
+        Ok(())
+    }
+
+    fn decode(written: anyhow::Result<Vec<u8>>) -> StoreResult<MetaResponse> {
+        let bytes = written.map_err(StoreError::Unexpected)?;
         let result = decode_result(&bytes).map_err(StoreError::from)?;
         result.map_err(StoreError::from)
     }
@@ -827,7 +860,7 @@ impl ControlPlaneStore for RaftStore {
         self.handle.cluster_version().await >= command::METADATA_VERSION
     }
 
-    async fn create_resources_ready(&self) -> bool {
+    async fn create_resources_ready(&self) -> StoreResult<bool> {
         let needs = MetaCommand::CreateResources {
             streams: Vec::new(),
             caches: Vec::new(),
@@ -836,8 +869,7 @@ impl ControlPlaneStore for RaftStore {
             needs_identity: false,
         }
         .version();
-        // Not ready while the leader cannot confirm its term.
-        self.group_level().await.is_ok_and(|level| level >= needs)
+        Ok(self.group_level().await? >= needs)
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
@@ -1568,11 +1600,11 @@ impl ControlPlaneStore for RaftStore {
         } = &mut command
             && readmits
             && self.may_readmit(report).await
-            && self.group_level().await? >= READMITTED_LEVEL
+            && level >= READMITTED_LEVEL
         {
             *readmit = true;
         }
-        match self.propose(command).await? {
+        match self.propose_at(level, command).await? {
             MetaResponse::Unit => Ok(ReportWrite::Stored),
             MetaResponse::StaleReport => Ok(ReportWrite::Stale),
             MetaResponse::NotLeaderReport => Ok(ReportWrite::NotLeader),

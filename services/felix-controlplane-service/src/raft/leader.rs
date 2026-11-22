@@ -152,15 +152,42 @@ impl RaftHandle {
     /// writes are rare, so each pays one. [`super::NoQuorum`], which callers
     /// retry, if it cannot confirm that `within`.
     pub(crate) async fn proposal_level(&self, within: Duration) -> Result<u16, super::NoQuorum> {
-        if self.is_leader() && !self.confirm_leadership_within(within).await {
+        if self.is_leader() {
+            return Ok(self.leader_level(within).await?.1);
+        }
+        Ok(self
+            .cluster_version_with_unknown_at(self.app.join_floor())
+            .await)
+    }
+
+    /// [`Self::proposal_level`] as this member leads, with the term a fresh
+    /// read-index confirmed it in, or [`super::NoQuorum`] if it cannot
+    /// confirm that `within`.
+    pub(crate) async fn leader_level(
+        &self,
+        within: Duration,
+    ) -> Result<(u64, u16), super::NoQuorum> {
+        let term = self.current_term();
+        // A read-index from a later term proves nothing about this one.
+        if !self.confirm_leadership_within(within).await || self.current_term() != term {
             return Err(super::NoQuorum::new(
                 within,
                 &anyhow::anyhow!("no quorum confirmed this term's leader"),
             ));
         }
-        Ok(self
+        let level = self
             .cluster_version_with_unknown_at(self.app.join_floor())
-            .await)
+            .await;
+        Ok((term, level))
+    }
+
+    /// The level off the leader, when this member's own join floor does not
+    /// decide it. `None` when a member that never answered is counted at
+    /// that floor and it is below what the others answered: the floor may
+    /// lag the log, so only the leader's confirmed level can settle it.
+    pub(crate) async fn level_without_own_floor(&self) -> Option<u16> {
+        self.level_unless_unknown_decides(self.app.join_floor())
+            .await
     }
 
     /// The leader this member knows of, with the address its membership

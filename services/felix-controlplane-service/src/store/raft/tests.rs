@@ -291,9 +291,9 @@ async fn ensure_signing_keys_never_overwrites() {
 /// nothing, as a build from before metadata versions does. It accepts every
 /// append so the leader has nothing to retry.
 /// A [`stub_member`] level that makes it answer no probe.
-const SILENT: u16 = u16::MAX;
+pub(super) const SILENT: u16 = u16::MAX;
 
-async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
+pub(super) async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
