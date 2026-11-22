@@ -263,7 +263,7 @@ async fn a_quiet_thread_parks_without_polling() {
     let appender = LogThread::spinning("test-append", Duration::from_micros(200));
     for _ in 0..20 {
         appender.run(|| Ok(())).await.expect("run");
-        std::thread::sleep(Duration::from_millis(2));
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     let wasted = appender.polls.wasted.load(Ordering::Relaxed);
     assert!(
