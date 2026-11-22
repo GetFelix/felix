@@ -2882,10 +2882,20 @@ sequenceDiagram
 stream's hand-over order and calls `propose` while it holds that place, so
 the order of hand-overs is the order openraft gives out indexes. The
 batch then waits for `await_commit`, which checks the term of the entry at
-its offset, and for the batch handed over before it. Only then does it
-join the stream's commit hold. The hold appends it to the replay ring and
-fans it out as one shared envelope, encoded once per frame shape, the same
-way a held `Quorum` batch is released on the hybrid.
+its offset, and for the batch handed over before it. If nothing is held
+ahead of it and the read bound covers it, the publisher's own task appends
+it to the replay ring and fans it out as one shared envelope, encoded once
+per frame shape, then answers the publisher. A stream whose subscribers
+`Block` skips this, so a full subscriber never holds up an answer.
+Otherwise the batch joins the stream's commit hold,
+whose release task does the same once the bound passes it, the way a held
+`Quorum` batch is released on the hybrid. Either way the batch keeps its
+place in the hand-over order until it is fanned out, so the next batch
+cannot overtake it.
+
+A publish answered at its commit waits for the write and then the commit,
+not for the leader's own flush as well: the commit already puts the batch
+on a majority's disks.
 
 - A batch that times out keeps its place. The publisher is answered with
   the timeout, but delivery keeps waiting for the commit, so the batches
