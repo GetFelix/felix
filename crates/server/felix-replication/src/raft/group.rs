@@ -35,7 +35,7 @@ use super::network::{
     Router, term_of,
 };
 use super::propose::{
-    self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
+    self, AckAt, Batch, Clock, Heard, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
 };
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
@@ -1702,7 +1702,8 @@ impl Group {
     }
 
     /// Queue `batch` behind every batch queued before it and answer where
-    /// it landed, once its records are as far as `batch.ack` asks.
+    /// it landed, once its records are as far as `batch.ack` asks, or at
+    /// its apply when `heard` says so.
     ///
     /// The batch is queued by the call, not by the first poll of what it
     /// returns. Dropping that future takes nothing back: the batch is still
@@ -1716,12 +1717,16 @@ impl Group {
     pub(crate) fn propose(
         &self,
         batch: Batch,
+        heard: Heard,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         #[cfg(any(test, feature = "testing"))]
         self.proposed.fetch_add(1, Ordering::Relaxed);
         let split = match self.cache {
             Some(_) => Err(propose::not_a_stream()),
-            None => propose::split(batch),
+            None => propose::split(batch).map(|(proposal, mut waiting)| {
+                waiting.heard = heard;
+                (proposal, waiting)
+            }),
         };
         self.queue(split)
     }

@@ -2893,9 +2893,14 @@ whose release task does the same once the bound passes it, the way a held
 place in the hand-over order until it is fanned out, so the next batch
 cannot overtake it.
 
-A publish answered at its commit waits for the write and then the commit,
-not for the leader's own flush as well: the commit already puts the batch
-on a majority's disks.
+A publish answered at its commit waits for openraft's answer at the
+apply, not for the write or the leader's own flush first: the commit
+already puts the batch on a majority's disks, so either wait would only
+wake the publisher once more. The state machine answers a run of entries
+after it shows the run as applied, so the commit wait that follows is
+already met. If this broker stops leading before the answer comes, the
+publisher is told what the write says, as it would have been had it
+waited for the write.
 
 - A batch that times out keeps its place. The publisher is answered with
   the timeout, but delivery keeps waiting for the commit, so the batches

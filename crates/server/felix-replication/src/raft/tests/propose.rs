@@ -19,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::network::Router;
 use super::super::propose::{
-    DRAIN_BYTES, DRAIN_RECORDS, Leading, Lost, Span, Unacknowledged, Waiting, acknowledged, drain,
-    respond, split,
+    DRAIN_BYTES, DRAIN_RECORDS, Heard, Leading, Lost, Span, Unacknowledged, Waiting, acknowledged,
+    drain, respond, split,
 };
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -1135,6 +1135,10 @@ fn at(term: u64, index: u64) -> LogPoint {
 
 /// A batch of three records, expected at indexes 5 to 7 of term 3.
 fn waiting(ack: AckAt) -> Signals {
+    waiting_on(ack, Heard::Written)
+}
+
+fn waiting_on(ack: AckAt, heard: Heard) -> Signals {
     let token = || {
         let (resolve, written) = oneshot::channel::<LogPoint>();
         let written: Token = Box::pin(async move { written.await.ok() });
@@ -1149,6 +1153,7 @@ fn waiting(ack: AckAt) -> Signals {
     let stop = CancellationToken::new();
     let waiting = Waiting {
         ack,
+        heard,
         records: 3,
         first: Some(first_at),
         last: last_at,
@@ -1239,6 +1244,37 @@ async fn a_committed_batch_is_acknowledged_whatever_its_log_says() {
         let _ = signals.answer.take().expect("once").send(Ok(applied));
         assert_eq!(signals.now(), Some(Ok(LANDED)), "{ack:?}");
     }
+}
+
+/// A publisher that waits for the commit anyway is woken by openraft's
+/// answer, not by the write before it.
+#[tokio::test]
+async fn a_publisher_heard_at_the_apply_is_not_woken_by_the_write() {
+    let mut signals = waiting_on(AckAt::Written, Heard::Applied);
+    signals.written(at(TERM, 5), at(TERM, 7));
+    assert_eq!(signals.now(), None);
+    let applied = Span {
+        first: at(TERM, 5),
+        last: at(TERM, 7),
+    };
+    let _ = signals.answer.take().expect("once").send(Ok(applied));
+    assert_eq!(signals.now(), Some(Ok(LANDED)));
+}
+
+/// Without an answer, a member that stops leading says what the write
+/// says, as a publisher woken by the write is told: written, so the
+/// commit wait goes on, or not known to be written.
+#[tokio::test]
+async fn a_publisher_heard_at_the_apply_falls_back_to_the_write() {
+    let mut written = waiting_on(AckAt::Written, Heard::Applied);
+    written.written(at(TERM, 5), at(TERM, 7));
+    written.leading.send_replace((false, TERM));
+    assert_eq!(written.now(), Some(Ok(LANDED)));
+
+    let mut unwritten = waiting_on(AckAt::Written, Heard::Applied);
+    unwritten.leading.send_replace((false, TERM));
+    let told = unwritten.reached().expect("answered").expect_err("not led");
+    assert_eq!(told.written_end, None);
 }
 
 /// openraft's refusal ends the wait while the token is still out, and

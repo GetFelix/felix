@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 
 use super::super::deliver::{Proposed, settled};
 use super::super::lease;
-use super::super::propose::Unacknowledged;
+use super::super::propose::{Heard, Unacknowledged};
 use super::commit::{Led, led, lost};
 use super::propose::cut_after_first;
 use super::*;
@@ -526,7 +526,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             producer: None,
             publisher: None,
         };
-        let written = engine.propose_reaching(&shard(0), batch);
+        let written = engine.propose_reaching(&shard(0), batch, Heard::Written);
         let written = async move {
             let written = written.await;
             let _ = landing.send(());
