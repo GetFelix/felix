@@ -45,9 +45,11 @@ prepare, locks and abort on top.
   reader sees both.
 - **Snapshot reads across shards.** A read of two shards is two reads at two
   moments. Consistent cuts are issue #1388.
-- **Read-your-writes right after the answer.** The client is answered at the
-  decision, before any part applies, including home's own. A `state_get` on
-  any participant may not reflect the commit yet. See the open questions.
+- **Read-your-writes on every shard right after the answer.** The client is
+  answered at the decision, before any participant applies. A `state_get` on
+  a participant may not reflect the commit yet. The client can ask for the
+  answer to wait for home's own part, which is appended right behind the
+  decision and usually commits in the same round.
 - **Kafka transactions.** The Kafka listener still refuses transactional
   producers ([Transactions are refused](kafka-compatibility.md#transactions-are-refused)).
   Kafka's protocol puts uncommitted records in the log and asks readers to
@@ -79,13 +81,14 @@ could take back would break the guarantees above.
 
 **Prepare.** Home's leader checks authorization for every operation (see
 [Authorization](#authorization-and-trust-between-brokers)) and sends each
-participant a prepare: the commit id, the keys its part writes or reads, the
-preconditions on them, a digest of its operations, and the home term and
-prepare sequence described under [Exactly-once apply](#exactly-once-apply).
-The participant's leader appends a lock record. Whether the lock is granted is
-decided at the record's place in the log: granted if no other commit holds a
-conflicting lock on any of the keys and every precondition holds against the
-state the log has at that point. Every member applies the same record and so
+participant a prepare: the commit id, the client's token, the keys its part
+writes or reads, the preconditions on them, a digest of its operations, and
+the home term and number described under [Exactly-once apply](#exactly-once-apply).
+The participant checks the token for its own part, then its leader appends a
+lock record. Whether the lock is granted is decided at the record's place in
+the log: granted if no other commit holds a conflicting lock on any of the
+keys and every precondition holds against the state the log has at that
+point. Every member applies the same record and so
 reaches the same answer. The participant answers granted or refused once the
 record is committed.
 
@@ -104,7 +107,9 @@ record is the commit point and the client's answer.
 until the participant confirms, the way the outbox forwards a record. A
 participant that holds the commit's lock appends its part as one commit
 record that also carries the commit id and releases the lock. Its readers
-see an ordinary commit: an event at an offset, with its state updates. Home
+see an ordinary commit: an event at an offset, with its state updates. A part
+may have no event: one that only writes state, or only reads, is a commit
+record that stream readers skip, and it still versions the state it writes. Home
 applies its own part the same way, appended right behind the decision so the
 two usually commit in one round. On an abort, home sends a release instead,
 and the participant appends a release record. A part that only read keys
@@ -145,10 +150,12 @@ Nothing waits for a lock. A lock that cannot be granted is refused at once,
 and the prepare answers refused, which makes home abort. A single-shard
 `commit` or `commit_if` that writes a held key, or that has a precondition on
 an exclusively held key, is refused with a retryable `key_locked` error, and
-nothing is written. That check is made where conditional writes are decided
-on the leader, before the commit takes an offset, so a refused commit costs
-no offset and does not hold up later publishes behind it. Because nothing
-ever waits on a lock, no cycle of waits can form and there is no deadlock to
+nothing is written. The refusal is decided at the commit's place in the log,
+as a refused `commit_if` is on a Raft shard, so it takes an offset readers
+pass over. Checking earlier, against the locks already committed when the
+leader takes the write, would miss a lock record committing just ahead of it;
+the TLA+ model's `WriteCheckEarly` twin finds that. Because nothing ever
+waits on a lock, no cycle of waits can form and there is no deadlock to
 detect. The cost is retries under contention, which the client backs off.
 
 What a lock does not touch:
@@ -178,6 +185,9 @@ that home sent for a decision in its log.
 
 Home answers an ask from its log. With a decision, it sends the apply or the
 release. With none, it appends an abort decision and then sends the release.
+A commit at or below home's low-water mark (below) with no decision left in
+the log was aborted and trimmed, so home sends the release and appends
+nothing.
 
 **First record wins.** The abort home appends for an ask can race a commit
 decision that home's leader proposed a moment earlier and that has not
@@ -207,21 +217,23 @@ conditional write, because the version has moved. A blind put has no
 precondition, and it would be written twice.
 
 No timeout bounds how late a message arrives, so the table's lifetime cannot
-be set against the lock timeout. Instead, every message home sends carries its
-term and a prepare sequence home's leader numbers within that term, and a
-participant refuses a prepare when:
+be set against the lock timeout. Instead, home's leader numbers each commit
+it starts within its term, and every prepare and apply carries home's Raft
+term and that number. Home also sends its low-water mark: the highest number
+at or below which every commit of the term is aborted or done. A participant
+refuses a prepare when:
 
 - its home term is older than one the participant has already recorded from
   that home shard, or
-- its sequence is at or below the low-water mark the participant recorded for
-  that term. Home sends that mark with its messages: the highest sequence
-  below which every commit of the term is decided and, for commits, done.
+- its number is at or below the mark the participant recorded for that term.
 
-The participant writes the mark into its log as a fence record before it
-drops any id the mark covers, so a new participant leader enforces it too.
-Its table then holds only the ids above the mark, which home bounds by the
-commits it has in flight. The TLA+ model's `NoStaleFence` twin drops ids with
-no fence and finds the double apply.
+So a participant refuses anything at or below what it already retired. It
+writes the mark into its log as a fence record before it drops any id the
+mark covers, so a new participant leader enforces it too. Its table then
+holds only the ids above the mark, which home bounds by the commits it has in
+flight. A commit a deposed leader started and never decided is covered by
+the term rule, and its locks end through asks. The TLA+ model's `NoFence`
+twin drops ids with no fence and finds the double apply.
 
 **Retries at home.** Home keeps each decision in its own table until it is
 done and the client retry window has passed, so a client that retries a commit
@@ -241,8 +253,7 @@ gets an unknown outcome and retries; the new leader starts the commit.
 **Home leader changes after some prepares.** Participants hold locks that the
 new leader knows nothing about, since home writes nothing before the decision.
 If the client retries the same id, the new leader prepares again; a
-participant that holds the lock answers with its original grant, and records
-the newer term, which fences the old leader's late prepares. If nobody
+participant that holds the lock answers with its original grant. If nobody
 retries, each lock passes its timeout and asks, and home appends an abort.
 Either way exactly one decision is reached, by first record wins.
 
@@ -294,10 +305,11 @@ may still commit. If it loses an apply record, the part is gone after home
 has written done. If home's group loses a commit decision, a participant that
 asks gets an abort while others have applied. None of these can be made safe
 inside the protocol, because the record that would make them safe is the one
-that was lost. The design states this as a limit: atomicity across shards
-holds as long as no group in the commit is re-formed with loss. `felixctl raft
-reform plan` should list the cross-shard commits in doubt on every group it
-would re-form, so the operator sees them. See the open questions.
+that was lost. This is a stated limit: atomicity across shards holds as long
+as no group in the commit is re-formed with loss. `felixctl raft reform plan`
+lists the cross-shard commits in doubt on every group it would re-form (open
+decisions on a home, held locks on a participant), so the operator sees what
+a re-form puts at risk before running it.
 
 **Participant stream deleted mid-commit.** Before the decision, the prepare
 finds no shard, or its lock goes with the stream, and home aborts. After a
@@ -307,11 +319,13 @@ applied. That is safe: a deleted stream has no readers and no records, so
 the stream before the deletion and missed the part saw it as lagging, which
 the guarantees allow.
 
-**Home stream deleted mid-commit.** This one is not safe as it stands. A
-participant holding a lock asks a home that no longer exists, and if some
-participants had applied a commit decision, releasing the others breaks
-atomicity. The design needs deletion of a home stream to wait until its
-undone decisions are done. See the open questions.
+**Home stream deleted mid-commit.** Deleting a stream that is home to open
+commits waits, up to a bound, for every commit decision on it to be done and
+its locks released. After the bound the delete is refused with an error that
+names the open commits, and the operator retries once they finish. There is
+no forced delete: a participant holding a lock would ask a home that no
+longer exists, and if others had applied, releasing it would break
+atomicity.
 
 **Retention.** See the next section.
 
@@ -396,12 +410,17 @@ cross-shard commit keeps that rule:
 - Prepare, apply, release and the low-water mark are accepted only from a
   broker that the participant's routes name as a replica of the home shard,
   and an ask is answered only for a participant the decision names.
+- The peer credential alone never authorizes a tenant write
+  ([abuse case 1](threat-model-internal.md#abuse-cases)). A prepare with no
+  token, or one that does not check, appends nothing, and an apply with no
+  matching lock writes nothing, so a forged apply matches nothing.
 
 What a compromised broker that hosts the home shard can still do is limited
-to commits a real client authorized: it can abort them, or delay their
-applies. It cannot write a part no client authorized, and it cannot change a
-part's operations. The security review this design needs is of exactly that
-boundary.
+to what the tokens it is handed authorize, as with a forwarded publish today:
+it can abort commits, delay their applies, or, while it holds a valid token,
+write what that token's principal may write. Without a token it cannot get a
+lock, and without a lock no apply writes. The security review this design
+needs is of exactly that boundary.
 
 ## On the wire
 
@@ -427,7 +446,7 @@ entry has tag 8:
 
 | Record | Shard | Body | Readers |
 | --- | --- | --- | --- |
-| lock | participant | commit id, home shard and incarnation, home term and sequence, keys and mode, preconditions, digest, principal, granted or refused | skipped |
+| lock | participant | commit id, home shard and incarnation, home term and number, keys and mode, preconditions, digest, principal, granted or refused | skipped |
 | release | participant | commit id | skipped |
 | fence | participant | home shard, term, low-water mark | skipped |
 | decision | home | commit id, commit or abort, every part's operations, home's preconditions and keys | skipped |
@@ -440,7 +459,8 @@ A skipped record takes an offset that readers pass over, as a refused
 The segment format has four record kind bits, and twelve of their sixteen
 codes are taken, so four are left, too few for six new kinds.
 The design spends one: a txn kind whose body starts with a one-byte subtag
-for the six records above, the way a trim record carries its tag. It lives
+for the six records above, the way a trim record carries its tag. That keeps
+three codes free for later features. It lives
 only in a segment at the newest layout. A build that predates the kind
 refuses it as an unknown kind rather than misreading it, and a member built
 before the new entry tags refuses the append by its tag, so nothing writes
@@ -473,67 +493,57 @@ waits for them.
 
 A decision record holds every part, so the whole commit must fit in one
 record and one Raft entry, and the request in one client frame (4 MiB by
-default). Proposed limits, enforced by the client before sending and by home
+default). The limits, enforced by the client before sending and by home
 before preparing: at most 16 participants, the request within one frame, and
-a bound on the keys one part may lock. A larger commit is refused, never
-split.
+at most 1,024 keys locked by one part. A larger commit is refused, never
+split. The lock timeout is 10 s, well above a prepare round plus a decision
+commit. The key bound and the timeout are broker settings; the participant
+count is not.
 
 ## How it is checked
 
-[`docs/formal/FelixCrossShardCommit.tla`](formal/FelixCrossShardCommit.tla) is
-an outline of the model. It has home and participant leader changes, message
-loss, duplication and reordering, lock timeouts, single-shard writers and
-retention, and states `Atomicity`, `NoDoubleApply` and `PreconditionsHeld`,
-with `EventuallyApplied` under fairness. It is not model-checked yet and no
-configuration runs it. Each rule has a twin that drops it and should fail:
+[`docs/formal/FelixCrossShardCommit.tla`](formal/FelixCrossShardCommit.tla)
+models the protocol: a home group and two participant groups, each with a
+leader change that keeps any prefix of its proposals; messages lost,
+duplicated and delayed; lock asks at any time; ids forgotten under the fence;
+home retention; a single-shard writer; and a forger on the internal port with
+no client token. It states `Atomicity`, `NoDoubleApply`, `PreconditionsHeld`
+and `NoForgedApply`, and `EventuallyRetired` under fairness: every commit is
+done, or aborted with no lock left. The model gives each commit one number
+across terms; the term rule covers what that leaves out. The configurations
+run as random walks in `.github/workflows/tla-walk.yml`, which is sampling,
+not proof. Each rule has a twin that drops it and must fail:
 
-| Twin | Drops | Should violate |
+| Twin | Drops | Violates |
 | --- | --- | --- |
-| `NoDedup` | apply only under the lock | `NoDoubleApply` |
 | `NoFirstWins` | first record wins | `Atomicity` |
 | `ReleaseOnTimeout` | a lock never ends on a timer | `Atomicity` |
-| `NoStaleFence` | the term and low-water fence | `NoDoubleApply`, with a blind put |
 | `TrimUndone` | retention keeps undone decisions | `Atomicity` |
-| `WritesIgnoreLocks` | single-shard writes respect locks | `PreconditionsHeld` |
+| `NoFence` | the term and low-water fence | `NoDoubleApply`, with a blind put |
+| `WriteCheckEarly` | `key_locked` decided at the write's place | `PreconditionsHeld` |
+| `ApplyWithoutLock` | apply only under a held lock | `NoForgedApply` |
+| `NoTokenCheck` | the participant checks the token | `NoForgedApply` |
 
 The implementation adds a simulator nemesis that kills and partitions home and
 participant leaders at each step, and a history checker rule that every
 committed cross-shard commit is eventually read on every participant and no
 aborted one on any.
 
-## Open questions for the maintainer
+## Decisions
 
-1. **Re-form with loss.** Atomicity cannot survive a re-form that loses a
-   lock, apply or decision record. Recommendation: state it as a limit, make
-   `felixctl raft reform plan` list in-doubt commits on every group it would
-   re-form, and have `apply` refuse a group with in-doubt commits unless the
-   operator names them.
-2. **Deleting a home stream.** Recommendation: deletion waits, with a bound,
-   until the stream's undone commit decisions are done, and is refused with an
-   error naming them after the bound. A forced delete would release the
-   participants and break atomicity, so it should not exist.
-3. **Refuse or wait on a held key.** Recommendation: refuse, as above. A wait
-   queue gives fairer progress under contention but brings deadlock detection
-   and holds requests on the leader; it can be added later behind the same
-   error.
-4. **The participant re-checks the client's token.** The issue has all
-   participants checked at home and trust from the peer credential.
-   Recommendation: check at home and again at each participant's prepare, with
-   the token in the prepare, because peer identity alone has never authorized
-   a tenant write in Felix. The cost is one token check per participant.
-5. **Read-your-writes on the answer.** The client is answered at the decision.
-   Recommendation: keep that, and let the answer optionally wait for home's
-   own part to apply, since it is appended right behind the decision and
-   usually commits in the same round. Waiting for every participant should be
-   a separate call.
-6. **Parts with no event.** A single-shard commit has exactly one event. A part
-   that only writes state, or only reads, would need an event today.
-   Recommendation: let a part have zero events; its commit record is then
-   skipped by stream readers like a blank, and still versions the state it
-   writes.
-7. **Limits and timeouts.** Recommendation: 16 participants, the request within
-   one client frame, 1,024 keys per part, a lock timeout of 10 s, and a home
-   retry window equal to the one idempotent commits choose. All but the
-   participant count as broker settings.
-8. **Kind bits.** Recommendation: the one txn kind with a subtag, keeping three
-   codes free for later features.
+- **Re-form with loss is a stated limit.** No protocol survives losing the
+  record that decides. `felixctl raft reform plan` lists the in-doubt
+  cross-shard commits on each group it would re-form.
+- **Deleting a home stream waits**, up to a bound, for its open decisions to
+  be done. A forced delete would break atomicity, so there is none.
+- **A write to a locked key is refused** with `key_locked`. No queue, so no
+  deadlock detection and no requests held on the leader.
+- **Every participant re-checks the client token at prepare**, and an apply
+  writes only against a lock it granted to an authorized prepare. Peer
+  identity has never authorized a tenant write in Felix.
+- **The answer comes at the decision**, and can optionally wait for home's own
+  part.
+- **Parts with no event are allowed.**
+- **Limits**: 16 participants, one client frame, 1,024 keys per part, a 10 s
+  lock timeout.
+- **One new storage record kind** with a subtag.
