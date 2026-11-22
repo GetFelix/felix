@@ -1173,6 +1173,17 @@ The publish path on a Raft shard:
    checked by `admit_local_ack`, and a `Quorum` write waits on
    `await_commit`.
 
+**Who hands the batch to openraft.** Each shard has one publish queue, and
+calls reach openraft in queue order. Usually the publish task drains it. A
+stream shard's publisher that finds the queue idle and the leader lease
+fresh drains it itself, on its own thread, and so saves the task's wake.
+It makes at most one call, never waits, and never blocks on the queue's
+lock. If openraft's bounded API channel cannot take the call at once, the
+call is handed to the publish task to finish rather than dropped (dropping
+it would drop every batch in it), and no later call is made until it has
+been sent. A stale lease, a busy task, or a cache shard, whose writes are
+stamped by the task, goes through the task as before.
+
 **Two signals from one append.** Decided (issue #2167): Raft's own flush
 is always a real fsync, and the publisher's acknowledgement follows the
 stream's fsync policy. The adapter's `append` gives two signals for the
@@ -2257,8 +2268,9 @@ one wake-up of the thread runs every ready task of every group on it.
   driver and the group's other tasks, and `follow_commits`.
 - Elsewhere: publishers, subscribers, the peer transport and the ticker
   stay on the broker runtime, and log IO on the log's own thread. A write
-  still crosses threads where it enters a group (publisher to publish task,
-  peer to core) and where it leaves (answers, fanout, network sends).
+  still crosses threads where it enters a group (publisher to publish task
+  or, when the publisher drains the queue itself, to openraft's core; peer
+  to core) and where it leaves (answers, fanout, network sends).
 - A group thread never waits on disk. Log work goes to the log thread or a
   blocking task and is awaited. A caller of the log thread on a group
   thread does not poll for its answer, since other groups' tasks are

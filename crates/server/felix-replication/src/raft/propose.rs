@@ -927,6 +927,14 @@ fn refuse_mixed(
 /// batch is answered by its [`Respond`]ers, on the task that applies it, so
 /// a drain wakes this task once.
 pub(crate) async fn run(drainer: Arc<Drainer>, mut stamper: Option<Stamper>) {
+    // Closed however the task ends, also when its runtime drops it.
+    struct Closing<'a>(&'a Drainer);
+    impl Drop for Closing<'_> {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _closing = Closing(&drainer);
     loop {
         let notified = drainer.wake.notified();
         let ran = match drainer.next() {
@@ -959,7 +967,6 @@ pub(crate) async fn run(drainer: Arc<Drainer>, mut stamper: Option<Stamper>) {
             }
         };
         if ran.is_none() {
-            drainer.close();
             return;
         }
     }
