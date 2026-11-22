@@ -105,6 +105,7 @@ jobs:
           SECONDS_PER_TRIAL: ${{ inputs.seconds || '15' }}
           ROUNDS: ${{ inputs.rounds || '2' }}
           FANOUT_RECORDS: ${{ inputs.fanout_total || '50000' }}
+          FELIX_SHARD_RAFT_GROUP_THREADS: '2'
         run: |
           set -euo pipefail
           results=/tmp/felix-raft-rf3/results.jsonl
