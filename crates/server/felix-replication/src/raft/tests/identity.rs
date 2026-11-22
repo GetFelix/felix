@@ -51,7 +51,7 @@ impl Roots {
 /// How long a publish answered on a written majority may take.
 const ANSWERED: Duration = Duration::from_secs(10);
 
-/// Set in the process that poisons a log for [`flush_failed_copy`].
+/// Set in the process that poisons a log, see [`ran_in_poisoning_process`].
 const POISONING_PROCESS: &str = "FELIX_TEST_POISONING_PROCESS";
 
 /// A copy id is minted where the copy is, so the broker that forms a group
@@ -516,8 +516,17 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
 /// report. The leader still counts its answers to appends, which on this
 /// fsync-on-commit log come after the fsync, so it is never counted past
 /// what it has synced.
+///
+/// It poisons a log, so the body runs in a process of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
+    if ran_in_poisoning_process(
+        "raft::tests::identity::a_written_report_leaves_only_after_the_roots_marker_is_synced",
+    )
+    .await
+    {
+        return;
+    }
     let mut cluster = Cluster::new(true);
     let roots = Roots::new();
     let mut members = BTreeSet::new();
@@ -1127,27 +1136,38 @@ fn segment_lengths(dir: &Path) -> Vec<(std::path::PathBuf, u64)> {
         .collect()
 }
 
+/// Run the test `name` again in a child process and check it passed, unless
+/// this is that child. True when the caller should return: a poisoned log is
+/// counted for the whole process and never forgotten, and the replica tests
+/// in this binary attest no trusted copy once one is.
+async fn ran_in_poisoning_process(name: &str) -> bool {
+    if std::env::var_os(POISONING_PROCESS).is_some() {
+        return false;
+    }
+    let name = name.to_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(std::env::current_exe().expect("this binary"))
+            .args(["--exact", &name, "--nocapture"])
+            .env(POISONING_PROCESS, "1")
+            .output()
+            .expect("child")
+    })
+    .await
+    .expect("join");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // "1 passed": a filter that matched nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 /// The body of the two tests above. `marker_fails` fails the poison marker
 /// write and cuts F1's log back to its last sync before the reopen.
 async fn flush_failed_copy(name: &str, marker_fails: bool) {
-    if std::env::var_os(POISONING_PROCESS).is_none() {
-        let name = name.to_owned();
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(std::env::current_exe().expect("this binary"))
-                .args(["--exact", &name, "--nocapture"])
-                .env(POISONING_PROCESS, "1")
-                .output()
-                .expect("child")
-        })
-        .await
-        .expect("join");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // "1 passed": a filter that matched nothing also exits 0.
-        assert!(
-            output.status.success() && stdout.contains("1 passed"),
-            "{stdout}\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    if ran_in_poisoning_process(name).await {
         return;
     }
     let mut cluster = Cluster::new(true);
