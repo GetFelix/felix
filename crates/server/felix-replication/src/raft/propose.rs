@@ -24,12 +24,15 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::cache::{self, CacheCommand};
+use super::codec::ShardCodec;
 use super::group::Pace;
 use super::lead::Leadership;
-use super::machine::{Cache, Machine};
+use super::machine::{Bypass, Cache, Machine};
 use super::types::{Command, CondPlace, ProducerMark, ShardTypes};
 use super::wire;
 use crate::engine::{CommitError, Written};
+use felix_storage::raft_log::RaftLog;
+use openraft::entry::RaftEntry as _;
 
 /// One record of a batch to write.
 #[derive(Debug, Clone)]
@@ -663,10 +666,13 @@ pub(crate) async fn run(
     mut queue: mpsc::UnboundedReceiver<Proposal>,
     stop: CancellationToken,
     calls: Arc<AtomicU64>,
+    mut local: Option<(Bypass, RaftLog<ShardTypes, ShardCodec>)>,
     lease: Lease,
     mut stamper: Option<Stamper>,
 ) {
     let mut held = None;
+    // MEASUREMENT ONLY: the RF 1 local path's term and next index.
+    let mut tail: Option<(u64, u64)> = None;
     loop {
         let first = match held.take() {
             Some(first) => first,
@@ -686,6 +692,48 @@ pub(crate) async fn run(
             answers,
         } = drain(first, &mut queue, &mut held);
         felix_storage::hops::mark(felix_storage::hops::Stage::Dequeued);
+        if LOCAL_PATH.load(Ordering::Relaxed)
+            && stamper.is_none()
+            && let Some((bypass, log)) = local.as_mut()
+        {
+            if tail.is_none() {
+                tail = Some(settled_tail(&raft).await);
+            }
+            let (term, mut index) = tail.expect("set above");
+            let mut points = Vec::with_capacity(commands.len());
+            let mut entries = Vec::with_capacity(commands.len());
+            for command in commands {
+                let id = openraft::LogId::new(term.into(), index);
+                entries.push(
+                    <openraft::type_config::alias::EntryOf<ShardTypes>>::new_normal(id, command),
+                );
+                points.push(LogPoint { term, index });
+                index += 1;
+            }
+            tail = Some((term, index));
+            let (flushed, on_flush) = {
+                use openraft::type_config::TypeConfigExt as _;
+                ShardTypes::oneshot()
+            };
+            let appended = openraft::storage::RaftLogStorage::append(
+                log,
+                entries,
+                openraft::storage::IOFlushed::signal(flushed),
+            );
+            appended.await.expect("local append");
+            on_flush.await.expect("flush").expect("flushed");
+            bypass.apply(&points);
+            let mut at = 0;
+            for (records, to) in answers {
+                let span = Span {
+                    first: points[at],
+                    last: points[at + records - 1],
+                };
+                at += records;
+                let _ = to.send(Ok(span));
+            }
+            continue;
+        }
         // Every entry of a cache shard is a stamped command, and a stream's
         // are raw records. A mix would stamp the wrong entries and append
         // ones no member can apply. A cache write names no term: it is
@@ -740,6 +788,31 @@ pub(crate) async fn run(
             // answer every batch as stopped.
             tracing::warn!(error = %fatal, "a stopped Raft group took no write");
         }
+    }
+}
+
+/// MEASUREMENT ONLY: route a sole voter's stream writes past openraft.
+pub(crate) static LOCAL_PATH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Wait until openraft has applied everything it wrote and return the
+/// leader's term and the next index.
+async fn settled_tail(raft: &Raft<ShardTypes, Machine>) -> (u64, u64) {
+    use openraft::async_runtime::watch::WatchReceiver;
+    let mut metrics = raft.metrics();
+    loop {
+        let (term, last, applied) = {
+            let m = metrics.borrow_watched();
+            (
+                m.current_term,
+                m.last_log_index,
+                m.last_applied.map(|id| id.index),
+            )
+        };
+        if last.is_some() && last == applied {
+            return (term, last.expect("some") + 1);
+        }
+        let _ = metrics.changed().await;
     }
 }
 

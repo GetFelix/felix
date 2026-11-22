@@ -1865,3 +1865,174 @@ async fn a_publish_answered_at_its_commit_does_not_wait_for_the_flush_too() {
     assert!(receiver.try_recv().is_err(), "delivered twice");
     cluster.stop().await;
 }
+
+// MEASUREMENT ONLY (RF 1 local-path ceiling, never merged). CPU, polls and
+// parks per message and publish latency, openraft path vs the local path.
+fn cpu_now() -> Duration {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+    let tv = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
+    tv(usage.ru_utime) + tv(usage.ru_stime)
+}
+
+#[cfg(tokio_unstable)]
+fn wake_counts(handles: &[tokio::runtime::Handle]) -> (u64, u64) {
+    let (mut polls, mut parks) = (0, 0);
+    for handle in handles {
+        let metrics = handle.metrics();
+        for w in 0..metrics.num_workers() {
+            polls += metrics.worker_poll_count(w);
+            parks += metrics.worker_park_count(w);
+        }
+    }
+    (polls, parks)
+}
+
+#[cfg(not(tokio_unstable))]
+fn wake_counts(_: &[tokio::runtime::Handle]) -> (u64, u64) {
+    (0, 0)
+}
+
+fn wake_handles(cluster: &Cluster) -> Vec<tokio::runtime::Handle> {
+    let mut handles = vec![tokio::runtime::Handle::current()];
+    for broker in BROKERS {
+        if let Some(group) = cluster
+            .net
+            .brokers
+            .lock()
+            .get(broker)
+            .and_then(|rt| rt.group(&shard(0)))
+        {
+            let handle = group.runtime().clone();
+            if !handles.iter().any(|h| h.id() == handle.id()) {
+                handles.push(handle);
+            }
+        }
+    }
+    handles
+}
+
+async fn measure_ceiling(name: &str, cluster: &Cluster, engine: &RaftEngine, n: usize) {
+    let (ack, answer) = (AckAt::Flushed, AnswerAt::Commit);
+    let (broker, handle) = broker_on(engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    for _ in 0..50 {
+        let p = publish_acked(
+            engine,
+            &broker,
+            &handle,
+            Bytes::from_static(b"w"),
+            ack,
+            answer,
+            PATIENCE,
+        );
+        p.await.expect("joined").expect("committed");
+        next(&mut receiver).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let handles = wake_handles(cluster);
+    let mut acked = Vec::with_capacity(n);
+    let mut delivered = Vec::with_capacity(n);
+    let (p0, k0) = wake_counts(&handles);
+    let c0 = cpu_now();
+    let w0 = std::time::Instant::now();
+    for _ in 0..n {
+        let began = std::time::Instant::now();
+        let p = publish_acked(
+            engine,
+            &broker,
+            &handle,
+            Bytes::from_static(b"w"),
+            ack,
+            answer,
+            PATIENCE,
+        );
+        p.await.expect("joined").expect("committed");
+        acked.push(began.elapsed());
+        next(&mut receiver).await;
+        delivered.push(began.elapsed());
+    }
+    let wall = w0.elapsed();
+    let cpu = cpu_now() - c0;
+    let (p1, k1) = wake_counts(&handles);
+    acked.sort();
+    delivered.sort();
+    let q = |v: &[Duration], f: f64| {
+        v[((v.len() as f64 * f) as usize).min(v.len() - 1)].as_secs_f64() * 1e6
+    };
+    let per = |x: u64| x as f64 / n as f64;
+    eprintln!(
+        "CEIL {name} ({} rt): cpu us/msg {:.1} wall us/msg {:.1} polls/msg {:.2} parks/msg {:.2} ack p50 {:.0} p99 {:.0} deliver p50 {:.0} p99 {:.0}",
+        handles.len(),
+        cpu.as_secs_f64() * 1e6 / n as f64,
+        wall.as_secs_f64() * 1e6 / n as f64,
+        per(p1 - p0),
+        per(k1 - k0),
+        q(&acked, 0.5),
+        q(&acked, 0.99),
+        q(&delivered, 0.5),
+        q(&delivered, 0.99),
+    );
+}
+
+async fn sole_voter_relaxed(cluster: &mut Cluster, relaxed: bool) -> RaftEngine {
+    if relaxed {
+        cluster.open_relaxed(0, &["a"]).await;
+    } else {
+        cluster.open(0).await;
+    }
+    let only = BTreeSet::from([MemberId::new("a", 1)]);
+    let runtime = cluster.runtime("a");
+    runtime
+        .initialize(&shard(0), only)
+        .await
+        .expect("initialize");
+    let engine = RaftEngine::new(runtime.clone());
+    eventually(|| {
+        let status = runtime.status(&shard(0))?;
+        let ready =
+            status.role == Role::Leader && engine.read_bound(&shard(0)).is_ok_and(|b| b > 0);
+        ready.then_some(())
+    })
+    .await;
+    engine
+}
+
+#[test]
+#[ignore = "measurement only"]
+fn measure_rf1_local_ceiling() {
+    let n: usize = std::env::var("CEIL_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        for round in 0..2 {
+            for relaxed in [false, true] {
+                for local in [false, true] {
+                    super::super::propose::LOCAL_PATH
+                        .store(local, std::sync::atomic::Ordering::Relaxed);
+                    let mut cluster = Cluster::new(true);
+                    let engine = sole_voter_relaxed(&mut cluster, relaxed).await;
+                    let name = format!(
+                        "r{round} {} {}",
+                        if relaxed {
+                            "written-commit"
+                        } else {
+                            "on_commit"
+                        },
+                        if local { "LOCAL" } else { "openraft" }
+                    );
+                    measure_ceiling(&name, &cluster, &engine, n).await;
+                    cluster.stop().await;
+                    super::super::propose::LOCAL_PATH
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    });
+}

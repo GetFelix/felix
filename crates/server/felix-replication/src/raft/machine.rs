@@ -80,7 +80,7 @@ pub(crate) struct Machine {
     /// per run of applied entries.
     published: watch::Sender<Commits>,
     /// Woken by the applied index, beside `published`.
-    applied: Queue<u64>,
+    applied: Arc<Queue<u64>>,
     /// What each record of a run has below it that holds no record.
     skips: Skips,
     /// The run of applied entries holding no record that ends at the last
@@ -142,9 +142,17 @@ impl Machine {
             open_batch(log.filter(|_| matches!(kind, ShardKind::Stream)), applied).await?,
         );
         let (published, watched) = watch::channel(commits.clone());
-        let applied = Queue::new();
+        let applied = Arc::new(Queue::new());
         let waiters = applied.waiters();
         let skips = Skips::default();
+        // MEASUREMENT ONLY (RF 1 local-path ceiling).
+        let bypass = Bypass {
+            published: published.clone(),
+            applied: Arc::clone(&applied),
+            skips: skips.clone(),
+            commits: None,
+            quiet: 0..0,
+        };
         let machine = Self {
             snapshots,
             state,
@@ -168,6 +176,7 @@ impl Machine {
         };
         Ok(Opened {
             machine,
+            bypass,
             commits: watched,
             applied: waiters,
             skips,
@@ -191,6 +200,47 @@ impl Machine {
     fn wake(&self) {
         self.applied
             .advance(self.commits.applied().map(|applied| applied.index));
+    }
+}
+
+/// MEASUREMENT ONLY. The commit-side half of `apply` for entries the RF 1
+/// local path wrote without openraft. It owns its own copy of the commits,
+/// taken from the published ones at its first use, so openraft's state
+/// machine must apply nothing once the local path has started.
+pub(crate) struct Bypass {
+    published: watch::Sender<Commits>,
+    applied: Arc<Queue<u64>>,
+    skips: Skips,
+    commits: Option<Commits>,
+    quiet: std::ops::Range<u64>,
+}
+
+impl Bypass {
+    /// Apply a run of plain records at `points`, then publish and wake once.
+    pub(crate) fn apply(&mut self, points: &[LogPoint]) {
+        let published = &self.published;
+        let commits = self
+            .commits
+            .get_or_insert_with(|| published.borrow().clone());
+        let bound = commits.read_bound();
+        let mut skipped = Vec::new();
+        for point in points {
+            commits.apply(*point, Holds::Record, &mut self.quiet, &mut skipped);
+        }
+        let commits = &*commits;
+        let publish = || {
+            published.send_if_modified(|now| {
+                let moved = now != commits;
+                if moved {
+                    now.clone_from(commits);
+                }
+                moved
+            })
+        };
+        if self.skips.applied(bound, &skipped, publish) {
+            self.applied
+                .advance(commits.applied().map(|applied| applied.index));
+        }
     }
 }
 
@@ -257,6 +307,7 @@ async fn open_batch(
 /// A state machine as [`Machine::open`] opened it, and what the member's
 /// other paths share with it.
 pub(crate) struct Opened {
+    pub(crate) bypass: Bypass,
     pub(crate) machine: Machine,
     pub(crate) commits: watch::Receiver<Commits>,
     pub(crate) applied: Waiters<u64>,

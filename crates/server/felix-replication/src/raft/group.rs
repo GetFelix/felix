@@ -171,6 +171,9 @@ pub(crate) struct Group {
     /// Calls made to openraft for publishes. One carries every batch that
     /// was queued when it was made.
     client_writes: Arc<AtomicU64>,
+    /// MEASUREMENT ONLY: what the RF 1 local path needs, taken by the
+    /// publish task when it starts.
+    bypass: parking_lot::Mutex<Option<(machine::Bypass, RaftLog<ShardTypes, ShardCodec>)>>,
     /// Cancelled when the member is told to stop. Ends the publish task and
     /// every publisher's wait.
     stop: CancellationToken,
@@ -785,6 +788,7 @@ impl Group {
             log.first_index_reader(),
         );
         let machine::Opened {
+            bypass,
             mut machine,
             commits,
             applied,
@@ -861,6 +865,7 @@ impl Group {
             commits.clone(),
             stop.clone(),
         ));
+        let local_log = log.clone();
         Ok(Self {
             id,
             member,
@@ -912,6 +917,7 @@ impl Group {
             stopped: AtomicBool::new(false),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
+            bypass: parking_lot::Mutex::new(Some((bypass, local_log))),
             stop,
             reads: Arc::default(),
             runtime,
@@ -2244,6 +2250,7 @@ impl Group {
                 queued,
                 self.stop.clone(),
                 Arc::clone(&self.client_writes),
+                self.bypass.lock().take(),
                 propose::Lease {
                     length: Duration::from_millis(timers.election_max),
                     again: Duration::from_millis(timers.heartbeat),
