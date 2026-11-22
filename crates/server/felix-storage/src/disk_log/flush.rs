@@ -19,10 +19,10 @@ impl LogInner {
     /// then the lock is released before the flush: an `fsync` must never be held
     /// across the lock that appends need.
     ///
-    /// The capture runs on the append thread, behind the appends already
-    /// queued there, so one flush covers every append in flight. Taken
-    /// straight away it would miss the ones still queued, and each of those
-    /// would wait for a flush of its own.
+    /// The capture runs behind the appends already queued on the append
+    /// thread, so one flush covers every append in flight. Taken straight
+    /// away it would miss the ones still queued, and each of those would wait
+    /// for a flush of its own. With none queued it is taken here.
     pub(super) async fn flush(self: Arc<Self>) -> Result<Offset> {
         // After a failed fsync the kernel may have dropped the dirty pages and
         // cleared the error, so the next fsync "succeeds" having written
@@ -32,7 +32,7 @@ impl LogInner {
         let capturer = Arc::clone(&self);
         let (handle, segment_id, synced_bytes, durable_upto, written) = self
             .appender
-            .run(move || {
+            .run_behind(move || {
                 let segments = capturer.segments.read();
                 let active = segments.active();
                 // The writer's own sync (a seal, a truncation) failed. Flushing
