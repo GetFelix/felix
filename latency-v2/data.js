@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795312651048,
+  "lastUpdate": 1795313364849,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82896,6 +82896,72 @@ window.BENCHMARK_DATA = {
             "range": "754.58",
             "unit": "us",
             "extra": "trials: 5\nmedian: 657.00\nmean: 1020.40\nstdev: 754.58\ncv: 73.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "204c3a978b7bb449dd74f53c7da473a6728cb635",
+          "message": "feat(raft): read-only re-form plans (felixctl raft reform plan) (#2250) (#2938)\n\n* wip(raft): read-only re-form plans on the control plane (#2250)\n\nSurvey registry, plan routes, broker survey/report routes and the\nstorage wire forms. Broker poller, felixctl and docs still owed.\n\nSpec-Unaffected: the planner's rule is unchanged; this only carries reports to it.\n\n* wip(raft): re-form plans live on the metadata Raft leader (#2250)\n\n* wip(raft): brokers answer re-form surveys (#2250)\n\n* wip(raft): keep the plan HTTP bodies with the routes, order the plan module (#2250)\n\n* feat(raft): brokers send the group epoch with a copy id (#2882)\n\n* feat(felixctl): raft reform plan (#2250)\n\n* docs(raft): running a re-form plan, and the plan routes (#2250)\n\n* test(raft): borrow the held copy as a slice (#2882)\n\n* docs: follow the moved append_pending_at line (#2250)\n\n* fix(raft): an older metadata leader refuses re-form requests with 409; review cleanups (#2250)\n\n* fix(raft): keep the dead-code allow on kept_logs only (#2250)",
+          "timestamp": "2026-11-21T18:03:05-08:00",
+          "tree_id": "54f8675f0f0cc0eb3141aa57ae046ad22dbafb41",
+          "url": "https://github.com/GetFelix/felix/commit/204c3a978b7bb449dd74f53c7da473a6728cb635"
+        },
+        "date": 1795313349266,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "6.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 106.00\nstdev: 6.52\ncv: 6.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 154,
+            "range": "10.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 155.20\nstdev: 10.99\ncv: 7.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 190,
+            "range": "711.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 507.80\nstdev: 711.30\ncv: 140.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 127,
+            "range": "4.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 129.20\nstdev: 4.97\ncv: 3.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 287,
+            "range": "520.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 287.00\nmean: 512.80\nstdev: 520.65\ncv: 101.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 564,
+            "range": "1065.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 564.00\nmean: 1067.60\nstdev: 1065.75\ncv: 99.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
