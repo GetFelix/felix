@@ -105,6 +105,8 @@ pub(crate) struct Group {
     /// What the records the state machine applied had below them that
     /// holds no record.
     skips: Skips,
+    /// The streams the state machine serves on each commit while led here.
+    followed: super::followed::Followed,
     /// The member's log, and its first index read live: a purge held only in
     /// memory counts.
     copy: felix_storage::raft_copy::CurrentCopy,
@@ -791,6 +793,7 @@ impl Group {
             skips,
             cache,
             groups,
+            followed,
         } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         let purge_at = machine.purging(log.reader());
         #[cfg(test)]
@@ -882,6 +885,7 @@ impl Group {
             commits,
             applied,
             skips,
+            followed,
             copy,
             leadership,
             reached_before: AtomicBool::new(false),
@@ -1811,6 +1815,11 @@ impl Group {
     /// The commit table as the state machine publishes it.
     pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
         self.commits.clone()
+    }
+
+    /// The streams the state machine serves on each commit while led here.
+    pub(crate) fn followed_streams(&self) -> &super::followed::Followed {
+        &self.followed
     }
 
     /// Hold the skip counts of the records about to be proposed. See

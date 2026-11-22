@@ -271,6 +271,9 @@ impl Broker {
         if !led && marked {
             state.leads_engine_log.store(false, Ordering::Release);
         }
+        if marked {
+            state.lead_changed.notify_waiters();
+        }
         Ok(led)
     }
 
@@ -303,6 +306,7 @@ impl Broker {
         let _wanted = LeadWanted::new(&state);
         let _pass = state.log_pass.lock().await;
         state.leads_engine_log.store(false, Ordering::Release);
+        state.lead_changed.notify_waiters();
     }
 
     pub(super) async fn get_stream_state(
@@ -802,6 +806,25 @@ impl StreamHandle {
     /// `notified_owned()` future and `enable()` it *before* reading the tail.
     pub fn appended(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.state.appended)
+    }
+
+    /// Wake the readers waiting on [`Self::appended`].
+    pub fn notify_appended(&self) {
+        self.state.appended.notify_waiters();
+    }
+
+    /// Whether this broker leads the shard on its engine's log, so its
+    /// publishers' batches deliver what commits and a pass over the log
+    /// has nothing to do.
+    pub fn leads_engine_log(&self) -> bool {
+        self.state.leads_engine_log.load(Ordering::Acquire)
+    }
+
+    /// Notified after every change to [`Self::leads_engine_log`]. To wait
+    /// for one without missing it, `enable()` the future before reading
+    /// the flag.
+    pub fn lead_changed(&self) -> &tokio::sync::Notify {
+        &self.state.lead_changed
     }
 
     /// How far readers of this shard may see; see [`crate::ReadBound`].

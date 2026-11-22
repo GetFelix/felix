@@ -674,8 +674,14 @@ impl RaftEngine {
     /// subscribers from the log, and readers waiting at the bound (history
     /// reads) look again. Ends when the group stops or the stream closes.
     /// `None` when this broker holds no member of the shard.
+    ///
+    /// While this broker leads the stream the state machine does the
+    /// release and the wake as it publishes each commit, and the task
+    /// sleeps until the lead changes, the stream closes or the group stops.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
+        // Before the first pass, so no commit falls between the two.
+        let following = self.followed(shard)?.follow(stream.clone());
         Some(self.group_runtime(shard).spawn(async move {
             let mut failures = 0u32;
             loop {
@@ -705,6 +711,26 @@ impl RaftEngine {
                 };
                 if !stream.is_active() {
                     return;
+                }
+                if recheck.is_none() {
+                    // Enabled before the flag is read, so a flip after the
+                    // read wakes it.
+                    let flipped = stream.lead_changed().notified();
+                    let mut flipped = std::pin::pin!(flipped);
+                    flipped.as_mut().enable();
+                    if stream.leads_engine_log() {
+                        if commits.is_closed() {
+                            return;
+                        }
+                        tokio::select! {
+                            () = flipped => {}
+                            () = following.woken() => {}
+                        }
+                        // Marked seen before the pass, so a commit after
+                        // it still wakes the next `changed()`.
+                        commits.borrow_and_update();
+                        continue;
+                    }
                 }
                 // A pass that had to wait is not told when it may go on: a
                 // deposed term's batches settle without the commit index

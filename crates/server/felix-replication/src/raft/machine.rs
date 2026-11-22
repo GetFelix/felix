@@ -33,6 +33,7 @@ use tokio::sync::{Semaphore, watch};
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{ShardCodec, StoredMembership, invalid};
 use super::commit::{Commits, Holds, OpenBatch, Skips};
+use super::followed::{EndOnDrop, Followed};
 use super::stream_snapshot::StreamSnapshot;
 use super::types::{Applied, CondPlace, ShardTypes};
 use crate::ShardKind;
@@ -79,6 +80,11 @@ pub(crate) struct Machine {
     /// `commits` as the read bound and the commit waits see it, moved once
     /// per run of applied entries.
     published: watch::Sender<Commits>,
+    /// Wakes the follow tasks once `published` is dropped, so declared
+    /// after it.
+    _end: EndOnDrop,
+    /// The streams served here on each publish while this broker leads.
+    followed: Followed,
     /// Woken by the applied index, beside `published`.
     applied: Queue<u64>,
     /// What each record of a run has below it that holds no record.
@@ -145,11 +151,14 @@ impl Machine {
         let applied = Queue::new();
         let waiters = applied.waiters();
         let skips = Skips::default();
+        let followed = Followed::default();
         let machine = Self {
             snapshots,
             state,
             commits,
             published,
+            _end: EndOnDrop(followed.clone()),
+            followed: followed.clone(),
             applied,
             skips: skips.clone(),
             quiet: 0..0,
@@ -173,6 +182,7 @@ impl Machine {
             skips,
             cache,
             groups,
+            followed,
         })
     }
 
@@ -187,10 +197,12 @@ impl Machine {
         })
     }
 
-    /// Wake the waiters up to what [`Self::publish`] showed.
+    /// Wake the waiters up to what [`Self::publish`] showed, and serve the
+    /// streams this broker leads.
     fn wake(&self) {
         self.applied
             .advance(self.commits.applied().map(|applied| applied.index));
+        self.followed.serve();
     }
 }
 
@@ -263,6 +275,7 @@ pub(crate) struct Opened {
     pub(crate) skips: Skips,
     pub(crate) cache: Option<Cache>,
     pub(crate) groups: Option<Groups>,
+    pub(crate) followed: Followed,
 }
 
 /// A snapshot's data as openraft carries it.

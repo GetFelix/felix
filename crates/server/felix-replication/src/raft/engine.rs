@@ -341,6 +341,12 @@ impl RaftEngine {
         Some(self.runtime.group(shard)?.commits())
     }
 
+    /// The streams `shard`'s state machine serves on each commit, if this
+    /// broker holds a member.
+    pub(crate) fn followed(&self, shard: &ShardKey) -> Option<super::followed::Followed> {
+        Some(self.runtime.group(shard)?.followed_streams().clone())
+    }
+
     /// Hold `shard`'s skip counts for a batch about to be proposed, so its
     /// publisher can ask [`Self::skipped_before`] after the commit.
     pub(crate) fn claim_skips(&self, shard: &ShardKey) -> Option<super::commit::SkipClaim> {

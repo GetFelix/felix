@@ -85,6 +85,8 @@ pub(crate) struct StreamState {
     /// ring from its publishers' batches. Otherwise they are read from the
     /// log as the engine commits them.
     pub(crate) leads_engine_log: AtomicBool,
+    /// Notified after every store to `leads_engine_log`.
+    pub(crate) lead_changed: tokio::sync::Notify,
     /// Held across a pass that delivers from the engine's log, and across a
     /// new leader's move to the committed tail, so the two never interleave.
     pub(crate) log_pass: tokio::sync::Mutex<()>,
@@ -224,6 +226,7 @@ impl StreamState {
             proposals: ProposalOrder::default(),
             engine_log: false,
             leads_engine_log: AtomicBool::new(false),
+            lead_changed: tokio::sync::Notify::new(),
             log_pass: tokio::sync::Mutex::new(()),
             leads_wanted: AtomicUsize::new(0),
             lead_wanted: tokio::sync::Notify::new(),
