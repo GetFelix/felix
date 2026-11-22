@@ -81,6 +81,8 @@ impl Reports {
     /// `from` says the last entry it has written is `at`. The furthest
     /// position each sender named is kept, by term and then index, so a
     /// report that arrives late does not undo a newer one.
+    // Measurement only: a uprobe target (felix-cpu-step0).
+    #[inline(never)]
     pub(crate) fn heard(&self, from: MemberId, at: LogPoint) {
         let moved = self.heard.send_if_modified(|heard| {
             if let Some((_, had)) = heard.iter_mut().find(|(member, _)| *member == from) {

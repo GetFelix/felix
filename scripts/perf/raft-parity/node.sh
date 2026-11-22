@@ -6,7 +6,8 @@
 set -euo pipefail
 
 R=/mnt/build/raft-parity
-BIN=$R/bin
+# PARITY_BIN names another install (build.sh BIN_NAME), so a profiling build sits beside the matrix one.
+BIN=$R/${PARITY_BIN:-bin}
 # The release baseline's broker and control plane (build.sh BASELINE_REF); its loadgen is a
 # copy of the one in $BIN, which every side uses.
 BASE_BIN=$R/bin-baseline
@@ -200,26 +201,35 @@ PY
   # perf-stop. Needs kernel.perf_event_paranoid <= 1 and a broker built with frame pointers
   # (build.sh FRAME_POINTERS=1), or the stacks stop at the first frame.
   perf-start)
-    dir=$1; in_run "$dir"
+    # perf-start <dir> [record 1|0] [extra events] [unix-secs]: from that wall-clock time when given.
+    dir=$1 record=${2:-1} extra=${3:-} at=${4:-0}; in_run "$dir"
+    pid=$(cat "$dir/broker.pid")
+    delay='now=$(date +%s); [ "$0" -le "$now" ] || sleep $(( $0 - now )); exec "$@"'
     # System wide, filtered to the broker when folded: following a pid misses threads a pool
     # starts after the recording does.
-    start "$dir" perf perf record -a -F 499 -g -o "$dir/perf.data"
-    # Syscall counts, system wide: a single node cell's broker box runs nothing else.
-    start "$dir" perfstat perf stat -a -x, -o "$dir/syscalls.csv" \
-      -e 'syscalls:sys_enter_fsync,syscalls:sys_enter_fdatasync,syscalls:sys_enter_sync_file_range' \
-      -e 'syscalls:sys_enter_pwrite64,syscalls:sys_enter_write,syscalls:sys_enter_writev,syscalls:sys_enter_futex' \
-      -e 'syscalls:sys_enter_renameat2,syscalls:sys_enter_openat,context-switches'
+    [ "$record" = 0 ] || start "$dir" perf bash -c "$delay" "$at" perf record -a -F 499 -g -o "$dir/perf.data"
+    # The broker's own syscalls and switches. sched_switch with prev_state 0 is a preempted
+    # (involuntary) switch; context-switches minus it are voluntary.
+    ev='syscalls:sys_enter_futex,syscalls:sys_enter_sendmsg,syscalls:sys_enter_sendmmsg,syscalls:sys_enter_recvmsg'
+    ev="$ev,syscalls:sys_enter_recvmmsg,syscalls:sys_enter_sendto,syscalls:sys_enter_recvfrom,syscalls:sys_enter_fsync"
+    ev="$ev,syscalls:sys_enter_fdatasync,syscalls:sys_enter_sync_file_range,syscalls:sys_enter_epoll_wait"
+    ev="$ev,syscalls:sys_enter_io_uring_enter,syscalls:sys_enter_pwrite64,syscalls:sys_enter_pwritev"
+    ev="$ev,syscalls:sys_enter_write,syscalls:sys_enter_writev,context-switches,cpu-migrations"
+    start "$dir" perfstat bash -c "$delay" "$at" perf stat -p "$pid" -x, -o "$dir/syscalls.csv" -e "$ev" \
+      -e sched:sched_switch --filter 'prev_state == 0' ${extra:+-e "$extra"}
     ;;
 
   # perf-stop <dir>: end the recording and print its stacks folded (profile.py fold).
   perf-stop)
     dir=$1; in_run "$dir"
     for f in perf perfstat; do
+      [ -f "$dir/$f.pid" ] || continue
       pid=$(cat "$dir/$f.pid")
       safe_pid "$pid" && kill -INT "$pid" 2>/dev/null || true
       for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
       rm -f "$dir/$f.pid"
     done
+    [ -f "$dir/perf.data" ] || exit 0
     perf script -i "$dir/perf.data" --pid "$(cat "$dir/broker.pid")" 2>/dev/null | python3 "$R/profile.py" fold
     rm -f "$dir/perf.data"
     ;;

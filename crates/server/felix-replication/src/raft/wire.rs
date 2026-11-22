@@ -169,6 +169,8 @@ pub(crate) fn fit(request: &mut RaftRequest) {
     rpc.entries.truncate(keep);
 }
 
+// Measurement only: a uprobe target (felix-cpu-step0).
+#[inline(never)]
 pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     let mut buf = BytesMut::new();
     buf.put_u8(LAYOUT);

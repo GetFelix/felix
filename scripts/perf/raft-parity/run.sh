@@ -62,7 +62,8 @@
 #                 (`profile.py top` summarizes them) and system-wide syscall counts as
 #                 syscalls-box<N>.csv. Sampling costs CPU, so a profiled run's
 #                 CPU and latency numbers are not comparable with an unprofiled one. Build with
-#                 FRAME_POINTERS=1 first.
+#                 FRAME_POINTERS=1 first. PERF_RECORD=0 keeps only the counts; PERF_EVENTS adds
+#                 perf stat events (e.g. uprobes); PARITY_BIN=bin-fp runs that install.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -107,7 +108,7 @@ done
 CP_BOX=${BOXES[0]}
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 raw() { host_raw "$@"; }
-on() { local b=$1; shift; raw "$b" "bash $R/node.sh $*"; }
+on() { local b=$1; shift; raw "$b" "PARITY_BIN=${PARITY_BIN:-bin} bash $R/node.sh $*"; }
 IP=(); MT=()
 for b in "${BOXES[@]}"; do
   read -r st ip mt < <(host_info "$b")
@@ -135,7 +136,7 @@ if [ "${CLEAN_RUNS:-$([ "$PARITY_PROVIDER" = azure ] && echo 1 || echo 0)}" = 1 
 fi
 sums=""
 for b in "${BOXES[@]}"; do
-  s=$(raw "$b" "cd $R/bin 2>/dev/null && sha256sum -c --quiet SHA256SUMS >&2 && cat REV SHA256SUMS") \
+  s=$(raw "$b" "cd $R/${PARITY_BIN:-bin} 2>/dev/null && sha256sum -c --quiet SHA256SUMS >&2 && cat REV SHA256SUMS") \
     || { echo "!! $(host_name "$b") has no intact $R/bin; run build.sh" >&2; exit 1; }
   [ -z "$sums" ] || [ "$s" = "$sums" ] || { echo "!! $(host_name "$b") has different binaries; run build.sh" >&2; exit 1; }
   sums=$s
@@ -280,7 +281,7 @@ cpu_before() { # [unix-secs]
     else
       on "$b" cpu "$dir" > "$loc/cpu-before-box$b.txt" 2>&1 || true
     fi
-    [ "$PROFILE" != 1 ] || on "$b" perf-start "$dir" > "$loc/perf-start-box$b.txt" 2>&1 || true
+    [ "$PROFILE" != 1 ] || on "$b" perf-start "$dir" "${PERF_RECORD:-1}" "'${PERF_EVENTS:-}'" "${1:-0}" > "$loc/perf-start-box$b.txt" 2>&1 || true
   done
 }
 cpu_after() {

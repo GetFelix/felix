@@ -28,7 +28,7 @@ lane="$(basename "$top")"
 BOXES=${BOXES:-"1 2 3"}
 on() { host_raw "$@"; }
 
-BIN=/mnt/build/raft-parity/bin
+BIN=/mnt/build/raft-parity/${BIN_NAME:-bin}
 if [ -n "${BASELINE_REF:-}" ]; then
   BIN=/mnt/build/raft-parity/bin-baseline
   # The tag gets its own worktree, and so its own box build dir (remote.sh names it after the lane).

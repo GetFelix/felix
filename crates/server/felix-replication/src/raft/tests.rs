@@ -22,6 +22,7 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod bench;
 mod cache;
 mod change;
 mod commit;
