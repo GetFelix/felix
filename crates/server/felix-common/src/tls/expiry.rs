@@ -79,9 +79,15 @@ impl ChainExpiry {
     /// does not parse has no known end, so it closes at once; `None` for an
     /// empty chain.
     pub fn close_at(&self, chain: &[CertificateDer<'_>], spread: Duration) -> Option<i64> {
-        self.not_after(chain)
-            .unwrap_or(Some(0))
-            .map(|at| spread_before(at, spread))
+        // A zero spread skips the jitter draw, so the simulator's seeded
+        // jitter stream is unchanged by callers that ask for no spread.
+        self.not_after(chain).unwrap_or(Some(0)).map(|at| {
+            if spread.is_zero() {
+                at
+            } else {
+                spread_before(at, spread)
+            }
+        })
     }
 
     fn intermediates_end(

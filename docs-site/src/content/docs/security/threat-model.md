@@ -158,10 +158,11 @@ The short version:
   refused.
 - **Raft messages only from members and placed brokers.** A shard's Raft
   member refuses a vote, append, snapshot or read index unless the sender is
-  in that group's own membership. A copy with no membership yet, or one that
-  missed a change, also takes messages from the brokers the control plane's
-  placement or target names, as of a feed answer under a minute old. A broker
-  outside a group cannot raise its term, take its vote or truncate its log
+  in that group's own membership. A member that missed a change also takes
+  messages from the brokers the control plane's placement or target names. A
+  copy with no membership yet takes them from those brokers and from the
+  voters its leader last reported. Both use a feed answer under a minute old.
+  A broker outside a group cannot raise its term, take its vote or truncate its log
   ([#2909](https://github.com/GetFelix/felix/issues/2909)). On this port the
   sender is the broker named by the certificate's DNS name; the
   `felix:principal:raft-member:` URI SAN belongs to the control-plane Raft
