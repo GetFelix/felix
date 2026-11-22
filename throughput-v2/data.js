@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795312655104,
+  "lastUpdate": 1795313367857,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65312,6 +65312,58 @@ window.BENCHMARK_DATA = {
             "range": "6281.34",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808228.73\nmean: 807309.78\nstdev: 6281.34\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "204c3a978b7bb449dd74f53c7da473a6728cb635",
+          "message": "feat(raft): read-only re-form plans (felixctl raft reform plan) (#2250) (#2938)\n\n* wip(raft): read-only re-form plans on the control plane (#2250)\n\nSurvey registry, plan routes, broker survey/report routes and the\nstorage wire forms. Broker poller, felixctl and docs still owed.\n\nSpec-Unaffected: the planner's rule is unchanged; this only carries reports to it.\n\n* wip(raft): re-form plans live on the metadata Raft leader (#2250)\n\n* wip(raft): brokers answer re-form surveys (#2250)\n\n* wip(raft): keep the plan HTTP bodies with the routes, order the plan module (#2250)\n\n* feat(raft): brokers send the group epoch with a copy id (#2882)\n\n* feat(felixctl): raft reform plan (#2250)\n\n* docs(raft): running a re-form plan, and the plan routes (#2250)\n\n* test(raft): borrow the held copy as a slice (#2882)\n\n* docs: follow the moved append_pending_at line (#2250)\n\n* fix(raft): an older metadata leader refuses re-form requests with 409; review cleanups (#2250)\n\n* fix(raft): keep the dead-code allow on kept_logs only (#2250)",
+          "timestamp": "2026-11-21T18:03:05-08:00",
+          "tree_id": "54f8675f0f0cc0eb3141aa57ae046ad22dbafb41",
+          "url": "https://github.com/GetFelix/felix/commit/204c3a978b7bb449dd74f53c7da473a6728cb635"
+        },
+        "date": 1795313367190,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 435523.26,
+            "range": "21391.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 435523.26\nmean: 424927.31\nstdev: 21391.77\ncv: 5.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 435523.26,
+            "range": "21391.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 435523.26\nmean: 424927.31\nstdev: 21391.77\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97447.69,
+            "range": "1691.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97447.69\nmean: 96895.91\nstdev: 1691.97\ncv: 1.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 974476.91,
+            "range": "16919.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 974476.91\nmean: 968959.09\nstdev: 16919.74\ncv: 1.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
