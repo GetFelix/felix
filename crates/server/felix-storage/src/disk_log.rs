@@ -1522,6 +1522,8 @@ impl DiskLog {
             #[cfg(test)]
             pause_next_read: Mutex::new(None),
             #[cfg(test)]
+            pause_next_sync: Mutex::new(None),
+            #[cfg(test)]
             slow_inline_roll_millis: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             hold_between_locks_millis: std::sync::atomic::AtomicU64::new(0),
@@ -1643,6 +1645,20 @@ impl DiskLog {
         self.inner.segments.read().tail_offset()
     }
 
+    /// A flush for `pending` that a flush thread answers with no task
+    /// waiting on it, when one can start now. Only under a policy that
+    /// flushes for the append: see [`Self::synced`].
+    #[cfg(feature = "raft")]
+    pub(crate) fn begin_detached_flush(
+        &self,
+        pending: &PendingAppend,
+    ) -> Option<flush::DetachedFlush> {
+        if self.inner.durability.acknowledges_before_sync() && !pending.holds_trim {
+            return None;
+        }
+        self.inner.begin_detached_flush(pending.durable_target)
+    }
+
     /// What [`Self::commit`] answers when it has nothing to wait for, and
     /// `None` when a flush must cover the batch first.
     #[cfg(feature = "raft")]
@@ -1762,6 +1778,12 @@ impl DiskLog {
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
+    /// Stop the next flush before its fsync: it waits on `pause` once to say
+    /// it got there, and again to go on.
+    pub(crate) fn pause_next_sync(&self, pause: Arc<std::sync::Barrier>) {
+        *self.inner.pause_next_sync.lock() = Some(pause);
+    }
+
     /// Wait until the commit offset in memory is the one on disk.
     pub(crate) async fn commit_offset_persisted(&self) {
         while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
@@ -2389,6 +2411,10 @@ struct LogInner {
     /// barrier once to say it has planned, and again to go on.
     #[cfg(test)]
     pause_next_read: Mutex<Option<Arc<std::sync::Barrier>>>,
+    /// Stops the next flush on the flush thread before its fsync, the same
+    /// way.
+    #[cfg(test)]
+    pause_next_sync: Mutex<Option<Arc<std::sync::Barrier>>>,
     /// Milliseconds an inline rollover holds the segment lock, for tests.
     #[cfg(test)]
     slow_inline_roll_millis: std::sync::atomic::AtomicU64,

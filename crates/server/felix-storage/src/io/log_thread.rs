@@ -168,6 +168,33 @@ impl LogThread {
             .unwrap_or_else(|_| Err(io::Error::other("the job panicked")))
     }
 
+    /// Whether every job submitted so far has finished.
+    #[cfg(feature = "raft")]
+    pub(crate) fn is_idle(&self) -> bool {
+        self.pending.load(Ordering::Acquire) == 0
+    }
+
+    /// Run `work` on the thread, behind the jobs already submitted, without
+    /// waiting for it. If no thread can be started it goes to the blocking
+    /// pool, as [`Self::run`] does.
+    #[cfg(feature = "raft")]
+    pub(crate) fn spawn(&self, work: impl FnOnce() + Send + 'static) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        let job: Job = Box::new(move |pending: &AtomicUsize| {
+            work();
+            pending.fetch_sub(1, Ordering::AcqRel);
+        });
+        let submitted = if felix_common::blocking::on_runtime() {
+            Err(job)
+        } else {
+            self.submit(job)
+        };
+        if let Err(job) = submitted {
+            let pending = Arc::clone(&self.pending);
+            drop(felix_common::blocking::spawn(move || job(&pending)));
+        }
+    }
+
     /// Hand `job` to the thread, starting one if there is none. Gives the job
     /// back if no thread could be started.
     fn submit(&self, job: Job) -> Result<(), Job> {

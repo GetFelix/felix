@@ -1,7 +1,9 @@
 //! Appends waiting for a flush, and the one task that waits for them.
 //!
 //! A flush covers a prefix of the log, so the task waits once for the newest
-//! append it holds and then answers every one before it, in order.
+//! append it holds and then answers every one before it, in order. An
+//! append with nothing queued ahead of it skips the task: its flush is
+//! answered from the flush thread.
 
 use std::io;
 use std::sync::Arc;
@@ -63,7 +65,24 @@ impl FlushQueue {
         flushed: Flushed,
         mark: Option<(CopyMarks, LogPoint)>,
     ) {
-        self.waiting.send_modify(|waiting| *waiting += 1);
+        let mut before = 0;
+        self.waiting.send_modify(|waiting| {
+            before = *waiting;
+            *waiting += 1;
+        });
+        // With nothing ahead of it the flush thread answers this one itself:
+        // the fsync wakes Raft directly instead of a task that forwards it.
+        if before == 0
+            && mark.is_none()
+            && let Some(flush) = log.begin_detached_flush(&pending)
+        {
+            let waiting = Arc::clone(&self.waiting);
+            flush.run(Box::new(move |result| {
+                let _settle = Settle(&waiting);
+                flushed(result.map_err(io_error));
+            }));
+            return;
+        }
         let mut sender = self.sender.lock();
         // A task that stopped (a callback panicked, or its runtime shut
         // down) has failed what it held. Nothing on disk is in doubt, so

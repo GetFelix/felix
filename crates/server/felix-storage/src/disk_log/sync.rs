@@ -50,7 +50,7 @@ pub(super) struct Durability {
     durable_tx: watch::Sender<Offset>,
     /// Held by whichever task is currently flushing. Everyone else queues here
     /// and finds the work already done when they get in.
-    flush_lock: Mutex<()>,
+    flush_lock: Arc<Mutex<()>>,
     /// Flushes actually issued. One relaxed increment against a syscall that
     /// costs microseconds at best, so it is always on rather than behind a
     /// feature -- and it is the only machine-independent way to see group
@@ -67,7 +67,7 @@ impl Durability {
         Self {
             mode,
             durable_tx: watch::channel(durable_upto).0,
-            flush_lock: Mutex::new(()),
+            flush_lock: Arc::new(Mutex::new(())),
             flushes: AtomicU64::new(0),
         }
     }
@@ -155,6 +155,19 @@ impl Durability {
                 false
             }
         });
+    }
+
+    /// The flush lock if nobody holds it, owned so a flush thread can drop it.
+    /// The caller counts the flush with [`Self::count_flush`].
+    #[cfg(feature = "raft")]
+    pub(super) fn try_lock_flushes_owned(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Arc::clone(&self.flush_lock).try_lock_owned().ok()
+    }
+
+    /// Count a flush issued without [`Self::ensure_durable`].
+    #[cfg(feature = "raft")]
+    pub(super) fn count_flush(&self) {
+        self.flushes.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Prevent flush progress from racing an operation that rewrites the log.

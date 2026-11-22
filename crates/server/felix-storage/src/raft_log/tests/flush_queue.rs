@@ -184,6 +184,8 @@ fn a_task_dropped_before_it_ran_fails_what_was_sent() {
     let raft = open(&dir);
     let log = raft.disk_log().clone();
     let pending = runtime.block_on(write(&log, 0));
+    // Held, so the append goes to the task rather than the flush thread.
+    let held = runtime.block_on(log.hold_flushes());
 
     let (answered, mut answer) = tokio::sync::oneshot::channel();
     let unpolled = tokio::runtime::Builder::new_current_thread()
@@ -205,6 +207,7 @@ fn a_task_dropped_before_it_ran_fails_what_was_sent() {
         .expect("answered")
         .expect_err("the task stopped");
     assert!(raft.shared.flushes.is_empty());
+    drop(held);
 }
 
 /// An append still queued when the last user of the log goes is answered
@@ -225,6 +228,113 @@ async fn a_queued_append_outlives_the_log() {
         .await
         .expect("answered")
         .expect("flushed");
+}
+
+/// What `push` answered, and the thread it answered on.
+type Answered = tokio::sync::oneshot::Receiver<(io::Result<()>, Option<String>)>;
+
+/// Queue `pending` with a callback that reports its thread.
+fn push(raft: &RaftLog<Types, Codec>, log: &DiskLog, pending: PendingAppend) -> Answered {
+    let (answered, answer) = tokio::sync::oneshot::channel();
+    raft.shared.flushes.push(
+        log,
+        pending,
+        Box::new(move |flushed| {
+            let thread = std::thread::current().name().map(str::to_owned);
+            drop(answered.send((flushed, thread)));
+        }),
+        None,
+    );
+    answer
+}
+
+/// An append with nothing queued ahead of it is answered by the flush
+/// thread itself, with no task in between, and only once its fsync is
+/// done: held before the fsync, the callback has not fired and nothing is
+/// durable.
+#[tokio::test]
+async fn the_flush_thread_answers_an_append_only_after_its_fsync() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let log = raft.disk_log().clone();
+    let pending = write(&log, 0).await;
+    let pause = std::sync::Arc::new(std::sync::Barrier::new(2));
+    log.pause_next_sync(std::sync::Arc::clone(&pause));
+
+    let mut answer = push(&raft, &log, pending);
+    pause.wait();
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(answer.try_recv().is_err(), "answered before the fsync");
+    assert_eq!(log.durable_offset(), 0);
+    assert!(!raft.shared.flushes.is_empty());
+
+    pause.wait();
+    let (flushed, thread) = answer.await.expect("answered");
+    flushed.expect("flushed");
+    assert_eq!(thread.as_deref(), Some("felix-flush"));
+    assert_eq!(log.durable_offset(), 1);
+    assert!(raft.shared.flushes.is_empty());
+}
+
+/// An append queued behind a flush the flush thread is answering goes to
+/// the task, and is answered after the one ahead of it.
+#[tokio::test]
+async fn an_append_behind_a_flush_thread_answer_is_answered_after_it() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let log = raft.disk_log().clone();
+    let first = write(&log, 0).await;
+    let pause = std::sync::Arc::new(std::sync::Barrier::new(2));
+    log.pause_next_sync(std::sync::Arc::clone(&pause));
+    let mut ahead = push(&raft, &log, first);
+    pause.wait();
+
+    let second = write(&log, 1).await;
+    let behind = push(&raft, &log, second);
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert!(ahead.try_recv().is_err(), "answered before the fsync");
+
+    pause.wait();
+    let (flushed, thread) = behind.await.expect("answered");
+    flushed.expect("flushed");
+    assert_ne!(thread.as_deref(), Some("felix-flush"), "not from the task");
+    let (flushed, _) = ahead
+        .try_recv()
+        .expect("the append ahead was answered first");
+    flushed.expect("flushed");
+    assert_eq!(log.durable_offset(), 2);
+}
+
+/// A truncation waits for an append the flush thread is still answering.
+#[tokio::test]
+async fn a_truncation_waits_for_a_flush_thread_answer() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let log = raft.disk_log().clone();
+    let pause = std::sync::Arc::new(std::sync::Barrier::new(2));
+    log.pause_next_sync(std::sync::Arc::clone(&pause));
+    let entries = [blank(1, 0), normal(1, 1, "a"), normal(1, 2, "b")];
+    let flushed = append(&mut raft, &entries).await.expect("append");
+    pause.wait();
+
+    let mut cutter = raft.clone();
+    let mut cut = std::pin::pin!(cutter.truncate_after(Some(log_id(1, 0))));
+    for _ in 0..20 {
+        assert!(
+            cut.as_mut().now_or_never().is_none(),
+            "cut under a flush in flight"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    pause.wait();
+    cut.await.expect("truncate");
+    flushed
+        .now_or_never()
+        .expect("the callback had not fired when the truncation returned")
+        .expect("flush");
+    assert_eq!(all(&raft).await.expect("read"), entries[..1]);
 }
 
 /// One record at `offset`, written but not yet waited for.
