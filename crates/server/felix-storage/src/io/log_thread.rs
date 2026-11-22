@@ -89,14 +89,23 @@ impl LogThread {
     /// the thread otherwise. For short work that only reads what earlier
     /// jobs left. Skipping the hand-off saves a wake-up of the thread and of
     /// the caller.
+    ///
+    /// On the calling thread `work` is told it may not wait, and gives `None`
+    /// where it would: the caller may be a group thread other groups' tasks
+    /// queue behind. It then runs on the thread, told it may.
     pub(crate) async fn run_behind<T: Send + 'static>(
         &self,
-        work: impl FnOnce() -> io::Result<T> + Send + 'static,
+        work: impl Fn(bool) -> Option<io::Result<T>> + Send + 'static,
     ) -> io::Result<T> {
-        if self.pending.load(Ordering::Acquire) == 0 {
-            return work();
+        if self.pending.load(Ordering::Acquire) == 0
+            && let Some(done) = work(false)
+        {
+            return done;
         }
-        self.run(work).await
+        self.run(move || {
+            work(true).unwrap_or_else(|| Err(io::Error::other("work that may wait gave nothing")))
+        })
+        .await
     }
 
     /// Run `work` on the thread and return its result.

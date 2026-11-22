@@ -325,7 +325,7 @@ async fn run_behind_waits_only_for_pending_jobs() {
     let appender = Arc::new(LogThread::new("test-append"));
     let caller = std::thread::current().id();
     let ran_on = appender
-        .run_behind(|| Ok(std::thread::current().id()))
+        .run_behind(|_| Some(Ok(std::thread::current().id())))
         .await
         .expect("run");
     assert_eq!(ran_on, caller, "nothing was pending");
@@ -353,7 +353,7 @@ async fn run_behind_waits_only_for_pending_jobs() {
         let done = Arc::clone(&done);
         tokio::spawn(async move {
             appender
-                .run_behind(move || Ok(done.load(Ordering::SeqCst)))
+                .run_behind(move |_| Some(Ok(done.load(Ordering::SeqCst))))
                 .await
         })
     };

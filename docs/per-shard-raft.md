@@ -2284,10 +2284,9 @@ deadlines are timeouts, not sleeps, and are unchanged.
 ### Group threads
 
 A write wakes several tasks in turn: the publish task, openraft's core, its
-state machine worker, its IO forwarder, the replication streams and the
-task that serves committed records (`follow_commits`). On the broker's
-multi-thread runtime each of those wakes can be a hop to another worker
-thread, which costs a scheduler pass and a kernel wake-up.
+state machine worker, its IO forwarder and the replication streams. On the
+broker's multi-thread runtime each of those wakes can be a hop to another
+worker thread, which costs a scheduler pass and a kernel wake-up.
 
 So a broker runs every group's tasks on a few group threads instead
 (`raft/executor.rs`): one per four cores it may use, at most 8. Under four
@@ -2301,17 +2300,19 @@ openraft. A wake between them is then a push onto that thread's queue, and
 one wake-up of the thread runs every ready task of every group on it.
 
 - On the group thread: openraft's tasks, the publish task, the membership
-  driver and the group's other tasks, and `follow_commits`.
-- Elsewhere: publishers, subscribers, the peer transport and the ticker
-  stay on the broker runtime, and log IO on the log's own thread. A write
+  driver and the group's other tasks.
+- Elsewhere: publishers, subscribers, the peer transport, the ticker and
+  `follow_commits` stay on the broker runtime, and log IO on the log's own
+  thread. `follow_commits` is kept off because one pass can fan a page of
+  records out to many subscribers without yielding. A write
   still crosses threads where it enters a group (publisher to publish task,
   peer to core) and where it leaves (answers, fanout, network sends).
 - A group thread does not wait on disk in normal operation. Log work goes
   to the log thread or a blocking task and is awaited. A caller of the log
   thread on a group thread does not poll for its answer, since other
-  groups' tasks are waiting behind it. One rare case remains: a flush
-  capture that runs inline can wait for a segment roll another thread
-  started ([#2947](https://github.com/GetFelix/felix/issues/2947)).
+  groups' tasks are waiting behind it. A flush capture that runs inline
+  only tries the segment lock: if an append is rolling a segment under it,
+  the capture goes to the log thread instead of waiting there.
 - A hot group shares its thread: the thread runs ready tasks in turn, and
   tokio makes a task that keeps finding work on channels give the thread up
   after a bounded number of steps. The state machine gives it up the same

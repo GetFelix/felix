@@ -585,6 +585,9 @@ struct Inner {
     admitted_until: parking_lot::Mutex<Option<tokio::time::Instant>>,
     /// See [`RuntimeConfig::group_threads`].
     threads: Option<GroupThreads>,
+    /// The runtime this one was started on: the broker's. Work that must
+    /// not hold up a group thread runs here, such as follower fanout.
+    home: Option<tokio::runtime::Handle>,
 }
 
 /// A copy an open found stopped, which rejoins once a leader is heard
@@ -661,6 +664,7 @@ impl GroupRuntime {
                 admitted_until: parking_lot::Mutex::default(),
                 placement: config.placement,
                 threads: start_group_threads(config.group_threads),
+                home: tokio::runtime::Handle::try_current().ok(),
             }),
         })
     }
@@ -1475,6 +1479,15 @@ impl GroupRuntime {
             .registry
             .get(shard)
             .map(|group| group.positions())
+    }
+
+    /// The broker runtime, or the current one if this was built outside a
+    /// runtime.
+    pub(crate) fn home(&self) -> tokio::runtime::Handle {
+        self.inner
+            .home
+            .clone()
+            .unwrap_or_else(tokio::runtime::Handle::current)
     }
 
     /// How many groups run on each group thread. Empty without them.

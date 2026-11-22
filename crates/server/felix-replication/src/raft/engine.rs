@@ -333,6 +333,11 @@ impl RaftEngine {
             })
     }
 
+    /// The broker runtime, for work that must not hold up a group thread.
+    pub(crate) fn home_runtime(&self) -> tokio::runtime::Handle {
+        self.runtime.home()
+    }
+
     /// `shard`'s commit table on this broker, if it holds a member.
     pub(crate) fn commits(
         &self,

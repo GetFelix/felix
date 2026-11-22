@@ -1681,6 +1681,15 @@ async fn a_write_is_reported_written_and_flushed() {
     cluster.stop().await;
 }
 
+/// The threads `follow_commits` passes have run on, in any test.
+static FOLLOWED_ON: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+pub(super) fn followed_on(thread: Option<&str>) {
+    FOLLOWED_ON
+        .lock()
+        .push(thread.unwrap_or("unnamed").to_owned());
+}
+
 /// With group threads, each group's openraft core and the tasks it spawns
 /// run on the group's thread, and a write still commits everywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

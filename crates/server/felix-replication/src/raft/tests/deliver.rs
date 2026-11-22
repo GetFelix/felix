@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use super::super::deliver::{Proposed, settled};
 use super::super::lease;
 use super::super::propose::{Heard, Unacknowledged};
-use super::commit::{Led, led, lost};
+use super::commit::{Led, led, led_with, lost};
 use super::propose::cut_after_first;
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -882,6 +882,39 @@ async fn a_followers_subscriber_gets_what_its_member_applied() {
         ]
     );
     nothing(&mut receiver).await;
+    led.cluster.stop().await;
+}
+
+/// **A follower's fanout runs on the broker runtime, not its group's
+/// thread.** A pass can hand a page of records to many subscribers without
+/// yielding, and every group on the thread would wait behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_followers_fanout_runs_off_its_group_thread() {
+    let threads = RuntimeConfig {
+        group_threads: 2,
+        ..timers()
+    };
+    let mut led = led_with(threads).await;
+    let follower = led.followers().next().expect("a follower");
+    assert!(
+        !led.cluster
+            .runtime(&follower)
+            .group_thread_loads()
+            .is_empty()
+    );
+    let (broker, _handle) = broker_on_log_of(&led, &follower).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let one = led.cluster.write(0, b"one").await;
+    assert_eq!(
+        records(&mut receiver, 1).await,
+        [(one, Bytes::from_static(b"one"))]
+    );
+    let on = super::FOLLOWED_ON.lock().clone();
+    assert!(!on.is_empty());
+    assert!(
+        on.iter().all(|name| !name.starts_with("felix-raft-group-")),
+        "ran on {on:?}"
+    );
     led.cluster.stop().await;
 }
 

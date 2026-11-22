@@ -674,11 +674,17 @@ impl RaftEngine {
     /// subscribers from the log, and readers waiting at the bound (history
     /// reads) look again. Ends when the group stops or the stream closes.
     /// `None` when this broker holds no member of the shard.
+    ///
+    /// Runs on the broker runtime, not the group's thread: one pass can fan
+    /// out a page of records to many subscribers without yielding, and the
+    /// releases it starts run where it does.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
-        Some(self.group_runtime(shard).spawn(async move {
+        Some(self.home_runtime().spawn(async move {
             let mut failures = 0u32;
             loop {
+                #[cfg(test)]
+                super::tests::followed_on(std::thread::current().name());
                 stream.release_committed();
                 stream.appended().notify_waiters();
                 let recheck = match stream.deliver_from_log().await {

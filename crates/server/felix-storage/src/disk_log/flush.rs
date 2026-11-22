@@ -32,23 +32,31 @@ impl LogInner {
         let capturer = Arc::clone(&self);
         let (handle, segment_id, synced_bytes, durable_upto, written) = self
             .appender
-            .run_behind(move || {
-                let segments = capturer.segments.read();
+            .run_behind(move |may_wait| {
+                // An append rolling inline holds the write lock across a
+                // seal's fsync.
+                let segments = if may_wait {
+                    capturer.segments.read()
+                } else {
+                    capturer.segments.try_read()?
+                };
                 let active = segments.active();
                 // The writer's own sync (a seal, a truncation) failed. Flushing
                 // through a cloned handle would not see that.
                 if active.is_poisoned() {
                     capturer.poison_after_writer_failure(&segments);
                     drop(segments);
-                    return Ok(Err(capturer.check_healthy().expect_err("just poisoned")));
+                    return Some(Ok(Err(capturer
+                        .check_healthy()
+                        .expect_err("just poisoned"))));
                 }
-                Ok(Ok((
+                Some(Ok(Ok((
                     active.sync_handle(),
                     active.id(),
                     active.size_bytes(),
                     segments.tail_offset(),
                     capturer.records_written.load(Ordering::Relaxed),
-                )))
+                ))))
             })
             .await
             .map_err(StorageError::Io)??;
