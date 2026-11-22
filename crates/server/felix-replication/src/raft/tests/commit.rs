@@ -1483,7 +1483,13 @@ async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
     applied_on(&led.cluster, &led.leader.broker, at + 2).await;
     led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
     *led.cluster.net.lose_entries_from.lock() = None;
-    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    // The lapse is the leader's own, so wait for it to say so; a fixed sleep
+    // is short whenever the machine is slow to run the leader's timers.
+    eventually(|| {
+        let status = led.cluster.runtime(&led.leader.broker).status(&shard(0))?;
+        status.leader.is_none().then_some(())
+    })
+    .await;
     assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
     let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
     assert!(
