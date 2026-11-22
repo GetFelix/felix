@@ -343,9 +343,13 @@ PreCampaign(c) ==
 \* unless DroppedPreVoteGrants, where the drop reads as a grant. A refusal
 \* that carries a higher vote is adopted, uncommitted, and ends the round
 \* (openraft's handle_pre_vote_resp): without it a member with the longer
-\* log and one with the higher term refuse each other forever.
+\* log and one with the higher term refuse each other forever. The
+\* candidate reads the refusal's vote uncommitted before it compares
+\* (network.rs `pre_vote_answer`), so a leader's committed vote that the
+\* candidate already holds uncommitted does not end the round (#2889).
 PreVoteReq(s, c) ==
     LET wakes == ~awake[s]
+        seen == [vote[s] EXCEPT !.committed = FALSE]
         held == VoteHold /\ (wakes \/ hold[s] # "none")
         engine == /\ vote[c].term + 1 > vote[s].term
                   /\ \/ Last(c).term > Last(s).term
@@ -354,7 +358,7 @@ PreVoteReq(s, c) ==
                   /\ wakes \/ ~HearsLeader(s)
         grant == IF held THEN DroppedPreVoteGrants ELSE engine
         adopt == /\ ~held /\ ~grant
-                 /\ VoteGE(vote[s], vote[c]) /\ vote[s] # vote[c]
+                 /\ VoteGE(seen, vote[c]) /\ seen # vote[c]
     IN /\ PreVote
        /\ s # c
        /\ s \in up /\ c \in up
@@ -363,7 +367,7 @@ PreVoteReq(s, c) ==
        /\ wakes \/ grant \/ adopt
        /\ pre' = IF grant THEN [pre EXCEPT ![c] = @ \cup {s}]
                  ELSE IF adopt THEN [pre EXCEPT ![c] = {}] ELSE pre
-       /\ vote' = IF adopt THEN [vote EXCEPT ![c] = [vote[s] EXCEPT !.committed = FALSE]]
+       /\ vote' = IF adopt THEN [vote EXCEPT ![c] = seen]
                   ELSE vote
        /\ role' = IF adopt THEN [role EXCEPT ![c] = "follower"] ELSE role
        /\ granted' = IF adopt THEN [granted EXCEPT ![c] = {}] ELSE granted

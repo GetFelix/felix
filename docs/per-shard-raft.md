@@ -1848,6 +1848,18 @@ pre-vote at the transfer's expiry is granted at once. After a leader
 dies, the first follower to time out may have to wait for the others to
 time out too, which still falls inside the 6 to 7 s above.
 
+A candidate reads a refused pre-vote's vote as uncommitted. openraft ends
+the round when a refusal names a vote above the candidate's own, and it
+counts a committed vote above the same vote uncommitted. A follower that
+voted for a leader and never took an append from it holds that vote
+uncommitted, so the leader's refusal, sent for its longer log, ended the
+follower's round without teaching it anything. When that refusal came
+before the other follower's grant, it did so on every retry, and a leader
+whose appends were lost but whose answers arrived kept the group from
+electing for good (#2889). Read uncommitted, the refusal ends the round
+only for a vote that is really higher. The candidate's vote, its term and
+the real vote rules are unchanged.
+
 Because a cut-off member keeps its term, openraft keeps naming the leader it
 last heard, and it never steps a leader down for losing its majority. Felix
 serves readers only from a member that is still in touch with its group:
@@ -1866,8 +1878,10 @@ leader. A forward to a leader that is gone fails, and the client retries.
 > `crates/server/felix-replication/src/raft/tests.rs`,
 > `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return`,
 > `a_leader_no_majority_answers_names_no_leader`,
-> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease` and
-> `an_idle_group_elects_soon_after_a_transfer_to_a_dead_target`.
+> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease`,
+> `an_idle_group_elects_soon_after_a_transfer_to_a_dead_target`,
+> `a_leader_that_loses_its_appends_does_not_stall_the_next_election` and
+> `a_pre_vote_refusal_names_its_vote_uncommitted`.
 
 ### Many groups electing at once
 

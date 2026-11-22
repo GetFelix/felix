@@ -111,6 +111,9 @@ struct Net {
     lose_entries_from: parking_lot::Mutex<Option<u64>>,
     /// While set, every vote request is lost. Pre-votes still go through.
     lose_votes: std::sync::atomic::AtomicBool,
+    /// While set, a granted pre-vote's answer comes back late, after every
+    /// refusal sent with it.
+    late_pre_vote_grants: std::sync::atomic::AtomicBool,
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
@@ -289,12 +292,19 @@ impl RaftTransport for Net {
             _ => None,
         };
         let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
+        let late_grant =
+            matches!(request.body, Request::PreVote(_)) && self.late_pre_vote_grants.load(Relaxed);
         let answer = match runtime {
             Some(runtime) => runtime.handle_unchecked(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
         if unheard {
             return Err(Refused::Unreachable("the answer was lost".into()));
+        }
+        if late_grant
+            && matches!(&answer, Ok(RaftReply(super::network::Reply::Vote(vote))) if vote.vote_granted)
+        {
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
         if let Some(slow) = slow {
             tokio::time::sleep(slow).await;
@@ -2622,6 +2632,79 @@ async fn a_leader_no_majority_answers_names_no_leader() {
     assert_eq!(status.role, Role::Leader, "{status:?}");
     assert_eq!(status.leader_hint.as_ref(), Some(&leader), "{status:?}");
     cluster.stop().await;
+}
+
+/// A leader whose appends are all lost still answers pre-votes, and refuses
+/// them for its longer log. Its refusal names its vote committed, while the
+/// followers hold that vote uncommitted, never having heard an append. Read
+/// as openraft compares it, that refusal ended a follower's round whenever
+/// it came before the other follower's grant, on every retry (#2889). Here
+/// every grant comes after the refusals, and a later term still elects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_that_loses_its_appends_does_not_stall_the_next_election() {
+    use std::sync::atomic::Ordering::Relaxed;
+    // a stands first, so b and c both vote for it and never commit that
+    // vote. One that stood itself would hold its own vote, which the
+    // leader's refusal does not match.
+    let slower = RuntimeConfig {
+        election_min: Duration::from_secs(3),
+        election_max: Duration::from_secs(4),
+        ..timers()
+    };
+    let own = HashMap::from([("b", slower.clone()), ("c", slower)]);
+    let mut cluster = Cluster::with_own(timers(), own, true);
+    cluster.open(0).await;
+    cluster.net.lose_appends.store(true, Relaxed);
+    cluster.net.late_pre_vote_grants.store(true, Relaxed);
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members())
+            .await
+            .expect("initialize");
+    }
+    let leads = |cluster: &Cluster, above: u64| {
+        let statuses = cluster.statuses(0).into_iter();
+        let mut leaders = statuses.filter(|status| status.role == Role::Leader);
+        leaders.find(|status| status.term > above)
+    };
+    let elected = eventually(|| leads(&cluster, 0)).await;
+    assert_eq!(&*elected.member.broker, "a", "{elected:?}");
+    // b and c stand within about 6 s of their last message, so a later
+    // term well inside this is the stall gone. With it every round failed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let later = loop {
+        if let Some(later) = leads(&cluster, elected.term) {
+            break later;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no leader above term {} in 60 s: {:?}",
+            elected.term,
+            cluster.statuses(0)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(later.term > elected.term);
+    cluster.stop().await;
+}
+
+/// The candidate reads a refusal's vote uncommitted, and nothing else in
+/// the answer changes.
+#[test]
+fn a_pre_vote_refusal_names_its_vote_uncommitted() {
+    use openraft::raft::VoteResponse;
+    let leader = LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1));
+    let vote =
+        |committed| <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader.clone(), committed);
+    let answer = |committed, granted| VoteResponse::new(vote(committed), None, granted);
+    let read = super::network::pre_vote_answer(answer(true, false));
+    assert_eq!(read.vote, vote(false));
+    assert!(!read.vote_granted);
+    for (committed, granted) in [(true, true), (false, false), (false, true)] {
+        let read = super::network::pre_vote_answer(answer(committed, granted));
+        assert_eq!(read.vote, vote(committed), "{committed} {granted}");
+        assert_eq!(read.vote_granted, granted);
+    }
 }
 
 /// openraft refuses a pre-vote only inside its 2 s lease, which ends just
