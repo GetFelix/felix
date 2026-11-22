@@ -34,6 +34,7 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use super::types::{Entry, EntryPayload};
 use super::version::{ASK_TIMEOUT, Asker, Doubt, PROBE_TIMEOUT, Versions, probe};
 use super::{AppStateMachine, NodeId};
 
@@ -97,18 +98,34 @@ impl Hold {
         }
     }
 
-    /// `Err` while member `target` must not be sent entries or a snapshot.
+    /// `Err` while member `target` must not be sent `entries` or a snapshot.
     /// Reads only cached state.
-    pub(super) fn check(&self, target: NodeId) -> Result<(), BelowFloor> {
-        let floor = self.app.join_floor();
-        if floor == 0 {
-            self.release(target);
-            return Ok(());
-        }
+    ///
+    /// The floor is the applied one raised to what `entries` need: a new
+    /// leader applies the entries earlier terms committed only after its
+    /// blank entry commits, which this send may be part of, so its applied
+    /// floor can lag the log it sends from.
+    pub(super) fn check(&self, target: NodeId, entries: &[Entry]) -> Result<(), BelowFloor> {
         let (reported, doubt) = {
             let versions = self.versions.lock().expect("versions lock");
             (versions.reported(target), versions.doubt(target))
         };
+        let mut floor = self.app.join_floor();
+        // No entry this build can decode needs more than its own level, so
+        // only a member reporting less, or not trusted, costs the decode.
+        if doubt.is_some() || reported.is_some_and(|version| version < self.app.version()) {
+            floor = entries
+                .iter()
+                .filter_map(|entry| match &entry.payload {
+                    EntryPayload::Normal(command) => Some(self.app.floor_of(&command.0)),
+                    _ => None,
+                })
+                .fold(floor, u16::max);
+        }
+        if floor == 0 {
+            self.release(target);
+            return Ok(());
+        }
         if let Some(doubt) = doubt {
             return Err(self.hold(target, Why::Doubted(doubt), floor));
         }
@@ -128,9 +145,8 @@ impl Hold {
     /// the caller should [`Self::ask`] it now; false while an ask of it is
     /// still in flight.
     pub(super) fn lost_log(&self, target: NodeId) -> bool {
-        if self.app.join_floor() == 0 {
-            return false;
-        }
+        // Marked even while the applied floor is 0: on a new leader it can
+        // lag, and `check` judges the mark against the entries it sends.
         self.versions
             .lock()
             .expect("versions lock")
@@ -144,9 +160,6 @@ impl Hold {
     /// or fails. True when the caller should [`Self::ask`] it now; false
     /// while an earlier mark is still unsettled or an ask is in flight.
     pub(super) fn unconfirmed(&self, target: NodeId) -> bool {
-        if self.app.join_floor() == 0 {
-            return false;
-        }
         let marked = self
             .versions
             .lock()

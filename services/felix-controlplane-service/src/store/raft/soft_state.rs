@@ -20,7 +20,6 @@
 //! The design is in `docs/metadata-raft-design.md` ("Liveness is leader
 //! soft state").
 use felix_common::random::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -103,6 +102,10 @@ pub(crate) enum LeaderRequest {
     Reform {
         request: crate::store::reform::ReformRequest,
     },
+    /// The level the leader settles proposals at, behind a fresh read-index,
+    /// for a follower whose own lagging join floor would decide it. A leader
+    /// that predates it fails to read it, and the asker uses its own level.
+    ProposalLevel,
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -114,9 +117,6 @@ pub(crate) struct SoftState {
     /// expired right after it was told it is alive.
     serial: tokio::sync::Mutex<()>,
     view: Mutex<Option<View>>,
-    /// The latest term in which this member, leading, saw its own blank
-    /// entry applied. Zero until then.
-    barrier_term: AtomicU64,
     /// Re-form plans and the term they were made in. A new term starts
     /// with none: a plan is only good while its leader leads.
     reform: Mutex<(u64, Arc<crate::store::reform::ReformPlans>)>,
@@ -165,7 +165,6 @@ impl SoftState {
             machine: Arc::clone(&machine),
             serial: tokio::sync::Mutex::new(()),
             view: Mutex::new(None),
-            barrier_term: AtomicU64::new(0),
             reform: Mutex::new((0, Default::default())),
         });
         // Weak: the machine outlives nothing it points at.
@@ -240,12 +239,14 @@ impl SoftState {
         // The lease is judged here at every level: its only write,
         // `TakePlacementLease`, is one every member applies, and the log
         // holds no renewals to judge a take by.
-        // Re-form plans write nothing, so need no level either.
+        // Re-form plans and the proposal level write nothing, so need no
+        // level either.
         let exempt = matches!(
             request,
             LeaderRequest::AcquirePlacementLease { .. }
                 | LeaderRequest::ReleasePlacementLease { .. }
                 | LeaderRequest::Reform { .. }
+                | LeaderRequest::ProposalLevel
         );
         let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
         if !exempt && self.handle.cluster_version().await < needs {
@@ -359,6 +360,14 @@ impl SoftState {
                 }
                 Ok(Ok(MetaResponse::Assignments { assignments }))
             }
+            LeaderRequest::ProposalLevel => {
+                let (_, level) = self
+                    .handle
+                    .leader_level(CONFIRM_WITHIN)
+                    .await
+                    .map_err(|_| NotLeader)?;
+                Ok(Ok(MetaResponse::Level { level }))
+            }
             LeaderRequest::ShardAssignmentHead => {
                 self.confirm_read().await?;
                 Ok(self
@@ -376,20 +385,12 @@ impl SoftState {
 
     /// Wait until this member has applied the blank entry that opened `term`,
     /// so nothing is judged on state missing what earlier terms committed.
-    /// Only the first request of a term pays for the read-index; see
-    /// `docs/metadata-raft-design.md` ("Liveness is leader soft state").
     async fn await_own_blank(&self, term: u64) -> Result<(), NotLeader> {
-        if self.barrier_term.load(Ordering::Acquire) == term {
-            return Ok(());
+        if self.handle.await_own_blank(term, CONFIRM_WITHIN).await {
+            Ok(())
+        } else {
+            Err(NotLeader)
         }
-        self.confirm_read().await?;
-        // A read-index from a later term proves nothing about this one; the
-        // caller retries.
-        if self.handle.current_term() != term {
-            return Err(NotLeader);
-        }
-        self.barrier_term.fetch_max(term, Ordering::AcqRel);
-        Ok(())
     }
 
     /// A read-index before answering a read, bounded as a heartbeat's is.

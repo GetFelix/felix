@@ -240,9 +240,9 @@ impl HttpNetwork {
 
     /// Entries and snapshots go only to a member not known to be below the
     /// group's floor ([`super::hold`]); otherwise it reads as unreachable.
-    fn hold_back(&self) -> Result<(), Unreachable<TypeConfig>> {
+    fn hold_back(&self, entries: &[super::types::Entry]) -> Result<(), Unreachable<TypeConfig>> {
         self.hold
-            .check(self.target)
+            .check(self.target, entries)
             .map_err(|held| Unreachable::new(&held))
     }
 
@@ -322,7 +322,7 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
         mut rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendResult<TypeConfig>, RPCError<TypeConfig>> {
-        if let Err(held) = self.hold_back() {
+        if let Err(held) = self.hold_back(&rpc.entries) {
             if !rpc.entries.is_empty() {
                 return Err(RPCError::Unreachable(held));
             }
@@ -417,7 +417,8 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
         cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
         _option: RPCOption,
     ) -> Result<SnapshotResponse<TypeConfig>, StreamingError<TypeConfig>> {
-        self.hold_back()?;
+        // Built from applied state, so the applied floor covers it.
+        self.hold_back(&[])?;
         let head = wire::SnapshotHead {
             vote: (&vote).into(),
             meta: (&snapshot.meta).into(),

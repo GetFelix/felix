@@ -217,6 +217,14 @@ impl RaftHandle {
         self.level().await.counting_unknown_at(unknown)
     }
 
+    /// [`Self::cluster_version_with_unknown_at`], or `None` when a member
+    /// that never answered is counted at `unknown` and that decides the
+    /// level.
+    pub(crate) async fn level_unless_unknown_decides(&self, unknown: u16) -> Option<u16> {
+        let level = self.level().await;
+        (!level.unknown || unknown >= level.answered).then_some(level.answered)
+    }
+
     /// The lowest level every member has said it can apply, or `None` while
     /// some member of the current membership has never answered since this
     /// process started. For a decision that may act only on evidence.

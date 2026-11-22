@@ -881,6 +881,11 @@ pub enum MetaResponse {
     AssignmentHead {
         next_seq: u64,
     },
+    /// The leader's confirmed proposal level, for
+    /// `LeaderRequest::ProposalLevel`. Never the answer to a command.
+    Level {
+        level: u16,
+    },
     /// `PutShardAssignmentIf` found another generation and wrote nothing.
     StaleAssignment {
         current_generation: Option<u64>,

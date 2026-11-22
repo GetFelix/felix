@@ -140,9 +140,10 @@ pub trait ControlPlaneStore: Send + Sync {
     }
 
     /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
-    /// part-way through an upgrade answers no.
-    async fn create_resources_ready(&self) -> bool {
-        true
+    /// part-way through an upgrade answers no. An error when the level
+    /// cannot be read, such as a leader that cannot confirm its term.
+    async fn create_resources_ready(&self) -> StoreResult<bool> {
+        Ok(true)
     }
 
     /// Whether every control-plane member runs this build's metadata level.

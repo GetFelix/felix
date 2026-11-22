@@ -937,3 +937,64 @@ async fn overlapping_mounts_are_refused_the_same_on_every_member() {
         ]
     );
 }
+
+/// A leader judges the entries it sends by `floor_of` before it applies
+/// them (#2878), so `floor_of` must be the floor apply raises to: for every
+/// command, a finalized feature, an entry above the released level, and an
+/// import that brings a finalized feature.
+#[tokio::test]
+async fn floor_of_is_the_floor_apply_raises() {
+    use crate::raft::AppStateMachine;
+    let jump_hash = felix_common::fleet::JUMP_HASH_ROUTING.name().to_string();
+    let mut broker = node("broker-a", 7001);
+    broker.status.features.insert(jump_hash.clone());
+    let register = MetaCommand::RegisterNodeInFleet { node: broker };
+    let finalize = MetaCommand::FinalizeFleetFeature {
+        feature: jump_hash,
+        hold_unformed: false,
+        hold_formed: false,
+    };
+    let source = machine();
+    source.apply(&encode_command(&register)).await;
+    source.apply(&encode_command(&finalize)).await;
+    let import = MetaCommand::ImportState {
+        state: Box::new(source.store().export_state().await),
+        overwrite: true,
+        mark_unplaced: false,
+        raise_incarnation: false,
+        lose_ordered: false,
+    };
+    let flagged = MetaCommand::DeleteTenant {
+        names: false,
+        unassign: false,
+        tenant_id: "missing".to_string(),
+        take_shards: true,
+        incarnations: false,
+    };
+
+    let importing = machine();
+    let bytes = encode_command(&import);
+    assert_eq!(importing.floor_of(&bytes), 3, "the import's feature");
+    importing.apply(&bytes).await;
+    assert_eq!(importing.join_floor(), 3);
+
+    let target = machine();
+    let mut commands = vec![register, finalize];
+    commands.extend(script());
+    commands.push(flagged);
+    let mut seen = std::collections::BTreeSet::new();
+    for command in commands {
+        let bytes = encode_command(&command);
+        let before = target.join_floor();
+        let raises = target.floor_of(&bytes);
+        target.apply(&bytes).await;
+        assert_eq!(
+            target.join_floor(),
+            before.max(raises),
+            "{command:?} raised the floor past what floor_of said"
+        );
+        seen.insert(raises);
+    }
+    assert_eq!(target.join_floor(), 10);
+    assert!(seen.contains(&3) && seen.contains(&10), "{seen:?}");
+}

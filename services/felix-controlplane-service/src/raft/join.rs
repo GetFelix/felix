@@ -845,7 +845,14 @@ impl RaftHandle {
     /// Added anyway, it would refuse those entries while the others apply
     /// them, and the two would diverge. Once there is a floor, a member that
     /// does not answer is refused too: nothing says it meets it.
+    ///
+    /// Read behind a fresh read-index on every join, not the term's cached
+    /// barrier, so the floor holds every level the log committed so far,
+    /// this term's included.
     pub(super) async fn admit(&self, id: NodeId, addr: &str) -> anyhow::Result<()> {
+        if !self.confirm_leadership_within(self.write_timeout).await {
+            anyhow::bail!("not the raft leader, or could not confirm it; retry on the leader");
+        }
         let floor = self.app.join_floor();
         if floor == 0 {
             return Ok(());
