@@ -129,6 +129,9 @@ Actions:
   over `cluster:*` for the tenant catalog (create, list, delete)
 - `ns.manage`, `stream.manage`, `cache.manage`: the control plane's resource
   API, over the namespace, stream or cache being changed
+- `stream.create`: create the streams under a stream object and nothing else;
+  never in a broker token. See
+  [Create-only grants](security/rbac.md#create-only-grants)
 - `stream.publish`, `stream.subscribe`
 - `stream.trim`: a conditional head trim (`trim_before`) over the stream.
   See [Head trims](#head-trims)

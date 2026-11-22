@@ -713,3 +713,36 @@ fn narrowing_passes_a_template_through_but_never_makes_one() {
     assert_eq!(narrow_object(&wide, &template), None);
     assert_eq!(narrow_object(&template, &template), None);
 }
+
+/// `stream.create` names streams it may create, so a policy write takes it
+/// over a stream object and nothing wider or sideways.
+#[test]
+fn stream_create_takes_only_a_stream_object() {
+    let admin = [ParsedObject::Tenant {
+        tenant_id: "t1".to_string(),
+    }];
+    let rule = |object: &str| PolicyRule {
+        subject: "role:admission".to_string(),
+        object: object.to_string(),
+        action: ACTION_STREAM_CREATE.to_string(),
+    };
+    for object in [
+        "stream:t1/payments/orders",
+        "stream:t1/payments/*",
+        "stream:t1/*/*",
+    ] {
+        validate_new_rule_allowed(&admin, "t1", &rule(object)).expect(object);
+    }
+    for object in [
+        "tenant:t1",
+        "namespace:t1/payments",
+        "namespace:t1/*",
+        "cache:t1/payments/sessions",
+        "group:t1/payments/orders/billing",
+    ] {
+        assert!(
+            validate_new_rule_allowed(&admin, "t1", &rule(object)).is_err(),
+            "{object}"
+        );
+    }
+}

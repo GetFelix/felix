@@ -483,3 +483,108 @@ async fn a_token_is_bound_to_its_tenant() {
         StatusCode::FORBIDDEN,
     );
 }
+
+/// `stream.create` makes streams inside its scope and does nothing else: not
+/// read, change or delete them, not even the ones it made, and not mount them.
+#[tokio::test]
+async fn a_create_only_grant_creates_and_does_nothing_else() {
+    let h = harness().await;
+    let creator = h
+        .credentials
+        .token("t1", &["stream.create:stream:t1/payments/*"]);
+    let post = |uri: &str, body: serde_json::Value| json_request_as("POST", uri, &creator, body);
+    let streams = "/v1/tenants/t1/namespaces/payments/streams";
+    let batch = "/v1/tenants/t1/namespaces/payments/resources";
+    let mut mounted = stream_body("mounted");
+    mounted["durable"] = serde_json::json!(true);
+    mounted["mount"] = serde_json::json!("sensors");
+
+    let cases = [
+        (post(streams, stream_body("orders")), StatusCode::CREATED),
+        // A retry of the same create is answered, not refused.
+        (post(streams, stream_body("orders")), StatusCode::OK),
+        (
+            post(
+                "/v1/tenants/t1/namespaces/billing/streams",
+                stream_body("invoices"),
+            ),
+            StatusCode::FORBIDDEN,
+        ),
+        (post(streams, mounted.clone()), StatusCode::FORBIDDEN),
+        (
+            post(
+                batch,
+                serde_json::json!({ "streams": [stream_body("refunds")] }),
+            ),
+            StatusCode::CREATED,
+        ),
+        (
+            post(batch, serde_json::json!({ "streams": [mounted] })),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            post(
+                batch,
+                serde_json::json!({ "caches": [{ "cache": "sessions", "display_name": "Sessions" }] }),
+            ),
+            StatusCode::FORBIDDEN,
+        ),
+        (request_as("GET", streams, &creator), StatusCode::FORBIDDEN),
+        (
+            request_as("GET", &format!("{streams}/orders"), &creator),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            json_request_as(
+                "PATCH",
+                &format!("{streams}/orders"),
+                &creator,
+                serde_json::json!({ "durable": true }),
+            ),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            request_as("DELETE", &format!("{streams}/orders"), &creator),
+            StatusCode::FORBIDDEN,
+        ),
+    ];
+    for (index, (request, expected)) in cases.into_iter().enumerate() {
+        assert_eq!(status(&h, request).await, expected, "case {index}");
+    }
+    let mut made: Vec<String> = h
+        .store
+        .list_streams("t1", "payments")
+        .await
+        .expect("list")
+        .into_iter()
+        .map(|stream| stream.stream)
+        .collect();
+    made.sort();
+    assert_eq!(made, ["orders", "refunds"]);
+}
+
+/// A policy write refuses `stream.create` over anything but a stream, but a
+/// bootstrap seed is not checked. A tenant-wide one grants nothing.
+#[tokio::test]
+async fn a_create_grant_over_a_wider_object_creates_nothing() {
+    let h = harness().await;
+    for object in ["tenant:t1", "namespace:t1/payments"] {
+        let token = h
+            .credentials
+            .token("t1", &[&format!("stream.create:{object}")]);
+        assert_eq!(
+            status(
+                &h,
+                json_request_as(
+                    "POST",
+                    "/v1/tenants/t1/namespaces/payments/streams",
+                    &token,
+                    stream_body("orders"),
+                ),
+            )
+            .await,
+            StatusCode::FORBIDDEN,
+            "{object}"
+        );
+    }
+}

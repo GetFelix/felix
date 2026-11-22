@@ -20,16 +20,14 @@ use crate::api::error::{
     ApiError, api_conflict, api_error, api_internal, api_not_found, api_validation_error,
 };
 use crate::api::streams::{
-    jump_hash_finalized, new_stream, proposes_incarnation, same_stream, stream_key, stream_object,
+    StreamCreators, jump_hash_finalized, new_stream, proposes_incarnation, same_stream, stream_key,
     validate_stream_request,
 };
 use crate::api::types::{
     BatchCache, BatchItemStatus, BatchStream, ResourceBatchRequest, ResourceBatchResponse,
 };
 use crate::auth::bearer::{Refusal, refused, tenant_scopes_for};
-use crate::auth::rbac::authorize::{
-    ACTION_CACHE_MANAGE, ACTION_STREAM_MANAGE, ParsedObject, object_within_scope,
-};
+use crate::auth::rbac::authorize::{ACTION_CACHE_MANAGE, ParsedObject, object_within_scope};
 use crate::model::{Cache, Stream, StreamRouting, validate_identifier};
 use crate::store::StoreError;
 
@@ -208,7 +206,8 @@ pub(crate) async fn create_resources(
     ))
 }
 
-/// `stream.manage` and `cache.manage` over every item, checked before
+/// `stream.manage` or `stream.create` over every stream (a mount needs
+/// `stream.manage`) and `cache.manage` over every cache, checked before
 /// anything is read so a refusal says nothing about what exists.
 async fn authorize(
     state: &AppState,
@@ -217,14 +216,12 @@ async fn authorize(
     headers: &HeaderMap,
     body: &ResourceBatchRequest,
 ) -> Result<(), ApiError> {
-    let streams: Vec<(&str, ParsedObject)> = body
-        .streams
-        .iter()
-        .map(|item| {
-            let name = item.stream.as_str();
-            (name, stream_object(tenant_id, namespace, name))
-        })
-        .collect();
+    if !body.streams.is_empty() {
+        let creators = StreamCreators::of(state, tenant_id, headers).await?;
+        for item in &body.streams {
+            creators.check(tenant_id, namespace, item)?;
+        }
+    }
     let caches: Vec<(&str, ParsedObject)> = body
         .caches
         .iter()
@@ -233,24 +230,19 @@ async fn authorize(
             (name, cache_object(tenant_id, namespace, name))
         })
         .collect();
-    for (kind, action, targets) in [
-        ("stream", ACTION_STREAM_MANAGE, streams),
-        ("cache", ACTION_CACHE_MANAGE, caches),
-    ] {
-        if targets.is_empty() {
-            continue;
-        }
-        let scopes = tenant_scopes_for(state, tenant_id, headers, action).await?;
-        for (name, target) in &targets {
-            if !scopes
-                .iter()
-                .any(|scope| object_within_scope(scope, target))
-            {
-                return Err(refused(
-                    Refusal::Forbidden,
-                    &format!("insufficient scope for {kind} {name}"),
-                ));
-            }
+    if caches.is_empty() {
+        return Ok(());
+    }
+    let scopes = tenant_scopes_for(state, tenant_id, headers, ACTION_CACHE_MANAGE).await?;
+    for (name, target) in &caches {
+        if !scopes
+            .iter()
+            .any(|scope| object_within_scope(scope, target))
+        {
+            return Err(refused(
+                Refusal::Forbidden,
+                &format!("insufficient scope for cache {name}"),
+            ));
         }
     }
     Ok(())
