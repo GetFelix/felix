@@ -490,6 +490,10 @@ impl Registry {
             _ => None,
         }
     }
+
+    fn holds(&self, shard: &ShardKey) -> bool {
+        matches!(self.slots.read().by_shard.get(shard), Some(Slot::Open(_)))
+    }
 }
 
 /// This broker's member of every Raft group it holds.
@@ -1466,6 +1470,19 @@ impl GroupRuntime {
     /// This broker's member of `shard`'s group, if it has one.
     pub fn status(&self, shard: &ShardKey) -> Option<GroupStatus> {
         self.inner.registry.get(shard).map(|group| group.status())
+    }
+
+    /// Whether this broker holds a member of `shard`: exactly when
+    /// [`Self::status`] is `Some`. Per-message paths ask this, since a
+    /// status clones the member's whole Raft metrics.
+    pub fn holds(&self, shard: &ShardKey) -> bool {
+        self.inner.registry.holds(shard)
+    }
+
+    /// [`GroupStatus::leader`]`.is_some()` for this broker's member of
+    /// `shard`, without building the status. `None` when it holds none.
+    pub fn hears_leader(&self, shard: &ShardKey) -> Option<bool> {
+        self.group(shard).map(|group| group.hears_leader())
     }
 
     /// Whether this broker holds a member of `shard` that does not lead it
