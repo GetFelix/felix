@@ -156,11 +156,16 @@ The short version:
   so a peer cannot act under no name. The node id is bound once per
   connection, and a Raft message that names another broker as its sender is
   refused.
-- **Raft messages only from members.** A shard's Raft member refuses a vote,
-  append, snapshot or read index unless the sender is in that group's own
-  membership, so a broker outside a group cannot raise its term, take its
-  vote or truncate its log
-  ([#2909](https://github.com/GetFelix/felix/issues/2909)).
+- **Raft messages only from members and placed brokers.** A shard's Raft
+  member refuses a vote, append, snapshot or read index unless the sender is
+  in that group's own membership. A copy with no membership yet, or one that
+  missed a change, also takes messages from the brokers the control plane's
+  placement or target names, as of a feed answer under a minute old. A broker
+  outside a group cannot raise its term, take its vote or truncate its log
+  ([#2909](https://github.com/GetFelix/felix/issues/2909)). On this port the
+  sender is the broker named by the certificate's DNS name; the
+  `felix:principal:raft-member:` URI SAN belongs to the control-plane Raft
+  port below.
 - **Forwarding is not authority.** A forwarded publish or cache write carries
   the client's own token, and the owner verifies it before writing. With
   subject binding on, the owner also verifies the client's certificate chain

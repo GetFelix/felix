@@ -19,7 +19,7 @@ pub(super) fn refusal(
     let Ok((_, parsed)) = x509_parser::parse_x509_certificate(candidate.as_ref()) else {
         return Some("the certificate does not parse".to_string());
     };
-    let now = now().as_secs() as i64;
+    let now = crate::clock::unix_now().as_secs() as i64;
     let validity = parsed.validity();
     if now < validity.not_before.timestamp() {
         return Some(format!(
@@ -67,19 +67,13 @@ pub fn verify_chain(
             provider.signature_verification_algorithms.all,
             &roots.roots,
             intermediates,
-            UnixTime::since_unix_epoch(now()),
+            UnixTime::since_unix_epoch(crate::clock::unix_now()),
             usage,
             None,
             None,
         )
         .map(|_| ())
         .map_err(|err| format!("the certificate does not verify against the CA as a {presenter:?} certificate: {err}"))
-}
-
-fn now() -> std::time::Duration {
-    crate::clock::system_time()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
 }
 
 /// The DNS names and IP addresses `cert` is valid for. A wildcard stands for

@@ -28,13 +28,11 @@ use rustls::sign::CertifiedKey;
 
 mod binding;
 mod client_ca;
-pub use binding::{PRINCIPAL_URI_PREFIX, check_subject_binding};
+pub use binding::{PRINCIPAL_URI_PREFIX, UriSanError, check_subject_binding, uri_sans_after};
 pub use client_ca::{ReloadingClientCa, SavedClientCa};
 mod expiry;
 mod rotation;
-pub use expiry::{
-    ChainExpiry, Presenter, UnreadableCertificate, sleep_until_unix, spread_before, until_unix,
-};
+pub use expiry::{ChainExpiry, Presenter, UnreadableCertificate, spread_before};
 pub use rotation::verify_chain;
 
 /// How often services check their certificate files for a rotation.

@@ -122,9 +122,7 @@ impl LivePeerTls {
             &provider(),
             felix_common::tls::Presenter::Client,
         )
-        .not_after(chain)
-        .unwrap_or(Some(0))
-        .map(|at| felix_common::tls::spread_before(at, CLOSE_SPREAD))
+        .close_at(chain, CLOSE_SPREAD)
     }
 
     /// Re-read everything once. The revocation list and CA go first, so a

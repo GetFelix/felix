@@ -363,6 +363,10 @@
      "path": "crates/server/felix-authz"
     },
     {
+     "name": "felix-common",
+     "path": "crates/server/felix-common"
+    },
+    {
      "name": "felix-mqtt-wire",
      "path": "crates/protocol/felix-mqtt-wire"
     },

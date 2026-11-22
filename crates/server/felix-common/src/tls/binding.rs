@@ -85,18 +85,46 @@ fn carries_principal_uri(
     if subject.is_empty() {
         return Ok(false);
     }
-    let (_, cert) = x509_parser::parse_x509_certificate(leaf.as_ref())
-        .map_err(|err| format!("the client certificate does not parse: {err}"))?;
+    let names = uri_sans_after(leaf.as_ref(), PRINCIPAL_URI_PREFIX)
+        .map_err(|err| err.describe("client"))?;
+    Ok(names.iter().any(|name| name == subject))
+}
+
+/// Why a certificate's URI SANs could not be read.
+#[derive(Debug)]
+pub enum UriSanError {
+    /// The certificate does not parse.
+    Certificate(String),
+    /// The SAN extension does not parse.
+    Extension(String),
+}
+
+impl UriSanError {
+    /// The refusal text for the certificate `whose` ("client", "peer").
+    pub fn describe(&self, whose: &str) -> String {
+        match self {
+            Self::Certificate(err) => format!("the {whose} certificate does not parse: {err}"),
+            Self::Extension(err) => format!("the {whose} certificate's SANs do not parse: {err}"),
+        }
+    }
+}
+
+/// What follows `prefix` in each of `leaf`'s URI SANs that starts with it.
+/// The one place `felix:principal:` URIs are read, for client principals and
+/// Raft members alike.
+pub fn uri_sans_after(leaf: &[u8], prefix: &str) -> std::result::Result<Vec<String>, UriSanError> {
+    let (_, cert) = x509_parser::parse_x509_certificate(leaf)
+        .map_err(|err| UriSanError::Certificate(err.to_string()))?;
     let sans = cert
         .subject_alternative_name()
-        .map_err(|err| format!("the client certificate's SANs do not parse: {err}"))?;
-    Ok(sans.is_some_and(|sans| {
-        sans.value.general_names.iter().any(|name| {
-            matches!(
-                name,
-                x509_parser::extensions::GeneralName::URI(uri)
-                    if uri.strip_prefix(PRINCIPAL_URI_PREFIX) == Some(subject)
-            )
+        .map_err(|err| UriSanError::Extension(err.to_string()))?;
+    Ok(sans
+        .into_iter()
+        .flat_map(|sans| sans.value.general_names.iter())
+        .filter_map(|name| match name {
+            x509_parser::extensions::GeneralName::URI(uri) => uri.strip_prefix(prefix),
+            _ => None,
         })
-    }))
+        .map(str::to_owned)
+        .collect())
 }

@@ -198,3 +198,33 @@ fn verify_chain_checks_the_issuer_and_the_clock() {
         .expect_err("expired");
     }
 }
+
+#[test]
+fn uri_sans_are_read_after_their_prefix_and_others_are_skipped() {
+    let mut params = rcgen::CertificateParams::new(vec!["node".to_string()]).unwrap();
+    for uri in [
+        "felix:principal:raft-member:c1:3",
+        "felix:principal:alice",
+        "https://example.test/x",
+    ] {
+        params
+            .subject_alt_names
+            .push(rcgen::SanType::URI(uri.try_into().unwrap()));
+    }
+    let key = rcgen::KeyPair::generate().unwrap();
+    let der = params.self_signed(&key).unwrap().der().clone();
+    assert_eq!(
+        uri_sans_after(&der, PRINCIPAL_URI_PREFIX).unwrap(),
+        ["raft-member:c1:3", "alice"]
+    );
+    assert_eq!(
+        uri_sans_after(&der, "felix:principal:raft-member:c1:").unwrap(),
+        ["3"]
+    );
+    assert!(uri_sans_after(&der, "nope:").unwrap().is_empty());
+    let err = uri_sans_after(b"junk", PRINCIPAL_URI_PREFIX).unwrap_err();
+    assert!(
+        err.describe("peer")
+            .starts_with("the peer certificate does not parse")
+    );
+}

@@ -30,3 +30,18 @@ fn system_time_follows_the_host_clock_without_a_simulator() {
     let after = std::time::SystemTime::now();
     assert!(before <= read && read <= after);
 }
+
+#[test]
+fn a_past_instant_is_due_now() {
+    assert!(until_unix(0).is_zero());
+    assert!(until_unix(i64::MIN).is_zero());
+    assert!(!until_unix(i64::MAX).is_zero());
+}
+
+#[cfg(feature = "wall-sleep")]
+#[tokio::test(start_paused = true)]
+async fn an_absent_end_never_returns_and_a_past_one_returns_at_once() {
+    sleep_until_unix_or_never(Some(0)).await;
+    let never = tokio::time::timeout(Duration::from_secs(3600), sleep_until_unix_or_never(None));
+    assert!(never.await.is_err());
+}

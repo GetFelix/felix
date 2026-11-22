@@ -83,12 +83,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let revoked = session.principal.revoked();
         tokio::pin!(revoked);
         let expiry = session.principal.expires_at();
-        let expired = async {
-            match expiry {
-                Some(at) => sleep_until_unix(at).await,
-                None => std::future::pending().await,
-            }
-        };
+        let expired = felix_common::clock::sleep_until_unix_or_never(expiry);
         tokio::pin!(expired);
         let silent = sleep_until(Instant::now() + keepalive);
         tokio::pin!(silent);
@@ -235,24 +230,4 @@ fn decode_end(err: &DecodeError, version: Option<Version>) -> End {
         },
     };
     End::Disconnect(err.reason_code(), Some(reason))
-}
-
-/// Sleep until `unix_secs` on the wall clock. Re-checked on wake, so a
-/// suspended host or a stepped clock does not carry the connection past it.
-async fn sleep_until_unix(unix_secs: i64) {
-    loop {
-        let left = until_unix(unix_secs);
-        if left.is_zero() {
-            return;
-        }
-        tokio::time::sleep(left.min(Duration::from_secs(60))).await;
-    }
-}
-
-/// Time from now until `unix_secs`, zero if it has passed.
-pub(super) fn until_unix(unix_secs: i64) -> Duration {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64);
-    Duration::from_secs((unix_secs - now).max(0) as u64)
 }

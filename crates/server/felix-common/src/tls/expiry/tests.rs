@@ -180,8 +180,17 @@ fn a_spread_close_is_never_after_not_after() {
 }
 
 #[test]
-fn a_past_instant_is_due_now() {
-    assert!(until_unix(0).is_zero());
-    assert!(until_unix(i64::MIN).is_zero());
-    assert!(!until_unix(i64::MAX).is_zero());
+fn a_close_time_fails_closed_on_an_unreadable_leaf() {
+    let root = self_signed_ca("root", (2040, 1, 1));
+    let junk = CertificateDer::from(&b"junk"[..]);
+    let expiry = expiry(&[&root]);
+    assert_eq!(
+        expiry.close_at(std::slice::from_ref(&junk), Duration::from_secs(30)),
+        Some(0)
+    );
+    assert_eq!(expiry.close_at(&[], Duration::from_secs(30)), None);
+    let chain = [leaf((2032, 1, 1), &root)];
+    assert_eq!(expiry.close_at(&chain, Duration::ZERO), Some(Y2032));
+    let at = expiry.close_at(&chain, Duration::from_secs(30)).unwrap();
+    assert!((Y2032 - 30..=Y2032).contains(&at), "{at}");
 }
