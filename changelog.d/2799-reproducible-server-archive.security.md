@@ -1,0 +1,1 @@
+- The Linux x86_64 server archive is built reproducibly. The release builds it twice on separate runners and stops if the sha256 differ; [Reproduce a release](https://docs.getfelix.dev/security/reproducible-builds/) shows how to rebuild and compare.
