@@ -2260,9 +2260,14 @@ one wake-up of the thread runs every ready task of every group on it.
   blocking task and is awaited. A caller of the log thread on a group
   thread does not poll for its answer, since other groups' tasks are
   waiting behind it.
-- A hot group cannot keep a thread to itself: the thread runs ready tasks
-  in turn, and tokio makes a task that keeps finding work on channels give
-  the thread up after a bounded number of steps.
+- A hot group shares its thread: the thread runs ready tasks in turn, and
+  tokio makes a task that keeps finding work on channels give the thread up
+  after a bounded number of steps. The state machine gives it up the same
+  way while it applies a long run of entries. A single step that takes long
+  (a large snapshot cut, say) still delays the thread's other groups.
+- The peer transport's tasks run on the broker's IO runtimes. With those
+  turned off (`FELIX_PUMP_COLOCATE=0`), a connection dialled from a group
+  thread runs its pumps there.
 - A panic in a group task ends only that task, as on the broker runtime.
   The thread and its other groups keep running.
 

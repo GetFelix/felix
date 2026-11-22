@@ -815,11 +815,12 @@ impl Group {
         let started = Raft::new(member.clone(), config, network, log.clone(), machine);
         // Started on its group thread, openraft spawns all its tasks there.
         let started = match &thread {
-            Some(thread) => thread
-                .handle()
-                .spawn(started)
-                .await
-                .map_err(|err| OpenError::Raft(err.to_string()))?,
+            // Aborted if this open is dropped, as awaiting it here would be.
+            Some(thread) => {
+                tokio_util::task::AbortOnDropHandle::new(thread.handle().spawn(started))
+                    .await
+                    .map_err(|err| OpenError::Raft(err.to_string()))?
+            }
             None => started.await,
         };
         let raft = started.map_err(|err| OpenError::Raft(err.to_string()))?;

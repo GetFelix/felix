@@ -792,6 +792,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // answer finds its commit already published and is not woken again.
         let mut answers = Vec::new();
         while let Some(next) = entries.next().await {
+            // A long run gives the thread up now and then: on a group
+            // thread the other groups' tasks wait behind it.
+            tokio::task::consume_budget().await;
             let (entry, responder) = match next {
                 Ok(next) => next,
                 Err(err) => {

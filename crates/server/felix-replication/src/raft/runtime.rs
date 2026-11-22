@@ -1578,7 +1578,8 @@ impl GroupRuntime {
     }
 
     /// How many groups run on each group thread. Empty without them.
-    pub fn group_thread_loads(&self) -> Vec<usize> {
+    #[cfg(test)]
+    pub(crate) fn group_thread_loads(&self) -> Vec<usize> {
         self.inner
             .threads
             .as_ref()

@@ -36,25 +36,29 @@ pub(crate) struct Placed {
 impl GroupThreads {
     /// Start `count` threads. `count` must be at least one.
     pub(crate) fn start(count: usize) -> std::io::Result<Self> {
-        let stop = CancellationToken::new();
-        let mut threads = Vec::with_capacity(count);
+        // Built up in place, so a thread that fails to start drops the
+        // pool and stops the ones already started.
+        let mut pool = Self {
+            threads: Vec::with_capacity(count),
+            stop: CancellationToken::new(),
+        };
         for at in 0..count {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
             let handle = runtime.handle().clone();
-            let stopped = stop.clone();
+            let stopped = pool.stop.clone();
             std::thread::Builder::new()
                 .name(format!("felix-raft-group-{at}"))
                 // The runtime is dropped here, off any async context, once
                 // the stop comes. Tasks still on it are dropped with it.
                 .spawn(move || runtime.block_on(stopped.cancelled()))?;
-            threads.push(GroupThread {
+            pool.threads.push(GroupThread {
                 handle,
                 placed: Arc::default(),
             });
         }
-        Ok(Self { threads, stop })
+        Ok(pool)
     }
 
     /// A place on the thread with the fewest groups. Groups never move,
@@ -73,6 +77,7 @@ impl GroupThreads {
     }
 
     /// Groups placed on each thread.
+    #[cfg(test)]
     pub(crate) fn placed(&self) -> Vec<usize> {
         self.threads
             .iter()

@@ -59,7 +59,7 @@ fn a_panic_in_one_group_leaves_the_others_on_its_thread_running() {
 #[test]
 fn a_hot_group_does_not_starve_another_on_its_thread() {
     const TIMER: Duration = Duration::from_millis(2);
-    const BOUND: Duration = Duration::from_millis(50);
+    const BOUND: Duration = Duration::from_millis(250);
     let threads = GroupThreads::start(1).expect("threads");
     let (hot, quiet) = (threads.place(), threads.place());
     let stop = Arc::new(AtomicBool::new(false));

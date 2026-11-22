@@ -1648,10 +1648,10 @@ async fn a_write_is_reported_written_and_flushed() {
     cluster.stop().await;
 }
 
-/// With group threads, each group's openraft core and its publish task run
-/// on the group's thread, and a write still commits everywhere.
+/// With group threads, each group's openraft core and the tasks it spawns
+/// run on the group's thread, and a write still commits everywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_groups_core_and_publish_task_run_on_its_group_thread() {
+async fn a_groups_core_runs_on_its_group_thread() {
     let threads = RuntimeConfig {
         group_threads: 2,
         ..timers()
