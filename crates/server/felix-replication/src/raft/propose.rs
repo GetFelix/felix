@@ -68,9 +68,9 @@ pub(crate) enum Heard {
     /// The log's write of the batch, as soon as it is on this leader's log.
     Written,
     /// openraft's answer at the apply, for a publisher that waits for the
-    /// commit anyway: one wake instead of two. The write is looked at only
-    /// if this member stops leading or stops first, so that answer is the
-    /// one [`Self::Written`] gives.
+    /// commit anyway: one wake instead of two. If this member stops
+    /// leading or stops before the answer, the publisher is told what the
+    /// write says, as with [`Self::Written`].
     Applied,
 }
 

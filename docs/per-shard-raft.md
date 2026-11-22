@@ -2898,9 +2898,9 @@ apply, not for the write or the leader's own flush first: the commit
 already puts the batch on a majority's disks, so either wait would only
 wake the publisher once more. The state machine answers a run of entries
 after it shows the run as applied, so the commit wait that follows is
-already met. If this broker stops leading before the answer comes, the
-publisher is told what the write says, as it would have been had it
-waited for the write.
+already met. If this broker stops leading, or its group stops, before the
+answer comes, the publisher is told what the write says, as it would have
+been had it waited for the write.
 
 - A batch that times out keeps its place. The publisher is answered with
   the timeout, but delivery keeps waiting for the commit, so the batches

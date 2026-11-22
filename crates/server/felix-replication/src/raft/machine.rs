@@ -789,7 +789,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // publisher however long the run.
         let mut skipped = Vec::new();
         // Answered after the publish below, so a publisher woken by its
-        // answer finds its commit already shown and is not woken again.
+        // answer finds its commit already published and is not woken again.
         let mut answers = Vec::new();
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {
@@ -870,7 +870,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         for responder in answers {
             responder.send(Applied);
         }
-        // After the publish, so the run's waiters are not held by it.
+        // After the publish and the answers, so neither is held by it.
         self.fold_back(written);
         applied
     }
