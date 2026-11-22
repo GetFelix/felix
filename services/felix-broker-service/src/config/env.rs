@@ -733,8 +733,8 @@ pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
     Ok(RaftSettings {
         lease: shard_raft_lease()?,
         elections_at_once: shard_raft_elections_at_once()?,
-        group_threads: parse_shard_raft_group_threads(
-            std::env::var("FELIX_SHARD_RAFT_GROUP_THREADS")
+        group_threads: parse_raft_group_threads(
+            std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
                 .ok()
                 .as_deref(),
         )?,
@@ -760,10 +760,12 @@ pub(crate) fn parse_shard_raft_elections_at_once(value: Option<&str>) -> Result<
     parse_count("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE", value)
 }
 
-/// `FELIX_SHARD_RAFT_GROUP_THREADS`: how many threads run the Raft groups'
-/// tasks, a few groups to each. Unset or `0` runs them on the broker runtime.
-pub(crate) fn parse_shard_raft_group_threads(value: Option<&str>) -> Result<Option<usize>> {
-    parse_count("FELIX_SHARD_RAFT_GROUP_THREADS", value)
+/// `FELIX_TEST_RAFT_GROUP_THREADS`: how many threads run the Raft groups'
+/// tasks, for tests and A/B runs. Unset keeps the count derived from the
+/// machine, and `0` runs the groups on the broker runtime. Not an operator
+/// setting.
+pub(crate) fn parse_raft_group_threads(value: Option<&str>) -> Result<Option<usize>> {
+    parse_count("FELIX_TEST_RAFT_GROUP_THREADS", value)
 }
 
 fn parse_count(name: &str, value: Option<&str>) -> Result<Option<usize>> {

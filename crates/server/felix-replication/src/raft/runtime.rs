@@ -114,8 +114,9 @@ pub struct RuntimeConfig {
     pub max_elections_at_once: usize,
     /// How many group threads run the groups' openraft tasks, a few groups
     /// to each, so wakes inside a group stay on one thread. `0` runs them
-    /// on the runtime each group is opened on. See docs/per-shard-raft.md,
-    /// "Group threads".
+    /// on the runtime each group is opened on. Defaults to
+    /// one per four cores, at most 8, and none under four cores. See
+    /// docs/per-shard-raft.md, "Group threads".
     pub group_threads: usize,
     /// How long a leader holds an append that carries only a new commit
     /// index, for the next append to carry it instead. With no write after
@@ -147,7 +148,7 @@ impl Default for RuntimeConfig {
             append_entries: 1024,
             placement: Placement::default(),
             max_elections_at_once: 64,
-            group_threads: 0,
+            group_threads: default_group_threads(),
             commit_hold: Duration::from_millis(1),
         }
     }
@@ -179,6 +180,19 @@ pub struct ElectionLoad {
 /// How long one piece of a snapshot may take to send and be answered. The
 /// last piece's answer waits for the install as well.
 pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
+
+/// One group thread per four cores the process may use, at most 8.
+///
+/// Under four cores there are none: a group thread would take half the
+/// machine or more from the broker runtime, which already has only one or
+/// two workers for the wakes to cross.
+pub(crate) fn default_group_threads() -> usize {
+    group_threads_for(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+}
+
+pub(crate) fn group_threads_for(cores: usize) -> usize {
+    (cores / 4).min(8)
+}
 
 /// `count` group threads, or none. A broker that cannot start them runs its
 /// groups on its own runtime, which is slower but the same otherwise.

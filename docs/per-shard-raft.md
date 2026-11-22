@@ -2243,9 +2243,10 @@ task that serves committed records (`follow_commits`). On the broker's
 multi-thread runtime each of those wakes can be a hop to another worker
 thread, which costs a scheduler pass and a kernel wake-up.
 
-`FELIX_SHARD_RAFT_GROUP_THREADS=<n>` (or `RuntimeConfig::group_threads`)
-runs every group's tasks on one of `n` group threads instead
-(`raft/executor.rs`). Each thread is a single-threaded tokio runtime, and a
+So a broker runs every group's tasks on a few group threads instead
+(`raft/executor.rs`): one per four cores it may use, at most 8. Under four
+cores it runs none, because a group thread would take half the machine or
+more from the broker runtime. There is no setting for it. Each thread is a single-threaded tokio runtime, and a
 group is placed on the thread with the fewest groups when it opens. It
 stays there until it closes, since a task cannot move between runtimes.
 openraft spawns its tasks on the runtime it is started from, so starting a
@@ -2275,11 +2276,14 @@ one wake-up of the thread runs every ready task of every group on it.
 - A panic in a group task ends only that task, as on the broker runtime.
   The thread and its other groups keep running.
 
-Unset or `0` keeps every group on the broker runtime, the default until
-the A/B on the perf hosts. The simulator never uses group threads. Tests
-that pause tokio's clock cannot either, because a group thread keeps time
-on its own clock. `FELIX_TEST_RAFT_GROUP_THREADS=<n>` runs the `raft::`
-unit tests on group threads.
+On the perf hosts (16 cores, so 4 group threads) this cut Raft's CPU per
+message by 12-33% in every cell, with throughput within a few points of
+running without them.
+
+The simulator never uses group threads: it runs every broker on one
+simulated runtime. `FELIX_TEST_RAFT_GROUP_THREADS=<n>` sets the count for
+tests and A/B runs, on a broker or for the `raft::` unit tests. `0` runs
+the groups without group threads, which keeps that path tested.
 
 ## Heartbeat coalescing
 

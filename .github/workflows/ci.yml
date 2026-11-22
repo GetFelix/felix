@@ -419,6 +419,10 @@ jobs:
           cargo test $PACKAGES --doc
           if [ -n "$LIB_PACKAGES" ]; then cargo test $LIB_PACKAGES --lib; fi
 
+      - name: Raft groups without group threads
+        if: needs.changes.outputs.test_lib_packages == '' || contains(needs.changes.outputs.test_lib_packages, 'felix-replication')
+        run: task test:raft-no-group-threads
+
       # Failed 74 times in 640 under load, and never alone, before cache puts
       # staged on a task of their own.
       - name: Cancelled put under load

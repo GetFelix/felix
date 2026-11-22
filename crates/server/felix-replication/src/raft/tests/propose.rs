@@ -89,16 +89,20 @@ fn lost(result: &Result<Written, CommitError>) -> &'static str {
     }
 }
 
-/// Perf item a. On one thread nothing else runs until the test waits, so
-/// the task finds every batch queued and makes one call for all of them.
+/// Perf item a. Batches queued while the publish task is not running are
+/// found together, and the task makes one call for all of them. The group's
+/// thread is held while they are queued.
 #[tokio::test]
 async fn batches_queued_together_go_to_openraft_in_one_call() {
     let (mut cluster, leader, engine, committed) = led().await;
     assert_eq!(status(&cluster, &leader).client_writes, 0);
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let held = hold_group_thread(&member.expect("group")).await;
 
     let queued: Vec<_> = (0..16)
         .map(|_| engine.propose(&shard(0), batch(&[b"one", b"two"], AckAt::Flushed)))
         .collect();
+    drop(held);
     let written = futures::future::join_all(queued).await;
 
     let term = status(&cluster, &leader).term;
@@ -112,9 +116,10 @@ async fn batches_queued_together_go_to_openraft_in_one_call() {
 }
 
 /// **A drain wakes the publish task once.** openraft answers each batch
-/// where it applies it, so nothing wakes the task to hand answers on. On
-/// one thread the task finds all 16 batches queued, makes one call, and is
-/// not polled again until every batch has committed and been applied.
+/// where it applies it, so nothing wakes the task to hand answers on. With
+/// the group's thread held while they are queued, the task finds all 16
+/// batches, makes one call, and is not polled again until every batch has
+/// committed and been applied.
 /// Timers this long keep the lease fresh however slow the runner is, so
 /// no heartbeat wait adds a poll.
 #[tokio::test]
@@ -127,11 +132,14 @@ async fn a_drain_wakes_the_publish_task_once() {
     };
     let (mut cluster, leader, engine, committed) = led_with(long).await;
     let member = cluster.runtime(&leader.broker).group(&shard(0));
-    let gate = Arc::clone(&member.expect("group").gate);
+    let member = member.expect("group");
+    let gate = Arc::clone(&member.gate);
+    let held = hold_group_thread(&member).await;
 
     let queued: Vec<_> = (0..16)
         .map(|_| engine.propose(&shard(0), batch(&[b"one", b"two"], AckAt::Flushed)))
         .collect();
+    drop(held);
     let written = futures::future::join_all(queued).await;
     let end = committed + 1 + 32;
     assert!(

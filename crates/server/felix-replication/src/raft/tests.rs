@@ -49,17 +49,43 @@ const PATIENCE: Duration = Duration::from_secs(120);
 /// The shipped timers. Shorter ones churn on a loaded machine, where an
 /// fsync can outlast a short election timeout.
 ///
-/// `FELIX_TEST_RAFT_GROUP_THREADS` runs the suite on group threads. Tests
-/// that pause tokio's clock cannot run that way: a group thread keeps time
-/// on its own clock.
+/// Group threads are the shipped count for this machine.
+/// `FELIX_TEST_RAFT_GROUP_THREADS=<n>` sets it, so `0` runs the suite with
+/// the groups on the test's runtime.
 fn timers() -> RuntimeConfig {
     RuntimeConfig {
-        group_threads: std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
-            .ok()
-            .and_then(|threads| threads.parse().ok())
-            .unwrap_or(0),
+        group_threads: test_group_threads(),
         ..RuntimeConfig::default()
     }
+}
+
+fn test_group_threads() -> usize {
+    std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
+        .ok()
+        .and_then(|threads| threads.parse().ok())
+        .unwrap_or_else(runtime::default_group_threads)
+}
+
+/// Keeps `group`'s thread busy until the returned sender is dropped, so what
+/// the test queues meanwhile is found together. `None` when the group runs
+/// on the test's own runtime, which runs nothing else until the test waits.
+async fn hold_group_thread(group: &group::Group) -> Option<std::sync::mpsc::Sender<()>> {
+    let probe = group.runtime().spawn(async {
+        std::thread::current()
+            .name()
+            .is_some_and(|name| name.starts_with("felix-raft-group-"))
+    });
+    if !probe.await.expect("probe") {
+        return None;
+    }
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (started, holding) = tokio::sync::oneshot::channel();
+    drop(group.runtime().spawn(async move {
+        let _ = started.send(());
+        let _ = held.recv();
+    }));
+    holding.await.expect("held");
+    Some(release)
 }
 
 fn shard(n: u32) -> ShardKey {
@@ -1798,9 +1824,21 @@ fn a_commands_token_is_not_serialized() {
 
 /// A group whose queue is full takes no timer check. Its checks are dropped
 /// and counted, and the other groups on the broker still get theirs.
+///
+/// The core is parked by blocking its thread, which with group threads
+/// would also stop the groups placed beside it. With at least as many
+/// threads as groups, the stuck one has its thread to itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stuck_group_does_not_hold_up_the_rest() {
-    let mut cluster = Cluster::new(false);
+    let threads = match test_group_threads() {
+        0 => 0,
+        _ => 4,
+    };
+    let config = RuntimeConfig {
+        group_threads: threads,
+        ..timers()
+    };
+    let mut cluster = Cluster::with(config, false);
     cluster.open(0).await;
     let stuck = cluster.runtime("a").group(&shard(0)).expect("group");
 
@@ -3155,6 +3193,19 @@ fn the_timers_must_make_sense() {
         ..RuntimeConfig::default()
     };
     assert!(heartbeat_past_election.raft(ShardKind::Stream).is_err());
+}
+
+#[test]
+fn group_threads_are_one_per_four_cores_and_none_under_four() {
+    assert_eq!(runtime::group_threads_for(1), 0);
+    assert_eq!(runtime::group_threads_for(3), 0);
+    assert_eq!(runtime::group_threads_for(4), 1);
+    assert_eq!(runtime::group_threads_for(16), 4);
+    assert_eq!(runtime::group_threads_for(64), 8);
+    assert_eq!(
+        RuntimeConfig::default().group_threads,
+        runtime::default_group_threads()
+    );
 }
 
 #[test]
