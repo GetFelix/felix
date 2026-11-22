@@ -220,6 +220,7 @@ impl ShardAssignment {
 
     /// The bases of every re-form up to [`Self::group_epoch`], when the
     /// record is past epoch 0 and holds one per epoch at this incarnation.
+    #[cfg(feature = "raft")]
     pub fn epoch_bases(&self) -> Option<Vec<felix_storage::raft_copy::EpochBase>> {
         let epoch = self.group_epoch();
         let bases = self
