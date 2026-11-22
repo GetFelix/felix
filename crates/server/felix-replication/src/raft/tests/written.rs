@@ -568,6 +568,60 @@ async fn led_with_a_learner() -> (Led, &'static str) {
     (led, other)
 }
 
+/// **A sole voter sends nothing for its writes, and starts sending once a
+/// member joins.** A group of one has no peer: its own written or synced
+/// copy is the majority, so a write costs no append, heartbeat or written
+/// report. Nothing decides that up front. openraft replicates to the
+/// members its membership names, so the first learner gets appends and,
+/// once a `Quorum` write has waited on the count, written reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_sends_nothing_until_a_member_joins() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const WRITES: usize = 100;
+    let mut cluster = Cluster::new(true);
+    cluster.open(0).await;
+    let runtime = cluster.runtime("a");
+    let formed = runtime.initialize(&shard(0), set(&["a"])).await;
+    formed.expect("initialize");
+    let leads = || {
+        let status = runtime.status(&shard(0))?;
+        let ready = status.role == Role::Leader && status.committed == status.last_index;
+        ready.then_some(status.member)
+    };
+    let leader = eventually(leads).await;
+    let engine = RaftEngine::new(runtime.clone());
+    let mut led = Led {
+        cluster,
+        leader,
+        engine,
+    };
+    let sent = || led.cluster.net.sent.load(Relaxed);
+    let before = sent();
+    for _ in 0..WRITES {
+        let written = led.prime().await;
+        let strict = led.acked(written, AckAt::Flushed).await;
+        strict.expect("acknowledged at its commit");
+    }
+    assert_eq!(
+        sent() - before,
+        0,
+        "a sole voter sent messages for its writes"
+    );
+    assert!(led.cluster.net.written_reports.lock().is_empty());
+
+    let group = led.group();
+    let joined = group.raft().add_learner(member("c"), EmptyNode {}, true);
+    joined.await.expect("the learner joined");
+    let joined = sent();
+    assert!(joined > before, "the learner was sent nothing");
+    let written = led.prime().await;
+    led.told_by("c", written).await;
+    assert!(sent() > joined, "the learner's report was not sent");
+    let reports = led.cluster.net.written_reports.lock().clone();
+    assert!(reports.iter().all(|from| from == "c"), "{reports:?}");
+    led.cluster.stop().await;
+}
+
 /// The acknowledgement comes while no follower has fsynced the record, so
 /// nothing has committed it, and it moves neither the commit index nor the
 /// read bound. A leader nobody waited on this way asks for no report.
