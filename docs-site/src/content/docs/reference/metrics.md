@@ -377,6 +377,7 @@ Token issue, refresh and revocation on the control plane.
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
 | `felix_controlplane_auth_rejected_total` | counter | `reason` | Credential refusals, by `reason` from a closed set. |
+| `felix_audit_records_dropped_total` | counter | `reason` | [Audit records](/security/audit-log/) not committed: `rate_limited`, `busy`, `store`, `level_pending`, `closed`. |
 | `felix_bootstrap_attempts_total` | counter | `outcome`, `reason` | Tenant bootstrap attempts. Bootstrap is presented once per tenant by an operator, so anything but the normal outcomes is a misconfigured deploy or someone probing. |
 | `felix_delegated_tokens_issued_total` | counter | - | Delegated tokens minted. |
 | `felix_refresh_tokens_issued_total` | counter | `via` | Refresh tokens issued, by how (`via`). |
@@ -404,7 +405,7 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_forwarded_proposals_total` | counter | - | Proposals a follower forwarded to the leader. Informational; forwarding is correct, one hop more. |
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |
 | `felix_meta_raft_write_timeouts_total` | counter | - | Proposals that ran out their whole budget, which means no leader or no quorum. Alert on this. |
-| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`: `cluster_id`, `token`, or `target` for a request meant for another member. |
+| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`: `cluster_id`, `token`, `target` for a request meant for another member, or `command` for a proposal a peer may not send (an import, or audit records under another member's name). |
 | `felix_meta_raft_peer_token_accepted_total` | counter | `token` | Raft peer requests accepted, by which configured token they carried: `current`, `next` or `previous`. When `previous` stops growing during a rotation, nothing sends the old token. |
 | `felix_meta_raft_unsupported_commands_total` | counter | - | Commands this member's build does not understand. In a mixed-version group the member's state now differs from a newer leader's. |
 

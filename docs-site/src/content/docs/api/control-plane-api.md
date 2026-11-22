@@ -257,6 +257,15 @@ tenant by hand. See [Revoking a principal](https://github.com/GetFelix/felix/blo
   "tenant_id", "principal_id", "revoked_at"}], "next_seq"}`, each principal
   once at its latest revocation, `principal_id` `*` for a whole tenant.
 
+### Audit log
+
+- `GET /v1/audit?after=<seq>&limit=<n>` -> requires `audit.view:cluster:*`.
+  Up to `n` (default 100, at most 1000) records after `seq`, oldest first:
+  `{"records": [{"seq", "at_ms", "member", "listener", "peer", "method",
+  "route", "path", "tenant", "subject", "actor", "cert_sha256", "credential",
+  "status", "refusal", "suppressed"}], "oldest_seq", "last_seq"}`. Fields
+  that do not apply are left out. See [Audit log](/security/audit-log/).
+
 ### Admin API: Refresh-token revocation and signing keys
 
 Both require `tenant.manage` on `tenant:{tenant_id}`.

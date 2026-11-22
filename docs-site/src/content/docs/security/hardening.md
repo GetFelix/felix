@@ -355,6 +355,7 @@ All of these are in the [metrics reference](/reference/metrics/).
 | `felix_broker_peer_inbound_rejected_total` | Refused handshakes on the internal port. |
 | `felix_quic_auth_timeout_total`, `felix_kafka_refused_total`, `felix_mqtt_refused_total` | Connections that never authenticate, or are refused, by `reason`. |
 | `felix_lease_tokens_issued_total` | An unexpected rate of lease token mints. |
+| `felix_audit_records_dropped_total` | Any increase other than `reason="rate_limited"`: [audit records](/security/audit-log/) were not committed. Ship the `felix_audit` log target too. |
 
 Felix does not export certificate expiry times. Watch them with your
 certificate tooling, since a connection closes at `notAfter`.
