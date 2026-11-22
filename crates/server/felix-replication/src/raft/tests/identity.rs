@@ -914,8 +914,16 @@ async fn power_cut_keeps(acked: Acked) {
         .runtime(&leader.broker)
         .group(&shard(0))
         .expect("group");
+    // An fsynced append answer counts as a report too, and when it is ready
+    // first the written report is dropped. Waiting for the marker as well
+    // keeps this on the path where the follower vouched. That the report
+    // waits for the marker is tested on its own above.
+    let vouched = || {
+        sim_fs::entry_is_durable(&root_of(failing), run_state::VOUCHED_UNSYNCED_FILE_NAME)
+            .expect("simulated root")
+    };
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while heard.reports().from(&old).is_none() {
+    while heard.reports().from(&old).is_none() || !vouched() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the follower never vouched"
@@ -932,13 +940,6 @@ async fn power_cut_keeps(acked: Acked) {
             .expect("acknowledged");
         cluster.committed_everywhere(0, again.end - 1).await;
     }
-    // The leader counts this copy from here on, so the marker has to be on
-    // the device already, not only in the page cache.
-    assert!(
-        sim_fs::entry_is_durable(&root_of(failing), run_state::VOUCHED_UNSYNCED_FILE_NAME)
-            .expect("simulated root"),
-        "a report left before its marker was synced"
-    );
     let log = logs.remove(failing).expect("log");
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while log.durable_offset() < log.tail_offset().await.expect("tail") {
