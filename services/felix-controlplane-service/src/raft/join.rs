@@ -846,13 +846,11 @@ impl RaftHandle {
     /// them, and the two would diverge. Once there is a floor, a member that
     /// does not answer is refused too: nothing says it meets it.
     ///
-    /// Read only once this term's blank entry has applied, so the floor is
-    /// not older than the committed log.
+    /// Read behind a fresh read-index on every join, not the term's cached
+    /// barrier, so the floor holds every level the log committed so far,
+    /// this term's included.
     pub(super) async fn admit(&self, id: NodeId, addr: &str) -> anyhow::Result<()> {
-        if !self
-            .await_own_blank(self.current_term(), self.write_timeout)
-            .await
-        {
+        if !self.confirm_leadership_within(self.write_timeout).await {
             anyhow::bail!("not the raft leader, or could not confirm it; retry on the leader");
         }
         let floor = self.app.join_floor();

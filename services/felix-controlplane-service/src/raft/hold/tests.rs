@@ -707,9 +707,11 @@ async fn leader(dir: &std::path::Path, app: Arc<dyn AppStateMachine>) -> crate::
 }
 
 /// Raises its floor to 12 on applying `raise`, which waits for `gate`.
+/// `lvl` depends on the level, and the levels it is settled at are kept.
 struct GatedApp {
     floor: Arc<AtomicU16>,
     gate: Arc<tokio::sync::Semaphore>,
+    settled: Arc<std::sync::Mutex<Vec<u16>>>,
 }
 
 #[async_trait::async_trait]
@@ -731,23 +733,48 @@ impl AppStateMachine for GatedApp {
     fn join_floor(&self) -> u16 {
         self.floor.load(Ordering::SeqCst)
     }
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        command == b"lvl"
+    }
+    fn settle_for_level(&self, _command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        self.settled.lock().expect("settled").push(level);
+        Ok(None)
+    }
 }
 
-/// A leader on [`GatedApp`] with `raise` committed but not applied, the
-/// gate that lets it apply, and the write waiting on it.
-async fn leader_with_unapplied_raise(
-    dir: &std::path::Path,
-) -> (
-    crate::raft::RaftHandle,
-    Arc<tokio::sync::Semaphore>,
-    tokio::task::JoinHandle<anyhow::Result<Vec<u8>>>,
-) {
+/// A leader on [`GatedApp`], the gate that lets `raise` apply, and the
+/// levels `lvl` was settled at. It has a learner that never answers, so
+/// the group's level counts at the join floor.
+struct Gated {
+    handle: crate::raft::RaftHandle,
+    gate: Arc<tokio::sync::Semaphore>,
+    settled: Arc<std::sync::Mutex<Vec<u16>>>,
+}
+
+async fn gated_leader(dir: &std::path::Path) -> Gated {
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let settled = Arc::<std::sync::Mutex<Vec<u16>>>::default();
     let app = GatedApp {
         floor: Arc::default(),
         gate: Arc::clone(&gate),
+        settled: Arc::clone(&settled),
     };
     let handle = leader(dir, Arc::new(app)).await;
+    handle
+        .add_learner_without_waiting(3, "127.0.0.1:1".to_string())
+        .await
+        .expect("add learner");
+    Gated {
+        handle,
+        gate,
+        settled,
+    }
+}
+
+/// Commits `raise` without applying it and returns the write waiting on it.
+async fn commit_unapplied_raise(
+    handle: &crate::raft::RaftHandle,
+) -> tokio::task::JoinHandle<anyhow::Result<Vec<u8>>> {
     let writer = handle.clone();
     let write = tokio::spawn(async move { writer.write(b"raise".to_vec()).await });
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -764,7 +791,39 @@ async fn leader_with_unapplied_raise(
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    (handle, gate, write)
+    write
+}
+
+/// A leader on [`GatedApp`] with `raise` committed but not applied, the
+/// gate that lets it apply, and the write waiting on it.
+async fn leader_with_unapplied_raise(
+    dir: &std::path::Path,
+) -> (
+    crate::raft::RaftHandle,
+    Arc<tokio::sync::Semaphore>,
+    tokio::task::JoinHandle<anyhow::Result<Vec<u8>>>,
+) {
+    let gated = gated_leader(dir).await;
+    let write = commit_unapplied_raise(&gated.handle).await;
+    (gated.handle, gated.gate, write)
+}
+
+/// A member at version 10 at `addr`, as its standing route answers.
+async fn standing_at_10() -> (String, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let router = axum::Router::new().route(
+        &crate::raft::peer_route("standing"),
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({ "last_log_index": 0, "version": 10, "member": 2 }))
+        }),
+    );
+    (
+        addr,
+        tokio::spawn(async move { axum::serve(listener, router).await }),
+    )
 }
 
 /// Lets `gate` open after a delay, so a caller that does not wait for
@@ -783,17 +842,7 @@ fn open_later(gate: Arc<tokio::sync::Semaphore>) -> tokio::task::JoinHandle<()> 
 async fn a_leader_admits_against_the_floor_its_log_committed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (handle, gate, write) = leader_with_unapplied_raise(dir.path()).await;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let addr = listener.local_addr().expect("addr").to_string();
-    let router = axum::Router::new().route(
-        &crate::raft::peer_route("standing"),
-        axum::routing::get(|| async {
-            axum::Json(serde_json::json!({ "last_log_index": 0, "version": 10, "member": 2 }))
-        }),
-    );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let (addr, server) = standing_at_10().await;
     let opener = open_later(gate);
     let refused = handle
         .admit(2, &addr)
@@ -816,7 +865,10 @@ async fn a_leader_settles_proposals_behind_what_its_log_committed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (handle, gate, write) = leader_with_unapplied_raise(dir.path()).await;
     let opener = open_later(gate);
-    handle.proposal_level().await.expect("leads");
+    handle
+        .proposal_level(Duration::from_secs(10))
+        .await
+        .expect("leads");
     assert_eq!(
         handle.app.join_floor(),
         12,
@@ -825,6 +877,67 @@ async fn a_leader_settles_proposals_behind_what_its_log_committed() {
     opener.await.expect("opener");
     write.await.expect("write task").expect("write");
     handle.shutdown().await.expect("shutdown");
+}
+
+/// The term's barrier passed before a raise this term committed must not
+/// let a join read the floor from before it (#2878).
+#[tokio::test]
+async fn a_join_waits_for_a_raise_committed_after_the_terms_barrier() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gated = gated_leader(dir.path()).await;
+    let handle = gated.handle;
+    assert!(
+        handle
+            .await_own_blank(handle.current_term(), Duration::from_secs(10))
+            .await
+    );
+    let write = commit_unapplied_raise(&handle).await;
+    let (addr, server) = standing_at_10().await;
+    let opener = open_later(gated.gate);
+    let refused = handle
+        .admit(2, &addr)
+        .await
+        .expect_err("admitted below the floor");
+    assert!(
+        refused.to_string().contains("supports metadata version 10"),
+        "{refused:#}"
+    );
+    opener.await.expect("opener");
+    write.await.expect("write task").expect("write");
+    handle.shutdown().await.expect("shutdown");
+    server.abort();
+}
+
+/// A write that depends on the level is settled at the floor its leader's
+/// log committed, not the one applied so far (#2878).
+#[tokio::test]
+async fn a_write_is_settled_at_the_floor_its_leaders_log_committed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gated = gated_leader(dir.path()).await;
+    let raise = commit_unapplied_raise(&gated.handle).await;
+    let opener = open_later(gated.gate);
+    gated.handle.write(b"lvl".to_vec()).await.expect("write");
+    assert_eq!(*gated.settled.lock().expect("settled"), [12]);
+    opener.await.expect("opener");
+    raise.await.expect("raise task").expect("raise");
+    gated.handle.shutdown().await.expect("shutdown");
+}
+
+/// A leader that cannot pass its barrier settles nothing.
+#[tokio::test]
+async fn a_write_is_not_settled_while_the_barrier_cannot_pass() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gated = gated_leader(dir.path()).await;
+    let raise = commit_unapplied_raise(&gated.handle).await;
+    let proposal = gated
+        .handle
+        .proposal_bytes(b"lvl", Duration::from_millis(300))
+        .await;
+    assert!(matches!(proposal, crate::raft::proposal::Proposal::Forward));
+    assert!(gated.settled.lock().expect("settled").is_empty());
+    gated.gate.add_permits(1);
+    raise.await.expect("raise task").expect("raise");
+    gated.handle.shutdown().await.expect("shutdown");
 }
 
 /// A new leader's applied floor lags the entries it sends. An entry that

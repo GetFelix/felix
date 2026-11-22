@@ -149,19 +149,18 @@ impl RaftHandle {
     /// that have not answered counted at the join floor. On the leader the
     /// floor is read only after [`Self::await_own_blank`], so a new leader
     /// does not settle a write below what the committed log already needs;
-    /// `None` if it cannot confirm that.
-    pub(crate) async fn proposal_level(&self) -> Option<u16> {
-        if self.is_leader()
-            && !self
-                .await_own_blank(self.current_term(), self.write_timeout)
-                .await
-        {
-            return None;
+    /// [`super::NoQuorum`], which callers retry, if it cannot confirm that
+    /// `within`.
+    pub(crate) async fn proposal_level(&self, within: Duration) -> Result<u16, super::NoQuorum> {
+        if self.is_leader() && !self.await_own_blank(self.current_term(), within).await {
+            return Err(super::NoQuorum::new(
+                within,
+                &anyhow::anyhow!("no quorum confirmed this term's leader"),
+            ));
         }
-        Some(
-            self.cluster_version_with_unknown_at(self.app.join_floor())
-                .await,
-        )
+        Ok(self
+            .cluster_version_with_unknown_at(self.app.join_floor())
+            .await)
     }
 
     /// The leader this member knows of, with the address its membership

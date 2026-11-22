@@ -822,7 +822,7 @@ async fn deleted_names_wait_for_every_member() {
 
     version.store(18, std::sync::atomic::Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await < 18 {
+    while store.group_level().await.unwrap_or(0) < 18 {
         assert!(std::time::Instant::now() < deadline, "level never read");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -921,7 +921,7 @@ async fn shard_renewal_waits_for_every_member() {
     // 17 itself: a member at a later level adds that level's flags.
     version.store(17, std::sync::atomic::Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await < 17 {
+    while store.group_level().await.unwrap_or(0) < 17 {
         assert!(std::time::Instant::now() < deadline, "level never read");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -1870,7 +1870,7 @@ async fn an_import_carrying_an_identity_waits_for_the_identity_level() {
     let exported = store.machine.store().export_state().await;
     let identity = exported.cluster_identity.clone().expect("identity");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await != PLACED_LEVEL {
+    while store.group_level().await.unwrap_or(0) != PLACED_LEVEL {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted"
@@ -4258,7 +4258,7 @@ async fn a_consistency_change_fences_placement_once_every_member_is_at_19() {
         std::sync::atomic::Ordering::SeqCst,
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await < super::PATCH_FENCE_LEVEL {
+    while store.group_level().await.unwrap_or(0) < super::PATCH_FENCE_LEVEL {
         assert!(std::time::Instant::now() < deadline, "level never read");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -4346,7 +4346,7 @@ async fn a_mount_waits_for_every_member() {
         std::sync::atomic::Ordering::SeqCst,
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await < super::MOUNT_LEVEL {
+    while store.group_level().await.unwrap_or(0) < super::MOUNT_LEVEL {
         assert!(std::time::Instant::now() < deadline, "level never read");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -4556,7 +4556,7 @@ async fn creates_wait_for_the_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = unrecorded_store(dir.path()).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await < super::IDENTITY_LEVEL {
+    while store.group_level().await.unwrap_or(0) < super::IDENTITY_LEVEL {
         assert!(std::time::Instant::now() < deadline, "level never read");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -4636,7 +4636,7 @@ async fn creates_wait_while_a_member_level_is_unknown() {
         .expect("add member");
     // The level read before the member joined is served for a while.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await >= super::IDENTITY_LEVEL {
+    while store.group_level().await.unwrap_or(0) >= super::IDENTITY_LEVEL {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted"
@@ -4772,7 +4772,7 @@ async fn an_internal_registration_waits_for_level_44() {
     let (store, version) =
         store_with_member_at(dir.path(), super::command::INTERNAL_ROLE_LEVEL - 1).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await != super::command::INTERNAL_ROLE_LEVEL - 1 {
+    while store.group_level().await.unwrap_or(0) != super::command::INTERNAL_ROLE_LEVEL - 1 {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted"
@@ -4848,7 +4848,7 @@ async fn a_switch_waits_for_every_member_at_its_level() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, version) = store_with_member_at(dir.path(), SWITCH_LEVEL - 1).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await != SWITCH_LEVEL - 1 {
+    while store.group_level().await.unwrap_or(0) != SWITCH_LEVEL - 1 {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted"
@@ -5098,7 +5098,7 @@ async fn a_delete_clears_report_stamps_only_from_level_37() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, version) = store_with_member_at(dir.path(), FORGET_REPORTS_LEVEL - 1).await;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await != FORGET_REPORTS_LEVEL - 1 {
+    while store.group_level().await.unwrap_or(0) != FORGET_REPORTS_LEVEL - 1 {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted"
@@ -5149,7 +5149,7 @@ async fn a_delete_clears_report_stamps_only_from_level_37() {
 
     version.store(FORGET_REPORTS_LEVEL, std::sync::atomic::Ordering::SeqCst);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while store.group_level().await != FORGET_REPORTS_LEVEL {
+    while store.group_level().await.unwrap_or(0) != FORGET_REPORTS_LEVEL {
         assert!(
             std::time::Instant::now() < deadline,
             "the member never counted at level 37"

@@ -187,7 +187,9 @@ requests in the same term skip it. The same per-term barrier
 leader decisions read from applied state: admitting a member against the
 join floor, and the level a proposal is settled at, which counts a member
 that has not answered at the join floor. Settled below what the committed log
-already needs, a write could drop a field a finalized feature relies on. The first heartbeat of a term pays for
+already needs, a write could drop a field a finalized feature relies on.
+If the barrier cannot be confirmed within one write attempt, the leader
+refuses the write and the caller retries. The first heartbeat of a term pays for
 two read-indexes, so a leader with many entries left to apply fails
 forwarded heartbeats until it catches up, and brokers retry.
 

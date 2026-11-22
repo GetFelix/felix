@@ -260,19 +260,17 @@ impl RaftStore {
     /// restarted member with a peer down dropped what the group had been
     /// storing, such as a node's storage identity.
     ///
-    /// A leader that cannot confirm its term falls back to the applied
-    /// floor: the proposal then goes through `proposal_bytes`, which settles
-    /// it again behind the barrier or forwards it.
-    async fn group_level(&self) -> u16 {
-        use crate::raft::AppStateMachine;
-        match self.handle.proposal_level().await {
-            Some(level) => level,
-            None => {
-                self.handle
-                    .cluster_version_with_unknown_at(self.machine.join_floor())
-                    .await
-            }
-        }
+    ///
+    /// On the leader the floor is read behind its term's barrier. If that
+    /// cannot be confirmed in time this errs rather than settle on a floor
+    /// older than the committed log.
+    async fn group_level(&self) -> StoreResult<u16> {
+        /// As long as one write attempt waits; the caller retries.
+        const BARRIER_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+        self.handle
+            .proposal_level(BARRIER_WAIT)
+            .await
+            .map_err(|err| StoreError::Unexpected(anyhow::Error::new(err)))
     }
 
     /// Whether a create at `level` must carry the identity mark, so the
@@ -315,22 +313,18 @@ impl RaftStore {
     /// Without the level an older member would drop the map and diverge, so
     /// the promoted leader's fence falls back to counting every answer, as
     /// before identities. Cleared before proposing.
-    async fn drop_unstorable_fence_ids(&self, assignment: &mut ShardAssignment) {
-        if !assignment.fence_storage_ids.is_empty()
-            && self.group_level().await < FENCE_STORAGE_LEVEL
-        {
+    fn drop_unstorable_fence_ids(level: u16, assignment: &mut ShardAssignment) {
+        if !assignment.fence_storage_ids.is_empty() && level < FENCE_STORAGE_LEVEL {
             assignment.fence_storage_ids.clear();
         }
         // Dropped the same way: a copy that is not named reads the set as it
         // did before identities, so it never learns it is wiped.
-        if !assignment.member_storage_ids.is_empty()
-            && self.group_level().await < MEMBER_STORAGE_LEVEL
-        {
+        if !assignment.member_storage_ids.is_empty() && level < MEMBER_STORAGE_LEVEL {
             assignment.member_storage_ids.clear();
         }
         // Dropped the same way: placement then reads the shard as it did
         // before learners, and a wiped copy still refuses to lead itself.
-        if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
+        if !assignment.learners.is_empty() && level < LEARNER_LEVEL {
             assignment.learners.clear();
         }
         // Store-owned: the apply decides it, and a value copied from the
@@ -384,7 +378,7 @@ impl RaftStore {
     /// reaches the level.
     #[cfg(test)]
     async fn deletes_take_shards(&self) -> bool {
-        Self::takes_shards_at(self.group_level().await)
+        self.group_level().await.is_ok_and(Self::takes_shards_at)
     }
 
     /// [`Self::deletes_take_shards`] at a level already read.
@@ -421,7 +415,7 @@ impl RaftStore {
     /// Propose one command and decode its outcome. A command newer than
     /// some member can apply is refused here, before it reaches the log.
     async fn propose(&self, command: MetaCommand) -> StoreResult<MetaResponse> {
-        self.propose_at(self.group_level().await, command).await
+        self.propose_at(self.group_level().await?, command).await
     }
 
     /// [`Self::propose`] at a level the caller already read and built the
@@ -502,7 +496,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_tenant(&self, tenant_id: &str) -> StoreResult<()> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         self.propose_at(
             level,
             MetaCommand::DeleteTenant {
@@ -548,7 +542,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_namespace(&self, key: &NamespaceKey) -> StoreResult<()> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         self.propose_at(
             level,
             MetaCommand::DeleteNamespace {
@@ -591,7 +585,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn create_stream(&self, mut stream: Stream) -> StoreResult<Stream> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         Self::require_mount_level(level, stream.mount.is_some())?;
         let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::decides_at(level);
@@ -621,7 +615,7 @@ impl ControlPlaneStore for RaftStore {
         patch: StreamPatchRequest,
     ) -> StoreResult<Stream> {
         // Only where it can matter, so other patches stay at level 0.
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         Self::require_mount_level(level, patch.mount.is_some())?;
         let fence =
             (patch.consistency.is_some() || patch.durable.is_some()) && level >= PATCH_FENCE_LEVEL;
@@ -642,7 +636,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_stream(&self, key: &StreamKey) -> StoreResult<()> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         self.propose_at(
             level,
             MetaCommand::DeleteStream {
@@ -689,7 +683,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn create_cache(&self, mut cache: Cache) -> StoreResult<Cache> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::caches_decide_at(level, std::slice::from_ref(&cache));
         if incarnations && cache.incarnation == 0 {
@@ -726,7 +720,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_cache(&self, key: &CacheKey) -> StoreResult<()> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         self.propose_at(
             level,
             MetaCommand::DeleteCache {
@@ -766,7 +760,7 @@ impl ControlPlaneStore for RaftStore {
         streams: Vec<Stream>,
         caches: Vec<Cache>,
     ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         Self::require_mount_level(level, streams.iter().any(|s| s.mount.is_some()))?;
         let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::caches_decide_at(level, &caches);
@@ -842,7 +836,8 @@ impl ControlPlaneStore for RaftStore {
             needs_identity: false,
         }
         .version();
-        self.group_level().await >= needs
+        // Not ready while the leader cannot confirm its term.
+        self.group_level().await.is_ok_and(|level| level >= needs)
     }
 
     async fn register_node(&self, node: Node) -> StoreResult<Node> {
@@ -866,7 +861,7 @@ impl ControlPlaneStore for RaftStore {
         // Stored without it, the node reads as one that sent none, which
         // placement cannot check a report against. Dropped first: the level
         // below is measured with it gone.
-        if node.status.storage_id.is_some() && self.group_level().await < STORAGE_IDENTITY_LEVEL {
+        if node.status.storage_id.is_some() && self.group_level().await? < STORAGE_IDENTITY_LEVEL {
             node.status.storage_id = None;
         }
         let command = MetaCommand::RegisterNodeInFleet { node: node.clone() };
@@ -1105,8 +1100,8 @@ impl ControlPlaneStore for RaftStore {
         &self,
         mut assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
-        self.drop_unstorable_fence_ids(&mut assignment).await;
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
+        Self::drop_unstorable_fence_ids(level, &mut assignment);
         match self
             .propose_at(
                 level,
@@ -1134,8 +1129,8 @@ impl ControlPlaneStore for RaftStore {
         // A pending set is never dropped, unlike the fence ids: without it a
         // cut-over takes the new set at once. Its level refuses the write
         // below 21 instead.
-        self.drop_unstorable_fence_ids(&mut assignment).await;
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
+        Self::drop_unstorable_fence_ids(level, &mut assignment);
         let joint_fence = at_least > 0 && self.joint_fence().await?;
         let at_least = honoured_at_least(at_least, level, joint_fence);
         match self
@@ -1179,7 +1174,7 @@ impl ControlPlaneStore for RaftStore {
         // Below 26 every member applies the older form, which takes only the
         // generation of a leader elected on another set, and below 27 it
         // still does for the shard's own leader.
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         match self
             .propose_at(
                 level,
@@ -1452,50 +1447,48 @@ impl ControlPlaneStore for RaftStore {
         readmits: bool,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
+        let level = self.group_level().await?;
         // Without it the leader is replaced only on its storage identity, and
         // never reclaimed. Dropped first.
-        if report.given_up && self.group_level().await < GIVEN_UP_LEVEL {
+        if report.given_up && level < GIVEN_UP_LEVEL {
             report.given_up = false;
         }
         // Without them the report is read as before: from any leader, and a
         // follower without an identity across its restarts. Dropped first.
         if (report.leader.is_some() || !report.node_incarnations.is_empty())
-            && self.group_level().await < REPORT_STAMP_LEVEL
+            && level < REPORT_STAMP_LEVEL
         {
             report.leader = None;
             report.node_incarnations.clear();
         }
         // Without them every follower is judged by the report's age alone,
         // as before identities existed. Dropped first, like `by_round`.
-        if !report.follower_storage.is_empty() && self.group_level().await < STORAGE_IDENTITY_LEVEL
-        {
+        if !report.follower_storage.is_empty() && level < STORAGE_IDENTITY_LEVEL {
             report.follower_storage.clear();
         }
         // Without them a member its leader had not reached is named by none,
         // which refuses its fence answer, as before. Dropped first.
-        if !report.inherited_storage.is_empty()
-            && self.group_level().await < INHERITED_STORAGE_LEVEL
-        {
+        if !report.inherited_storage.is_empty() && level < INHERITED_STORAGE_LEVEL {
             report.inherited_storage.clear();
         }
         // Without it the pending set stays pending, which is the safe side.
         // Dropped first.
-        if report.joint_start_acked.is_some() && self.group_level().await < PENDING_SET_LEVEL {
+        if report.joint_start_acked.is_some() && level < PENDING_SET_LEVEL {
             report.joint_start_acked = None;
         }
         // Without it a replaced copy is never re-admitted, which is the safe
         // side. Dropped first.
-        if !report.holds_start.is_empty() && self.group_level().await < LEARNER_LEVEL {
+        if !report.holds_start.is_empty() && level < LEARNER_LEVEL {
             report.holds_start.clear();
         }
         // Without it the shard waits on the leader's silence, as before.
-        if report.refused.is_some() && self.group_level().await < REFUSED_LEVEL {
+        if report.refused.is_some() && level < REFUSED_LEVEL {
             report.refused = None;
         }
         // Without it the leader is named one up, as before.
         if let Some(refused) = report.refused.as_mut()
             && refused.ballot != 0
-            && self.group_level().await < REFUSED_BALLOT_LEVEL
+            && level < REFUSED_BALLOT_LEVEL
         {
             refused.ballot = 0;
         }
@@ -1575,7 +1568,7 @@ impl ControlPlaneStore for RaftStore {
         } = &mut command
             && readmits
             && self.may_readmit(report).await
-            && self.group_level().await >= READMITTED_LEVEL
+            && self.group_level().await? >= READMITTED_LEVEL
         {
             *readmit = true;
         }
@@ -1684,7 +1677,7 @@ impl ControlPlaneStore for RaftStore {
         if !crate::model::RootSequence::moved_by(held.as_ref(), &heard) {
             return Ok(false);
         }
-        let level = self.group_level().await;
+        let level = self.group_level().await?;
         if level < ROOT_SEQUENCE_LEVEL {
             if self.root_sequence_unkept.first_at(level) {
                 tracing::warn!(
@@ -1743,7 +1736,7 @@ impl ControlPlaneStore for RaftStore {
         if !crate::model::PlacementAck::moved_by(held.as_ref(), &heard) {
             return Ok(false);
         }
-        if self.group_level().await < PLACEMENT_INCARNATION_LEVEL {
+        if self.group_level().await? < PLACEMENT_INCARNATION_LEVEL {
             return Ok(false);
         }
         match self

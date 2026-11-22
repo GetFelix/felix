@@ -964,7 +964,9 @@ impl AppStateMachine for MetadataStateMachine {
         self.floor.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// What [`Self::apply`] raises the floor to for `command`.
+    /// What [`Self::apply`] raises the floor to for `command` when it
+    /// succeeds. A command that fails at apply raises nothing, so this
+    /// can read high; it never reads low.
     fn floor_of(&self, command: &[u8]) -> u16 {
         floor_of(command)
     }

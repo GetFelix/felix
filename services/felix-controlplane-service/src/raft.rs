@@ -270,9 +270,10 @@ pub trait AppStateMachine: Send + Sync + 'static {
         0
     }
 
-    /// The level [`Self::join_floor`] rises to once `command` applies; 0 when
-    /// it raises nothing. Lets a leader whose applied state lags its log
-    /// judge the entries it sends by their own levels. Must not wait.
+    /// At least the level [`Self::join_floor`] rises to once `command`
+    /// applies; 0 when it raises nothing. Lets a leader whose applied state
+    /// lags its log judge the entries it sends by their own levels. Higher
+    /// than apply only costs a hold, never safety. Must not wait.
     fn floor_of(&self, command: &[u8]) -> u16 {
         let _ = command;
         0
