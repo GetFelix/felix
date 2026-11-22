@@ -27,6 +27,30 @@ scripts/perf/raft-parity/azure.sh teardown         # deletes the resource group;
 Add the release as a third side with `BASELINE_REF=v0.7.2 azure.sh build` after the normal
 build, then `BASELINE_REF=v0.7.2 azure.sh run` (see "Against the last release").
 
+### When you cannot ssh to the VMs
+
+Some networks block outbound ssh on every port. `scripts/perf/raft-parity/azure-inside.sh`
+then runs the same steps from inside Azure: VM 1 gets its own key, reaches all three over
+their private addresses, and runs `azure.sh` from a clone. The laptop only talks to Azure
+through `az vm run-command`, which takes 30-90 s a call and returns about 4 KB of output.
+
+```bash
+scripts/perf/raft-parity/azure-inside.sh start           # after provision, or from deallocated
+scripts/perf/raft-parity/azure-inside.sh keys            # VM 1's key on all three, hosts.env
+scripts/perf/raft-parity/azure-inside.sh checkout <sha>  # clone on VM 1 at that commit
+scripts/perf/raft-parity/azure-inside.sh launch smoke build smoke
+scripts/perf/raft-parity/azure-inside.sh state smoke     # poll; the log ends in PARITY_DONE
+scripts/perf/raft-parity/azure-inside.sh fetch smoke .scratch/parity
+ROUNDS=2 scripts/perf/raft-parity/azure-inside.sh launch run run
+scripts/perf/raft-parity/azure-inside.sh fetch run .scratch/parity
+scripts/perf/raft-parity/azure-inside.sh teardown
+```
+
+`launch` starts a systemd unit on VM 1, so the job outlives the call that started it. `fetch`
+brings back `results.md`, `results.json` and `cells.tsv` in base64 chunks and checks the
+archive's hash. VM 1 runs the operator side next to its own broker and generator, which is
+a few ssh sessions and no measurable load.
+
 What the steps do:
 
 - `provision` creates the resource group `felix-perf-parity-<NAME>` (the same naming as
