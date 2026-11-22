@@ -2333,7 +2333,7 @@ request and deleted when the release that has it is pinned. See Questions,
 Right after a leader commits, openraft sends each follower an AppendEntries
 with no entries whose only news is the new commit index. When writes come
 one at a time, that is one extra message and one extra answer per follower
-per write: at RF 3 it was a third of a leader's peer messages. And openraft
+per write. And openraft
 sends one append at a time to a follower, so the next write's append waited
 for the answer to it.
 
@@ -2360,13 +2360,18 @@ it is also its answer to the held one: the same vote, the same previous
 entry to check, and a commit index no lower. openraft needs no answer per
 request. An answer "ok through 7" acknowledges every request up to entry 7,
 the held one included, and the lease counts from the later request's send
-time, which openraft takes before the request leaves.
+time, which openraft takes before the request leaves. A held append that goes
+out alone is credited from when openraft built it, which is earlier than it
+left, so the lease errs short.
 
-What waits on it. A follower learns a commit up to 1 ms later when no write
-follows it. Applying on a follower, delivering to a follower's subscribers
+What waits on it. A follower learns a commit up to the hold later when no
+write follows it; tokio's timer fires on whole milliseconds, so the default
+hold lasts 1 to 2 ms. Applying on a follower, delivering to a follower's subscribers
 and serving a read on a follower wait for that. Under load the next append
 follows at once, and it no longer waits behind a commit-only append's round
-trip. The leader's acknowledgement to a publisher, written reports, lease
+trip. A write that comes just after the hold ends does wait: the held append
+has gone out, and openraft sends one append at a time, so that write can
+take up to one follower round trip longer than without the hold. The leader's acknowledgement to a publisher, written reports, lease
 reads, elections and heartbeats do not wait on it, and heartbeats do not go
 through this path. No member applies or decides anything differently:
 followers apply what the leader committed, only later, and Raft's safety

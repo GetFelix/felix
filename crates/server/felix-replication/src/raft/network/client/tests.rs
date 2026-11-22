@@ -118,6 +118,7 @@ async fn a_commit_only_append_goes_with_the_next_append() {
 #[tokio::test(start_paused = true)]
 async fn a_later_commit_replaces_an_earlier_one() {
     let mut follower = Follower::default();
+    let start = tokio::time::Instant::now();
     run(
         &mut follower,
         vec![append(2, 5, 5, 4), append(2, 5, 5, 5)],
@@ -125,6 +126,10 @@ async fn a_later_commit_replaces_an_earlier_one() {
     )
     .await;
     assert_eq!(follower.sent(), vec![(2, 5, 5, 5)]);
+    // The hold runs from the first one, so a stream of commits cannot keep
+    // the followers waiting.
+    let waited = follower.sent_at()[0] - start;
+    assert!(waited >= HOLD && waited < HOLD * 2, "{waited:?}");
 }
 
 #[tokio::test(start_paused = true)]
