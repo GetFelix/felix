@@ -71,6 +71,12 @@ impl Followed {
         });
     }
 
+    /// Whether no stream is followed.
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.entries.lock().is_empty()
+    }
+
     /// The state machine is gone: wake every task so it sees the commits
     /// close.
     pub(crate) fn end(&self) {

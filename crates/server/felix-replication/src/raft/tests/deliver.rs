@@ -1865,3 +1865,124 @@ async fn a_publish_answered_at_its_commit_does_not_wait_for_the_flush_too() {
     assert!(receiver.try_recv().is_err(), "delivered twice");
     cluster.stop().await;
 }
+
+/// A broker leading `led`'s stream on the leader's own log, as the broker
+/// holding the leader does once its term opens.
+async fn leading_broker(led: &Led) -> (Broker, StreamHandle) {
+    let leader = led.leader.broker.to_string();
+    let (broker, handle) = broker_on_log_of(led, &leader).await;
+    let opened = broker.lead_from_tail_if("t", "ns", "orders", 0, || true);
+    assert!(opened.await.expect("lead"), "the term opened");
+    assert!(handle.leads_engine_log());
+    (broker, handle)
+}
+
+/// Wait until `led`'s stream reads past `end` on its leader.
+async fn committed_past(handle: &StreamHandle, end: u64) {
+    eventually(|| match handle.read_bound() {
+        ReadBound::Committed(bound) => (bound >= end).then_some(()),
+        _ => None,
+    })
+    .await;
+}
+
+/// **On the broker leading the shard, a commit wakes the readers waiting at
+/// the bound with the follow task asleep, and batches answered before
+/// their commit still go out at it.** The state machine wakes the readers
+/// as it publishes the commit; left to the asleep task, a reader would
+/// wait for a publish of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leaders_commit_wakes_readers_and_releases_held_batches_inline() {
+    let mut led = led().await;
+    let (broker, handle) = leading_broker(&led).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    // Long enough for the follow task to park.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Records written past this broker's publishers: only the commit says
+    // they are there.
+    let appended = handle.appended();
+    let woken = appended.notified();
+    let mut woken = std::pin::pin!(woken);
+    woken.as_mut().enable();
+    let written = led.propose(1).await;
+    let woke = tokio::time::timeout(PATIENCE, woken).await;
+    woke.expect("a reader at the bound is woken by the commit");
+    committed_past(&handle, written.end).await;
+
+    // Each goes out well inside the release's own recheck.
+    for round in 0..5u8 {
+        leased(&led).await;
+        led.cut_followers();
+        let payload = Bytes::from(vec![round]);
+        let published = publish_on_lease(&led, &broker, &handle, payload.clone());
+        let outcome = published.await.expect("joined").expect("on the lease");
+        let (_, last) = outcome.offsets.expect("offsets");
+        nothing(&mut receiver).await;
+        led.heal();
+        committed_past(&handle, last + 1).await;
+        let released = tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await;
+        let envelope = released
+            .unwrap_or_else(|_| panic!("round {round}: not released at its commit"))
+            .expect("subscription open");
+        assert_eq!(envelope.base_offset(), Some(last));
+        assert_eq!(envelope.payloads(), [payload]);
+    }
+    led.cluster.stop().await;
+}
+
+/// **A broker deposed while its follow task sleeps delivers what was
+/// committed under the old term with no later commit to wake it.** The
+/// flip of the lead wakes the task; without it the records would wait for
+/// the next write to the shard, which may never come.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deposed_leader_delivers_the_last_commits_with_no_later_commit() {
+    let mut led = led().await;
+    let (broker, handle) = leading_broker(&led).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Written past this broker's publishers, so only a pass over the log
+    // delivers it, and a leader runs none.
+    let written = led.propose(1).await;
+    committed_past(&handle, written.end).await;
+    nothing(&mut receiver).await;
+
+    broker.follow_engine_log("t", "ns", "orders", 0).await;
+    assert!(!handle.leads_engine_log());
+    assert_eq!(
+        records(&mut receiver, 1).await,
+        [(written.end - 1, Bytes::from_static(b"proposed"))]
+    );
+    led.cluster.stop().await;
+}
+
+/// **A stream closed while its follow task sleeps ends the task and drops
+/// its entry at the next commit.** The task sees no commits while it
+/// sleeps, so the state machine tells it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_stream_ends_its_sleeping_follow_task() {
+    let mut led = led().await;
+    let leader = led.leader.broker.to_string();
+    let (broker, handle) = broker_on_log_of(&led, &leader).await;
+    let engine = RaftEngine::new(led.cluster.runtime(&leader));
+    let task = engine
+        .follow_commits(&shard(0), handle.clone())
+        .expect("a member here");
+    let opened = broker.lead_from_tail_if("t", "ns", "orders", 0, || true);
+    assert!(opened.await.expect("lead"));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!task.is_finished(), "a task follows a live stream");
+
+    let closed = broker.close_stream_shard("t", "ns", "orders", 0, None);
+    closed.await.expect("closed");
+    assert!(!handle.is_active());
+    led.propose(1).await;
+    tokio::time::timeout(PATIENCE, task)
+        .await
+        .expect("the task ended")
+        .expect("joined");
+    let followed = engine.followed(&shard(0)).expect("a member here");
+    eventually(|| followed.is_empty().then_some(())).await;
+    led.cluster.stop().await;
+}
