@@ -352,6 +352,7 @@ impl LogInner {
         let _accepting =
             matches!(condition, WriteIf::Sealing { .. }).then(|| self.replica_persisted.lock());
         let mut segments = self.segments.write();
+        crate::hops::mark(crate::hops::Stage::JobLocked);
         if segments.would_roll_within(records, self.roll_pending()) {
             // A refused record must not leave the log on a newer version.
             // Without a roll, staging the batch refuses it.
@@ -386,13 +387,16 @@ impl LogInner {
         if !holds {
             return Ok(Err(segments.tail_offset()));
         }
+        crate::hops::mark(crate::hops::Stage::JobRolled);
         segments.check_open()?;
         let stamps = self.stamps_for(segments.active(), writers, segments.tail_offset())?;
         let staged = segments.active_mut().stage_at(records, stamps)?;
         drop(segments);
+        crate::hops::mark(crate::hops::Stage::JobStaged);
 
         self.hold_append_at(HoldAt::Write);
         let wrote = staged.write();
+        crate::hops::mark(crate::hops::Stage::JobWrote);
 
         // Kept even if the caller has gone by now, as when the write ran in
         // its poll: cutting the batch back would free the preallocated blocks
@@ -400,6 +404,7 @@ impl LogInner {
         let mut segments = self.segments.write();
         let segment = segments.active().id();
         let ((first_offset, last_offset), index) = segments.active_mut().finish(staged, wrote)?;
+        crate::hops::mark(crate::hops::Stage::JobFinished);
         self.observe_marks(first_offset, records, digests);
         self.records_written
             .fetch_add(records.len() as u64, Ordering::Relaxed);

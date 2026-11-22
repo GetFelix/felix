@@ -498,6 +498,7 @@ pub(crate) enum SyncKind {
 /// An injected failure returns before the flush and before the power-loss
 /// layer sees it: a flush that reported `EIO` made nothing durable.
 fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
+    sync_trace("file");
     injected_fault()?;
     #[cfg(all(
         target_os = "linux",
@@ -519,7 +520,26 @@ thread_local! {
 }
 
 /// [`before_sync`] for a directory flush.
+/// MEASURE ONLY.
+fn sync_trace(what: &str) {
+    if std::env::var("FELIX_SYNC_TRACE").is_ok() {
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        let frames: Vec<&str> = bt
+            .lines()
+            .filter(|l| l.contains("felix_") && !l.contains("sync_trace") && !l.contains("at "))
+            .take(6)
+            .map(str::trim)
+            .collect();
+        eprintln!(
+            "SYNC {what} {:?} {}",
+            std::thread::current().name(),
+            frames.join(" < ")
+        );
+    }
+}
+
 fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
+    sync_trace("dir");
     #[cfg(test)]
     DIR_SYNCS.with(|syncs| {
         let mut names: Vec<String> = crate::fs::read_dir(path)

@@ -29,6 +29,12 @@ pub enum Stage {
     AppendBegin,
     /// The log thread started the append job.
     LogJobStart,
+    /// MEASURE ONLY: append_now sub-stages.
+    JobLocked,
+    JobRolled,
+    JobStaged,
+    JobWrote,
+    JobFinished,
     /// The log thread finished writing the batch.
     LogJobEnd,
     /// The appender's caller resumed with the reply.
@@ -53,13 +59,18 @@ pub enum Stage {
     AckSent,
 }
 
-const STAGES: usize = 16;
+const STAGES: usize = 21;
 const NAMES: [&str; STAGES] = [
     "handed",
     "dequeued",
     "proposed",
     "append_begin",
     "log_job_start",
+    "j_locked",
+    "j_rolled",
+    "j_staged",
+    "j_wrote",
+    "j_finished",
     "log_job_end",
     "log_replied",
     "written",
