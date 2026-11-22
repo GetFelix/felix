@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795307503073,
+  "lastUpdate": 1795309195193,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -82764,6 +82764,72 @@ window.BENCHMARK_DATA = {
             "range": "862.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 431.00\nmean: 946.00\nstdev: 862.06\ncv: 91.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d6f4e38e4130570bbcfb8387f40d69ca1fdb844",
+          "message": "fix(tls): control-plane Raft and bootstrap TLS re-read their files on rotation (#2815) (#2933)\n\n* fix(tls): control-plane Raft and bootstrap TLS re-read their files on rotation (#2815)\n\nThe Raft peer listener and client, and the bootstrap listener, read their\ncertificate, key and CA once, so a short-lived certificate expired under a\nrunning control plane. They now re-read every 30 s like the broker's\nlisteners. A rotated Raft certificate must pass the startup checks (names\nthe same member, not revoked) or it is refused and the old one kept. The\ncontrol-plane CA bundles and the new FELIX_RAFT_TLS_REVOKED_FILE reload on\nthe same timer, and a Raft peer connection closes at its client\ncertificate's notAfter.\n\nSpec-Unaffected: transport credential loading only; no Raft log, apply or election change.\n\n* fix(tls): validate rotated certificates and CA bundles before use (#2815)\n\n* test: request after reload\n\n* fix(tls): bootstrap rotation tests, keep_names opt-in, docs require write-then-rename (#2815)\n\n* fix(peer): a rotated broker internal certificate must verify against the internal CA (#2815)\n\n* fix(raft): take a new CA bundle and the leaf under it as a pair (#2815)\n\n* test(controlplane): the API and bootstrap listeners keep names across rotation (#2815)\n\n* fix(raft): clearing the revocation file takes an explicit marker line (#2815)\n\n* docs(tls): names are fixed across rotation, local clock, unchecked client CAs, revocation clear marker (#2815)\n\n* test(peer): margin on the expiring-certificate dial; live.rs module doc\n\n* fix(raft): put back a CA bundle taken on a waiting leaf that is then refused (#2815)\n\n* docs(raft): live.rs module doc wrap",
+          "timestamp": "2026-11-22T00:53:44Z",
+          "tree_id": "db09fa54f0a94b41a7ecdfcd767b203b3c8d690a",
+          "url": "https://github.com/GetFelix/felix/commit/2d6f4e38e4130570bbcfb8387f40d69ca1fdb844"
+        },
+        "date": 1795309181213,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 157,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 156.60\nstdev: 0.55\ncv: 0.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 214.40\nstdev: 3.21\ncv: 1.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 544,
+            "range": "413.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 544.00\nmean: 581.20\nstdev: 413.80\ncv: 71.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 206,
+            "range": "10.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 211.00\nstdev: 10.75\ncv: 5.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 431,
+            "range": "332.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 431.00\nmean: 579.00\nstdev: 332.17\ncv: 57.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1186,
+            "range": "671.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1186.00\nmean: 1450.20\nstdev: 671.78\ncv: 46.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
