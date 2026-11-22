@@ -576,6 +576,29 @@ fn record_drop(
     }
 }
 
+/// Append and fan out a committed `batch` on the caller's task when nothing
+/// is held and the read bound covers it, as a claimed batch skips the hold.
+/// Otherwise it joins the hold and `None` comes back with the batch handed
+/// on. The caller holds the batch's turn until this returns, so the next
+/// batch cannot overtake it in the ring or at a subscriber.
+pub(super) async fn release_now(handle: &StreamHandle, batch: HeldBatch) -> Option<HeldBatch> {
+    let state = &handle.state;
+    let plain = !batch.gap && batch.blanks == 0 && batch.trim.is_none();
+    #[cfg(test)]
+    let plain = plain && !state.stall_release.is_set();
+    if !plain || state.held.is_busy() || !state.read_bound().covers(batch.end()) {
+        return Some(batch);
+    }
+    let log_capacity = state.held.log_capacity().unwrap_or(1);
+    let mut completion = Completion::released(handle.clone(), batch, log_capacity);
+    // Refused only once this broker stops leading the engine's log, whose
+    // pass then delivers what committed there.
+    if completion.append().is_ok() {
+        let _ = completion.deliver().await;
+    }
+    None
+}
+
 /// Start releasing `handle`'s held batches on a task of their own.
 ///
 /// Never inline in a caller's future: a release cancelled half way would

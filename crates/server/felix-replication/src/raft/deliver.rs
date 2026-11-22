@@ -425,6 +425,14 @@ impl RaftEngine {
             let count = records.len() as u64;
             let Attribution { publisher, headers } = attribution;
             let records = with_headers(records, headers, timestamp_micros);
+            // Answered at the commit, the batch needs only to be known
+            // written before `settled` waits for the commit, which covers
+            // the flush ([`AckAt::Flushed`]). A flush wait here is one
+            // more wake per publish.
+            let ack = match (&on_lease, &on_majority) {
+                (None, None) => AckAt::Written,
+                _ => ack,
+            };
             let batch = Batch {
                 records,
                 ack,

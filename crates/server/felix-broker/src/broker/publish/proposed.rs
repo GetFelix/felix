@@ -19,7 +19,7 @@ use felix_storage::disk_log::ProducerSequence;
 use felix_storage::log::PayloadDigest;
 use tokio::sync::oneshot;
 
-use super::completion::spawn_release;
+use super::completion::{release_now, spawn_release};
 use super::{PublishOutcome, SequenceReuse};
 use crate::broker::Broker;
 use crate::broker::shards::StreamHandle;
@@ -753,11 +753,20 @@ async fn finish<E>(
     };
     // Any other batch never reaches the view: the wait ends at once.
     drop(applied);
-    let start = state.held.push(batch);
-    state.proposals.settled();
-    drop(turn);
-    if start {
-        spawn_release(&handle);
+    // With nothing held and the bound past it, the batch goes out on this
+    // task: a release task per publish is one more wake for each. It
+    // settles only once delivered, since a pass over the log waits for the
+    // order to empty and would otherwise read in under it.
+    if let Some(batch) = release_now(&handle, batch).await {
+        let start = state.held.push(batch);
+        state.proposals.settled();
+        drop(turn);
+        if start {
+            spawn_release(&handle);
+        }
+    } else {
+        state.proposals.settled();
+        drop(turn);
     }
     committed.map_err(|failed| failed.error)?;
     if let (Some(tail), Some(expected)) = (missed, expected) {

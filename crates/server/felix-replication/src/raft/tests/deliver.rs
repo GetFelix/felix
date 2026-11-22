@@ -1800,3 +1800,68 @@ async fn records_between_group_entries_in_one_apply_run_count_no_drop() {
     }
     led.cluster.stop().await;
 }
+
+/// A future that counts its polls: one per wake of the task running it.
+struct Counted<F> {
+    run: std::pin::Pin<Box<F>>,
+    polls: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl<F: std::future::Future> std::future::Future for Counted<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        self.polls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.run.as_mut().poll(cx)
+    }
+}
+
+/// **A publish answered at its commit wakes its publisher at the write and
+/// at the commit, not for the flush in between, and is fanned out before
+/// its answer.** The commit covers the flush, so waiting on both is one
+/// more wake per publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_answered_at_its_commit_does_not_wait_for_the_flush_too() {
+    let mut cluster = Cluster::new(true);
+    let (engine, _) = sole_voter(&mut cluster).await;
+    let (broker, handle) = broker_on(&engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let polls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    const PUBLISHES: u64 = 50;
+    let mut last = None;
+    for _ in 0..PUBLISHES {
+        let proposed = engine.publish(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            vec![Bytes::from_static(b"w")],
+            AckAt::Flushed,
+            AnswerAt::Commit,
+            PATIENCE,
+        );
+        let run = Box::pin(proposed.expect("proposed").complete());
+        let polls = Arc::clone(&polls);
+        let outcome = tokio::spawn(Counted { run, polls }).await;
+        let (first, _) = outcome
+            .expect("joined")
+            .expect("committed")
+            .offsets
+            .expect("offsets");
+        let envelope = receiver.try_recv().expect("delivered before the answer");
+        assert_eq!(envelope.base_offset(), Some(first));
+        assert!(last.is_none_or(|last| first == last + 1), "out of order");
+        last = Some(first);
+    }
+    let polls = polls.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        polls <= 3 * PUBLISHES,
+        "{polls} polls for {PUBLISHES} publishes"
+    );
+    assert!(receiver.try_recv().is_err(), "delivered twice");
+    cluster.stop().await;
+}
