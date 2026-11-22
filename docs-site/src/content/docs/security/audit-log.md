@@ -51,19 +51,20 @@ A record holds:
 | `listener` | `api` or `bootstrap`. |
 | `peer` | The socket address the request came from. Forwarding headers such as `X-Forwarded-For` are ignored, so behind a load balancer this is the balancer. |
 | `method`, `route`, `path` | What was asked. `route` is the template, such as `/v1/tenants/{tenant_id}/streams`. |
-| `tenant` | The tenant of the verified credential, or the one the path names. |
+| `tenant` | The tenant of the verified credential. It is never read from the path: a change made with the bootstrap token or an operator token has no `tenant`, and `path` shows which tenant it named. |
 | `subject` | The subject of the verified credential. For a delegated token, `actor` is the gateway that acted for it. |
 | `cert_sha256` | The SHA-256 of the client's TLS certificate, when the API asks for one. |
 | `credential` | What verified: `felix_token`, `idp_token`, `refresh_token`, `bootstrap_token`, `operator_token`, or `none`. |
 | `status` | The HTTP status answered. `0` means the client went away before the answer, and the change may have been made anyway. |
 | `refusal` | Why a credential was refused, with the same reasons as `felix_controlplane_auth_rejected_total`. |
-| `suppressed` | Refusals this member skipped since its last recorded one (see below). |
+| `suppressed` | Rate-limited requests this member skipped since its last recorded one (see below). |
 
 Tokens, request bodies, query strings, keys and unverified claims are never
-recorded. A refused request records only its route template as its path,
-since the caller chose the path and could use it to fill the log. A request
-that names a subject but fails to verify records no subject: an unverified
-name proves nothing.
+recorded. A refused request, and any request without a verified credential,
+records only its route template as its path, since the caller chose the path
+and could use it to fill the log. A request that names a subject but fails to
+verify records no subject: an unverified name proves nothing. Every text
+field is cut to 256 bytes, so a record stays a few KiB.
 
 ## Where it is kept
 
@@ -115,7 +116,7 @@ in `felix_audit_records_dropped_total` by `reason`:
 
 | Reason | What happened |
 | --- | --- |
-| `rate_limited` | A refusal over this member's limit of 20 a second (bursts of 100). Refusals need no credential, so without a limit a flood of bad requests would be a flood of Raft writes. The next refusal recorded carries the count in `suppressed`. |
+| `rate_limited` | A refusal, or a request with no verified credential whatever its status (a malformed body's 400, a 405), over this member's limit of 20 a second (bursts of 100). These need no credential, so without a limit a flood of bad requests would be a flood of Raft writes. The next one recorded carries the count in `suppressed`. |
 | `busy` | More than 4,096 records were waiting to be committed on this member. |
 | `store` | The Raft write failed, for example with no quorum. |
 | `level_pending` | Some member runs a release older than metadata level 49, which cannot apply records. The local log line is the only copy until every member is upgraded. |

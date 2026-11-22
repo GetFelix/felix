@@ -278,3 +278,77 @@ async fn a_closed_sink_drops_and_counts() {
         .expect("records");
     assert!(page.records.is_empty());
 }
+
+#[tokio::test]
+async fn unauthenticated_writes_are_limited_and_bounded_whatever_the_status() {
+    let fixture = fixture().await;
+    let tenant = "T".repeat(16 * 1024);
+    let uri = format!("/v1/tenants/{tenant}/rbac/policies");
+    let sent = 2 * REFUSAL_BURST as usize;
+    for _ in 0..sent {
+        // A malformed body is refused before the handler looks for a credential.
+        let status = fixture.send("POST", &uri, None, "{").await;
+        assert!(status.is_client_error(), "{status}");
+        assert!(!matches!(status.as_u16(), 401 | 403), "{status}");
+    }
+    // A method the route does not serve is a 405 on a matched path.
+    let status = fixture.send("PATCH", &uri, None, "").await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+
+    let records = fixture.records().await;
+    // The burst, plus what the bucket refilled while the test ran.
+    assert!(
+        records.len() < REFUSAL_BURST as usize + 20,
+        "{} of {} recorded",
+        records.len(),
+        sent + 1
+    );
+    for record in &records {
+        let entry = &record.entry;
+        assert_eq!(entry.credential, "none");
+        assert_eq!(entry.tenant, None);
+        assert_eq!(entry.path, entry.route);
+        let line = serde_json::to_string(entry).expect("json");
+        assert!(!line.contains("TTTT"), "caller's path recorded: {line}");
+        assert!(line.len() < 4 * 1024, "{} bytes", line.len());
+    }
+}
+
+#[test]
+fn every_string_field_is_bounded() {
+    let long = "x".repeat(10 * MAX_FIELD);
+    let entry = bounded(AuditEntry {
+        member: long.clone(),
+        listener: long.clone(),
+        peer: Some(long.clone()),
+        method: long.clone(),
+        route: long.clone(),
+        path: long.clone(),
+        tenant: Some(long.clone()),
+        subject: Some(long.clone()),
+        actor: Some(long.clone()),
+        cert_sha256: Some(long.clone()),
+        credential: long.clone(),
+        refusal: Some(long.clone()),
+        ..entry("/v1/x")
+    });
+    let json = serde_json::to_value(&entry).expect("json");
+    for (field, value) in json.as_object().expect("object") {
+        if let Some(text) = value.as_str() {
+            assert!(text.len() <= MAX_FIELD, "{field} is {} bytes", text.len());
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_405_on_a_matched_path_is_recorded_as_a_write() {
+    let fixture = fixture().await;
+    let status = fixture
+        .send("PATCH", "/v1/tenants/t1/rbac/policies", None, "")
+        .await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    let records = fixture.records().await;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].entry.status, 405);
+    assert_eq!(records[0].entry.method, "PATCH");
+}

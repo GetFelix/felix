@@ -30,9 +30,9 @@ pub const AUDIT_RETAIN: usize = 10_000;
 /// The largest page `GET /v1/audit` answers.
 const MAX_PAGE: usize = 1_000;
 
-/// Refusals recorded per second, and the burst, per member. Refusals need no
-/// credential, so without a bound a flood of bad requests is a flood of Raft
-/// writes.
+/// Refusals and requests with no verified credential recorded per second,
+/// and the burst, per member. Neither needs a credential, so without a bound
+/// a flood of bad requests is a flood of Raft writes.
 const REFUSALS_PER_SEC: f64 = 20.0;
 const REFUSAL_BURST: f64 = 100.0;
 
@@ -60,7 +60,10 @@ pub struct AuditEntry {
     pub route: String,
     /// The path, without its query string.
     pub path: String,
-    /// The tenant of the verified credential, or the one the path names.
+    /// The tenant of the verified credential. Never taken from the path, which
+    /// the caller chooses: a write made with a credential that names no tenant
+    /// (the bootstrap or an operator token) has none, and `path` shows what it
+    /// asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
     /// The verified subject, or the one a minted token was issued to.
@@ -82,8 +85,8 @@ pub struct AuditEntry {
     /// labels it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
-    /// Refusals this member did not record, over its rate limit, since the
-    /// last one it did.
+    /// Rate-limited records (refusals and requests with no verified
+    /// credential) this member did not keep since the last one it did.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub suppressed: u64,
 }
@@ -307,8 +310,8 @@ async fn record(State(listener): State<Listener>, request: Request, next: Next) 
             .get::<ConnectInfo<SocketAddr>>()
             .map(|info| info.0.to_string()),
         method: method.to_string(),
-        path: truncate(request.uri().path(), MAX_PATH),
-        tenant: path_tenant(request.uri().path()),
+        path: request.uri().path().to_string(),
+        tenant: None,
         cert_sha256: request
             .extensions()
             .get::<PeerCertificates>()
@@ -355,10 +358,12 @@ impl Pending {
             return;
         }
         entry.status = status;
+        // Without a verified credential anyone can send the request, whatever
+        // it is answered (400, 405, 422): it is limited like a refusal.
+        let mut limited = refused;
         if let Ok(noted) = self.noted.lock() {
-            if noted.tenant.is_some() {
-                entry.tenant.clone_from(&noted.tenant);
-            }
+            limited |= noted.credential.is_none();
+            entry.tenant.clone_from(&noted.tenant);
             entry.subject.clone_from(&noted.subject);
             entry.actor.clone_from(&noted.actor);
             entry.credential = noted.credential.unwrap_or("none").to_string();
@@ -369,17 +374,18 @@ impl Pending {
                 entry.subject = None;
                 entry.actor = None;
             }
-            if refused {
-                // The caller picks the path of a refused request: keep only
-                // the template, so it cannot size or fill the record.
+            if limited {
+                // The caller picks the path of a refused or unauthenticated
+                // request: keep only the template.
                 entry.path.clone_from(&entry.route);
-                entry.tenant = noted.tenant.clone();
             }
+        } else {
+            limited = true;
         }
-        if refused && !self.sink.admit_refusal(&mut entry) {
+        if limited && !self.sink.admit_refusal(&mut entry) {
             return;
         }
-        self.sink.submit(&self.store, entry);
+        self.sink.submit(&self.store, bounded(entry));
     }
 }
 
@@ -549,7 +555,7 @@ async fn commit_batches(
                 metrics::counter!(AUDIT_DROPPED_TOTAL, "reason" => "level_pending")
                     .increment(count);
                 for line in &lines {
-                    tracing::info!(target: AUDIT_TARGET, entry = %line, "audit entry, not replicated");
+                    tracing::error!(target: AUDIT_TARGET, entry = %line, "audit entry not replicated");
                 }
             }
             Err(err) => {
@@ -568,17 +574,44 @@ fn dropped(reason: &'static str, entry: &AuditEntry) {
     tracing::error!(target: AUDIT_TARGET, reason, entry = %line, "audit entry dropped");
 }
 
-/// The tenant a `/v1/tenants/{tenant_id}/...` or bootstrap path names.
-fn path_tenant(path: &str) -> Option<String> {
-    let rest = path
-        .strip_prefix("/v1/tenants/")
-        .or_else(|| path.strip_prefix("/internal/bootstrap/tenants/"))?;
-    let tenant = rest.split('/').next()?;
-    (!tenant.is_empty()).then(|| tenant.to_string())
-}
+/// The longest any string field of a record is kept, in bytes. With a dozen
+/// fields this keeps a record to a few KiB, and a [`MAX_BATCH`] proposal far
+/// below the peer body limit.
+const MAX_FIELD: usize = 256;
 
-/// The longest path kept in a record.
-const MAX_PATH: usize = 256;
+/// Every string field cut to [`MAX_FIELD`]. Some are the caller's (the path,
+/// a custom method) and some come from a token's claims.
+fn bounded(mut entry: AuditEntry) -> AuditEntry {
+    let cap = |field: &mut String| {
+        if field.len() > MAX_FIELD {
+            *field = truncate(field, MAX_FIELD);
+        }
+    };
+    for field in [
+        &mut entry.member,
+        &mut entry.listener,
+        &mut entry.method,
+        &mut entry.route,
+        &mut entry.path,
+        &mut entry.credential,
+    ] {
+        cap(field);
+    }
+    for field in [
+        &mut entry.peer,
+        &mut entry.tenant,
+        &mut entry.subject,
+        &mut entry.actor,
+        &mut entry.cert_sha256,
+        &mut entry.refusal,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        cap(field);
+    }
+    entry
+}
 
 fn truncate(text: &str, max: usize) -> String {
     let mut end = text.len().min(max);
