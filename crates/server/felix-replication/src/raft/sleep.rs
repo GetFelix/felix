@@ -50,6 +50,14 @@ impl ShardSleep {
         }
     }
 
+    /// A duration too long to add to now never ends, as tokio's own sleep.
+    pub(crate) fn after(duration: Duration) -> Self {
+        match tokio::time::Instant::now().checked_add(duration) {
+            Some(_) => Self::until(TokioInstant::now() + duration),
+            None => Self::Timer(Box::pin(tokio::time::sleep(duration))),
+        }
+    }
+
     fn timer(deadline: TokioInstant) -> Self {
         Self::Timer(Box::pin(TokioRuntime::sleep_until(deadline)))
     }

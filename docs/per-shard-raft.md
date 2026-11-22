@@ -2229,8 +2229,8 @@ fires on whole milliseconds, and openraft's IO completion forwarder sleeps
 1 us whenever a second write completes right after the first, so with
 tokio's sleep that write was answered up to a millisecond late. The sleep
 yields at most 32 times, then arms the timer, and it never ends before its
-deadline. Longer sleeps (elections, heartbeats, backoff) use the timer as
-before.
+deadline. Longer sleeps use the timer as before. Election and heartbeat
+deadlines are timeouts, not sleeps, and are unchanged.
 
 ## Heartbeat coalescing
 

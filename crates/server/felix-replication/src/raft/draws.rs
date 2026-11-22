@@ -96,7 +96,7 @@ impl AsyncRuntime for ShardRuntime {
     }
 
     fn sleep(duration: Duration) -> Self::Sleep {
-        ShardSleep::until(Self::Instant::now() + duration)
+        ShardSleep::after(duration)
     }
 
     fn sleep_until(deadline: Self::Instant) -> Self::Sleep {

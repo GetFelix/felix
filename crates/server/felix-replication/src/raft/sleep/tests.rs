@@ -48,8 +48,12 @@ fn a_close_deadline_yields_and_arms_no_timer() {
 fn a_nanosecond_sleep_still_yields() {
     let waker = Waker::from(Arc::new(Wakes::default()));
     let mut cx = Context::from_waker(&waker);
-    let mut sleep = ShardRuntime::sleep(Duration::from_nanos(1));
+    let deadline = TokioInstant::now() + Duration::from_nanos(1);
+    let mut sleep = ShardRuntime::sleep_until(deadline);
     assert!(Pin::new(&mut sleep).poll(&mut cx).is_pending());
+    while TokioInstant::now() <= deadline {
+        std::hint::spin_loop();
+    }
     assert!(Pin::new(&mut sleep).poll(&mut cx).is_ready());
 }
 
@@ -97,9 +101,14 @@ fn a_close_deadline_still_early_after_its_yields_arms_the_timer() {
         .build()
         .expect("runtime");
     let _entered = runtime.enter();
-    let mut sleep = ShardSleep::until(TokioInstant::now() + Duration::from_micros(900));
+    let deadline = TokioInstant::now() + Duration::from_micros(900);
+    let mut sleep = ShardSleep::until(deadline);
     while matches!(sleep, ShardSleep::Soon { .. }) {
-        assert!(Pin::new(&mut sleep).poll(&mut cx).is_pending());
+        // A preempted thread can pass the deadline: Ready is then right.
+        if Pin::new(&mut sleep).poll(&mut cx).is_ready() {
+            assert!(TokioInstant::now() >= deadline);
+            return;
+        }
     }
 }
 
