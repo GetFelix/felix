@@ -315,9 +315,10 @@ impl LogInner {
 #[cfg(feature = "raft")]
 impl DetachedFlush {
     /// Hand the flush to the flush thread, which calls `done` once the
-    /// flush has covered the target, or failed. `done` runs before the new
-    /// durable bound is published and before the lock goes, so no flush
-    /// started after this one answers before it.
+    /// flush has covered the target, or failed. The bound is published
+    /// first, as `ensure_durable` does. An append after this one is above
+    /// what it captured, so it needs a flush of its own, and the lock goes
+    /// only after `done`: none answers before this one.
     pub(crate) fn run(self, done: Box<dyn FnOnce(Result<()>) + Send>) {
         let Self {
             inner,
@@ -333,8 +334,8 @@ impl DetachedFlush {
             let outcome = flusher.sync_captured(&capture, injected);
             match flusher.finish_flush(&capture, outcome, started) {
                 Ok(durable_upto) => {
-                    answer.send(Ok(()));
                     flusher.durability.note_durable(durable_upto);
+                    answer.send(Ok(()));
                 }
                 Err(err) => {
                     metrics::counter!(metrics_names::SYNC_FAILURES_TOTAL).increment(1);
