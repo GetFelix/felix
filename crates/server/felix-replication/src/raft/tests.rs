@@ -149,6 +149,8 @@ struct Net {
     flaky_rest: std::sync::atomic::AtomicU32,
     /// Appends carrying entries that were handed to a broker.
     appends: std::sync::atomic::AtomicU64,
+    /// Appends with no entries that were handed to a broker.
+    empty_appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
     /// Calls to a cut broker.
@@ -293,9 +295,12 @@ impl RaftTransport for Net {
             false => self.brokers.lock().get(broker).cloned(),
         };
         if runtime.is_some()
-            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+            && let Request::Append(rpc) = &request.body
         {
-            self.appends.fetch_add(1, Relaxed);
+            match rpc.entries.is_empty() {
+                false => self.appends.fetch_add(1, Relaxed),
+                true => self.empty_appends.fetch_add(1, Relaxed),
+            };
         }
         let slow = match request.body {
             Request::Append(_) => *self.answer_after.lock(),
@@ -1010,6 +1015,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         election_max: millis(config.election_max),
         lease: millis(config.lease),
         max_elections_at_once: config.max_elections_at_once,
+        commit_hold: config.commit_hold,
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)

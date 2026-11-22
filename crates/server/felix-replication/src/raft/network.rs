@@ -2,6 +2,8 @@
 //! [`RaftTransport`] to send, and the router that turns openraft's calls
 //! into them.
 
+mod client;
+
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -30,6 +32,7 @@ use super::reach::{Reach, Refusals, Waits};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
+use client::Client;
 
 /// One Raft message for one member of one group. What is in it is this
 /// module's business; a transport carries it to [`Self::to`]'s broker.
@@ -569,13 +572,18 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
 pub(crate) struct Network {
     pub(crate) router: Router,
     pub(crate) group: GroupId,
+    /// [`super::RuntimeConfig::commit_hold`].
+    pub(crate) commit_hold: Duration,
 }
 
 impl RaftNetworkFactory<ShardTypes> for Network {
-    type Network = GroupNetworkAdapter<ShardTypes, GroupId, Router>;
+    type Network = Client;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
         let router = self.router.toward(&target, &self.group);
-        GroupNetworkAdapter::new(router, target, self.group.clone())
+        Client {
+            adapter: GroupNetworkAdapter::new(router, target, self.group.clone()),
+            hold: self.commit_hold,
+        }
     }
 }

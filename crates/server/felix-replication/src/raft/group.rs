@@ -198,6 +198,8 @@ pub(crate) struct Timers {
     pub(crate) lease: u64,
     /// [`super::RuntimeConfig::max_elections_at_once`].
     pub(crate) max_elections_at_once: usize,
+    /// [`super::RuntimeConfig::commit_hold`].
+    pub(crate) commit_hold: Duration,
 }
 
 impl Timers {
@@ -810,6 +812,7 @@ impl Group {
                 Arc::clone(&config),
             ),
             group: id.clone(),
+            commit_hold: timers.commit_hold,
         };
         let lag_threshold = config.replication_lag_threshold;
         let started = Raft::new(member.clone(), config, network, log.clone(), machine);
