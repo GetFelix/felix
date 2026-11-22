@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795301403790,
+  "lastUpdate": 1795307505446,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65156,6 +65156,58 @@ window.BENCHMARK_DATA = {
             "range": "8458.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805655.80\nmean: 804004.37\nstdev: 8458.06\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "38975d9383f80290692ca13ee90fe14b65df196b",
+          "message": "perf(raft-parity): run the Azure matrix from inside Azure when ssh is blocked (#2934)\n\nazure-inside.sh drives azure.sh through az vm run-command: VM 1 gets its\nown key, reaches all three VMs over their private addresses, and runs\nbuild, smoke and run from a clone as a systemd unit. fetch brings the\nresults back in base64 chunks and checks the hash.\n\nPart of #2646",
+          "timestamp": "2026-11-22T00:24:45Z",
+          "tree_id": "62175fe409572cff4ac4011f614ab49e91d7d5e9",
+          "url": "https://github.com/GetFelix/felix/commit/38975d9383f80290692ca13ee90fe14b65df196b"
+        },
+        "date": 1795307504980,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 543604.79,
+            "range": "36404.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 543604.79\nmean: 543592.80\nstdev: 36404.65\ncv: 6.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 543604.79,
+            "range": "36404.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 543604.79\nmean: 543592.80\nstdev: 36404.65\ncv: 6.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124902.5,
+            "range": "1012.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124902.50\nmean: 125237.17\nstdev: 1012.90\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1249025.02,
+            "range": "10129.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1249025.02\nmean: 1252371.75\nstdev: 10129.00\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
