@@ -371,6 +371,7 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
         key: orders.clone(),
         incarnation: INCARNATION,
         copy,
+        epoch: 0,
         set: ["broker-a".to_string()].into(),
         in_target,
         withheld,

@@ -755,3 +755,31 @@ async fn a_raft_claim_marks_the_directory_the_incarnation_opens() {
         .expect("retire");
     assert!(!claimed.exists());
 }
+
+/// A re-form survey reads a claimed directory or an absent one, never a
+/// hybrid log no Raft member claimed, and never another incarnation's.
+#[tokio::test]
+async fn a_raft_dir_is_claimed_or_absent() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    provider.set_stream_incarnation("t", "ns", "orders", Some(7));
+    let expected = layout::incarnation_dir(dir.path(), &shard("orders"), 7);
+
+    assert_eq!(provider.raft_dir(&shard("orders"), 6).expect("read"), None);
+    assert_eq!(
+        provider.raft_dir(&shard("orders"), 7).expect("read"),
+        Some(expected.clone()),
+        "nothing there reads as an empty copy"
+    );
+    assert!(!expected.exists(), "a survey created the directory");
+
+    std::fs::create_dir_all(&expected).expect("hybrid dir");
+    assert_eq!(provider.raft_dir(&shard("orders"), 7).expect("read"), None);
+    std::fs::remove_dir(&expected).expect("remove");
+
+    provider.claim_for_raft(&shard("orders"), 7).expect("claim");
+    assert_eq!(
+        provider.raft_dir(&shard("orders"), 7).expect("read"),
+        Some(expected)
+    );
+}

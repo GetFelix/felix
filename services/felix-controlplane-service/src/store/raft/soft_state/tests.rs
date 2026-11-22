@@ -652,3 +652,135 @@ async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
         member.server.abort();
     }
 }
+
+/// Re-form plans live on the leader: a plan made, polled and answered
+/// through a follower is the leader's plan, read from the leader's state.
+#[tokio::test]
+async fn a_reform_plan_asked_through_a_follower_is_the_leaders() {
+    use crate::store::reform::tests::{LOG, answer, copy, shard};
+    use crate::store::reform::{ReformReply, ReformRequest, ReformScope};
+    let members = two_member_group().await;
+    let leader = members
+        .iter()
+        .position(|member| member.store.handle.is_leader())
+        .expect("a leader");
+    let (leader, follower) = (&members[leader].store, &members[1 - leader].store);
+    // Only the leader's applied state holds the shard, so a plan with it
+    // in was made there.
+    let local = leader.machine.store();
+    let mut shard = shard();
+    catalog(local.as_ref(), &shard.key).await;
+    for (id, port) in [("a", 7001), ("b", 7002), ("c", 7003)] {
+        local.register_node(node(id, port)).await.expect("register");
+    }
+    let incarnation = local
+        .list_streams(&shard.key.tenant_id, &shard.key.namespace)
+        .await
+        .expect("streams")[0]
+        .incarnation;
+    shard.incarnation = incarnation;
+    shard.raft_seed.as_mut().unwrap().incarnation = incarnation;
+    shard.raft_ordered.as_mut().unwrap().incarnation = incarnation;
+    local.put_shard_assignment(shard).await.expect("put");
+
+    let ReformReply::Created { plan_id } = follower
+        .reform(ReformRequest::Create {
+            scope: ReformScope::Cluster,
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("not a create reply");
+    };
+    let ReformReply::Surveys { mut surveys } = follower
+        .reform(ReformRequest::Surveys {
+            node_id: "a".to_string(),
+        })
+        .await
+        .expect("poll")
+    else {
+        panic!("not a surveys reply");
+    };
+    assert_eq!(surveys.len(), 1, "the follower's poll missed the plan");
+    let survey = surveys.remove(0);
+    assert_eq!(survey.plan_id, plan_id);
+    let reply = follower
+        .reform(ReformRequest::Reports {
+            node_id: "a".to_string(),
+            answers: vec![answer(
+                &survey,
+                copy(&LOG, Some(4), Some(2), &survey.probes),
+            )],
+        })
+        .await
+        .expect("answer");
+    assert!(
+        matches!(
+            reply,
+            ReformReply::Recorded {
+                accepted: 1,
+                ignored: 0
+            }
+        ),
+        "{reply:?}"
+    );
+    let ReformReply::Plan { plan: Some(plan) } = leader
+        .reform(ReformRequest::View { plan_id })
+        .await
+        .expect("view")
+    else {
+        panic!("the leader holds no such plan");
+    };
+    assert_eq!(plan.shards.len(), 1);
+    assert!(
+        !plan.shards[0].waiting_on.contains(&"a".to_string()),
+        "the answer given through the follower did not reach the plan: {:?}",
+        plan.shards[0]
+    );
+    for member in &members {
+        member.store.handle.shutdown().await.expect("shutdown");
+        member.server.abort();
+    }
+}
+
+/// The tenant, namespace and three-replica stream `key` names.
+async fn catalog(store: &dyn ControlPlaneStore, key: &crate::model::ShardKey) {
+    use crate::model::*;
+    store
+        .create_tenant(Tenant {
+            tenant_id: key.tenant_id.clone(),
+            display_name: "t".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(Namespace {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            display_name: "ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    store
+        .create_stream(Stream {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            kind: StreamKind::Stream,
+            shards: 1,
+            replication_factor: 3,
+            retention: RetentionPolicy {
+                max_age_seconds: None,
+                max_size_bytes: None,
+            },
+            consistency: ConsistencyLevel::Leader,
+            delivery: DeliveryGuarantee::AtMostOnce,
+            durable: true,
+            region: None,
+            routing: Default::default(),
+            incarnation: 0,
+            mount: None,
+        })
+        .await
+        .expect("stream");
+}

@@ -98,6 +98,11 @@ pub(crate) enum LeaderRequest {
     /// broker that must not take a lagging member's feed as current. A leader
     /// that predates it fails to read it, and the asker answers without one.
     ShardAssignmentHead,
+    /// A re-form plan request. Plans are this leader's, for this term. A
+    /// leader that predates it fails to read it, and the asker refuses.
+    Reform {
+        request: crate::store::reform::ReformRequest,
+    },
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -112,6 +117,9 @@ pub(crate) struct SoftState {
     /// The latest term in which this member, leading, saw its own blank
     /// entry applied. Zero until then.
     barrier_term: AtomicU64,
+    /// Re-form plans and the term they were made in. A new term starts
+    /// with none: a plan is only good while its leader leads.
+    reform: Mutex<(u64, Arc<crate::store::reform::ReformPlans>)>,
 }
 
 /// One term's view. Replaced whenever the term moves, so nothing a previous
@@ -158,6 +166,7 @@ impl SoftState {
             serial: tokio::sync::Mutex::new(()),
             view: Mutex::new(None),
             barrier_term: AtomicU64::new(0),
+            reform: Mutex::new((0, Default::default())),
         });
         // Weak: the machine outlives nothing it points at.
         let weak: Weak<Self> = Arc::downgrade(&state);
@@ -231,13 +240,15 @@ impl SoftState {
         // The lease is judged here at every level: its only write,
         // `TakePlacementLease`, is one every member applies, and the log
         // holds no renewals to judge a take by.
-        let lease = matches!(
+        // Re-form plans write nothing, so need no level either.
+        let exempt = matches!(
             request,
             LeaderRequest::AcquirePlacementLease { .. }
                 | LeaderRequest::ReleasePlacementLease { .. }
+                | LeaderRequest::Reform { .. }
         );
         let needs = MetaCommand::ExpireNodes { nodes: Vec::new() }.version();
-        if !lease && self.handle.cluster_version().await < needs {
+        if !exempt && self.handle.cluster_version().await < needs {
             // A deposed leader's answer would send the caller to the log
             // path: let it ask the new leader instead.
             let mut view = self.view_in(term)?;
@@ -312,6 +323,17 @@ impl SoftState {
                     .peek_refresh_token(&tenant_id, &token_id)
                     .await
                     .map(|token| MetaResponse::RefreshToken { token })
+                    .map_err(Into::into))
+            }
+            LeaderRequest::Reform { request } => {
+                let plans = self.reform_plans(term);
+                let store: &dyn ControlPlaneStore = self.machine.store().as_ref();
+                let reply = crate::store::reform::answer(&plans, store, request).await;
+                // Answered from a term that has ended: let the asker find
+                // the leader whose plans these are not.
+                self.leading_in(term)?;
+                Ok(reply
+                    .map(|reply| MetaResponse::Reform { reply })
                     .map_err(Into::into))
             }
             LeaderRequest::ShardAssignment { key } => {
@@ -654,6 +676,15 @@ impl SoftState {
         } else {
             Err(NotLeader)
         }
+    }
+
+    /// This term's re-form plans, started empty when the term moved.
+    fn reform_plans(&self, term: u64) -> Arc<crate::store::reform::ReformPlans> {
+        let mut held = self.reform.lock().expect("soft state lock");
+        if held.0 != term {
+            *held = (term, Default::default());
+        }
+        Arc::clone(&held.1)
     }
 
     /// The view for `term`, locked, while this member still leads `term`.

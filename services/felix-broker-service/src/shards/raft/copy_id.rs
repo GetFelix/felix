@@ -53,6 +53,8 @@ pub(crate) struct Held {
     pub(crate) incarnation: u64,
     /// The copy id the member votes under.
     pub(crate) copy: u64,
+    /// The group epoch the copy proved, which is the shard record's.
+    pub(crate) epoch: u64,
     /// The brokers placement names for the shard. The control plane keeps
     /// copy ids only while this stays the same.
     pub(crate) set: BTreeSet<String>,
@@ -69,6 +71,7 @@ pub(crate) struct Held {
 #[derive(Debug, Clone)]
 struct Sent {
     copy: u64,
+    epoch: u64,
     set: BTreeSet<String>,
     at: Instant,
     taken: bool,
@@ -80,6 +83,13 @@ struct Sent {
     /// not, a refused report is sent again at once: the gate that refused
     /// it has opened, and nothing else says so.
     seen_withheld: bool,
+}
+
+impl Sent {
+    /// Whether this report was for `held`'s copy, epoch and set.
+    fn same_as(&self, held: &Held) -> bool {
+        self.copy == held.copy && self.epoch == held.epoch && self.set == held.set
+    }
 }
 
 /// The reports owed to the control plane, by shard and stream incarnation.
@@ -109,7 +119,7 @@ impl CopyIds {
                 let last = self
                     .sent
                     .get(&(held.key.clone(), held.incarnation))
-                    .filter(|sent| sent.copy == held.copy && sent.set == held.set);
+                    .filter(|sent| sent.same_as(held));
                 let wait = match last {
                     None => return Some((None, held)),
                     Some(sent) if sent.taken => RESEND,
@@ -135,7 +145,7 @@ impl CopyIds {
         let before = self
             .sent
             .get(&key)
-            .filter(|sent| sent.copy == held.copy && sent.set == held.set)
+            .filter(|sent| sent.same_as(held))
             .map_or(0, |sent| sent.refused);
         let refused = match outcome {
             Outcome::Taken => 0,
@@ -146,6 +156,7 @@ impl CopyIds {
             key,
             Sent {
                 copy: held.copy,
+                epoch: held.epoch,
                 set: held.set.clone(),
                 at: now,
                 taken: outcome == Outcome::Taken,
@@ -196,6 +207,7 @@ pub(crate) async fn tick<L: ControlPlaneLink>(
             incarnation,
             registered_at_millis,
             shard_incarnation: held.incarnation,
+            group_epoch: held.epoch,
         };
         let sent = tokio::time::timeout(
             REQUEST_TIMEOUT,
