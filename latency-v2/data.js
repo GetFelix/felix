@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795334083572,
+  "lastUpdate": 1795336372468,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -83028,6 +83028,72 @@ window.BENCHMARK_DATA = {
             "range": "532.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1673.00\nmean: 1412.40\nstdev: 532.62\ncv: 37.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f94c6c49ad3c799d1148c8f7826a9da8c39d0aea",
+          "message": "fix(raft): metadata joins and level-dependent writes read the floor the leader's log committed (#2878) (#2944)\n\n* fix(raft): a new metadata leader reads the join floor behind its blank entry (#2878)\n\nAdmitting a member, and settling a proposal's level, now wait for the\nterm's blank entry to apply, so the floor is not older than the committed\nlog. The hold check raises the applied floor to what the entries it sends\nneed (AppStateMachine::floor_of) and no longer skips marking a member\nwhile the applied floor is 0.\n\nSpec-Unaffected: the join floor rule is unchanged; this only fixes when a new leader reads it.\n\n* fix(raft): admit confirms per join; level reads err instead of settling low (#2878)\n\n- admit runs a fresh read-index on every join, so a raise committed\n  after the term's barrier is not missed.\n- group_level returns a retryable NoQuorum error when the barrier cannot\n  be confirmed, instead of falling back to the applied floor.\n- The barrier wait is bounded by one write attempt, and the level is read\n  once per report and assignment write.\n- Tests: a same-term join, and the proposal_bytes gate end to end.\n\nSpec-Unaffected: no TLA spec models join floors or metadata levels.\n\n* fix(raft): each level-dependent write confirms behind a fresh read-index (#2878)\n\nA raise committed after the term's cached barrier could leave a write\nsettled at the older floor. proposal_level now runs an uncached confirm,\nbounded by the attempt; these writes are rare.\n\nSpec-Unaffected: no TLA spec models join floors or metadata levels.\n\n* fix(raft): a follower settles on the leader's confirmed level, not its own floor (#2878)\n\nA follower's applied join floor can lag its log, and what it strips from\nan assignment or report before forwarding it the leader appends as sent.\nWhen the follower's own floor would decide the level, it now asks the\nleader for its confirmed one (LeaderRequest::ProposalLevel).\n\nA level-dependent write on the leader hands the level it confirmed to the\nappend, so it pays one read-index. record_replica_report reads the level\nonce. A level that cannot be read in create_resources_ready answers the\nstore's retryable 503 unavailable, not upgrade_in_progress.\n\nSpec-Unaffected: no TLA spec models join floors or metadata levels.\n\n* fix(raft): steady two-member test group, retry skips the confirmed level once\n\nRetries re-read the level instead of reusing the first attempt's, and the\ndesign doc states what each caller sees when the read-index cannot pass.\n\nSpec-Unaffected: no change to the TLA model",
+          "timestamp": "2026-11-22T08:27:47Z",
+          "tree_id": "0fc06f224decf03ce99ba50a1dd46c11351e3f92",
+          "url": "https://github.com/GetFelix/felix/commit/f94c6c49ad3c799d1148c8f7826a9da8c39d0aea"
+        },
+        "date": 1795336360234,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 129.20\nstdev: 2.17\ncv: 1.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 179,
+            "range": "31.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 190.20\nstdev: 31.92\ncv: 16.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.20\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 264,
+            "range": "7.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 264.40\nstdev: 7.30\ncv: 2.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 389,
+            "range": "962.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 389.00\nmean: 1053.80\nstdev: 962.63\ncv: 91.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
