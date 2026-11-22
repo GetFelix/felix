@@ -129,8 +129,8 @@ impl Completion {
         }
     }
 
-    /// A held batch the mark has passed: committed, turn long released, and
-    /// only the ring append and the fanout left.
+    /// A committed batch the mark has passed, with only the ring append and
+    /// the fanout left.
     fn released(handle: StreamHandle, batch: HeldBatch, log_capacity: usize) -> Self {
         Self {
             handle,
@@ -578,12 +578,18 @@ fn record_drop(
 
 /// Append and fan out a committed `batch` on the caller's task when nothing
 /// is held and the read bound covers it, as a claimed batch skips the hold.
-/// Otherwise it joins the hold and `None` comes back with the batch handed
-/// on. The caller holds the batch's turn until this returns, so the next
-/// batch cannot overtake it in the ring or at a subscriber.
+/// Otherwise the batch comes back, for the hold. The caller holds the
+/// batch's turn until this returns, so the next batch cannot overtake it in
+/// the ring or at a subscriber.
+///
+/// Never under `Block`: a full subscriber would hold up the publisher's
+/// answer and keep the batch unsettled, which reads as a stalled engine.
 pub(super) async fn release_now(handle: &StreamHandle, batch: HeldBatch) -> Option<HeldBatch> {
     let state = &handle.state;
-    let plain = !batch.gap && batch.blanks == 0 && batch.trim.is_none();
+    let plain = !batch.gap
+        && batch.blanks == 0
+        && batch.trim.is_none()
+        && state.subscriber_queue_policy != SubQueuePolicy::Block;
     #[cfg(test)]
     let plain = plain && !state.stall_release.is_set();
     if !plain || state.held.is_busy() || !state.read_bound().covers(batch.end()) {

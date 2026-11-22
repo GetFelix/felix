@@ -2885,8 +2885,9 @@ batch then waits for `await_commit`, which checks the term of the entry at
 its offset, and for the batch handed over before it. If nothing is held
 ahead of it and the read bound covers it, the publisher's own task appends
 it to the replay ring and fans it out as one shared envelope, encoded once
-per frame shape, before the publisher is answered, as the hybrid does with
-a batch that needs no hold. Otherwise it joins the stream's commit hold,
+per frame shape, then answers the publisher. A stream whose subscribers
+`Block` skips this, so a full subscriber never holds up an answer.
+Otherwise the batch joins the stream's commit hold,
 whose release task does the same once the bound passes it, the way a held
 `Quorum` batch is released on the hybrid. Either way the batch keeps its
 place in the hand-over order until it is fanned out, so the next batch

@@ -570,10 +570,10 @@ impl<E: Send + 'static> ProposedPublish<E> {
         self
     }
 
-    /// Wait until the batch is committed and queued for delivery behind
-    /// every batch handed over before it, or until [`Self::answer_at`]
-    /// says it may be answered. Reports its offsets and no subscribers:
-    /// the fanout runs after this returns. The offsets of a batch finished
+    /// Wait until the batch is committed and fanned out or queued for
+    /// delivery behind every batch handed over before it, or until
+    /// [`Self::answer_at`] says it may be answered. Reports its offsets and
+    /// no subscribers. The offsets of a batch finished
     /// after a leader stopped partway run from the start's first record to
     /// the last one written now, and are not one run: other records lie
     /// between its pieces.

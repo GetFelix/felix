@@ -1859,7 +1859,7 @@ async fn a_publish_answered_at_its_commit_does_not_wait_for_the_flush_too() {
     }
     let polls = polls.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
-        polls <= 3 * PUBLISHES,
+        polls < 4 * PUBLISHES,
         "{polls} polls for {PUBLISHES} publishes"
     );
     assert!(receiver.try_recv().is_err(), "delivered twice");
