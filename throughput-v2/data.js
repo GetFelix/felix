@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795309198901,
+  "lastUpdate": 1795312655104,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65260,6 +65260,58 @@ window.BENCHMARK_DATA = {
             "range": "8767.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 804699.94\nmean: 805024.03\nstdev: 8767.14\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d642b01967e98de4a2284e99292383e9d019b768",
+          "message": "refactor(raft): one admission check for every Raft message (#2937)\n\n* refactor(raft): one admission check for every Raft message\n\nRaft message admission now lives in raft/runtime/admission.rs: one\nadmit_message check (sender name, then group membership or placement)\nruns before every member, other-copy refusal and stopped copy. The\nunchecked GroupRuntime::handle entry point is test-only as\nhandle_unchecked, and the internal close codes 0-4 are named constants\nbeside 5-7, listed in docs/internal-protocol.md.\n\nSpec-Unaffected: refactor, no behaviour change\n\n* docs(internal-protocol): say which senders learn another copy's id",
+          "timestamp": "2026-11-21T17:51:17-08:00",
+          "tree_id": "6f79d4883901aa8f363ffb4fa562006fc601d2e8",
+          "url": "https://github.com/GetFelix/felix/commit/d642b01967e98de4a2284e99292383e9d019b768"
+        },
+        "date": 1795312654264,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351345.4,
+            "range": "12189.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351345.40\nmean: 353554.24\nstdev: 12189.33\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351345.4,
+            "range": "12189.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351345.40\nmean: 353554.24\nstdev: 12189.33\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80822.87,
+            "range": "628.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80822.87\nmean: 80730.98\nstdev: 628.14\ncv: 0.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808228.73,
+            "range": "6281.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808228.73\nmean: 807309.78\nstdev: 6281.34\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
