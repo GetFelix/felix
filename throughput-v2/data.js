@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795307505446,
+  "lastUpdate": 1795309198901,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65208,6 +65208,58 @@ window.BENCHMARK_DATA = {
             "range": "10129.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1249025.02\nmean: 1252371.75\nstdev: 10129.00\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d6f4e38e4130570bbcfb8387f40d69ca1fdb844",
+          "message": "fix(tls): control-plane Raft and bootstrap TLS re-read their files on rotation (#2815) (#2933)\n\n* fix(tls): control-plane Raft and bootstrap TLS re-read their files on rotation (#2815)\n\nThe Raft peer listener and client, and the bootstrap listener, read their\ncertificate, key and CA once, so a short-lived certificate expired under a\nrunning control plane. They now re-read every 30 s like the broker's\nlisteners. A rotated Raft certificate must pass the startup checks (names\nthe same member, not revoked) or it is refused and the old one kept. The\ncontrol-plane CA bundles and the new FELIX_RAFT_TLS_REVOKED_FILE reload on\nthe same timer, and a Raft peer connection closes at its client\ncertificate's notAfter.\n\nSpec-Unaffected: transport credential loading only; no Raft log, apply or election change.\n\n* fix(tls): validate rotated certificates and CA bundles before use (#2815)\n\n* test: request after reload\n\n* fix(tls): bootstrap rotation tests, keep_names opt-in, docs require write-then-rename (#2815)\n\n* fix(peer): a rotated broker internal certificate must verify against the internal CA (#2815)\n\n* fix(raft): take a new CA bundle and the leaf under it as a pair (#2815)\n\n* test(controlplane): the API and bootstrap listeners keep names across rotation (#2815)\n\n* fix(raft): clearing the revocation file takes an explicit marker line (#2815)\n\n* docs(tls): names are fixed across rotation, local clock, unchecked client CAs, revocation clear marker (#2815)\n\n* test(peer): margin on the expiring-certificate dial; live.rs module doc\n\n* fix(raft): put back a CA bundle taken on a waiting leaf that is then refused (#2815)\n\n* docs(raft): live.rs module doc wrap",
+          "timestamp": "2026-11-22T00:53:44Z",
+          "tree_id": "db09fa54f0a94b41a7ecdfcd767b203b3c8d690a",
+          "url": "https://github.com/GetFelix/felix/commit/2d6f4e38e4130570bbcfb8387f40d69ca1fdb844"
+        },
+        "date": 1795309198151,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350793.87,
+            "range": "6780.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350793.87\nmean: 353646.13\nstdev: 6780.35\ncv: 1.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350793.87,
+            "range": "6780.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350793.87\nmean: 353646.13\nstdev: 6780.35\ncv: 1.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80469.99,
+            "range": "876.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80469.99\nmean: 80502.40\nstdev: 876.71\ncv: 1.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804699.94,
+            "range": "8767.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804699.94\nmean: 805024.03\nstdev: 8767.14\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
