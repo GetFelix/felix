@@ -323,6 +323,16 @@ impl RaftEngine {
         self.runtime.group(shard)?.groups()
     }
 
+    /// Where `shard`'s group runs its tasks, or the current runtime when
+    /// this broker holds no member of it.
+    pub(crate) fn group_runtime(&self, shard: &ShardKey) -> tokio::runtime::Handle {
+        self.runtime
+            .group(shard)
+            .map_or_else(tokio::runtime::Handle::current, |group| {
+                group.runtime().clone()
+            })
+    }
+
     /// `shard`'s commit table on this broker, if it holds a member.
     pub(crate) fn commits(
         &self,

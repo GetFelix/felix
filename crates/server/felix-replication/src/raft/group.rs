@@ -25,6 +25,7 @@ use bytes::Bytes;
 use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits, SkipClaim, Skips};
+use super::executor::Placed;
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
@@ -175,10 +176,12 @@ pub(crate) struct Group {
     stop: CancellationToken,
     /// The read-index rounds the shard's reads share.
     reads: Arc<ReadRounds<Round>>,
-    /// The runtime the group was opened on, where its openraft core runs.
-    /// The publish task starts there, not on the first publisher's runtime,
-    /// which may end while the group lives on.
+    /// Where the group's openraft core runs: its group thread, or else the
+    /// runtime it was opened on. The publish task starts there, not on the
+    /// first publisher's runtime, which may end while the group lives on.
     runtime: tokio::runtime::Handle,
+    /// Its place on a group thread, held while the group lives.
+    _thread: Option<Placed>,
 }
 
 /// The runtime's clock and timers, as a group needs them to say when its
@@ -683,6 +686,9 @@ pub(crate) struct Host {
     pub(crate) placed_budget: Arc<placed::Budget>,
     /// The highest placement incarnation the broker has heard of.
     pub(crate) acked: Arc<AtomicU64>,
+    /// The group thread its tasks run on. `None` runs them on the runtime
+    /// the group is opened on.
+    pub(crate) thread: Option<Placed>,
 }
 
 /// [`Pace`]'s mark for a time that has not come yet.
@@ -727,7 +733,13 @@ impl Group {
             placement,
             placed_budget,
             acked,
+            thread,
         } = host;
+        let runtime = thread
+            .as_ref()
+            .map_or_else(tokio::runtime::Handle::current, |thread| {
+                thread.handle().clone()
+            });
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
             RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
@@ -800,9 +812,17 @@ impl Group {
             group: id.clone(),
         };
         let lag_threshold = config.replication_lag_threshold;
-        let raft = Raft::new(member.clone(), config, network, log.clone(), machine)
-            .await
-            .map_err(|err| OpenError::Raft(err.to_string()))?;
+        let started = Raft::new(member.clone(), config, network, log.clone(), machine);
+        // Started on its group thread, openraft spawns all its tasks there.
+        let started = match &thread {
+            Some(thread) => thread
+                .handle()
+                .spawn(started)
+                .await
+                .map_err(|err| OpenError::Raft(err.to_string()))?,
+            None => started.await,
+        };
+        let raft = started.map_err(|err| OpenError::Raft(err.to_string()))?;
         // A sole voter's promise binds nobody else, so it stands at once
         // too. The newest set must
         // name this member alone, and the committed one no other voter:
@@ -831,7 +851,7 @@ impl Group {
         let stop = CancellationToken::new();
         let leadership = Arc::new(Leadership::new(Arc::clone(&id.shard), host));
         // Ends on `stop`, or when the group's core is gone.
-        tokio::spawn(lead::run(
+        runtime.spawn(lead::run(
             Arc::clone(&leadership),
             raft.clone(),
             commits.clone(),
@@ -890,7 +910,8 @@ impl Group {
             client_writes: Arc::default(),
             stop,
             reads: Arc::default(),
-            runtime: tokio::runtime::Handle::current(),
+            runtime,
+            _thread: thread,
         })
     }
 
@@ -1789,6 +1810,12 @@ impl Group {
     /// Cancelled when the member is shut down.
     pub(crate) fn stopped(&self) -> CancellationToken {
         self.stop.clone()
+    }
+
+    /// Where this group's tasks run: its group thread, or the runtime it
+    /// was opened on.
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
     }
 
     /// The commit table as the state machine publishes it.

@@ -602,7 +602,7 @@ impl RaftEngine {
         let written = self.propose_reaching(shard, batch, Heard::Written);
         // On a task of its own, so the turn is given up when the batch is
         // written whether or not its publisher has started waiting.
-        let written = tokio::spawn(async move {
+        let written = self.group_runtime(shard).spawn(async move {
             let written = written.await;
             drop(turn);
             written
@@ -676,7 +676,7 @@ impl RaftEngine {
     /// `None` when this broker holds no member of the shard.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
-        Some(tokio::spawn(async move {
+        Some(self.group_runtime(shard).spawn(async move {
             let mut failures = 0u32;
             loop {
                 stream.release_committed();

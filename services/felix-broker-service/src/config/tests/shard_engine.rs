@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::config::env::{
     RaftPrerequisites, ShardEngine, parse_shard_engine, parse_shard_raft_elections_at_once,
-    parse_shard_raft_lease,
+    parse_shard_raft_group_threads, parse_shard_raft_lease,
 };
 
 const ALL: RaftPrerequisites = RaftPrerequisites {
@@ -116,4 +116,18 @@ fn the_raft_election_bound_is_the_default_unless_set() {
         let err = format!("{err}");
         assert!(err.contains("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE"), "{err}");
     }
+}
+
+#[test]
+fn raft_group_threads_are_off_unless_set() {
+    assert_eq!(parse_shard_raft_group_threads(None).expect("unset"), None);
+    assert_eq!(
+        parse_shard_raft_group_threads(Some(" 4 ")).expect("set"),
+        Some(4)
+    );
+    let err = parse_shard_raft_group_threads(Some("auto")).expect_err("not a number");
+    assert!(
+        format!("{err}").contains("FELIX_SHARD_RAFT_GROUP_THREADS"),
+        "{err}"
+    );
 }

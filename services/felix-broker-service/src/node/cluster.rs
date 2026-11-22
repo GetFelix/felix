@@ -163,6 +163,9 @@ pub(super) fn start_raft_shards(
     if let Some(elections) = settings.elections_at_once {
         timers.max_elections_at_once = elections;
     }
+    if let Some(threads) = settings.group_threads {
+        timers.group_threads = threads;
+    }
     let runtime = GroupRuntime::start(membership.node_id.clone(), timers, Arc::new(transport))
         .map_err(|err| anyhow::anyhow!("start the Raft group runtime: {err}"))?;
     let shards = crate::shards::raft::RaftShards::new(

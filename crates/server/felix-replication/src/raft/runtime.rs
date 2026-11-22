@@ -21,6 +21,7 @@ use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
+use super::executor::GroupThreads;
 use super::group::driver::MembershipProgress;
 use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
@@ -111,6 +112,11 @@ pub struct RuntimeConfig {
     /// drains in a quarter of `election_min`. 0 takes the bound off.
     /// See `docs/per-shard-raft.md`, "Many groups electing at once".
     pub max_elections_at_once: usize,
+    /// How many group threads run the groups' openraft tasks, a few groups
+    /// to each, so wakes inside a group stay on one thread. `0` runs them
+    /// on the runtime each group is opened on. See docs/per-shard-raft.md,
+    /// "Group threads".
+    pub group_threads: usize,
 }
 
 impl Default for RuntimeConfig {
@@ -135,6 +141,7 @@ impl Default for RuntimeConfig {
             append_entries: 1024,
             placement: Placement::default(),
             max_elections_at_once: 64,
+            group_threads: 0,
         }
     }
 }
@@ -165,6 +172,19 @@ pub struct ElectionLoad {
 /// How long one piece of a snapshot may take to send and be answered. The
 /// last piece's answer waits for the install as well.
 pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
+
+/// `count` group threads, or none. A broker that cannot start them runs its
+/// groups on its own runtime, which is slower but the same otherwise.
+fn start_group_threads(count: usize) -> Option<GroupThreads> {
+    if count == 0 {
+        return None;
+    }
+    GroupThreads::start(count)
+        .inspect_err(|err| {
+            tracing::warn!(error = %err, count, "could not start Raft group threads, so groups run on the broker runtime");
+        })
+        .ok()
+}
 
 fn wall_clock_micros() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -533,6 +553,8 @@ struct Inner {
     admitted: parking_lot::Mutex<BTreeMap<ShardKey, Arc<Admission>>>,
     /// See [`GroupRuntime::admit_until`].
     admitted_until: parking_lot::Mutex<Option<tokio::time::Instant>>,
+    /// See [`RuntimeConfig::group_threads`].
+    threads: Option<GroupThreads>,
 }
 
 /// See [`GroupRuntime::admit`].
@@ -616,6 +638,7 @@ impl GroupRuntime {
                 admitted: parking_lot::Mutex::default(),
                 admitted_until: parking_lot::Mutex::default(),
                 placement: config.placement,
+                threads: start_group_threads(config.group_threads),
             }),
         })
     }
@@ -884,6 +907,7 @@ impl GroupRuntime {
             placement: inner.placement.clone(),
             placed_budget: Arc::clone(&inner.placed_budget),
             acked: Arc::clone(&inner.acked),
+            thread: inner.threads.as_ref().map(GroupThreads::place),
         };
         let raft = match group.shard.kind {
             ShardKind::Stream => &inner.raft,
@@ -1551,6 +1575,14 @@ impl GroupRuntime {
             .registry
             .get(shard)
             .map(|group| group.positions())
+    }
+
+    /// How many groups run on each group thread. Empty without them.
+    pub fn group_thread_loads(&self) -> Vec<usize> {
+        self.inner
+            .threads
+            .as_ref()
+            .map_or_else(Vec::new, GroupThreads::placed)
     }
 
     /// How many groups are open here.
