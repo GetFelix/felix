@@ -546,8 +546,8 @@ async fn two_member_group() -> Vec<Member> {
                 tls: None,
             },
         );
-        settings.heartbeat_interval = Duration::from_millis(50);
-        settings.election_timeout = (Duration::from_millis(150), Duration::from_millis(300));
+        settings.heartbeat_interval = Duration::from_millis(100);
+        settings.election_timeout = (Duration::from_secs(1), Duration::from_secs(2));
         let handle = RaftHandle::start(
             settings,
             std::sync::Arc::clone(&machine) as std::sync::Arc<dyn AppStateMachine>,
@@ -578,19 +578,37 @@ async fn two_member_group() -> Vec<Member> {
         })
         .collect();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !members.iter().all(|member| {
-        let status = member.store.handle.status();
-        status.leader.is_some() && status.last_applied_index.is_some()
-    }) {
+    let leader = loop {
+        let first = members[0].store.handle.status().leader;
+        let agreed = first.is_some()
+            && members.iter().all(|member| {
+                let status = member.store.handle.status();
+                status.leader == first && status.last_applied_index.is_some()
+            });
+        if agreed {
+            break first.expect("agreed leader");
+        }
         assert!(std::time::Instant::now() < deadline, "no committed leader");
         tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    };
+    let leader = members
+        .iter()
+        .find(|member| member.store.handle.status().id == leader)
+        .expect("leader is a member");
+    assert!(
+        leader
+            .store
+            .handle
+            .confirm_leadership_within(Duration::from_secs(2))
+            .await,
+        "leader confirms"
+    );
     members
 }
 
 /// A deposed leader's decision is not forwarded to the leader that replaced
 /// it: the new leader has not seen what the old one judged from.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
     let members = two_member_group().await;
     let leader = members
@@ -651,4 +669,241 @@ async fn a_deposed_leaders_take_is_not_forwarded_to_its_successor() {
         member.store.handle.shutdown().await.expect("shutdown");
         member.server.abort();
     }
+}
+
+/// Re-form plans live on the leader: a plan made, polled and answered
+/// through a follower is the leader's plan, read from the leader's state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reform_plan_asked_through_a_follower_is_the_leaders() {
+    use crate::store::reform::tests::{LOG, answer, copy, shard};
+    use crate::store::reform::{ReformReply, ReformRequest, ReformScope};
+    let members = two_member_group().await;
+    let leader = members
+        .iter()
+        .position(|member| member.store.handle.is_leader())
+        .expect("a leader");
+    let (leader, follower) = (&members[leader].store, &members[1 - leader].store);
+    // Only the leader's applied state holds the shard, so a plan with it
+    // in was made there.
+    let local = leader.machine.store();
+    let mut shard = shard();
+    catalog(local.as_ref(), &shard.key).await;
+    for (id, port) in [("a", 7001), ("b", 7002), ("c", 7003)] {
+        local.register_node(node(id, port)).await.expect("register");
+    }
+    let incarnation = local
+        .list_streams(&shard.key.tenant_id, &shard.key.namespace)
+        .await
+        .expect("streams")[0]
+        .incarnation;
+    shard.incarnation = incarnation;
+    shard.raft_seed.as_mut().unwrap().incarnation = incarnation;
+    shard.raft_ordered.as_mut().unwrap().incarnation = incarnation;
+    local.put_shard_assignment(shard).await.expect("put");
+
+    let ReformReply::Created { plan_id } = follower
+        .reform(ReformRequest::Create {
+            scope: ReformScope::Cluster,
+        })
+        .await
+        .expect("create")
+    else {
+        panic!("not a create reply");
+    };
+    let ReformReply::Surveys { mut surveys } = follower
+        .reform(ReformRequest::Surveys {
+            node_id: "a".to_string(),
+        })
+        .await
+        .expect("poll")
+    else {
+        panic!("not a surveys reply");
+    };
+    assert_eq!(surveys.len(), 1, "the follower's poll missed the plan");
+    let survey = surveys.remove(0);
+    assert_eq!(survey.plan_id, plan_id);
+    let reply = follower
+        .reform(ReformRequest::Reports {
+            node_id: "a".to_string(),
+            answers: vec![answer(
+                &survey,
+                copy(&LOG, Some(4), Some(2), &survey.probes),
+            )],
+        })
+        .await
+        .expect("answer");
+    assert!(
+        matches!(
+            reply,
+            ReformReply::Recorded {
+                accepted: 1,
+                ignored: 0
+            }
+        ),
+        "{reply:?}"
+    );
+    let ReformReply::Plan { plan: Some(plan) } = leader
+        .reform(ReformRequest::View { plan_id })
+        .await
+        .expect("view")
+    else {
+        panic!("the leader holds no such plan");
+    };
+    assert_eq!(plan.shards.len(), 1);
+    assert!(
+        !plan.shards[0].waiting_on.contains(&"a".to_string()),
+        "the answer given through the follower did not reach the plan: {:?}",
+        plan.shards[0]
+    );
+    for member in &members {
+        member.store.handle.shutdown().await.expect("shutdown");
+        member.server.abort();
+    }
+}
+
+/// A follower whose own join floor would decide its level (a member it has
+/// never heard from counts at that floor, and the floor can lag the log)
+/// takes the leader's confirmed level instead. What it strips, the leader
+/// appends as sent, so fields the group can store survive (#2878).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_follower_strips_nothing_on_its_own_lagging_floor() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    use crate::raft::AppStateMachine;
+    use crate::store::raft::command::METADATA_VERSION;
+    use crate::store::raft::tests::{SILENT, stub_member};
+    use std::sync::atomic::{AtomicU16, Ordering};
+    let members = two_member_group().await;
+    let leader = members
+        .iter()
+        .position(|member| member.store.handle.is_leader())
+        .expect("a leader");
+    let (leader, follower) = (&members[leader].store, &members[1 - leader].store);
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    // On each member's applied state rather than through the log, as the
+    // re-form test does: a create entry would raise the join floor past
+    // every level put_shard_assignment strips at.
+    for member in &members {
+        let local = member.store.machine.store();
+        catalog(local.as_ref(), &key).await;
+        for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+            local.register_node(node(id, port)).await.expect("register");
+        }
+    }
+    // A third member the leader hears from once, and the follower never.
+    let version = std::sync::Arc::new(AtomicU16::new(METADATA_VERSION));
+    let addr = stub_member(std::sync::Arc::clone(&version)).await;
+    leader
+        .handle
+        .add_learner_without_waiting(3, addr)
+        .await
+        .expect("add member");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while leader.handle.cluster_version_if_known().await != Some(METADATA_VERSION) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the leader never heard"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    version.store(SILENT, Ordering::SeqCst);
+    while follower.handle.cluster_version_if_known().await.is_some() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follower never counted the member"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let floor = follower.machine.join_floor();
+    assert!(
+        follower.handle.cluster_version_with_unknown_at(floor).await < super::super::LEARNER_LEVEL,
+        "the follower's own floor {floor} would not strip learners"
+    );
+
+    let assignment = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: [("broker-y".to_string(), "b".repeat(32))].into(),
+        member_storage_ids: [("broker-y".to_string(), "c".repeat(32))].into(),
+        learners: ["broker-y".to_string()].into(),
+        pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
+        placed: None,
+        switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
+        raft_floor: None,
+        raft_formed: None,
+        raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
+        raft_ordered: None,
+    };
+    let written = follower
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    assert_eq!(written.fence_storage_ids, assignment.fence_storage_ids);
+    assert_eq!(written.member_storage_ids, assignment.member_storage_ids);
+    assert_eq!(written.learners, assignment.learners);
+    for member in &members {
+        member.store.handle.shutdown().await.expect("shutdown");
+        member.server.abort();
+    }
+}
+
+/// The tenant, namespace and three-replica stream `key` names.
+async fn catalog(store: &dyn ControlPlaneStore, key: &crate::model::ShardKey) {
+    use crate::model::*;
+    store
+        .create_tenant(Tenant {
+            tenant_id: key.tenant_id.clone(),
+            display_name: "t".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(Namespace {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            display_name: "ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    store
+        .create_stream(Stream {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            kind: StreamKind::Stream,
+            shards: 1,
+            replication_factor: 3,
+            retention: RetentionPolicy {
+                max_age_seconds: None,
+                max_size_bytes: None,
+            },
+            consistency: ConsistencyLevel::Leader,
+            delivery: DeliveryGuarantee::AtMostOnce,
+            durable: true,
+            region: None,
+            routing: Default::default(),
+            incarnation: 0,
+            mount: None,
+        })
+        .await
+        .expect("stream");
 }

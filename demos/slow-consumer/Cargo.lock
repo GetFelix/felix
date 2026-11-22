@@ -1070,6 +1070,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "felix-authz",
+ "felix-common",
  "felix-mqtt-wire",
  "felix-wire",
  "metrics",
@@ -1142,6 +1143,7 @@ dependencies = [
  "metrics",
  "object_store",
  "parking_lot 0.13.0",
+ "serde",
  "tokio",
  "tracing",
 ]

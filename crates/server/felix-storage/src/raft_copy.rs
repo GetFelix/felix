@@ -22,20 +22,12 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod copy_file;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the re-form command, not built yet, calls it")
-)]
 mod epoch_file;
 mod gate;
 mod judge;
 mod marks;
 mod placement_ack;
 mod reclaim;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the re-form command, not built yet, calls it")
-)]
 mod reform;
 mod report;
 mod rotated_by;
@@ -47,11 +39,8 @@ mod start;
 mod stop_file;
 #[cfg(test)]
 pub(crate) mod tests;
-#[cfg_attr(
-    not(test),
-    allow(dead_code, reason = "the re-form command, not built yet, calls it")
-)]
 mod vouch;
+mod wire;
 
 pub use copy_file::CopyFile;
 #[allow(
@@ -98,6 +87,10 @@ pub use vouch::{BrokerReport, GroupRecord, VoterId};
 )]
 pub(crate) use vouch::{
     Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, plan_reform, probes,
+};
+pub use wire::{
+    PlanView, REPORT_VERSION, SurveyStep, VersionMismatch, WireBase, WireCopy, WireFloor,
+    WireReport, WireRotated, first_probes, survey_step,
 };
 
 use std::path::Path;

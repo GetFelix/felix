@@ -371,6 +371,7 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
         key: orders.clone(),
         incarnation: INCARNATION,
         copy,
+        epoch: 0,
         set: ["broker-a".to_string()].into(),
         in_target,
         withheld,
@@ -1963,13 +1964,13 @@ impl RaftTransport for Loopback {
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {
             Some(runtime) if unheard => {
-                let _ = runtime.handle(request).await;
+                let _ = runtime.handle_unchecked(request).await;
                 Err(Refused::Unreachable(format!(
                     "the answer from {to} was lost"
                 )))
             }
             Some(runtime) => {
-                let reply = runtime.handle(request).await;
+                let reply = runtime.handle_unchecked(request).await;
                 *self.answered.lock().entry(to).or_default() += 1;
                 reply
             }

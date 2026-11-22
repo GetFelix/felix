@@ -182,9 +182,39 @@ a node that had just registered again. So the first leader-only request of a
 term runs a read-index, which waits for the blank entry to apply, and only
 then is the request answered. Every leader-only request goes through that one
 check (`SoftState::dispatch` in `store/raft/soft_state.rs`), and later
-requests in the same term skip it. The first heartbeat of a term pays for
-two read-indexes, so a leader with many entries left to apply fails
-forwarded heartbeats until it catches up, and brokers retry.
+requests in the same term skip it. Leader soft state is the only reader of
+that cached per-term barrier (`RaftHandle::await_own_blank` in
+`raft/leader.rs`).
+
+The other leader decisions read from applied state run a fresh read-index on
+every call instead, so a floor raised later in the same term is not missed:
+admitting a member against the join floor (`RaftHandle::admit` in
+`raft/join.rs`), and the level a proposal is settled at
+(`RaftHandle::proposal_level` in `raft/leader.rs`), which counts a member that
+has not answered at the join floor. Settled below what the committed log
+already needs, a write could drop a field a finalized feature relies on. Joins
+and level-dependent writes are rare, so the extra read-index costs little. A
+store write that reads the level and then settles a level-dependent command
+reuses the level it confirmed while the term lasts, so it pays one read-index.
+
+If a write's read-index cannot pass within one attempt (2 s), the attempt is
+forwarded and retried inside the write budget, like any refused proposal, but
+only for callers of `RaftHandle::write` directly. Every `RaftStore` write on a
+leader that has not confirmed answers a retryable 503 `unavailable`: its
+proposal reads the level through `leader_level`, and the other path goes
+through `group_level`.
+
+A follower's own join floor can lag its log just as a new leader's can, and
+what a follower strips from a command before forwarding it the leader appends
+as sent. So when a member that has not answered would be counted at the
+follower's floor, and that floor is below what the other members answered,
+the follower asks the leader for its confirmed level (`LeaderRequest::ProposalLevel`)
+instead of settling on its own. A leader that predates the request answers
+Unsupported (404 if it predates the leader route), and the follower falls back to its own floor, as that leader does.
+
+The first heartbeat of a term pays for two read-indexes, so a leader with many
+entries left to apply fails forwarded heartbeats until it catches up, and
+brokers retry.
 
 A judgement belongs to the term it was made in, and so does what it writes.
 A request can wait for the judging slot, or for the store, while the term
@@ -863,7 +893,10 @@ field it does not know; it never sees the mark, because the mark is only
 set by entries it could not apply either. Once the floor is above 0, the
 leader asks a new member its level on the `standing` route before adding it
 as a learner, and refuses the join when it is below the floor, reports
-none, or does not answer, naming both versions. At floor 0 any build may
+none, or does not answer, naming both versions. It reads the floor only
+after the term's barrier (see "Liveness is leader soft state"), so a newly
+elected leader judges the join by the committed log, not by what it had
+applied when it won. At floor 0 any build may
 join: the group's level drops to the newcomer's, as during a rolling
 upgrade.
 
@@ -885,7 +918,13 @@ a higher vote and depose the leader. That is one extra election per long
 hold. The check reads only
 cached state, the floor from an atomic the state machine updates on apply
 and restore and each member's last reported level; a send never waits on a
-probe. The leader keeps those levels fresh in the background
+probe. A new leader applies what earlier terms committed only after its
+blank entry commits, and that needs these very sends, so its applied floor
+can lag the log it sends from. For a member that reported a level below the
+leader's, or that is marked as described below, the check therefore raises
+the floor to what the entries in the append need, the level each would raise
+the mark to once applied. A snapshot is built from applied state, so the
+applied floor covers it. The leader keeps those levels fresh in the background
 (`watch_versions` in `raft/version.rs`): it asks every member on the
 `standing` route when it takes the lead, every 10 seconds after that, and
 every 500 ms while a member is held. An answer that names another member is

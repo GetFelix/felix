@@ -530,12 +530,11 @@ async fn a_member_under_a_certificate_that_is_not_its_own_does_not_start() {
             token: None,
             previous_token: None,
             next_token: None,
-            tls: Some(PeerTls {
-                cert_path: path("peer.pem"),
-                key_path: path("peer.key"),
-                ca_path: path("ca.pem"),
-                revoked: Default::default(),
-            }),
+            tls: Some(PeerTls::new(
+                path("peer.pem"),
+                path("peer.key"),
+                path("ca.pem"),
+            )),
         },
         insecure_peers: false,
         initial_cluster_state: crate::raft::InitialClusterState::New,

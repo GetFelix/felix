@@ -15,7 +15,8 @@
 //!
 //! Rotation is a file swap, handled by `felix_common::tls::ReloadingIdentity`:
 //! the next handshake presents the new certificate, connections already up
-//! keep theirs, and the CA bundle is read once.
+//! keep theirs, and the CA bundle is read once. A rotated certificate that
+//! does not verify against that CA is refused and the current one kept.
 //!
 //! What both modes enforce is *role separation*: both ends negotiate
 //! [`INTERNAL_ALPN`], and the listener rejects a connection that settled on
@@ -24,7 +25,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use felix_common::tls::{IdentityFiles, ReloadingIdentity};
+use felix_common::tls::{IdentityFiles, Presenter, ReloadingIdentity, verify_chain};
 use quinn::{ClientConfig, ServerConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -62,8 +63,15 @@ impl PeerTls {
     /// comes up with unreadable key material is a misconfiguration, not a
     /// runtime condition to retry.
     pub fn load(paths: &PeerTlsConfig) -> Result<Self> {
-        let roots = felix_common::tls::load_roots("FELIX_INTERNAL_TLS_CA", &paths.ca_path)?;
-        let identity = ReloadingIdentity::load(
+        let roots = Arc::new(felix_common::tls::load_roots(
+            "FELIX_INTERNAL_TLS_CA",
+            &paths.ca_path,
+        )?);
+        // Every peer verifies this chain against the same CA as client and
+        // server, so one that does not would cut this broker off from all of
+        // them. Names stay free to change: the name is the identity here.
+        let check_roots = Arc::clone(&roots);
+        let identity = ReloadingIdentity::load_checked(
             IdentityFiles {
                 cert_path: paths.cert_path.clone(),
                 cert_var: "FELIX_INTERNAL_TLS_CERT",
@@ -71,10 +79,17 @@ impl PeerTls {
                 key_var: "FELIX_INTERNAL_TLS_KEY",
             },
             provider(),
+            Some(Arc::new(move |chain| {
+                [Presenter::Client, Presenter::Server]
+                    .into_iter()
+                    .try_for_each(|presenter| {
+                        verify_chain(chain, &check_roots, &provider(), presenter)
+                    })
+            })),
         )?;
         Ok(Self {
             paths: paths.clone(),
-            roots: Arc::new(roots),
+            roots,
             identity: Arc::new(identity),
         })
     }
@@ -101,10 +116,7 @@ impl PeerTls {
     }
 
     /// When a chain a peer presented stops being valid, against these roots.
-    pub(crate) fn chain_expiry(
-        &self,
-        presenter: felix_common::tls::Presenter,
-    ) -> felix_common::tls::ChainExpiry {
+    pub(crate) fn chain_expiry(&self, presenter: Presenter) -> felix_common::tls::ChainExpiry {
         felix_common::tls::ChainExpiry::new(Arc::clone(&self.roots), &provider(), presenter)
     }
 

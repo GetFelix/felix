@@ -1,5 +1,5 @@
 //! TLS on the API listener: the certificate it serves, re-read on rotation,
-//! and the CA client certificates must chain to.
+//! and the CA client certificates must chain to, both re-read on rotation.
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
@@ -12,7 +12,8 @@ pub struct ApiTlsConfig {
     /// PEM private key for the leaf.
     pub key_path: String,
     /// When set, every client must present a certificate chaining to this PEM
-    /// bundle, or the handshake is refused. Read once at startup.
+    /// bundle, or the handshake is refused. Re-read on rotation, with no
+    /// check that it still admits the brokers already connecting.
     #[serde(default)]
     pub client_ca_path: Option<String>,
     /// A bearer token must be issued to the client's certificate: a

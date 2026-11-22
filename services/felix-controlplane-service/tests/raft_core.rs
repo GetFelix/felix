@@ -1933,7 +1933,7 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
     .await;
 
     // The token alone is not enough without a certificate.
-    let ca = std::fs::read(&tls[0].ca_path).expect("read ca");
+    let ca = std::fs::read(tls[0].ca_path()).expect("read ca");
     let no_cert = reqwest::Client::builder()
         .tls_certs_only([reqwest::Certificate::from_pem(&ca).expect("ca")])
         .build()
@@ -1985,7 +1985,7 @@ async fn a_member_refuses_a_peer_serving_a_revoked_certificate() {
         let (handle, shutdown) = (handle.clone(), shutdown.clone());
         tokio::spawn(async move { handle.serve_peers(listener, shutdown).await })
     };
-    let pem = std::fs::read(&tls[1].cert_path).expect("read cert");
+    let pem = std::fs::read(tls[1].cert_path()).expect("read cert");
     let der = rustls::pki_types::CertificateDer::from_pem_slice(&pem).expect("parse cert");
     let fingerprint = {
         use sha2::Digest;
@@ -1999,7 +1999,7 @@ async fn a_member_refuses_a_peer_serving_a_revoked_certificate() {
         let mut first = settings(1, dir.path().into()).security;
         let mut own = tls[0].clone();
         if revoked {
-            own.revoked.insert(fingerprint.clone());
+            own = own.with_revoked([fingerprint.clone()].into());
         }
         first.tls = Some(own);
         let client = first.client(Duration::from_secs(5)).expect("client");
@@ -2043,12 +2043,11 @@ fn peer_pki(dir: &std::path::Path, members: u64) -> Vec<felix_controlplane_servi
             std::fs::write(path(&format!("peer-{id}.pem")), cert.pem()).expect("write cert");
             std::fs::write(path(&format!("peer-{id}.key")), key.serialize_pem())
                 .expect("write key");
-            felix_controlplane_service::raft::PeerTls {
-                cert_path: path(&format!("peer-{id}.pem")),
-                key_path: path(&format!("peer-{id}.key")),
-                ca_path: path("ca.pem"),
-                revoked: Default::default(),
-            }
+            felix_controlplane_service::raft::PeerTls::new(
+                path(&format!("peer-{id}.pem")),
+                path(&format!("peer-{id}.key")),
+                path("ca.pem"),
+            )
         })
         .collect()
 }

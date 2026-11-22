@@ -326,6 +326,22 @@ pub(crate) enum Command {
     )]
     Placement(PlacementCommand),
 
+    /// Plan re-forming Raft groups that lost their majority (control plane)
+    #[command(
+        subcommand,
+        long_about = "Re-form a Raft group that can no longer elect a leader, because too \
+                      many of its copies are lost. `raft reform plan` surveys the brokers \
+                      and prints what a re-form would do for each shard: which copy it \
+                      starts from, the new voters, and whether records could be lost. It \
+                      changes nothing. Needs a control-plane token allowed node.manage on \
+                      the cluster.",
+        after_long_help = "Examples:
+  felixctl raft reform plan
+  felixctl raft reform plan --scope node broker-2
+  felixctl raft reform plan --json"
+    )]
+    Raft(RaftCommand),
+
     /// List fleet features and finalize them (control plane)
     #[command(
         subcommand,
@@ -1451,6 +1467,54 @@ pub(crate) enum FeaturesCommand {
         #[command(flatten)]
         confirm: Confirm,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum RaftCommand {
+    /// Plan re-forming Raft groups that lost their majority
+    #[command(
+        subcommand,
+        long_about = "Re-form Raft groups that lost their majority. `plan` shows what a \
+                      re-form would do and changes nothing.",
+        after_long_help = "Examples:
+  felixctl raft reform plan
+  felixctl raft reform plan --scope node broker-2"
+    )]
+    Reform(ReformCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ReformCommand {
+    /// Survey the brokers and print what a re-form would do, changing nothing
+    #[command(
+        long_about = "Ask the control plane for a re-form plan and wait while it surveys \
+                      the brokers placed on each Raft shard in scope. Prints one line per \
+                      shard: `reform` with the copy it would start from and the new \
+                      voters, `blocked` with the reason, or `left_alone` when the group \
+                      still has a leader. A plan that could lose acknowledged records says \
+                      so and names them. The plan changes nothing on any broker or in the \
+                      control plane. It is kept by the control-plane leader only, so after \
+                      a leader change, plan again. A survey still running after 5 minutes \
+                      prints what it has and exits with an error.",
+        after_long_help = "Examples:
+  felixctl raft reform plan
+  felixctl raft reform plan --scope cluster
+  felixctl raft reform plan --scope node broker-2 --json"
+    )]
+    Plan(ReformPlanArgs),
+}
+
+/// `raft reform plan`.
+#[derive(Debug, Args)]
+pub(crate) struct ReformPlanArgs {
+    /// `cluster` for every Raft shard, or `node ID` for the shards placed on one broker
+    #[arg(
+        long,
+        num_args = 1..=2,
+        value_names = ["SCOPE", "NODE"],
+        default_values_t = ["cluster".to_string()]
+    )]
+    pub(crate) scope: Vec<String>,
 }
 
 /// `backup-point NAME`.

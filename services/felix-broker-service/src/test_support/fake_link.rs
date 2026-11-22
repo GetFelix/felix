@@ -18,6 +18,7 @@ pub(crate) struct FakeLink {
     statuses: Arc<Mutex<HashMap<&'static str, StatusCode>>>,
     floors: Arc<Mutex<Vec<Vec<felix_replication::controlplane_link::RaftFloor>>>>,
     copy_ids: Arc<Mutex<Vec<felix_replication::controlplane_link::RaftCopyId>>>,
+    reform_reports: Arc<Mutex<Vec<serde_json::Value>>>,
     failing: Arc<Mutex<std::collections::HashSet<&'static str>>>,
 }
 
@@ -51,6 +52,12 @@ impl FakeLink {
     #[cfg_attr(not(feature = "raft"), allow(dead_code))]
     pub(crate) fn copy_ids(&self) -> Vec<felix_replication::controlplane_link::RaftCopyId> {
         self.copy_ids.lock().unwrap().clone()
+    }
+
+    /// Each reform-reports body, in the order it was sent.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn reform_reports(&self) -> Vec<serde_json::Value> {
+        self.reform_reports.lock().unwrap().clone()
     }
 
     /// Answer `call` by its reply again, not by a status set earlier.
@@ -159,6 +166,20 @@ impl ControlPlaneLink for FakeLink {
     ) -> Result<LinkResponse> {
         self.copy_ids.lock().unwrap().push(report.clone());
         self.answer("report_raft_copy_id")
+    }
+
+    async fn reform_surveys(&self, _: Option<&str>, _: &str) -> Result<LinkResponse> {
+        self.answer("reform_surveys")
+    }
+
+    async fn reform_reports(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        body: &serde_json::Value,
+    ) -> Result<LinkResponse> {
+        self.reform_reports.lock().unwrap().push(body.clone());
+        self.answer("reform_reports")
     }
 
     async fn confirmed_assignment(

@@ -36,6 +36,10 @@ pub(crate) struct KeptLog {
 
 /// Every copy rotations moved aside from `dir`, read as [`KeptLog`]s. A
 /// directory that cannot be read is an error, never skipped.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the re-form apply step, not built yet, calls it")
+)]
 pub(crate) fn kept_logs(dir: &Path, index_spacing_bytes: u64) -> io::Result<Vec<KeptLog>> {
     kept_copies(dir)?
         .into_iter()

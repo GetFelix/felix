@@ -9,6 +9,7 @@ pub mod export;
 pub mod identity;
 pub mod memory;
 pub mod raft;
+pub mod reform;
 
 #[cfg(test)]
 pub(crate) mod contract;
@@ -139,9 +140,10 @@ pub trait ControlPlaneStore: Send + Sync {
     }
 
     /// Whether [`Self::create_resources`] can be used yet. Only a Raft group
-    /// part-way through an upgrade answers no.
-    async fn create_resources_ready(&self) -> bool {
-        true
+    /// part-way through an upgrade answers no. An error when the level
+    /// cannot be read, such as a leader that cannot confirm its term.
+    async fn create_resources_ready(&self) -> StoreResult<bool> {
+        Ok(true)
     }
 
     /// Whether every control-plane member runs this build's metadata level.
@@ -150,6 +152,11 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn every_member_current(&self) -> bool {
         true
     }
+
+    /// Answer a re-form plan request where the plans live: on the metadata
+    /// Raft leader, or on this store when it is the only member. Writes
+    /// nothing.
+    async fn reform(&self, request: reform::ReformRequest) -> StoreResult<reform::ReformReply>;
 
     /// Register a node, or revive the record a restarting node already has.
     ///

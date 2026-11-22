@@ -462,13 +462,28 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
 /// A vote names its candidate, and openraft grants it to that member. A
 /// connection bound to one broker may not ask in another's name, nor ask at
 /// all before it is bound.
-#[test]
-fn a_raft_message_in_another_brokers_name_is_refused() {
+#[tokio::test]
+async fn a_raft_message_in_another_brokers_name_is_refused() {
+    let runtime = GroupRuntime::start(
+        "b",
+        RuntimeConfig::default(),
+        Arc::new(crate::raft::AgreeingPeers),
+    )
+    .expect("timers");
     let vote = vote_for(GroupId::new(shard(), 0), MemberId::new("b", 1));
-    assert!(impersonation(Some("a"), &vote).is_none());
-    let refused = impersonation(Some("c"), &vote).expect("refused");
-    assert!(matches!(refused, Refused::Unreachable(_)), "{refused}");
-    assert!(impersonation(None, &vote).is_some());
+    let answer = |from: Option<&str>| {
+        let bytes = wire::encode_request(&vote).expect("encode");
+        let answer = runtime.answer(from.map(Arc::from), bytes);
+        async { wire::decode_reply(answer.await).expect("reply") }
+    };
+    // Past the check, there is no member here to answer it.
+    let passed = answer(Some("a")).await.err().expect("no member");
+    assert!(matches!(passed, Refused::NoSuchMember(_)), "{passed}");
+    for from in [Some("c"), None] {
+        let refused = answer(from).await.err().expect("refused");
+        assert!(matches!(refused, Refused::Unreachable(_)), "{refused}");
+    }
+    runtime.shutdown().await;
 }
 
 /// The answer path itself holds a connection to its bound broker: an append
@@ -596,6 +611,51 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
     wire::decode_reply(reply)
         .expect("reply")
         .expect("a broker placed now is answered");
+    broker.stop().await;
+}
+
+/// A message for another copy of a member is answered with that member's
+/// copy id, which only a broker of the group is told. The answer path
+/// refuses an outsider before that refusal is built.
+#[tokio::test]
+async fn an_outsider_is_not_told_a_members_copy() {
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let broker = Broker::start("a", &book, true).await;
+    let group = GroupId::new(shard(), 0);
+    broker
+        .runtime
+        .open(group.clone(), 1, open_log(&root, "a"))
+        .await
+        .expect("open");
+    let members: BTreeSet<MemberId> = ["a", "b"].map(|b| MemberId::new(b, 1)).into();
+    broker
+        .runtime
+        .initialize(&shard(), members)
+        .await
+        .expect("initialize");
+    let ask = |name: &str| {
+        let leader = openraft::impls::leader_id_std::LeaderId::new(1, MemberId::new(name, 1));
+        let mut request = vote_for(group.clone(), MemberId::new("a", 2));
+        request.body = Request::Vote(VoteRequest::new(
+            VoteOf::<ShardTypes>::from_leader_id(leader, false),
+            None,
+        ));
+        wire::encode_request(&request).expect("encode")
+    };
+    let reply = broker.runtime.answer(Some("c".into()), ask("c")).await;
+    let Err(Refused::Unreachable(why)) = wire::decode_reply(reply).expect("reply") else {
+        panic!("expected a refusal");
+    };
+    assert!(why.contains("not a member"), "{why}");
+    let reply = broker.runtime.answer(Some("b".into()), ask("b")).await;
+    assert!(
+        matches!(
+            wire::decode_reply(reply).expect("reply"),
+            Err(Refused::OtherCopy(_, 1))
+        ),
+        "a member is told the copy"
+    );
     broker.stop().await;
 }
 

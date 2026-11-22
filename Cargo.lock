@@ -1146,6 +1146,7 @@ name = "felix-controlplane-service"
 version = "0.8.0-preview.2"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "aws-lc-rs",
  "axum",
@@ -1169,6 +1170,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "parking_lot 0.13.0",
  "rand 0.10.3",
  "rcgen",
  "reqwest",
@@ -1240,6 +1242,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "felix-authz",
+ "felix-common",
  "felix-mqtt-wire",
  "felix-wire",
  "metrics",

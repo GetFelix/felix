@@ -28,6 +28,7 @@ raft = ["dep:openraft", "dep:sha2"]
 
 [dependencies]
 bytes = { workspace = true }
+serde = { workspace = true }
 felix-common = { path = "../felix-common", version = "0.8.0-preview.2", features = ["blocking", "hasher"] }
 tokio = { workspace = true }
 tracing = { workspace = true }

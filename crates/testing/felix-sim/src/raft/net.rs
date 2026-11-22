@@ -105,7 +105,7 @@ impl RaftTransport for Wire {
         }
         let runtime = self.links.runtimes.lock().get(to).cloned();
         let runtime = runtime.ok_or_else(|| lost("not connected"))?;
-        let answer = runtime.handle(request).await;
+        let answer = runtime.handle_unchecked(request).await;
         tokio::time::sleep(self.delay()).await;
         // Checked after the member handled it: a one-way cut loses the
         // answer to a request that took effect.

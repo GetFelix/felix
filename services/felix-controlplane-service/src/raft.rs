@@ -55,6 +55,7 @@ pub use handle::RaftHandle;
 pub use health::Replaying;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use member::RaftMember;
+pub(crate) use peer::parse_fingerprints;
 pub use peer::{CLUSTER_ID_HEADER, MEMBER_URI_PREFIX, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;
@@ -266,6 +267,15 @@ pub trait AppStateMachine: Send + Sync + 'static {
     /// refuse entries the others apply. 0 admits any member. Read on every
     /// replication send, so it must not wait on anything.
     fn join_floor(&self) -> u16 {
+        0
+    }
+
+    /// At least the level [`Self::join_floor`] rises to once `command`
+    /// applies; 0 when it raises nothing. Lets a leader whose applied state
+    /// lags its log judge the entries it sends by their own levels. Higher
+    /// than apply only costs a hold, never safety. Must not wait.
+    fn floor_of(&self, command: &[u8]) -> u16 {
+        let _ = command;
         0
     }
 }

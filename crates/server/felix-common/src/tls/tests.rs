@@ -82,3 +82,149 @@ fn an_empty_bundle_is_an_error_not_an_empty_trust_store() {
     let err = load_roots("TEST_CA", &path.display().to_string()).expect_err("empty bundle");
     assert!(matches!(err, TlsFileError::Empty { .. }), "{err}");
 }
+
+#[test]
+fn a_rotated_certificate_that_fails_the_check_is_refused_and_the_old_one_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let files = write_pair(dir.path(), "a", "good.test");
+    let check: IdentityCheck = Arc::new(|chain| {
+        let (_, cert) =
+            x509_parser::parse_x509_certificate(&chain[0]).map_err(|e| e.to_string())?;
+        let names = format!("{:?}", cert.subject_alternative_name());
+        if names.contains("good.test") {
+            Ok(())
+        } else {
+            Err("not good.test".to_string())
+        }
+    });
+    let identity =
+        ReloadingIdentity::load_checked(files.clone(), provider(), Some(Arc::clone(&check)))
+            .expect("load");
+    let before = identity.chain();
+
+    let bad = write_pair(dir.path(), "b", "bad.test");
+    std::fs::copy(&bad.cert_path, &files.cert_path).expect("swap cert");
+    std::fs::copy(&bad.key_path, &files.key_path).expect("swap key");
+    let err = identity.reload().expect_err("the check refuses it");
+    assert!(matches!(err, TlsFileError::Refused { .. }), "{err}");
+    assert_eq!(identity.chain(), before, "the old certificate stays");
+
+    // The same check fails startup.
+    assert!(ReloadingIdentity::load_checked(files, provider(), Some(check)).is_err());
+}
+
+/// Write a self-signed pair for `names` over `files`' paths, valid until
+/// the start of `year`.
+fn overwrite(files: &IdentityFiles, names: &[&str], year: i32) {
+    let key = rcgen::KeyPair::generate().expect("key");
+    let mut params = rcgen::CertificateParams::new(
+        names
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>(),
+    )
+    .expect("params");
+    params.not_after = rcgen::date_time_ymd(year, 1, 1);
+    let cert = params.self_signed(&key).expect("cert");
+    std::fs::write(&files.cert_path, cert.pem()).expect("write cert");
+    std::fs::write(&files.key_path, key.serialize_pem()).expect("write key");
+}
+
+#[test]
+fn a_rotated_certificate_that_is_expired_or_drops_a_name_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let files = write_pair(dir.path(), "a", "one.test");
+    overwrite(&files, &["one.test", "127.0.0.1"], 2099);
+    let identity = ReloadingIdentity::load(files.clone(), provider())
+        .expect("load")
+        .keep_names();
+    let before = identity.chain();
+
+    for (names, year, why) in [
+        (&["one.test", "127.0.0.1"][..], 2020, "expired"),
+        (&["one.test"][..], 2099, "127.0.0.1"),
+        (&["two.test", "127.0.0.1"][..], 2099, "one.test"),
+    ] {
+        overwrite(&files, names, year);
+        let err = identity.reload().expect_err("refused");
+        assert!(
+            matches!(err, TlsFileError::Refused { .. }) && err.to_string().contains(why),
+            "{err}"
+        );
+        assert_eq!(identity.chain(), before, "the old certificate stays");
+    }
+
+    // More names and a later end are fine.
+    overwrite(&files, &["one.test", "127.0.0.1", "extra.test"], 2100);
+    assert!(identity.reload().expect("accepted"));
+}
+
+#[test]
+fn verify_chain_checks_the_issuer_and_the_clock() {
+    let issuer = |year| {
+        let key = rcgen::KeyPair::generate().expect("ca key");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let cert = params.self_signed(&key).expect("ca");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.der().clone()).expect("root");
+        let leaf_key = rcgen::KeyPair::generate().expect("key");
+        let mut leaf = rcgen::CertificateParams::new(vec!["one.test".to_string()]).expect("params");
+        leaf.not_after = rcgen::date_time_ymd(year, 1, 1);
+        let leaf = leaf
+            .signed_by(&leaf_key, &rcgen::Issuer::new(params, key))
+            .expect("leaf");
+        (roots, leaf.der().clone())
+    };
+    let (roots, good) = issuer(2099);
+    let (other_roots, _) = issuer(2099);
+    let (expired_roots, expired) = issuer(2020);
+    for presenter in [Presenter::Client, Presenter::Server] {
+        verify_chain(std::slice::from_ref(&good), &roots, &provider(), presenter)
+            .expect("verifies");
+        verify_chain(
+            std::slice::from_ref(&good),
+            &other_roots,
+            &provider(),
+            presenter,
+        )
+        .expect_err("wrong CA");
+        verify_chain(
+            std::slice::from_ref(&expired),
+            &expired_roots,
+            &provider(),
+            presenter,
+        )
+        .expect_err("expired");
+    }
+}
+
+#[test]
+fn uri_sans_are_read_after_their_prefix_and_others_are_skipped() {
+    let mut params = rcgen::CertificateParams::new(vec!["node".to_string()]).unwrap();
+    for uri in [
+        "felix:principal:raft-member:c1:3",
+        "felix:principal:alice",
+        "https://example.test/x",
+    ] {
+        params
+            .subject_alt_names
+            .push(rcgen::SanType::URI(uri.try_into().unwrap()));
+    }
+    let key = rcgen::KeyPair::generate().unwrap();
+    let der = params.self_signed(&key).unwrap().der().clone();
+    assert_eq!(
+        uri_sans_after(&der, PRINCIPAL_URI_PREFIX).unwrap(),
+        ["raft-member:c1:3", "alice"]
+    );
+    assert_eq!(
+        uri_sans_after(&der, "felix:principal:raft-member:c1:").unwrap(),
+        ["3"]
+    );
+    assert!(uri_sans_after(&der, "nope:").unwrap().is_empty());
+    let err = uri_sans_after(b"junk", PRINCIPAL_URI_PREFIX).unwrap_err();
+    assert!(
+        err.describe("peer")
+            .starts_with("the peer certificate does not parse")
+    );
+}

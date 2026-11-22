@@ -6,9 +6,10 @@
 //! to open. It owns no timer per group: every group is built with openraft's
 //! own tick off, and the runtime's one ticker task runs each group's timer
 //! check every [`RuntimeConfig::tick`]. Messages between brokers go through a
-//! [`RaftTransport`], and [`GroupRuntime::handle`] takes the ones that
-//! arrive. [`PeerTransport`] carries them over the broker's peer connections,
-//! and a runtime given to `PeerServer::with_raft` answers them there.
+//! [`RaftTransport`]. [`PeerTransport`] carries them over the broker's peer
+//! connections, and a runtime given to `PeerServer::with_raft` answers the
+//! ones that arrive there. Each passes one admission check, which refuses a
+//! sender outside the group, before a member sees it (`runtime/admission.rs`).
 //!
 //! A publish goes in through [`RaftEngine::propose`] and waits for its
 //! commit on [`RaftEngine::await_commit`]. Readers are bounded by

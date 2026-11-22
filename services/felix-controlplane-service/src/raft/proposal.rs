@@ -32,7 +32,7 @@ impl NoQuorum {
 }
 
 /// What one attempt does with a command.
-enum Proposal {
+pub(super) enum Proposal {
     /// Append these bytes.
     Append(Vec<u8>),
     /// Refused before the log: answer this without appending.
@@ -40,6 +40,12 @@ enum Proposal {
     /// Send the command to the leader rather than writing it here.
     Forward,
 }
+
+/// Each attempt is capped well below the whole budget: a single hung hop
+/// (a forward to a leader that is frozen, not dead, so its socket accepts
+/// and then stalls) must not consume every retry the budget was meant to
+/// fund. The chaos suite's freeze fault found exactly that.
+const ATTEMPT_CAP: Duration = Duration::from_secs(2);
 
 impl RaftHandle {
     /// Propose one command and wait until it is committed and applied;
@@ -50,13 +56,27 @@ impl RaftHandle {
     /// giving up. The bound matters — a caller must get "no leader" as an
     /// error it can surface, not an indefinite hang inside the seam.
     pub async fn write(&self, command: Vec<u8>) -> Result<Vec<u8>> {
+        self.write_with(command, None).await
+    }
+
+    /// [`Self::write`] for a command whose level this member confirmed as
+    /// leader of `term`. Appended in that term, it is settled at `level`
+    /// rather than paying a second read-index; otherwise as any write.
+    pub(crate) async fn write_at_level(
+        &self,
+        command: Vec<u8>,
+        term: u64,
+        level: u16,
+    ) -> Result<Vec<u8>> {
+        self.write_with(command, Some((term, level))).await
+    }
+
+    async fn write_with(
+        &self,
+        command: Vec<u8>,
+        mut confirmed: Option<(u64, u16)>,
+    ) -> Result<Vec<u8>> {
         const RETRY_DELAY: Duration = Duration::from_millis(250);
-        // Each attempt is capped well below the whole budget: a single hung
-        // hop — a forward to a leader that is frozen, not dead, so its
-        // socket accepts and then stalls — must not consume every retry the
-        // budget was meant to fund. The chaos suite's freeze fault found
-        // exactly that.
-        const ATTEMPT_CAP: Duration = Duration::from_secs(2);
         let deadline = tokio::time::Instant::now() + self.write_timeout;
 
         // One id for this write, stamped before the first attempt and carried
@@ -89,7 +109,10 @@ impl RaftHandle {
             // Bounded per attempt too: a leader that lost quorum queues
             // proposals forever, and that must become this instance's error,
             // not its hang.
-            let proposal = match self.proposal_bytes(&command).await {
+            let proposal = match self
+                .proposal_bytes(&command, attempt, confirmed.take())
+                .await
+            {
                 Proposal::Append(bytes) => bytes,
                 Proposal::Answer(bytes) => return Ok(bytes),
                 Proposal::Forward => {
@@ -164,7 +187,7 @@ impl RaftHandle {
             &uuid::Uuid::new_v4().to_string(),
         )
         .unwrap_or(command);
-        let proposal = match self.proposal_bytes(&command).await {
+        let proposal = match self.proposal_bytes(&command, ATTEMPT_CAP, None).await {
             Proposal::Append(bytes) => bytes,
             Proposal::Answer(bytes) => return Ok(Some(bytes)),
             Proposal::Forward => return Ok(None),
@@ -224,7 +247,15 @@ impl RaftHandle {
     /// command is never appended unsettled. Off the leader it is forwarded
     /// instead of written, because this member could win an election between
     /// the check and `client_write` and append it as sent.
-    async fn proposal_bytes(&self, command: &[u8]) -> Proposal {
+    ///
+    /// `confirmed` is a level this member confirmed as leader of a term; it
+    /// stands in for the read-index while that term lasts.
+    pub(super) async fn proposal_bytes(
+        &self,
+        command: &[u8],
+        within: Duration,
+        confirmed: Option<(u64, u16)>,
+    ) -> Proposal {
         let depends_on_level = self.app.depends_on_level(command);
         if !self.is_leader() {
             return if depends_on_level {
@@ -238,9 +269,15 @@ impl RaftHandle {
         if !depends_on_level {
             return Proposal::Append(command.to_vec());
         }
-        let level = self
-            .cluster_version_with_unknown_at(self.app.join_floor())
-            .await;
+        let level = match confirmed {
+            Some((term, level)) if self.current_term() == term => level,
+            // Not confirmed as leader of this term: the next attempt finds
+            // out who is.
+            _ => match self.proposal_level(within).await {
+                Ok(level) => level,
+                Err(_) => return Proposal::Forward,
+            },
+        };
         match self.app.settle_for_level(command, level) {
             Ok(Some(settled)) => Proposal::Append(settled),
             Ok(None) => Proposal::Append(command.to_vec()),

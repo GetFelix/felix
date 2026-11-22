@@ -389,6 +389,27 @@ pub(super) fn report_raft_copy_ids<L: ControlPlaneLink>(
     ));
 }
 
+/// Answer the control plane's re-form surveys about the Raft copies held
+/// here. Only a broker that runs Raft shards and is a cluster member holds
+/// any.
+#[cfg(feature = "raft")]
+pub(super) fn answer_reform_surveys<L: ControlPlaneLink>(
+    shards: &RaftShards,
+    link: Option<L>,
+    node_id: String,
+    credential: Option<NodeCredential>,
+    stop: CancellationToken,
+) {
+    let (Some(members), Some(link)) = (shards.members.clone(), link) else {
+        return;
+    };
+    let credential = credential
+        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
+    tokio::spawn(crate::shards::raft::reform_survey::run(
+        members, link, node_id, credential, stop,
+    ));
+}
+
 /// Put the engine check in front of `shards` and route by the result: a
 /// durable stream shard placed with a peer on the other engine is refused
 /// here, whichever engine this broker runs. Call it before the routing feed

@@ -4,8 +4,8 @@
 use utoipa::OpenApi;
 
 use crate::api::{
-    caches, identity, namespaces, nodes, regions, resources, shard_assignments, shard_moves,
-    streams, system, tenants,
+    caches, identity, namespaces, nodes, raft_reform, regions, resources, shard_assignments,
+    shard_moves, streams, system, tenants,
     types::{
         BatchCache, BatchItemStatus, BatchStream, CacheChangesResponse, CacheCreateRequest,
         CacheListResponse, CacheSnapshotResponse, ClusterIdentityResponse,
@@ -116,6 +116,10 @@ use crate::model::{
         nodes::fleet::finalize_fleet_feature,
         nodes::dead::declare_dead,
         nodes::dead::list_dead,
+        raft_reform::create_plan,
+        raft_reform::get_plan,
+        raft_reform::surveys,
+        raft_reform::reports,
         nodes::patch_node,
         nodes::delete_node,
         shard_assignments::list_shard_assignments,
@@ -134,6 +138,16 @@ use crate::model::{
     ),
     components(schemas(
         DeclaredDead,
+        raft_reform::ReformScope,
+        raft_reform::CreateReformPlanRequest,
+        raft_reform::CreateReformPlanResponse,
+        raft_reform::ReformShardView,
+        raft_reform::ReformPlanView,
+        raft_reform::ReformSurvey,
+        raft_reform::ReformSurveysResponse,
+        raft_reform::ReformAnswer,
+        raft_reform::ReformReportsRequest,
+        raft_reform::ReformReportsResponse,
         FeatureFlags,
         SystemInfo,
         HealthStatus,
@@ -278,6 +292,7 @@ use crate::model::{
         (name = "caches", description = "Cache management"),
         (name = "resources", description = "Streams and caches created together, all or none"),
         (name = "nodes", description = "Broker membership"),
+        (name = "raft", description = "Raft group re-form plans"),
         (name = "placement", description = "Shard moves and placement, for operators")
     )
 )]

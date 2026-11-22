@@ -91,7 +91,10 @@ control plane's placement or target, or a voter the group's leader last
 reported for the epoch. Any member also takes one from a broker the placement
 or target names now, so a member that missed the change adding a new member
 still hears from it once it leads. Both hold only while the broker's feed of
-the control plane answered within the last minute.
+the control plane answered within the last minute. A message for a group this
+broker has no member of is answered that there is no such member, or that a
+re-form stopped the copy it names. One for another copy of a member it does
+run is answered with that member's copy id, and only to a sender of the group.
 
 It exists for *when* a mismatch is found, not for what is found. Every frame
 already carries the version, so a mismatched peer would be rejected on its first
@@ -103,6 +106,20 @@ The node ids make one further check possible: the caller compares `HelloOk`
 against the node id it dialled. An address the catalog has since reassigned
 answers with a different id, which is a connection to the wrong broker whether
 or not it would have served the request.
+
+Either end that closes an internal connection says why with an application close
+code. A peer acts on the code, never the reason text.
+
+| Code | Meaning |
+|------|---------|
+| 0 | No fault: the broker is shutting down, or the dialler is done with the connection. |
+| 1 | The connection did not negotiate the internal ALPN. |
+| 2 | The listener is at its inbound connection limit. |
+| 3 | The `Hello` named a node the certificate does not, or another node than the connection is bound to. |
+| 4 | The responder registered a new incarnation. |
+| 5 | The peer's certificate passed its `notAfter`. Either side may send it. |
+| 6 | A request came before the `Hello` was accepted. |
+| 7 | No `Hello` within 10 seconds. |
 
 ### Capabilities
 

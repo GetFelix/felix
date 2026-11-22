@@ -149,6 +149,18 @@ impl BrokerAuth {
         self.client_chains.not_after(chain)
     }
 
+    /// When a connection under `chain` must close; see
+    /// [`ChainExpiry::close_at`]. No spread: the credential ends then too.
+    ///
+    /// [`ChainExpiry::close_at`]: felix_common::tls::ChainExpiry::close_at
+    pub(crate) fn client_chain_close_at(
+        &self,
+        chain: &[rustls::pki_types::CertificateDer<'_>],
+    ) -> Option<i64> {
+        self.client_chains
+            .close_at(chain, std::time::Duration::ZERO)
+    }
+
     /// [`bound_by_certificate`] with the end of `chain`, refusing a chain
     /// whose leaf cannot be read.
     fn bound_by_chain(

@@ -137,7 +137,7 @@ where
             .bootstrap
             .tls
             .as_ref()
-            .map(tls::load_server_config)
+            .map(|paths| tls::bootstrap_server_config(paths, &api_shutdown))
             .transpose()?;
         Some(tokio::spawn(async move {
             match tokio::net::TcpListener::bind(bootstrap_addr).await {
@@ -152,8 +152,15 @@ where
                     );
                     match bootstrap_tls {
                         Some(tls) => {
-                            tls::serve_tls("bootstrap", listener, bootstrap_app, tls, api_shutdown)
-                                .await;
+                            tls::serve_tls(
+                                "bootstrap",
+                                listener,
+                                bootstrap_app,
+                                tls,
+                                None,
+                                api_shutdown,
+                            )
+                            .await;
                         }
                         None => {
                             let _ = axum::serve(listener, bootstrap_app.into_make_service())
@@ -177,15 +184,9 @@ where
     let api_tls = match &config.api_tls {
         Some(paths) => {
             let identity = tls::load_api_identity(paths)?;
-            let client_roots = tls::load_api_client_roots(paths)?;
-            let server_config = tls::api_server_config(Arc::clone(&identity), client_roots)?;
-            let reload_shutdown = api_shutdown.clone();
-            drop(tokio::spawn(async move {
-                tokio::select! {
-                    _ = reload_shutdown.cancelled() => {}
-                    _ = identity.reload_periodically("API") => {}
-                }
-            }));
+            let client_ca = tls::load_api_client_roots(paths)?;
+            let server_config = tls::api_server_config(Arc::clone(&identity), client_ca.clone())?;
+            tls::spawn_reload("API", identity, client_ca, &api_shutdown);
             Some(server_config)
         }
         None => None,
@@ -219,7 +220,7 @@ where
         let api_shutdown = api_shutdown.clone();
         match api_tls {
             Some(server_config) => tokio::spawn(async move {
-                tls::serve_tls("api", listener, app, server_config, api_shutdown).await;
+                tls::serve_tls("api", listener, app, server_config, None, api_shutdown).await;
                 Ok(())
             }),
             None => tokio::spawn(
