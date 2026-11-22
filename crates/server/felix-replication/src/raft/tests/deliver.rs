@@ -1214,6 +1214,113 @@ async fn a_sole_voter_with_no_lease_answers_a_leader_publish_once_written() {
     cluster.stop().await;
 }
 
+/// **A sole voter answers a `Quorum` publish on a stream fsynced on commit
+/// at its own flush, before it applies the batch**, with the offset the
+/// apply then gives it. Subscribers and the read bound still wait for the
+/// apply, and a read confirmed after the answer waits for it too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_answers_a_quorum_publish_at_its_flush() {
+    let mut cluster = Cluster::new(true);
+    let (engine, term) = sole_voter(&mut cluster).await;
+    let (broker, handle) = broker_on(&engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let member = cluster.runtime("a").group(&shard(0)).expect("group");
+    let bound = engine.read_bound(&shard(0)).expect("bound");
+
+    let held = Arc::clone(&member.apply_hold).lock_owned().await;
+    let payload = Bytes::from_static(b"flushed");
+    let published = publish_answered(
+        &engine,
+        &broker,
+        &handle,
+        payload.clone(),
+        AnswerAt::Commit,
+        PATIENCE,
+    );
+    let outcome = tokio::time::timeout(ON_MAJORITY, published).await;
+    let outcome = outcome.expect("answered before its apply").expect("joined");
+    let (offset, last) = outcome.expect("answered").offsets.expect("offsets");
+    assert_eq!((offset, last), (bound, bound));
+    let flushed = member.positions().borrow().flushed.expect("flushed");
+    assert!(
+        flushed.term == term && flushed.index >= offset,
+        "{flushed:?}"
+    );
+    assert_eq!(engine.read_bound(&shard(0)), Ok(bound));
+    nothing(&mut receiver).await;
+    let confirming = tokio::spawn({
+        let engine = engine.clone();
+        async move { engine.confirm_read(&shard(0), term).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !confirming.is_finished(),
+        "a read confirmed below the answer"
+    );
+
+    drop(held);
+    assert_eq!(confirming.await.expect("joined"), Ok(()));
+    assert!(engine.read_bound(&shard(0)).expect("bound") > offset);
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(offset));
+    assert_eq!(envelope.payloads()[0], payload);
+    cluster.stop().await;
+}
+
+/// **A batch answered at a sole voter's flush is on its disk at the offset
+/// it was given, and is committed there after a restart.** The answer came
+/// before the apply, so the restart is what decides it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_answered_at_a_sole_voters_flush_survives_a_restart() {
+    use felix_storage::log::ReadRange;
+    let mut cluster = Cluster::new(true);
+    let (engine, _) = sole_voter(&mut cluster).await;
+    let (broker, handle) = broker_on(&engine).await;
+    let member = cluster.runtime("a").group(&shard(0)).expect("group");
+
+    let held = Arc::clone(&member.apply_hold).lock_owned().await;
+    let payload = Bytes::from_static(b"kept");
+    let published = publish_answered(
+        &engine,
+        &broker,
+        &handle,
+        payload.clone(),
+        AnswerAt::Commit,
+        PATIENCE,
+    );
+    let outcome = tokio::time::timeout(ON_MAJORITY, published).await;
+    let outcome = outcome.expect("answered before its apply").expect("joined");
+    let (offset, _) = outcome.expect("answered").offsets.expect("offsets");
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    let read = |log: DiskLog| async move {
+        let range = ReadRange {
+            start: offset,
+            max_bytes: 1 << 20,
+        };
+        let page = AppendOnlyLog::read_range(&log, range).await.expect("read");
+        page.records.first().map(|record| record.payload.clone())
+    };
+    assert_eq!(read(log).await, Some(payload.clone()));
+    drop(held);
+    drop(member);
+    drop((broker, handle));
+
+    cluster.stop().await;
+    cluster.start(true);
+    cluster.open(0).await;
+    let engine = RaftEngine::new(cluster.runtime("a"));
+    eventually(|| {
+        engine
+            .read_bound(&shard(0))
+            .is_ok_and(|b| b > offset)
+            .then_some(())
+    })
+    .await;
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    assert_eq!(read(log).await, Some(payload));
+    cluster.stop().await;
+}
+
 /// **A read confirmed after a `Quorum` publish was answered on a written
 /// majority sees the write, or is refused.** The answer comes before the
 /// commit, so a read bounded by the commit index alone would miss a write

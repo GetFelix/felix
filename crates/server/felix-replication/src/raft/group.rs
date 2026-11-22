@@ -1850,10 +1850,11 @@ impl Group {
     }
 
     /// Wait until a `Quorum` write may be acknowledged. With `AckAt::Flushed`
-    /// that is its commit. With `AckAt::Written` it is the commit or a
-    /// majority of the voters having written it, whichever is first. The
-    /// written count acknowledges and does nothing else: the commit index
-    /// and the read bound do not move on it.
+    /// that is its commit, or, on a leader that is its group's only voter,
+    /// its own flush ([`Group::sole_flushed`]), whichever is first. With
+    /// `AckAt::Written` it is the commit or a majority of the voters having
+    /// written it, whichever is first. Neither early answer moves the
+    /// commit index or the read bound.
     pub(crate) fn await_quorum(
         &self,
         written: Written,
@@ -1861,19 +1862,32 @@ impl Group {
         timeout: Duration,
     ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
         let commit = self.await_commit(written, timeout);
-        let early = (ack == AckAt::Written)
-            .then(|| written.end.checked_sub(1))
-            .flatten()
-            .map(|index| LogPoint {
-                term: written.generation,
-                index,
-            });
+        let early = written.end.checked_sub(1).map(|index| LogPoint {
+            term: written.generation,
+            index,
+        });
+        let sole = (ack == AckAt::Flushed)
+            .then(|| early.filter(|at| self.sole_flushed(*at)))
+            .flatten();
+        let early = early.filter(|_| ack == AckAt::Written);
         let reports = Arc::clone(&self.reports);
         let answered = Arc::clone(&self.answered);
         let raft = self.raft.clone();
         let me = self.member.clone();
         let root = self.root.clone();
+        let note_answered = move |at: LogPoint| {
+            // Before the caller is told, so a read that starts after the
+            // answer waits for this entry.
+            let mut answered = answered.lock();
+            if answered.is_none_or(|was| (was.term, was.index) < (at.term, at.index)) {
+                *answered = Some(at);
+            }
+        };
         async move {
+            if let Some(at) = sole {
+                note_answered(at);
+                return Ok(());
+            }
             let Some(at) = early else {
                 return commit.await;
             };
@@ -1894,16 +1908,48 @@ impl Group {
                 // with a majority's reports in hand.
                 committed = commit => committed,
                 () = majority => {
-                    // Before the caller is told, so a read that starts
-                    // after the answer waits for this entry.
-                    let mut answered = answered.lock();
-                    if answered.is_none_or(|was| (was.term, was.index) < (at.term, at.index)) {
-                        *answered = Some(at);
-                    }
+                    note_answered(at);
                     Ok(())
                 }
             }
         }
+    }
+
+    /// Whether the entry at `at` is committed by this member's own flush:
+    /// the log has flushed it, and in one metrics snapshot that holds it
+    /// this member leads `at.term` and is the only voter. openraft's sole
+    /// voter commits on that flush; this is read before it has handled it.
+    /// A membership appended after the snapshot cannot undo it: every
+    /// later election needs this member's vote until a membership without
+    /// it commits, and that one is above the entry. See
+    /// `docs/per-shard-raft.md`, "Acknowledging a write".
+    pub(crate) fn sole_flushed(&self, at: LogPoint) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        // First: an entry of `at.term` at or past it on this log means the
+        // entry is still here, since only that term's leader wrote it.
+        let flushed = self.positions.borrow().flushed;
+        if !flushed.is_some_and(|f| f.term == at.term && f.index >= at.index) {
+            return false;
+        }
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let leads = metrics.state == ServerState::Leader && metrics.current_term == at.term;
+        let holds = metrics.last_log_index.is_some_and(|last| last >= at.index);
+        leads && holds && self.only_voter(&metrics)
+    }
+
+    /// Whether this member looks like its group's only voting leader now.
+    /// A hint for how to wait, never for what to answer.
+    pub(crate) fn leads_alone(&self) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        metrics.state == ServerState::Leader && self.only_voter(&metrics)
+    }
+
+    fn only_voter(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
+        let voters = metrics.membership_config.membership().get_joint_config();
+        matches!(voters.as_slice(), [only] if only.len() == 1 && only.contains(&self.member))
     }
 
     /// Confirm by a read-index round that this member still leads `term`,

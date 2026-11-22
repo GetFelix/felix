@@ -136,6 +136,14 @@ impl RaftEngine {
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let attribution = broker.admit_attribution(&payloads, attribution)?;
         let records = payloads.clone();
+        // A sole voter commits at its own flush, so it can answer there
+        // instead of after openraft's core and apply. `await_quorum` checks
+        // that it is still the only voter once the flush is in; if not, the
+        // answer stays at the commit.
+        let (ack, answer) = match answer {
+            AnswerAt::Commit if self.leads_alone(shard) => (AckAt::Flushed, AnswerAt::Majority),
+            answer => (ack, answer),
+        };
         let (on_lease, answered) = oneshot::channel();
         let (on_lease, on_majority) = match answer {
             AnswerAt::Commit => (None, None),

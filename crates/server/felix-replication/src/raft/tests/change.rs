@@ -9,8 +9,10 @@ use std::sync::atomic::Ordering::Relaxed;
 use openraft::membership::{RaftMembership, RaftMembershipEdit};
 
 use super::*;
+use crate::engine::Written;
 use crate::raft::group::Group;
 use crate::raft::group::membership::{Basis, StepError};
+use crate::raft::propose::Heard;
 use crate::raft::types::{Membership, MembershipEdit};
 
 fn m(broker: &str) -> MemberId {
@@ -638,5 +640,101 @@ async fn a_leader_removed_as_a_voter_holds_no_lease() {
             detail: crate::raft::lease::NOT_VOTER,
         })
     );
+    cluster.stop().await;
+}
+
+/// Write `payload` through `leader` and wait for its own flush of it.
+async fn flushed_on(leader: &Group, payload: &'static [u8]) -> (Written, LogPoint) {
+    let batch = Batch {
+        records: vec![Record {
+            timestamp_micros: 0,
+            payload: Bytes::from_static(payload),
+            headers: None,
+        }],
+        ack: AckAt::Flushed,
+        term: None,
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        publisher: None,
+    };
+    let written = leader
+        .propose(batch, Heard::Written)
+        .await
+        .expect("flushed");
+    let at = LogPoint {
+        term: written.generation,
+        index: written.end - 1,
+    };
+    (written, at)
+}
+
+/// Wait until openraft's metrics show a log holding `at`.
+async fn metrics_hold(leader: &Group, at: LogPoint) {
+    use openraft::async_runtime::watch::WatchReceiver;
+    eventually(|| {
+        let metrics = leader.raft().metrics();
+        let last = metrics.borrow_watched().last_log_index;
+        last.is_some_and(|last| last >= at.index).then_some(())
+    })
+    .await;
+}
+
+/// **A sole voter's flush answers a write only while no membership with a
+/// second voter is below it in the log.** Behind a joint that cannot
+/// commit, the write waits for its commit, which never comes here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_behind_a_joint_is_not_answered_at_the_sole_voters_flush() {
+    let (mut cluster, leader) = one_voter().await;
+    let (_, before) = flushed_on(&leader, b"before").await;
+    metrics_hold(&leader, before).await;
+    assert!(leader.sole_flushed(before), "learners need no copy");
+
+    let (change, _) = stalled_in_the_joint(&cluster, &leader).await;
+    let (written, behind) = flushed_on(&leader, b"behind").await;
+    metrics_hold(&leader, behind).await;
+    assert!(!leader.sole_flushed(behind));
+    let answered = leader.await_quorum(written, AckAt::Flushed, PATIENCE);
+    let answered = tokio::time::timeout(Duration::from_millis(300), answered).await;
+    assert!(answered.is_err(), "answered before the joint committed it");
+    change.abort();
+    cluster.stop().await;
+}
+
+/// **A sole voter's write is not answered at its write, only at its
+/// flush.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_answers_only_what_it_has_flushed() {
+    let (mut cluster, leader) = one_voter().await;
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    let held = log.hold_flushes().await;
+    let batch = Batch {
+        records: vec![Record {
+            timestamp_micros: 0,
+            payload: Bytes::from_static(b"unsynced"),
+            headers: None,
+        }],
+        ack: AckAt::Written,
+        term: None,
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        publisher: None,
+    };
+    let written = leader
+        .propose(batch, Heard::Written)
+        .await
+        .expect("written");
+    let at = LogPoint {
+        term: written.generation,
+        index: written.end - 1,
+    };
+    // Only the flush is missing.
+    metrics_hold(&leader, at).await;
+    assert!(!leader.sole_flushed(at), "answered before its flush");
+    drop(held);
+    eventually(|| leader.sole_flushed(at).then_some(())).await;
     cluster.stop().await;
 }

@@ -80,6 +80,15 @@ impl RaftEngine {
         async move { proposed?.await }
     }
 
+    /// Whether `shard`'s group here looks like a leader that is its only
+    /// voter. Only picks how a publish waits: see
+    /// [`super::group::Group::sole_flushed`] for what it may be told.
+    pub(crate) fn leads_alone(&self, shard: &ShardKey) -> bool {
+        self.runtime
+            .group(shard)
+            .is_some_and(|group| group.leads_alone())
+    }
+
     /// How many stream batches `shard`'s group on this broker was handed.
     /// Not an API: tests count proposals with it.
     #[cfg(any(test, feature = "testing"))]
