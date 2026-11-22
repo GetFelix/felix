@@ -2268,9 +2268,10 @@ one wake-up of the thread runs every ready task of every group on it.
   after a bounded number of steps. The state machine gives it up the same
   way while it applies a long run of entries. A single step that takes long
   (a large snapshot cut, say) still delays the thread's other groups.
-- The peer transport's tasks run on the broker's IO runtimes. With those
-  turned off (`FELIX_PUMP_COLOCATE=0`), a connection dialled from a group
-  thread runs its pumps there.
+- The peer transport never runs on a group thread. A connection's quinn
+  driver and its stream pumps run on the dedicated QUIC I/O runtime when
+  there is one, and otherwise on the runtime the peer endpoint was bound on,
+  whichever thread dials first. A group thread only hands frames to them.
 - A panic in a group task ends only that task, as on the broker runtime.
   The thread and its other groups keep running.
 
