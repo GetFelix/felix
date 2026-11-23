@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795454313924,
+  "lastUpdate": 1795457604919,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67028,6 +67028,58 @@ window.BENCHMARK_DATA = {
             "range": "38934.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1118423.47\nmean: 1135559.75\nstdev: 38934.56\ncv: 3.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db4e3829cb2632027fe89791275bc9eefe54011c",
+          "message": "test(cluster): failover tests on Raft address the elected leader, not placement's name (#3031) (#3042)\n\nThe group state was never lost. After the kill, placement renames the\ndown leader to a survivor of its choosing, while the group elects its own\nand keeps it while a voter is down. The tests then asked a follower for\n30 s. serving_leader and promoted_leader name the elected member on Raft\nand keep the placement owner on hybrid. Placement divergence is #3041.",
+          "timestamp": "2026-11-23T17:52:17Z",
+          "tree_id": "a4c14e37ac1071990b74448e26d2ea78a35cc426",
+          "url": "https://github.com/GetFelix/felix/commit/db4e3829cb2632027fe89791275bc9eefe54011c"
+        },
+        "date": 1795457604400,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 565936.16,
+            "range": "31863.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 565936.16\nmean: 556200.91\nstdev: 31863.41\ncv: 5.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 565936.16,
+            "range": "31863.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 565936.16\nmean: 556200.91\nstdev: 31863.41\ncv: 5.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123788.34,
+            "range": "1019.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123788.34\nmean: 123628.14\nstdev: 1019.33\ncv: 0.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1237883.41,
+            "range": "10193.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1237883.41\nmean: 1236281.36\nstdev: 10193.32\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
