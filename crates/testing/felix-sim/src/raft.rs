@@ -947,6 +947,28 @@ impl Sim {
             .map(|(_, member)| member)
     }
 
+    /// Each member's role, term and whether it has `shard` open, for a
+    /// finding that has no leader to name.
+    fn roles(&self, shard: u32) -> String {
+        let key = key(shard);
+        let members: Vec<String> = (0..self.members.len())
+            .map(|member| {
+                let at = self.at(member);
+                match at.runtime.status(&key) {
+                    Some(status) => format!(
+                        "{} {:?} term {} open {:?}",
+                        name(member),
+                        status.role,
+                        status.term,
+                        at.engine.open_term(&key)
+                    ),
+                    None => format!("{} no group", name(member)),
+                }
+            })
+            .collect();
+        format!("{}: {}", list(shard), members.join(", "))
+    }
+
     /// Publish a fresh value to `shard` on `member` and record how it ended.
     /// Every error is recorded as unknown: a refused batch may still commit.
     async fn append(&self, process: usize, member: usize, shard: u32) -> bool {
@@ -2184,7 +2206,7 @@ impl Sim {
                 let same = running
                     .iter()
                     .all(|member| reads[*member].is_some() && reads[*member] == reads[running[0]]);
-                if same || Instant::now() >= deadline {
+                if (same && self.leader(shard).is_some()) || Instant::now() >= deadline {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -2221,6 +2243,7 @@ impl Sim {
                         "{}: no leader to take the final read from",
                         list(shard)
                     ));
+                    self.fault(self.roles(shard));
                 }
             }
         }

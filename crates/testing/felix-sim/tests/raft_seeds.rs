@@ -151,6 +151,27 @@ fn raft_seed_1_with_restores() {
     check(1, Clocks::Off, Disks::Restore);
 }
 
+/// A leader elected just before the final reads had not opened its shard
+/// yet, and the run reported no leader to read from. The final reads now
+/// wait for an open leader like the recovery check does.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn raft_seed_1233_with_power_loss() {
+    check(1233, Clocks::Off, Disks::PowerLoss);
+}
+
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn raft_seed_920_with_majority_cuts() {
+    check(920, Clocks::Off, Disks::MajorityCut);
+}
+
 /// One shard's directory wiped on a majority at once leaves no copy that
 /// may vote under its old id, so the shard stalls until an operator
 /// re-forms it (#2350). Nothing acknowledged is reported lost, the other
