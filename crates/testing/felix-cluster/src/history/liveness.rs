@@ -6,7 +6,9 @@
 //! cache), no move or follower replacement may still be in flight, and each
 //! replicated shard must have a replica reported caught up at its current
 //! generation, so that it could fail over again, and no replica its leader
-//! has stopped shipping to. A cluster that does not get
+//! has stopped shipping to. On Raft the group's own members say instead: a
+//! member leads by its own report and a majority holds the log through its
+//! commit index. A cluster that does not get
 //! there ends the run with a report naming each stuck shard and what it is
 //! stuck in.
 //!
@@ -53,7 +55,11 @@ pub(super) async fn await_recovery(
     let bound = wait::budget(RECOVERY);
     let mut served = BTreeSet::new();
     loop {
-        let stuck = stuck_shards(cluster, campaign, workload, &mut served).await;
+        let stuck = if cluster.raft() {
+            stuck_raft_shards(cluster, campaign, workload, &mut served).await
+        } else {
+            stuck_shards(cluster, campaign, workload, &mut served).await
+        };
         if stuck.is_empty() {
             return Ok(started.elapsed());
         }
@@ -79,6 +85,9 @@ pub(super) async fn ready_to_elect(
     campaign: &Campaign,
     node: &str,
 ) -> Result<Vec<ShardStatus>> {
+    if cluster.raft() {
+        return raft_ready_to_elect(cluster, campaign, node).await;
+    }
     let last = std::sync::Mutex::new(Vec::new());
     let found = wait::until_some(
         READY_TO_ELECT,
@@ -135,6 +144,9 @@ pub(super) async fn await_election(
     led: &[ShardStatus],
     opens: &mut BTreeSet<Opened>,
 ) -> Result<Vec<String>> {
+    if cluster.raft() {
+        return raft_await_election(cluster, campaign, workload, killed, led, opens).await;
+    }
     let started = Instant::now();
     let bound = wait::budget(ELECTED_WITHIN);
     // The prober is numbered after the workload's clients.
@@ -301,6 +313,210 @@ async fn stuck_shards(
         }
     }
     stuck
+}
+
+/// [`stuck_shards`] on Raft, where placement's generation and replica
+/// reports say nothing about the group: each shard needs a member that leads
+/// by its own report, a majority holding the log through its commit index,
+/// and a probe that leader serves.
+async fn stuck_raft_shards(
+    cluster: &Cluster,
+    campaign: &Campaign,
+    workload: &Workload,
+    served: &mut BTreeSet<(&'static str, String)>,
+) -> Vec<String> {
+    let mut stuck = Vec::new();
+    for (kind, name) in campaign.shard_names() {
+        let (leader, term) = match cluster.raft_serving(kind, name).await {
+            Ok(found) => found,
+            Err(why) => {
+                stuck.push(format!("{kind} {name}/0: {why}"));
+                continue;
+            }
+        };
+        if served.contains(&(kind, name.to_string())) {
+            continue;
+        }
+        let shard = format!("{kind} {name}/0 (leader {leader}, term {term})");
+        let Some(addr) = cluster.node(&leader).map(|node| node.client_addr) else {
+            stuck.push(format!(
+                "{shard}: its leader is not a broker of this cluster"
+            ));
+            continue;
+        };
+        match probe(campaign, workload, kind, name, addr).await {
+            Ok(()) => {
+                served.insert((kind, name.to_string()));
+            }
+            Err(err) => stuck.push(format!("{shard}: its leader refused a probe: {err:#}")),
+        }
+    }
+    stuck
+}
+
+/// [`ready_to_elect`] on Raft: every shard of the workload has a leader with
+/// a majority holding its commit index, and the ones `node` leads are
+/// returned with their term as the generation.
+async fn raft_ready_to_elect(
+    cluster: &Cluster,
+    campaign: &Campaign,
+    node: &str,
+) -> Result<Vec<ShardStatus>> {
+    let last = std::sync::Mutex::new(Vec::new());
+    let found = wait::until_some(
+        READY_TO_ELECT,
+        &format!("the shards {node} leads to be ready to elect"),
+        || async {
+            let mut led = Vec::new();
+            let mut waiting = Vec::new();
+            for (kind, name) in campaign.shard_names() {
+                match cluster.raft_serving(kind, name).await {
+                    Ok((leader, term)) if leader == node => led.push(ShardStatus {
+                        kind,
+                        name: name.to_string(),
+                        shard: 0,
+                        leader,
+                        generation: term,
+                        replicas: Vec::new(),
+                        successor: None,
+                        joining: None,
+                        fenced: false,
+                        move_reason: None,
+                        caught_up_reported: true,
+                    }),
+                    Ok(_) => {}
+                    Err(why) => waiting.push(format!("{kind} {name}/0: {why}")),
+                }
+            }
+            let ready = waiting.is_empty();
+            *last.lock().expect("ready lock") = waiting;
+            ready.then_some(led)
+        },
+    )
+    .await;
+    let led = found.with_context(|| {
+        format!(
+            "still waiting on {}",
+            last.lock().expect("ready lock").join("; ")
+        )
+    })?;
+    if led.is_empty() {
+        bail!("{node} leads none of the workload's shards");
+    }
+    Ok(led)
+}
+
+/// [`await_election`] on Raft, where a broker logs no fenced open: each shard
+/// in `led` needs a member other than `killed` that leads at a later term,
+/// holds a majority through its commit index and serves a probe. Each such
+/// leader goes into `opens` at its term, so rule 21 sees two brokers that
+/// ever led one shard in the same term.
+async fn raft_await_election(
+    cluster: &Cluster,
+    campaign: &Campaign,
+    workload: &Workload,
+    killed: &str,
+    led: &[ShardStatus],
+    opens: &mut BTreeSet<Opened>,
+) -> Result<Vec<String>> {
+    let started = Instant::now();
+    let bound = wait::budget(ELECTED_WITHIN);
+    let mut lines = Vec::new();
+    let mut pending: Vec<&ShardStatus> = led.iter().collect();
+    let mut last = std::collections::BTreeMap::new();
+    while !pending.is_empty() {
+        if cluster.control_plane_running() {
+            bail!("the control plane came back before the election was checked");
+        }
+        let mut still = Vec::new();
+        for status in pending {
+            let shard = format!("{} {}/{}", status.kind, status.name, status.shard);
+            let (leader, term) = match cluster.raft_serving(status.kind, &status.name).await {
+                Ok((leader, term)) if leader != killed && term > status.generation => {
+                    (leader, term)
+                }
+                Ok((leader, term)) => {
+                    last.insert(shard, format!("{leader} still leads at term {term}"));
+                    still.push(status);
+                    continue;
+                }
+                Err(why) => {
+                    last.insert(shard, why);
+                    still.push(status);
+                    continue;
+                }
+            };
+            let Some(addr) = cluster
+                .node(&leader)
+                .filter(|node| node.is_running())
+                .map(|node| node.client_addr)
+            else {
+                still.push(status);
+                continue;
+            };
+            match probe(campaign, workload, status.kind, &status.name, addr).await {
+                Ok(()) => {
+                    opens.insert(Opened {
+                        name: status.name.clone(),
+                        shard: status.shard,
+                        generation: term,
+                        node: leader.clone(),
+                    });
+                    lines.push(format!(
+                        "{shard}: {leader} elected at term {term} (was {killed} at {}), serving \
+                         {:.1}s after the kill with the control plane down",
+                        status.generation,
+                        started.elapsed().as_secs_f64()
+                    ));
+                }
+                Err(err) => {
+                    last.insert(shard, format!("{leader} refused a probe: {err:#}"));
+                    still.push(status);
+                }
+            }
+        }
+        pending = still;
+        if pending.is_empty() {
+            break;
+        }
+        if started.elapsed() >= bound {
+            let stuck: Vec<String> = pending
+                .iter()
+                .map(|status| {
+                    let shard = format!("{} {}/{}", status.kind, status.name, status.shard);
+                    let why = last.get(&shard).cloned().unwrap_or_default();
+                    format!("{shard} (term {}): {why}", status.generation)
+                })
+                .collect();
+            bail!(
+                "liveness: with the control plane down, {} shard(s) {killed} led had no elected \
+                 leader serving {bound:?} after the kill:\n  {}",
+                stuck.len(),
+                stuck.join("\n  ")
+            );
+        }
+        tokio::time::sleep(RETRY).await;
+    }
+    Ok(lines)
+}
+
+/// A write to list `name`, or a get from the cache, through `addr`, as the
+/// prober numbered after the workload's clients.
+async fn probe(
+    campaign: &Campaign,
+    workload: &Workload,
+    kind: &str,
+    name: &str,
+    addr: std::net::SocketAddr,
+) -> Result<()> {
+    let prober = campaign.clients;
+    match kind {
+        "cache" => {
+            let key = campaign.keys.first().map_or("k0", String::as_str);
+            workload.probe_get(prober, addr, key).await
+        }
+        _ => workload.probe_append(prober, addr, name).await,
+    }
 }
 
 /// Every halted replica the running brokers list. A broker that cannot be

@@ -832,7 +832,9 @@ calls `recover_control_plane` and waits for the broker. The campaign also
 reads every broker's log for the shards each one opened, so the checker can
 fail a run where two brokers opened one shard at the same generation. The
 whole sequence is in "Elections without the control plane" in the history
-checker doc.
+checker doc. On Raft brokers the campaign reads leadership from each
+member's own report rather than placement and broker logs; "Liveness" in the
+history checker doc says how.
 
 ## The conformance suite
 

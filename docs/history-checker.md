@@ -551,6 +551,17 @@ these:
   a halted replica is out of every quorum until it is rebuilt;
 - its leader takes an append (a list) or answers a get (the cache).
 
+On Raft brokers placement's generation and replica reports say nothing about
+the group, so the check asks each broker's member of the shard instead
+(`Cluster::raft_serving`). A shard serves when one member leads by its own
+report, a majority of the voting members hold the log through that leader's
+commit index, and the leader takes the probe. The stuck line then names the
+leader's term rather than a generation. The fault views the nemesis picks from
+and the final reads follow the elected leader in the same way, and
+`ElectWithoutControlPlane` waits for a member other than the killed one to
+lead at a later term. Each leader it sees there goes into rule 21 at its term,
+since a Raft broker logs no fenced open.
+
 The probe append and get are recorded in the history under a client number of
 their own, one past the workload's clients, so the checker holds them to the
 same rules. After each heal, each shard is probed until it answers once.
