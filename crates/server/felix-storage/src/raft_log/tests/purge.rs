@@ -396,14 +396,20 @@ async fn the_first_index_reader_follows_a_purge() {
 /// its first append lands past the gap. Every record of the base stays
 /// readable below the gap, across a reopen. A log whose tail is not the
 /// latest base's end starts afresh at the append, as after any purge past
-/// its end: what lies between could be entries a snapshot folded.
+/// its end: what lies between could be entries a snapshot folded. So does
+/// one whose tail is the base's end but whose append is not the epoch's
+/// first index: a snapshot installed past the gap came first.
 #[tokio::test]
 async fn a_re_formed_voters_base_stays_below_the_gap() {
     use crate::raft_copy::epoch_file::{self, EpochBase, EpochFile, EpochLogId};
     use crate::raft_log::purged::{self, Purged};
 
     let first = 12 + (1 << 40);
-    for (base_end, keeps) in [(12, true), (11, false)] {
+    for (base_end, first_index, keeps) in [
+        (12, first, true),
+        (11, first, false),
+        (12, 12 + (1 << 20), false),
+    ] {
         let dir = tempdir().expect("dir");
         let mut raft = open(&dir);
         append_flushed(&mut raft, &thirty()[..12]).await;
@@ -415,7 +421,7 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
                 epoch: 0,
                 term: 1,
             }),
-            first_index: first,
+            first_index,
         };
         epoch_file::store(
             dir.path(),
@@ -464,7 +470,10 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
         }
         let mut expected: Vec<Offset> = if keeps { (0..12).collect() } else { vec![] };
         expected.push(first);
-        assert_eq!(offsets, expected, "base end {base_end}");
+        assert_eq!(
+            offsets, expected,
+            "base end {base_end}, first index {first_index}"
+        );
         assert_eq!(all(&raft).await.expect("read"), [next]);
     }
 }

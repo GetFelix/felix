@@ -577,9 +577,15 @@ fn prefix_matches(
     Ok(true)
 }
 
-/// Remove every segment, index, purged id and snapshot in `dir`. The copy
-/// file, votes, reservation and markers stay.
+/// Remove every segment, index, purged id and snapshot in `dir`, and the
+/// forgotten batches and carried floor. The copy file, votes, reservation
+/// and markers stay.
 fn empty_log(dir: &Path) -> io::Result<()> {
+    // No record holds these, so they would outlive the log they describe:
+    // the next log would refuse re-sends of batches its voters never forgot.
+    // A snapshot install merges into them rather than replacing them.
+    state_file::remove(dir, crate::disk_log::forgotten_file_name())?;
+    state_file::remove(dir, carried_floor::FILE_NAME)?;
     for entry in crate::fs::read_dir(dir)? {
         let path = entry?.path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -619,17 +625,12 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
     }
     crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
     empty_log(dir)?;
-    // The forgotten batches and the floor are the kept log's, which no
-    // record holds: the voter's own would refuse batches the kept log
-    // holds and take re-sends of the ones it forgot as new.
+    step()?;
+    // The kept log's forgotten batches and floor come with its records.
     let carried = [
         crate::disk_log::forgotten_file_name(),
         carried_floor::FILE_NAME,
     ];
-    for name in carried {
-        state_file::remove(dir, name)?;
-    }
-    step()?;
     let mut names = Vec::new();
     for entry in crate::fs::read_dir(kept)? {
         let name = entry?.file_name();

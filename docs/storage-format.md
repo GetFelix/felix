@@ -200,7 +200,7 @@ file:
 ### Segment header (32 bytes)
 
 <p align="center">
-  <img src="assets/storage/segment-header.svg" alt="Segment header byte layout: magic, version, flags, base_offset, created_at_micros, header_crc, reserved" width="882">
+  <img src="assets/storage/segment-header.svg" alt="Segment header byte layout: magic, version, flags, base_offset, created_at_micros, header_crc, gap_from" width="882">
 </p>
 
 | Offset | Size | Field | Value |

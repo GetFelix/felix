@@ -1152,7 +1152,9 @@ record past the base's last index, no purged id, and every record in the
 base's term at its index, none in a gap an earlier re-form left. Anything else empties it, rather than cutting it
 to the part that agrees, and it catches up from the leader by snapshot. An
 empty learner's saved commit is set to zero, so it never counts entries it
-does not hold.
+does not hold. Its forgotten batches and carried floor go with its records:
+a snapshot install merges into them rather than replacing them, so a cut
+only its old log made would refuse a re-send its voters take.
 
 Two promises the vouch rule depends on are checked before a start
 finishes, and a start that cannot keep them fails (#2640):

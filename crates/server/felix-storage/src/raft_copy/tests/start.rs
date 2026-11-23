@@ -280,6 +280,65 @@ async fn a_voter_from_a_kept_copy_drops_its_own_forgotten_batches_and_floor() {
     log.close().await.expect("close");
 }
 
+/// An emptied learner drops its own forgotten batches and floor, as a voter
+/// rebuilt from a kept copy does: a re-send of a batch only its old log cut
+/// is taken alike on both, not refused on the learner alone. Its cuts
+/// arrive with the snapshot it installs.
+#[tokio::test]
+async fn an_emptied_learner_drops_its_forgotten_batches_and_floor() {
+    use crate::disk_log::ProducerSequence;
+    use crate::disk_log::carried_floor::{self, CarriedFloor};
+
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    let voter = tempfile::tempdir().expect("voter");
+    log_of(voter.path(), 7).await;
+    forget(voter.path(), 7, 5).await;
+    let learner = tempfile::tempdir().expect("learner");
+    log_of(learner.path(), 7).await;
+    forget(learner.path(), 7, 5).await;
+    for dir in [voter.path(), learner.path()] {
+        carried_floor::raise(
+            dir,
+            CarriedFloor {
+                offset: 1,
+                floor: 1,
+                headers: Bytes::from_static(b"own"),
+            },
+        )
+        .expect("own floor");
+    }
+
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(voter.path(), &from_kept, &config())
+        .await
+        .expect("voter start");
+    start_copy(learner.path(), &start(Role::Learner), &config())
+        .await
+        .expect("learner start");
+
+    for (name, dir) in [("voter", voter.path()), ("learner", learner.path())] {
+        assert_eq!(
+            carried_floor::load(dir).expect("load"),
+            None,
+            "the {name} kept its own floor"
+        );
+        let log = DiskLog::open(dir, "t/ns/raft/0", config()).expect("open");
+        assert_eq!(
+            log.producer_sequence(7, 5),
+            ProducerSequence::Unknown,
+            "the {name} refuses a re-send of its own old cut"
+        );
+        let cuts = log
+            .forgotten_cuts_from(log.base_offset())
+            .await
+            .expect("cuts");
+        assert!(cuts.is_empty(), "the {name} carries its own cuts: {cuts:?}");
+        log.close().await.expect("close");
+    }
+}
+
 /// A kept directory that does not end in the base's term at the base's
 /// last index is not the base, and the start refuses.
 #[tokio::test]
