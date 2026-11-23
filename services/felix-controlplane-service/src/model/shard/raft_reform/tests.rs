@@ -452,3 +452,35 @@ fn a_write_keeps_the_stored_seed_and_bases() {
     write.carry_raft_epochs(Some(&held));
     assert_eq!((write.raft_seed, write.raft_bases), (None, None));
 }
+
+/// A plan made for an earlier incarnation of the stream never starts the
+/// new incarnation's group: both are at epoch 0, so only the incarnation
+/// tells them apart, and the old plan's base would sit below offsets the
+/// new group has not handed out yet.
+#[test]
+fn a_plan_for_another_incarnation_is_refused() {
+    let mut a = assignment();
+    let start = ReformEpochStart {
+        incarnation: 2,
+        expected_epoch: 0,
+        planned_floor: Some(40),
+        base: base(Some((40, 0, 5)), 45),
+        voters: copies(&[("a", 11), ("b", 12)]),
+        dead: set(&["c"]),
+    };
+    let before = a.clone();
+    assert_eq!(
+        a.start_reform(&start),
+        Err(ReformWriteError::OtherIncarnation {
+            planned: 2,
+            current: 3
+        })
+    );
+    assert_eq!(a, before);
+    a.start_reform(&ReformEpochStart {
+        incarnation: 3,
+        ..start
+    })
+    .expect("this incarnation");
+    assert_eq!(a.group_epoch(), 1);
+}

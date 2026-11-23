@@ -17,7 +17,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::model::{ShardAssignment, ShardKey, ShardKind};
+use crate::model::{ShardAssignment, ShardKey};
 use crate::store::{ControlPlaneStore, StoreResult};
 
 /// How long a round waits for every broker before planning without the
@@ -380,12 +380,14 @@ pub(crate) async fn answer(
     })
 }
 
-/// The Raft shards `scope` covers: stream shards with a record of the
-/// brokers placed in their epoch, not switched from the hybrid.
+/// The Raft shards `scope` covers: stream and cache shards with a record of
+/// the brokers placed in their epoch, not switched from the hybrid. A cache
+/// shard on a Raft cluster runs a group too, and loses its majority the same
+/// way (#2978).
 fn in_scope(shards: Vec<ShardAssignment>, scope: &ReformScope) -> Vec<ShardAssignment> {
     shards
         .into_iter()
-        .filter(|s| s.key.kind == ShardKind::Stream && !s.switched())
+        .filter(|s| !s.switched())
         .filter(|s| match (&s.placed, scope) {
             (None, _) => false,
             (Some(_), ReformScope::Cluster) => true,

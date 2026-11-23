@@ -1,0 +1,1 @@
+The control plane can start a Raft group's next epoch from a re-form plan in one compare-and-swap write (`StartReformedEpoch`, metadata level 50), refused for another stream incarnation, another epoch or a floor raised since the plan. Re-form plans now cover Raft cache shards, and brokers answer their surveys from the cache store's root (#2978).

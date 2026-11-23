@@ -689,6 +689,24 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RecordAudit {
             entries: vec![audit_entry()],
         },
+        MetaCommand::StartReformedEpoch {
+            key: shard_key(),
+            start: crate::model::ReformEpochStart {
+                incarnation: 1,
+                expected_epoch: 1,
+                planned_floor: Some(1),
+                base: crate::model::RaftEpochBase {
+                    base_last: Some(crate::model::RaftLogId {
+                        index: 1,
+                        epoch: 1,
+                        term: 1,
+                    }),
+                    first_index: 2,
+                },
+                voters: any_map(1),
+                dead: BTreeSet::from([s("b")]),
+            },
+        },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
             floors: vec![crate::model::RaftFloorReport {
@@ -908,6 +926,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
         MetaCommand::DeclareNodeDead { .. } => "declare_node_dead",
         MetaCommand::RecordAudit { .. } => "record_audit",
+        MetaCommand::StartReformedEpoch { .. } => "start_reformed_epoch",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",

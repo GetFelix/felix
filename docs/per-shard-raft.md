@@ -719,7 +719,8 @@ the groups of one broker or the whole cluster, and it has two steps:
   any group whose facts differ from the plan, so nothing is done that the
   operator did not see.
 
-**Running a plan.** `plan` is built; `apply` is not yet. Run
+**Running a plan.** `plan` is built; `apply` is not yet (see "Applying a
+plan" below). Run
 
 ```bash
 felixctl raft reform plan                          # every Raft shard
@@ -757,6 +758,95 @@ How the plan is made:
   survey (an older broker).
 - `GET /v1/raft/reform/plans/{id}` reads the plan: `surveying` until every
   shard settles, then `done`. `felixctl` polls it.
+
+A plan covers cache shards as well as stream shards: on a Raft cluster
+every cache shard runs a group (see "Serving a cache shard from its group"),
+and it loses its majority the same way. A broker reads a cache shard's copy
+under the cache store's root, where its member lives.
+
+**Applying a plan.** The epoch write is built; the stop and start rounds
+and the `felixctl` command are not yet. The design:
+
+```bash
+felixctl raft reform apply <plan-id>                              # re-form every group the plan marks `reform`
+felixctl raft reform apply <plan-id> --accept-loss t1/ns/orders/2 # also a group that may lose acknowledged records
+```
+
+`apply` names a plan the operator has read. Each shard the plan marked
+`reform` goes through three more rounds on the same survey channel, so the
+control plane still never calls a broker:
+
+1. **Stop.** The control plane asks every listed broker to stop its copy.
+   A broker first checks again that its member leads no term of the epoch,
+   and refuses the stop if it does. Otherwise it stops the member, fsyncs
+   `raft-stopped` (`raft_copy::stop`) and answers with a fresh read of the
+   copy, taken after the stop.
+2. **Compare.** The control plane plans again from the post-stop reads. A
+   group whose new plan differs from the one the operator saw (source,
+   base, first index, voters, learners, mark or dropped records) is
+   skipped as `changed`: nothing is done that the operator did not see. A
+   group the operator did not name with `--accept-loss` whose plan needs it
+   is skipped too.
+3. **Write.** The control plane commits `StartReformedEpoch`: the shard
+   key, the incarnation and epoch the plan was made at, the floor it read,
+   the base, the voters and the dead set the plan used. It is a compare
+   and swap. The apply refuses another incarnation, another epoch, or a
+   floor raised since the plan, and the base checks of
+   `ShardAssignment::start_reformed_epoch` hold. It writes the next
+   `placed` record, appends the base to `raft_bases`, sets the voters as
+   the epoch's seed and starts an empty ordered list, in one write the shard
+   feed carries to every broker. The command is level 50, so no member
+   that cannot apply it is ever asked to: a member below that level would
+   refuse the entry and keep the old epoch while the others start the next.
+4. **Start.** Each listed broker sees the new epoch in its shard feed and
+   runs `raft_copy::start_copy` on its stopped copy, with
+   `Start::of(plan, accepted)`: a voter keeps the base and gets the gap at
+   `first_index - 1`, a learner keeps a prefix of the base or empties. The
+   member then opens at the new epoch. A fresh learner placed later gets its
+   `raft-epoch` before it can vote (#2882).
+
+A crash between any two steps is safe. Before the write, the stopped copies
+stay stopped and a second `apply` (or a new plan) finishes the group. After
+it, the start is idempotent under `reform-building`, and the epoch write
+cannot land twice: the second one finds the group one epoch on.
+
+**A restore from a backup point is a re-form.** A whole-cluster restore
+rotates every broker's storage id, so every Raft copy comes back with a new
+copy id and no vote, and the shard does not form again (#2620). The restore
+runs as a re-form from the backup point rather than as a separate
+mechanism:
+
+- `felixctl backup-point` reads each shard's committed offsets from its
+  leader, and the operator copies the leaders' shard directories while they
+  run. The point is the base: every record at or below it was acknowledged
+  and is in the copied directory.
+- `felix-broker restore-point` rotates the storage id and cuts each
+  restored leader copy back to the point. The broker's next open of the
+  shard rotates the copy and keeps the cut log in `.kept` as `restore`,
+  where the plan reads it. A follower copy is removed, not restored.
+- On start the shards wait for a re-form. `plan` reads each restored leader
+  copy as the only copy holding the base and every other broker as empty,
+  so the plan re-forms from the restored copy. It is marked: the votes of
+  the rotated copies are unknown, so applying it needs `--accept-loss`, and
+  what it loses is exactly what was acknowledged after the point.
+- The new epoch's first index is above the base (the point), above the
+  offset floor the restored control plane holds, and above every
+  reservation the restored copy carries. Every offset at or below the
+  point stays as it was, and nothing at or below it is handed out again.
+- What this does not cover: offsets acknowledged after both the copy of
+  the leader directories and the control-plane export. Neither the
+  restored floor nor the restored reservations know of them, so a re-form
+  from a backup can hand them out again. Closing it needs a floor that is
+  not restored from the backup; until then the guide tells the operator
+  that readers who kept offsets past the point must treat them as
+  reassigned.
+
+**An RF 1 copy restored alone.** An RF 1 group re-forms like any other: its
+only copy is the source and the only voter, and the plan is unmarked when
+the copy kept its records. A rotated RF 1 copy restarting as its own voter
+without the command (the exception the decision on #2167 names) is not
+built. The command covers it, and an automatic path would need its own
+proof that no newer copy exists.
 
 Plans live on the metadata Raft leader, in memory, for its term. A plan
 asked through a follower is forwarded to the leader, and so are broker
@@ -5261,6 +5351,12 @@ A write passing either field has it replaced by the stored one, and a new
 stream incarnation starts with neither. Below level 47 neither is written:
 a group whose first target was stored there has no seed, so its plans stay
 marked and `apply` needs the operator to accept the loss.
+
+From level 50 the re-form's write is its own command,
+`StartReformedEpoch`, which carries the plan's incarnation, epoch, floor,
+base, voters and dead set and applies `ShardAssignment::start_reform`. Every
+member decides it from the record and the command alone, and the command
+is refused below level 50.
 
 From level 47 a copy id report also carries the group epoch the copy runs
 (`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records

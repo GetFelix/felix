@@ -17,6 +17,7 @@ pub(crate) mod placement_acks;
 pub(crate) mod raft_floors;
 pub(crate) mod raft_targets;
 pub(crate) mod rbac;
+pub(crate) mod reform_epochs;
 pub(crate) mod refresh_tokens;
 pub(crate) mod replica_reports;
 pub(crate) mod resources;

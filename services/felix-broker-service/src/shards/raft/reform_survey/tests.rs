@@ -73,3 +73,48 @@ async fn nothing_is_sent_without_a_survey() {
     tick(&idle, "b1", None, read).await;
     assert!(idle.reform_reports().is_empty());
 }
+
+/// A Raft cache shard is surveyed too (#2978): its copy is read from the
+/// cache store's root, where `open_member` claimed it, not the stream
+/// root, which holds nothing for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cache_shards_copy_is_read_from_the_cache_root() {
+    use crate::shards::raft::tests::{
+        INCARNATION, assigned, cache_broker, key, shards, take_formed,
+    };
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = cache_broker(root.path(), "sessions").await;
+    let shards = shards(&broker);
+    let sessions = ShardKey {
+        kind: ShardKind::Cache,
+        ..key("sessions", 0)
+    };
+    take_formed(&shards, assigned(sessions.clone(), INCARNATION)).await;
+    let copy = shards
+        .held_copies()
+        .into_iter()
+        .find(|held| held.key == sessions)
+        .expect("a cache member")
+        .copy;
+
+    let survey = Survey {
+        plan_id: "p".to_string(),
+        round: 1,
+        key: sessions,
+        incarnation: INCARNATION,
+        epoch: 0,
+        probes: BTreeSet::new(),
+    };
+    let read = shards.reform_reader();
+    let report = tokio::task::spawn_blocking(move || read(&survey))
+        .await
+        .expect("read")
+        .expect("the cache shard's copy is read");
+    assert_eq!(report.current.copy, Some(copy));
+    assert!(
+        report.current.path.contains("caches"),
+        "{}",
+        report.current.path
+    );
+}

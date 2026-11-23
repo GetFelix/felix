@@ -46,7 +46,7 @@ pub(crate) async fn run_raft_native_target_contract(store: Arc<dyn ControlPlaneS
 
 /// A report for a shard that started on Raft, from the process `node` is
 /// registered as now.
-async fn try_native_report(
+pub(crate) async fn try_native_report(
     store: &dyn ControlPlaneStore,
     a: &ShardAssignment,
     node: &str,

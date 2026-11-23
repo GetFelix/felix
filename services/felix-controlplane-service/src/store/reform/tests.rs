@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use felix_storage::raft_copy::{REPORT_VERSION, WireCopy, WireReport};
 
 use super::*;
-use crate::model::{PlacedInEpoch, RaftOrdered, RaftSeed, RaftTarget, ShardState};
+use crate::model::{PlacedInEpoch, RaftOrdered, RaftSeed, RaftTarget, ShardKind, ShardState};
 
 fn set(nodes: &[&str]) -> BTreeSet<String> {
     nodes.iter().map(|n| n.to_string()).collect()
@@ -284,4 +284,26 @@ fn a_node_scope_covers_only_shards_placed_on_it() {
     let picked = in_scope(vec![shard(), elsewhere], &ReformScope::Node("a".into()));
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0].key.shard, 0);
+}
+
+/// A cache shard on a Raft cluster runs a group too, so a plan covers it
+/// and surveys its brokers like a stream shard's (#2978).
+#[test]
+fn a_raft_cache_shard_is_planned_like_a_stream_shard() {
+    let mut cache = shard();
+    cache.key.kind = ShardKind::Cache;
+    let picked = in_scope(vec![cache.clone()], &ReformScope::Cluster);
+    assert_eq!(picked.len(), 1, "the cache shard is in scope");
+
+    let plans = ReformPlans::default();
+    let now = Instant::now();
+    let id = plans.create(ReformScope::Cluster, &picked, &BTreeSet::new(), now);
+    let asked = survey(&plans, now, |_, probes| {
+        copy(&LOG, Some(4), Some(2), probes)
+    });
+    assert!(asked.iter().all(|s| s.key.kind == ShardKind::Cache));
+    let view = plans.view(&id, now).unwrap();
+    let shard = &view.shards[0];
+    assert_eq!(shard.state, "reform", "{shard:?}");
+    assert_eq!(shard.plan.as_ref().unwrap().voters.len(), 3);
 }

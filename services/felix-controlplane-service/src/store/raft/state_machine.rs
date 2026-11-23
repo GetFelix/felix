@@ -554,6 +554,11 @@ impl MetadataStateMachine {
                 store.apply_record_audit(entries).await;
                 Ok(MetaResponse::Unit)
             }
+            MetaCommand::StartReformedEpoch { key, start } => store
+                .apply_start_reformed_epoch(&key, &start)
+                .await
+                .map(|assignment| MetaResponse::Assignment { assignment })
+                .map_err(Into::into),
             MetaCommand::DeclareNodeDead { node_id } => store
                 .apply_declare_node_dead(&node_id)
                 .await

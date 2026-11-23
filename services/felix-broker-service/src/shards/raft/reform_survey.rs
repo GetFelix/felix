@@ -113,8 +113,8 @@ pub(crate) async fn tick<L: ControlPlaneLink>(
 }
 
 impl RaftShards {
-    /// How this broker answers surveys: its copy of each surveyed stream
-    /// shard, read from disk at the survey's probes, and whether its member
+    /// How this broker answers surveys: its copy of each surveyed stream or
+    /// cache shard, read from disk at the survey's probes, and whether its member
     /// leads the group at the surveyed incarnation and epoch.
     pub(crate) fn reform_reader(&self) -> Read {
         let broker = Arc::clone(&self.broker);
@@ -124,21 +124,33 @@ impl RaftShards {
             .map(|led| (led.key, led.incarnation, led.epoch))
             .collect();
         Arc::new(move |survey: &Survey| {
-            if survey.key.kind != ShardKind::Stream {
-                return None;
-            }
             let storage = broker.durable_storage()?;
             let key = &survey.key;
-            let dir = storage
-                .raft_dir(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    survey.incarnation,
-                )
-                .ok()
-                .flatten()?;
+            // A cache shard's copy lives under the cache store's root, as
+            // `open_member` claims it.
+            let dir = match key.kind {
+                ShardKind::Stream => storage
+                    .raft_dir(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        survey.incarnation,
+                    )
+                    .ok(),
+                ShardKind::Cache => broker
+                    .cache()
+                    .as_log_cache()?
+                    .raft_dir(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        survey.incarnation,
+                    )
+                    .ok(),
+            }
+            .flatten()?;
             let leads = led.contains(&(key.clone(), survey.incarnation, survey.epoch));
             let spacing = storage.config().index_spacing_bytes;
             match felix_replication::raft::reform_report(
