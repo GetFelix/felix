@@ -358,3 +358,6 @@ async fn a_quorum_cache_watch_waits_its_timeout_for_the_mark() {
     assert!(waited >= timeout, "ended early after {waited:?}");
     assert!(waited < timeout * 6, "ended late after {waited:?}");
 }
+
+#[cfg(feature = "raft")]
+mod raft;

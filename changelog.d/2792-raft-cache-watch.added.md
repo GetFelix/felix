@@ -1,0 +1,1 @@
+A keyed cache watch is served on a Raft cache shard, by any member that knows its leader, and keeps going across a leader change. A resume from below the member's applied edge is answered with `resnapshot`; a snapshot install or a member with no leader ends the watch as `cache_watch_lagged` (#2792).

@@ -5395,8 +5395,20 @@ on the hybrid.
   stream Raft paths answer it: a write may still commit. Writes carry no
   client producer id yet, so a client retry after one may apply twice, as
   on the hybrid.
-- **Not served yet:** a keyed cache watch on a Raft cache shard. It reads
-  the hybrid store, which never opens the member's directory (#2792).
+- **Watches** are served by any member that knows its leader, as a
+  subscribe is. Each member reports the changes its applied entries make
+  to the broker's watch hub, under the state's lock, and a change's offset
+  is its entry's index, which is also the version a put writes. Only
+  committed entries apply, so a watch is never handed a change a failover
+  takes back, it waits on no commit mark, and it keeps going when the group
+  changes leader. A retry, a refused conditional write and a delete of an
+  absent key change nothing and report nothing. A watch joins at the
+  member's applied edge, read under the same lock as the values a retained
+  watch is handed. The group keeps no change history to replay, so a resume
+  from below the edge is answered with `resnapshot` and each key's current
+  value. A snapshot install, and a member left with no leader, end the
+  shard's watches as lagged at the first change they were not told of.
+  See [cache-on-log.md](cache-on-log.md#watch).
 
 ## Moving a shard from the hybrid to Raft
 
