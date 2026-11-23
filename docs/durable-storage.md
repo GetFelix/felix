@@ -381,7 +381,10 @@ graph LR
 Rules that recovery depends on:
 
 - Offsets are contiguous **within** a segment and **across** the boundary. A gap
-  is corruption, not a shrug.
+  is corruption, not a shrug. The one exception is the gap a Raft re-form
+  leaves above a voter's base, which the segment after it names in its header
+  (`docs/storage-format.md`, "Gap segments"). Reads step over it like a
+  skipped offset.
 - A batch is never split across segments. Rollover is decided before the write,
   from the projected size, so one append is always one `write` call.
 - A record larger than `segment_size_bytes` gets a segment to itself rather than

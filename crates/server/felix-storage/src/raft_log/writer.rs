@@ -241,7 +241,16 @@ where
                         )));
                     }
                     if first > tail {
-                        log.reset_to(first).await.map_err(io_error)?;
+                        // A re-formed voter's base ends at the tail and its
+                        // epoch starts at `first`: the offsets between are the
+                        // re-form's gap, so the base stays readable below it.
+                        // Anything else between could be records the leader
+                        // folded into a snapshot, and the log starts afresh.
+                        if reform_gap(log.dir(), tail, first).await? {
+                            log.open_gap(first).await.map_err(io_error)?;
+                        } else {
+                            log.reset_to(first).await.map_err(io_error)?;
+                        }
                     }
                 }
                 tail
@@ -596,6 +605,18 @@ impl Batch {
                 }
             })
     }
+}
+
+/// Whether `[tail, first)` is the gap the copy's latest re-form left: its
+/// base ends at `tail` and its epoch starts at `first`.
+async fn reform_gap(dir: &std::path::Path, tail: Offset, first: Offset) -> io::Result<bool> {
+    let dir = dir.to_path_buf();
+    let epoch = felix_common::blocking::spawn(move || crate::raft_copy::epoch_file::load(&dir))
+        .await
+        .map_err(io::Error::other)??;
+    Ok(epoch
+        .and_then(|epoch| epoch.bases.last().copied())
+        .is_some_and(|base| base.base_end() == tail && base.first_index == first))
 }
 
 /// A storage error as openraft takes it, keeping an I/O error's kind.

@@ -178,7 +178,6 @@ async fn start(
 /// acknowledged record, so the plan makes it a learner, and the new epoch's
 /// voters are the two copies that hold it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails: the new epoch's first append past the gap resets the voter's log, dropping the records below the base"]
 async fn a_three_copy_stream_group_re_forms_and_serves() {
     use felix_replication::engine::Engine;
 

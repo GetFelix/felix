@@ -119,10 +119,8 @@ impl SegmentWriter {
         Self::create_with(
             dir,
             id,
-            base_offset,
-            created_at_micros,
+            SegmentHeader::at_version(base_offset, created_at_micros, version),
             (reserve_limit_bytes, index_spacing_bytes),
-            version,
             DirEntry::Sync,
         )
     }
@@ -142,26 +140,33 @@ impl SegmentWriter {
         Self::create_with(
             dir,
             0,
-            base_offset,
-            created_at_micros,
+            SegmentHeader::at_version(base_offset, created_at_micros, version),
             (reserve_limit_bytes, index_spacing_bytes),
-            version,
             DirEntry::Deferred,
         )
+    }
+
+    /// [`Self::create_at_version`] with the whole header given, for a
+    /// segment past a gap ([`SegmentHeader::follows_gap`]).
+    pub(crate) fn create_with_header(
+        dir: &Path,
+        id: SegmentId,
+        header: SegmentHeader,
+        limits: (u64, u64),
+    ) -> Result<Self> {
+        Self::create_with(dir, id, header, limits, DirEntry::Sync)
     }
 
     fn create_with(
         dir: &Path,
         id: SegmentId,
-        base_offset: Offset,
-        created_at_micros: u64,
+        header: SegmentHeader,
         (reserve_limit_bytes, index_spacing_bytes): (u64, u64),
-        version: u16,
         entry: DirEntry,
     ) -> Result<Self> {
         let created =
             BlankSegment::create(dir, id, reserve_limit_bytes, index_spacing_bytes, entry)?
-                .activate(base_offset, created_at_micros, version)
+                .activate_with(header)
                 .and_then(|mut writer| {
                     // The header must be durable before any record claims to live
                     // here.
@@ -876,14 +881,26 @@ impl BlankSegment {
     /// sync of this segment, which under every fsync policy happens no later
     /// than the acknowledgement of the first record written to it.
     pub(crate) fn activate(
-        mut self,
+        self,
         base_offset: Offset,
         created_at_micros: u64,
         version: u16,
     ) -> Result<SegmentWriter> {
-        self.file.write_all(
-            &SegmentHeader::at_version(base_offset, created_at_micros, version).encode(),
-        )?;
+        self.activate_with(SegmentHeader::at_version(
+            base_offset,
+            created_at_micros,
+            version,
+        ))
+    }
+
+    /// [`Self::activate`] with the whole header given.
+    fn activate_with(mut self, header: SegmentHeader) -> Result<SegmentWriter> {
+        let SegmentHeader {
+            base_offset,
+            version,
+            ..
+        } = header;
+        self.file.write_all(&header.encode())?;
         let index = IndexWriter::create(
             &self.index_path,
             SparseIndex::new(base_offset),
