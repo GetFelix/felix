@@ -17,6 +17,10 @@ pub(crate) struct SetHold {
     /// A formed group's step its reported voters do not keep a majority of
     /// ([`ShardAssignment::holds_formed_set`], #2905).
     pub(crate) formed: bool,
+    /// Not a hold: a set change keeps the dropped target's counter
+    /// ([`ShardAssignment::carry_raft_target`]). Here so it takes the same
+    /// level gate as the holds.
+    pub(crate) counter: bool,
 }
 
 impl SetHold {
@@ -24,11 +28,13 @@ impl SetHold {
     pub(crate) const ALL: Self = Self {
         unformed: true,
         formed: true,
+        counter: true,
     };
     /// No hold, for an entry proposed below the level that knows them.
     pub(crate) const NONE: Self = Self {
         unformed: false,
         formed: false,
+        counter: false,
     };
 }
 
@@ -374,7 +380,7 @@ pub(super) async fn write_shard_assignment(
     };
     stored.switch = (switch == SwitchWrite::Order).then(|| stored.seal_order(generation));
     let existing = state.records.get(&stored.key);
-    stored.carry_raft_target(existing);
+    stored.carry_raft_target(existing, hold.counter);
     stored.carry_raft_floor(existing);
     stored.carry_raft_formed(existing);
     stored.carry_raft_ordered(existing);

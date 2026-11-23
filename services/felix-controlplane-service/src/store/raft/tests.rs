@@ -881,6 +881,7 @@ async fn shard_renewal_waits_for_every_member() {
                     placed: None,
                     switch: None,
                     raft_copy_ids: Default::default(),
+                    raft_target_counter: 0,
                     raft_target: None,
                     raft_floor: None,
                     raft_formed: None,
@@ -979,6 +980,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     placed: None,
                     switch: None,
                     raft_copy_ids: Default::default(),
+                    raft_target_counter: 0,
                     raft_target: None,
                     raft_floor: None,
                     raft_formed: None,
@@ -1189,6 +1191,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -1319,6 +1322,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -1463,6 +1467,7 @@ async fn a_previous_generation_waits_for_every_member() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -1568,6 +1573,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -1709,6 +1715,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -1753,8 +1760,9 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // Every assignment write at the current level carries the hold.
-    assert_eq!(store.machine.join_floor(), FIRST_FORM_LEVEL);
+    // Every assignment write at the current level carries the hold and
+    // the counter flag.
+    assert_eq!(store.machine.join_floor(), TARGET_COUNTER_LEVEL);
 
     let moved = store
         .put_shard_assignment(set(shard, &["broker-z"]))
@@ -1789,7 +1797,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
             .brokers,
         brokers
     );
-    assert_eq!(restored.join_floor(), FIRST_FORM_LEVEL);
+    assert_eq!(restored.join_floor(), TARGET_COUNTER_LEVEL);
 }
 
 /// An import marks the streams and caches it restores, so every member
@@ -1966,6 +1974,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -2086,6 +2095,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -2175,6 +2185,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -2315,6 +2326,7 @@ async fn pending_sets_wait_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -2438,11 +2450,11 @@ async fn pending_sets_wait_for_every_member() {
 
     // The log now holds the finalize, a level 26 entry, and assignment
     // writes that carry the level 45 hold, and the finalize lifts the
-    // floor to 46, which a member below refuses.
+    // floor to 50, which a member below refuses.
     let old = stub_member(Arc::new(std::sync::atomic::AtomicU16::new(20))).await;
     let refused = store.handle.add_learner_without_waiting(3, old).await;
     assert!(
-        matches!(&refused, Err(err) if err.to_string().contains("the group is at 46")),
+        matches!(&refused, Err(err) if err.to_string().contains("the group is at 50")),
         "a member below level 21 joined: {refused:?}"
     );
 }
@@ -2495,6 +2507,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -2608,6 +2621,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -2722,6 +2736,7 @@ async fn inherited_storage_waits_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -2849,6 +2864,7 @@ async fn learners_wait_for_every_member() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -3006,6 +3022,7 @@ async fn a_refusal_waits_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -3152,6 +3169,7 @@ async fn storage_ids_wait_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -3488,6 +3506,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,
@@ -3729,8 +3748,8 @@ async fn an_older_member_joins_a_group_with_nothing_finalized() {
 /// refuse the incarnated entries the others apply, so it is refused before
 /// the membership changes: at a lower level, without a reported level, and
 /// without an answer. One at the group's level joins. The finalize, proposed
-/// in a group at this build, also carries the level 45 hold (#2794), so the
-/// group is at 45.
+/// in a group at this build, also carries the level 50 counter flag, so the
+/// group is at 50.
 #[tokio::test]
 async fn a_member_below_a_finalized_level_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3751,11 +3770,11 @@ async fn a_member_below_a_finalized_level_is_refused() {
     let version = Arc::new(std::sync::atomic::AtomicU16::new(8));
     let addr = stub_member(Arc::clone(&version)).await;
     for (level, expected) in [
-        (8, "supports metadata version 8, but the group is at 46"),
-        (0, "supports metadata version 0, but the group is at 46"),
+        (8, "supports metadata version 8, but the group is at 50"),
+        (0, "supports metadata version 0, but the group is at 50"),
         (
             SILENT,
-            "did not report its metadata version, and the group is at 46",
+            "did not report its metadata version, and the group is at 50",
         ),
     ] {
         version.store(level, std::sync::atomic::Ordering::SeqCst);
@@ -4414,6 +4433,7 @@ async fn adoption_waits_for_every_member() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,

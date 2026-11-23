@@ -848,6 +848,7 @@ async fn a_follower_strips_nothing_on_its_own_lagging_floor() {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
