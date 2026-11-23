@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795442645626,
+  "lastUpdate": 1795443037757,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66768,6 +66768,58 @@ window.BENCHMARK_DATA = {
             "range": "80661.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1251764.64\nmean: 1213992.81\nstdev: 80661.99\ncv: 6.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4b6073dcbdc91d65c15ac43ac5caba39274f5ee2",
+          "message": "test(cluster): Raft leader wait names the shard's leader and a caught-up majority (#3027)\n\n* test(cluster): the Raft leader wait names the shard's own leader and a caught-up majority (#2982)\n\nshard_inspect now carries the broker's Raft member. Skips on Raft print their reason without --nocapture and to the job summary; the conformance lease skip names the property.\n\n* raft: record that the inspect view leaves the model alone (#2982)\n\nSpec-Unaffected: the change adds a read-only view of a member's role, term, leader and log indexes to the shard inspect answer; no vote, term, commit, lease or log rule changes.",
+          "timestamp": "2026-11-23T13:57:27Z",
+          "tree_id": "d2ada73b099b936b4395082e55162690217cc62d",
+          "url": "https://github.com/GetFelix/felix/commit/4b6073dcbdc91d65c15ac43ac5caba39274f5ee2"
+        },
+        "date": 1795443037065,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351924.5,
+            "range": "8333.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351924.50\nmean: 352919.97\nstdev: 8333.58\ncv: 2.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351924.5,
+            "range": "8333.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351924.50\nmean: 352919.97\nstdev: 8333.58\ncv: 2.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79824.18,
+            "range": "1178.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79824.18\nmean: 79315.86\nstdev: 1178.01\ncv: 1.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798241.82,
+            "range": "11780.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798241.82\nmean: 793158.61\nstdev: 11780.11\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
