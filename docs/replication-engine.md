@@ -880,8 +880,9 @@ release before the design relies on it:
 
 - `openraft-multi` routes every group's RPCs through one shared router,
   tagged with a group id (`examples/multi-raft-kv`). It shares connections,
-  but each group still sends its own heartbeats, so coalescing per peer
-  (below) is still Felix's to build, and a candidate to contribute upstream.
+  but each group still sends its own heartbeats, so Felix sends them
+  together per peer itself (`docs/per-shard-raft.md`, "Heartbeats sent
+  together"), the way openraft#2390 shows.
 - Pipelined replication (`RaftNetworkV2::stream_append`), and consecutive
   appends merged into one storage write. Both bear on the per-record cost of
   Decision 2.
@@ -898,10 +899,9 @@ release before the design relies on it:
 
 **Limits found in openraft are fixed upstream.** Felix files an openraft
 issue with the measured numbers and, where the fix is clear, sends the pull
-request. Felix does not switch libraries or keep a private fork. The likely
-first one is coalescing heartbeats per peer in `openraft-multi`
-(openraft#1959 reported high p99 from groups ticking together and noted
-batching as the real fix). A lease backed by broker liveness goes to the
+request. Felix does not switch libraries or keep a private fork. Heartbeat
+batching per peer, which openraft leaves to the application (openraft#1959,
+#2390), Felix does in its transport. A lease backed by broker liveness goes to the
 open LeaseGuard issue (openraft#1651) once the TLA+ model (issue #2198)
 covers it.
 

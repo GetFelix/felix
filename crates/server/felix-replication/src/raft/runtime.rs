@@ -128,6 +128,13 @@ pub struct RuntimeConfig {
     /// `heartbeat`. See docs/per-shard-raft.md, "A commit goes on the next
     /// append".
     pub commit_hold: Duration,
+    /// How long a heartbeat waits for others to the same broker, so the
+    /// heartbeats of every group handed off within it go as one message.
+    /// Appends that carry entries never wait. It only ages a leader's lease:
+    /// the lease counts from when openraft handed the heartbeat off, before
+    /// this wait. Shorter than `heartbeat`; zero sends each on its own. See
+    /// docs/per-shard-raft.md, "Heartbeats sent together".
+    pub beat_window: Duration,
 }
 
 impl Default for RuntimeConfig {
@@ -154,6 +161,7 @@ impl Default for RuntimeConfig {
             max_elections_at_once: 64,
             group_threads: default_group_threads(),
             commit_hold: Duration::from_millis(1),
+            beat_window: Duration::from_millis(1),
         }
     }
 }
@@ -224,6 +232,11 @@ impl RuntimeConfig {
         if self.commit_hold >= self.heartbeat {
             return Err(InvalidTimers(
                 "the commit hold is not shorter than the heartbeat".into(),
+            ));
+        }
+        if self.beat_window >= self.heartbeat {
+            return Err(InvalidTimers(
+                "the heartbeat window is not shorter than the heartbeat".into(),
             ));
         }
         if self.idle_heartbeat < self.heartbeat {
@@ -642,7 +655,7 @@ impl GroupRuntime {
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
-                transport,
+                transport: super::beats::Beats::wrap(transport, config.beat_window),
                 clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
