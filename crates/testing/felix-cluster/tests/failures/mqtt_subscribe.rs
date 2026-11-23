@@ -22,6 +22,35 @@ const STREAM: &str = "plant";
 #[serial]
 #[tokio::test]
 async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
+    withheld_until_committed(false).await;
+}
+
+/// The same on a Raft shard. The cut leader is deposed once the followers
+/// elect among themselves, and an entry only it held can then be truncated,
+/// so the record may never arrive. What holds is that it is not sent while
+/// the cut lasts and that a new subscriber is served after the heal.
+#[serial]
+#[tokio::test]
+async fn a_subscriber_on_a_raft_shard_is_not_sent_a_record_the_shard_has_not_committed() {
+    withheld_until_committed(true).await;
+}
+
+async fn withheld_until_committed(raft: bool) {
+    if raft && !super::raft::opted_in() {
+        return;
+    }
+    let mut broker_env = vec![
+        ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
+        // A refused publish comes back quickly; the record stays on the
+        // leader.
+        (
+            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+            "3000".to_string(),
+        ),
+    ];
+    if raft {
+        broker_env.push(super::raft::engine());
+    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3).mounted_at("plant/")],
@@ -29,15 +58,7 @@ async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
             "FELIX_MQTT_LISTEN".to_string(),
             "127.0.0.1:{port}".to_string(),
         )],
-        broker_env: vec![
-            ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
-            // A refused publish comes back quickly; the record stays on the
-            // leader.
-            (
-                "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
-                "3000".to_string(),
-            ),
-        ],
+        broker_env,
         proxy_links: true,
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
         ..Default::default()
@@ -45,10 +66,21 @@ async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
     .await
     .expect("start cluster");
     cluster
-        .finalize_fleet_features(&["record_headers"], Duration::from_secs(30))
+        .finalize_fleet_features(
+            if raft {
+                &["record_headers", "raft_record_headers"][..]
+            } else {
+                &["record_headers"][..]
+            },
+            Duration::from_secs(30),
+        )
         .await
-        .expect("finalize record_headers");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+        .expect("finalize the headers features");
+    let leader = if raft {
+        super::raft::leader_among(&cluster, &cluster.node_ids()).await
+    } else {
+        cluster.owner(STREAM).await.expect("owner")
+    };
     let port = cluster
         .node(&leader)
         .and_then(|node| node.tcp_port("FELIX_MQTT_LISTEN"))
@@ -99,6 +131,48 @@ async fn a_subscriber_is_not_sent_a_record_the_shard_has_not_committed() {
     );
 
     cluster.heal(&refuse).await.expect("heal the peers");
+    if raft {
+        let _ = client.disconnect().await;
+        let nodes = cluster.node_ids();
+        let leader = super::raft::leader_among(&cluster, &nodes).await;
+        let port = cluster
+            .node(&leader)
+            .and_then(|node| node.tcp_port("FELIX_MQTT_LISTEN"))
+            .expect("an MQTT port");
+        let mut options = MqttOptions::new("watcher-after", "127.0.0.1", port);
+        options.set_credentials(cluster.tenant_id.clone(), cluster.client_token());
+        let (client, mut events) = AsyncClient::new(options, 10);
+        client
+            .subscribe("plant/#", QoS::AtLeastOnce)
+            .await
+            .expect("subscribe");
+        wait_for_suback(&mut events).await;
+        let mut sent = Err("never tried".to_string());
+        for _ in 0..30 {
+            sent = publish_qos1(&tenant, &token, port, "plant/line/3", "after").await;
+            if sent.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        sent.expect("a publish after the heal");
+        // The cut record may arrive first, if the leader kept it.
+        let mut seen = Vec::new();
+        while let Some(payload) = next_payload(&mut events, Duration::from_secs(30)).await {
+            let done = payload == "after";
+            seen.push(payload);
+            if done {
+                break;
+            }
+        }
+        assert!(
+            seen.iter().any(|payload| payload == "after"),
+            "the new subscriber never got the record published after the heal: {seen:?}"
+        );
+        let _ = client.disconnect().await;
+        cluster.shutdown().await;
+        return;
+    }
     assert_eq!(
         next_payload(&mut events, Duration::from_secs(60)).await,
         Some("uncommitted".to_string()),

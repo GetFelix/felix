@@ -555,7 +555,7 @@ jobs:
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
   cluster:
-    name: Cluster tests (${{ matrix.suite }})
+    name: Cluster tests (${{ matrix.suite }}${{ matrix.engine == 'raft' && ', raft' || '' }})
     needs: changes
     if: needs.changes.outputs.cluster == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
@@ -566,6 +566,17 @@ jobs:
       fail-fast: false
       matrix:
         suite: [routing, failures, history, rest]
+        # The shard engine a suite runs on (FELIX_TEST_SHARD_ENGINE). Hybrid
+        # unless listed; a suite listed here as raft also keeps its hybrid
+        # run until the hybrid is deleted (#2982).
+        engine: [hybrid]
+        include:
+          - suite: rest
+            engine: raft
+          - suite: routing
+            engine: raft
+    # A suite moving to Raft reports until its failures are triaged.
+    continue-on-error: ${{ matrix.engine == 'raft' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -611,6 +622,7 @@ jobs:
       - name: Test
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
+          FELIX_TEST_SHARD_ENGINE: ${{ matrix.engine }}
           # Every cluster test copies its broker logs here at teardown; the
           # steps below upload the failing tests' share.
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
@@ -649,7 +661,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: failed-cluster-logs-${{ matrix.suite }}-${{ github.run_attempt }}
+          name: failed-cluster-logs-${{ matrix.suite }}-${{ matrix.engine }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/failed-cluster-logs.tar.gz
           if-no-files-found: ignore
           retention-days: 7
@@ -691,11 +703,21 @@ jobs:
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
           FELIX_TEST_RAFT_SHARDS: "1"
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         # The Kafka and MQTT failover tests on Raft live beside their
         # default-engine twins in `failures`.
         run: |
           cargo test --locked -p felix-cluster --test raft_shards
           cargo test --locked -p felix-cluster --test failures -- on_a_raft_shard
+
+      # The failure output quotes only each broker's last lines.
+      - name: Upload the brokers' logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: raft-cluster-logs
+          path: ${{ runner.temp }}/cluster-logs
+          retention-days: 7
 
   # Lint and the repository checks, beside the tests rather than in front of
   # them.

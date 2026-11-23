@@ -155,6 +155,17 @@ pub fn flush_failed(root: &Path) -> io::Result<bool> {
     Ok(tree(root)?.flush_failed())
 }
 
+/// Make every later flush of a log segment under `root` succeed without
+/// keeping anything, so a log there acknowledges records a power cut takes.
+/// For checking that a power-loss nemesis catches such a log.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn ignore_segment_flushes(root: &Path) -> io::Result<()> {
+    tree(root)?.ignore_segment_flushes();
+    Ok(())
+}
+
 fn tree(root: &Path) -> io::Result<std::sync::Arc<crate::fs::Tree>> {
     crate::fs::tree_at(root).ok_or_else(|| {
         io::Error::new(

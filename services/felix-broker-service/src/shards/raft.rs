@@ -256,6 +256,9 @@ impl RaftShards {
             stall_ends: tokio::sync::watch::Sender::new(false),
         });
         runtime.report_to(Arc::clone(&leading), Arc::clone(&leading));
+        if let Some(hub) = broker.cache_watches() {
+            runtime.report_cache_changes(Arc::clone(hub) as Arc<dyn felix_storage::CacheObserver>);
+        }
         let shards = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             engine: RaftEngine::new(runtime.clone()),
@@ -840,6 +843,15 @@ impl RaftShards {
     /// until it has stopped.
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
+        // The hub keys watches by shard, not incarnation: a watch left here
+        // would go quiet, or, once the cache is made again, drop the new
+        // group's low indexes as duplicates. Ended after the member stopped,
+        // so no change is applied behind it.
+        if key.kind == ShardKind::Cache
+            && let Some(hub) = self.broker.cache_watches()
+        {
+            hub.end_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard, None);
+        }
         self.epochs.lock().remove(key);
         self.recorded_epochs.lock().remove(key);
         self.formed_marks.lock().remove(key);
@@ -1098,6 +1110,15 @@ impl EngineShards for RaftShards {
                             None,
                         )
                         .await;
+                }
+                // A cache watch here would go quiet, which reads as a quiet
+                // key. It ends as lagged, so the client re-watches from
+                // where it stopped once some member follows a leader.
+                if leaderless
+                    && key.kind == ShardKind::Cache
+                    && let Some(hub) = self.broker.cache_watches()
+                {
+                    self.engine.end_cache_watches(key, hub.as_ref());
                 }
             }
             let streams: Vec<ShardKey> = assignments
@@ -1527,7 +1548,7 @@ impl EngineShards for RaftShards {
             };
             if kept {
                 let version = target.as_ref().map(|target| target.version);
-                tracing::debug!(shard = ?key, ?version, term, "told the shard's Raft leader its target");
+                tracing::info!(shard = ?key, ?version, term, "told the shard's Raft leader its target");
                 #[cfg(test)]
                 self.told.lock().push((key, target, term));
             }

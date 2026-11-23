@@ -5,7 +5,10 @@
 //! no failover to decide. Placement only names the member it wants leading,
 //! and the group's leader hands its leadership there. Moving a leader is one
 //! write that changes `leader` to another member of the set. The set changes
-//! in one case: a follower on an internal node is swapped for a live node. `docs/control-plane.md`, "Raft shards".
+//! when a member must leave (an internal, draining or lost broker) or an
+//! operator moves a shard outside it: one member is swapped for a live node
+//! and the group's leader runs the membership change. `docs/control-plane.md`,
+//! "Raft shards".
 use std::collections::BTreeSet;
 
 use felix_common::random::HashMap;
@@ -14,7 +17,7 @@ use super::leadership::{Leadership, Owner};
 use super::moves::Moves;
 use super::rendezvous::score;
 use super::zones::domain;
-use super::{Blocked, Decision, MoveStep};
+use super::{Blocked, Decision, Leaving, MoveStep};
 use crate::model::{Node, ShardAssignment, ShardKind, ShardState};
 
 /// Most Raft shards one pass names a new leader for. Once brokers follow
@@ -49,9 +52,10 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   brokers with no member forward to the leader placement names.
 /// - A down leader with no live member stays named, with no alert: the
 ///   group cannot elect either until a member is back.
-/// - A follower on an internal node is replaced by a live node outside the
-///   set, one at a time, through the group's membership target. With no such
-///   node it stays and the shard waits, shown to the operator.
+/// - A follower that must leave (`leaving`: an internal, draining or lost
+///   broker) is replaced by a live node outside the set, one at a time,
+///   through the group's membership target. With no such node it stays and
+///   the shard waits, shown to the operator.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering.
@@ -64,7 +68,7 @@ pub(super) fn raft_step<'a>(
     counted: &dyn Fn(&str) -> bool,
     leaders: &mut Leadership<'a>,
     moves: &mut Moves,
-    is_internal: &dyn Fn(&str) -> bool,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
 ) -> Decision {
@@ -72,12 +76,12 @@ pub(super) fn raft_step<'a>(
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
     }
     let leader = existing.leader.as_str();
-    // A leader on an internal node moves first, below; its followers are
-    // swapped on a later pass.
+    // A leader that must leave is renamed first, below; it is swapped out
+    // as a follower on a later pass.
     if is_live(leader)
-        && !is_internal(leader)
+        && leaving(leader).is_none()
         && let Some(decision) =
-            replace_internal(existing, is_live, is_internal, eligible, load, moves)
+            replace_leaving(existing, is_serving, leaving, eligible, load, moves)
     {
         return decision;
     }
@@ -146,74 +150,38 @@ pub(super) fn raft_step<'a>(
     )
 }
 
-/// Swaps a follower on an internal node for a live node outside the set.
+/// Swaps a follower that must leave for a live node outside the set.
 ///
 /// The set keeps its size, and the new target is stored with the new member
 /// in it before the group's leader acts, so the leader adds it as a learner
 /// and only then drops the old voter. A change is written only on a target
 /// stored for the current set, so there is one change at a time.
-fn replace_internal<'a>(
+fn replace_leaving<'a>(
     existing: &'a ShardAssignment,
-    is_live: &dyn Fn(&str) -> bool,
-    is_internal: &dyn Fn(&str) -> bool,
+    is_serving: &dyn Fn(&str) -> bool,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
     moves: &mut Moves,
 ) -> Option<Decision> {
-    let from = existing
+    // A member that is not serving first, lost ones before the rest: until
+    // it is replaced every other swap waits on it below, so a draining or
+    // internal member picked ahead of it would block forever.
+    let (from, why) = existing
         .replicas
         .iter()
-        .find(|node| is_internal(node.as_str()))?;
-    let key = &existing.key;
-    // The swap replaces the stored target. With another member down the group
-    // could not finish the change, so the internal voter would stay unseen.
-    if let Some(down) = existing
-        .nodes()
-        .find(|node| node.as_str() != from && !is_internal(node) && !is_live(node))
-    {
-        return Some(Decision::Waiting(Blocked::MemberDown {
-            node: down.clone(),
-        }));
-    }
-    // A replacement in a zone the rest of the set already holds comes last.
-    let staying: Vec<&str> = existing
-        .nodes()
-        .map(String::as_str)
-        .filter(|node| *node != from.as_str())
-        .collect();
-    let to = eligible
-        .iter()
-        .map(|node| node.node_id.as_str())
-        .filter(|id| !existing.nodes().any(|member| member == id))
-        .min_by_key(|id| {
-            (
-                staying
-                    .iter()
-                    .any(|node| domain(eligible, node) == domain(eligible, id)),
-                load.get(id).copied().unwrap_or(0),
-                u64::MAX - score(key, id),
-                *id,
-            )
-        });
-    let Some(to) = to else {
-        return Some(Decision::Waiting(Blocked::NoReplacement {
-            node: from.clone(),
-        }));
+        .filter_map(|node| leaving(node).map(|why| (node, why)))
+        .min_by_key(|(node, why)| (is_serving(node), *why != Leaving::Lost))?;
+    let to = match replacement(existing, from, is_serving, eligible, load) {
+        Ok(to) => to,
+        Err(Blocked::NoReplacement { node, .. }) => {
+            return Some(Decision::Waiting(Blocked::NoReplacement { node, why }));
+        }
+        Err(Blocked::MemberDown { node, .. }) => {
+            return Some(Decision::Waiting(Blocked::MemberDown { node, why }));
+        }
+        Err(blocked) => return Some(Decision::Waiting(blocked)),
     };
-    let settled = existing.raft_target.as_ref().is_some_and(|target| {
-        target
-            .members
-            .keys()
-            .eq(existing.nodes().collect::<BTreeSet<_>>())
-    });
-    if !settled {
-        return Some(Decision::Waiting(Blocked::TargetUnsettled));
-    }
-    // The store refuses the write too; waiting here keeps it from being
-    // proposed every pass.
-    if existing.holds_unformed_set() {
-        return Some(Decision::Waiting(Blocked::Unformed));
-    }
     if moves.paused() {
         return Some(Decision::Waiting(Blocked::Paused));
     }
@@ -234,7 +202,7 @@ fn replace_internal<'a>(
         })
         .collect();
     Some(Decision::Move(
-        MoveStep::RaftReplaceInternal {
+        MoveStep::RaftReplace {
             from: from.clone(),
             to: to.to_string(),
         },
@@ -243,6 +211,90 @@ fn replace_internal<'a>(
             ..existing.renamed()
         },
     ))
+}
+
+/// The live node outside the set that takes `from`'s seat, when the group
+/// can make the change now.
+///
+/// Refused while another member is not serving, since the joint change needs
+/// a majority of both sets, and while the target is not stored for the
+/// current set or the group has not formed on it: one set change at a time.
+/// The errors name no `why`; callers fill it in.
+fn replacement<'a>(
+    existing: &ShardAssignment,
+    from: &str,
+    is_serving: &dyn Fn(&str) -> bool,
+    eligible: &[&'a Node],
+    load: &HashMap<&'a str, u32>,
+) -> Result<&'a str, Blocked> {
+    let key = &existing.key;
+    if let Some(down) = existing
+        .nodes()
+        .find(|node| node.as_str() != from && !is_serving(node))
+    {
+        return Err(Blocked::MemberDown {
+            node: down.clone(),
+            why: Leaving::Draining,
+        });
+    }
+    // A replacement in a zone the rest of the set already holds comes last.
+    let staying: Vec<&str> = existing
+        .nodes()
+        .map(String::as_str)
+        .filter(|node| *node != from)
+        .collect();
+    let to = eligible
+        .iter()
+        .map(|node| node.node_id.as_str())
+        .filter(|id| !existing.nodes().any(|member| member == id))
+        .min_by_key(|id| {
+            (
+                staying
+                    .iter()
+                    .any(|node| domain(eligible, node) == domain(eligible, id)),
+                load.get(id).copied().unwrap_or(0),
+                u64::MAX - score(key, id),
+                *id,
+            )
+        })
+        .ok_or_else(|| Blocked::NoReplacement {
+            node: from.to_string(),
+            why: Leaving::Draining,
+        })?;
+    seat_open(existing)?;
+    Ok(to)
+}
+
+/// Whether `existing`'s set may change now: its target is stored for the
+/// current set and the group has formed on it.
+pub(super) fn seat_open(existing: &ShardAssignment) -> Result<(), Blocked> {
+    let settled = existing.raft_target.as_ref().is_some_and(|target| {
+        target
+            .members
+            .keys()
+            .eq(existing.nodes().collect::<BTreeSet<_>>())
+    });
+    if !settled {
+        return Err(Blocked::TargetUnsettled);
+    }
+    // The store refuses the write too; waiting here keeps it from being
+    // proposed every pass.
+    if existing.holds_unformed_set() {
+        return Err(Blocked::Unformed);
+    }
+    Ok(())
+}
+
+/// `existing` with its leader's seat given to `to`, a broker outside the
+/// set, which placement also names leader: an operator move outside the set.
+/// The group's leader adds `to` as a learner, grows the voters to the target
+/// plus itself, hands leadership to a voter both keep and that one shrinks
+/// the voters, so no leader writes a membership without itself.
+pub(super) fn seat_moved(existing: &ShardAssignment, to: &str) -> ShardAssignment {
+    ShardAssignment {
+        leader: to.to_string(),
+        ..existing.renamed()
+    }
 }
 
 /// `existing` with `to`, one of its replicas, as leader. The set and every

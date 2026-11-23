@@ -117,19 +117,58 @@ async fn allow_follower_reads(cluster: &Cluster) {
 
 /// Everything `node` replays from the start of the stream, read until every
 /// payload in `owed` has arrived.
+///
+/// A leadership transfer closes the shard on the member, which ends the
+/// subscription without ending the stream, so a replay that ends early
+/// resubscribes on the same node from the next offset.
 async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u8>> {
-    let (_client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+    let (client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+    let deadline =
+        tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
     let mut payloads = Vec::new();
+    let mut next_offset = 0u64;
+    let mut ended = Vec::new();
     while !owed.iter().all(|payload| payloads.contains(payload)) {
-        match tokio::time::timeout(Duration::from_secs(10), subscription.next_event()).await {
-            Ok(Ok(Some(event))) => payloads.push(event.payload.to_vec()),
-            other => panic!(
-                "{node} stopped at {} records with {} owed: {:?}",
-                payloads.len(),
-                owed.len(),
-                other.map(|event| event.map(|event| event.is_some()))
-            ),
+        let step = tokio::time::timeout(Duration::from_secs(10), subscription.next_event()).await;
+        match step {
+            Ok(Ok(Some(event))) => {
+                if let Some(offset) = event.offset {
+                    next_offset = offset + 1;
+                }
+                payloads.push(event.payload.to_vec());
+                continue;
+            }
+            Ok(Ok(None)) => ended.push("ended".to_string()),
+            Ok(Err(err)) => ended.push(format!("error: {err:#}")),
+            Err(_) => ended.push("no event for 10 s".to_string()),
         }
+        if tokio::time::Instant::now() < deadline {
+            if let Ok(resumed) = client
+                .subscribe_from(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    Some(felix_client::StartPosition::Offset(next_offset)),
+                )
+                .await
+            {
+                subscription = resumed;
+            } else {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            continue;
+        }
+        let text = |payload: &Vec<u8>| String::from_utf8_lossy(payload).into_owned();
+        let missing: Vec<String> = owed
+            .iter()
+            .filter(|payload| !payloads.contains(payload))
+            .map(text)
+            .collect();
+        panic!(
+            "{node} gave up after {ended:?}\n delivered: {:?}\n owed: {:?}\n missing: {missing:?}",
+            payloads.iter().map(text).collect::<Vec<_>>(),
+            owed.iter().map(text).collect::<Vec<_>>(),
+        );
     }
     payloads
 }
@@ -649,6 +688,7 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
     let mut owed = vec![b"before".to_vec()];
+    let mut unanswered = Vec::new();
     publish_acked(&cluster, &leader, &owed[0]).await;
 
     cluster.partition_node(&leader).expect("partition");
@@ -660,6 +700,8 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
         let answered = tokio::time::timeout(Duration::from_secs(3), publish).await;
         if matches!(answered, Ok(Ok(_))) {
             owed.push(payload);
+        } else {
+            unanswered.push(payload);
         }
     }
     let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
@@ -678,6 +720,15 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
     for payload in &owed {
         let text = String::from_utf8_lossy(payload);
         assert_eq!(copies(&held, payload), 1, "{elected} holds {text:?}");
+    }
+    // A cut-off publish the leader never answered may or may not survive,
+    // but nothing else is in the log.
+    for payload in &held {
+        let text = String::from_utf8_lossy(payload);
+        assert!(
+            owed.contains(payload) || unanswered.contains(payload) || payload == b"harness-probe",
+            "{elected} holds {text:?}, which nobody acknowledged"
+        );
     }
 }
 
@@ -1749,6 +1800,206 @@ async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
                 }
             }
         }
+    }
+    cluster.shutdown().await;
+}
+
+/// Four brokers and one three-copy shard, so every set change has a broker
+/// outside the set to swap in.
+fn four_broker_raft_cluster() -> ClusterConfig {
+    ClusterConfig {
+        nodes: 4,
+        ..raft_cluster()
+    }
+}
+
+/// The shard's stored assignment: placement's leader and followers, and the
+/// voters its group's leader last reported, by broker.
+async fn stored_set(cluster: &Cluster) -> (String, Vec<String>, Vec<String>) {
+    let assignments = cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store
+        .list_shard_assignments()
+        .await
+        .expect("assignments");
+    let shard = assignments
+        .into_iter()
+        .find(|a| a.key.stream == STREAM && a.key.shard == 0)
+        .expect("shard 0 is placed");
+    let voters = shard
+        .raft_voters
+        .map(|voters| voters.members.into_keys().collect())
+        .unwrap_or_default();
+    (shard.leader, shard.replicas, voters)
+}
+
+/// Waits until the group's reported voters are exactly `want`.
+async fn voters_become(cluster: &Cluster, want: &[String], within: Duration) {
+    let mut want = want.to_vec();
+    want.sort();
+    let waited =
+        felix_cluster::wait::until(within, "the group to report the new voters", || async {
+            stored_set(cluster).await.2 == want
+        })
+        .await;
+    if let Err(err) = waited {
+        let shard = cluster
+            .control_plane
+            .as_ref()
+            .expect("control plane running")
+            .store
+            .list_shard_assignments()
+            .await
+            .expect("assignments")
+            .into_iter()
+            .find(|a| a.key.stream == STREAM && a.key.shard == 0)
+            .expect("shard 0 is placed");
+        panic!(
+            "voters never became {want:?}: {err:#}; stored raft_target {:?}, raft_voters {:?}",
+            shard.raft_target, shard.raft_voters
+        );
+    }
+}
+
+/// **An operator move outside a Raft shard's set swaps the leader's seat.**
+/// The destination joins as a learner, the voters change through joint
+/// consensus, the old leader hands its leadership on before it leaves, and
+/// the new broker ends up leading with every acknowledged record, including
+/// those published during the change.
+#[tokio::test]
+#[serial]
+async fn an_operator_move_outside_the_set_hands_the_leaders_seat_over() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    let (old_leader, followers, _) = stored_set(&cluster).await;
+    let mut members: Vec<String> = followers.clone();
+    members.push(old_leader.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let outsider = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+
+    let mut acked = Vec::new();
+    for n in 0..5 {
+        let payload = format!("before-{n}").into_bytes();
+        publish_acked(&cluster, &followers[0], &payload).await;
+        acked.push(payload);
+    }
+    let step = cluster
+        .start_move(STREAM, 0, &outsider)
+        .await
+        .expect("a move outside the set is taken");
+    assert_eq!(step, "raft_replace");
+    for n in 0..5 {
+        let payload = format!("during-{n}").into_bytes();
+        publish_acked(&cluster, &followers[0], &payload).await;
+        acked.push(payload);
+    }
+
+    let mut want = followers.clone();
+    want.push(outsider.clone());
+    voters_become(&cluster, &want, converged_within).await;
+    felix_cluster::wait::until(converged_within, "the moved-to broker to lead", || async {
+        cluster
+            .metric(&outsider, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|led| led >= 1.0)
+    })
+    .await
+    .expect("leadership follows placement onto the new member");
+    // The old leader left the set, so it must no longer lead, and with that
+    // no longer acknowledge writes for the shard.
+    felix_cluster::wait::until(
+        converged_within,
+        "the old leader to stop leading",
+        || async {
+            cluster
+                .metric(&old_leader, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|led| led < 1.0)
+        },
+    )
+    .await
+    .expect("the old leader stops leading once it is out of the set");
+
+    let held = replay_holding(&cluster, &outsider, &acked).await;
+    for payload in &acked {
+        assert_eq!(copies(&held, payload), 1, "{payload:?} once on {outsider}");
+    }
+    cluster.shutdown().await;
+}
+
+/// **A drained broker's follower copy is replaced, and the broker can then
+/// go.** Placement swaps it for the broker outside the set; once the group
+/// reports the new voters, killing the drained broker costs no write.
+#[tokio::test]
+#[serial]
+async fn a_drained_brokers_follower_copy_is_replaced_so_the_broker_can_go() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    // The new copy is read as a follower at the end.
+    allow_follower_reads(&cluster).await;
+    let (leader, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(leader.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let drained = followers[0].clone();
+    let outsider = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+
+    let mut acked = Vec::new();
+    for n in 0..5 {
+        let payload = format!("before-{n}").into_bytes();
+        publish_acked(&cluster, &leader, &payload).await;
+        acked.push(payload);
+    }
+    cluster.drain_node(&drained).await.expect("drain");
+    felix_cluster::wait::until(converged_within, "placement to swap the copy", || async {
+        cluster.place_shards().await;
+        let (leader, replicas, _) = stored_set(&cluster).await;
+        leader != drained && !replicas.contains(&drained)
+    })
+    .await
+    .expect("the drained follower leaves the set");
+    let want: Vec<String> = members
+        .iter()
+        .filter(|node| **node != drained)
+        .cloned()
+        .chain(std::iter::once(outsider.clone()))
+        .collect();
+    voters_become(&cluster, &want, converged_within).await;
+
+    cluster
+        .kill_node(&drained)
+        .expect("kill the drained broker");
+    let (now_leader, _, _) = stored_set(&cluster).await;
+    let payload = b"after-the-drain".to_vec();
+    publish_acked(&cluster, &now_leader, &payload).await;
+    acked.push(payload);
+    let held = replay_holding(&cluster, &outsider, &acked).await;
+    for payload in &acked {
+        assert_eq!(copies(&held, payload), 1, "{payload:?} once on {outsider}");
     }
     cluster.shutdown().await;
 }

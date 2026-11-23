@@ -55,6 +55,7 @@ fn assignment() -> ShardAssignment {
             ("b".to_string(), 12),
             ("d".to_string(), 14),
         ]),
+        raft_target_counter: 0,
         raft_target: Some(target(2, &[("a", 11), ("b", 12), ("d", 14)])),
         raft_floor: Some(RaftFloor {
             incarnation: 3,

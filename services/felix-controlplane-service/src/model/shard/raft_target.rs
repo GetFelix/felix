@@ -83,17 +83,18 @@ impl ShardAssignment {
         {
             return Ok(false);
         }
-        let counter = match &self.raft_target {
-            None => 1,
-            Some(target) => target
-                .counter
-                .checked_add(1)
-                .ok_or(RaftTargetError::CounterExhausted)?,
-        };
+        let last = self
+            .raft_target
+            .as_ref()
+            .map_or(self.raft_target_counter, |target| target.counter);
+        let counter = last
+            .checked_add(1)
+            .ok_or(RaftTargetError::CounterExhausted)?;
         self.raft_target = Some(RaftTarget {
             counter,
             members: self.raft_copy_ids.clone(),
         });
+        self.raft_target_counter = 0;
         Ok(true)
     }
 
@@ -101,17 +102,36 @@ impl ShardAssignment {
     /// brokers, so a leader move leaves a membership change in flight and its
     /// version alone. A different set drops both: the target named the old
     /// set's members.
-    pub(crate) fn carry_raft_target(&mut self, existing: Option<&ShardAssignment>) {
-        match existing.filter(|existing| existing.raft_set() == self.raft_set()) {
-            Some(existing) => {
-                self.raft_copy_ids = existing.raft_copy_ids.clone();
-                self.raft_target = existing.raft_target.clone();
-            }
-            None => {
-                self.raft_copy_ids.clear();
-                self.raft_target = None;
-            }
+    ///
+    /// `keep_counter`: a different set keeps the counter the dropped target
+    /// reached. The group's membership carries that target's version, and a
+    /// leader takes only a newer one, so a count started again at 1 would
+    /// never be acted on.
+    pub(crate) fn carry_raft_target(
+        &mut self,
+        existing: Option<&ShardAssignment>,
+        keep_counter: bool,
+    ) {
+        self.raft_target_counter = 0;
+        let Some(existing) = existing else {
+            self.raft_copy_ids.clear();
+            self.raft_target = None;
+            return;
+        };
+        if existing.raft_set() == self.raft_set() {
+            self.raft_copy_ids = existing.raft_copy_ids.clone();
+            self.raft_target = existing.raft_target.clone();
+            self.raft_target_counter = existing.raft_target_counter;
+            return;
         }
+        if keep_counter && existing.incarnation == self.incarnation {
+            self.raft_target_counter = existing
+                .raft_target
+                .as_ref()
+                .map_or(existing.raft_target_counter, |target| target.counter);
+        }
+        self.raft_copy_ids.clear();
+        self.raft_target = None;
     }
 
     /// Whether this record's set must stay as it is: its group's first

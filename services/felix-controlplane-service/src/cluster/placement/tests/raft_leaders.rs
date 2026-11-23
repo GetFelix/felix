@@ -1,6 +1,7 @@
 //! Shards a Raft group runs: placement names the member it wants leading
-//! with one write that changes only `leader`, and leaves failover and the set
-//! to the group.
+//! with one write that changes only `leader`, and leaves failover to the
+//! group. The set changes one member at a time, through the group's
+//! membership target.
 use super::*;
 use crate::model::RaftTarget;
 use crate::store::ControlPlaneStore;
@@ -131,8 +132,17 @@ fn a_drain_moves_every_raft_leader_off_the_broker_in_one_pass() {
     );
     assert_eq!(leaders_on(&written, "broker-c"), 2);
 
+    // The leaders are off; the follower copies have no broker outside the
+    // set to go to, so they wait and say why.
     let again = plan_with(&streams, &[], &nodes, &written, &NothingCaughtUp, raft());
-    assert_eq!(again.kept(), 4, "the drain is done: {again:?}");
+    assert_eq!(again.moves().count(), 0, "{again:?}");
+    assert!(
+        again.waiting().all(|(_, why)| matches!(
+            why,
+            Blocked::NoReplacement { node, why: Leaving::Draining } if node == "broker-a"
+        )),
+        "{again:?}"
+    );
 }
 
 #[test]
@@ -266,11 +276,9 @@ fn a_hybrid_move_left_on_a_raft_shard_is_dropped() {
 }
 
 #[test]
-fn an_operator_moves_a_raft_leader_only_to_a_member() {
-    let streams = vec![replicated_stream("orders", 1, 2)];
-    let mut existing = member_of(0, "broker-a");
-    existing.replicas = vec!["broker-b".to_string()];
-    let existing = vec![existing];
+fn an_operator_moves_a_raft_leader_to_a_member_in_one_write() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![member_of(0, "broker-a")];
     let nodes = live(&ABC);
     let catalog = Catalog {
         streams: &streams,
@@ -284,10 +292,6 @@ fn an_operator_moves_a_raft_leader_only_to_a_member() {
         },
     };
 
-    assert_eq!(
-        start_move(&catalog, &existing[0].key, "broker-c").unwrap_err(),
-        Refused::NotAMember("broker-c".to_string())
-    );
     // No move slot is needed: nothing is copied.
     let step = start_move(&catalog, &existing[0].key, "broker-b").expect("moves");
     assert_eq!(
@@ -298,9 +302,300 @@ fn an_operator_moves_a_raft_leader_only_to_a_member() {
         }
     );
     assert_eq!(step.assignment.leader, "broker-b");
-    assert_eq!(step.assignment.replicas, vec!["broker-a".to_string()]);
+    assert_eq!(set_of(&step.assignment), set_of(&existing[0]));
     assert_eq!(step.assignment.raft_target, existing[0].raft_target);
     assert_eq!(step.expected_generation, existing[0].generation);
+}
+
+/// **An operator move outside the set gives the destination the leader's
+/// seat.** One write names it leader in place of the old leader and keeps
+/// the followers, so the group's leader adds it as a learner and swaps the
+/// voters; the group never runs below its factor.
+#[test]
+fn an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![member_of(0, "broker-a")];
+    let nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+    let catalog = Catalog {
+        streams: &streams,
+        caches: &[],
+        nodes: &nodes,
+        existing: &existing,
+        caught_up: &NothingCaughtUp,
+        policy: raft(),
+    };
+
+    let step = start_move(&catalog, &existing[0].key, "broker-d").expect("moves");
+    assert_eq!(
+        step.step,
+        MoveStep::RaftReplace {
+            from: "broker-a".to_string(),
+            to: "broker-d".to_string()
+        }
+    );
+    assert_eq!(step.assignment.leader, "broker-d");
+    assert_eq!(
+        step.assignment.replicas,
+        vec!["broker-b".to_string(), "broker-c".to_string()]
+    );
+    assert_eq!(step.expected_generation, existing[0].generation);
+}
+
+/// **A one-member group cannot be moved by an operator yet.** The store holds
+/// a one-voter set in place, so the write would be accepted and then refused
+/// for good; it is refused up front with its own code.
+#[test]
+fn an_operator_move_of_a_one_member_raft_shard_is_refused() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let mut single = member_of(0, "broker-a");
+    single.replicas.clear();
+    let existing = vec![single];
+    let nodes = live(&["broker-a", "broker-b"]);
+    let catalog = Catalog {
+        streams: &streams,
+        caches: &[],
+        nodes: &nodes,
+        existing: &existing,
+        caught_up: &NothingCaughtUp,
+        policy: raft(),
+    };
+
+    let refused = start_move(&catalog, &existing[0].key, "broker-b").unwrap_err();
+    assert_eq!(refused, Refused::SingleMember);
+    assert_eq!(refused.code(), "single_member");
+}
+
+/// One set change at a time, and only with every member serving: the joint
+/// change needs a majority of both sets.
+#[test]
+fn an_operator_move_outside_a_raft_set_waits_for_a_settled_serving_set() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let mut unsettled = member_of(0, "broker-a");
+    unsettled.raft_target = None;
+    let mut learner = member_of(0, "broker-a");
+    learner.learners.insert("broker-d".to_string());
+    let mut nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+    let refused = |existing: &ShardAssignment, nodes: &[Node]| {
+        let existing = vec![existing.clone()];
+        let catalog = Catalog {
+            streams: &streams,
+            caches: &[],
+            nodes,
+            existing: &existing,
+            caught_up: &NothingCaughtUp,
+            policy: raft(),
+        };
+        start_move(&catalog, &existing[0].key, "broker-d").unwrap_err()
+    };
+
+    assert_eq!(refused(&unsettled, &nodes), Refused::SetUnsettled);
+    assert_eq!(
+        refused(&learner, &nodes),
+        Refused::NotAMember("broker-d".to_string())
+    );
+    nodes[2].status.lifecycle = NodeLifecycle::Down;
+    assert_eq!(
+        refused(&member_of(0, "broker-a"), &nodes),
+        Refused::MemberDown("broker-c".to_string())
+    );
+}
+
+/// **A drained broker's follower copy is replaced.** Its leader moves off on
+/// one pass; the follower is swapped for a broker outside the set on the
+/// next, through the group's membership target.
+#[test]
+fn a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![member_of(0, "broker-b")];
+    let mut nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+    nodes[0].status.lifecycle = NodeLifecycle::Draining;
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    let (_, step, written) = plan.moves().next().expect("a set change");
+    assert_eq!(
+        step,
+        &MoveStep::RaftReplace {
+            from: "broker-a".to_string(),
+            to: "broker-d".to_string()
+        }
+    );
+    assert_eq!(written.leader, "broker-b");
+    assert_eq!(
+        set_of(written),
+        ["broker-b", "broker-c", "broker-d"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect()
+    );
+}
+
+/// With no broker outside the set, a drained follower stays, and the shard
+/// says why.
+#[test]
+fn a_drained_raft_follower_with_nowhere_to_go_waits_visibly() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![member_of(0, "broker-b")];
+    let mut nodes = live(&ABC);
+    nodes[0].status.lifecycle = NodeLifecycle::Draining;
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    assert!(
+        matches!(
+            plan.waiting().next(),
+            Some((_, Blocked::NoReplacement { node, why: Leaving::Draining })) if node == "broker-a"
+        ),
+        "{plan:?}"
+    );
+}
+
+/// **A lost broker is replaced.** A follower whose broker has been gone past
+/// `restore_after_millis` is swapped for a live one. Before the delay it
+/// stays: a restart is cheaper than a copy.
+#[test]
+fn a_raft_follower_lost_past_the_delay_is_replaced() {
+    use super::restore::{MINUTE, Reports, gone};
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![member_of(0, "broker-a")];
+    let nodes = |silent_for| {
+        vec![
+            node("broker-a", NodeLifecycle::Live, None),
+            node("broker-b", NodeLifecycle::Live, None),
+            gone("broker-c", silent_for),
+            node("broker-d", NodeLifecycle::Live, None),
+        ]
+    };
+    let reports = Reports::default();
+
+    let early = plan_with(&streams, &[], &nodes(MINUTE), &existing, &reports, raft());
+    assert_eq!(early.moves().count(), 0, "{early:?}");
+
+    let late = plan_with(
+        &streams,
+        &[],
+        &nodes(10 * MINUTE),
+        &existing,
+        &reports,
+        raft(),
+    );
+    let (_, step, written) = late.moves().next().expect("a set change");
+    assert_eq!(
+        step,
+        &MoveStep::RaftReplace {
+            from: "broker-c".to_string(),
+            to: "broker-d".to_string()
+        }
+    );
+    assert_eq!(written.leader, "broker-a");
+    assert!(!set_of(written).contains("broker-c"));
+}
+
+/// Brokers `a` (leader), `b` and `core` hold a group; `b` is draining.
+fn drained_beside(core: Node) -> (Vec<Stream>, Vec<ShardAssignment>, Vec<Node>) {
+    let mut existing = member_of(0, "a");
+    existing.replicas = vec!["b".to_string(), "core".to_string()];
+    let members = ["a", "b", "core"]
+        .iter()
+        .map(|node| (node.to_string(), 7))
+        .collect::<BTreeMap<_, _>>();
+    existing.raft_target = Some(RaftTarget {
+        counter: 2,
+        members: members.clone(),
+    });
+    existing.raft_voters = Some(crate::model::RaftVoters {
+        incarnation: existing.incarnation,
+        epoch: 0,
+        index: 1,
+        members: members.clone(),
+    });
+    existing.raft_copy_ids = members;
+    let mut nodes = live(&["a", "b", "c", "d"]);
+    nodes[1].status.lifecycle = NodeLifecycle::Draining;
+    nodes.push(core);
+    (
+        vec![replicated_stream("orders", 1, 3)],
+        vec![existing],
+        nodes,
+    )
+}
+
+fn internal_down(silent_for: u64) -> Node {
+    use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+    let mut node = super::restore::gone("core", silent_for);
+    node.spec
+        .labels
+        .insert(NODE_ROLE_LABEL.to_string(), NODE_ROLE_INTERNAL.to_string());
+    node
+}
+
+/// **A member that is down is replaced before one that is only leaving.**
+/// Every other swap waits on it, so picking the draining member first would
+/// hold the shard on the down one, and the down one would never be picked.
+#[test]
+fn a_down_internal_member_is_replaced_before_a_draining_one() {
+    use super::restore::{MINUTE, Reports};
+    let (streams, existing, nodes) = drained_beside(internal_down(10 * MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &Reports::default(),
+        raft(),
+    );
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplace { from, .. } if from == "core"),
+        "{plan:?}"
+    );
+}
+
+/// Internal is not a reason to wait on the delay: the down member is taken
+/// first even before it counts as lost.
+#[test]
+fn a_down_internal_member_inside_the_delay_does_not_hold_a_draining_one() {
+    use super::restore::{MINUTE, Reports};
+    let (streams, existing, nodes) = drained_beside(internal_down(MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &Reports::default(),
+        raft(),
+    );
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplace { from, .. } if from == "core"),
+        "{plan:?}"
+    );
+}
+
+/// A lost member goes before a draining one that is still serving.
+#[test]
+fn a_lost_raft_member_is_replaced_before_a_draining_one() {
+    use super::restore::{MINUTE, Reports, gone};
+    let (streams, existing, mut nodes) = drained_beside(gone("core", 10 * MINUTE));
+    nodes.retain(|node| node.node_id != "core");
+    nodes.push(gone("core", 10 * MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &Reports::default(),
+        raft(),
+    );
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplace { from, .. } if from == "core"),
+        "{plan:?}"
+    );
 }
 
 /// Through the store: the cluster's identity says Raft, and a drained
@@ -339,7 +634,9 @@ async fn a_drain_on_a_raft_cluster_finishes_through_the_store() {
         .expect("drain");
     let outcome = reconcile_once(&store, &liveness, policy.clone()).await;
     assert_eq!(outcome.failed, 0);
-    assert_eq!(outcome.waiting, 0, "{outcome:?}");
+    // The followers on broker-a have nowhere to go on three brokers, and no
+    // stored target either; they wait, the set unchanged.
+    assert_eq!(outcome.moved, 1, "{outcome:?}");
 
     let after = store.list_shard_assignments().await.expect("list");
     assert_eq!(leaders_on(&after, "broker-a"), 0, "{after:?}");
@@ -435,12 +732,10 @@ fn a_hybrid_move_left_on_a_raft_cache_shard_is_dropped() {
 }
 
 #[test]
-fn an_operator_moves_a_raft_cache_leader_only_to_a_member() {
-    let caches = vec![super::caches::replicated_cache("sessions", 1, 2)];
-    let mut existing = cache_member_of(0, "broker-a");
-    existing.replicas = vec!["broker-b".to_string()];
-    let existing = vec![existing];
-    let nodes = live(&ABC);
+fn an_operator_moves_a_raft_cache_leader_to_a_member_or_its_seat_outside() {
+    let caches = vec![super::caches::replicated_cache("sessions", 1, 3)];
+    let existing = vec![cache_member_of(0, "broker-a")];
+    let nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
     let catalog = Catalog {
         streams: &[],
         caches: &caches,
@@ -453,9 +748,13 @@ fn an_operator_moves_a_raft_cache_leader_only_to_a_member() {
         },
     };
 
+    let outside = start_move(&catalog, &existing[0].key, "broker-d").expect("seat move");
     assert_eq!(
-        start_move(&catalog, &existing[0].key, "broker-c").unwrap_err(),
-        Refused::NotAMember("broker-c".to_string())
+        outside.step,
+        MoveStep::RaftReplace {
+            from: "broker-a".to_string(),
+            to: "broker-d".to_string()
+        }
     );
     let step = start_move(&catalog, &existing[0].key, "broker-b").expect("moves");
     assert_eq!(
@@ -503,7 +802,9 @@ async fn a_cache_drain_on_a_raft_cluster_finishes_through_the_store() {
         .expect("drain");
     let outcome = reconcile_once(&store, &liveness, policy.clone()).await;
     assert_eq!(outcome.failed, 0);
-    assert_eq!(outcome.waiting, 0, "{outcome:?}");
+    // The followers on broker-a have nowhere to go on three brokers, and no
+    // stored target either; they wait, the set unchanged.
+    assert_eq!(outcome.moved, 1, "{outcome:?}");
 
     let after = store.list_shard_assignments().await.expect("list");
     assert_eq!(leaders_on(&after, "broker-a"), 0, "{after:?}");

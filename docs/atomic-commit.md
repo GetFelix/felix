@@ -240,6 +240,8 @@ needs a distributed transaction (two-phase commit or a coordinator with
 commit and abort markers, recovery of in-doubt transactions, and readers that
 skip uncommitted records), and it would add latency to every transactional
 write. It is not built. A commit that would need it is refused, never split.
+A design for commits across shards is in
+[cross-shard-commit.md](cross-shard-commit.md).
 
 **Caches.** The state a commit writes is the stream shard's own state, read
 with `state_get`. It is not a Felix cache. A cache is a separate log with

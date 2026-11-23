@@ -216,6 +216,33 @@ impl CacheWatchHub {
 }
 
 impl felix_storage::CacheObserver for CacheWatchHub {
+    fn watching(&self) -> bool {
+        self.watching.load(Ordering::Acquire) != 0
+    }
+
+    /// Ends the shard's watchers as lagged at `at`. Removing them drops
+    /// their senders, so each drains what was queued and then reports `at`.
+    fn cache_reset(&self, tenant_id: &str, namespace: &str, cache: &str, shard: u32, at: u64) {
+        let key = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+            shard,
+        );
+        let Some(watchers) = self.stripe(&key).lock().remove(&key) else {
+            return;
+        };
+        self.watching.fetch_sub(watchers.len(), Ordering::AcqRel);
+        for watcher in watchers.iter() {
+            let _ = watcher.state.lagged_at.compare_exchange(
+                NOT_LAGGED,
+                at,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
     /// Called with the shard's write lock held, so it must not block: every
     /// enqueue is a `try_send`, and a full queue (by entries or by bytes)
     /// ends that watcher rather than stalling the writer.

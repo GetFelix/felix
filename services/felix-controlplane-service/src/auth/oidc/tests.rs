@@ -153,8 +153,12 @@ async fn rejects_non_allowed_header_algorithms() {
         "exp": now + 300
     });
     let hs_header = Header::new(Algorithm::HS256);
-    let hs_token = jsonwebtoken::encode(&hs_header, &claims, &EncodingKey::from_secret(b"secret"))
-        .expect("hs token");
+    let hs_token = jsonwebtoken::encode(
+        &hs_header,
+        &claims,
+        &EncodingKey::from_secret(b"secret").expect("hs key"),
+    )
+    .expect("hs token");
     let validator = UpstreamOidcValidator::default();
     let hs_err = validator.validate(&hs_token, &[]).await.unwrap_err();
     assert!(matches!(hs_err, OidcError::UnsupportedAlgorithm));

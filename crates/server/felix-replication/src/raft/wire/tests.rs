@@ -268,6 +268,7 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
         Err(Refused::Stopped(addressee(), "fatal".into())),
         Err(Refused::NoSnapshots(addressee())),
         Err(Refused::OtherCopy(addressee(), 0xfeed)),
+        Err(Refused::Slow(addressee())),
     ]
 }
 
@@ -1185,4 +1186,112 @@ fn a_piece_of_no_batch_is_refused_on_the_wire() {
             "{refused}"
         );
     }
+}
+
+fn heartbeat(shard: u32, to: &str) -> RaftRequest {
+    let mut beat = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: Some(log_id(2, 7)),
+        entries: Vec::new(),
+        leader_commit: Some(log_id(2, 6)),
+    }));
+    let mut key = (*beat.group.shard).clone();
+    key.shard = shard;
+    beat.group = GroupId::new(key, beat.group.epoch);
+    beat.to = member(to);
+    beat
+}
+
+#[test]
+fn heartbeats_read_back_as_written_in_order() {
+    let written: Vec<_> = (0..5).map(|n| heartbeat(n, "b")).collect();
+    let wait = std::time::Duration::from_micros(1_500);
+    let bytes = encode_beats(&written, wait).expect("encode");
+    assert!(is_beats(&bytes));
+    // Layout, tag, then the deadline where a listener reads every body's.
+    assert_eq!(&bytes[..2], &[LAYOUT, BEATS]);
+    assert_eq!(crate::peer::raft_deadline(&bytes), written[0].deadline);
+    assert_eq!(&bytes[6..10], &1_500u32.to_be_bytes());
+    assert_eq!(&bytes[10..12], &5u16.to_be_bytes());
+    let (read, read_wait) = decode_beats(bytes.clone()).expect("decode");
+    assert_eq!(read_wait, wait);
+    assert_eq!(read.len(), written.len());
+    for (read, written) in read.iter().zip(&written) {
+        assert_eq!(read.group, written.group);
+        assert_eq!(
+            encode_request(read).expect("encode"),
+            encode_request(written).expect("encode")
+        );
+    }
+    assert_eq!(encode_beats(&read, wait).expect("encode"), bytes);
+}
+
+#[test]
+fn only_heartbeats_go_in_a_heartbeats_body() {
+    let wait = std::time::Duration::from_millis(1);
+    assert!(encode_beats(&[], wait).is_err());
+    let many: Vec<_> = (0..=MAX_BEATS as u32).map(|n| heartbeat(n, "b")).collect();
+    assert!(encode_beats(&many, wait).is_err());
+    assert!(encode_beats(&many[..MAX_BEATS], wait).is_ok());
+    let mut with_vote = vec![heartbeat(0, "b")];
+    with_vote.push(every_request().remove(2));
+    assert!(encode_beats(&with_vote, wait).is_err());
+
+    // A body written by hand with a vote inside is refused whole.
+    let inner = encode_request(&every_request()[2]).expect("encode");
+    let mut body = BytesMut::new();
+    body.put_u8(LAYOUT);
+    body.put_u8(BEATS);
+    body.put_u32(200);
+    body.put_u32(1_000);
+    body.put_u16(1);
+    body.put_u32(inner.len() as u32);
+    body.extend_from_slice(&inner);
+    assert!(decode_beats(body.freeze()).is_err());
+}
+
+#[test]
+fn a_cut_heartbeats_body_is_refused_at_every_length() {
+    let written: Vec<_> = (0..3).map(|n| heartbeat(n, "b")).collect();
+    let bytes = encode_beats(&written, std::time::Duration::from_millis(1)).expect("encode");
+    for len in 0..bytes.len() {
+        assert!(decode_beats(bytes.slice(..len)).is_err(), "{len}");
+    }
+    let mut longer = BytesMut::from(&bytes[..]);
+    longer.put_u8(0);
+    assert!(decode_beats(longer.freeze()).is_err());
+}
+
+#[test]
+fn heartbeat_answers_read_back_in_order_and_only_at_their_count() {
+    let written = every_reply();
+    let bytes = encode_beats_reply(&written);
+    let read = decode_beats_reply(bytes.clone(), written.len()).expect("decode");
+    assert_eq!(read.len(), written.len());
+    for (read, written) in read.iter().zip(&written) {
+        assert_eq!(encode_reply(read), encode_reply(written));
+    }
+    assert!(decode_beats_reply(bytes.clone(), written.len() - 1).is_err());
+    assert!(decode_beats_reply(bytes.clone(), written.len() + 1).is_err());
+    for len in 0..bytes.len() {
+        assert!(
+            decode_beats_reply(bytes.slice(..len), written.len()).is_err(),
+            "{len}"
+        );
+    }
+}
+
+/// A listener that could not read the body answers once for all of it.
+#[test]
+fn a_refusal_of_the_whole_body_refuses_every_heartbeat() {
+    let refused = encode_reply(&Err(Refused::Unreachable("does not read".into())));
+    let read = decode_beats_reply(refused, 3).expect("decode");
+    assert_eq!(read.len(), 3);
+    assert!(
+        read.iter()
+            .all(|answer| matches!(answer, Err(Refused::Unreachable(_))))
+    );
+    // An answer for one message is not an answer for many.
+    let one = encode_reply(&Ok(RaftReply(Reply::Written)));
+    assert!(decode_beats_reply(one, 3).is_err());
 }

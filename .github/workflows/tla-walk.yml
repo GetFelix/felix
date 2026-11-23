@@ -46,6 +46,7 @@ on:
       - docs/formal/FelixShardShortCopy*.cfg
       - docs/formal/FelixShardElectUncleanContinuingDoubtedFull.cfg
       - docs/formal/FelixShard.tla
+      - docs/formal/FelixCrossShardCommit*
 
 permissions:
   contents: read
@@ -107,6 +108,14 @@ jobs:
           - family: reform-gate-twins
             configs: FelixRaftWrittenReformGateOpen FelixRaftWrittenCommitsReformJointDeadOneSet
             report-only: true
+          # The cross-shard commit design (docs/cross-shard-commit.md), not
+          # built yet. Each twin drops one rule and must find its violation.
+          - family: cross-shard
+            configs: FelixCrossShardCommit FelixCrossShardCommitLive
+          - family: cross-shard-twins-a
+            configs: FelixCrossShardCommitNoFirstWins FelixCrossShardCommitReleaseOnTimeout FelixCrossShardCommitTrimUndone FelixCrossShardCommitNoFence
+          - family: cross-shard-twins-b
+            configs: FelixCrossShardCommitWriteCheckEarly FelixCrossShardCommitApplyWithoutLock FelixCrossShardCommitNoTokenCheck
     steps:
       - name: Checkout
         uses: actions/checkout@v7

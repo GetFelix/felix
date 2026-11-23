@@ -50,7 +50,13 @@ impl Cluster {
     /// Replicated shards that could not fail over yet, because their leader has
     /// not reported a caught-up replica at the current generation. See
     /// [`ControlPlane::unreported_shards`](crate::ControlPlane::unreported_shards).
+    ///
+    /// Always empty on Raft: a Raft shard fails over by election and nothing
+    /// is reported for placement to promote from.
     pub async fn unreported_shards(&self) -> Result<Vec<String>> {
+        if self.config.raft_brokers() {
+            return Ok(Vec::new());
+        }
         self.control_plane().unreported_shards().await
     }
 

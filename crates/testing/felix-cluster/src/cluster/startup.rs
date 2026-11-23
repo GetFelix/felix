@@ -116,6 +116,19 @@ impl Cluster {
                     .await
                     .context("enable joint_fence")?;
             }
+            // A new Raft cluster has every Raft feature finalized, so a suite
+            // moved to Raft forms its cluster the same way (#3003).
+            if config.raft_by_suite_default() {
+                let features: Vec<&str> = felix_common::fleet::IMPLEMENTED
+                    .iter()
+                    .map(|feature| feature.name())
+                    .filter(|name| name.starts_with("raft_"))
+                    .collect();
+                cluster
+                    .finalize_fleet_features(&features, Duration::from_secs(30))
+                    .await
+                    .context("enable the Raft fleet features")?;
+            }
             anyhow::Ok(())
         }
         .await;

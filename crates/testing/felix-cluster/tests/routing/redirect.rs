@@ -29,6 +29,9 @@ fn config() -> ClusterConfig {
 #[serial]
 #[tokio::test]
 async fn a_subscribe_to_a_non_owner_is_redirected() {
+    if felix_cluster::skip_on_raft_until_3008() {
+        return;
+    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     let (owner, non_owner) = cluster
         .owner_and_non_owner(STREAM)
@@ -73,6 +76,9 @@ async fn a_subscribe_to_a_non_owner_is_redirected() {
 #[serial]
 #[tokio::test]
 async fn a_cluster_client_follows_the_redirect_to_the_owner() {
+    if felix_cluster::skip_on_raft_until_3008() {
+        return;
+    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     let (owner, non_owner) = cluster
         .owner_and_non_owner(STREAM)

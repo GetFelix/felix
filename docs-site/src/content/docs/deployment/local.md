@@ -48,9 +48,8 @@ directory, with the tenant, namespace, client token and broker addresses.
 cluster. The [Quickstart](/getting-started/quickstart/) walks through
 them.
 
-Its brokers run the older hybrid shard engine for now, because keyed cache
-watches are not served on Raft yet
-([#2792](https://github.com/GetFelix/felix/issues/2792)). Run
+Its brokers run the older hybrid shard engine for now
+([#2985](https://github.com/GetFelix/felix/issues/2985)). Run
 `FELIX_SHARD_ENGINE=raft cargo run --release -p felix-cluster -- up --nodes 3`
 to start them, and the control plane, on Raft.
 

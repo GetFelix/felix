@@ -14,6 +14,7 @@ mod snapshot;
 mod state;
 #[cfg(test)]
 mod tests;
+mod watch;
 
 use std::io;
 
@@ -24,7 +25,8 @@ pub(crate) use record::{CacheCommand, Request};
 pub(crate) use snapshot::{ENCODED, restores_of};
 #[cfg(test)]
 pub(crate) use state::floor;
-pub(crate) use state::{Answer, CacheState, Cut, Read, stamp};
+pub(crate) use state::{Answer, CacheState, Cut, Read, Watched, stamp};
+pub(crate) use watch::CacheWatch;
 
 use super::codec::invalid;
 

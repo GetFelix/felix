@@ -155,7 +155,7 @@ hashbrown = { version = "0.17", features = ["equivalent"] }
 # The Kafka wire codecs. Default features off: compression codecs are added by
 # whoever needs to decode a producer's batches.
 kafka-protocol = { version = "0.18", default-features = false }
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 libc = "0.2"
 # Linux-only, and only for the broker's storage layer: device flushes go
 # through IORING_OP_FSYNC rather than a blocking thread (#548).
