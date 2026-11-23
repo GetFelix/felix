@@ -1759,26 +1759,35 @@ impl Group {
     /// Queue one consumer-group write, `entry` being its encoded
     /// [`felix_broker::GroupEntry`], written only while this member leads
     /// `term`. A cache shard has no groups and refuses it.
+    ///
+    /// An `Err` here means the write never reached the proposer, so nothing
+    /// was appended; the future's errors come after it may have been.
     pub(crate) fn propose_group(
         &self,
         entry: Bytes,
         timestamp_micros: u64,
         term: u64,
-    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+    ) -> Result<impl Future<Output = Result<Written, Unacknowledged>> + Send + use<>, CommitError>
+    {
         let split = match self.cache {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split_group(entry, timestamp_micros, term),
         };
+        // The gate answers as a write whose append is not known, without
+        // sending it.
         #[cfg(test)]
-        let split = match self
+        let gated = self
             .gate
             .unknown_groups
             .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            true => Err(propose::unknown()),
-            false => split,
+            .then(propose::unknown);
+        #[cfg(not(test))]
+        let gated: Option<CommitError> = None;
+        let acknowledged = match gated {
+            Some(unknown) => Err(unknown),
+            None => Ok(self.acknowledge(self.send(split)?)),
         };
-        self.queue(split)
+        Ok(async move { acknowledged?.await })
     }
 
     /// A stream shard's consumer groups, as this member has applied them.
@@ -1790,19 +1799,33 @@ impl Group {
         &self,
         split: Result<(Proposal, Waiting), CommitError>,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
-        let waiting = if self.stop.is_cancelled() {
-            Err(propose::stopped())
-        } else {
-            split.and_then(|(proposal, waiting)| {
-                let queued = self.proposer().send(proposal);
-                queued.map(|()| waiting).map_err(|_| propose::stopped())
-            })
-        };
+        let acknowledged = self.send(split).map(|waiting| self.acknowledge(waiting));
+        async move { acknowledged?.await }
+    }
+
+    /// Hand a split write to the proposer.
+    fn send(
+        &self,
+        split: Result<(Proposal, Waiting), CommitError>,
+    ) -> Result<Waiting, CommitError> {
+        if self.stop.is_cancelled() {
+            return Err(propose::stopped());
+        }
+        let (proposal, waiting) = split?;
+        let queued = self.proposer().send(proposal);
+        queued.map(|()| waiting).map_err(|_| propose::stopped())
+    }
+
+    /// The answer to a write [`Self::send`] queued.
+    fn acknowledge(
+        &self,
+        waiting: Waiting,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let positions = self.positions.clone();
         let flushed = self.flushed_waiters.clone();
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
-        async move { propose::acknowledged(waiting?, positions, flushed, leading, stop).await }
+        propose::acknowledged(waiting, positions, flushed, leading, stop)
     }
 
     /// The member's copy, for deciding whether a kept copy of an earlier

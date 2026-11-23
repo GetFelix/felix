@@ -136,14 +136,21 @@ impl ClusterConfig {
 }
 
 /// The shard engine brokers start with unless a test names one, from
-/// `FELIX_TEST_SHARD_ENGINE` (`raft` or `hybrid`). Hybrid when unset, so a
-/// suite moves to Raft by CI setting the variable, one suite at a time.
+/// `FELIX_TEST_SHARD_ENGINE` (`raft` or `hybrid`). Raft when unset; CI sets
+/// `hybrid` for the fallback runs that stay until the hybrid is deleted.
 pub(crate) fn default_engine() -> &'static str {
-    match std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() {
-        Ok("raft") => "raft",
-        _ => "hybrid",
+    engine_named(std::env::var("FELIX_TEST_SHARD_ENGINE").ok().as_deref())
+}
+
+fn engine_named(value: Option<&str>) -> &'static str {
+    match value {
+        Some("hybrid") => "hybrid",
+        _ => "raft",
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// Say a test skipped itself on Raft, where a green result would otherwise
 /// pass for a run. Written to the real stderr, which libtest does not capture,
@@ -172,13 +179,12 @@ pub fn skip_on_raft_until_moves_land() -> bool {
     skip
 }
 
-/// True when the suite runs on Raft, for a test of subscribe redirects and
-/// region refusals that Raft shards do not yet satisfy (#3008). The test
-/// still runs on hybrid.
-pub fn skip_on_raft_until_3008() -> bool {
+/// True when the suite runs on Raft, for a test that fails there on Raft
+/// work not built yet, tracked by `issue`. The test still runs on hybrid.
+pub fn skip_on_raft_until(issue: u32, reason: &str) -> bool {
     let skip = default_engine() == "raft";
     if skip {
-        report_skip("skipped on Raft: subscribe redirect, opening shards, region refusal (#3008)");
+        report_skip(&format!("skipped on Raft: {reason} (#{issue})"));
     }
     skip
 }

@@ -2326,7 +2326,9 @@ behind the `raft` cargo feature of `felix-replication`, which the broker
 service turns on by default. A broker with a node id runs it unless
 `FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
 the internal listener or durable storage. A standalone broker, with no node
-id, does not run it.
+id, does not run it until single-voter Raft (#3000) lands. The cluster
+test suites run on Raft by default too; the hybrid runs report only (see
+`docs/hybrid-retirement.md`).
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:
@@ -3566,7 +3568,11 @@ majority is not deposed, and each batch handed to it waits with its payload
 in memory, whether or not its publisher was answered on the lease.
 `propose_publish` refuses a new batch with `ProposalsStalled` while the
 oldest unsettled one has waited longer than the publish timeout, so what is
-held is at most one timeout's worth of publishes.
+held is at most one timeout's worth of publishes. The refused batch was
+never proposed, so it is answered `shard_unavailable` (retry). A batch that
+was proposed and whose wait ends without a commit is answered outcome
+unknown (`quorum_timeout` or `leadership_lost`): it may still commit after
+a heal or under the next leader, and a retry could write it twice.
 
 **A `Leader` publisher that outruns the commits is slowed down, not
 refused.** Answered on the lease, a publisher comes back for more before
@@ -4483,7 +4489,13 @@ and waits for this member to apply it, so it sees every group write
 committed before it. A write is proposed at that term, refused by openraft
 if the member no longer leads it, and answered only once applied. If the
 append's outcome is unknown, the leader closes the term before answering, so
-only a later term's read index can see the entry. Claims are group entries
+only a later term's read index can see the entry. A write is retryable
+only when it provably was not appended: refused before the proposer took
+it, or by openraft on a lapsed lease. Any other error, while proposing or
+while waiting for the apply, is outcome unknown (`quorum_timeout` when the
+wait ran out, otherwise `leadership_lost`), as a stream write is: the entry
+may commit under the next leader, and a retry there would redrive, delete
+or claim a second time. Claims are group entries
 too: a poll that hands records out, and an extension, writes a claim and
 answers once it applied. A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,

@@ -209,11 +209,11 @@ writes the new pages.
 
 | Spec | Lines | Configs | Fate |
 | --- | --- | --- | --- |
-| `FelixShard.tla` | 5,559 | 355 | Deleted |
-| `FelixShardUnified.tla` | 575 | 40 | Deleted |
+| `FelixShard.tla` | 5,559 | 355 | Configurations deleted. The module stays until `FelixShardReads` and `FelixShardSessions`, which extend it, are deleted |
+| `FelixShardUnified.tla` | 575 | 40 | Deleted (done) |
 | `FelixShardMoveGiveUp.tla` | 445 | 13 | Deleted after its liveness check has a Raft twin (Gaps, 3) |
-| `FelixShardFigure8.tla` | 145 | 8 | Deleted. `FelixRaft` has the current-term commit rule |
-| `FelixShardWalkElectStaleSetReplay.tla`, `FelixShardWalkSparesSeatEarlyReplay.tla` | 966 | 2 | Deleted with `.github/workflows/tla-walk.yml` |
+| `FelixShardFigure8.tla` | 145 | 8 | Deleted (done). `FelixRaft` has the current-term commit rule |
+| `FelixShardWalkElectStaleSetReplay.tla`, `FelixShardWalkSparesSeatEarlyReplay.tla` | 966 | 2 | Deleted (done). `.github/workflows/tla-walk.yml` stays for the Raft walks and nightly checks and lost its hybrid jobs |
 | `FelixShardReads.tla`, `FelixShardSessions.tla` | 304 | 8 | Re-based on `FelixRaft` as `FelixRaftReads.tla` and `FelixRaftSessions.tla`; the old files are deleted (Gaps, 1) |
 | `FelixHeadTrim.tla`, `FelixPlacementPacing.tla` | 614 | 16 | Kept. Their fence and promotion steps are restated (Gaps, 3) |
 | `FelixGroups.tla`, `FelixAtomicCommit.tla` | 450 | 10 | Kept unchanged |
@@ -247,17 +247,27 @@ flowchart LR
 
 | Phase | What main has | What CI runs |
 | --- | --- | --- |
-| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, shares no shard and keeps its durable streams on the hybrid path, with a warning, until the hybrid is deleted. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` and `felix-cluster up` stay on the hybrid path until #2985 moves them | Raft jobs, and the existing hybrid tests, which pin the hybrid explicitly |
+| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, shares no shard and keeps its durable streams on the hybrid path, with a warning, until the hybrid is deleted. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` and `felix-cluster up` stay on the hybrid path until #2985 moves them | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
 | 2. Hybrid deleted | Raft only, one pull request at a time (see "Pull request split"). A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups or refuses durable streams, decided in #2986 | Raft only. Each pull request removes the hybrid tests for the code it removes |
 
-The deletion pull requests start only when all of these hold:
+The order, decided with Raft as the default:
 
-- The parity items on the Raft gate (#2243) are closed: every hybrid
-  feature works on Raft.
-- The Raft disk-fault simulator modes (#2954) are green.
-- Raft performance matches the v0.7.0 release binary on the gate's cells
-  (#2646). The comparison is against v0.7.0, not against the hybrid on
-  main, which is frozen.
+- Raft is the default now, for clustered brokers and for the cluster test
+  suites. The Raft cluster jobs gate a merge. The hybrid cluster jobs still
+  run and only report, until the code they test is deleted.
+- The hybrid TLA specs are deleted now, except the ones still waiting on a
+  Raft twin. Those go with the pull request that adds the twin.
+- The code deletion pull requests (#2259 to #2265) start when single-voter
+  Raft (#3000) merges, because a standalone broker keeps its durable streams
+  on the hybrid path until then.
+- The skipped Raft gaps (#2995, #3030, #3032, #3001, #3005) are fixed along
+  the way. A cluster test tracked by an issue skips on Raft and says so.
+- Raft performance still has to match the v0.7.0 release binary on the
+  gate's cells (#2646). The comparison is against v0.7.0, not against the
+  hybrid on main, which is frozen.
+- The long parity runs (#2243) and the bridge-build latch condition are
+  dropped. There is no 0.7 to 0.8 upgrade, so no cluster ever runs both
+  engines.
 - The Raft models for reads, sessions and idempotent publish pass (Gaps, 1
   and 2), so no client property loses its model when `FelixShard` goes.
 - Every row of the hand-off table has its Raft check merged, or is marked
@@ -287,11 +297,11 @@ live in the Raft groups simulation, `felix-sim/src/raft.rs`, run by
 | `election-settles` | Kept. Every shard has a leader after the heal | Landed: `Sim::recover`, each shard acknowledges a write within 30 s of the heal |
 | `one-leader-per-generation` | One leader per term (`ElectionSafety`) | Landed: `Sim::watch`, "both led term" |
 | `acked-held-by-leader` | Kept (`LeaderCompleteness`) | Landed: `Sim::acknowledged` and `Sim::watch` (an acknowledged or served offset is flushed on a majority), `Sim::final_reads` |
-| `at-most-one-serving` | No two brokers pass the lease check for a shard at one time. The leader lease (#2249) has landed, so this now has something to check | Missing |
+| `at-most-one-serving` | No two brokers pass the lease check for a shard at one time. The leader lease (#2249) has landed, so this now has something to check | Landed: `Sim::check_serving`, read in one step before every write and each second. A run whose skewed timers exceed what the lease is sized for is not judged |
 | `adopted-matches-opened` | Retired. Nothing is adopted. Its replacement checks that a broker opens a shard at a term only if Raft elected it at that term and its blank entry is committed (Gaps, 4) | Landed: `felix-sim/src/raft/opens.rs`. Every open the engine reports is judged: a majority has flushed an entry of the term when it opens, one broker per term, the broker the watch saw lead that term, and an entry of that term in the final log |
-| `record-generations-agree` | Kept above the base: copies agree on the term of every entry. Below the base the generation is not compared, by design | Missing. `Sim::final_reads` compares values, not entry terms |
-| `generation-burn` (warning) | Kept as a term-burn warning. It catches election storms, which sleep makes more likely | Missing. `terms_led` feeds only the vacuity check |
-| `torn-tail-repaired` | Unchanged | Missing. The Raft simulation has no power-loss mode yet (#2954) |
+| `record-generations-agree` | Kept above the base: copies agree on the term of every entry. Below the base the generation is not compared, by design | Landed: `Sim::check_terms_agree` after the final reads, below each member's read bound |
+| `generation-burn` (warning) | Kept as a term-burn warning. It catches election storms, which sleep makes more likely | Landed: `RaftOutcome::warnings`, from the lowest and highest term the watch saw per shard |
+| `torn-tail-repaired` | Unchanged | Landed: `Sim::check_power_cut` in the power modes (#2989). `raft_seed_1233_with_power_loss` tears and repairs tails |
 | New with #2239 | `SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep` | Missing, with #2239. `AsleepIsLevel` is modelled (`FelixRaftSleep.cfg`) |
 
 ### History checker
@@ -313,7 +323,7 @@ The Raft cluster tests are in `felix-cluster/tests/raft_shards.rs`.
 | `failures/replica_election.rs`, `failures/replica_set.rs` | Retired. Elections are checked by the simulator and by the control-plane-down failover test of #2233 | Retired. Landed in their place: `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged` |
 | `scale/failover_heal.rs` | Ported. No flag | Missing |
 | `failures/majority_ack.rs`, `failures/failover.rs` | Ported: an acknowledged record survives its leader. The cases about reports and finalizing are retired | Landed: `a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies`, `a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged`, `a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies` |
-| `failures/promotion_fence.rs`, `failures/joint_fence.rs`, `failures/fencing.rs`, `failures/fenced_caches.rs` | Retired as mechanism tests. One ported test each for streams and caches: a deposed leader acknowledges nothing | Streams landed: `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease`. Caches missing |
+| `failures/promotion_fence.rs`, `failures/joint_fence.rs`, `failures/fencing.rs`, `failures/fenced_caches.rs` | Retired as mechanism tests. One ported test each for streams and caches: a deposed leader acknowledges nothing | Landed: `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease` for streams, `a_cut_off_cache_leader_acknowledges_nothing_the_group_loses` for caches |
 | `failures/wiped.rs` | Ported: a wiped copy comes back as a learner and an acknowledged record survives (#2250) | Missing on clusters. The simulator wipes copies (`raft_seed_2_with_wipes`) |
 | `routing/generation_start.rs` | Ported: the blank entry of a term takes no offset a consumer sees | Missing |
 | `failures/lease_free_reads.rs`, `failures/lease_free_sessions.rs` | Ported: a `Quorum` read or a group commit on a deposed leader is refused | Missing |

@@ -1,0 +1,1 @@
+- The cluster test suites run on Raft by default (`FELIX_TEST_SHARD_ENGINE` unset means `raft`), and the Raft cluster jobs gate a merge. The hybrid cluster jobs still run and only report, until the hybrid is deleted. `docs/hybrid-retirement.md` records the new order.

@@ -2314,8 +2314,26 @@ impl Member {
     }
 
     pub(crate) async fn publish(&self, term: u64, payload: &'static [u8]) -> u64 {
-        let published = self.publish_within(term, payload, Duration::from_secs(10));
-        published.await.expect("published")
+        use crate::serving::direct_publish::publish_direct;
+        let orders = key("orders", 0);
+        let handle = self
+            .broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await
+            .expect("handle");
+        // The error is kept, so a failure says why the publish was refused.
+        publish_direct(
+            &self.broker,
+            None,
+            &self.engine,
+            target(handle, &orders, term),
+            &[bytes::Bytes::from_static(payload)],
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{} refused a publish: {err:?}", self.name))
+        .expect("an offset")
     }
 
     /// The offset, or `None` when no answer came within `timeout`.

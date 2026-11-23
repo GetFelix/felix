@@ -22,7 +22,7 @@
 # returns only the last ~4 KB of output, so the steps print little.
 #
 # Settings: NAME=parity (the azure.sh group felix-perf-parity-<NAME>), REPO, SRC=/mnt/build/src/felix
-# on VM 1, ROUNDS CELLS SIDES BASELINE_REF SECS LAT_SECS pass through to launch.
+# on VM 1, ROUNDS CELLS SIDES BASELINE_REF SECS LAT_SECS IDLE_GROUPS (and the other IDLE_* settings) pass through to launch.
 # The start and deallocate times go to the cost log, .scratch/raft-parity-azure/<NAME>/cost.log.
 set -euo pipefail
 
@@ -120,7 +120,7 @@ cmd_launch() {
   [ $# -gt 0 ] || die "launch <job> <azure.sh step>..."
   local s envs="PARITY_HOME=$RHOME NAME=$NAME" v
   for s in "$@"; do case "$s" in build|smoke|run|fetch-results) ;; *) die "unknown step $s" ;; esac; done
-  for v in ROUNDS CELLS SIDES BASELINE_REF SECS LAT_SECS ALLOW_STALE; do
+  for v in ROUNDS CELLS SIDES BASELINE_REF SECS LAT_SECS ALLOW_STALE IDLE_GROUPS IDLE_SHARDS IDLE_BATCH IDLE_BATCH_WAIT_SECS IDLE_SETTLE_SECS; do
     [ -z "${!v:-}" ] || envs="$envs $v=$(printf '%q' "${!v}")"
   done
   rc_ok 1 "set -e; systemctl is-active -q parity-$job && { echo 'parity-$job is already running'; exit 1; }

@@ -284,3 +284,33 @@ fn trim_headers_reach_only_a_client_that_offered_head_trim() {
     new.negotiate_hi(felix_wire::FEATURE_HEAD_TRIM);
     assert_eq!(new.shape(refused.clone()), refused);
 }
+
+/// On Raft, a write the engine took and could not settle is outcome unknown
+/// with the code the stream writes use; one it never took is retryable.
+#[test]
+fn a_raft_write_is_retryable_only_before_its_proposal() {
+    use felix_broker::BrokerError;
+    let stalled = BrokerError::ProposalsStalled {
+        waited: std::time::Duration::from_secs(5),
+    };
+    assert_eq!(
+        code_of(stalled.into()),
+        (ErrorCode::ShardUnavailable, RetryClass::Retry)
+    );
+    let timed_out = BrokerError::WriteUnsettled {
+        timed_out: true,
+        detail: "no commit within 5s".into(),
+    };
+    assert_eq!(
+        code_of(timed_out.into()),
+        (ErrorCode::QuorumTimeout, RetryClass::OutcomeUnknown)
+    );
+    let lost = BrokerError::WriteUnsettled {
+        timed_out: false,
+        detail: "the term ended".into(),
+    };
+    assert_eq!(
+        code_of(lost.into()),
+        (ErrorCode::LeadershipLost, RetryClass::OutcomeUnknown)
+    );
+}

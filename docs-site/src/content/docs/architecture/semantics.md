@@ -161,7 +161,8 @@ moves only after that report has landed. The leader also re-checks its lease
 before it answers. The ordering closes the one interleaving a model check of
 the promotion protocol (`task tla:check`) finds and no injected fault reaches:
 a leader that acknowledges a write and dies before the control plane learns
-who holds it. `FelixShard.tla` explores 5.38M distinct states of this design
+who holds it. The hybrid engine's model of this design (`FelixShard.tla`, deleted with
+the engine and kept in the v0.7.0 tag) explored 5.38M distinct states
 without a violation. With the ordering removed it loses an acknowledged record
 in a second.
 
