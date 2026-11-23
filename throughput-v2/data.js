@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795423189744,
+  "lastUpdate": 1795425514451,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66352,6 +66352,58 @@ window.BENCHMARK_DATA = {
             "range": "43325.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1636127.97\nmean: 1643112.99\nstdev: 43325.25\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ccabaf00c116fcaf26186c5349fee5a8535a8346",
+          "message": "perf(raft): a vote at a new term fsyncs only its ballot; model the many-groups election storm (#2317) (#3015)\n\n* perf(raft): a vote at a new term fsyncs only its ballot; model the many-groups election storm (#2317)\n\nA Raft vote at a new term wrote the ballot and then the replica state, each\nthrough a temporary file, an fsync, a rename and a directory fsync. The open\nalready takes the generation from a ballot ahead of the replica state, so\nsave_vote now writes only the ballot and leaves the generation to the next\ncommit write. That halves the fsyncs of nearly every vote in a storm. The\nvote is still on disk before save_vote returns, so before it is answered.\nThe hybrid's accept/commit paths are unchanged.\n\nticker/tests/storm.rs is a deterministic model of the storm: the real\nElections bound on two live brokers, a mock clock, one serial disk per\nbroker, pre-vote, own-vote save before asking and voter save before\nanswering. At 2,000 groups and 5 ms fsyncs every group is led in 22.6 s\n(42.7 s at four fsyncs a vote, 54.8 s with no bound).\n\nSpec-Unaffected: storage write order only; the vote is durable before it is answered exactly as before, and the models do not represent individual files or fsyncs.\n\n* storage: say that a ballot ahead of replica is an answered vote, not only a crash (#2317)\n\nSpec-Unaffected: comments only.\n\n* test(raft): the power-cut tests wait for a written report, not any report (#2317)\n\nThe tests waited until the leader held a report from the follower, then\nasserted its vouched-unsynced marker was durable. The leader also counts\nan append the follower fsynced before answering (Reports::answered), and\nthat needs no marker. When the answer beat the marker's sync, the loop\nended with the marker still in flight. Fewer vote fsyncs made that more\nlikely; the marker path itself was already correct.\n\nThe test now holds the follower's marker sync and shows the leader\ncounting its fsynced answers with no written report and no marker, then\nreleases it and waits for a real written report before checking the\nmarker is on the device.\n\nSpec-Unaffected: test-only change; no code path or protocol changes.",
+          "timestamp": "2026-11-23T09:10:58Z",
+          "tree_id": "874fe79111cb2d4f1374102cfeac01c8b1e59963",
+          "url": "https://github.com/GetFelix/felix/commit/ccabaf00c116fcaf26186c5349fee5a8535a8346"
+        },
+        "date": 1795425513732,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 472269.21,
+            "range": "35785.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 472269.21\nmean: 475274.82\nstdev: 35785.76\ncv: 7.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 472269.21,
+            "range": "35785.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 472269.21\nmean: 475274.82\nstdev: 35785.76\ncv: 7.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112050.31,
+            "range": "1058.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112050.31\nmean: 111760.61\nstdev: 1058.35\ncv: 0.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1120503.06,
+            "range": "10583.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1120503.06\nmean: 1117606.09\nstdev: 10583.53\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
