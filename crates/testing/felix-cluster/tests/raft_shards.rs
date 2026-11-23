@@ -1482,6 +1482,9 @@ async fn a_raft_cache_entry_expires_on_time_across_a_failover() {
     })
     .await
     .expect("put with a short ttl");
+    // The deadline is stamped before the ack, so a retried put that lands late
+    // still expires by `acked + SHORT_MS`.
+    let acked = tokio::time::Instant::now();
     cache_put_acked(&cluster, &other, "plain", b"plain").await;
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a long ttl put", || async {
         cluster
@@ -1519,7 +1522,7 @@ async fn a_raft_cache_entry_expires_on_time_across_a_failover() {
     }
 
     // Past the expiry, on both survivors, the entry never reads again.
-    tokio::time::sleep_until(started + Duration::from_millis(SHORT_MS + 1_000)).await;
+    tokio::time::sleep_until(acked + Duration::from_millis(SHORT_MS + 1_000)).await;
     for _ in 0..5 {
         for node in &survivors {
             assert_eq!(get(node, "short").await, None, "read {node} after expiry");
