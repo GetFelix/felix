@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795421924495,
+  "lastUpdate": 1795422587384,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66248,6 +66248,58 @@ window.BENCHMARK_DATA = {
             "range": "9001.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1245312.01\nmean: 1242410.15\nstdev: 9001.92\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06d8e85bfeaee02e9e44d37f5076e236fd622fb1",
+          "message": "sim: every Raft seed changes leader once (#2957) (#2993)\n\n* sim: Raft power-loss and majority-cut nemesis modes (#2954)\n\nThe hybrid's disk nemeses had no Raft twins, so power cuts, torn Raft-log\ntails and crashes between write and fsync were never run against the\nengine 0.8 ships.\n\nraft-power-loss cuts one member's power inside its next log append (or\nafter two seconds with none in flight) and starts it on what the device\nkept; raft-relaxed-power-loss does the same with Quorum/Periodic streams\nanswered on a written majority; the majority modes add cuts of two\nmembers or a majority in one instant. Each start writes a run record as a\nbroker does, so a relaxed cut rotates the storage id.\n\nA seed fails when a copy that kept its id lost a record it had fsynced,\nwhen a strict cut rotates a copy or a relaxed one keeps it, when recovery\nreopens a torn segment without repairing it, or when a shard answers a\nwrite after a relaxed cut of a majority closed it. The history checker is\nunchanged. sim_fs gains ignore_segment_flushes for a broken-disk test\nthat the power mode must catch. The sweep script and nightly workflow\nrun the modes as the raft-disks group.\n\n* sim: final reads wait for an open leader; pin Raft seeds 1233 and 920 (#2954)\n\n* sim: every Raft seed isolates a leader once so leadership always moves (#2957)\n\n* sim: pinned Raft seeds keep their original schedule (no forced leader change)",
+          "timestamp": "2026-11-23T08:23:07Z",
+          "tree_id": "5c2a44e727d4939b6986d4fe7e019b84819805ce",
+          "url": "https://github.com/GetFelix/felix/commit/06d8e85bfeaee02e9e44d37f5076e236fd622fb1"
+        },
+        "date": 1795422586696,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 336192.12,
+            "range": "30318.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336192.12\nmean: 332820.70\nstdev: 30318.38\ncv: 9.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 336192.12,
+            "range": "30318.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336192.12\nmean: 332820.70\nstdev: 30318.38\ncv: 9.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81192.81,
+            "range": "5155.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81192.81\nmean: 79538.50\nstdev: 5155.91\ncv: 6.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811928.06,
+            "range": "51559.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811928.06\nmean: 795385.04\nstdev: 51559.14\ncv: 6.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
