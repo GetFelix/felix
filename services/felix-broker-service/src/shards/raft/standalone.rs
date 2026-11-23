@@ -138,6 +138,7 @@ fn alone(key: ShardKey, incarnation: u64, target: Option<RaftTarget>) -> ShardAs
         raft_formed: None,
         raft_voters: None,
         raft_bases: None,
+        raft_seed: None,
         placed: None,
     }
 }
