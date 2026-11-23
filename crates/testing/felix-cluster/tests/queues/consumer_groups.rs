@@ -149,7 +149,12 @@ async fn a_group_position_survives_a_leader_failover() {
     .await
     .expect("start cluster");
 
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    // The broker that serves the shard, which on Raft is the elected
+    // member rather than placement's name for it.
+    let owner = cluster
+        .serving_leader(STREAM, std::time::Duration::from_secs(30))
+        .await
+        .expect("owner");
     for job in ["one", "two", "three"] {
         cluster
             .publish_via(&owner, STREAM, job.as_bytes().to_vec())
@@ -191,17 +196,10 @@ async fn a_group_position_survives_a_leader_failover() {
         .into_iter()
         .filter(|node| node != &owner)
         .collect();
-    let promoted = felix_cluster::wait::until(
-        std::time::Duration::from_secs(30),
-        "a new leader for the stream",
-        || async {
-            cluster.place_shards().await;
-            matches!(cluster.owner(STREAM).await, Ok(next) if next != owner)
-        },
-    )
-    .await;
-    assert!(promoted.is_ok(), "no replica was promoted");
-    let leader = cluster.owner(STREAM).await.expect("new owner");
+    let leader = cluster
+        .promoted_leader(STREAM, &owner, std::time::Duration::from_secs(30))
+        .await
+        .expect("no replica was promoted");
     assert!(survivors.contains(&leader));
 
     // Waiting on a *different* group, deliberately. Polling the group under
@@ -265,7 +263,12 @@ async fn a_dead_letter_survives_a_leader_failover() {
     .await
     .expect("start cluster");
 
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    // The broker that serves the shard, which on Raft is the elected
+    // member rather than placement's name for it.
+    let owner = cluster
+        .serving_leader(STREAM, std::time::Duration::from_secs(30))
+        .await
+        .expect("owner");
     cluster
         .publish_via(&owner, STREAM, b"poison".to_vec())
         .await
@@ -301,17 +304,10 @@ async fn a_dead_letter_survives_a_leader_failover() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     cluster.kill_node(&owner).expect("kill the owner");
 
-    let promoted = felix_cluster::wait::until(
-        std::time::Duration::from_secs(30),
-        "a new leader for the stream",
-        || async {
-            cluster.place_shards().await;
-            matches!(cluster.owner(STREAM).await, Ok(next) if next != owner)
-        },
-    )
-    .await;
-    assert!(promoted.is_ok(), "no replica was promoted");
-    let leader = cluster.owner(STREAM).await.expect("new owner");
+    let leader = cluster
+        .promoted_leader(STREAM, &owner, std::time::Duration::from_secs(30))
+        .await
+        .expect("no replica was promoted");
 
     // Being named owner and serving groups are different moments.
     let listed = felix_cluster::wait::until(

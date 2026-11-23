@@ -179,17 +179,6 @@ pub fn skip_on_raft_until_moves_land() -> bool {
     skip
 }
 
-/// True when the suite runs on Raft, for a test of subscribe redirects and
-/// region refusals that Raft shards do not yet satisfy (#3008). The test
-/// still runs on hybrid.
-pub fn skip_on_raft_until_3008() -> bool {
-    let skip = default_engine() == "raft";
-    if skip {
-        report_skip("skipped on Raft: subscribe redirect, opening shards, region refusal (#3008)");
-    }
-    skip
-}
-
 /// True when the suite runs on Raft, for a test that fails there on Raft
 /// work not built yet, tracked by `issue`. The test still runs on hybrid.
 pub fn skip_on_raft_until(issue: u32, reason: &str) -> bool {
