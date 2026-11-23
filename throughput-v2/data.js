@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795470282570,
+  "lastUpdate": 1795472618616,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67236,6 +67236,58 @@ window.BENCHMARK_DATA = {
             "range": "5589.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803056.13\nmean: 804670.80\nstdev: 5589.69\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "82ebb9312327edc9e9b049ad7a5e57663b11b61b",
+          "message": "chore(tla): delete the hybrid engine's TLA+ models (#2265) (#3044)\n\nDeletes FelixShard's configurations, FelixShardUnified, FelixShardFigure8\nand the two walk replays, with the walks and nightly jobs over them.\nFelixShard.tla stays as the base of FelixShardReads and FelixShardSessions.\nThe spec pairing check drops paths whose only model is gone.",
+          "timestamp": "2026-11-23T13:35:36-08:00",
+          "tree_id": "4c2e6cb9726ff3735881b5dc5564058624eea7ea",
+          "url": "https://github.com/GetFelix/felix/commit/82ebb9312327edc9e9b049ad7a5e57663b11b61b"
+        },
+        "date": 1795472617627,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 403711.69,
+            "range": "25102.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 403711.69\nmean: 415866.33\nstdev: 25102.22\ncv: 6.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 403711.69,
+            "range": "25102.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 403711.69\nmean: 415866.33\nstdev: 25102.22\ncv: 6.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94620.15,
+            "range": "288.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94620.15\nmean: 94543.45\nstdev: 288.93\ncv: 0.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 946201.46,
+            "range": "2889.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 946201.46\nmean: 945434.52\nstdev: 2889.31\ncv: 0.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
