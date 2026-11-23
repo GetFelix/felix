@@ -268,7 +268,23 @@ pub(crate) async fn handle_cache_watch_message(
     // shard log to replay from: its base is the edge itself, so a resume
     // from below it is answered with a resnapshot.
     let wants_entries = request.retained || request.from_offset.is_some();
-    let raft = raft_join(&publish_ctx.engine, &shard_key, &filter, wants_entries);
+    let raft = match raft_join(&publish_ctx.engine, &shard_key, &filter, wants_entries).await {
+        Ok(raft) => raft,
+        Err(why) => {
+            drop(watch);
+            subscriptions.release();
+            responder
+                .send(
+                    ClientError::unavailable(
+                        &crate::shards::routing::Reason::NotReady,
+                        format!("this member could not confirm its state is current: {why}; retry"),
+                    )
+                    .into_message(),
+                )
+                .await?;
+            return Ok(true);
+        }
+    };
     let (log, tail, base, gate) = match &raft {
         Some(join) => {
             let mut tail = join.tail;
@@ -553,26 +569,38 @@ struct RaftJoin {
 
 /// The join point of `key`'s Raft group on this broker, read after the
 /// watch registered. `None` when the hybrid runs the shard. Values are read
-/// only when `entries` asks for them.
-fn raft_join(
+/// only when `entries` asks for them, and then the join first passes the
+/// group's read barrier; its error is retryable.
+async fn raft_join(
     engine: &crate::shards::routing::StreamEngine,
     key: &crate::shards::ShardKey,
     filter: &CacheWatchFilter,
     entries: bool,
-) -> Option<RaftJoin> {
+) -> Result<Option<RaftJoin>, &'static str> {
     #[cfg(feature = "raft")]
     {
         let keep = |name: &str| entries && filter.matches(name);
-        let point = engine.raft(key)?.cache_watch_point(key, &keep)?;
-        Some(RaftJoin {
+        let Some(raft) = engine.raft(key) else {
+            return Ok(None);
+        };
+        // Handed-out state (a retained set, or a resume's resnapshot) has to
+        // include every put acknowledged before the watch began, and this
+        // member may be a follower that has not applied it yet. A live-only
+        // watch hands out none.
+        let point = if entries {
+            raft.cache_retained_point(key, &keep).await?
+        } else {
+            raft.cache_watch_point(key, &keep)
+        };
+        Ok(point.map(|point| RaftJoin {
             tail: point.tail,
             entries: point.entries,
-        })
+        }))
     }
     #[cfg(not(feature = "raft"))]
     {
         let _ = (engine, key, filter, entries);
-        None
+        Ok(None)
     }
 }
 

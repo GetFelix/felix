@@ -26,7 +26,8 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::NotReadable { .. }
         | BrokerError::ShardNotOpen { .. }
         | BrokerError::ProposalsStalled { .. }
-        | BrokerError::PublishSuperseded { .. } => ResponseError::NotLeaderOrFollower,
+        | BrokerError::PublishSuperseded { .. }
+        | BrokerError::WriteUnsettled { .. } => ResponseError::NotLeaderOrFollower,
         BrokerError::Storage(_)
         | BrokerError::StorageFull(_)
         | BrokerError::OpenFileLimit(_)

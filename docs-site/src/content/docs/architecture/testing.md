@@ -358,24 +358,20 @@ The models in `docs/formal/` cover one shard: three brokers, one control plane
 and discrete time, with clocks that may drift. TLC explores every interleaving
 within the configured bounds.
 
-- `FelixShard.tla` models the lease, replication to a majority, promotion, the
-  promotion fence, planned moves and cancelled moves, fenced or not, and
-  replicas electing themselves under ballots. Its invariants include
-  that no two brokers serve the shard at once, that whoever serves holds every
-  acknowledged record, that two brokers never disagree on an acknowledged
-  record, and that no log holds a re-sent write twice.
-- `FelixShardFigure8.tla` starts the same model from a history two
-  leaderships in, to check the generation-start record against the loss Raft's
-  paper shows in its Figure 8.
-- `FelixShardReads.tla` adds reads, and checks that a `Quorum` read confirmed by
-  a majority round never returns a stale value.
+- `FelixRaft.tla` and the modules beside it model the Raft engine: elections,
+  the current-term commit rule from Raft's Figure 8, membership changes, leader
+  leases, re-forming a group and the crash rules the segment log must keep. They
+  check that no two leaders share a term, that a leader holds every committed
+  record, and that no committed record is truncated.
+- `FelixRaftReads.tla` and `FelixRaftSessions.tla` check that a read confirmed
+  by a majority round never returns a stale value and that a consumer group
+  never loses a delivery.
+- `FelixShardReads.tla`, `FelixShardSessions.tla` and `FelixShardMoveGiveUp.tla`
+  are the hybrid engine's remaining models. They are deleted once their Raft
+  twins cover the same properties. `FelixShard.tla` stays only as the module
+  the first two extend.
 - `FelixPlacementPacing.tla` checks that concurrent moves across shards stay
   within the copy limits, including with two control-plane instances.
-- `FelixRaft.tla` models the engine planned for 0.8: one Raft group whose log
-  is the segment log. It checks Raft's safety properties, that an
-  acknowledged record is on a majority's disks, and that the offsets a
-  subscriber sees have no gap and are never reused, under the crash rules the
-  log storage must keep. That storage is not built yet.
 
 Each configuration declares whether it must pass or which invariant it must
 break. The breaking ones remove one piece of the design, such as the fence, the
@@ -397,9 +393,8 @@ every test the spec cites still exists.
 
 The exhaustive configurations stop at a move or two and a promotion or two.
 A nightly job (`tla-walk.yml`, `task tla:walk`) runs TLC in simulation mode
-over `FelixShardWalk*.cfg`, which lift those bounds and sample behaviours a
-few hundred steps long that grow the set, replace followers, move the shard
-and fail over many times. That is sampling, not proof. Each walk has a
+over the configurations too big to check exhaustively, and samples behaviours a
+few hundred steps long. That is sampling, not proof. Each walk has a
 negative twin that must find its violation within the same budget.
 
 Detail, with every configuration and its state count:

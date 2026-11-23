@@ -21,7 +21,7 @@ on:
         description: "Per-job timeout, in minutes (at most 360)"
         default: "60"
       tla_coverage:
-        description: "Non-empty prints how often each action fired (TLC -coverage); FelixShard.tla operator names also print their expression counts"
+        description: "Non-empty prints how often each action fired (TLC -coverage); FelixShard.tla operator names (for FelixShardReads and FelixShardSessions) also print their expression counts"
         required: false
         default: ""
 
@@ -1236,7 +1236,6 @@ jobs:
       count: ${{ steps.plan.outputs.count }}
       shards: ${{ steps.plan.outputs.shards }}
       heavy: ${{ steps.plan.outputs.heavy }}
-      walk: ${{ steps.plan.outputs.walk }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1256,7 +1255,6 @@ jobs:
               echo "count=30"
               echo "shards=$(jq -cn '[range(30)]')"
               echo "heavy=[]"
-              echo "walk=$([ "$EVENT" = push ] && echo true || echo false)"
             } | tee -a "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -1264,17 +1262,13 @@ jobs:
           plan="$(scripts/check_tla.sh --affected HEAD^1)"
           echo "$plan"
           count="$(sed -n 's/^# shards: //p' <<<"$plan")"
-          walks="$(scripts/check_tla.sh --affected HEAD^1 --simulate)"
-          walk=false
-          if grep -qxE 'FelixShardFencedCrash(Unprobed|CountsUnnamed)' <<<"$walks"; then walk=true; fi
           {
             echo "configs=$(sed '/^#/d' <<<"$plan" | tr '\n' ' ')"
             echo "count=$count"
             echo "shards=$(jq -cn --argjson n "$count" '[range($n)]')"
             echo "heavy=$(TLA_CHANGED_BASE=HEAD^1 scripts/check_tla.sh --plan-heavy)"
-            echo "walk=$walk"
           } >>"$GITHUB_OUTPUT"
-          echo "shards: $count, walk: $walk"
+          echo "shards: $count"
 
   # A pull request checks its affected configurations of ten minutes or less,
   # plus the ones it changes up to 30 minutes (`formal-heavy` takes those
@@ -1383,48 +1377,6 @@ jobs:
       - name: Model-check
         run: scripts/check_tla.sh "${{ matrix.cfg }}"
 
-  # FelixShardFencedCrashUnprobed no longer finishes exhaustively in a hosted
-  # runner's six hours (#1584), so it is walked here instead, with its twin,
-  # at the nightly walks' budget (tla-walk.yml). Sampling, not proof. A pull
-  # request walks it only when the diff affects those configurations.
-  formal-walk:
-    needs: formal-plan
-    if: needs.formal-plan.outputs.walk == 'true'
-    name: TLA+ walk (unprobed crash)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Java
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: "21"
-
-      - name: Scratch disk for TLC
-        run: |
-          mkdir -p "$RUNNER_TEMP/tlc"
-          echo "TLC_SCRATCH_DIR=$RUNNER_TEMP/tlc" >> "$GITHUB_ENV"
-
-      - name: Walk
-        env:
-          TLA_SIM_MINUTES: "25"
-          TLA_DEPTH: "300"
-        run: scripts/check_tla.sh --simulate FelixShardFencedCrashUnprobed FelixShardFencedCrashCountsUnnamed
-
-      # TLC's whole output, with the seed and any trace.
-      - name: Upload the traces
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: tla-walk-unprobed-crash
-          path: target/tla/walk/
-          retention-days: 14
-
   # The decoders that parse input from outside the process, on a time budget.
   #
   # Separate from `test` because it needs nightly (libFuzzer links a runtime the
@@ -1507,7 +1459,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, sim, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal-plan, formal, formal-heavy, formal-walk, fuzz]
+    needs: [changes, images, compose, test, sim, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal-plan, formal, formal-heavy, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
