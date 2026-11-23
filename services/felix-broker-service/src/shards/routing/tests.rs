@@ -1590,7 +1590,7 @@ fn another_engines_leader_in_an_unbridged_region_is_refused() {
     };
     let refused = engine_ingress(engine(), "eu-west-1", true);
     assert_eq!(
-        dispatch(Some(&refused), &key(0)),
+        dispatch(Some(&refused), &StreamEngine::default(), &key(0)),
         Dispatch::Unavailable(Reason::RegionNotRoutable {
             region: "eu-west-1".to_string()
         })
@@ -1603,7 +1603,7 @@ fn another_engines_leader_in_an_unbridged_region_is_refused() {
 
     let same_region = engine_ingress(engine(), "us-west-2", true);
     assert!(matches!(
-        dispatch(Some(&same_region), &key(0)),
+        dispatch(Some(&same_region), &StreamEngine::default(), &key(0)),
         Dispatch::Forward { .. }
     ));
 }
