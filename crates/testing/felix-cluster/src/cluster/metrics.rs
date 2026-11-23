@@ -104,6 +104,41 @@ impl Cluster {
         }
     }
 
+    /// The broker that serves `stream`'s shard 0: placement's owner, or on
+    /// Raft the member the group elected. Placement names a Raft shard's
+    /// leader but cannot make the group elect it. After a failover the group
+    /// keeps its elected leader while a voter is down, so the two can differ
+    /// until the dead broker is back, and only the elected one serves.
+    pub async fn serving_leader(&self, stream: &str, timeout: Duration) -> Result<String> {
+        if self.config.raft_brokers() {
+            return self.wait_for_raft_leader(stream, timeout).await;
+        }
+        self.owner(stream).await
+    }
+
+    /// [`Self::serving_leader`] once it is a broker other than `dead`,
+    /// stepping placement meanwhile so a hybrid shard is promoted.
+    pub async fn promoted_leader(
+        &self,
+        stream: &str,
+        dead: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        let what = format!("a leader of {stream} other than {dead}");
+        wait::until_some(timeout, &what, || async {
+            self.place_shards().await;
+            let leader = if self.config.raft_brokers() {
+                self.wait_for_raft_leader(stream, Duration::from_secs(1))
+                    .await
+                    .ok()
+            } else {
+                self.owner(stream).await.ok()
+            };
+            leader.filter(|leader| leader != dead)
+        })
+        .await
+    }
+
     /// The Raft counterpart of [`wait_for_replication`](Self::wait_for_replication).
     /// Publishes nothing, so a test counting records is unaffected.
     ///
