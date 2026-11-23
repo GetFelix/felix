@@ -24,6 +24,13 @@ pub struct RaftSeed {
     pub epoch: u64,
     /// Copy id by node id, one per voter.
     pub members: BTreeMap<String, u64>,
+    /// For an epoch a re-form started, each placed broker's part of the
+    /// plan by node id. It is in the committed record, not only in the
+    /// metadata leader's memory, so a broker finds its start after a
+    /// leader change or restart. Empty at epoch 0.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schema(value_type = Object)]
+    pub starts: BTreeMap<String, felix_storage::raft_copy::WireStart>,
 }
 
 /// How each re-form of a Raft shard's group started its epoch, oldest
@@ -67,9 +74,36 @@ impl From<RaftEpochBase> for EpochBase {
     }
 }
 
+/// One group's re-form as `apply` writes it: the compare and swap that
+/// starts the next epoch from a plan (`MetaCommand::StartReformedEpoch`).
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct ReformEpochStart {
+    /// The stream or cache incarnation the plan was made for.
+    pub incarnation: u64,
+    /// The group epoch the plan was made at.
+    pub expected_epoch: u64,
+    /// The highest of the floor index and offset floor the plan read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_floor: Option<u64>,
+    pub base: RaftEpochBase,
+    /// Copy id by node id: the copies that hold the base.
+    pub voters: BTreeMap<String, u64>,
+    /// The brokers declared dead when the plan was made. The apply uses this
+    /// set, not the one it reads, so every member writes the same record.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub dead: BTreeSet<String>,
+    /// Each placed broker's part of the plan, written into the new epoch's
+    /// [`RaftSeed::starts`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schema(value_type = Object)]
+    pub starts: BTreeMap<String, felix_storage::raft_copy::WireStart>,
+}
+
 /// Why a re-form's next epoch was not written.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub(crate) enum ReformWriteError {
+    #[error("the plan is for incarnation {planned}, the shard is at {current}")]
+    OtherIncarnation { planned: u64, current: u64 },
     #[error("the group is at epoch {current}, not {expected}")]
     EpochMoved { expected: u64, current: u64 },
     #[error(transparent)]
@@ -141,6 +175,7 @@ impl ShardAssignment {
                     .collect()
             }),
             ordered: self.ordered_voter_sets(),
+            restore: None,
         })
     }
 
@@ -194,6 +229,7 @@ impl ShardAssignment {
                 incarnation,
                 epoch,
                 members: first.members.clone(),
+                starts: BTreeMap::new(),
             });
         }
     }
@@ -210,6 +246,44 @@ impl ShardAssignment {
             .filter(|bases| bases.incarnation == incarnation);
     }
 
+    /// [`Self::start_reformed_epoch`] from a re-form's command. A plan from
+    /// another stream or cache incarnation is refused: the new incarnation's
+    /// group starts at epoch 0 too, so the epoch alone would not tell them
+    /// apart.
+    pub(crate) fn start_reform(
+        &mut self,
+        start: &ReformEpochStart,
+    ) -> Result<(), ReformWriteError> {
+        if start.incarnation != self.incarnation {
+            return Err(ReformWriteError::OtherIncarnation {
+                planned: start.incarnation,
+                current: self.incarnation,
+            });
+        }
+        self.start_reformed_epoch(
+            start.expected_epoch,
+            &start.dead,
+            start.planned_floor,
+            start.base,
+            start.voters.clone(),
+        )?;
+        if let Some(seed) = &mut self.raft_seed {
+            seed.starts = start.starts.clone();
+        }
+        Ok(())
+    }
+
+    /// Whether this record is the one `start` writes: the next epoch with
+    /// its base and voters, for its incarnation.
+    pub(crate) fn started_by(&self, start: &ReformEpochStart) -> bool {
+        self.incarnation == start.incarnation
+            && self.group_epoch() == start.expected_epoch + 1
+            && self.raft_bases.as_ref().and_then(|held| held.bases.last()) == Some(&start.base)
+            && self.raft_seed.as_ref().is_some_and(|seed| {
+                seed.epoch == start.expected_epoch + 1 && seed.members == start.voters
+            })
+    }
+
     /// Start the next epoch of the group, as the re-form's epoch compare
     /// and swap writes it in one command: the next [`super::PlacedInEpoch`]
     /// record, `base` appended to the bases, `voters` as the new epoch's
@@ -224,10 +298,6 @@ impl ShardAssignment {
     /// end below its first index, which must be above the floor and every
     /// earlier epoch's, and an entry of a re-formed epoch it ends on must be
     /// at or past that epoch's first index.
-    #[allow(
-        dead_code,
-        reason = "the re-form command's epoch compare and swap (#2250) calls it"
-    )]
     pub(crate) fn start_reformed_epoch(
         &mut self,
         expected: u64,
@@ -314,6 +384,7 @@ impl ShardAssignment {
             incarnation: self.incarnation,
             epoch: current + 1,
             members: voters,
+            starts: BTreeMap::new(),
         });
         self.start_raft_ordered();
         Ok(())

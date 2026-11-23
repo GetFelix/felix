@@ -264,6 +264,37 @@ class Run(unittest.TestCase):
         self.assertEqual(res["verdict"], "FAIL")
 
 
+class IdleCell(Run):
+    def rows(self, raft_msg_s=1000, raft_cpu=50.0, form=(40, 90)):
+        out = []
+        for rnd in (1, 2, 3):
+            for side in ("hybrid", "raft"):
+                doc = {**self.ingest(raft_msg_s if side == "raft" else 1000, 500),
+                       **self.cpu(raft_cpu if side == "raft" else 50.0),
+                       "idle_groups": 2000, "idle_form_s": form[side == "raft"]}
+                out.append((rnd, "rf3-idle-tput", side, "ok", doc))
+        return out
+
+    def cell(self, res):
+        return next(c for c in res["cells"] if c["id"] == "rf3-idle-tput")
+
+    def test_matching_busy_shards_pass_and_formation_time_is_reported(self):
+        res = s.summarize(self.write(self.rows()))
+        self.assertEqual(self.cell(res)["verdict"], "PASS")
+        form = next(m for m in self.cell(res)["metrics"] if m["id"] == "idle_form")
+        self.assertFalse(form["gates"])
+        self.assertEqual(form["raft"]["mean"], 90)
+
+    def test_idle_groups_slowing_the_busy_shards_fail_the_cell(self):
+        # Raft loses throughput once the idle groups exist.
+        res = s.summarize(self.write(self.rows(raft_msg_s=700)))
+        self.assertEqual(self.cell(res)["verdict"], "FAIL")
+
+    def test_idle_groups_burning_cpu_fail_the_cell(self):
+        res = s.summarize(self.write(self.rows(raft_cpu=80.0)))
+        self.assertEqual(self.cell(res)["verdict"], "FAIL")
+
+
 class Cpu(Run):
     def cell_rows(self, hybrid, raft, cell="rf3-oncommit-tput"):
         rows = []

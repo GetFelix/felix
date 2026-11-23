@@ -241,7 +241,27 @@ where
                         )));
                     }
                     if first > tail {
-                        log.reset_to(first).await.map_err(io_error)?;
+                        // A re-formed voter's base ends at the tail and its
+                        // epoch starts at `first`: the offsets between are the
+                        // re-form's gap, so the base stays readable below it.
+                        // Anything else between could be records the leader
+                        // folded into a snapshot, and the log starts afresh.
+                        // The epoch's own first append never starts afresh
+                        // over records: no snapshot below the first index
+                        // carries a stream's base, so that would drop it.
+                        match reform_gap(log.dir(), tail, first).await? {
+                            GapCheck::Gap => log.open_gap(first).await.map_err(io_error)?,
+                            GapCheck::Other(Some(first_index))
+                                if first <= first_index && log.base_offset() < tail =>
+                            {
+                                return Err(invalid(format!(
+                                    "{}: the epoch's first append at {first} finds the log \
+                                     ending at {tail}, not at its base's end",
+                                    log.label()
+                                )));
+                            }
+                            GapCheck::Other(_) => log.reset_to(first).await.map_err(io_error)?,
+                        }
                     }
                 }
                 tail
@@ -596,6 +616,26 @@ impl Batch {
                 }
             })
     }
+}
+
+/// What an append past the tail finds against the copy's latest re-form.
+enum GapCheck {
+    /// `[tail, first)` is the gap the re-form left: the base ends at `tail`
+    /// and the epoch starts at `first`.
+    Gap,
+    /// Anything else, with the latest base's first index when there is one.
+    Other(Option<Offset>),
+}
+
+async fn reform_gap(dir: &std::path::Path, tail: Offset, first: Offset) -> io::Result<GapCheck> {
+    let dir = dir.to_path_buf();
+    let epoch = felix_common::blocking::spawn(move || crate::raft_copy::epoch_file::load(&dir))
+        .await
+        .map_err(io::Error::other)??;
+    Ok(match epoch.and_then(|epoch| epoch.bases.last().copied()) {
+        Some(base) if base.base_end() == tail && base.first_index == first => GapCheck::Gap,
+        base => GapCheck::Other(base.map(|base| base.first_index)),
+    })
 }
 
 /// A storage error as openraft takes it, keeping an I/O error's kind.

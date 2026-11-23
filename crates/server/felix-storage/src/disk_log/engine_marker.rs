@@ -77,7 +77,7 @@ fn write(dir: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Whether [`claim_for_raft`] has marked `dir`.
-pub(crate) fn claimed_for_raft(dir: &Path, label: &str) -> Result<bool> {
+pub fn claimed_for_raft(dir: &Path, label: &str) -> Result<bool> {
     marked_raft(dir, label)
 }
 

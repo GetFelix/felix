@@ -1,0 +1,1 @@
+The Raft parity matrix gains `rf3-idle-tput`, the batched RF 3 throughput cell with `IDLE_GROUPS` (2000) idle groups on the same brokers, created in bounded batches that must have leaders before the window opens, so idle groups costing the busy shards CPU or throughput fail the gate (#2331).

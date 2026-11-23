@@ -720,7 +720,8 @@ the groups of one broker or the whole cluster, and it has two steps:
   any group whose facts differ from the plan, so nothing is done that the
   operator did not see.
 
-**Running a plan.** `plan` is built; `apply` is not yet. Run
+**Running a plan.** `plan` and `apply` are built (see "Applying a plan"
+below). Run
 
 ```bash
 felixctl raft reform plan                          # every Raft shard
@@ -759,10 +760,280 @@ How the plan is made:
 - `GET /v1/raft/reform/plans/{id}` reads the plan: `surveying` until every
   shard settles, then `done`. `felixctl` polls it.
 
+A plan covers cache shards as well as stream shards: on a Raft cluster
+every cache shard runs a group (see "Serving a cache shard from its group"),
+and it loses its majority the same way. A broker reads a cache shard's copy
+under the cache store's root, where its member lives.
+
+**Applying a plan.** The epoch write, the stop, compare and start rounds
+(`store/reform/apply.rs`, and the broker's `stop_for_reform` and
+`start_reformed`), `felixctl raft reform apply` and `POST
+/v1/raft/reform/plans/{id}/apply` are built. A survey carries a `kind`
+(`survey`, `stop` or `start`) and so does its answer; a broker that predates
+the kind answers a stop as a read-only survey, without the kind, so the
+control plane ignores the answer and the stop round fails after 30 s with
+nothing written. The design:
+
+```bash
+felixctl raft reform apply <plan-id>                              # re-form every group the plan marks `reform`
+felixctl raft reform apply <plan-id> --accept-loss t1/ns/orders/2 # also a group that may lose acknowledged records
+```
+
+`apply` names a plan the operator has read. Each shard the plan marked
+`reform` goes through three more rounds on the same survey channel, so the
+control plane still never calls a broker:
+
+1. **Stop.** The control plane asks every listed broker to stop its copy.
+   A broker first checks again that its member leads no term of the epoch,
+   and refuses the stop if it does. Otherwise it stops the member, fsyncs
+   `raft-stopped` (`raft_copy::stop`) and answers with a fresh read of the
+   copy, taken after the stop.
+2. **Compare.** The control plane plans again from the post-stop reads. A
+   group whose new plan differs from the one the operator saw (source,
+   base, first index, voters, learners, mark or dropped records) is
+   skipped as `changed`: nothing is done that the operator did not see. A
+   group the operator did not name with `--accept-loss` whose plan needs it
+   is skipped too.
+3. **Write.** The control plane commits `StartReformedEpoch`: the shard
+   key, the incarnation and epoch the plan was made at, the floor it read,
+   the base, the voters and the dead set the plan used. It is a compare
+   and swap. The apply refuses another incarnation, another epoch, or a
+   floor raised since the plan, and the base checks of
+   `ShardAssignment::start_reformed_epoch` hold. It writes the next
+   `placed` record, appends the base to `raft_bases`, sets the voters as
+   the epoch's seed with each broker's part of the plan (`raft_seed.starts`)
+   and starts an empty ordered list, in one write the shard feed carries to
+   every broker. The command is level 51, so no member
+   that cannot apply it is ever asked to: a member below that level would
+   refuse the entry and keep the old epoch while the others start the next.
+4. **Start.** Each listed broker sees the new epoch in its shard feed and,
+   with its part of the plan from the seed, runs
+   `CopyRoot::start_stopped` on its stopped copy, then opens the member at
+   the new epoch. A fresh learner placed later gets its `raft-epoch`
+   before it can vote (#2882).
+
+A crash between the stop and the write leaves the copies stopped, and a
+second `apply` (or a new plan) finishes the group. The epoch write cannot
+land twice: the second one finds the group one epoch on, which the control
+plane reads as written when the record holds this plan's base and voters.
+So a request dropped while its write is in flight leaves nothing stuck: the
+write goes back to due and the next request writes it again or finds it
+written.
+
+**What a start needs.** A broker cannot plan on its own: the plan reads
+every broker's copy. So the epoch write records each broker's part of the
+plan in the seed's `starts`, keyed by node id, and the `start` survey also
+carries it in an optional `start` field, which a survey of any other kind
+leaves out, so an older broker and the `survey` and `stop` rounds see
+byte-identical JSON. The broker takes the seed's part first. Plans live only
+in the metadata leader's memory, so a leader change after the write would
+otherwise leave a broker that had not polled yet with no start and its copy
+stopped for good:
+
+- `role`: `voter` with the copy id the plan named, or `learner`. A
+  voter whose directory now holds another copy id does not start; it waits
+  stopped, and the shard stays at `starting`.
+- `kept`: the kept directory the base is read from, sent only to the
+  source broker when the plan's source is a kept copy.
+- `floor`: the plan's highest floor with its trim's headers, raised into
+  every copy's `raft-floor`.
+- `needs_accept_loss` and `accepted`: whether the plan needs the loss
+  accepted and whether the operator named the shard. A start with the
+  first and not the second is refused, as `AcceptLoss::of` refuses it.
+
+The epoch's bases come from the shard feed, not the survey: the `placed`
+record the epoch write made. The broker starts only when that record's
+epoch is the seed's or the survey's epoch, so a survey cannot start a copy
+into an epoch the store did not record.
+
+**A learner always empties.** A learner keeps a prefix only where its terms
+match the base's at every index (`base_terms`). The reports carry terms at
+the probed indexes only, so the control plane does not know where each of
+the base's terms starts, and a prefix check against a guess could keep a
+divergent log. The start survey therefore sends no `base_terms`, and every
+learner holding a record empties its log and catches up from the new
+leader by snapshot. It costs a transfer, never a disagreement at the base.
+Sending exact terms needs the source to report where each of its terms
+starts, which is left for later.
+
+**A voter's snapshot at the gap's end is a fold.** A voter's purged id sits
+at `first_index - 1`, so the member applies nothing at or below it: the
+snapshot stored there must hold the state machine as of the base, not the
+empty data a switch from the hybrid writes. A stream shard's snapshot holds
+its group table and the cuts it must still refuse; a cache shard's holds
+the cache. The broker builds it like a purge snapshot
+(`felix_replication::raft::GapSnapshot`): the copy's stored snapshot, with
+every entry after it through the base's last index applied, and the new
+voters (the record's seed) as the membership at the gap's end. It runs once
+the voter's log ends at the base, after a kept directory is copied in and
+anything past the base is cut, so it never folds an entry the re-form
+drops; a stored snapshot past the base is refused. The state machine is
+deterministic and every voter holds the same base, so every voter stores
+the same state whatever snapshot its fold began from, and a learner that installs it from the leader gets the
+same state.
+
+**The marks follow the start.** A start can leave a log below its marks: a
+learner empties, a voter cuts what it held past the base. The copy's next
+open would then rotate it for a log below its marks, and a voter rotated
+to a new copy id is no longer the voter the seed names. So before
+`start_copy` runs the broker lowers the copy's log mark to the base's last
+entry for a voter and to nothing for a learner, as a truncation lowers the
+mark before it cuts. A voter's log after the start ends at its purged id
+in the base's term, at or above that mark. The vote mark is untouched.
+
+**Crash points.** Each step is synced before the next, and the start is
+resumed from the feed, not from the survey answer. The feed carries each
+broker's part of the plan, so none of these needs the plan that started it:
+
+- After the stop, before the write: the copies stay stopped. A second
+  `apply` (or a new plan) re-reads them.
+- After the write, before a broker sees it: the feed carries the epoch on
+  the next pass; the broker starts then. A metadata leader change or restart
+  here drops the plan and its `start` survey, and changes nothing: the
+  broker's part of the plan is in the record the new leader serves.
+- After the mark is lowered, before `reform-building`: the mark is below
+  the log, which opens. The start is run again from the feed, since the
+  copy's `raft-epoch` is still the old one.
+- Under `reform-building`: the directory does not open and no plan reads
+  it. The next pass runs the start again, which redoes every step.
+- After `reform-building` is removed, before the member opens: the copy's
+  `raft-epoch` is the new one, so the stop marker is spent and the open is
+  an ordinary one.
+- After the member opens, before the answer reaches the control plane: the
+  `start` survey is asked again, and answered once the copy's `raft-epoch`
+  names the new epoch. After a metadata leader change nothing asks; the
+  plan's view then reads 404 and the epoch shows in the shard record.
+
+**A restore from a backup point is a re-form.** A whole-cluster restore
+rotates every broker's storage id, so every Raft copy comes back with a new
+copy id and no vote, and the shard does not form again (#2620). The restore
+runs as a re-form from the backup point rather than as a separate
+mechanism:
+
+- `felixctl backup-point` reads each shard's committed offsets from its
+  leader, and the operator copies the leaders' shard directories while they
+  run. Every broker is asked, since the elected leader need not be the one
+  placement names. The point is read only from a member serving its term
+  at the newest term any member reports: a leader at an older term may be
+  deposed without knowing it, and a new one knows the commit index only
+  once it has committed in its own term. The point is one past the furthest
+  entry of that term the leader acknowledged, which is its commit index or
+  past it: a `Quorum` write on a `Periodic` stream is answered on a written
+  majority, and a `Leader` write on the lease, before the commit reaches
+  it. The point is the base: every write acknowledged before it was read is
+  below it, and everything below it is on the leader's log and so in the
+  copied directory. A written-majority entry is in every later leader's
+  log, so a leader change before the copy cannot cut it; a lease entry
+  can be, as the `Leader` level allows. The point records the term of the
+  entry below it, and the restore refuses that shard when the copy does not
+  reach the point or holds an entry of another term there, which is what a
+  later leader leaves after it overwrote the lost entry.
+- `felix-broker restore-point` rotates the storage id and cuts each
+  restored leader copy back to the point. The copy's saved commit is set to
+  the point, raised if it was below: the copy may have saved its commit
+  before the acknowledged entries committed, or a follower's flush held it
+  back, and the operator chose to restore that state. The broker's next open of the
+  shard rotates the copy and keeps the cut log in `.kept` as `restore`,
+  where the plan reads it. A follower copy is removed, not restored.
+- On start the shards wait for a re-form. `felixctl raft reform plan
+  --restore-point FILE` names the point, and `plan` reads each restored
+  leader copy as the only copy holding the base and every other broker as
+  empty, so the plan re-forms from the restored copy. It is marked: the
+  votes of the rotated copies are unknown, so applying it needs
+  `--accept-loss`, and what it loses is exactly what was acknowledged after
+  the point. A shard the point does not name, names at another incarnation,
+  or whose base does not end at the point's offset is blocked with the
+  reason: below the point the base would drop acknowledged records, above
+  it keep ones the point left out.
+- The new epoch's first index is
+
+  ```text
+  max(2^14 * plan time + offset gap, point, restored floor + 1,
+      restored reservation + 1)
+  ```
+
+  together with the other bounds every re-form takes. The plan time is the
+  control plane's wall clock in Unix milliseconds, stamped once when the
+  plan is made, so the re-plan after the stop reaches the same index. The
+  offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also needs
+  `--accept-short-gap`, which also takes a plan whose line plus gap falls
+  below the point's end, as when the control plane's clock is far behind;
+  otherwise the plan is blocked). The point's `taken_at_millis` comes from the
+  clock of the host that ran `felixctl backup-point`; it is shown in the
+  plan and never used for the index.
+
+  The restored files cannot tell three cases from a clean restore: offsets
+  acknowledged after the directory copy and the control-plane export,
+  an offset acknowledged before the copy when the copied leader stepped
+  down after the point and fell behind its own reservation, and offsets
+  an earlier restore, from this backup or any other, acknowledged. Two
+  restores from one backup read the same copy, floor, reservation and
+  bases, so the index cannot come from them.
+
+  It comes from a time line instead. The assumption: a shard gives out at
+  most 2^13 offsets per millisecond (8 per microsecond, half the line's
+  slope R = 2^14), counting every offset a re-form skips. Epoch 0 starts
+  near 0, far below the line. Every restored epoch starts on the line at
+  its plan time, and the line rises twice as fast as the epoch can give
+  out offsets, so at any time t every offset ever given out is below
+  `R * t + gap` plus what skew added. A later restore planned at t2 starts
+  at `R * t2 + gap`, past all of them. Skew is what is left: if the
+  control-plane node that planned the earlier restore ran S ahead and the
+  one planning the later one (another leader, after a leader change) runs
+  S behind, the later restore needs `(R - R/2) * Δ > 2 * R * S` of true
+  time Δ between them, that is Δ > 4 S. With clocks within a minute, that
+  is four minutes between restores; stopping every broker, restoring the
+  files and planning again takes longer.
+
+  The gap is added to the line, never to the point: a backup taken from a
+  restored epoch ends near the line, and adding the gap past its end would
+  start the next epoch a gap above the line, where the lead shrinks only
+  at R/2 per millisecond (about 37 hours for 2^40) and an older backup
+  restored before then lands below it. The first index costs about 2^54
+  at today's Unix time and stays below 2^63 for thousands of years; a
+  plan time whose index would overflow is refused.
+
+  The first index is written in the epoch's base before any copy opens it,
+  so a crash mid-restore and every later re-form keep it. The control plane
+  also refuses to apply a plan made before another plan whose epoch write
+  for the same shard went through (state `stale`). The write itself
+  compares the epoch, so this only matters when the record went back, as
+  when the metadata is restored while the leader still holds the older
+  plan; plans live in the leader's memory, so a new leader starts clean.
+  `FelixRaftRestore.tla` checks a single restore: with no gap the first two
+  cases reuse an offset (`FelixRaftRestoreAfterBackup`,
+  `FelixRaftRestoreLeaderMoved`), a gap at least as large as the offsets
+  acknowledged after the point closes both (`FelixRaftRestoreGap`,
+  `FelixRaftRestoreGapShort`). The code's first index is the larger of the
+  point's end and the time line plus the gap, so repeated restores rest on
+  `FelixRaftRestoreRepeated`, not on this model. `FelixRaftRestoreRepeated.tla` checks two backups and three
+  restores, each planned on a clock off by up to a tick: no offset is given
+  out twice (`FelixRaftRestoreRepeated`); without the line a second restore
+  from one backup reuses one (`FelixRaftRestoreRepeatedNoTime`), and so does
+  adding the gap past the backup's end (`FelixRaftRestoreRepeatedEndGap`).
+- What this does not cover: a shard giving out offsets faster than 2^13
+  per millisecond sustained, or two restores closer together than four
+  times the skew between the clocks that planned them. Either can give an
+  offset out again, and readers who kept offsets past the point must then
+  treat them as reassigned.
+- The gap costs no space. The first append past it starts a segment whose
+  header carries `FOLLOWS_GAP` and the low 32 bits of where the gap starts
+  (`docs/storage-format.md`), so neither the segments nor the sparse
+  indexes grow with it.
+
+**An RF 1 copy restored alone.** An RF 1 group re-forms like any other: its
+only copy is the source and the only voter, and the plan is unmarked when
+the copy kept its records. A rotated RF 1 copy restarting as its own voter
+without the command (the exception the decision on #2167 names) is not
+built. The command covers it, and an automatic path would need its own
+proof that no newer copy exists.
+
 Plans live on the metadata Raft leader, in memory, for its term. A plan
 asked through a follower is forwarded to the leader, and so are broker
 answers. A leader change drops every plan (the read answers 404 with "plan
 again"), and since a plan changes nothing, planning again is always safe.
+An applied plan whose epoch was written needs nothing from its plan after
+that: each broker starts from the record.
 A control plane without the routes answers 404, and one whose metadata
 leader runs a version without them answers 409.
 
@@ -946,7 +1217,11 @@ and the plan refuses with a record in the gap.
 
 A voter whose base is in a kept directory, the records a rotation moved
 aside, rebuilds its log from there: each segment and the durable mark are
-copied in under a temporary name and synced, then renamed into place. The
+copied in under a temporary name and synced, then renamed into place. So
+are the kept log's forgotten batches (`producers.forgotten`) and carried
+floor (`raft-floor`), which no record holds; the voter's own are removed
+first, since they describe the log being replaced. Without that a re-send
+of a batch the kept log forgot would be taken as new. The
 kept directory is only read, and read whole before the voter's own log is
 touched, so a missing or damaged one fails the start with that log intact. A voter holding records past the base cuts
 them. When its saved commit covers any of them (for a copy rebuilt from a kept
@@ -975,7 +1250,9 @@ record past the base's last index, no purged id, and every record in the
 base's term at its index, none in a gap an earlier re-form left. Anything else empties it, rather than cutting it
 to the part that agrees, and it catches up from the leader by snapshot. An
 empty learner's saved commit is set to zero, so it never counts entries it
-does not hold.
+does not hold. Its forgotten batches and carried floor go with its records:
+a snapshot install merges into them rather than replacing them, so a cut
+only its old log made would refuse a re-send its voters take.
 
 Two promises the vouch rule depends on are checked before a start
 finishes, and a start that cannot keep them fails (#2640):
@@ -1206,6 +1483,9 @@ Questions, 10.
 **After a re-form the group may have one voter.** If only one report holds
 the base, that copy is the only voter and the rest are learners. The leader
 promotes each learner by a membership change as soon as it has caught up.
+A cache learner catches up from the leader's snapshot. A stream learner
+cannot yet: the snapshot at the gap's end carries no records, so the learner
+refuses it and stays a learner (#3005).
 Until the voters are again a majority of the placed set, the control plane
 shows the shard as under-replicated and does not count it as RF 3, and a
 `Quorum` acknowledgement rests on as many copies as there are voters,
@@ -2046,7 +2326,9 @@ behind the `raft` cargo feature of `felix-replication`, which the broker
 service turns on by default. A broker with a node id runs it unless
 `FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
 the internal listener or durable storage. A standalone broker, with no node
-id, does not run it.
+id, does not run it until single-voter Raft (#3000) lands. The cluster
+test suites run on Raft by default too; the hybrid runs report only (see
+`docs/hybrid-retirement.md`).
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:
@@ -5486,6 +5768,12 @@ A write passing either field has it replaced by the stored one, and a new
 stream incarnation starts with neither. Below level 47 neither is written:
 a group whose first target was stored there has no seed, so its plans stay
 marked and `apply` needs the operator to accept the loss.
+
+From level 51 the re-form's write is its own command,
+`StartReformedEpoch`, which carries the plan's incarnation, epoch, floor,
+base, voters and dead set and applies `ShardAssignment::start_reform`. Every
+member decides it from the record and the command alone, and the command
+is refused below level 51.
 
 From level 47 a copy id report also carries the group epoch the copy runs
 (`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records

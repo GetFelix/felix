@@ -795,6 +795,33 @@ impl LogCache {
         crate::disk_log::engine_marker::claimed_for_raft(&dir, &layout::shard_label(&key)).map(Some)
     }
 
+    /// Where a Raft member of a cache shard at `incarnation` keeps its copy,
+    /// for a re-form survey to read. Marks and creates nothing. See
+    /// [`crate::DiskLogProvider::raft_dir`].
+    pub fn raft_dir(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        incarnation: u64,
+    ) -> Result<Option<PathBuf>> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: cache.to_string(),
+            shard,
+        };
+        let dir = layout::incarnation_dir(&self.root, &key, incarnation);
+        Ok(
+            match self.claimed_for_raft(tenant, namespace, cache, shard, incarnation)? {
+                Some(true) => Some(dir),
+                Some(false) if !crate::fs::try_exists(&dir)? => Some(dir),
+                _ => None,
+            },
+        )
+    }
+
     /// Close one cache shard's log and forget it, for a shard this broker no
     /// longer holds. Everything accepted is flushed first.
     ///

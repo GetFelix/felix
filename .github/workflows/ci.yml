@@ -555,7 +555,7 @@ jobs:
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
   cluster:
-    name: Cluster tests (${{ matrix.suite }}${{ matrix.engine == 'raft' && ', raft' || '' }})
+    name: Cluster tests (${{ matrix.suite }}${{ matrix.engine == 'hybrid' && ', hybrid' || '' }})
     needs: changes
     if: needs.changes.outputs.cluster == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
@@ -566,17 +566,10 @@ jobs:
       fail-fast: false
       matrix:
         suite: [routing, failures, history, rest]
-        # The shard engine a suite runs on (FELIX_TEST_SHARD_ENGINE). Hybrid
-        # unless listed; a suite listed here as raft also keeps its hybrid
-        # run until the hybrid is deleted (#2982).
-        engine: [hybrid]
-        include:
-          - suite: rest
-            engine: raft
-          - suite: routing
-            engine: raft
-    # A suite moving to Raft reports until its failures are triaged.
-    continue-on-error: ${{ matrix.engine == 'raft' }}
+        # The shard engine a suite runs on (FELIX_TEST_SHARD_ENGINE). Raft
+        # gates; the hybrid runs report only, until the hybrid is deleted.
+        engine: [raft, hybrid]
+    continue-on-error: ${{ matrix.engine == 'hybrid' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7

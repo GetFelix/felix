@@ -123,6 +123,11 @@ pub struct ShardAssignment {
     /// that predates them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_bases: Option<RaftBases>,
+    /// The voters a re-form started the group's epoch with. A copy the
+    /// re-form starts as a voter names them in its snapshot at the gap's
+    /// end. Absent from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_seed: Option<RaftVoters>,
 }
 
 /// The epoch half of the control plane's record of the brokers placed in
@@ -171,6 +176,10 @@ pub struct RaftVoters {
     pub epoch: u64,
     /// Copy id by node id.
     pub members: std::collections::BTreeMap<String, u64>,
+    /// On a re-formed epoch's seed, each placed broker's part of the plan by
+    /// node id, as the epoch write committed it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub starts: std::collections::BTreeMap<String, felix_storage::raft_copy::WireStart>,
 }
 
 /// A Raft shard's target as the control plane sends it.
@@ -336,6 +345,7 @@ impl PreviousSet {
             raft_formed: None,
             raft_voters: None,
             raft_bases: None,
+            raft_seed: None,
             placed: None,
         }
     }

@@ -707,6 +707,7 @@ async fn a_reform_plan_asked_through_a_follower_is_the_leaders() {
     let ReformReply::Created { plan_id } = follower
         .reform(ReformRequest::Create {
             scope: ReformScope::Cluster,
+            restore: None,
         })
         .await
         .expect("create")
