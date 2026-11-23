@@ -13,6 +13,7 @@ fn elections(most: usize) -> Elections<Member> {
         election_max: 2000,
         lease: 1500,
         max_elections_at_once: most,
+        commit_hold: Duration::from_millis(1),
     };
     Elections::new(&timers, Arc::default())
 }
@@ -504,6 +505,7 @@ fn a_vote_save_under_way_is_counted_for_its_member() {
             election_max: 2000,
             lease: 1500,
             max_elections_at_once: 1,
+            commit_hold: Duration::from_millis(1),
         },
         own: Arc::clone(&own),
     };

@@ -381,3 +381,135 @@ fn the_totals_never_unbalance_a_raft_stream() {
 
     assert_eq!(plan.moves().count(), 0, "{plan:?}");
 }
+
+/// [`member_of`] for shard `shard` of the cache `sessions`.
+fn cache_member_of(shard: u32, leader: &str) -> ShardAssignment {
+    let mut assignment = member_of(shard, leader);
+    assignment.key.stream = "sessions".to_string();
+    assignment.key.kind = ShardKind::Cache;
+    assignment
+}
+
+#[test]
+fn a_drain_moves_a_raft_cache_leader_in_one_write() {
+    let caches = vec![super::caches::replicated_cache("sessions", 2, 3)];
+    let existing: Vec<ShardAssignment> = (0..2)
+        .map(|shard| cache_member_of(shard, "broker-a"))
+        .collect();
+    let mut nodes = live(&ABC);
+    nodes[0].status.lifecycle = NodeLifecycle::Draining;
+
+    let plan = plan_with(&[], &caches, &nodes, &existing, &NothingCaughtUp, raft());
+
+    // Not a staged successor: the group keeps its members.
+    let written = leader_writes(&plan, &existing);
+    assert_eq!(written.len(), 2, "{plan:?}");
+    assert_eq!(leaders_on(&written, "broker-a"), 0);
+}
+
+#[test]
+fn a_hybrid_move_left_on_a_raft_cache_shard_is_dropped() {
+    let caches = vec![super::caches::replicated_cache("sessions", 1, 3)];
+    let mut staged = cache_member_of(0, "broker-a");
+    staged.replicas.push("broker-d".to_string());
+    staged.successor = Some("broker-d".to_string());
+    staged.move_reason = Some(crate::model::MoveReason::Drain);
+    let nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+
+    let plan = plan_with(
+        &[],
+        &caches,
+        &nodes,
+        std::slice::from_ref(&staged),
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    match &plan.shards[0].decision {
+        Decision::Move(MoveStep::RaftMoveDropped, written) => {
+            assert_eq!(written.successor, None);
+            assert_eq!(set_of(written), set_of(&cache_member_of(0, "broker-a")));
+        }
+        other => panic!("expected the move dropped, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_operator_moves_a_raft_cache_leader_only_to_a_member() {
+    let caches = vec![super::caches::replicated_cache("sessions", 1, 2)];
+    let mut existing = cache_member_of(0, "broker-a");
+    existing.replicas = vec!["broker-b".to_string()];
+    let existing = vec![existing];
+    let nodes = live(&ABC);
+    let catalog = Catalog {
+        streams: &[],
+        caches: &caches,
+        nodes: &nodes,
+        existing: &existing,
+        caught_up: &NothingCaughtUp,
+        policy: MovePolicy {
+            max_concurrent: 0,
+            ..raft()
+        },
+    };
+
+    assert_eq!(
+        start_move(&catalog, &existing[0].key, "broker-c").unwrap_err(),
+        Refused::NotAMember("broker-c".to_string())
+    );
+    let step = start_move(&catalog, &existing[0].key, "broker-b").expect("moves");
+    assert_eq!(
+        step.step,
+        MoveStep::RaftLeader {
+            from: "broker-a".to_string(),
+            to: "broker-b".to_string()
+        }
+    );
+    assert_eq!(step.assignment.raft_target, existing[0].raft_target);
+}
+
+/// [`a_drain_on_a_raft_cluster_finishes_through_the_store`] for a cache.
+#[tokio::test]
+async fn a_cache_drain_on_a_raft_cluster_finishes_through_the_store() {
+    let store = super::reconciler::cluster(&ABC)
+        .await
+        .with_shard_engine("raft");
+    store
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("drop the one-copy stream");
+    store
+        .create_cache(super::caches::replicated_cache("sessions", 3, 3))
+        .await
+        .expect("cache");
+    let policy = MovePolicy {
+        settle_millis: None,
+        ..MovePolicy::default()
+    };
+    let liveness = Default::default();
+    reconcile_once(&store, &liveness, policy.clone()).await;
+    let placed = store.list_shard_assignments().await.expect("list");
+    assert_eq!(placed.len(), 3);
+    assert!(placed.iter().all(|a| a.key.kind == ShardKind::Cache));
+    assert!(placed.iter().any(|a| a.leader == "broker-a"), "{placed:?}");
+
+    store
+        .set_node_lifecycle("broker-a", NodeLifecycle::Draining)
+        .await
+        .expect("drain");
+    let outcome = reconcile_once(&store, &liveness, policy.clone()).await;
+    assert_eq!(outcome.failed, 0);
+    assert_eq!(outcome.waiting, 0, "{outcome:?}");
+
+    let after = store.list_shard_assignments().await.expect("list");
+    assert_eq!(leaders_on(&after, "broker-a"), 0, "{after:?}");
+    for assignment in &after {
+        let before = placed.iter().find(|a| a.key == assignment.key).unwrap();
+        assert_eq!(set_of(assignment), set_of(before));
+        assert_eq!(assignment.successor, None);
+    }
+}

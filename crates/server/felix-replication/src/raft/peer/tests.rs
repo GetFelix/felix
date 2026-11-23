@@ -524,7 +524,6 @@ async fn answering_refuses_an_append_or_written_in_another_brokers_name() {
 /// term. A member of the same message is answered.
 #[tokio::test]
 async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
-    use openraft::async_runtime::watch::WatchReceiver;
     let root = tempfile::tempdir().expect("dir");
     let book = Book::default();
     let broker = Broker::start("a", &book, true).await;
@@ -543,8 +542,14 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
         .expect("initialize");
     let member = broker.runtime.group(&shard()).expect("group");
     // The member campaigns on its own meanwhile, so only the outsider's
-    // term and name are looked for.
-    let vote = || member.raft().metrics().borrow_watched().vote.clone();
+    // term and name are looked for. Asked of the core, which has handled
+    // every earlier message by then: its metrics may still be on the way.
+    let vote = || async {
+        let state = member
+            .raft()
+            .with_raft_state(|state| state.vote_ref().clone());
+        state.await.expect("core")
+    };
     let ask = |name: &str, append: bool| {
         let sender = MemberId::new(name, 1);
         let leader = openraft::impls::leader_id_std::LeaderId::new(100, sender);
@@ -573,7 +578,7 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
             panic!("expected a refusal");
         };
         assert!(why.contains("not a member"), "{why}");
-        let now = vote();
+        let now = vote().await;
         assert!(term_of(&now) < 100, "an outsider raised the term: {now:?}");
         assert_ne!(now.leader_id().node_id().broker.as_ref(), "c", "{now:?}");
     }
@@ -584,7 +589,11 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
     wire::decode_reply(reply)
         .expect("reply")
         .expect("a member's append is answered");
-    assert_eq!(term_of(&vote()), 100, "a member's higher term is taken");
+    assert_eq!(
+        term_of(&vote().await),
+        100,
+        "a member's higher term is taken"
+    );
     // A member that missed the change adding `c` hears from it once the
     // control plane places `c` in the group, and not from the epoch's
     // record alone.

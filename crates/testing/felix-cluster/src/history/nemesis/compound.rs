@@ -301,8 +301,8 @@ pub(super) async fn return_control_plane(
     if started_early {
         match cluster.await_node_ready(node).await {
             Ok(()) => return Ok(()),
-            // An early start that lost a port race has exited, and only
-            // `restart_node` retries that.
+            // An early start that exited for another reason is started again
+            // below.
             Err(_)
                 if !cluster
                     .node(node)

@@ -676,6 +676,12 @@ fn timers() -> RuntimeConfig {
             backoff_cap: Duration::from_secs(5),
             ..felix_replication::raft::Placement::default()
         },
+        // `0` runs these tests without group threads, as a broker under
+        // four cores does.
+        group_threads: std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
+            .ok()
+            .and_then(|threads| threads.parse().ok())
+            .unwrap_or(RuntimeConfig::default().group_threads),
         ..RuntimeConfig::default()
     }
 }

@@ -3,27 +3,27 @@
 This page is the design for track 6 of the one-engine plan (issue #2167):
 delete the bespoke shard replication protocol, which the other pages call
 "the hybrid", so that 0.8 has one engine (a Raft group per shard, through
-openraft) and one model set (`FelixRaft`). Nothing here is built yet.
+openraft) and one model set (`FelixRaft`). Raft is already the default
+engine on main; the deletion is not built yet.
 
 Read [`per-shard-raft.md`](per-shard-raft.md) first. It defines the Raft
-engine, the switch of a shard from the hybrid to Raft, and the pull requests
-of track 4 that this page orders itself against. The decisions both pages
+engine and the pull requests of track 4 that this page orders itself
+against. The decisions both pages
 rest on are in [`replication-engine.md`](replication-engine.md).
 
 Line counts and paths are as of the commit that added this page.
 
 ## Summary
 
-- The hybrid leaves in three steps: Raft becomes the default while the
-  hybrid still ships, then the hybrid is compiled out, then it is deleted.
-  No step ships a code path that CI no longer runs.
-- 0.8.0 contains no hybrid code, so it cannot switch a hybrid shard. The
-  last build that holds both engines is released as the **bridge build**. A
-  0.7 cluster upgrades to the bridge build, switches every shard, and then
-  upgrades to 0.8.0. This is the main open call (Questions, 1).
-- A new fleet feature, `hybrid_retired`, is the latch. It takes effect only
-  if no shard is on the hybrid at the log position where it is applied.
-  0.8.0 refuses a cluster without it.
+- There is no upgrade from 0.7 to 0.8. A 0.8 cluster starts fresh, so no
+  build has to switch a running hybrid shard to Raft, and nothing has to
+  ship both engines.
+- Raft is the default shard engine on main. `FELIX_SHARD_ENGINE` unset
+  means Raft. The hybrid is frozen: no fixes, no perf work. It stays
+  selectable (`FELIX_SHARD_ENGINE=hybrid`, deprecated) only so its tests
+  keep running until it is deleted.
+- Then the hybrid is deleted, in the pull requests below, in dependency
+  order. 0.8.0 contains no hybrid code.
 - Deleting is about 21,000 lines of non-test replication code, 2,000 lines
   of storage code, 8 TLA+ specs and 426 configs. What cannot simply be
   deleted is listed under "Gaps".
@@ -136,21 +136,19 @@ forward one rule at a time. In 0.8.0 each is always on, cannot be turned
 off, and its name is never used again:
 
 `generation_start`, `majority_ack`, `lease_free_reads`, `fenced_caches`,
-`joint_fence`, `replica_election`, the report markers `peer_election`,
-`start_holders`, `fences_every_change` and `non_voting`, and the two that
-exist only for the move to Raft, `shard_raft` and `hybrid_retired`.
+`joint_fence`, `replica_election`, and the report markers `peer_election`,
+`start_holders`, `fences_every_change` and `non_voting`.
+`record_generations` stays a real feature of the format.
 
-A 0.8.0 broker still reports the names, so a bridge-build control plane
-that checks them accepts it during the rolling upgrade. `record_generations`
-stays a real feature of the format.
+`FELIX_SHARD_ENGINE` goes too, with the cluster identity's
+`shard_engine` field kept and always `raft`, so a control plane and a
+broker still refuse each other if one predates the deletion.
 
 ### Wire
 
 **Client protocol.** Nothing is removed. No frame flag or negotiated bit
 exists for the hybrid, and `ORIGINAL_V1_FLAGS` is not touched. The
-`generation` field of redirects carries the Raft term. It keeps rising
-across the switch because Raft elects above the sealed generation. The
-error codes `NotLeader`, `QuorumTimeout` and `LeadershipLost` and the
+`generation` field of redirects carries the Raft term. The error codes `NotLeader`, `QuorumTimeout` and `LeadershipLost` and the
 `shard_unavailable` reason `fenced` keep their values and meanings.
 
 **Internal protocol.** `crates/protocol/felix-wire/src/internal/`. Kinds are
@@ -243,90 +241,32 @@ The rule: a code path is in a released artifact only while CI runs it.
 
 ```mermaid
 flowchart LR
-  A[Hybrid ships, Raft behind a cargo feature] -->|gate passes #2243| B[Both engines ship, Raft is the default]
-  B -->|bridge build released| C[Hybrid compiled out]
-  C --> D[Hybrid deleted]
-  D --> E[0.8.0]
+  A[Raft is the default, hybrid frozen and deprecated] -->|gates below pass| B[Hybrid deleted, in dependency order]
+  B --> C[0.8.0, Raft only]
 ```
 
-| Phase | Starts when | What ships | What CI runs |
-| --- | --- | --- | --- |
-| 1. Hybrid ships | Today | The hybrid. Raft is behind a cargo feature no release enables (#2227 to #2250) | Everything on the hybrid. Raft jobs build with the feature |
-| 2. Both ship | The gate (#2243) passes and PR 1 below merges | Both engines. A new cluster starts on Raft. An existing cluster stays on the hybrid until an operator finalizes `shard_raft` | Every simulator mode and history nemesis on both engines, and the switch under faults (#2242) |
-| 3. Hybrid compiled out | The bridge build is released from phase 2 and PR 3 merges | Raft only | Raft only. Hybrid tests are behind the same feature as the code |
-| 4. Hybrid deleted | PRs 4 to 9 | Raft only | Raft only |
+| Phase | What main has | What CI runs |
+| --- | --- | --- |
+| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, shares no shard and keeps its durable streams on the hybrid path, with a warning, until the hybrid is deleted. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` and `felix-cluster up` stay on the hybrid path until keyed cache watches work on Raft (#2792, #2985) | Raft jobs, and the existing hybrid tests, which pin the hybrid explicitly |
+| 2. Hybrid deleted | Raft only, one pull request at a time (see "Pull request split"). A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups or refuses durable streams, decided in #2986 | Raft only. Each pull request removes the hybrid tests for the code it removes |
 
-The one-way points, in order:
+The deletion pull requests start only when all of these hold:
 
-1. **Per shard: the control plane's compare-and-swap in the switch**
-   (`per-shard-raft.md`, "Moving a shard from the hybrid to Raft"). Before
-   it the shard is a closed hybrid shard and can reopen. After it no broker
-   runs the hybrid for that shard.
-2. **Per cluster: finalizing `shard_raft`.** Shards start switching, and a
-   build without the Raft engine can no longer join. From the log entry
-   that enables it, every shard record is created on Raft ("Creating
-   shards after `shard_raft`" below). So after this entry the number of
-   hybrid shards only falls.
-3. **Per cluster: finalizing `hybrid_retired`.** The condition "no shard is
-   on the hybrid" is evaluated when the entry is applied, on every member,
-   from the state at that log position. If a hybrid shard exists there the
-   entry changes nothing and the operator is told which shards remain.
-   Today's finalize checks run when the operator asks
-   (`services/felix-controlplane-service/src/cluster/fleet.rs`,
-   `check_prerequisites`). That is sound for conditions that only grow. It
-   is not enough here: a shard create could commit between the check and
-   the latch. After it the control plane refuses every hybrid write, nothing
-   creates a hybrid shard, and a build without the hybrid can join.
-4. **For the repository: PR 3.** Main can no longer run a hybrid shard. A
-   fix to the switch after this goes to the bridge build's own branch.
-
-### Creating shards after `shard_raft`
-
-The rule is on the state machine, not on each caller. One function inserts
-a shard record, and it reads the enabled set at the entry being applied:
-with `shard_raft` enabled the record is created on Raft, whoever proposed
-it and on whatever build. Every path that makes a shard record goes
-through it:
-
-- creating a stream,
-- creating a cache,
-- the group and dead-letter logs a stream gets,
-- growing a stream's shard count,
-- the fresh set that `placement abandon` writes.
-
-A path that is found to insert a record any other way is a bug in the
-bridge build. After the latch nothing creates a hybrid shard, and a command
-that would write hybrid state applies as a no-op.
-
-These are decisions made in apply, so every member must make them alike,
-including two patch builds of the bridge. They are tied to a metadata
-level, as the control plane does for every other change to what apply
-does: `shard_raft` and `hybrid_retired` can be proposed only when every
-member is at or above that level, and a member below it is held, not fed.
-This is the concern the comment on `check_prerequisites` states: a member
-applying a command must not decide differently from one on another build.
-
-PR 3 merges only when all of these hold:
-
-- The gate on the engine page has passed and its write-up is merged.
-- The bridge build is released, from a commit where one 2000-seed sweep
-  per mode passed on each engine and the switch sweep passed.
+- The parity items on the Raft gate (#2243) are closed: every hybrid
+  feature works on Raft.
+- The Raft disk-fault simulator modes (#2954) are green.
+- Raft performance matches the v0.7.0 release binary on the gate's cells
+  (#2646). The comparison is against v0.7.0, not against the hybrid on
+  main, which is frozen.
 - The Raft models for reads, sessions and idempotent publish pass (Gaps, 1
-  and 2). They are needed before the bridge build is released, because
-  that is when Raft first ships.
-- The upgrade test passes: a cluster started on the latest 0.7 release,
-  with data, rolled to the bridge build, switched under faults, latched,
-  then rolled to the candidate. It includes the two crash points under
-  "What 0.8.0 finishes".
-- The project's own long-running clusters have switched and latched on the
-  bridge build.
+  and 2), so no client property loses its model when `FelixShard` goes.
 - Every row of the hand-off table has its Raft check merged, or is marked
   retired.
 
 The specs go last among the deletes. A model of code that is gone costs CI
 time. Code without its model is the thing to avoid, and it cuts both ways:
 a client property that is modelled only on `FelixShard` must be modelled
-on `FelixRaft` before Raft ships, not when the old spec is deleted.
+on `FelixRaft` before the hybrid goes, not when the old spec is deleted.
 
 ## Coverage hand-off
 
@@ -400,9 +340,9 @@ Each has an issue and blocks what is named.
    and the blank-entry barrier in place of the fence round and the lease.
    `FelixShardReads.tla` and `FelixShardSessions.tla` extend `FelixShard`.
    Their properties are about clients, not the hybrid, so they are re-based
-   on `FelixRaft`, not retired. Needed before the bridge release, and so PR 3:
-   from PR 3 Raft is the only engine and from PR 4 the code `FelixShard`
-   models is gone, so nothing else would hold `NoStaleRead`,
+   on `FelixRaft`, not retired. Needed before PR 3: from PR 3 Raft is the
+   only engine and from PR 4 the code `FelixShard` models is gone, so
+   nothing else would hold `NoStaleRead`,
    `NoStaleGroupCommit` or `NoLostDelivery`. Issue #2266.
 2. **Idempotent publish across a leader change.** Closed by
    `FelixRaftIdempotent.tla`: `NoDuplicate` holds across changes of Raft
@@ -418,21 +358,18 @@ Each has an issue and blocks what is named.
    configs (#2244). Blocks PR 8. Issue #2268.
 4. **No check that the host opens only what Raft elected.** Replaces
    `adopted-matches-opened`. Part of PR 2.
-5. **No test starts from a released version's data.** The upgrade test
-   above does not exist. Part of PR 1.
+5. **No test starts from a released version's data.** Not needed: there is
+   no upgrade from 0.7 ("Upgrade").
 6. **Retired internal numbers can be reused by accident.** Part of PR 7.
-7. **The switch does not say that hybrid files are dead afterwards.** #2242
-   must state that once a shard's member starts under Raft, nothing reads
-   `replica`, `ballot`, `replica-set` or `copy-trust` for it. The rollback
-   from 0.8.0 to the bridge build rests on that. Part of PR 1.
+7. **Hybrid files in a data directory.** A fresh 0.8 cluster never writes
+   `replica`, `ballot`, `replica-set` or `copy-trust`, so 0.8.0 does not
+   read or clean them. Part of PR 7.
 8. **No invariants page exists.** See "Complexity budget". Part of PR 9.
 
 ## Upgrade
 
-### From 0.7
-
-There is no upgrade from 0.7 data to 0.8. The control plane's metadata
-does not carry over (no conversion from redb;
+There is no upgrade from 0.7 to 0.8. The control plane's metadata does not
+carry over (no conversion from redb;
 [#2234](https://github.com/GetFelix/felix/issues/2234) is not planned for
 0.8), and a broker's 0.7 data would never be served or deleted under the new
 group. Moving to 0.8 means stopping the cluster and starting every
@@ -441,153 +378,16 @@ upgrades page, "Control plane metadata in 0.8"). A 0.8 broker does not yet
 refuse a 0.7 data directory
 ([#2438](https://github.com/GetFelix/felix/issues/2438)).
 
-The rest of this section is the design for switching existing hybrid
-shards in place through a bridge build. It does not apply to moving 0.7 data
-to 0.8, which is not supported; it is kept for a later in-place switch. The
-path it describes:
+Because every 0.8 cluster starts fresh, no build switches a running hybrid
+shard to Raft. That drops the bridge build, the `shard_raft` and
+`hybrid_retired` fleet features, the in-place switch (#2242), the member
+mark and the control-plane log latch.
 
-1. Roll the cluster to the bridge build.
-2. Finalize `record_generations`, then `shard_raft`. Shards switch a few at
-   a time. Each is closed for one hybrid promotion plus one Raft election.
-3. When the fleet status shows no shard on the hybrid, finalize
-   `hybrid_retired`. If a shard was created or is still hybrid at that
-   point the finalize reports it and changes nothing. Try again later.
-4. Wait until every control-plane member reports a snapshot at or past the
-   latch entry and a log purged up to it.
-5. Roll the cluster to 0.8.0.
-
-A single broker follows the same steps. Its RF 1 shards switch with a set
-of one.
-
-**A shard that cannot switch.** The seal needs a majority of the shard's
-hybrid set. An RF 1 shard whose broker is gone, or a shard that has lost
-its majority, never seals, and the latch waits on it forever. The way out
-is on the bridge build, while the hybrid is still there:
-
-- `felixctl placement abandon <stream> <shard>` writes a fresh set on live
-  brokers. It loses the records no live copy holds, as it does today. The
-  shard then has a live majority and switches. It is only for a shard with
-  no live majority: the leader proposes it only then, and apply accepts it
-  only if the set version is the one the command saw and the shard is
-  still on the hybrid. So it cannot race the switch. Before the
-  compare-and-swap, an abandon raises the set version, the switch's write
-  fails and the seal starts over on the new set. After it, apply sees the
-  shard is on Raft and refuses, and the answer points to re-forming the
-  group (#2250).
-- Or delete the stream or cache.
-
-The fleet status names each shard that has not switched and why. Abandon
-must work for every such shard, so the abandon refusal in #2066 is fixed
-on the bridge build, not left for re-forming under Raft.
-
-Records written before generations were recorded keep generation 0 on
-disk. They sit below every base and are never compared by term, so nothing
-rewrites them.
-
-### What 0.8.0 refuses
-
-Every refusal happens at start, before anything is written, and names the
-bridge build. So a mistaken start on 0.8.0 changes nothing and the old
-build can be started again.
-
-| Finds | Does |
-| --- | --- |
-| Control plane: a redb store | Refuses, as today, and says the group must start over |
-| Control plane: a store whose snapshot is not at or past the latch entry | Refuses. This is also how it knows the cluster is latched |
-| Broker: a control plane without `hybrid_retired` finalized | Does not register and exits |
-
-A broker does not refuse over what a shard directory holds. Once the
-cluster is latched every shard has a recorded base, and that record decides
-what a directory is, as the next section says.
-
-### What 0.8.0 finishes
-
-The latch reads the control plane's record, and that record flips at the
-compare-and-swap, before each copy has started its member (steps 3 and 4
-of the switch). So a latched cluster can hold copies that never finished.
-Example: C acknowledges the base, the write commits, C crashes before it
-starts its member, the operator latches and rolls to 0.8.0. C's directory
-has hybrid files and a copy id, because the copy id was minted before the
-switch.
-
-So 0.8.0 keeps the member start from a recorded base. It is Raft-side code
-that re-forming a group also uses, and PRs 4 and 7 must not remove it:
-
-- A member that has started leaves a **member mark** in its shard
-  directory: the group epoch and the base it started from. The copy id is
-  not that mark. The mark is written by a rename, and the file and its
-  directory are fsynced, in every fsync mode, before the member answers
-  any vote or append. Without that, a copy could rename the mark,
-  acknowledge entries above the base, lose power, come back with no mark,
-  and cut the entries it acknowledged.
-- A directory without the mark is not a member yet. The broker reads the
-  shard's current record from the control plane, not from a saved view:
-  the group epoch, base and voters as they are now, which after a re-form
-  are not the ones the switch wrote. If its copy id is a voter of the
-  current epoch it cuts anything above that base and starts from it
-  (step 3). Otherwise it starts empty as a learner (step 4). That covers a
-  copy that failed the digest on the first seal and was still being
-  rebuilt.
-- If the broker cannot read the record, that member waits. It does not
-  guess, and the broker's other shards are not held up.
-- A directory for a shard the record does not place on this broker is a
-  leftover and is not opened.
-
-Only then are the dead files removed: `replica`, `ballot` and
-`replica-set` from a directory that has the member mark, and `copy-trust`
-from the data root. 0.8.0 never reads their contents.
-
-The upgrade test crashes a voter between the compare-and-swap and its
-member start, and leaves a learner from a failed first seal, then latches
-and rolls to the candidate. Both must come up and no acknowledged record
-may be lost.
-
-### Control-plane log
-
-The metadata log of an upgraded cluster holds hybrid commands (promotion,
-adoption, replica reports, suspicions) and its snapshot holds hybrid fields.
-Finalizing `hybrid_retired` is a log entry, the latch entry. Applying it
-clears the hybrid fields. Each bridge member then takes a snapshot and
-purges its log up to it, and redoes both at start if it crashed in
-between. The rules, which hold on the bridge build and on 0.8.0 alike:
-
-- **A hybrid command after the latch is a no-op.** A bridge leader can
-  commit a hybrid command that was proposed before it applied the latch,
-  at an index after the latch. Every member, on either build, applies it
-  as a no-op, because its state is latched at that position. 0.8.0 keeps
-  the reserved tags only to recognize them for this.
-- **A hybrid command before the latch stops a 0.8.0 member.** If 0.8.0 is
-  asked to apply a reserved tag while its state is not latched, it stops
-  with a message that names the bridge build and applies nothing. It
-  cannot skip it: before the latch hybrid commands also moved state that
-  stays, such as the replica set and its version.
-- **0.8.0 starts only from a snapshot at or past the latch entry**, and
-  purges its log up to its snapshot before it serves. It refuses to
-  install a snapshot from before the latch.
-- **The window closes at the purge, not at the snapshot.** A bridge leader
-  that has taken its latch snapshot and not yet purged can still send
-  entries from before the latch to an empty member. So step 4 of the
-  upgrade waits for every member to report its log purged up to the latch
-  entry before any member is replaced.
-- **Recovery is going back to the bridge build, never a wipe.** A stop
-  writes nothing, so a stopped member starts again on the bridge build
-  with its store as it was, finishes its snapshot and purge, and is then
-  upgraded. That holds for one member or for a majority. Wiping stopped
-  members is never the answer: wiping a majority loses the metadata.
-
-The command tags stay reserved, like wire numbers.
-
-### Rollback
-
-| From | To | Possible |
-| --- | --- | --- |
-| Bridge build, nothing finalized | 0.7 | Yes for brokers, by the existing rules. A converted control-plane member uses the tool's `rollback`, only before it first starts on the new store |
-| Bridge build, `record_generations` finalized | 0.7 | No. Storage format 9 does not roll back |
-| A switched shard | The hybrid | No. Restore from a backup taken before `shard_raft` was finalized |
-| 0.8.0 | Bridge build | Yes. The deleting pull requests change no storage, metadata or wire format, the member mark and the start from a base are the bridge build's own, and the bridge build runs a cluster that is all Raft |
-| 0.8.0 | 0.7 | No |
-
-Take a backup before finalizing `shard_raft`. It is the only way back.
+A cluster formed on main before the default flipped recorded `hybrid` as
+its engine and keeps it: the control plane records the engine once, when
+its metadata group forms. Its brokers refuse to start on Raft until they
+are given `FELIX_SHARD_ENGINE=hybrid`. Such a cluster is a test cluster;
+start it again on empty directories to move it to Raft.
 
 ## The bug map
 
@@ -607,11 +407,11 @@ is closed or kept.
 | #2133 interim routing publish copies the map under the lifecycle lock | Resolved in PR 5, which rewrites how the lifecycle publishes routes |
 | #2131 sim: assert a restarted broker reopens its torn segment | Added with the `power-loss` mode on Raft (#2250) |
 | #2067 moves never complete under placement faults (seed 3) | Re-tested by #2235, `placement` mode |
-| #2066 placement abandon refused on a held shard | Fixed on the hybrid in PR 1, because abandon is the way out for a shard that cannot switch. Under Raft, #2250 restates the rule against re-forming |
+| #2066 placement abandon refused on a held shard | Retires with the hybrid: no shard switches, so abandon is no longer the way out. Under Raft, #2250 restates the rule against re-forming |
 | #1998 fsync error must poison the log | Own storage fix, before #2233. A group stops on a storage error, so the error must be sticky |
 | #1931 crash between purge and snapshot install | Track 2 (#2221, pull request #2255) |
 | #1820 balancer moves caches back and forth | Placement. Re-tested after #2235, when leader balance is a transfer |
-| #1774 creating streams before a broker registers skips the feature finalize | Resolved in PR 1. A new cluster must come up latched whatever the order |
+| #1774 creating streams before a broker registers skips the feature finalize | Re-tested under Raft, which needs no replication feature finalized |
 | #1615 a counted copy dropped as staged | Resolved in PR 6. Staged and counted become learner and voter, read from the membership |
 | #1006 lone unbatched publisher slower on a per-log thread | Measured by the single-node cell of #2243 |
 | #2164 publishes time out forever after a whole-cluster wipe | Resolved by #2250: no voter is left, so the shard is re-formed or reported, not retried |
@@ -651,13 +451,13 @@ Each is safe to merge alone. All are tracked under #2167.
 
 | # | Pull request | Depends on | Why it is safe alone |
 | --- | --- | --- | --- |
-| 1 (#2257) | The latch and the default. `hybrid_retired` with its apply-time check, and shard creates that follow `shard_raft` in apply. The member mark. The Raft engine is compiled in. A new cluster starts on Raft. The upgrade test in Actions. The bridge build is released from here | The gate (#2243), Gaps 1 and 2 before the release | Additive. An existing cluster changes only when an operator finalizes a feature. Both engines stay under CI |
+| 1 (#2257) | The default. A new cluster starts on Raft, the release build includes the engine, `FELIX_SHARD_ENGINE=hybrid` is deprecated | None | Both engines stay under CI. The hybrid tests pin the hybrid |
 | 2 (#2258) | Coverage hand-off. The Raft checks in the tables above that track 4 did not already land, and the `opened` checker | 1 | Tests only |
-| 3 (#2259) | One engine at run time. The refusals and the finishing rules under "Upgrade". The hybrid in `felix-replication` and the broker wiring moves behind a cargo feature no build enables, with its tests. Hybrid environment variables are retired. Hybrid CI jobs and history modes are dropped | 1, 2, the bridge release, Gaps 1 and 2 | The only behaviour change is refusing clusters that are not latched. No format changes |
-| 4 (#2260) | Delete the hybrid in `felix-replication` and the broker service, with its metrics and tests. The member start from a recorded base stays | 3 | Deletes only code that is compiled out |
+| 3 (#2259) | One engine at run time. `FELIX_SHARD_ENGINE` and the hybrid environment variables are retired, the hybrid wiring in the broker is cut, hybrid CI jobs and history modes are dropped | 1, 2, the gates under "Ordering", Gaps 1 and 2 | No format changes |
+| 4 (#2260) | Delete the hybrid in `felix-replication` and the broker service, with its metrics and tests | 3 | Deletes only code nothing runs |
 | 5 (#2261) | The engine trait, the write fence and the shard lifecycle in their final shape | 4 | A refactor with no behaviour change. Simulator seeds and the history run pass unchanged |
-| 6 (#2262) | Control plane: no assigned leader, no generation bump, no reports, adoption, suspicion or seat fences. Routes removed. The snapshot rule | 3 | Removes code that is unreachable once latched, and 0.8.0 starts only latched |
-| 7 (#2263) | Leftovers on the wire and on disk: retired kinds and capability bits with the reserved list and its test, the three replica files and `copy-trust`, their cleanup at open | 4, 6 | Nothing refers to them. Formats on the wire and on disk are unchanged for what remains |
+| 6 (#2262) | Control plane: no assigned leader, no generation bump, no reports, adoption, suspicion or seat fences. Routes removed | 3 | Removes code a Raft cluster never reaches |
+| 7 (#2263) | Leftovers on the wire and on disk: retired kinds and capability bits with the reserved list and its test, the code that writes the three replica files and `copy-trust` | 4, 6 | Nothing refers to them. Formats on the wire and on disk are unchanged for what remains |
 | 8 (#2264) | Specs: delete the `FelixShard` family and its configs, re-point the spec pairing check, rewrite `docs/formal/README.md` | 4, 6, Gap 3 | Models only. Every invariant has a row in the hand-off table |
 | 9 (#2265) | Tests and docs: hybrid cluster tests, seeds, harness setup, workflow inputs; hybrid pages removed; the invariants page; the size report | 4 to 8 | Tests and docs only |
 
@@ -676,7 +476,7 @@ criterion. That stands for the gate. This section is what track 6 reports.
 | Shard protocol specs | 7,994 lines, 8 specs, 426 configs | all | `FelixRaft` and its configs, reported |
 | Hybrid cluster tests | about 7,800 lines, 16 files | all, some ported | Reported |
 | Environment variables | 11 hybrid | 11 | 0 |
-| Fleet features an operator must finalize for replication | 6 | 6 | 0 after the latch |
+| Fleet features an operator must finalize for replication | 6 | 6 | 0 |
 | Internal message kinds | 56 | 34 | 20 to 22, plus Raft's own behind one capability |
 | `docs/replication-design.md` | 5,873 lines | replaced | Under 1,000 |
 
@@ -695,75 +495,30 @@ it.
 
 Each has a recommendation.
 
-1. **Does 0.8.0 carry the hybrid for upgrades, or is there a bridge
-   build?** A live switch needs the hybrid's fence, catch-up and rebuild,
-   which is most of the hybrid. So either 0.8.0 ships both engines and the
-   delete moves to 0.9, or the last build with both is a required stop.
-   Recommended: a bridge build, on two conditions. First, PR 3 waits until
-   the project's own long-running clusters have switched and latched on
-   it, so the switch has run on real data before main loses the hybrid.
-   Second, the bridge build has its own branch, and that branch keeps the
-   hybrid, switch and upgrade CI jobs for as long as the build is
-   supported, so a fix to it is tested like any other. It is what track 3
-   already does for redb: the new release refuses the old state and names
-   what converts it. 0.8.0 then has one engine to test, model and document,
-   which is the point of the release. The cost is a second hop for
-   upgraders and a second branch to keep green.
+1. **Is the hybrid compiled out before it is deleted, or deleted in one
+   pull request?** Recommended: one engine at run time first (PR 3), then
+   the delete. PR 3 is small and holds every behaviour change, and PR 4 is
+   a delete a reviewer can check mechanically.
 
-2. **What is the bridge build called?** Two options. (a) A preview of the
-   0.8 line, pinned by exact version on the "Upgrading to 0.8" page. It
-   needs no new version scheme, but it makes a preview a required step,
-   previews get no patches, and the site recommends stable releases only.
-   (b) A named stable release with its own branch, versioned below 0.8.0,
-   listed on the site as the step between 0.7 and 0.8 and patched while
-   0.7 is supported. Recommended: (b). Every upgrade passes through this
-   build with real data, so it should be held to the bar of a release:
-   release checks, a changelog, patches from a branch whose CI still runs
-   the hybrid. The exact version number needs a maintainer decision.
-
-3. **Is `hybrid_retired` a feature an operator finalizes, or derived from
-   "no shard is on the hybrid"?** Recommended: finalized by an operator,
-   with the condition checked when the entry is applied, not when the
-   operator asks. It follows the fleet feature runbook, gives 0.8.0 one
-   fact to check at start, and gives the control plane a log entry to
-   snapshot behind. Checking in apply is what makes it a latch: no create
-   can slip in between the check and the entry.
-
-4. **Does 0.8.0 convert an RF 1 shard in place, so a single broker can
-   skip the bridge?** One copy has nobody to disagree with, so it is safe.
-   Recommended: no. It would be a second conversion path with its own
-   tests, for a hop that takes minutes on a single broker.
-
-5. **Is the hybrid compiled out before it is deleted, or deleted in one
-   pull request?** Recommended: compiled out first. PR 3 is then small and
-   holds every behaviour change, and PR 4 is a delete a reviewer can check
-   mechanically. The compiled-out code lives for days, not a release.
-
-6. **Do `RECORD_TIMES`, `HEAD_TRIM` and `RECORD_HEADERS` stay as peer
+2. **Do `RECORD_TIMES`, `HEAD_TRIM` and `RECORD_HEADERS` stay as peer
    capabilities?** Recommended: no. Raft messages carry record times,
    trims and headers unconditionally, because every Raft peer is new
    enough. The three bits are retired with the rest.
 
-7. **Is a removed environment variable an error?** Recommended: no. It is
+3. **Is a removed environment variable an error?** Recommended: no. It is
    reported by name as retired and ignored. Refusing to start over
    `FELIX_INTERNAL_ELECTION=false` in an old manifest helps nobody. The
-   retired names leave the registry one release later.
+   retired names leave the registry one release later. The exception is
+   `FELIX_SHARD_ENGINE=hybrid`: a broker asked for an engine it no longer
+   has refuses to start, so nobody believes they run the hybrid.
 
-8. **Is the size budget enforced?** Recommended: reported, with one
+4. **Is the size budget enforced?** Recommended: reported, with one
    ratchet. A small check in `task docs:evidence` holds the non-test line
    count of `felix-replication/src` to the number recorded after PR 9 plus
    10%, and raising the number takes a line in the pull request that does
    it. It is cheap, and it makes growth a choice.
 
-9. **Do the tracked hybrid stalls block the bridge build?** The seed batch
-   is ignored today for known hybrid liveness stalls (#2024, #2032, #2033). Recommended: no. They are liveness stalls, not history
-   violations, and 0.7 ships with them. The bridge build must have no stall
-   the latest 0.7 release does not have, and none in the switch.
-
-10. **When are the `FelixShard` specs deleted, and when must the Raft
-    models exist?** Recommended: two rules. A client property modelled
-    only on `FelixShard` (reads, sessions, idempotent publish: Gaps 1 and
-    2) has its `FelixRaft` model passing before the bridge build is
-    released, because Raft ships then. The `FelixShard` files are deleted
-    after the code (PR 8 after PRs 4 and 6) and after Gap 3. On the bridge
-    branch they stay and keep running.
+5. **When are the `FelixShard` specs deleted?** After the code (PR 8 after
+   PRs 4 and 6) and after Gap 3. The client properties modelled only on
+   `FelixShard` (Gaps 1 and 2) have their `FelixRaft` models passing
+   before PR 3.

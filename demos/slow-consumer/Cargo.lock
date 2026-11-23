@@ -63,6 +63,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
+name = "anyerror"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71add24cc141a1e8326f249b74c41cfd217aeb2a67c9c6cf9134d175469afd49"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -240,6 +249,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "backoff-series"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b143524c9d0b6c3e8e80542a0a17e1e472ccfd5a3d3696bd6ad2b18248d3350"
+
+[[package]]
+name = "base2histogram"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d74d05707c315a6c0601b1089186476cf11ee5fe8d6e035ea43c44ae1a0215cd"
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -334,6 +355,9 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "castaway"
@@ -747,6 +771,7 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -769,6 +794,12 @@ dependencies = [
  "const-oid",
  "crypto-common 0.2.2",
 ]
+
+[[package]]
+name = "display-more"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00f2a9f14c274f4514d5f1590da31c8a74659f557df982361d036cb3432f89a1"
 
 [[package]]
 name = "displaydoc"
@@ -1098,6 +1129,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
+ "crc32fast",
  "felix-broker",
  "felix-common",
  "felix-router",
@@ -1106,8 +1138,12 @@ dependencies = [
  "felix-wire",
  "futures",
  "metrics",
+ "openraft",
+ "openraft-multi",
+ "openraft-rt-tokio",
  "parking_lot 0.13.0",
  "quinn",
+ "rand 0.10.3",
  "rcgen",
  "reqwest",
  "rustls",
@@ -1142,8 +1178,10 @@ dependencies = [
  "libc",
  "metrics",
  "object_store",
+ "openraft",
  "parking_lot 0.13.0",
  "serde",
+ "sha2 0.11.1",
  "tokio",
  "tracing",
 ]
@@ -2068,6 +2106,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "maplit"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d"
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2341,6 +2385,80 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "openraft"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d327a24b1daed791b4aaf14f6f6b5a23abf7b1952afad6f091e8fc5f71403222"
+dependencies = [
+ "anyerror",
+ "backoff-series",
+ "base2histogram",
+ "derive_more",
+ "display-more",
+ "futures-util",
+ "itertools 0.15.0",
+ "maplit",
+ "openraft-macros",
+ "openraft-rt",
+ "openraft-rt-tokio",
+ "peel-off",
+ "quorum-set",
+ "rand 0.10.3",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.21",
+ "tracing",
+ "validit",
+]
+
+[[package]]
+name = "openraft-macros"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3b10ab72e76b9be32669b7e650b67fe3db825b5bb41d9d47c4dc782355fcdd3"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "semver",
+ "syn 3.0.3",
+]
+
+[[package]]
+name = "openraft-multi"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b37011b2a3f9b51ddf566fef1f3148fae1e4c2f1665cd8271e923acc33e3e23"
+dependencies = [
+ "anyerror",
+ "openraft",
+]
+
+[[package]]
+name = "openraft-rt"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45f10019e3c1bfc75a6270addac570d692588c3bebcd18f60a2cbd6cbd0655fc"
+dependencies = [
+ "futures-channel",
+ "futures-util",
+ "openraft-macros",
+ "pin-project-lite",
+ "rand 0.10.3",
+]
+
+[[package]]
+name = "openraft-rt-tokio"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346d0d56c907f19682088616c286a95e479af9475618c754ba902fab3fb6756c"
+dependencies = [
+ "futures-util",
+ "openraft-rt",
+ "rand 0.10.3",
+ "tokio",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2494,6 +2612,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "peel-off"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3420ea4424090cbd75a688996f696a807c68d6744b4863591b86435dc3078e9"
 
 [[package]]
 name = "pem"
@@ -2790,6 +2914,16 @@ dependencies = [
  "socket2",
  "tracing",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "quorum-set"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb2d258d9ae363883cddb09272af10aa6e1a5404fc64551fea20f3dc02091132"
+dependencies = [
+ "sha2 0.10.9",
+ "validit",
 ]
 
 [[package]]
@@ -4141,6 +4275,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
 name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4187,6 +4327,15 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "validit"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4417835826b78aa6265724624d424df2b1e6e71a33329227d8b04a88950780dc"
+dependencies = [
+ "anyerror",
 ]
 
 [[package]]

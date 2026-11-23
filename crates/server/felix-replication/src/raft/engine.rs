@@ -9,7 +9,7 @@ use std::time::Duration;
 use bytes::Bytes;
 
 use super::cache::{Answer, CacheCommand};
-use super::propose::{self, AckAt, Batch, Unacknowledged};
+use super::propose::{self, AckAt, Batch, Heard, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
 use crate::engine::{CommitError, Written};
@@ -60,21 +60,22 @@ impl RaftEngine {
         shard: &ShardKey,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
-        let proposed = self.propose_reaching(shard, batch);
+        let proposed = self.propose_reaching(shard, batch, Heard::Written);
         async move { proposed.await.map_err(|unacked| unacked.error) }
     }
 
     /// [`Self::propose`], and on an error how far the batch is known to be
-    /// written.
+    /// written. `heard` says what wakes the caller.
     pub(crate) fn propose_reaching(
         &self,
         shard: &ShardKey,
         batch: Batch,
+        heard: Heard,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let proposed = self
             .runtime
             .group(shard)
-            .map(|group| group.propose(batch))
+            .map(|group| group.propose(batch, heard))
             .ok_or_else(|| propose::lost(NO_GROUP));
         async move { proposed?.await }
     }
@@ -320,6 +321,21 @@ impl RaftEngine {
         shard: &ShardKey,
     ) -> Option<std::sync::Arc<parking_lot::RwLock<felix_broker::ShardGroups>>> {
         self.runtime.group(shard)?.groups()
+    }
+
+    /// Where `shard`'s group runs its tasks, or the current runtime when
+    /// this broker holds no member of it.
+    pub(crate) fn group_runtime(&self, shard: &ShardKey) -> tokio::runtime::Handle {
+        self.runtime
+            .group(shard)
+            .map_or_else(tokio::runtime::Handle::current, |group| {
+                group.runtime().clone()
+            })
+    }
+
+    /// The broker runtime, for work that must not hold up a group thread.
+    pub(crate) fn home_runtime(&self) -> tokio::runtime::Handle {
+        self.runtime.home()
     }
 
     /// `shard`'s commit table on this broker, if it holds a member.

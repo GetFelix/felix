@@ -62,6 +62,18 @@ impl AckAt {
     }
 }
 
+/// What wakes a publisher waiting for its batch to be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Heard {
+    /// The log's write of the batch, as soon as it is on this leader's log.
+    Written,
+    /// openraft's answer at the apply, for a publisher that waits for the
+    /// commit anyway: one wake instead of two. If this member stops
+    /// leading or stops before the answer, the publisher is told what the
+    /// write says, as with [`Self::Written`].
+    Applied,
+}
+
 /// When [`super::RaftEngine::publish`] answers the publisher. Subscribers
 /// get the batch at its commit either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,6 +385,7 @@ pub(crate) struct Proposal {
 /// The publisher's side of a queued batch. `W` is a token's future.
 pub(crate) struct Waiting<W = WrittenAt> {
     pub(super) ack: AckAt,
+    pub(super) heard: Heard,
     pub(super) records: u64,
     /// `None` for a batch of one record, where `last` is also the first.
     pub(super) first: Option<W>,
@@ -580,6 +593,7 @@ fn queued(
         },
         Waiting {
             ack,
+            heard: Heard::Written,
             records: count as u64,
             first,
             last,
@@ -1014,6 +1028,7 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
 ) -> Result<Written, Unacknowledged> {
     let Waiting {
         ack,
+        heard,
         records,
         first,
         last,
@@ -1027,6 +1042,15 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         span.written(records)
             .map_err(|err| Unacknowledged::from(err).reaching(span.end()))
     };
+    if heard == Heard::Applied {
+        tokio::select! {
+            biased;
+            answered = &mut answer => return committed(answered),
+            // Answered below, from the write if it was seen.
+            _ = leading.lost(None) => {}
+            () = stop.cancelled() => {}
+        }
+    }
     let written = async {
         let last = last.await?;
         let first = match first {

@@ -682,19 +682,21 @@ impl ShardEngine {
     }
 }
 
-/// `FELIX_SHARD_ENGINE`: `hybrid` (the default) or `raft`. Every broker of a
-/// cluster must say the same; see `docs/per-shard-raft.md`.
-pub(crate) fn shard_engine() -> Result<ShardEngine> {
+/// `FELIX_SHARD_ENGINE` as set: `raft`, `hybrid` (deprecated), or `None`
+/// when unset, which [`RaftPrerequisites::resolve`] turns into an engine.
+/// Every broker of a cluster must run the same; see `docs/per-shard-raft.md`.
+pub(crate) fn shard_engine() -> Result<Option<ShardEngine>> {
     parse_shard_engine(std::env::var("FELIX_SHARD_ENGINE").ok().as_deref())
 }
 
-pub(crate) fn parse_shard_engine(value: Option<&str>) -> Result<ShardEngine> {
+pub(crate) fn parse_shard_engine(value: Option<&str>) -> Result<Option<ShardEngine>> {
     match value
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()
     {
-        None | Some("" | "hybrid") => Ok(ShardEngine::Hybrid),
-        Some("raft") => Ok(ShardEngine::Raft),
+        None | Some("") => Ok(None),
+        Some("hybrid") => Ok(Some(ShardEngine::Hybrid)),
+        Some("raft") => Ok(Some(ShardEngine::Raft)),
         Some(other) => anyhow::bail!("FELIX_SHARD_ENGINE must be hybrid or raft, not {other:?}"),
     }
 }
@@ -726,12 +728,18 @@ pub(crate) fn parse_shard_raft_lease(value: Option<&str>) -> Result<Option<Durat
 pub(crate) struct RaftSettings {
     pub(crate) lease: Option<Duration>,
     pub(crate) elections_at_once: Option<usize>,
+    pub(crate) group_threads: Option<usize>,
 }
 
 pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
     Ok(RaftSettings {
         lease: shard_raft_lease()?,
         elections_at_once: shard_raft_elections_at_once()?,
+        group_threads: parse_raft_group_threads(
+            std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
+                .ok()
+                .as_deref(),
+        )?,
     })
 }
 
@@ -751,13 +759,23 @@ fn shard_raft_elections_at_once() -> Result<Option<usize>> {
 /// A value that does not parse is refused, never read as the default: an
 /// operator who meant `0` would keep the bound.
 pub(crate) fn parse_shard_raft_elections_at_once(value: Option<&str>) -> Result<Option<usize>> {
+    parse_count("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE", value)
+}
+
+/// `FELIX_TEST_RAFT_GROUP_THREADS`: how many threads run the Raft groups'
+/// tasks, for tests and A/B runs. Unset keeps the count derived from the
+/// machine, and `0` runs the groups on the broker runtime. An unsupported
+/// override, read in release builds so perf runs can compare.
+pub(crate) fn parse_raft_group_threads(value: Option<&str>) -> Result<Option<usize>> {
+    parse_count("FELIX_TEST_RAFT_GROUP_THREADS", value)
+}
+
+fn parse_count(name: &str, value: Option<&str>) -> Result<Option<usize>> {
     match value.map(str::trim) {
         None | Some("") => Ok(None),
         Some(count) => match count.parse() {
             Ok(count) => Ok(Some(count)),
-            Err(_) => anyhow::bail!(
-                "FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE must be a whole number, not {count:?}"
-            ),
+            Err(_) => anyhow::bail!("{name} must be a whole number, not {count:?}"),
         },
     }
 }
@@ -786,6 +804,27 @@ impl RaftPrerequisites {
             Some("it needs durable storage (FELIX_DURABLE_STORAGE_DIR)")
         } else {
             None
+        }
+    }
+
+    /// The engine this broker runs for `setting`. Unset is Raft wherever
+    /// Raft can run. A broker with a cluster identity that cannot run Raft
+    /// is refused rather than run the hybrid engine: the control plane
+    /// would place shards on it beside Raft peers. A standalone broker
+    /// shares no shard, so it runs the hybrid path until the hybrid is
+    /// removed. Asking for Raft where it cannot run is refused too.
+    pub(crate) fn resolve(&self, setting: Option<ShardEngine>) -> Result<ShardEngine> {
+        match (setting, self.missing()) {
+            (Some(ShardEngine::Raft), Some(missing)) => {
+                anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}")
+            }
+            (Some(engine), _) => Ok(engine),
+            (None, None) => Ok(ShardEngine::Raft),
+            (None, Some(missing)) if self.membership => anyhow::bail!(
+                "this broker has a cluster identity (FELIX_NODE_ID), so its durable stream \
+                 shards run on Raft, but {missing}"
+            ),
+            (None, Some(_)) => Ok(ShardEngine::Hybrid),
         }
     }
 }

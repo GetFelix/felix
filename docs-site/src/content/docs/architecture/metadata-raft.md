@@ -12,7 +12,7 @@ and snapshots on each instance's own volume. No external database is needed.
 [Control-plane HA](/deployment/control-plane-ha/) covers running it.
 
 The group also records its own identity once, when it forms: a random group
-id and the shard engine (`FELIX_SHARD_ENGINE`, `hybrid` by default). The first
+id and the shard engine (`FELIX_SHARD_ENGINE`, `raft` by default). The first
 record wins and it never changes, so a broker that kept data from one group can
 tell when it reaches another. `GET /v1/cluster/identity` returns it.
 
