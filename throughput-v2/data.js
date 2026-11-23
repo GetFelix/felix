@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795468907106,
+  "lastUpdate": 1795470282570,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67184,6 +67184,58 @@ window.BENCHMARK_DATA = {
             "range": "8168.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812879.90\nmean: 814257.07\nstdev: 8168.47\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1dbb4129a4098017a057e658fcf269e71b548226",
+          "message": "test(raft): the start survey is asked until the opened copy answers (#3059)\n\nA read that lands while the new member creates its first segment fails\nwith a truncated segment and answers nothing; the control plane asks\nagain, so the re-form test now does too.\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-23T13:34:13-08:00",
+          "tree_id": "22a89e1b0a7c4e9e1e4c303092b792175f408701",
+          "url": "https://github.com/GetFelix/felix/commit/1dbb4129a4098017a057e658fcf269e71b548226"
+        },
+        "date": 1795470281644,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 336942.57,
+            "range": "26199.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336942.57\nmean: 335128.94\nstdev: 26199.66\ncv: 7.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 336942.57,
+            "range": "26199.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336942.57\nmean: 335128.94\nstdev: 26199.66\ncv: 7.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80305.61,
+            "range": "558.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80305.61\nmean: 80467.08\nstdev: 558.97\ncv: 0.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803056.13,
+            "range": "5589.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803056.13\nmean: 804670.80\nstdev: 5589.69\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
