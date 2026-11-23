@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795428751920,
+  "lastUpdate": 1795432665732,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66508,6 +66508,58 @@ window.BENCHMARK_DATA = {
             "range": "47678.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798741.41\nmean: 776278.33\nstdev: 47678.94\ncv: 6.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b575a170c64599c45fde5b9a656b36845f6ae7c4",
+          "message": "feat(raft): placement swaps Raft shard members on drain, loss and moves outside the set (#2235) (#3010)\n\n* feat(raft): placement swaps Raft shard members on drain, loss and moves outside the set (#2235)\n\nA Raft shard's set now changes one member at a time when a copy has to\nmove. A follower on a draining, internal or lost broker is swapped for a\nlive broker outside the set, and an operator move outside the set gives\nthe destination the leader's seat instead of refusing with not_a_member.\nThe group's leader carries each swap out through the existing membership\ndriver: learner, catch-up, joint change, and a leadership transfer first\nwhen its own seat moves.\n\nSpec-Unaffected: placement only writes the one-member swaps the\nmembership driver and FelixRaftPlacement already cover; the cfg edit\nrenames a cited test.\n\n* fix(raft): replace a down member before a leaving one; refuse RF 1 seat moves up front (#2235)\n\nA down internal member was labelled Internal, never Lost, so a draining sibling was picked every pass and blocked on it forever. Non-serving members now go first. An operator move of a one-member group is refused with single_member instead of failing at the store.\n\n* ci: keep the Raft cluster tests' broker logs when they fail\n\n* fix(raft): a set change keeps the shard's Raft target counter (#2235)\n\nA placement write that changes a Raft shard's brokers dropped the stored\ntarget and its counter, so the target written once the new set reported\nits copy ids started again at counter 1. The group's membership already\ncarried version 0.1 from the first target, and a leader takes only a\nnewer target (`RaftGroup::retarget`, `next_step`'s StaleTarget), so the\nleader was never told the new voters and the drain and seat-move cluster\ntests waited 540 s for a change nobody started.\n\nThe record now keeps the counter the dropped target reached\n(`raft_target_counter`) and the next target takes the one after it.\nGated at metadata level 50: assignment writes and finalizes carry\n`keep_counter`, and the apply keeps the counter once the join floor is\nat 50, so every member decides the same.\n\nAlso: the membership driver logs each change of what a look came to, the\n\"told the shard's Raft leader its target\" line is at info, and the\ncluster tests' voters_become prints the stored target and voters when it\ntimes out.\n\n* test(raft): the drain test reads its new follower copy with follower reads finalized",
+          "timestamp": "2026-11-23T11:10:53Z",
+          "tree_id": "a14d05da411a2928db694fc67de7efaf92ba1107",
+          "url": "https://github.com/GetFelix/felix/commit/b575a170c64599c45fde5b9a656b36845f6ae7c4"
+        },
+        "date": 1795432664674,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350035.17,
+            "range": "10705.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350035.17\nmean: 345636.02\nstdev: 10705.74\ncv: 3.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350035.17,
+            "range": "10705.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350035.17\nmean: 345636.02\nstdev: 10705.74\ncv: 3.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79232.6,
+            "range": "7335.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79232.60\nmean: 74523.12\nstdev: 7335.82\ncv: 9.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 792325.96,
+            "range": "73358.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 792325.96\nmean: 745231.18\nstdev: 73358.21\ncv: 9.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
