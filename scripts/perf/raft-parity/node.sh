@@ -44,6 +44,15 @@ post() {
 }
 field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$RESP" "$1"; }
 
+# create_stream <dir> <name> <shards> <Leader|Quorum> <rf> [mount]
+create_stream() {
+  local mount=""; [ -z "${6:-}" ] || mount=",\"mount\":\"$6\""
+  post "http://$(ip_self):$CP_PORT/v1/tenants/$TENANT/namespaces/$NS/streams" \
+    "{\"stream\":\"$2\",\"kind\":\"Stream\",\"shards\":$3,\"replication_factor\":$5,\"retention\":{\"max_age_seconds\":null,\"max_size_bytes\":null},\"consistency\":\"$4\",\"delivery\":\"AtLeastOnce\",\"durable\":true$mount}" \
+    "Authorization: Bearer $(cat "$1/tokens/admin.jwt")"
+  case "$code" in 2*) ;; *) cat "$RESP" >&2; die "create stream $2 -> $code" ;; esac
+}
+
 cmd=${1:?subcommand}; shift
 case "$cmd" in
 
@@ -153,11 +162,15 @@ case "$cmd" in
   # stream <dir> <name> <shards> <Leader|Quorum> <rf> [mount]: create a durable stream.
   stream)
     dir=$1; in_run "$dir"; RESP=$dir/resp.json
-    mount=""; [ -z "${6:-}" ] || mount=",\"mount\":\"$6\""
-    post "http://$(ip_self):$CP_PORT/v1/tenants/$TENANT/namespaces/$NS/streams" \
-      "{\"stream\":\"$2\",\"kind\":\"Stream\",\"shards\":$3,\"replication_factor\":$5,\"retention\":{\"max_age_seconds\":null,\"max_size_bytes\":null},\"consistency\":\"$4\",\"delivery\":\"AtLeastOnce\",\"durable\":true$mount}" \
-      "Authorization: Bearer $(cat "$dir/tokens/admin.jwt")"
-    case "$code" in 2*) ;; *) cat "$RESP" >&2; die "create stream -> $code" ;; esac
+    create_stream "$dir" "$2" "$3" "$4" "$5" "${6:-}"
+    ;;
+
+  # idle <dir> <from> <to> <shards> <Leader|Quorum> <rf>: streams idle-<from>..idle-<to>, each
+  # <shards> shards, that no loadgen ever touches. The same call on both engines; run.sh creates
+  # them in bounded batches (a few thousand groups formed at once never got leaders, #2317).
+  idle)
+    dir=$1 from=$2 to=$3; in_run "$dir"; RESP=$dir/resp.json
+    for ((n = from; n <= to; n++)); do create_stream "$dir" "$(printf 'idle-%04d' "$n")" "$4" "$5" "$6" ""; done
     ;;
 
   # repl <dir>: "under=<n> shards=<n> leaders=<node>:<n>,..." from the control plane.

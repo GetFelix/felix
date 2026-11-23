@@ -24,7 +24,8 @@
 #   CELLS="..."   cell ids, default all (see summarize.py); names are
 #                 <single|rf3>-<oncommit|quorum|leader>-<lat|tput>, rf3-failover,
 #                 rf3-kafka, rf3-mqtt, rf3-mqtt-lat, rf3-fanout, and the read cells
-#                 rf3-kafka-tail, rf3-mqtt-tail, rf3-resume, rf3-follower-tail (single-resume
+#                 rf3-kafka-tail, rf3-mqtt-tail, rf3-resume, rf3-follower-tail, and
+#                 rf3-idle-tput (rf3-oncommit-tput plus IDLE_GROUPS idle groups; single-resume
 #                 is a one-node check of the resume loop; it is not in the default list)
 #   BOXES="1 2 3" the first holds the control plane. A smoke run uses one.
 #   SECS=60 LAT_SECS=30 FAIL_SECS=40 PAYLOAD=1024 BATCH=16 PUBLISHERS=8 IN_FLIGHT=4
@@ -56,6 +57,13 @@
 #   BASELINE_REF=v0.7.2   the tag build.sh built, named in the results (default v0.7.2)
 #   BASELINE_NA="..."   cell ids the baseline cannot run; recorded as n/a, not failed (default none)
 #   ONLY_SIDE=hybrid|raft|baseline   one engine only (a harness check, not a comparison)
+#   IDLE_GROUPS=2000 IDLE_SHARDS=10 IDLE_BATCH=200 IDLE_BATCH_WAIT_SECS=180 IDLE_SETTLE_SECS=30
+#                 rf3-idle-tput: groups (shards) created on the same brokers that no publisher
+#                 touches, IDLE_SHARDS per stream, created IDLE_BATCH groups at a time. Each batch
+#                 must have leaders (and, on Raft, an open member on every broker) within
+#                 IDLE_BATCH_WAIT_SECS before the next starts; the cell fails if one does not.
+#                 IDLE_SETTLE_SECS of quiet follow the last batch, then the same window as
+#                 rf3-oncommit-tput. The formation time is recorded. IDLE_GROUPS=0 is plain cell 2.
 #   SLOT_WAIT_SECS=3600 QUIET_WAIT_SECS=300
 set -euo pipefail
 
@@ -78,12 +86,17 @@ fi
 : "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
 : "${SIDES:=hybrid raft}" "${BASELINE_REF:=v0.7.2}" "${BASELINE_NA:=}"
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
+: "${IDLE_GROUPS:=2000}" "${IDLE_SHARDS:=10}" "${IDLE_BATCH:=200}" "${IDLE_BATCH_WAIT_SECS:=180}" "${IDLE_SETTLE_SECS:=30}"
+for v in IDLE_GROUPS IDLE_SHARDS IDLE_BATCH IDLE_BATCH_WAIT_SECS IDLE_SETTLE_SECS; do
+  [[ "${!v}" =~ ^[0-9]+$ ]] || { echo "!! $v must be a whole number" >&2; exit 2; }
+done
+[ "$IDLE_SHARDS" -ge 1 ] && [ "$IDLE_BATCH" -ge 1 ] || { echo "!! IDLE_SHARDS and IDLE_BATCH must be at least 1" >&2; exit 2; }
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
   for topo in single rf3; do for mode in oncommit quorum leader; do
     CELLS="$CELLS $topo-$mode-lat $topo-$mode-tput"
   done; done
-  CELLS="$CELLS rf3-failover rf3-kafka rf3-mqtt rf3-mqtt-lat rf3-fanout rf3-kafka-tail rf3-mqtt-tail rf3-resume rf3-follower-tail"
+  CELLS="$CELLS rf3-failover rf3-kafka rf3-mqtt rf3-mqtt-lat rf3-fanout rf3-kafka-tail rf3-mqtt-tail rf3-resume rf3-follower-tail rf3-idle-tput"
 fi
 MAX_HOLD_SECS=$(( 3600 + ROUNDS * 40 * 600 ))
 
@@ -173,7 +186,7 @@ case " $CELLS " in *-kafka*)
     echo "box$b ${IP[$b]} ${MT[$b]} $(on "$b" sysinfo)"
   done
   echo "control plane on $(host_name "$CP_BOX")"
-  echo "config SIDES=\"${ONLY_SIDE:-$SIDES}\" ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE MQTT_TAIL_RATE=$MQTT_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS"
+  echo "config SIDES=\"${ONLY_SIDE:-$SIDES}\" ROUNDS=$ROUNDS CELLS=\"$(echo $CELLS)\" SECS=$SECS LAT_SECS=$LAT_SECS FAIL_SECS=$FAIL_SECS PAYLOAD=$PAYLOAD BATCH=$BATCH PUBLISHERS=$PUBLISHERS IN_FLIGHT=$IN_FLIGHT LAT_PUBLISHERS=$LAT_PUBLISHERS SHARDS=$SHARDS KEYS=$KEYS FANOUT=$FANOUT FANOUT_TOTAL=$FANOUT_TOTAL KAFKA_RECORDS=$KAFKA_RECORDS MQTT_CONNS=$MQTT_CONNS MQTT_WINDOW=$MQTT_WINDOW TAIL_SECS=$TAIL_SECS TAIL_PUBLISHERS=$TAIL_PUBLISHERS TAIL_IN_FLIGHT=$TAIL_IN_FLIGHT KAFKA_TAIL_RATE=$KAFKA_TAIL_RATE MQTT_TAIL_RATE=$MQTT_TAIL_RATE RESUME_HISTORY=$RESUME_HISTORY RESUME_SPAN=$RESUME_SPAN RESUME_WORKERS=$RESUME_WORKERS TAIL_SUBS=$TAIL_SUBS IDLE_GROUPS=$IDLE_GROUPS IDLE_SHARDS=$IDLE_SHARDS IDLE_BATCH=$IDLE_BATCH IDLE_BATCH_WAIT_SECS=$IDLE_BATCH_WAIT_SECS IDLE_SETTLE_SECS=$IDLE_SETTLE_SECS"
 } | tee "$OUT/run.env"
 
 # --- reservation -----------------------------------------------------------------
@@ -232,10 +245,12 @@ log "quiet:$report"
 echo "quiet_at_start $report" >> "$OUT/run.env"
 
 # --- one cell --------------------------------------------------------------------
-# cell_shape <id>: sets TOPO CONS FSYNC KIND RF NSHARDS MOUNT STREAM_NAME
+# cell_shape <id>: sets TOPO CONS FSYNC KIND RF NSHARDS MOUNT STREAM_NAME IDLE
 cell_shape() {
-  MOUNT="" STREAM_NAME=bench NSHARDS=$SHARDS
+  MOUNT="" STREAM_NAME=bench NSHARDS=$SHARDS IDLE=0
   case "$1" in
+    # Cell 2 (rf3-oncommit-tput) with idle groups on the same brokers.
+    rf3-idle-tput) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=ingest-tput IDLE=$IDLE_GROUPS ;;
     # The read cells run on one shard so an offset or a follower means one thing,
     # and the kafka-tail consumer reads partition 0 only.
     single-resume|rf3-resume) TOPO=${1%%-*} CONS=Quorum FSYNC=on_commit KIND=resume NSHARDS=1 ;;
@@ -360,6 +375,44 @@ run_cell() {
       esac
     done
     [ "$side" != raft ] || [ "$status" != ok ] || echo "raft members open after $((SECONDS - t0)) s" >> "$loc/engine.txt"
+  fi
+  # Idle groups: streams nothing publishes to, created in bounded batches, each waited on
+  # until it has leaders, so the window opens on a settled cluster. Both engines go through
+  # the same calls. Formation time is the first batch to the last leader.
+  if [ "$status" = ok ] && [ "$IDLE" -gt 0 ]; then
+    local made=0 idx=0 total=$NSHARDS nb=0 t_idle=$SECONDS this full part w ready
+    while [ "$made" -lt "$IDLE" ]; do
+      this=$(( IDLE - made < IDLE_BATCH ? IDLE - made : IDLE_BATCH ))
+      full=$(( this / IDLE_SHARDS )); part=$(( this % IDLE_SHARDS ))
+      if [ "$full" -gt 0 ]; then
+        on "$CP_BOX" idle "$dir" $((idx + 1)) $((idx + full)) "$IDLE_SHARDS" "$CONS" "$RF" >> "$loc/idle-create.txt" 2>&1 || { status=idle-create-failed; break; }
+        idx=$((idx + full))
+      fi
+      if [ "$part" -gt 0 ]; then
+        on "$CP_BOX" idle "$dir" $((idx + 1)) $((idx + 1)) "$part" "$CONS" "$RF" >> "$loc/idle-create.txt" 2>&1 || { status=idle-create-failed; break; }
+        idx=$((idx + 1))
+      fi
+      made=$((made + this)); total=$((total + this)); nb=$((nb + 1))
+      ready=0; st=
+      for ((w = 0; w < IDLE_BATCH_WAIT_SECS; w += 3)); do
+        st=$(on "$CP_BOX" repl "$dir" 2>/dev/null || true)
+        case "$st" in "under=0 shards=$total "*) case "$st" in *none:*) ;; *) ready=1 ;; esac ;; esac
+        if [ "$ready" = 1 ] && [ "$side" = raft ]; then
+          for b in "${brokers[@]}"; do
+            e=$(on "$b" engine "$dir" 2>/dev/null || true); n=${e#*raft_dirs=}; n=${n%% *}
+            [ "$n" -ge "$total" ] || ready=0
+          done
+        fi
+        [ "$ready" = 1 ] && break
+        sleep 3
+      done
+      echo "batch $nb: $made idle groups, $total shards, ready=$ready after $((SECONDS - t_idle)) s: $st" >> "$loc/idle.txt"
+      [ "$ready" = 1 ] || { status=idle-not-formed; break; }
+    done
+    if [ "$status" = ok ]; then
+      echo "idle_groups=$IDLE streams=$idx batches=$nb form_secs=$((SECONDS - t_idle))" >> "$loc/idle.txt"
+      sleep "$IDLE_SETTLE_SECS"
+    fi
   fi
   if [ "$status" = ok ]; then
     sleep "$SETTLE_SECS"
@@ -493,6 +546,16 @@ run_cell() {
     fi
     grep -m1 '^LOADGEN_JSON ' "$loc/loadgen.txt" | sed 's/^LOADGEN_JSON //' > "$loc/loadgen.json" || true
     [ -s "$loc/loadgen.json" ] || { [ "$status" != ok ] || status=loadgen-failed; }
+    # The idle cell carries its formation time into the JSON the summary reads.
+    if [ "$status" = ok ] && [ "$IDLE" -gt 0 ]; then
+      python3 - "$loc/loadgen.json" "$loc/idle.txt" <<'PY' || status=idle-record-failed
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+m = re.search(r"idle_groups=(\d+) .* form_secs=(\d+)", open(sys.argv[2]).read())
+d.update({"idle_groups": int(m.group(1)), "idle_form_s": int(m.group(2))})
+json.dump(d, open(sys.argv[1], "w"))
+PY
+    fi
     # The background publisher is part of the measurement: it must have finished, sent
     # nothing that failed, and held 95% of the target rate. Otherwise the two engines were
     # not read under the same load and the cell is invalid, not a pass.
