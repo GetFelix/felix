@@ -134,7 +134,7 @@ async fn every_member_folds_the_same_group_table_and_keeps_it_across_a_restart()
 async fn stream_machine(dir: &std::path::Path) -> (Machine, super::super::machine::Groups) {
     let log = open_log(dir, "m", 0, log_config());
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    let opened = Machine::open(snapshots, ShardKind::Stream, Some(&log)).await;
+    let opened = Machine::open(snapshots, ShardKind::Stream, Some(&log), None).await;
     let Opened {
         machine, groups, ..
     } = opened.expect("open");

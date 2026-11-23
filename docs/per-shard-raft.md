@@ -1904,9 +1904,16 @@ leader. A forward to a leader that is gone fails, and the client retries.
 
 ### Many groups electing at once
 
-A vote is a small file per shard, written whole and renamed into place,
-and a vote at a new term also writes the shard's replica state. That is
-two to four fsyncs per vote, and each group does its own.
+A vote is a small file per shard, the ballot, written whole and renamed
+into place: two fsyncs, the file's and its directory's, and each group does
+its own. A vote at a new term does not also wait for the shard's replica
+state. An open takes the term from a ballot ahead of the replica state
+(the ballot is written first for that reason), so the ballot alone makes
+the vote durable, and the next commit write carries the term into the
+replica state. That halved the fsyncs of nearly every vote in a storm,
+since a candidate's own vote and each vote it is granted are at a new term.
+The vote mark at the root is one synced write for every shard's queued
+marks, so it is shared across groups already.
 
 When every group on a broker loses its leader in the same moment, or many
 groups are formed together, every member reaches its election timeout in
@@ -1991,6 +1998,31 @@ about 90 rounds for 700 groups whose leader's broker crashed. Usually the
 first member of a group to stand wins, and the limit climbs back by the
 elections that won once it is not cut.
 
+A deterministic model measures this: `ticker/tests/storm.rs` runs the
+real election bound on two live brokers whose groups all lost their leader
+to the third, on a mock clock, with one disk per broker that saves one vote
+at a time. Pre-vote, a candidate saving its own vote before it asks, and a
+voter saving before it answers are all modelled. On a disk held to 5 ms an
+fsync:
+
+| groups | fsyncs a vote, bound | all led | elections | highest term |
+|---|---|---|---|---|
+| 100 | 4, 64 | 4.5 s | 245 | 5 |
+| 500 | 4, 64 | 11.8 s | 600 | 4 |
+| 2,000 | 4, 64 | 42.7 s | 2,207 | 7 |
+| 100 | 2, 64 | 2.4 s | 210 | 5 |
+| 500 | 2, 64 | 6.9 s | 646 | 5 |
+| 2,000 | 2, 64 | 22.6 s | 2,347 | 7 |
+| 2,000 | 2, none | 54.8 s | 8,872 | 11 |
+
+With the bound, a group takes about one election, and the time to all led
+is the time the disks take to save two votes per group: the disk is the
+whole cost. Without it, members that cannot get their vote saved in time
+stand again, and four times the elections cost more than twice the
+fsyncs. `two_thousand_groups_elect_once_each_after_a_broker_dies` holds the
+2,000-group row to 30 s, and `storm::table` prints the rest (2 ms rows
+too).
+
 `GroupRuntime::election_load` and the gauges
 `felix_broker_raft_elections_in_flight` and
 `felix_broker_raft_elections_waiting` show the bound at work.
@@ -2069,7 +2101,7 @@ open:
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`
-`GroupRouter`, which is the seam the upstream heartbeat coalescing wraps.
+`GroupRouter`; heartbeats sent together wrap the transport under it.
 `PeerTransport` is the one over the broker's peer connections: it sends
 each message through the peer pool as an internal `Raft` frame, and a
 listener given the runtime (`PeerServer::with_raft`) hands it to `handle`
@@ -2367,53 +2399,65 @@ for tests and A/B runs, on a broker or for the `raft::` unit tests. It is
 not supported in production. `0` runs
 the groups without group threads, which keeps that path tested.
 
-## Heartbeat coalescing
+## Heartbeats sent together
 
 Without coalescing, each leader sends each follower one empty
 AppendEntries per heartbeat interval. A broker with 2,000 members at RF
 3 leads about 667 groups, so it sends about 1,300 heartbeats per interval and
 answers about as many.
 
-### The upstream shape
+The runtime wraps its transport (`raft/beats.rs`). A heartbeat, an append
+with no entries, waits up to `beat_window` (1 ms by default) for others to the
+same broker, and then all of them go as one message, answered with one result
+per heartbeat in order. This is the pattern openraft points to in
+openraft#2390 (`examples/multi-raft-kv`). Since the node ticker checks every
+group on the same tick, the heartbeats of all the groups due on a tick land in
+the same window. Everything else goes at once on its own: an append that
+carries entries never waits.
 
-openraft sends a heartbeat through the group's network handle, and
-`openraft-multi` routes it through `GroupRouter::append_entries(target,
-group, request)` with no entries. The pull request Felix sends to
-`openraft-multi` (openraft#2304, item 2) has three parts:
+- **Bounded.** One message holds at most 512 heartbeats. A batch that fills
+  goes at once, and the next one starts its own window.
+- **Negotiated.** Only a peer that offered `RAFT_BEATS` is sent the batch
+  (`docs/internal-protocol.md`, "Heartbeats together"). Any other is sent
+  each heartbeat on its own, the bytes it always read, and so is a batch of
+  one.
+- **One group cannot hold up the rest.** The receiver hands every
+  heartbeat to its member at once. Once one has answered, a member that stays
+  silent for one window past the latest answer is answered *slow*, which the
+  leader counts as not answered, with the broker up. A failure for one
+  group's heartbeat is that group's alone.
+- **Off.** `beat_window` zero sends each heartbeat on its own. It must be
+  shorter than `heartbeat`; the runtime refuses a config where it is not.
 
-1. A wrapper router that implements `GroupRouter` over any other
-   `GroupRouter`. An AppendEntries with no entries is parked in a buffer for
-   its target. Anything else passes straight through.
-2. A new `GroupRouter::heartbeats(target, batch)` method that carries many
-   `(group, request)` pairs and returns one result per pair. Its default
-   implementation calls `append_entries` for each, so existing routers keep
-   working. A router that implements it sends one message.
-3. A receive helper that hands each request in a batch to its group's
-   `Raft::append_entries` concurrently and collects the answers.
+Measured in the unit harness
+(`idle_groups_cost_a_broker_fewer_messages_with_heartbeats_together`), with
+every idle group at the short gap: 24 groups cost each broker 72 messages a
+second each on its own and 6 together.
 
-The buffer flushes when the oldest heartbeat in it has waited a short window
-(a few milliseconds), or when the batch reaches a size cap. Since the node
-ticker ticks all groups together, their heartbeats arrive in the same
-window, and one flush carries them all. One heartbeat is about 60 bytes
-(vote, previous log id, commit index), so 2,000 fit in one message.
+### The lease under the wait
 
-The delay is safe for leases. openraft takes the lease's start from when it
-handed the heartbeat to the network, which is before the wait, and a follower
-starts refusing votes when it receives it, which is after. Both err on the
-safe side. The window is added to the margin like the tick interval.
+The wait can only shorten a lease, never lengthen it:
 
-### The interim
+1. A leader's lease counts from when openraft handed off the message a
+   majority answered (`Lease::admit`, "Acknowledging a write"). openraft
+   stamps that instant when it builds the request, before it reaches the
+   transport, so before the wait.
+2. A follower's promise not to vote for anyone else starts when it takes
+   the heartbeat, after the wait and the trip.
 
-Felix does not coalesce privately (engine page, "Limits found in openraft are
-fixed upstream", and #2215). Until the upstream change ships, groups
-heartbeat one by one over the shared peer connection. A busy group's
-appends already serve as its heartbeats, so the load is from idle and
-lightly written groups, and with no sleep in 0.8 that is most of them. The
-design-point run measures that traffic on real transport first, and the
-numbers go on openraft#2304. If it breaks a gate cell before the release,
-the wrapper is carried in the tree as an exact copy of the upstream pull
-request and deleted when the release that has it is pinned. See Questions,
-3.
+So for every answer, hand-off <= taken, and a lease of `lease` after the
+hand-off ends no later than `lease` after the follower took it, inside its
+`election_max` promise by the drift bound of `RuntimeConfig::lease`. The
+window does not appear in that bound at all. What it costs is liveness: the
+lease the leader holds is up to one window older than it would be, and a
+follower's heartbeats can arrive up to one window further apart. With the
+1 ms default against a 200 ms heartbeat, a 1.5 s lease and a 1 s shortest
+election timeout, both are far inside the margin, and the runtime refuses
+any window as long as the heartbeat. Pre-vote reads the same instants: a
+follower refuses a pre-vote while its leader is recent by when it took the
+last heartbeat, which the wait only makes later.
+`the_lease_is_no_younger_than_the_heartbeat_wait` holds an 80 ms window and
+checks the leader's lease is never younger than the wait.
 
 ## A commit goes on the next append
 
@@ -3224,8 +3268,9 @@ The broker never appends to that log, and four rules follow from it.
   `propose_idempotent` ("Idempotent publishes", below), and a conditional
   one through `propose_publish_at` ("Conditional publishes", below), a
   head trim through `propose_trim_at` ("Head trims", below), and an atomic
-  commit through `propose_commit` ("Atomic commits", below). #2446
-  lists what is still refused.
+  commit through `propose_commit` ("Atomic commits", below). So none of
+  these refusals is reached from a served route on a Raft shard; each is a
+  backstop.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
   what a deposed leader held, drops nothing here.
@@ -3424,7 +3469,7 @@ never ends a subscriber of the new term.
 
 Consumer-group operations on a Raft shard go to the shard's own groups
 ("Consumer groups", below), and are refused by name until the fleet
-finalizes `raft_consumer_groups` (#2446). A head trim and an atomic commit
+finalizes `raft_consumer_groups`, as a new cluster does. A head trim and an atomic commit
 go to the shard's engine ("Head trims" and "Atomic commits", above).
 
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_groups.rs`,
@@ -5566,8 +5611,27 @@ on the hybrid.
   balance or operator move is one write that names another member as
   leader, and a hybrid move left on the shard is dropped
   (`docs/control-plane.md`, "Raft shards").
-- **Not served yet:** a keyed cache watch on a Raft cache shard. It reads
-  the hybrid store, which never opens the member's directory (#2792).
+- **Watches** are served by any member that knows its leader. Each member reports the changes its applied entries make
+  to the broker's watch hub, under the state's lock, and a change's offset
+  is its entry's index, which is also the version a put writes. Only
+  committed entries apply, so a watch is never handed a change a failover
+  takes back, it waits on no commit mark, and it keeps going when the group
+  changes leader. A retry, a refused conditional write and a delete of an
+  absent key change nothing and report nothing. A watch joins at the
+  member's applied edge, read under the same lock as the values a retained
+  watch is handed. That edge is the member's own, so a follower that is
+  behind can hand a retained watch a value older than one the client just
+  read from the leader. The newer value is committed and arrives as a
+  change once the follower applies it; nothing is lost. The group keeps no
+  change history to replay, so a resume from below the edge is answered
+  with `resnapshot` and each key's current value. A resume from past the
+  edge, an offset a member further ahead gave out, waits for this one to
+  apply that far, up to the publish quorum timeout, and is then refused as
+  retryable. A snapshot install, and a member left with no leader, end the
+  shard's watches as lagged at the first change they were not told of.
+  Closing a member, when its cache is deleted or made again, ends them
+  outright.
+  See [cache-on-log.md](cache-on-log.md#watch).
 
 ## Moving a shard from the hybrid to Raft
 
@@ -6259,7 +6323,7 @@ deletion.
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the vote hold with its exemptions, `admit_local_ack` and `await_ack`, the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write"), and the publish path asking the check for a `Leader` stream (#2436) | 4 | Behind the feature. The model's lease configs passed (#2422) |
 | 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
-| 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |
+| 8 (#2241) | Heartbeat coalescing: heartbeats for one broker sent together within a 1 ms window, behind the negotiated `RAFT_BEATS` capability. Built (#2939) | 3 | A peer without the capability is sent each heartbeat on its own |
 | 9 (#2242) | The switch from the hybrid: seal with digest, base and voters by compare-and-swap, `shard_raft` fleet feature, and the switch in the simulator with power loss | 4, 5, 6, 12 | Gated by a fleet feature nobody finalizes before the gate passes. Needs the model's switch config and the simulator runs first |
 | 10 (#2243) | Gate runs: A/B cells, groups-per-broker run, the added Raft-shard seeds, write-up in `docs/` | 4 to 6, 8, 9, 11, 12 | Workflows and docs only |
 
@@ -7098,13 +7162,9 @@ ones settled by the decisions of issue #2167 say so.
    before a restarted broker votes. The control plane's group is track 3's
    call.
 
-3. **What is the heartbeat-coalescing interim?** Recommended: none in the
-   tree. With no sleep in 0.8 every idle group heartbeats, so this is
-   measured first: the traffic at the design point, posted upstream with
-   the pull request. Only if an A/B or gate cell fails on heartbeat cost
-   does Felix carry the wrapper, as an exact copy of the upstream pull
-   request. The wrapper is safe either way, so this is about keeping one
-   copy of the code.
+3. **What is the heartbeat-coalescing interim?** Decided: Felix sends
+   heartbeats together itself, the way openraft#2390 shows, behind
+   `RAFT_BEATS` ("Heartbeats sent together").
 
 4. **Which timer values?** Decided, and the runtime's defaults: tick 50 ms,
    heartbeat 200 ms, idle heartbeat 2 s after 5 s without an entry,

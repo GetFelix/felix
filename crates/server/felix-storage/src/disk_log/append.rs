@@ -767,7 +767,7 @@ impl LogInner {
         // acknowledged, so the next start must not keep the storage id. On
         // every log's poison, not only the first: this one must not return
         // before the record says so. Forgetting twice writes nothing.
-        crate::run_state::forget_watched();
+        crate::run_state::forget_watched(self.mark.dir());
         if let Err(err) = self.mark.record_poison(&self.config.fsync_mode) {
             tracing::warn!(
                 shard = %self.label,

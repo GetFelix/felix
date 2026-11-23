@@ -79,11 +79,35 @@ pub(crate) enum Read {
     },
 }
 
+/// A key's value as a cache watch reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Watched {
+    pub(crate) value: Bytes,
+    /// The index of the put that wrote it.
+    pub(crate) version: u64,
+    /// In the log's microseconds; zero is never.
+    pub(crate) expires_at: u64,
+}
+
+impl Watched {
+    fn of(entry: &Entry) -> Self {
+        Self {
+            value: entry.value.clone(),
+            version: entry.version,
+            expires_at: entry.expires_at,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 #[cfg_attr(test, derive(Clone))]
 pub(crate) struct CacheState {
     /// The log's time: the stamp of the last stamped entry applied.
     pub(super) time: u64,
+    /// The index of the last entry folded in, or the last a restored
+    /// snapshot covers. Not in a snapshot: a cache watch reads it as its
+    /// live edge, under the lock apply holds.
+    applied: u64,
     /// The maps, unless `layered` holds them.
     tables: Tables,
     /// When the first value in `tables` expires, so a leader's expiry tick
@@ -152,6 +176,7 @@ impl CacheState {
         command: &CacheCommand,
     ) -> Option<Answer> {
         self.time = stamp;
+        self.applied = index;
         let request = match command {
             CacheCommand::Expire { key, version } => {
                 // A key written again since the leader looked keeps its value.
@@ -343,6 +368,7 @@ impl CacheState {
     pub(super) fn from_tables(time: u64, tables: Tables) -> Self {
         Self {
             time,
+            applied: 0,
             next_expiry: tables.expiring.first().map(|(at, _)| *at),
             tables,
             layered: None,
@@ -434,6 +460,32 @@ impl CacheState {
         } else {
             Read::Absent
         }
+    }
+
+    /// See [`Self::applied`]'s field.
+    pub(crate) fn applied(&self) -> u64 {
+        self.applied
+    }
+
+    /// The state restored from a snapshot whose last entry is `index`.
+    pub(crate) fn restored_through(&mut self, index: u64) {
+        self.applied = index;
+    }
+
+    /// What a cache watch sees of `key`: its value, version and expiry,
+    /// whether or not the log's time has passed the expiry yet.
+    pub(crate) fn watched(&self, key: &str) -> Option<Watched> {
+        self.entry(key).map(Watched::of)
+    }
+
+    /// Every key `keep` takes with a value unexpired at the log's time, for
+    /// a watch's snapshot.
+    pub(crate) fn watched_entries(&self, keep: &dyn Fn(&str) -> bool) -> Vec<(String, Watched)> {
+        self.view()
+            .entries()
+            .filter(|(key, entry)| keep(key) && entry.live(self.time))
+            .map(|(key, entry)| (key.clone(), Watched::of(entry)))
+            .collect()
     }
 
     pub(crate) fn sum(&self, key: &str) -> Option<i64> {

@@ -672,7 +672,7 @@ impl SegmentWriter {
     /// not keep the storage id, so the boot is forgotten here.
     fn poison_after_failed_sync(&mut self) {
         self.poisoned = true;
-        crate::run_state::forget_watched();
+        crate::run_state::forget_watched(&self.path);
     }
 
     /// Restore the file to the last byte this writer accounts for.

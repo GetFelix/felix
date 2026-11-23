@@ -323,9 +323,13 @@ impl PeerServer {
     }
 
     /// Answer peers' Raft messages with `raft`, and offer
-    /// [`PeerCapabilities::RAFT`] so they send them.
+    /// [`PeerCapabilities::RAFT`] so they send them, with
+    /// [`PeerCapabilities::RAFT_BEATS`] for heartbeats sent together.
     pub fn with_raft(mut self, raft: Arc<dyn RaftHandler>) -> Self {
-        self.capabilities = self.capabilities.union(PeerCapabilities::RAFT);
+        self.capabilities = self
+            .capabilities
+            .union(PeerCapabilities::RAFT)
+            .union(PeerCapabilities::RAFT_BEATS);
         self.raft = Some(raft);
         self
     }

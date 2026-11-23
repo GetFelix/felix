@@ -17,6 +17,8 @@
 # (docs/simulation.md, "Raft groups"), the second with skewed timers;
 # `raft-wipe` and `raft-restore` run them with members stopped and a shard
 # directory or data root wiped or put back from an older copy.
+# `raft-power-loss`, `raft-relaxed-power-loss`, `raft-majority-cut` and
+# `raft-majority-cut-relaxed` cut members' power, as their hybrid twins do.
 #
 # A failing seed is sorted by what its log says:
 #
@@ -71,7 +73,11 @@ case "$mode" in
   raft-clocks) test=raft_seeds; mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
   raft-wipe) test=raft_seeds; mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
   raft-restore) test=raft_seeds; mode_env=(FELIX_SIM_RESTORE=1); mode_prefix="FELIX_SIM_RESTORE=1 " ;;
-  *) echo "FELIX_SIM_MODE must be off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe or raft-restore, got $mode" >&2; exit 2 ;;
+  raft-power-loss) test=raft_seeds; mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
+  raft-relaxed-power-loss) test=raft_seeds; mode_env=(FELIX_SIM_POWER_LOSS=relaxed); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed " ;;
+  raft-majority-cut) test=raft_seeds; mode_env=(FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_MAJORITY_CUT=1 " ;;
+  raft-majority-cut-relaxed) test=raft_seeds; mode_env=(FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1 " ;;
+  *) echo "FELIX_SIM_MODE must be off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut or raft-majority-cut-relaxed, got $mode" >&2; exit 2 ;;
 esac
 # The test one seed runs: `replay` takes FELIX_SIM_SEED, the Raft batch a
 # range of one.

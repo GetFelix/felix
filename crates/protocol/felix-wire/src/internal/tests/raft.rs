@@ -54,6 +54,7 @@ fn raft_messages_need_the_raft_capability() {
     }
     // A bit of its own, not one an older peer already offers.
     assert_eq!(PeerCapabilities::RAFT.bits(), 1 << 23);
+    assert_eq!(PeerCapabilities::RAFT_BEATS.bits(), 1 << 28);
 }
 
 fn frame(kind: Kind, body: &[u8]) -> Bytes {

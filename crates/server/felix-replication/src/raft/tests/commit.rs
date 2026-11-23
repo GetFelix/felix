@@ -1076,7 +1076,7 @@ mod skipped_counts {
     async fn machine(dir: &std::path::Path) -> Opened {
         let log = open_log(dir, "m", 0, log_config());
         let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-        Machine::open(snapshots, ShardKind::Stream, Some(&log))
+        Machine::open(snapshots, ShardKind::Stream, Some(&log), None)
             .await
             .expect("open")
     }
@@ -1188,7 +1188,7 @@ mod skipped_counts {
 async fn stream_machine(dir: &std::path::Path) -> super::super::machine::Opened {
     let log = open_log(dir, "m", 0, log_config());
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    super::super::machine::Machine::open(snapshots, ShardKind::Stream, Some(&log))
+    super::super::machine::Machine::open(snapshots, ShardKind::Stream, Some(&log), None)
         .await
         .expect("open")
 }
@@ -1498,11 +1498,38 @@ async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
     );
     assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
 
+    // Healed, the followers have heard no leader for longer than an
+    // election timeout and neither holds the last piece, so either may win
+    // an election before the leader's next append reaches them and rightly
+    // discard it. The leader's appends are held until a follower has stood
+    // twice, as a loaded machine can delay them, and the followers' asks are
+    // lost so the leader is the one to commit the piece.
+    let asked = |net: &Net| {
+        let asks = net.asks.lock();
+        led.followers()
+            .map(|broker| asks.get(&broker).copied().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let before = asked(&led.cluster.net);
+    led.cluster
+        .net
+        .unheard_candidates
+        .lock()
+        .extend(led.followers());
+    led.cluster.net.lose_appends.store(true, Relaxed);
     led.heal();
+    eventually(|| {
+        let now = asked(&led.cluster.net);
+        let stood_twice = |(now, before): (&u32, &u32)| now - before >= 4;
+        now.iter().zip(&before).any(stood_twice).then_some(())
+    })
+    .await;
+    led.cluster.net.lose_appends.store(false, Relaxed);
     assert_eq!(
         led.engine.await_commit(&shard(0), written, PATIENCE).await,
         Ok(())
     );
+    led.cluster.net.unheard_candidates.lock().clear();
     for broker in BROKERS {
         let commits = applied_on(&led.cluster, broker, at + 3).await;
         assert!(commits.read_bound() >= at + 3, "{broker}");
