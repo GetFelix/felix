@@ -74,6 +74,8 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
         Some(format!("{reads} reads"))
     } else if faults < MIN_FAULTS {
         Some(format!("{faults} faults"))
+    } else if outcome.leases == Some(0) {
+        Some("no member passed the lease check, so none was judged".into())
     } else if disks.together() && outcome.power.together == 0 {
         Some("no members lost power together".into())
     } else if disks != Disks::Off && replaced == 0 {
@@ -98,6 +100,17 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
 
 /// Run `seed` and say what failed, if anything did, with the whole outcome.
 fn failure(seed: u64, clocks: Clocks, disks: Disks, leader_change: bool) -> Option<String> {
+    run_checked(seed, clocks, disks, leader_change).err()
+}
+
+/// Run `seed` and hand back its outcome, or say what failed with the whole
+/// outcome.
+fn run_checked(
+    seed: u64,
+    clocks: Clocks,
+    disks: Disks,
+    leader_change: bool,
+) -> Result<RaftOutcome, String> {
     let config = RaftSimConfig {
         clocks,
         disks,
@@ -112,13 +125,16 @@ fn failure(seed: u64, clocks: Clocks, disks: Disks, leader_change: bool) -> Opti
     } else {
         Some(format!("failed: {}", outcome.first_failure()))
     };
-    why.map(|why| format!("raft seed {seed} ({clocks:?}, {disks:?}) {why}\n{outcome}"))
+    match why {
+        Some(why) => Err(format!(
+            "raft seed {seed} ({clocks:?}, {disks:?}) {why}\n{outcome}"
+        )),
+        None => Ok(outcome),
+    }
 }
 
-fn check(seed: u64, clocks: Clocks, disks: Disks) {
-    if let Some(failure) = failure(seed, clocks, disks, false) {
-        panic!("{failure}");
-    }
+fn check(seed: u64, clocks: Clocks, disks: Disks) -> RaftOutcome {
+    run_checked(seed, clocks, disks, false).unwrap_or_else(|failure| panic!("{failure}"))
 }
 
 #[test]
@@ -159,14 +175,19 @@ fn raft_seed_1_with_restores() {
 
 /// A leader elected just before the final reads had not opened its shard
 /// yet, and the run reported no leader to read from. The final reads now
-/// wait for an open leader like the recovery check does.
+/// wait for an open leader like the recovery check does. The seed's cuts
+/// also tear appends, so it shows torn tails are repaired on Raft.
 #[test]
 #[cfg_attr(
     not(tokio_unstable),
     ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
 )]
 fn raft_seed_1233_with_power_loss() {
-    check(1233, Clocks::Off, Disks::PowerLoss);
+    let power = check(1233, Clocks::Off, Disks::PowerLoss).power;
+    assert!(
+        power.torn > 0 && power.repaired == power.torn,
+        "no torn tail to judge, or one left unrepaired: {power:?}"
+    );
 }
 
 #[test]

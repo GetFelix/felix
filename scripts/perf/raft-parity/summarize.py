@@ -117,6 +117,7 @@ METRICS = {
     "rate_attain": ("publisher rate / target", lambda d: _ratio(d, "publish_throughput_msg_s", "publish_target_msg_s"), True),
     "consume_msg_s": ("consumed throughput (msg/s)", lambda d: d.get("consumed_throughput_msg_s"), True),
     "cpu_kmsg": ("broker CPU per 1000 messages (ms)", cpu_ms_per_kmsg, False),
+    "idle_form": ("idle group formation (s)", lambda d: d.get("idle_form_s"), False),
     "first_commit": ("leader kill to first commit (ms)", lambda d: d.get("first_commit_ms"), False),
     "caught_up": ("leader kill to subscriber caught up (ms)", lambda d: d.get("caught_up_ms"), False),
 }
@@ -137,6 +138,10 @@ for topo, topo_name in (("single", "single node"), ("rf3", "RF 3")):
     for mode, mode_name in MODES:
         CELLS["%s-%s-lat" % (topo, mode)] = ("%s, %s, batch 1 latency" % (topo_name, mode_name), LAT)
         CELLS["%s-%s-tput" % (topo, mode)] = ("%s, %s, batched throughput" % (topo_name, mode_name), TPUT)
+# Cell 2 with idle groups on the same brokers: the busy shards must still match hybrid under the
+# same gates as rf3-oncommit-tput. Formation time is reported, not gated.
+CELLS["rf3-idle-tput"] = ("RF 3, Quorum on_commit, batched throughput with idle groups on the same brokers",
+                          TPUT + [("idle_form", False)])
 CELLS["rf3-failover"] = ("RF 3, Quorum on_commit, leader kill recovery",
                          [("first_commit", True), ("caught_up", True)])
 CELLS["rf3-kafka"] = ("RF 3, Quorum on_commit, Kafka produce", TPUT)

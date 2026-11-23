@@ -1625,6 +1625,8 @@ impl DiskLog {
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             hold_next_append: Mutex::new(None),
+            #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+            head_trims: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             append_held: std::sync::atomic::AtomicBool::new(false),
             roll_task: Mutex::new(None),
@@ -1848,6 +1850,13 @@ impl DiskLog {
     #[doc(hidden)]
     pub async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.durability.lock_flushes().await
+    }
+
+    /// Hold every head trim of this log, a purge's included, until the
+    /// guard is dropped.
+    #[doc(hidden)]
+    pub async fn hold_head_trims(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.head_trims.lock().await
     }
 }
 
@@ -2516,6 +2525,9 @@ struct LogInner {
     /// Holds the next append at a point, until the sender is used or dropped.
     #[cfg(test)]
     hold_next_append: Mutex<Option<(append::HoldAt, std::sync::mpsc::Receiver<()>)>>,
+    /// Held by a test to stall head trims, as a slow device would.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    head_trims: tokio::sync::Mutex<()>,
     /// Set while an append is held there.
     #[cfg(test)]
     append_held: std::sync::atomic::AtomicBool,

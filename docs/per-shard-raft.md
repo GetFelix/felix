@@ -2338,6 +2338,9 @@ on the single voter. A standalone broker with no durable storage keeps every
 stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
 selects the hybrid, deprecated. A standalone data directory the hybrid wrote is refused at startup
 with an error naming `FELIX_SHARD_ENGINE=hybrid`, which keeps serving it; 0.8 does not migrate it.
+The cluster
+test suites run on Raft by default too; the hybrid runs report only (see
+`docs/hybrid-retirement.md`).
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:
