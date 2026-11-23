@@ -5395,6 +5395,10 @@ on the hybrid.
   stream Raft paths answer it: a write may still commit. Writes carry no
   client producer id yet, so a client retry after one may apply twice, as
   on the hybrid.
+- **Placement** treats a cache shard like a Raft stream shard: a drain,
+  balance or operator move is one write that names another member as
+  leader, and a hybrid move left on the shard is dropped
+  (`docs/control-plane.md`, "Raft shards").
 - **Not served yet:** a keyed cache watch on a Raft cache shard. It reads
   the hybrid store, which never opens the member's directory (#2792).
 
