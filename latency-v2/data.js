@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795433661886,
+  "lastUpdate": 1795437722972,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -84612,6 +84612,72 @@ window.BENCHMARK_DATA = {
             "range": "627.50",
             "unit": "us",
             "extra": "trials: 5\nmedian: 324.00\nmean: 715.60\nstdev: 627.50\ncv: 87.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fca078016d4f089e57f22b360bf926d4c08ffe6d",
+          "message": "build(deps): bump jsonwebtoken from 11.1.0 to 12.0.0 (#3019)\n\n* build(deps): bump jsonwebtoken from 11.1.0 to 12.0.0\n\nBumps [jsonwebtoken](https://github.com/Keats/jsonwebtoken) from 11.1.0 to 12.0.0.\n- [Changelog](https://github.com/Keats/jsonwebtoken/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/Keats/jsonwebtoken/compare/v11.1.0...v12.0.0)\n\n---\nupdated-dependencies:\n- dependency-name: jsonwebtoken\n  dependency-version: 12.0.0\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* test(oidc): jsonwebtoken 12 returns a Result from EncodingKey::from_secret\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Gabriel Loewen <gabrielloewen@outlook.com>",
+          "timestamp": "2026-11-23T12:35:37Z",
+          "tree_id": "93f6904083c0ece5ec5bdc52e4ffcf4ba697b781",
+          "url": "https://github.com/GetFelix/felix/commit/fca078016d4f089e57f22b360bf926d4c08ffe6d"
+        },
+        "date": 1795437705720,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 67.40\nstdev: 0.89\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "553.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 381.80\nstdev: 553.33\ncv: 144.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 180,
+            "range": "1273.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 848.60\nstdev: 1273.12\ncv: 150.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.60\nstdev: 1.34\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 190,
+            "range": "10.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 188.60\nstdev: 10.38\ncv: 5.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 372,
+            "range": "298.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 372.00\nmean: 505.60\nstdev: 298.77\ncv: 59.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
