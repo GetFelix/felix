@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795419335146,
+  "lastUpdate": 1795420839066,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66144,6 +66144,58 @@ window.BENCHMARK_DATA = {
             "range": "5475.37",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1241162.65\nmean: 1239777.98\nstdev: 5475.37\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db122de4a580dd9a751671a9dd47813c8754ea35",
+          "message": "feat(raft): keyed cache watch on Raft cache shards (#2792) (#3017)\n\n* wip(raft): cache groups report applied changes to the watch hub (#2792)\n\nNot finished: the broker's cache_watch handler does not use\nRaftEngine::cache_watch_point yet, and there are no tests.\n\nSpec-Unaffected: WIP; reporting applied cache changes to watchers does not change what an entry means.\n\n* wip(raft): name the cache watch point's types (#2792)\n\n* wip(raft): cache watch join on a Raft shard, tests (#2792)\n\n* wip(raft): broker cache watch tests on Raft, docs (#2792)\n\n* test(raft): bound the lagged cache watch test's receive (#2792)\n\nSpec-Unaffected: the apply path applies the same entries with the same results; members only report what an apply changed, which the model does not describe.\n\n* fix(raft): end cache watches when a member closes, wait for a behind member on resume (#2792)\n\nClosing a Raft cache member left its watches in the hub, which keys them\nby shard alone: they went quiet, or after a delete and recreate dropped\nthe new group's low indexes as duplicates. A resume past a member's\napplied edge now waits for it to catch up, then answers retryably,\ninstead of a terminal InFuture. Tests cover close, remake, the behind\nresume and the leaderless ending in the feed pass. Docs say a watch\njoins at the serving member's own edge.",
+          "timestamp": "2026-11-23T07:53:36Z",
+          "tree_id": "cb9efca34d7628a11382864063358e51b77d5545",
+          "url": "https://github.com/GetFelix/felix/commit/db122de4a580dd9a751671a9dd47813c8754ea35"
+        },
+        "date": 1795420838294,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 539526.25,
+            "range": "17989.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 539526.25\nmean: 548822.71\nstdev: 17989.92\ncv: 3.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 539526.25,
+            "range": "17989.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 539526.25\nmean: 548822.71\nstdev: 17989.92\ncv: 3.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 126315.78,
+            "range": "1291.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 126315.78\nmean: 125722.68\nstdev: 1291.00\ncv: 1.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1263157.78,
+            "range": "12910.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1263157.78\nmean: 1257226.75\nstdev: 12910.00\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
