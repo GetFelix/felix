@@ -1,6 +1,7 @@
 //! Copy identity: the mark log, the gate, the judge, and the Raft log's
 //! hooks that keep the marks.
 
+mod fresh_epoch;
 mod gate;
 mod judge;
 mod marks;

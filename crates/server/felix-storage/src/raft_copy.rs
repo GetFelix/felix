@@ -23,6 +23,7 @@
 
 mod copy_file;
 mod epoch_file;
+mod fresh_epoch;
 mod gate;
 mod judge;
 mod marks;
@@ -49,6 +50,7 @@ pub use copy_file::CopyFile;
 )]
 pub(crate) use epoch_file::{EpochAt, EpochFile};
 pub use epoch_file::{EpochBase, EpochLogId};
+pub use fresh_epoch::{FreshEpoch, write_fresh_epoch};
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,

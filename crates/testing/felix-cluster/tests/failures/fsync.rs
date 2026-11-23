@@ -108,16 +108,36 @@ async fn a_retry_after_a_failed_fsync_is_not_trusted() {
         node: owner.clone(),
         fault: FsyncFault::FailOnce,
     };
-    cluster.inject(&fault).await.expect("inject");
-    // The failure goes to whichever flush on `owner` comes first. Here that
-    // is this publish's: one single-shard stream, and nothing else writing.
-    assert!(
-        cluster
-            .publish_via(&owner, STREAM, b"lost-writeback".to_vec())
-            .await
-            .is_err(),
-        "the publish whose fsync failed was acknowledged",
-    );
+    // The one-shot fault is process-wide: the first flush of any file on
+    // `owner` takes it, and the control-plane view writer flushes on its own
+    // tick. If that flush wins, this publish is rightly acknowledged and the
+    // fault is gone, so arm it again until a stream flush takes it.
+    let mut failed = false;
+    for attempt in 0..8 {
+        cluster.inject(&fault).await.expect("inject");
+        let published = cluster
+            .publish_via(
+                &owner,
+                STREAM,
+                format!("lost-writeback-{attempt}").into_bytes(),
+            )
+            .await;
+        if published.is_err() {
+            failed = true;
+            break;
+        }
+        // Acked: either the control-plane flush took the fault, and a
+        // second publish succeeds, or the stream's flush took it and the
+        // log must have refused the ack.
+        assert!(
+            cluster
+                .publish_via(&owner, STREAM, format!("probe-{attempt}").into_bytes())
+                .await
+                .is_ok(),
+            "a publish was acknowledged by a log whose fsync had failed",
+        );
+    }
+    assert!(failed, "no publish saw the injected fsync failure");
     // The failure has been used up: the disk would now flush fine.
     for attempt in 0..3 {
         assert!(

@@ -50,6 +50,7 @@ fn assignments(shards: &[u32]) -> HashMap<ShardKey, ShardAssignment> {
                 targets_withheld: false,
                 raft_formed: None,
                 raft_voters: None,
+                raft_bases: None,
                 placed: None,
             };
             (key(shard), assignment)
