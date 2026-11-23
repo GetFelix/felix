@@ -1221,26 +1221,44 @@ fn a_dropped_field_is_named_and_an_empty_one_is_not() {
     assert!(dropped_fields(&decoded, &decoded).is_empty());
 }
 
-/// Every `const NAME_LEVEL: u16 = N;` the metadata store declares.
+/// Every `const NAME_LEVEL: <ty> = N;` declared anywhere under `store/`,
+/// including values rustfmt wrapped onto the next line.
 fn declared_levels() -> Vec<(String, u16)> {
-    let sources = [
-        include_str!("../../../raft.rs"),
-        include_str!("../../command.rs"),
-    ];
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read store dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store");
+    let mut files = Vec::new();
+    rust_files(&root, &mut files);
     let mut found = Vec::new();
-    for source in sources {
-        for line in source.lines() {
-            let Some(rest) = line.split("const ").nth(1) else {
-                continue;
-            };
-            let Some((name, value)) = rest.split_once(": u16 = ") else {
-                continue;
-            };
-            if !name.ends_with("_LEVEL") {
+    for file in files {
+        let source = std::fs::read_to_string(&file).expect("read source");
+        let words: Vec<&str> = source.split_whitespace().collect();
+        for at in 0..words.len() {
+            if words[at] != "const" {
                 continue;
             }
-            let value = value.trim_end_matches(';').trim();
-            found.push((name.to_string(), value.parse().expect("a literal level")));
+            // `const NAME_LEVEL: ty = N;` split on whitespace: NAME_LEVEL:, ty, =, N;
+            let Some(name) = words.get(at + 1).and_then(|w| w.strip_suffix(':')) else {
+                continue;
+            };
+            if !name.ends_with("_LEVEL") || words.get(at + 3) != Some(&"=") {
+                continue;
+            }
+            let value = words.get(at + 4).map(|v| v.trim_end_matches(';'));
+            let level = value
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{name} in {} is not a literal level", file.display()));
+            found.push((name.to_string(), level));
         }
     }
     found
