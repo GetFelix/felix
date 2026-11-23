@@ -1323,7 +1323,10 @@ One entry per shard, in shard order. Empty means the broker knows nothing of
 the name. Each entry is what a request for that shard would be dispatched to:
 
 - An owned shard has `node_id`, `generation`, and `addr` when the cluster has
-  been told where clients reach that broker.
+  been told where clients reach that broker. On a Raft shard the generation is
+  the leader's Raft term as the answering broker knows it, or `0` when that
+  broker holds no member of the shard; otherwise it is the assignment's
+  generation.
 - A shard nobody can serve right now has no `node_id` and gives the
   `shard_unavailable` reason in `unavailable` (`not_assigned`,
   `owner_unavailable`, `not_ready`, `moving`, ...).
