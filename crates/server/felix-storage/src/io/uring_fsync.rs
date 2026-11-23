@@ -37,6 +37,7 @@ use std::sync::{Arc, OnceLock};
 use io_uring::{IoUring, opcode, types};
 use tokio::sync::oneshot;
 
+use super::OnFailure;
 use crate::fs::File;
 
 /// How many flushes may be outstanding in the ring at once.
@@ -137,13 +138,6 @@ struct Submission {
     fail_with: i32,
 }
 
-/// Runs on the ring's thread when a flush fails, before the reply is sent.
-///
-/// The caller may have stopped waiting by then, and a failed sync must still
-/// stop its log: the kernel may have dropped the pages, and the next fsync
-/// would report success having written nothing.
-pub(crate) type OnFailure = Box<dyn FnOnce(&io::Error) + Send>;
-
 #[derive(Clone, Copy)]
 enum Op {
     Fsync,
@@ -176,6 +170,7 @@ impl InFlight {
 
 /// Report an outcome, running the failure hook first so the log is stopped
 /// before any waiter hears about it, and whether or not one still listens.
+/// The hook is dropped here either way, before the reply.
 fn complete(
     reply: oneshot::Sender<io::Result<()>>,
     on_failure: Option<OnFailure>,
@@ -250,11 +245,33 @@ pub(crate) fn available() -> bool {
     ring().is_some()
 }
 
+/// For tests that need the ring: whether it is here, skipping otherwise.
+#[cfg(test)]
+pub(crate) fn available_or_required() -> bool {
+    available() || {
+        skip_without_ring();
+        false
+    }
+}
+
+/// Note a test skipped for want of a ring, or panic when
+/// `FELIX_TEST_REQUIRE_IO_URING=1` says CI has one.
+#[cfg(test)]
+pub(crate) fn skip_without_ring() {
+    let required = std::env::var("FELIX_TEST_REQUIRE_IO_URING").is_ok_and(|v| v == "1");
+    assert!(
+        !required,
+        "FELIX_TEST_REQUIRE_IO_URING=1 but io_uring is unavailable"
+    );
+    eprintln!("io_uring is unavailable here; skipping");
+}
+
 /// `fdatasync` the file through the ring.
 ///
 /// `None` means the ring is unavailable and the caller should use its own
 /// fallback; nothing was attempted and `on_failure` does not run. Otherwise
-/// `on_failure` runs on any failure, even if this future was dropped.
+/// `on_failure` runs on any failure, even if this future was dropped, and is
+/// dropped no earlier than the ring's answer.
 pub(crate) async fn fsync(file: Arc<File>, on_failure: OnFailure) -> Option<io::Result<()>> {
     // Checked first so a missing ring falls back before the fault hooks run:
     // the fallback runs them itself.

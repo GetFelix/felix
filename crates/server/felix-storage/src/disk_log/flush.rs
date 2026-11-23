@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::LogInner;
-use crate::io::sync_data;
+use crate::fs::File;
+use crate::io::{OnFailure, sync_data};
 use crate::log::Offset;
 use crate::{Result, StorageError, metrics_names};
 
@@ -78,25 +79,24 @@ impl LogInner {
         // available -- an old kernel, or a container that forbids the syscall --
         // and the flush thread below takes over, because durability must not
         // depend on an optimisation being present (#548).
-        #[cfg(target_os = "linux")]
-        let via_uring: Option<std::io::Result<()>> = if crate::io::uring_fsync::enabled() {
+        let via_uring: Option<std::io::Result<()>> = if self.ring_enabled() {
             // The retired segment first: `durable_upto` covers records in both,
             // and may not be reported until every one of them is on disk.
             let mut result = Some(Ok(()));
             if let Some(retired) = retired.as_ref() {
-                let on_failure = self.flush_failure_recorder(had_pending_seal);
-                result = crate::io::uring_fsync::fsync(Arc::clone(retired), on_failure).await;
+                result = self
+                    .ring_fsync(Arc::clone(retired), had_pending_seal)
+                    .await?;
             }
             if matches!(result, Some(Ok(()))) {
-                let on_failure = self.flush_failure_recorder(had_pending_seal);
-                result = crate::io::uring_fsync::fsync(Arc::clone(&handle), on_failure).await;
+                result = self
+                    .ring_fsync(Arc::clone(&handle), had_pending_seal)
+                    .await?;
             }
             result
         } else {
             None
         };
-        #[cfg(not(target_os = "linux"))]
-        let via_uring: Option<std::io::Result<()>> = None;
 
         #[cfg(any(test, feature = "fault-injection"))]
         let injected = self
@@ -197,10 +197,50 @@ impl LogInner {
         Ok(durable_upto)
     }
 
+    /// Whether flushes go through a ring rather than the flush thread.
+    fn ring_enabled(&self) -> bool {
+        #[cfg(test)]
+        if self.fake_ring.lock().is_some() {
+            return true;
+        }
+        platform_ring_enabled()
+    }
+
+    /// `fdatasync` one file through the ring, with this log's ring fsyncs
+    /// one at a time. `None` means there is no ring.
+    async fn ring_fsync(
+        self: &Arc<Self>,
+        file: Arc<File>,
+        had_pending_seal: bool,
+    ) -> Result<Option<std::io::Result<()>>> {
+        // The ring runs fsyncs concurrently, and Linux reports a writeback
+        // error once per open file. With two of this log's fsyncs in the ring
+        // an earlier one could fail while a later one succeeds and is reaped
+        // first, and the later flush would call durable what the kernel
+        // dropped. The flush lock cannot prevent that: it goes with a caller
+        // that stops waiting. So the gate goes with the hook, which the ring
+        // drops only once it has answered.
+        let gate = Arc::clone(&self.ring_gate).lock_owned().await;
+        // An fsync answered while this one waited may have failed.
+        self.check_healthy()?;
+        let record = self.flush_failure_recorder(had_pending_seal);
+        let on_failure: OnFailure = Box::new(move |err| {
+            record(err);
+            drop(gate);
+        });
+        #[cfg(test)]
+        {
+            let fake = self.fake_ring.lock().clone();
+            if let Some(ring) = fake {
+                return Ok(ring.fsync(on_failure).await);
+            }
+        }
+        Ok(platform_ring_fsync(file, on_failure).await)
+    }
+
     /// Poisons the log for a failed sync, from wherever the failure is
     /// seen. Handed to the io_uring thread, which runs it when it reaps the
     /// completion: this flush's caller may have stopped waiting by then.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(super) fn flush_failure_recorder(
         self: &Arc<Self>,
         had_pending_seal: bool,
@@ -232,5 +272,67 @@ impl LogInner {
         self.durability
             .ensure_durable(target, || Arc::clone(self).flush())
             .await
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_ring_enabled() -> bool {
+    crate::io::uring_fsync::enabled()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn platform_ring_enabled() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+async fn platform_ring_fsync(
+    file: Arc<File>,
+    on_failure: OnFailure,
+) -> Option<std::io::Result<()>> {
+    crate::io::uring_fsync::fsync(file, on_failure).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn platform_ring_fsync(
+    _file: Arc<File>,
+    _on_failure: OnFailure,
+) -> Option<std::io::Result<()>> {
+    None
+}
+
+/// Stands in for the io_uring flusher on every platform: each fsync is
+/// handed to the test, which answers it when and how it likes.
+#[cfg(test)]
+#[derive(Clone)]
+pub(super) struct FakeRing(pub(super) tokio::sync::mpsc::UnboundedSender<RingFsync>);
+
+#[cfg(test)]
+impl FakeRing {
+    async fn fsync(&self, on_failure: OnFailure) -> Option<std::io::Result<()>> {
+        let (reply, wait) = tokio::sync::oneshot::channel();
+        self.0.send(RingFsync { on_failure, reply }).ok()?;
+        wait.await.ok()
+    }
+}
+
+/// One fsync in the fake ring.
+#[cfg(test)]
+pub(super) struct RingFsync {
+    on_failure: OnFailure,
+    reply: tokio::sync::oneshot::Sender<std::io::Result<()>>,
+}
+
+#[cfg(test)]
+impl RingFsync {
+    /// Answer it the way the real ring does: the hook runs on a failure and
+    /// is dropped either way before the reply.
+    pub(super) fn answer(self, outcome: std::io::Result<()>) {
+        if let Err(err) = &outcome {
+            (self.on_failure)(err);
+        } else {
+            drop(self.on_failure);
+        }
+        let _ = self.reply.send(outcome);
     }
 }

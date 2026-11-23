@@ -19,11 +19,11 @@ fn temp_file(dir: &std::path::Path, name: &str) -> Arc<File> {
 }
 
 /// A flush must reach the kernel while another operation is still in the
-/// ring. One log's slow device sync must not hold back every other log.
+/// ring. One log's slow device sync must not hold back every other log. (A
+/// log's own fsyncs do wait for each other, in `disk_log::flush`.)
 #[tokio::test]
 async fn a_new_flush_is_not_held_behind_an_outstanding_one() {
-    if ring().is_none() {
-        eprintln!("io_uring unavailable; skipping");
+    if !available_or_required() {
         return;
     }
     // A poll on an empty pipe stands in for a slow fsync: it stays in the
@@ -52,8 +52,7 @@ async fn a_new_flush_is_not_held_behind_an_outstanding_one() {
 /// flush poisons its log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn more_requests_than_ring_entries_wait_rather_than_fail() {
-    if ring().is_none() {
-        eprintln!("io_uring unavailable; skipping");
+    if !available_or_required() {
         return;
     }
     let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -105,7 +104,7 @@ async fn released(file: &Arc<File>) -> bool {
 #[tokio::test]
 async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
     let Some(ring) = private_ring() else {
-        eprintln!("io_uring unavailable; skipping");
+        skip_without_ring();
         return;
     };
     let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -159,7 +158,7 @@ async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
 #[tokio::test]
 async fn a_busy_ring_delays_flushes_rather_than_failing_them() {
     let Some(ring) = private_ring() else {
-        eprintln!("io_uring unavailable; skipping");
+        skip_without_ring();
         return;
     };
     let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -194,8 +193,7 @@ async fn a_busy_ring_delays_flushes_rather_than_failing_them() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "measurement, not a check"]
 async fn concurrent_flush_latency() {
-    if ring().is_none() {
-        eprintln!("io_uring unavailable; skipping");
+    if !available_or_required() {
         return;
     }
     let dir = tempdir().expect("dir");
@@ -235,8 +233,7 @@ async fn concurrent_flush_latency() {
 /// failure: the hook runs where the completion is reaped.
 #[tokio::test]
 async fn a_failure_reaped_after_the_caller_left_still_runs_the_hook() {
-    if ring().is_none() {
-        eprintln!("io_uring unavailable; skipping");
+    if !available_or_required() {
         return;
     }
     let (reader, mut writer) = std::io::pipe().expect("pipe");

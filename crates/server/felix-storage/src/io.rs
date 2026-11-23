@@ -56,6 +56,14 @@ use std::os::windows::fs::FileExt;
 
 use crate::fs::File;
 
+/// Runs where a ring flush's failure is reaped, before anyone is told.
+///
+/// The caller may have stopped waiting by then, and a failed sync must still
+/// stop its log: the kernel may have dropped the pages, and the next fsync
+/// would report success having written nothing. A log also hands its flush
+/// gate in with it, so the hook is dropped only once the ring has answered.
+pub(crate) type OnFailure = Box<dyn FnOnce(&io::Error) + Send>;
+
 /// Read into `buf` starting at `offset` without touching the file cursor.
 ///
 /// Returns the number of bytes read, which is short only at end of file.
