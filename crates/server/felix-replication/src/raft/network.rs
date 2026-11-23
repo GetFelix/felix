@@ -439,6 +439,17 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
     }
 }
 
+/// A pre-vote answer as the candidate takes it: a refusal names its vote
+/// uncommitted, so only a really higher vote ends the round (#2889). See
+/// `docs/per-shard-raft.md`, "Idle groups".
+pub(crate) fn pre_vote_answer(mut answer: VoteResponse<ShardTypes>) -> VoteResponse<ShardTypes> {
+    use openraft::vote::RaftVote;
+    if !answer.vote_granted && answer.vote.is_committed() {
+        answer.vote = VoteOf::<ShardTypes>::from_leader_id(answer.vote.leader_id().clone(), false);
+    }
+    answer
+}
+
 fn wrong_reply() -> Unreachable<ShardTypes> {
     Unreachable::new(&WrongReply)
 }
@@ -489,7 +500,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .call(target, group_id, Request::PreVote(rpc), &option)
             .await?
         {
-            Reply::Vote(response) => Ok(response),
+            Reply::Vote(response) => Ok(pre_vote_answer(response)),
             _ => Err(wrong_reply().into()),
         }
     }
