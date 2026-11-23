@@ -86,6 +86,9 @@ fn cache_key(cluster: &Cluster, shard: u32) -> String {
 #[serial]
 #[tokio::test]
 async fn a_moved_shard_ends_its_readers_on_the_old_leader() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: vec![StreamSpec::new(STREAM, SHARDS)],

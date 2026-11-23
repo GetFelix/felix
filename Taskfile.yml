@@ -86,7 +86,7 @@ tasks:
           case " {{.CLUSTER_OWN_JOB}} " in *" $name "*) continue ;; esac
           if [ -f "$t" ] || [ -f "$t/main.rs" ]; then args+=(--test "$name"); fi
         done
-        cargo test -p felix-cluster "${args[@]}"
+        cargo test -p felix-cluster --no-fail-fast "${args[@]}"
         cargo test -p felix-cluster --doc
   # The raft:: suite with groups on the runtime that opens them, as on a
   # broker under four cores. The workspace run takes the machine's count.

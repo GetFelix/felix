@@ -79,7 +79,14 @@ impl Cluster {
     /// move between a publish and this wait, and a report about the wrong
     /// broker would never satisfy it. The timeout says which broker led, its
     /// tail, and what the last report claimed about each replica.
+    ///
+    /// On a Raft shard nothing is reported for placement to promote from: a
+    /// record acknowledged by the leader is already on a majority. The wait
+    /// is then for an elected leader, and returns the broker that leads.
     pub async fn wait_for_replication(&self, stream: &str, timeout: Duration) -> Result<String> {
+        if self.config.raft_brokers() {
+            return self.wait_for_raft_leader(stream, timeout).await;
+        }
         let budget = wait::budget(timeout);
         let deadline = Instant::now() + budget;
         loop {
@@ -95,6 +102,38 @@ impl Cluster {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// The Raft counterpart of [`wait_for_replication`](Self::wait_for_replication).
+    /// Publishes nothing, so a test counting records is unaffected.
+    async fn wait_for_raft_leader(&self, stream: &str, timeout: Duration) -> Result<String> {
+        wait::until_some(
+            timeout,
+            &format!("a leader of {stream} shard 0"),
+            || async {
+                let owner = self.owner(stream).await.ok()?;
+                let mut leading = Vec::new();
+                for id in self.node_ids() {
+                    let led = self
+                        .metric(&id, "felix_broker_raft_shards_led")
+                        .await
+                        .ok()
+                        .flatten();
+                    if led.is_some_and(|led| led >= 1.0) {
+                        leading.push(id);
+                    }
+                }
+                // The leader is the owner unless placement and the group
+                // disagree; a lone leading broker is then the one a test means.
+                match leading.len() {
+                    0 => None,
+                    1 => leading.pop(),
+                    _ if leading.contains(&owner) => Some(owner),
+                    _ => None,
+                }
+            },
+        )
+        .await
     }
 
     /// The owner of `stream`'s shard 0, and whether its last report names a

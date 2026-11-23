@@ -29,6 +29,9 @@ const COUNTER: &str = "hits";
 #[tokio::test]
 #[serial]
 async fn a_moved_shard_keeps_its_group_state_and_counters() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: vec![StreamSpec::new(STREAM, 1)],
@@ -374,6 +377,9 @@ async fn consume_until(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn writes_of_every_kind_through_a_move_are_never_refused() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: vec![StreamSpec::new(STREAM, 1)],
@@ -635,6 +641,9 @@ async fn publish_jobs(cluster: &Cluster, via: &str, from: usize, count: usize) {
 #[tokio::test]
 #[serial]
 async fn a_shard_moved_away_and_back_hands_out_nothing_already_acked() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],

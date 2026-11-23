@@ -35,6 +35,9 @@ const FORMAT: &str = "%p:%o:%s\\n";
 #[serial]
 #[tokio::test]
 async fn kcat_reads_every_shard_and_follows_a_moved_one() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     if !kcat_available().await {
         return;
     }

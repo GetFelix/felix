@@ -623,6 +623,13 @@ Raft is the default shard engine, but the harness starts every broker with
 is deleted (`docs/hybrid-retirement.md`). A test that wants Raft sets the
 engine in `broker_env` or `node_env`, which override it.
 
+`FELIX_TEST_SHARD_ENGINE=raft` makes Raft the harness default for a whole run:
+brokers and the control plane start on Raft, the cluster finalizes every
+`raft_*` fleet feature as a new cluster does, and the tests that need hybrid
+behaviour or unbuilt Raft work skip with a reason. Unset or `hybrid` keeps the
+hybrid default. CI runs `rest` and `routing` this way in jobs that report
+without failing the build (#2982).
+
 ```bash
 cargo build -p felix-broker-service --bin felix-broker
 FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test raft_shards

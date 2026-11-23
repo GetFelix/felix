@@ -51,7 +51,10 @@ pub mod session;
 pub mod wait;
 
 pub use cluster::{Assignment, Cluster};
-pub use config::{CacheSpec, ClusterConfig, StreamSpec};
+pub use config::{
+    CacheSpec, ClusterConfig, StreamSpec, skip_on_raft_retire_with_hybrid, skip_on_raft_until_3008,
+    skip_on_raft_until_moves_land,
+};
 pub use controlplane::ControlPlane;
 pub use credentials::Credentials;
 pub use fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
