@@ -2700,8 +2700,10 @@ recorded. An older release neither reads nor writes the file.
 ## `relaxed-crash-id`: what a relaxed crash rotated
 
 Written by the start that rotated the storage id after a relaxed crash
-(`run_state::begin`), and not by a restore or an operator's rotation. Text:
-the line `relaxed_crash`, then the new id in hex, then the ids relaxed
+(`run_state::begin`), and not by an operator's rotation. A standalone broker
+cannot tell a restored volume from a relaxed crash: restoring a volume
+snapshot taken while it ran writes it too, and the re-form that follows can
+give out offsets handed out after the snapshot. Text: the line `relaxed_crash`, then the new id in hex, then the ids relaxed
 crashes rotated away, newest first, at most 8, one per line in hex. Synced
 with the directory.
 

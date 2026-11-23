@@ -5818,8 +5818,12 @@ itself, before its member opens (`shards/raft/standalone.rs`,
 1. The start reads `relaxed-crash-id` (`docs/storage-format.md`). It acts
    only when that file names the current storage id, and only on a copy
    whose kept copies were all minted under an id a relaxed crash rotated
-   away. A clean stop, an `OnCommit` crash, a restore and an operator's
-   rotation leave no such evidence, and the copy stays as it is.
+   away. A clean stop, an `OnCommit` crash and an operator's rotation
+   leave no such evidence, and the copy stays as it is. A standalone
+   broker cannot tell a restored volume from a relaxed crash, so it
+   re-forms a restored copy from the reservation the snapshot holds. A
+   volume snapshot taken while the broker ran can therefore give out
+   offsets again; restore from a backup point instead.
 2. It plans the next group epoch from its kept copy with the same rule
    every re-form uses, with one difference: it keeps the copy's whole log,
    not only what the saved commit covers. The commit is saved at most once

@@ -236,3 +236,75 @@ async fn a_crash_after_an_operator_rotation_does_not_re_form() {
     stop.cancel();
     EngineShards::shutdown(&*shards).await;
 }
+
+/// **A second Periodic crash re-forms again above the first epoch's
+/// reservation**: publishing in epoch 1 raises the reservation past the
+/// first plan, and the second plan must clear it, not only the records it
+/// holds. Every synced record of both epochs reads back.
+#[tokio::test]
+async fn a_second_periodic_crash_re_forms_above_the_first_epochs_reservation() {
+    let root = tempfile::tempdir().expect("tempdir");
+    begin(root.path(), true, 1);
+    let w = write(root.path(), PERIODIC).await;
+    assert!(begin(root.path(), true, 2), "a relaxed crash rotates");
+
+    let (broker, shards, engine, stop) = reopen(root.path(), PERIODIC, w.end).await;
+    let first_plan = LocalRecord
+        .load(&w.dir)
+        .expect("plan")
+        .expect("a recorded plan")
+        .bases
+        .last()
+        .expect("a base")
+        .first_index;
+    let orders = key("orders", 0);
+    let next = publish(&broker, &engine, &[b"six", b"seven"]).await;
+    until("the epoch 1 batch commits", || {
+        engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(next + 2)
+    })
+    .await;
+    // Let the periodic sync cover the batch, as a crash keeps only synced
+    // records.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stop.cancel();
+    assert!(EngineShards::shutdown(&*shards).await);
+    drop(broker);
+    let epoch_one = highest_reserved(&w.dir)
+        .expect("reserved")
+        .expect("a reservation");
+    assert!(
+        epoch_one > first_plan,
+        "epoch 1 reserved {epoch_one}, not past its first index {first_plan}"
+    );
+
+    assert!(
+        begin(root.path(), true, 3),
+        "a second relaxed crash rotates"
+    );
+    let (broker, shards, engine, stop) = reopen(root.path(), PERIODIC, next + 2).await;
+    assert_eq!(
+        group_epoch(&w.dir).expect("epoch"),
+        Some(2),
+        "re-formed again"
+    );
+    let second_plan = LocalRecord
+        .load(&w.dir)
+        .expect("plan")
+        .expect("a recorded plan")
+        .bases
+        .last()
+        .expect("a base")
+        .first_index;
+    assert!(
+        second_plan > epoch_one,
+        "epoch 2 starts at {second_plan}, not above epoch 1's reservation {epoch_one}"
+    );
+    assert!(second_plan > first_plan);
+    let mut expected = written();
+    expected.extend([b"six".to_vec(), b"seven".to_vec()]);
+    assert_eq!(payloads(&broker).await, expected);
+    let last = publish(&broker, &engine, &[b"eight"]).await;
+    assert!(last >= next + 2, "offset {last} reused below {}", next + 2);
+    stop.cancel();
+    EngineShards::shutdown(&*shards).await;
+}

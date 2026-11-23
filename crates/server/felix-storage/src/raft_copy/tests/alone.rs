@@ -161,11 +161,11 @@ async fn a_relaxed_crash_re_forms_a_group_of_one_past_every_offset_it_gave_out()
         .expect("an epoch file")
         .bases;
     assert_eq!(bases.len(), 1);
+    assert!(top >= 3, "the crashed run reserved past its records: {top}");
     assert!(
-        bases[0].first_index > top.min(2),
-        "the epoch starts past what was handed out"
+        bases[0].first_index > top,
+        "the epoch starts past every index the crashed run reserved"
     );
-    assert!(bases[0].first_index >= 3);
     assert_eq!(bases[0].base_end(), 3, "every committed record survives");
     // Running again finds the work done, and the copy opens as its own voter.
     assert_eq!(reform(&copies, &dir).await.expect("again"), Aloned::NotOwed);
@@ -278,6 +278,15 @@ async fn a_second_crash_mid_start_plans_again() {
             panic!("the start finished before a crash could leave it half built");
         }
     }
+    let first_plan = LocalRecord
+        .load(&dir)
+        .expect("load")
+        .expect("the first plan")
+        .bases[0]
+        .first_index;
+    let top = highest_reserved(&dir)
+        .expect("reserved")
+        .expect("a reservation");
     relaxed_crash(&root, 3);
     root.witness_current_id();
     let copies = root.open();
@@ -288,6 +297,14 @@ async fn a_second_crash_mid_start_plans_again() {
         .expect("file");
     assert_eq!(file.bases.len(), 1);
     assert_eq!(file.bases[0].base_end(), 3);
+    assert!(
+        file.bases[0].first_index > top,
+        "the second plan starts past every reservation"
+    );
+    assert!(
+        file.bases[0].first_index >= first_plan,
+        "the second plan is not below the first"
+    );
     assert!(!crate::raft_copy::building(&dir).expect("building"));
 }
 
