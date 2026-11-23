@@ -4489,10 +4489,13 @@ and waits for this member to apply it, so it sees every group write
 committed before it. A write is proposed at that term, refused by openraft
 if the member no longer leads it, and answered only once applied. If the
 append's outcome is unknown, the leader closes the term before answering, so
-only a later term's read index can see the entry. A write refused before
-it was proposed is retryable; one whose wait for the apply ends without it
-is outcome unknown (`quorum_timeout` when the wait ran out, otherwise
-`leadership_lost`), as a stream write is. Claims are group entries
+only a later term's read index can see the entry. A write is retryable
+only when it provably was not appended: refused before the proposer took
+it, or by openraft on a lapsed lease. Any other error, while proposing or
+while waiting for the apply, is outcome unknown (`quorum_timeout` when the
+wait ran out, otherwise `leadership_lost`), as a stream write is: the entry
+may commit under the next leader, and a retry there would redrive, delete
+or claim a second time. Claims are group entries
 too: a poll that hands records out, and an extension, writes a claim and
 answers once it applied. A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,

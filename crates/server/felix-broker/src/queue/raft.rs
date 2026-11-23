@@ -57,7 +57,9 @@ pub trait GroupConsensus: Send + Sync {
     ///
     /// Any error means nothing was appended in `term`. An implementation that
     /// cannot tell must stop leading `term` before it returns the error, so
-    /// whatever it did append is settled by the next term's read index.
+    /// whatever it did append is settled by the next term's read index, and
+    /// answer [`BrokerError::WriteUnsettled`]: the entry may still commit
+    /// under the next leader, so the client must not be told to retry.
     fn propose(
         &self,
         key: &GroupKey,

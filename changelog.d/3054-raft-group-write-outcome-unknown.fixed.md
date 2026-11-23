@@ -1,1 +1,1 @@
-On Raft, a consumer-group write whose entry was proposed but not seen applied (the wait ran out or the leader stopped) is answered outcome unknown (`quorum_timeout` or `leadership_lost`) instead of a retryable `shard_unavailable`.
+On Raft, a consumer-group write that may have reached the log but was not seen applied (the leader was deposed or stopped after taking it, or the wait ran out) is answered outcome unknown (`quorum_timeout` or `leadership_lost`) instead of a retryable `shard_unavailable`. Only a write refused before it was appended stays retryable.

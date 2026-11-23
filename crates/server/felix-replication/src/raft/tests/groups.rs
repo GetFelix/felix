@@ -7,6 +7,7 @@ use openraft::entry::RaftEntry;
 use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
 use openraft::type_config::alias::{EntryOf, LogIdOf};
 
+use super::super::GroupWriteError;
 use super::super::machine::{Machine, Opened};
 use super::commit::led;
 use super::*;
@@ -283,7 +284,10 @@ async fn a_group_write_outside_its_term_is_refused_and_appends_nothing() {
         assert!(
             matches!(
                 refused,
-                Err(crate::engine::CommitError::LeadershipLost { .. })
+                Err(GroupWriteError {
+                    error: crate::engine::CommitError::LeadershipLost { .. },
+                    ..
+                })
             ),
             "term {other}: {refused:?}"
         );
@@ -336,6 +340,86 @@ async fn an_ambiguous_group_write_steps_the_leader_down() {
         .expect("committed");
     let mut cluster = led.cluster;
     cluster.stop().await;
+}
+
+/// **A group write refused before anything was appended says it cannot
+/// commit**: one with no group to go to, and one openraft refused on a
+/// lapsed lease. The broker answers both retryable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_write_refused_before_its_append_cannot_commit() {
+    let mut led = led().await;
+    let write = entry("a", GroupOp::Advance { cre: CRE, to: 1 });
+    let no_group = led
+        .engine
+        .propose_group(&shard(1), led.term, 1_700_000_000, &write)
+        .await;
+    assert!(
+        matches!(
+            no_group,
+            Err(GroupWriteError {
+                may_commit: false,
+                ..
+            })
+        ),
+        "{no_group:?}"
+    );
+
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    let lapsed = led
+        .engine
+        .propose_group(&shard(0), led.term, 1_700_000_000, &write)
+        .await
+        .expect_err("refused");
+    assert!(!lapsed.may_commit, "{lapsed:?}");
+    assert!(
+        matches!(
+            lapsed.error,
+            crate::engine::CommitError::LeadershipLost {
+                detail: "no majority has answered this leader lately, so nothing was written",
+                ..
+            }
+        ),
+        "{lapsed:?}"
+    );
+    led.heal();
+    led.cluster.stop().await;
+}
+
+/// **A group write the proposer took says it may commit when its wait
+/// ends without an answer**, here because the group stopped under it. The
+/// broker answers it outcome unknown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_write_stopped_after_it_was_queued_may_commit() {
+    let mut led = led().await;
+    let write = entry("a", GroupOp::Advance { cre: CRE, to: 1 });
+    let group = led
+        .cluster
+        .runtime(&led.leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    // Cut off past half its lease, the proposer spends a whole lease asking
+    // for a majority before it hands openraft the write, so the write sits
+    // queued while the group stops.
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    let held = led
+        .engine
+        .propose_group(&shard(0), led.term, 1_700_000_000, &write);
+    group.stopped().cancel();
+    let stopped = held.await;
+    assert!(
+        matches!(
+            stopped,
+            Err(GroupWriteError {
+                may_commit: true,
+                ..
+            })
+        ),
+        "{stopped:?}"
+    );
+    led.heal();
+    led.cluster.stop().await;
 }
 
 /// **A voter's snapshot at a re-form's gap end holds the stream shard's
