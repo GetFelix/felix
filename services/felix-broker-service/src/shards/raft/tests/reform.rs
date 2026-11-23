@@ -13,7 +13,12 @@ use super::*;
 use crate::shards::raft::reform_survey::{Survey, SurveyKind};
 use crate::shards::watch::{PlacedEpoch, RaftBases, RaftEpochBase, RaftLogId, RaftVoters};
 
-fn survey(key: &ShardKey, kind: SurveyKind, epoch: u64, probes: BTreeSet<u64>) -> Survey {
+pub(super) fn survey(
+    key: &ShardKey,
+    kind: SurveyKind,
+    epoch: u64,
+    probes: BTreeSet<u64>,
+) -> Survey {
     Survey {
         plan_id: "p1".to_string(),
         kind,
@@ -26,7 +31,10 @@ fn survey(key: &ShardKey, kind: SurveyKind, epoch: u64, probes: BTreeSet<u64>) -
     }
 }
 
-async fn read(member: &Member, survey: Survey) -> Option<felix_storage::raft_copy::WireReport> {
+pub(super) async fn read(
+    member: &Member,
+    survey: Survey,
+) -> Option<felix_storage::raft_copy::WireReport> {
     let read = member.shards.reform_reader();
     tokio::task::spawn_blocking(move || read(&survey))
         .await
@@ -110,7 +118,7 @@ async fn stop_and_plan(
 
 /// `placed` with the record the epoch write leaves: epoch 1, its base and
 /// first index, and the plan's voters as its seed.
-fn next_epoch(mut placed: ShardAssignment, view: &PlanView) -> ShardAssignment {
+pub(super) fn next_epoch(mut placed: ShardAssignment, view: &PlanView) -> ShardAssignment {
     placed.placed = Some(PlacedEpoch { epoch: 1 });
     placed.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
@@ -132,7 +140,7 @@ fn next_epoch(mut placed: ShardAssignment, view: &PlanView) -> ShardAssignment {
 /// Run the start round: each broker takes its `start` survey, then a feed
 /// pass with the new record starts its copy and opens its member. Returns
 /// the member that leads the new epoch.
-async fn start(
+pub(super) async fn start(
     members: &[Member],
     key: &ShardKey,
     next: &ShardAssignment,

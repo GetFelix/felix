@@ -487,6 +487,7 @@ impl Stopped {
                 self.next.epoch_bases().expect("bases"),
                 &self.wire,
                 &felix_replication::raft::GapSnapshot::new(ShardKind::Stream, voters),
+                &format!("broker-a#{}", self.copy),
                 &config,
             )
             .await

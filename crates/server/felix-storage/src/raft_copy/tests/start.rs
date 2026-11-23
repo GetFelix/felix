@@ -907,7 +907,7 @@ async fn a_voter_from_a_kept_copy_folds_from_its_snapshot() {
     let mut from_kept = start(Role::Voter);
     from_kept.kept = Some(kept.path().to_path_buf());
     let seen = Seen::default();
-    crate::raft_copy::start::start_with(dir.path(), &from_kept, &config(), Some(&seen))
+    crate::raft_copy::start::start_with(dir.path(), &from_kept, &config(), Some(&seen), None)
         .await
         .expect("start");
 

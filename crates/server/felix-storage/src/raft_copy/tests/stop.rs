@@ -285,7 +285,7 @@ async fn start_stopped(
     wire: &WireStart,
 ) -> std::io::Result<()> {
     copies
-        .start_stopped(SHARD, dir, 1, bases, wire, &FOLD, &config())
+        .start_stopped(SHARD, dir, 1, bases, wire, &FOLD, "b#1", &config())
         .await
 }
 
@@ -359,7 +359,16 @@ async fn a_voter_refuses_a_snapshot_folded_off_the_gaps_end() {
         ..learner()
     };
     copies
-        .start_stopped(SHARD, &dir, 1, bases(0), &voter, &Given(1), &config())
+        .start_stopped(
+            SHARD,
+            &dir,
+            1,
+            bases(0),
+            &voter,
+            &Given(1),
+            "b#1",
+            &config(),
+        )
         .await
         .expect_err("stored a misplaced snapshot");
     assert!(building(&dir).expect("marker"));

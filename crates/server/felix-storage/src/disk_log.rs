@@ -1855,6 +1855,25 @@ pub(crate) fn store_saved_commit(
     replica_state::store(dir, &replica)
 }
 
+/// Raise the vote `dir` saved to `generation`, for `leader`, when it is
+/// below it, without opening the log. A vote for the member itself at a
+/// term no candidate stands at grants nobody anything; it only puts the
+/// member's first election above that term.
+#[cfg(feature = "raft")]
+pub(crate) fn raise_saved_vote(dir: &std::path::Path, generation: u64, leader: &str) -> Result<()> {
+    if saved_vote_generation(dir)? >= generation {
+        return Ok(());
+    }
+    ballot::store(
+        dir,
+        &ballot::Ballot {
+            generation,
+            leader: leader.to_string(),
+            committed: false,
+        },
+    )
+}
+
 /// The generation of the vote `dir` saved, as an open reads it from its
 /// `replica` state and its ballot, read without opening the log. Zero for a
 /// directory that never voted.

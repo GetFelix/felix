@@ -31,6 +31,7 @@ mod placement_ack;
 mod reclaim;
 mod reform;
 mod report;
+mod restore;
 mod rotated_by;
 #[cfg_attr(
     not(test),
@@ -71,6 +72,7 @@ pub(crate) use reform::{
     BrokerCopies, CopyRead, KeptLog, kept_logs, read_copies, read_copy, read_kept,
 };
 pub use report::{MembershipReader, VoterSets, build_report};
+pub use restore::restore_copy;
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"

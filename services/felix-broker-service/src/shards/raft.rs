@@ -452,6 +452,7 @@ impl RaftShards {
             bases,
             &wire,
             &fold,
+            &MemberId::new(self.local.as_str(), wire.voter.unwrap_or_default()).to_string(),
             config,
         )
         .await?;

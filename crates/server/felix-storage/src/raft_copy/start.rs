@@ -169,7 +169,8 @@ impl CopyRoot {
     /// in the epoch `bases` ends, as the `start` survey's `wire` says. The
     /// bases come from the shard's `placed` record, never the survey. A
     /// voter's snapshot at the gap's end is what `fold` builds; a learner
-    /// does not call it. Run again over a start that crashed, it redoes every
+    /// does not call it. `member` is this copy's member id as its log
+    /// stores a vote for it. Run again over a start that crashed, it redoes every
     /// step. See `docs/per-shard-raft.md`, "What a start needs".
     #[allow(
         clippy::too_many_arguments,
@@ -183,6 +184,7 @@ impl CopyRoot {
         bases: Vec<EpochBase>,
         wire: &WireStart,
         fold: &dyn GapFold,
+        member: &str,
         config: &LogConfig,
     ) -> io::Result<()> {
         let label = dir.display();
@@ -250,7 +252,7 @@ impl CopyRoot {
             meta: Bytes::new(),
             data: Bytes::new(),
         };
-        start_with(dir, &start, config, Some(fold)).await
+        start_with(dir, &start, config, Some(fold), Some(member)).await
     }
 }
 
@@ -296,16 +298,18 @@ pub(crate) fn building(dir: &Path) -> io::Result<bool> {
 /// or the one copied from [`Start::kept`], is cut back to the base's last
 /// log id, and must then end there in the base's term.
 pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) -> io::Result<()> {
-    start_with(dir, start, config, None).await
+    start_with(dir, start, config, None, None).await
 }
 
 /// [`start_copy`], with a voter's snapshot at the gap's end from `fold`
-/// in place of [`Start::meta`] and [`Start::data`].
+/// in place of [`Start::meta`] and [`Start::data`], and a voter's vote
+/// raised to the base's term for `vote_for`.
 pub(super) async fn start_with(
     dir: &Path,
     start: &Start,
     config: &LogConfig,
     fold: Option<&dyn GapFold>,
+    vote_for: Option<&str>,
 ) -> io::Result<()> {
     let index_spacing_bytes = config.index_spacing_bytes;
     let base = *start
@@ -493,6 +497,13 @@ pub(super) async fn start_with(
         crate::disk_log::store_saved_commit(dir, base.first_index, generation)
             .map_err(io::Error::other)?;
         step()?;
+        // A voter that never voted (a restored or wiped copy) would
+        // campaign at term 1, at or below the base's last term, and openraft
+        // refuses to lead under a vote not above its last log id.
+        if let Some(member) = vote_for {
+            crate::disk_log::raise_saved_vote(dir, generation, member).map_err(io::Error::other)?;
+            step()?;
+        }
     }
     check_started(dir, start)?;
     state_file::remove(dir, BUILDING)
