@@ -1,7 +1,8 @@
 //! Re-form plan routes. The plans themselves, and why they live on the
 //! metadata Raft leader, are in [`crate::store::reform`].
 pub use crate::store::reform::{
-    ReformAnswer, ReformPlanView, ReformScope, ReformShardView, ReformSurvey,
+    ReformAnswer, ReformApplyView, ReformPlanView, ReformRestore, ReformRestoreView, ReformScope,
+    ReformShardView, ReformSurvey, RestoreShard, SurveyKind,
 };
 
 use axum::Json;
@@ -28,6 +29,11 @@ use crate::store::reform::{MAX_BATCH, ReformReply, ReformRequest};
 )]
 /// Start a read-only re-form plan for the Raft shards in `scope`.
 ///
+/// With `restore`, each shard re-forms from a backup point: its base must
+/// end at the point, and its next epoch starts at least `offset_gap` past
+/// 2^14 times the control plane's clock (Unix ms) at plan creation. A gap
+/// below 2^32 is refused unless `accept_short_gap` is set.
+///
 /// Brokers are surveyed in the background; read the plan with
 /// `GET /v1/raft/reform/plans/{plan_id}`. Requires `node.manage` on
 /// `cluster:*`.
@@ -37,11 +43,16 @@ pub(crate) async fn create_plan(
     Json(request): Json<CreateReformPlanRequest>,
 ) -> Result<Json<CreateReformPlanResponse>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+    if let Some(reason) = request.restore.as_ref().and_then(ReformRestore::refused) {
+        return Err(api_validation_error(&reason));
+    }
     let request = ReformRequest::Create {
         scope: request.scope,
+        restore: request.restore,
     };
     match ask(&state, request).await? {
         ReformReply::Created { plan_id } => Ok(Json(CreateReformPlanResponse { plan_id })),
+        ReformReply::NotCreated { reason } => Err(api_validation_error(&reason)),
         _ => Err(unexpected()),
     }
 }
@@ -70,6 +81,41 @@ pub(crate) async fn get_plan(
         ReformReply::Plan { plan: None } => Err(api_not_found(
             "no such plan; the control-plane leader may have changed since, so plan again",
         )),
+        _ => Err(unexpected()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/raft/reform/plans/{plan_id}/apply",
+    tag = "raft",
+    params(("plan_id" = String, Path, description = "Plan identifier")),
+    request_body = ApplyReformPlanRequest,
+    responses(
+        (status = 200, description = "The stop rounds started", body = ApplyReformPlanResponse),
+        (status = 409, description = "No such plan on the control-plane leader, or it is still surveying", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// Apply a re-form plan: stop each shard it marked `reform`, compare the
+/// post-stop plan with this one, write the next epoch, then start it. A
+/// shard whose plan may lose acknowledged records is applied only when
+/// named in `accept_loss`. Read progress with
+/// `GET /v1/raft/reform/plans/{plan_id}`. Requires `node.manage` on
+/// `cluster:*`, like making the plan.
+pub(crate) async fn apply_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(plan_id): Path<String>,
+    Json(request): Json<ApplyReformPlanRequest>,
+) -> Result<Json<ApplyReformPlanResponse>, ApiError> {
+    require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+    let request = ReformRequest::Apply {
+        plan_id,
+        accept_loss: request.accept_loss,
+    };
+    match ask(&state, request).await? {
+        ReformReply::Applied { applying } => Ok(Json(ApplyReformPlanResponse { applying })),
+        ReformReply::NotApplied { reason } => Err(api_conflict("conflict", &reason)),
         _ => Err(unexpected()),
     }
 }
@@ -137,11 +183,27 @@ pub(crate) async fn reports(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateReformPlanRequest {
     pub scope: ReformScope,
+    /// Re-form from a backup point instead of from the copies as they are.
+    #[serde(default)]
+    pub restore: Option<ReformRestore>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateReformPlanResponse {
     pub plan_id: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ApplyReformPlanRequest {
+    /// Shards whose plan may lose acknowledged records, applied anyway.
+    #[serde(default)]
+    pub accept_loss: Vec<crate::model::ShardKey>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ApplyReformPlanResponse {
+    /// How many shards started their stop round.
+    pub applying: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

@@ -29,8 +29,8 @@ pub use node::{
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftBases, RaftEpochBase,
     RaftFloor, RaftFloorError, RaftFloorReport, RaftFormed, RaftLogId, RaftOrdered, RaftSeed,
-    RaftTarget, RaftTargetError, RaftVoters, Readmitted, ReformRecordError, ReplicaReport,
-    SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    RaftTarget, RaftTargetError, RaftVoters, Readmitted, ReformEpochStart, ReformRecordError,
+    ReplicaReport, SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
     ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
     ShardValidationError,
 };

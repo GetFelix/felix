@@ -50,6 +50,55 @@ pub struct GroupRecord<B> {
     /// before the leader was asked: the control plane's
     /// `ShardAssignment::ordered_voter_sets`. `None` when not recorded.
     pub ordered: Option<Vec<BTreeSet<VoterId<B>>>>,
+    /// Set when the operator re-forms the group from a backup point.
+    pub restore: Option<RestoreAt>,
+}
+
+/// How far past the time line (`RESTORE_OFFSETS_PER_MILLI` times the
+/// plan's time) a restore's epoch starts when the operator names no gap.
+pub const DEFAULT_OFFSET_GAP: u64 = 1 << 40;
+
+/// The smallest gap the control plane takes without the operator accepting
+/// a short one by name.
+pub const MIN_OFFSET_GAP: u64 = 1 << 32;
+
+/// The slope of the time line a restore starts on, in offsets per
+/// millisecond of control-plane wall time (16 per microsecond). Safety
+/// assumes a shard gives out offsets at no more than half of it, which
+/// leaves room for clock skew between the control-plane nodes that plan
+/// two restores. `docs/per-shard-raft.md`, "A restore from a backup point
+/// is a re-form".
+pub const RESTORE_OFFSETS_PER_MILLI: u64 = 1 << 14;
+
+/// A re-form from a backup point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreAt {
+    /// The point's offset for the shard's log: every record below it was
+    /// acknowledged and is in the restored copy, and the base ends here.
+    pub end: u64,
+    /// How far past the time line the new epoch starts.
+    pub gap: u64,
+    /// The control plane's wall clock when the plan was made, in Unix
+    /// milliseconds. Fixed once per plan, so every reading of the plan
+    /// gives the same first index.
+    pub planned_at_millis: u64,
+}
+
+impl RestoreAt {
+    /// The lowest first index the restore takes:
+    /// `RESTORE_OFFSETS_PER_MILLI * planned_at_millis + gap`, or `None` past
+    /// the last index.
+    ///
+    /// Anchored to absolute time rather than the point, so every restored
+    /// epoch starts on one line that grows faster than any shard writes:
+    /// a later restore, from any backup, starts past every offset an
+    /// earlier one gave out. The gap is not added to the point's end as
+    /// well; an epoch started above the line would stay ahead of it.
+    pub fn first_index(&self) -> Option<u64> {
+        RESTORE_OFFSETS_PER_MILLI
+            .checked_mul(self.planned_at_millis)?
+            .checked_add(self.gap)
+    }
 }
 
 /// One broker's answer.
@@ -121,8 +170,11 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) learners: Vec<B>,
     /// Above the base, the offset floor, every reservation read, every
     /// earlier epoch's first index, every record a copy of the incarnation
-    /// holds, and every floor a copy carries.
+    /// holds, and every floor a copy carries. For a restore, also at least
+    /// the point plus the gap.
     pub(crate) first_index: u64,
+    /// The restore's gap, when the plan is one.
+    pub(crate) offset_gap: Option<u64>,
     /// The highest key of any vote or entry read, and of the floor.
     pub(crate) top: Key,
     /// Set when the voters whose votes are unknown (dead, no vote of the
@@ -173,8 +225,12 @@ pub(crate) enum Refused<B> {
     /// The base ends at an index the source copy purged, so its term is
     /// not on that disk.
     Purged { broker: B, index: u64 },
+    /// A restore's base does not end at its backup point.
+    NotAtPoint { base_end: u64, point: u64 },
     /// Every index is reserved.
     NoIndexLeft,
+    /// A restore's time line at its plan time is past the last index.
+    RestoreTooLate { planned_at_millis: u64 },
     /// No copy was read.
     NothingRead,
     /// No broker with a copy id holds the base, so the epoch would have no
@@ -393,6 +449,17 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         }
     };
 
+    // Below the point every record was acknowledged; a base that ends
+    // anywhere else either drops some of them or keeps records past it.
+    if let Some(restore) = record.restore
+        && base_end != restore.end
+    {
+        return Err(Refused::NotAtPoint {
+            base_end,
+            point: restore.end,
+        });
+    }
+
     let mut voters = Vec::new();
     let mut learners = Vec::new();
     for (broker, report) in &live {
@@ -460,6 +527,15 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max(earlier.unwrap_or(0))
         .max(held.unwrap_or(0))
         .max(carried.unwrap_or(0));
+    // Offsets acknowledged after the copy, by the lost cluster or by an
+    // earlier restore from any backup, are in no restored file. All of
+    // them are below the time line at the plan's time.
+    let first_index = match record.restore {
+        Some(restore) => first_index.max(restore.first_index().ok_or(Refused::RestoreTooLate {
+            planned_at_millis: restore.planned_at_millis,
+        })?),
+        None => first_index,
+    };
 
     Ok(ReformPlan {
         epoch: epoch + 1,
@@ -468,6 +544,7 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         voters,
         learners,
         first_index,
+        offset_gap: record.restore.map(|restore| restore.gap),
         top,
         marked,
         cut_by_vote,

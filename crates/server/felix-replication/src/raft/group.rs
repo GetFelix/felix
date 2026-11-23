@@ -84,6 +84,10 @@ pub(crate) struct Group {
     /// The furthest entry acknowledged on `reports` before its commit,
     /// which a confirmed read must wait to have applied.
     answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
+    /// The furthest entry acknowledged on the leader lease before its
+    /// commit. Only a backup point reads it: a lease write may not be on
+    /// a majority, so reads never wait for it.
+    acked_on_lease: parking_lot::Mutex<Option<LogPoint>>,
     /// The data root's mark log, when the member has one. Its
     /// vouched-unsynced marker is synced before a strict log's unsynced write
     /// is told to a leader or counted here, so a power cut rotates the copy.
@@ -882,6 +886,7 @@ impl Group {
             transport,
             reports,
             answered: Arc::default(),
+            acked_on_lease: parking_lot::Mutex::default(),
             root,
             refusals,
             stepped_down: AtomicU64::new(0),
@@ -2231,6 +2236,24 @@ impl Group {
         self.lease.admit(term, view).map_err(propose::lost)
     }
 
+    /// [`Self::admit_local_ack`] for `written`, which once admitted is
+    /// noted before the caller answers on it, as `await_quorum` notes a
+    /// written majority.
+    pub(crate) fn admit_local_ack_of(&self, written: Written) -> Result<(), CommitError> {
+        self.admit_local_ack(written.generation)?;
+        if let Some(index) = written.end.checked_sub(1) {
+            let at = LogPoint {
+                term: written.generation,
+                index,
+            };
+            let mut acked = self.acked_on_lease.lock();
+            if acked.is_none_or(|was| (was.term, was.index) < (at.term, at.index)) {
+                *acked = Some(at);
+            }
+        }
+        Ok(())
+    }
+
     /// The term this member has the shard open in.
     pub(crate) fn open_term(&self) -> Option<u64> {
         let lead = self.leadership.lead();
@@ -2634,6 +2657,43 @@ impl Group {
                 .is_none_or(|id| id.index <= committed.index))
         .then(|| stored.membership().voter_ids().collect());
         Some((at, voters))
+    }
+
+    /// The furthest entry this member acknowledged while it leads, with
+    /// the term it leads: its commit index or applied index, or past them a
+    /// write of its term answered on a written majority or on its lease
+    /// before the commit. A backup point reads it, so a write answered
+    /// before the read is at or below it. Every mark is an entry of this
+    /// leader's log; one on a written majority is in every later leader's
+    /// log too. `None` while it does not lead or has committed nothing.
+    pub(crate) fn led_acked(&self) -> Option<(u64, LogPoint)> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let (term, committed) = {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            if metrics.running_state.is_err() || metrics.state != ServerState::Leader {
+                return None;
+            }
+            let committed = metrics.local_committed.as_ref()?;
+            let at = LogPoint {
+                term: **committed.committed_leader_id(),
+                index: committed.index,
+            };
+            (metrics.vote.leader_id().term(), at)
+        };
+        // Read after the commit, so a mark set before it is seen. A commit
+        // answers on the apply watch, which the metrics may trail.
+        let applied = self.commits.borrow().applied();
+        let ours = |mark: Option<LogPoint>| mark.filter(|at| at.term == term);
+        let furthest = [
+            applied,
+            ours(*self.answered.lock()),
+            ours(*self.acked_on_lease.lock()),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(committed, |a, b| if b.index > a.index { b } else { a });
+        Some((term, furthest))
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {

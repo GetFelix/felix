@@ -1420,7 +1420,9 @@ pub use raft_floor::{RaftFloor, RaftFloorError, RaftFloorReport};
 mod raft_ordered;
 pub use raft_ordered::RaftOrdered;
 mod raft_reform;
-pub use raft_reform::{RaftBases, RaftEpochBase, RaftLogId, RaftSeed, ReformRecordError};
+pub use raft_reform::{
+    RaftBases, RaftEpochBase, RaftLogId, RaftSeed, ReformEpochStart, ReformRecordError,
+};
 mod raft_target;
 pub use raft_target::{RaftFormed, RaftTarget, RaftTargetError, RaftVoters};
 mod switch;

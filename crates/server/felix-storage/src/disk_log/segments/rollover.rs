@@ -14,8 +14,8 @@ use super::SegmentSet;
 use crate::Result;
 use crate::disk_log::now_micros;
 use crate::disk_log::sealed::{SealedEntry, SealedHandle};
-use crate::log::{AppendRecord, SegmentId};
-use crate::segment::format::GENERATION_VERSION;
+use crate::log::{AppendRecord, Offset, SegmentId};
+use crate::segment::format::{GENERATION_VERSION, SegmentHeader};
 use crate::segment::known::known_file_name;
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
@@ -189,19 +189,57 @@ impl SegmentSet {
 
     /// [`Self::roll`] to a segment at `version`.
     pub(crate) fn roll_to(&mut self, version: u16) -> Result<()> {
-        self.check_open()?;
-        let descriptor = self.active.seal()?;
-        let base_offset = self.active.next_offset();
-        let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
+        self.roll_at(version, None)
+    }
 
-        let mut replacement = SegmentWriter::create_at_version(
+    /// Seal the active segment and start a new one at `first`, past the
+    /// tail, keeping every record. The offsets between are a gap no record
+    /// takes; the new segment's header says where it starts so recovery
+    /// accepts it. See `docs/storage-format.md`, "Gap segments".
+    ///
+    /// Refused on an empty active segment that itself starts past a gap: the
+    /// roll deletes it, and the new segment would then follow neither it nor
+    /// the segment before it.
+    #[cfg(feature = "raft")]
+    pub(crate) fn roll_past_gap(&mut self, first: Offset) -> Result<()> {
+        let tail = self.tail_offset();
+        if first <= tail
+            || (self.active.record_count() == 0
+                && self
+                    .sealed
+                    .last()
+                    .is_some_and(|before| before.next_offset() != tail))
+        {
+            return Err(StorageError::OutsideLog {
+                offset: first,
+                base: self.base_offset(),
+                tail,
+            });
+        }
+        self.roll_at(self.successor_version(&[]), Some(first))
+    }
+
+    fn roll_at(&mut self, version: u16, past_gap: Option<Offset>) -> Result<()> {
+        self.check_open()?;
+        // Synced before the next segment exists: recovery reads every segment
+        // but the newest as sealed, so a torn tail here would be fatal.
+        let descriptor = self.active.seal()?;
+        let tail = self.active.next_offset();
+        let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
+        let base_offset = past_gap.unwrap_or(tail);
+        let header = SegmentHeader::at_version(base_offset, now_micros(), version);
+        let header = match past_gap {
+            Some(_) => header.past_gap(tail),
+            None => header,
+        };
+        let mut replacement = SegmentWriter::create_with_header(
             &self.dir,
             id,
-            base_offset,
-            now_micros(),
-            self.config.reserve_limit_bytes(),
-            self.config.index_spacing_bytes,
-            version,
+            header,
+            (
+                self.config.reserve_limit_bytes(),
+                self.config.index_spacing_bytes,
+            ),
         )?;
         replacement.continue_generations(self.active.last_generation());
         let retired = std::mem::replace(&mut self.active, replacement);

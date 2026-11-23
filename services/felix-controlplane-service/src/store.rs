@@ -753,6 +753,27 @@ pub trait ControlPlaneStore: Send + Sync {
         ))
     }
 
+    /// Start the next epoch of `key`'s Raft group from a re-form plan, by
+    /// compare and swap on the group epoch, and answer the shard as
+    /// written. The new `placed` record, the base, the voters as the
+    /// epoch's seed and an empty ordered list land in one write, which the
+    /// shard feed carries to the brokers.
+    ///
+    /// [`StoreError::Conflict`] when the shard moved past the plan (another
+    /// incarnation or epoch, or a floor raised after it), when the base
+    /// would give out an offset again, and on a Raft store below metadata
+    /// level 51. See `docs/per-shard-raft.md`, "Re-forming a group".
+    async fn start_reformed_epoch(
+        &self,
+        key: &ShardKey,
+        start: crate::model::ReformEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        let _ = (key, start);
+        Err(StoreError::Conflict(
+            "this store does not re-form Raft groups".to_string(),
+        ))
+    }
+
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.
     async fn group_identity(&self) -> StoreResult<identity::GroupIdentity> {

@@ -134,18 +134,18 @@ file:
 ### Segment header (32 bytes)
 
 <p align="center">
-  <img src={segmentHeader.src} alt="Segment header byte layout: magic, version, flags, base_offset, created_at_micros, header_crc, reserved" width="882" />
+  <img src={segmentHeader.src} alt="Segment header byte layout: magic, version, flags, base_offset, created_at_micros, header_crc, gap_from" width="882" />
 </p>
 
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
 | 4 | 2 | `version` | `3` when written; `4` to `8` for a segment that holds a record kind or part only that version allows (below); `2` is still read |
-| 6 | 2 | `flags` | `0`; any other value is rejected |
+| 6 | 2 | `flags` | `0`, or `1` (`FOLLOWS_GAP`) for a segment that starts past a re-formed Raft copy's gap; any other bit is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
 | 24 | 4 | `header_crc` | CRC-32 (IEEE) over bytes `0..24` |
-| 28 | 4 | `reserved` | `0` |
+| 28 | 4 | `gap_from` | with `FOLLOWS_GAP`, the low 32 bits of the offset the gap starts at; else `0`. Recovery accepts the hole only when the segment before ends there |
 
 The header is written once and fsynced before any record claims to live in the
 segment, so damage here is never a torn write. It is always an error.

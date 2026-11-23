@@ -67,7 +67,7 @@
   <text class="sub" x="216" y="145">u16 = 3</text>
   <rect class="cell id" x="368" y="108" width="304" height="46" rx="3"/>
   <text class="label" x="520" y="129">flags</text>
-  <text class="sub" x="520" y="145">u16 = 0</text>
+  <text class="sub" x="520" y="145">u16 = 0 or FOLLOWS_GAP</text>
   <rect class="cell data" x="64" y="154" width="608" height="92" rx="3"/>
   <text class="label" x="368" y="198">base_offset</text>
   <text class="sub" x="368" y="214">u64 — logical offset of the segment's first record</text>
@@ -77,9 +77,9 @@
   <rect class="cell crc" x="64" y="338" width="608" height="46" rx="3"/>
   <text class="label" x="368" y="359">header_crc</text>
   <text class="sub" x="368" y="375">u32</text>
-  <rect class="cell res" x="64" y="384" width="608" height="46" rx="3"/>
-  <text class="label" x="368" y="405">reserved</text>
-  <text class="sub" x="368" y="421">u32 = 0</text>
+  <rect class="cell data" x="64" y="384" width="608" height="46" rx="3"/>
+  <text class="label" x="368" y="405">gap_from</text>
+  <text class="sub" x="368" y="421">u32, low bits of where a gap starts; 0 without FOLLOWS_GAP</text>
   <text class="gutter" x="54" y="50">offset</text>
   <text class="offset" x="54" y="89">0</text>
   <text class="offset" x="54" y="135">4</text>
