@@ -259,6 +259,7 @@ impl PublishContext {
         Authority {
             ingress: self.ingress.as_deref(),
             lease: self.lease.as_deref(),
+            engine: Some(&self.engine),
         }
     }
 }

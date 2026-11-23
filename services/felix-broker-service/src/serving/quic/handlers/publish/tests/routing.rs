@@ -39,6 +39,7 @@ async fn resolve_stream_cached_uses_cached_entry_until_cleared() {
         Authority {
             ingress: None,
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,
@@ -73,6 +74,7 @@ async fn resolve_stream_cached_uses_cached_entry_until_cleared() {
         Authority {
             ingress: None,
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,
@@ -93,6 +95,7 @@ async fn resolve_stream_cached_uses_cached_entry_until_cleared() {
         Authority {
             ingress: None,
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,

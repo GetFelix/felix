@@ -17,6 +17,7 @@ async fn an_owned_shard_resolves() {
         Authority {
             ingress: Some(&ingress),
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,
@@ -47,6 +48,7 @@ async fn a_shard_owned_elsewhere_is_forwarded_not_served_locally() {
         Authority {
             ingress: Some(&ingress),
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,
@@ -76,6 +78,7 @@ async fn an_owned_but_unopened_shard_is_refused() {
         Authority {
             ingress: Some(&ingress),
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,
@@ -139,7 +142,8 @@ async fn losing_a_shard_takes_effect_without_waiting_for_the_cache() {
                 &broker,
                 Authority {
                     ingress: Some(&ingress),
-                    lease: None
+                    lease: None,
+                    engine: None
                 },
                 &mut cache,
                 &mut key,
@@ -163,7 +167,8 @@ async fn losing_a_shard_takes_effect_without_waiting_for_the_cache() {
                 &broker,
                 Authority {
                     ingress: Some(&moved),
-                    lease: None
+                    lease: None,
+                    engine: None
                 },
                 &mut cache,
                 &mut key,
@@ -191,6 +196,7 @@ async fn a_single_node_broker_is_unaffected() {
         Authority {
             ingress: None,
             lease: None,
+            engine: None,
         },
         &mut cache,
         &mut key,
@@ -232,6 +238,7 @@ async fn a_raft_shard_led_here_resolves_without_the_broker_lease() {
         Authority {
             ingress: Some(&ingress),
             lease: Some(&lease),
+            engine: None,
         },
         &mut cache,
         &mut key,

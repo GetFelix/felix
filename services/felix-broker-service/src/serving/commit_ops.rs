@@ -144,7 +144,8 @@ async fn commit_on_raft(
         )
         .into());
     }
-    let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
+    let (dispatched, _) =
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, key).await;
     let term = owned(dispatched, key)?;
     let handle = broker
         .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
@@ -240,7 +241,8 @@ async fn publish_at_on_raft(
     publisher: Option<Bytes>,
     expected_offset: u64,
 ) -> Result<u64, NotWritten> {
-    let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), shard).await;
+    let (dispatched, _) =
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, shard).await;
     let term = owned(dispatched, shard)?;
     let handle = broker
         .resolve_stream_handle(
@@ -301,7 +303,8 @@ pub(crate) async fn trim_at(
     if publish_ctx.engine.on_raft(&key) {
         return trim_at_on_raft(broker, publish_ctx, &key, before, expected_offset, headers).await;
     }
-    let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), &key).await;
+    let (dispatched, mut fenced) =
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key).await;
     let generation = owned(dispatched, &key)?;
     let handle = broker
         .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
@@ -339,7 +342,8 @@ async fn trim_at_on_raft(
     expected_offset: u64,
     headers: Bytes,
 ) -> Result<TrimOutcome, NotWritten> {
-    let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
+    let (dispatched, _) =
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, key).await;
     let term = owned(dispatched, key)?;
     let handle = broker
         .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
@@ -411,7 +415,8 @@ where
         .engine
         .refuse_on_raft(key, what)
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
+    let (dispatched, mut fenced) =
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, key).await;
     let generation = owned(dispatched, key)?;
     let handle = broker
         .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
@@ -466,7 +471,10 @@ pub(crate) async fn state_get(
         Some(entity_key),
         named,
     )?;
-    let term = owned(dispatch(publish_ctx.ingress.as_deref(), &shard), &shard)?;
+    let term = owned(
+        dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &shard),
+        &shard,
+    )?;
     if publish_ctx.engine.on_raft(&shard) {
         return state_get_on_raft(broker, publish_ctx, &shard, term, key).await;
     }

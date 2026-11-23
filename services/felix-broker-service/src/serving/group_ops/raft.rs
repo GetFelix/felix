@@ -68,9 +68,11 @@ pub(super) async fn on_raft(
     // A write is routed as a publish is, at the term it would be proposed
     // at; the reader then proposes only at a term a read index confirmed.
     let dispatched = if writes {
-        dispatch_write(publish_ctx.ingress.as_deref(), &key).await.0
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key)
+            .await
+            .0
     } else {
-        dispatch(publish_ctx.ingress.as_deref(), &key)
+        dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key)
     };
     match dispatched {
         Dispatch::Local { .. } => {}

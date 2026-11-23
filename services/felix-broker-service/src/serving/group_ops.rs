@@ -792,7 +792,7 @@ fn owned_here(
         .engine
         .refuse_on_raft(&key, "consumer groups")
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    match dispatch(publish_ctx.ingress.as_deref(), &key) {
+    match dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key) {
         Dispatch::Local { generation } => Ok(Owned {
             key,
             generation,

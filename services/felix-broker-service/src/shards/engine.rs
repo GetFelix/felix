@@ -212,6 +212,26 @@ impl StreamEngine {
         }
     }
 
+    /// Where a request for `key` goes on a broker with no ingress router,
+    /// which is a standalone one: the Raft group's answer when a group runs
+    /// the shard here, `None` for a shard that is simply local.
+    pub(crate) fn standalone_dispatch(&self, key: &ShardKey) -> Option<super::routing::Dispatch> {
+        if self.hybrid.serving().is_some() {
+            return None;
+        }
+        #[cfg(feature = "raft")]
+        {
+            use super::routing::EngineShards;
+            // A single voter forwards nowhere, so no broker has an address.
+            self.raft.get()?.dispatch(key, &|_| None)
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = key;
+            None
+        }
+    }
+
     /// Whether this broker runs stream shards on Raft groups. Another
     /// broker's shard it forwards to may be on one too.
     pub fn runs_raft(&self) -> bool {

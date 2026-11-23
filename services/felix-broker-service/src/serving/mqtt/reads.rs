@@ -22,7 +22,7 @@ use felix_broker::{Broker, BrokerError};
 use felix_mqtt::{ReadError, ReadPage, Reads, StoredMessage};
 
 use crate::serving::quic::handlers::redirect;
-use crate::shards::routing::{Dispatch, IngressRouter, dispatch};
+use crate::shards::routing::{Dispatch, IngressRouter};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Most records one read returns.
@@ -83,7 +83,7 @@ impl BrokerReads {
             return Err(ReadError::Unavailable);
         }
         let elsewhere = ingress.fence().is_closed(&key)
-            || matches!(dispatch(Some(ingress), &key), Dispatch::Forward { .. })
+            || matches!(ingress.dispatch(&key), Dispatch::Forward { .. })
             || matches!(
                 ingress.engine_dispatch(&key),
                 Some(Dispatch::Forward { .. })

@@ -49,8 +49,6 @@ pub(crate) fn redirect_for(
     kind: crate::shards::ShardKind,
     peer_features: u32,
 ) -> Option<Message> {
-    use crate::shards::routing::dispatch;
-
     let key = crate::shards::ShardKey {
         tenant_id: tenant_id.to_string(),
         namespace: namespace.to_string(),
@@ -63,7 +61,10 @@ pub(crate) fn redirect_for(
     if ingress.is_some_and(|ingress| ingress.engine_serves_reads(&key)) {
         return None;
     }
-    let dispatched = match dispatch(ingress, &key) {
+    let dispatched = match ingress.map_or(
+        crate::shards::routing::Dispatch::Local { generation: 0 },
+        |ingress| ingress.dispatch(&key),
+    ) {
         // Like a cut-off follower, a leader nobody answers serves no reader.
         crate::shards::routing::Dispatch::Local { .. }
             if ingress.is_some_and(|ingress| ingress.engine_leads_unheard(&key)) =>
@@ -142,7 +143,7 @@ pub(crate) fn stopped_serving(
     if fence.is_closed(key) {
         return Some(moved_away(key));
     }
-    match crate::shards::routing::dispatch(Some(ingress), key) {
+    match ingress.dispatch(key) {
         crate::shards::routing::Dispatch::Local { generation } => {
             read_refusal(fence, key, generation)
         }

@@ -193,7 +193,11 @@ impl Cluster for BrokerCluster {
                     .collect()
             })
             .unwrap_or_default();
-        match dispatch(self.replication.serving().map(|ingress| &**ingress), &key) {
+        match dispatch(
+            self.replication.serving().map(|ingress| &**ingress),
+            &self.replication,
+            &key,
+        ) {
             Dispatch::Local { .. } => Placement::Local { replicas },
             Dispatch::Forward { node_id, .. } => Placement::Remote {
                 leader: node_id,
@@ -225,7 +229,7 @@ impl Cluster for BrokerCluster {
             return Ok(WritePermit::at(term));
         }
         let ingress = self.replication.serving().map(|ingress| &**ingress);
-        match dispatch_write(ingress, &key).await {
+        match dispatch_write(ingress, &self.replication, &key).await {
             (Dispatch::Local { .. }, _) if on_raft => Err(WriteError::NotLeader),
             (Dispatch::Local { generation }, held) => {
                 let mut held = held;

@@ -55,7 +55,11 @@ pub(super) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>
         };
         // A follower's copy is written by its leader, and a write here would
         // be one the leader never made.
-        let Dispatch::Local { generation } = crate::shards::routing::dispatch(ingress, &key) else {
+        let Dispatch::Local { generation } = ingress
+            .map_or(Dispatch::Local { generation: 0 }, |ingress| {
+                ingress.dispatch(&key)
+            })
+        else {
             continue;
         };
         let fenced = match ingress {

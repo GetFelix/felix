@@ -621,12 +621,18 @@ fn gave_up(dispatch: Dispatch) -> Dispatch {
 /// cluster.
 ///
 /// `None` is a single-node broker: no identity, no assignments, nothing to
-/// resolve against. Everything is local, exactly as it was before clustering
-/// existed, and it costs one branch.
+/// resolve against. Everything is local, at the term of the shard's Raft
+/// group of one when `engine` runs it on one.
 #[inline]
-pub fn dispatch(ingress: Option<&IngressRouter>, key: &ShardKey) -> Dispatch {
+pub fn dispatch(
+    ingress: Option<&IngressRouter>,
+    engine: &StreamEngine,
+    key: &ShardKey,
+) -> Dispatch {
     match ingress {
-        None => Dispatch::Local { generation: 0 },
+        None => engine
+            .standalone_dispatch(key)
+            .unwrap_or(Dispatch::Local { generation: 0 }),
         Some(ingress) => ingress.dispatch(key),
     }
 }
@@ -635,10 +641,11 @@ pub fn dispatch(ingress: Option<&IngressRouter>, key: &ShardKey) -> Dispatch {
 /// [`IngressRouter::dispatch_write`].
 pub(crate) async fn dispatch_write(
     ingress: Option<&IngressRouter>,
+    engine: &StreamEngine,
     key: &ShardKey,
 ) -> (Dispatch, Option<FenceGuard>) {
     match ingress {
-        None => (Dispatch::Local { generation: 0 }, None),
+        None => (dispatch(None, engine, key), None),
         Some(ingress) => ingress.dispatch_write(key).await,
     }
 }
