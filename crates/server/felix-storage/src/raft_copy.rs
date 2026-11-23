@@ -21,6 +21,7 @@
 //! The design is in `docs/per-shard-raft.md`, "Group and member identity",
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
+mod alone;
 mod copy_file;
 pub(crate) mod epoch_file;
 mod fresh_epoch;
@@ -44,6 +45,7 @@ pub(crate) mod tests;
 mod vouch;
 mod wire;
 
+pub use alone::{Alone, AlonePlan, Aloned, EpochRecord, LocalRecord, ReadCopy};
 pub use copy_file::CopyFile;
 #[allow(
     unused_imports,
