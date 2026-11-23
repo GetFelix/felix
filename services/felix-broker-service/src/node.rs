@@ -122,20 +122,23 @@ where
     }
     // Before anything opens: a broker asked for Raft shards that came up as
     // a hybrid one would write a shard its peers run under Raft.
-    let shard_engine = crate::config::shard_engine()?;
+    let shard_engine_setting = crate::config::shard_engine()?;
+    let raft_prerequisites = crate::config::RaftPrerequisites {
+        compiled: cfg!(feature = "raft"),
+        membership: config.membership.is_some(),
+        peer_transport: config.peer_transport.is_some(),
+        durable_storage: durable_config.is_some(),
+    };
+    let shard_engine = raft_prerequisites.resolve(shard_engine_setting)?;
     let shard_raft = crate::config::shard_raft_settings()?;
-    if shard_engine == crate::config::ShardEngine::Raft {
-        let missing = crate::config::RaftPrerequisites {
-            compiled: cfg!(feature = "raft"),
-            membership: config.membership.is_some(),
-            peer_transport: config.peer_transport.is_some(),
-            durable_storage: durable_config.is_some(),
-        }
-        .missing();
-        if let Some(missing) = missing {
-            anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}");
-        }
-    }
+    log_shard_engine(
+        shard_engine,
+        shard_engine_setting,
+        raft_prerequisites.missing(),
+    );
+    // Only a broker that registers shares shards, so only its engine has to
+    // be the cluster's.
+    let cluster_engine = config.membership.is_some().then_some(shard_engine);
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
     let gate_readiness_on_sync = durable_storage_configured && config.controlplane_url.is_some();
@@ -274,7 +277,7 @@ where
         // Judged once the control plane answers (`sync::GroupCheck`).
         (Some(_), _, Some(_)) => None,
         (Some(root), Some(base_url), None) => tokio::select! {
-            group = identity::admit(&membership_client, base_url, &credential, root) => group?,
+            group = identity::admit(&membership_client, base_url, &credential, root, cluster_engine) => group?,
             () = shutdown.as_mut() => {
                 tracing::info!("stopped before the control plane answered; nothing was opened");
                 sync_shutdown.cancel();
@@ -282,12 +285,29 @@ where
                 return Ok(());
             }
         },
+        // No directory to judge, but a registering broker's engine still
+        // has to be the cluster's.
+        (None, Some(base_url), _) => {
+            if let Some(engine) = cluster_engine {
+                tokio::select! {
+                    checked = identity::check_engine(&membership_client, base_url, &credential, engine) => checked?,
+                    () = shutdown.as_mut() => {
+                        tracing::info!("stopped before the control plane answered; nothing was opened");
+                        sync_shutdown.cancel();
+                        peer_shutdown.cancel();
+                        return Ok(());
+                    }
+                }
+            }
+            None
+        }
         _ => None,
     };
     let group = sync::GroupCheck::for_start(
         durable_root.as_deref(),
         view.is_some(),
         group,
+        cluster_engine,
         &membership_client,
         &group_refused,
     );
@@ -807,6 +827,30 @@ fn gate_record_generations(
 fn offer_client_certs(config: &mut crate::config::BrokerConfig) {
     if let Some(peer) = config.peer_transport.as_mut() {
         peer.client_certs = config.client_tls.bind_subject;
+    }
+}
+
+/// Say which engine runs this broker's durable stream shards. The hybrid is
+/// deprecated and goes away in 0.8 (`docs/hybrid-retirement.md`).
+fn log_shard_engine(
+    engine: crate::config::ShardEngine,
+    setting: Option<crate::config::ShardEngine>,
+    raft_missing: Option<&str>,
+) {
+    use crate::config::ShardEngine;
+    match (engine, setting) {
+        (ShardEngine::Raft, _) => tracing::info!("durable stream shards run on Raft"),
+        (ShardEngine::Hybrid, Some(_)) => tracing::warn!(
+            "FELIX_SHARD_ENGINE=hybrid is deprecated: the hybrid shard engine is frozen and \
+             will be removed; new clusters run Raft (leave FELIX_SHARD_ENGINE unset)"
+        ),
+        // Only a standalone broker gets here: one with a node id that
+        // cannot run Raft is refused by `RaftPrerequisites::resolve`.
+        (ShardEngine::Hybrid, None) => tracing::warn!(
+            why = raft_missing.unwrap_or_default(),
+            "durable stream shards run on the deprecated hybrid engine, which will be removed; \
+             to run Raft, set FELIX_NODE_ID, FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR"
+        ),
     }
 }
 

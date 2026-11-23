@@ -12,6 +12,9 @@ use tokio::net::TcpListener;
 use super::*;
 use crate::test_support::{spawn_axum_with_shutdown, wait_for_listen};
 
+/// A registered broker on the hybrid engine, as these control planes are.
+const HYBRID: Option<ShardEngine> = Some(ShardEngine::Hybrid);
+
 /// A control plane that knows one tenant, `t1`, and serves its JWKS.
 fn control_plane() -> Router {
     let empty = || async { Json(json!({ "items": [], "next_seq": 1 })) };
@@ -235,15 +238,22 @@ fn a_start_from_the_view_judges_its_group_after_the_restore_check() {
     let dir = marked_directory();
     let client = reqwest::Client::new();
     let refused = CancellationToken::new();
-    let check = GroupCheck::for_start(Some(dir.path()), true, None, &client, &refused);
+    let check = GroupCheck::for_start(Some(dir.path()), true, None, HYBRID, &client, &refused);
     assert!(matches!(check, GroupCheck::Deferred { .. }), "{check:?}");
-    let check = GroupCheck::for_start(Some(dir.path()), false, None, &client, &refused);
+    let check = GroupCheck::for_start(Some(dir.path()), false, None, HYBRID, &client, &refused);
     assert!(
         matches!(&check, GroupCheck::Decided(Some(guard)) if guard.stored.is_none()),
         "a marked directory expects no group: {check:?}"
     );
     let unmarked = tempfile::tempdir().expect("dir");
-    let check = GroupCheck::for_start(Some(unmarked.path()), false, None, &client, &refused);
+    let check = GroupCheck::for_start(
+        Some(unmarked.path()),
+        false,
+        None,
+        HYBRID,
+        &client,
+        &refused,
+    );
     assert!(matches!(check, GroupCheck::Decided(None)), "{check:?}");
 }
 
@@ -312,7 +322,14 @@ async fn sync_from_view(
         &key_store,
         &checked,
         crate::cluster::catalog_sync::Provisional::default(),
-        GroupCheck::for_start(Some(dir), true, None, &reqwest::Client::new(), &refused),
+        GroupCheck::for_start(
+            Some(dir),
+            true,
+            None,
+            HYBRID,
+            &reqwest::Client::new(),
+            &refused,
+        ),
     )
     .expect("a control plane is configured");
     Ok((broker, refused, sync_shutdown, stop))

@@ -615,11 +615,16 @@ being discarded, so that reason exists to be quoted.
 `tests/raft_shards.rs` runs durable stream shards on per-shard Raft
 (`FELIX_SHARD_ENGINE=raft`), and so do the Kafka and MQTT failover tests in
 `tests/failures` whose names end in `on_a_raft_shard...`. They return at once unless
-`FELIX_TEST_RAFT_SHARDS=1` is set, because they need a broker built with the
-`raft` cargo feature and the default build has none:
+`FELIX_TEST_RAFT_SHARDS=1` is set; CI runs them in their own job. The default
+broker build includes the Raft engine.
+
+Raft is the default shard engine, but the harness starts every broker with
+`FELIX_SHARD_ENGINE=hybrid` so the hybrid tests keep running until the hybrid
+is deleted (`docs/hybrid-retirement.md`). A test that wants Raft sets the
+engine in `broker_env` or `node_env`, which override it.
 
 ```bash
-cargo build -p felix-broker-service --bin felix-broker --features raft
+cargo build -p felix-broker-service --bin felix-broker
 FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test raft_shards
 FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test failures -- on_a_raft_shard
 ```

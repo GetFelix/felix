@@ -2606,6 +2606,7 @@ impl Group {
 
     /// Every member of the latest membership this member holds, voters and
     /// learners.
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn members(&self) -> BTreeSet<MemberId> {
         use openraft::async_runtime::watch::WatchReceiver;
         let metrics = self.raft.metrics();

@@ -33,6 +33,7 @@ mod record_headers;
 mod recreate;
 mod replica_election;
 mod replica_set;
+mod restart_ports;
 mod retention_floor;
 mod wiped;
 mod writes;
