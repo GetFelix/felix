@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795437727519,
+  "lastUpdate": 1795442645626,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66716,6 +66716,58 @@ window.BENCHMARK_DATA = {
             "range": "49573.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1542209.74\nmean: 1539188.38\nstdev: 49573.05\ncv: 3.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff2ee498a57d575271e4ac2e3892eb464e49b362",
+          "message": "docs(design): cross-shard atomic commits (#2953) (#2958)\n\n* docs(design): cross-shard atomic commits (#2953)\n\nDesign for commits across shards: home-shard coordinator, lock records on\nparticipants, one decision record as the commit point, applies through the\noutbox, and a done record. Covers the failure cases, lock semantics, the\ndedup fence, retention, RBAC and peer trust, wire, records and fleet feature.\n\nAdds an outline of docs/formal/FelixCrossShardCommit.tla with its invariants\nand twins. It parses; no configuration checks it yet.\n\n* docs(design): decide cross-shard commit questions, model-check the protocol (#2953)\n\nThe design now states the approved decisions: re-form with loss is a\nlimit listed by reform plan, home-stream deletion waits for open\ndecisions, key_locked refuses, participants re-check the token at\nprepare and apply only against a lock they granted, the answer comes at\nthe decision, event-less parts, the limits, and one record kind.\n\nPrepares and applies carry home's term and number, and a participant\nrefuses anything at or below the low-water mark it fenced, so a delayed\nprepare and apply after dedup expiry cannot write twice. key_locked is\ndecided at the write's place in the log.\n\nFelixCrossShardCommit.tla is now a checkable model with nine walk\nconfigurations: two that must pass (safety, and EventuallyRetired under\nfairness) and seven twins that must each violate one invariant.\n\n* docs(formal): total Max in FelixCrossShardCommit (TLC hit an empty CHOOSE)\n\n* docs(design): home never decides a commit at or below its low-water mark\n\nTLC found home committing an aborted commit whose abort retention had\ntrimmed, from grants collected before the trim.\n\n* docs(formal): narrow the NoFence and WriteCheckEarly walks so they reach their violation in budget\n\n* docs(formal): narrow the NoFirstWins walk too",
+          "timestamp": "2026-11-23T05:55:34-08:00",
+          "tree_id": "b4fcfdeac5a4b36a31ace29699f3516374c7146d",
+          "url": "https://github.com/GetFelix/felix/commit/ff2ee498a57d575271e4ac2e3892eb464e49b362"
+        },
+        "date": 1795442644862,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 536060.27,
+            "range": "33044.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 536060.27\nmean: 520493.76\nstdev: 33044.41\ncv: 6.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 536060.27,
+            "range": "33044.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 536060.27\nmean: 520493.76\nstdev: 33044.41\ncv: 6.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125176.46,
+            "range": "8066.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125176.46\nmean: 121399.28\nstdev: 8066.20\ncv: 6.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1251764.64,
+            "range": "80661.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1251764.64\nmean: 1213992.81\nstdev: 80661.99\ncv: 6.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
