@@ -1517,10 +1517,12 @@ pub(crate) enum RaftCommand {
     #[command(
         subcommand,
         long_about = "Re-form Raft groups that lost their majority. `plan` shows what a \
-                      re-form would do and changes nothing.",
+                      re-form would do and changes nothing; `apply` carries out a plan \
+                      you have read.",
         after_long_help = "Examples:
   felixctl raft reform plan
-  felixctl raft reform plan --scope node broker-2"
+  felixctl raft reform plan --scope node broker-2
+  felixctl raft reform apply 3f2a9c"
     )]
     Reform(ReformCommand),
 }
@@ -1544,6 +1546,35 @@ pub(crate) enum ReformCommand {
   felixctl raft reform plan --scope node broker-2 --json"
     )]
     Plan(ReformPlanArgs),
+    /// Carry out a plan: stop the copies, check the plan still holds, start the next epoch
+    #[command(
+        long_about = "Apply a plan made with `raft reform plan`. For each shard the plan \
+                      marked `reform`, the brokers stop their copies, the control plane \
+                      plans again from the stopped copies and skips any shard whose plan \
+                      changed (`changed`), then writes the shard's next epoch and the \
+                      brokers start it. A shard whose plan may lose acknowledged records \
+                      is skipped unless named with --accept-loss. Waits up to 5 minutes \
+                      and prints each shard's state: `started`, `skipped`, `changed`, \
+                      `left_alone` or `failed`, or the round it is still in. Applying the \
+                      same plan again retries the shards that ended without a write.",
+        after_long_help = "Examples:
+  felixctl raft reform apply 3f2a9c
+  felixctl raft reform apply 3f2a9c --accept-loss t1/payments/orders/2
+  felixctl raft reform apply 3f2a9c --accept-loss cache:t1/payments/sessions/0 --json"
+    )]
+    Apply(ReformApplyArgs),
+}
+
+/// `raft reform apply`.
+#[derive(Debug, Args)]
+pub(crate) struct ReformApplyArgs {
+    /// The plan id `raft reform plan` printed
+    pub(crate) plan_id: String,
+    /// A shard, as TENANT/NAMESPACE/STREAM/SHARD (`cache:` in front for a cache
+    /// shard), to re-form even though its plan may lose acknowledged records.
+    /// Repeat for more shards
+    #[arg(long, value_name = "SHARD")]
+    pub(crate) accept_loss: Vec<String>,
 }
 
 /// `raft reform plan`.

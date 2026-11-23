@@ -1576,7 +1576,7 @@ felixctl raft reform plan --json
 
 ### `felixctl raft reform`
 
-Re-form Raft groups that lost their majority. `plan` shows what a re-form would do and changes nothing.
+Re-form Raft groups that lost their majority. `plan` shows what a re-form would do and changes nothing; `apply` carries out a plan you have read.
 
 ```text
 felixctl raft reform [OPTIONS] <COMMAND>
@@ -1587,6 +1587,7 @@ Examples:
 ```bash
 felixctl raft reform plan
 felixctl raft reform plan --scope node broker-2
+felixctl raft reform apply 3f2a9c
 ```
 
 #### `felixctl raft reform plan`
@@ -1607,6 +1608,30 @@ Examples:
 felixctl raft reform plan
 felixctl raft reform plan --scope cluster
 felixctl raft reform plan --scope node broker-2 --json
+```
+
+#### `felixctl raft reform apply`
+
+Apply a plan made with `raft reform plan`. For each shard the plan marked `reform`, the brokers stop their copies, the control plane plans again from the stopped copies and skips any shard whose plan changed (`changed`), then writes the shard's next epoch and the brokers start it. A shard whose plan may lose acknowledged records is skipped unless named with --accept-loss. Waits up to 5 minutes and prints each shard's state: `started`, `skipped`, `changed`, `left_alone` or `failed`, or the round it is still in. Applying the same plan again retries the shards that ended without a write.
+
+```text
+felixctl raft reform apply [OPTIONS] <PLAN_ID>
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `PLAN_ID` | yes | The plan id `raft reform plan` printed |
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--accept-loss` | `<SHARD>` | - | A shard, as TENANT/NAMESPACE/STREAM/SHARD (`cache:` in front for a cache shard), to re-form even though its plan may lose acknowledged records. Repeat for more shards |
+
+Examples:
+
+```bash
+felixctl raft reform apply 3f2a9c
+felixctl raft reform apply 3f2a9c --accept-loss t1/payments/orders/2
+felixctl raft reform apply 3f2a9c --accept-loss cache:t1/payments/sessions/0 --json
 ```
 
 ## `felixctl features`

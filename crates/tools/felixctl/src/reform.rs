@@ -1,11 +1,12 @@
-//! `raft reform plan`: a read-only re-form plan for Raft groups that lost
-//! their majority (`docs/per-shard-raft.md`, "Re-forming a group").
+//! `raft reform plan` and `raft reform apply`: a read-only re-form plan for
+//! Raft groups that lost their majority, and carrying one out
+//! (`docs/per-shard-raft.md`, "Re-forming a group", "Applying a plan").
 
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::cli::{RaftCommand, ReformCommand, ReformPlanArgs};
+use crate::cli::{RaftCommand, ReformApplyArgs, ReformCommand, ReformPlanArgs};
 use crate::context::Settings;
 use crate::controlplane::{Api, segment};
 use crate::error::{Exit, fail};
@@ -24,7 +25,11 @@ pub(crate) async fn run(
     settings: &Settings,
     out: &Output,
 ) -> anyhow::Result<()> {
-    let RaftCommand::Reform(ReformCommand::Plan(args)) = command;
+    let RaftCommand::Reform(command) = command;
+    let args = match command {
+        ReformCommand::Plan(args) => args,
+        ReformCommand::Apply(args) => return apply(args, settings, out).await,
+    };
     let api = Api::new(settings)?;
     let body = plan_body(args)?;
     let created = api.post("/v1/raft/reform/plans", &[], Some(&body)).await?;
@@ -58,6 +63,135 @@ pub(crate) async fn run(
         ));
     }
     Ok(())
+}
+
+async fn apply(args: &ReformApplyArgs, settings: &Settings, out: &Output) -> anyhow::Result<()> {
+    let api = Api::new(settings)?;
+    let body = apply_body(args)?;
+    let path = format!("/v1/raft/reform/plans/{}", segment(&args.plan_id));
+    // A 409 says why: no such plan on the leader, or it is still surveying.
+    api.post(&format!("{path}/apply"), &[], Some(&body)).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let plan = loop {
+        let plan = api.get(&path, &[]).await?;
+        if !applying(&plan) || tokio::time::Instant::now() >= deadline {
+            break plan;
+        }
+        tokio::time::sleep(POLL).await;
+    };
+    if out.json {
+        out.json_value(&plan)?;
+    } else {
+        out.text(&render_apply(&plan))?;
+    }
+    if applying(&plan) {
+        return Err(fail(
+            Exit::Server,
+            "the apply did not finish in time; read the plan again with `raft reform plan` \
+             or apply it again",
+        ));
+    }
+    Ok(())
+}
+
+/// The apply request for `--accept-loss`.
+pub(crate) fn apply_body(args: &ReformApplyArgs) -> anyhow::Result<Value> {
+    let keys = args
+        .accept_loss
+        .iter()
+        .map(|name| shard_key(name))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(json!({ "accept_loss": keys }))
+}
+
+/// `TENANT/NAMESPACE/STREAM/SHARD`, with `cache:` in front for a cache shard.
+fn shard_key(name: &str) -> anyhow::Result<Value> {
+    let (kind, rest) = match name.strip_prefix("cache:") {
+        Some(rest) => ("cache", rest),
+        None => ("stream", name),
+    };
+    let bad = || {
+        fail(
+            Exit::Usage,
+            format!("--accept-loss {name}: name a shard as TENANT/NAMESPACE/STREAM/SHARD"),
+        )
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let [tenant, namespace, stream, shard] = parts[..] else {
+        return Err(bad());
+    };
+    let shard: u32 = shard.parse().map_err(|_| bad())?;
+    if [tenant, namespace, stream]
+        .iter()
+        .any(|part| part.is_empty())
+    {
+        return Err(bad());
+    }
+    Ok(json!({
+        "tenant_id": tenant, "namespace": namespace, "stream": stream,
+        "shard": shard, "kind": kind,
+    }))
+}
+
+/// Whether some shard's apply is still in a round.
+fn applying(plan: &Value) -> bool {
+    shards(plan).iter().any(|shard| {
+        matches!(
+            shard["apply"]["state"].as_str(),
+            Some("stopping" | "writing" | "starting")
+        )
+    })
+}
+
+fn shards(plan: &Value) -> &[Value] {
+    plan["shards"].as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// One row per shard the apply touched.
+pub(crate) fn render_apply(plan: &Value) -> String {
+    let applied: Vec<&Value> = shards(plan)
+        .iter()
+        .filter(|shard| shard["apply"].is_object())
+        .collect();
+    let mut out = format!(
+        "plan {}: {} shards applied",
+        cell(&plan["plan_id"]),
+        applied.len()
+    );
+    if applied.is_empty() {
+        out.push_str("\nno shard in the plan is marked `reform`");
+        return out;
+    }
+    let rows = applied
+        .iter()
+        .map(|shard| {
+            let apply = &shard["apply"];
+            let waiting: Vec<String> = apply["waiting_on"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(cell)
+                .collect();
+            let note = match apply["reason"].as_str() {
+                Some(reason) => reason.to_string(),
+                None if !waiting.is_empty() => format!("waiting on {}", waiting.join(", ")),
+                None => String::new(),
+            };
+            vec![
+                row(shard)[0].clone(),
+                cell(&apply["state"]),
+                if apply["epoch"].is_null() {
+                    "-".to_string()
+                } else {
+                    cell(&apply["epoch"])
+                },
+                note,
+            ]
+        })
+        .collect();
+    out.push('\n');
+    out.push_str(&table(&["SHARD", "APPLY", "NEW EPOCH", "NOTE"], rows));
+    out
 }
 
 /// The create request for `--scope`.

@@ -76,6 +76,41 @@ pub(crate) async fn get_plan(
 }
 
 #[utoipa::path(
+    post,
+    path = "/v1/raft/reform/plans/{plan_id}/apply",
+    tag = "raft",
+    params(("plan_id" = String, Path, description = "Plan identifier")),
+    request_body = ApplyReformPlanRequest,
+    responses(
+        (status = 200, description = "The stop rounds started", body = ApplyReformPlanResponse),
+        (status = 409, description = "No such plan on the control-plane leader, or it is still surveying", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// Apply a re-form plan: stop each shard it marked `reform`, compare the
+/// post-stop plan with this one, write the next epoch, then start it. A
+/// shard whose plan may lose acknowledged records is applied only when
+/// named in `accept_loss`. Read progress with
+/// `GET /v1/raft/reform/plans/{plan_id}`. Requires `node.manage` on
+/// `cluster:*`, like making the plan.
+pub(crate) async fn apply_plan(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(plan_id): Path<String>,
+    Json(request): Json<ApplyReformPlanRequest>,
+) -> Result<Json<ApplyReformPlanResponse>, ApiError> {
+    require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+    let request = ReformRequest::Apply {
+        plan_id,
+        accept_loss: request.accept_loss,
+    };
+    match ask(&state, request).await? {
+        ReformReply::Applied { applying } => Ok(Json(ApplyReformPlanResponse { applying })),
+        ReformReply::NotApplied { reason } => Err(api_conflict("conflict", &reason)),
+        _ => Err(unexpected()),
+    }
+}
+
+#[utoipa::path(
     get,
     path = "/v1/nodes/{node_id}/reform/surveys",
     tag = "nodes",
@@ -143,6 +178,19 @@ pub struct CreateReformPlanRequest {
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateReformPlanResponse {
     pub plan_id: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ApplyReformPlanRequest {
+    /// Shards whose plan may lose acknowledged records, applied anyway.
+    #[serde(default)]
+    pub accept_loss: Vec<crate::model::ShardKey>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ApplyReformPlanResponse {
+    /// How many shards started their stop round.
+    pub applying: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

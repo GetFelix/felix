@@ -131,3 +131,72 @@ fn a_surveying_plan_says_who_it_waits_on() {
     }));
     assert!(empty.ends_with("no Raft shard in scope"), "{empty}");
 }
+
+fn apply_args(argv: &[&str]) -> anyhow::Result<Value> {
+    let cli = Cli::try_parse_from(
+        ["felixctl", "raft", "reform", "apply"]
+            .into_iter()
+            .chain(argv.iter().copied()),
+    )
+    .unwrap_or_else(|err| panic!("{argv:?}: {err}"));
+    let Some(Command::Raft(RaftCommand::Reform(ReformCommand::Apply(args)))) = cli.command else {
+        panic!("not raft reform apply");
+    };
+    apply_body(&args)
+}
+
+/// `--accept-loss` names shards the way the plan prints them, and a name
+/// that is not one is a usage error, never a shard nobody meant.
+#[test]
+fn accept_loss_names_stream_and_cache_shards() {
+    assert_eq!(
+        apply_args(&["p1"]).expect("body"),
+        json!({ "accept_loss": [] })
+    );
+    assert_eq!(
+        apply_args(&[
+            "p1",
+            "--accept-loss",
+            "t1/ns/orders/2",
+            "--accept-loss",
+            "cache:t1/ns/sessions/0",
+        ])
+        .expect("body"),
+        json!({ "accept_loss": [
+            {"tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 2, "kind": "stream"},
+            {"tenant_id": "t1", "namespace": "ns", "stream": "sessions", "shard": 0, "kind": "cache"},
+        ]})
+    );
+    for bad in [
+        "t1/ns/orders",
+        "t1/ns/orders/x",
+        "t1//orders/0",
+        "t1/ns/orders/0/1",
+    ] {
+        assert!(apply_args(&["p1", "--accept-loss", bad]).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn an_apply_prints_each_applied_shard_with_its_state() {
+    let mut started = shard("orders", "reform");
+    started["apply"] = json!({"state": "started", "epoch": 1});
+    let mut skipped = shard("refunds", "reform");
+    skipped["apply"] = json!({"state": "skipped", "reason": "name the shard with --accept-loss"});
+    let mut stopping = shard("audit", "reform");
+    stopping["apply"] = json!({"state": "stopping", "waiting_on": ["b"]});
+    let plan = json!({
+        "plan_id": "p1", "state": "applying",
+        "shards": [started, skipped, stopping, shard("left", "left_alone")],
+    });
+    let text = render_apply(&plan);
+    assert!(text.starts_with("plan p1: 3 shards applied"), "{text}");
+    assert!(
+        text.contains("t1/ns/orders/0") && text.contains("started"),
+        "{text}"
+    );
+    assert!(text.contains("--accept-loss"), "{text}");
+    assert!(text.contains("waiting on b"), "{text}");
+    assert!(!text.contains("t1/ns/left/0"), "{text}");
+    assert!(applying(&plan));
+}
