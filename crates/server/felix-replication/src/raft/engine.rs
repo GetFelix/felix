@@ -367,6 +367,33 @@ impl RaftEngine {
         group.cache_read(key, timeout).await
     }
 
+    /// Where a cache watch on `shard` joins this member: the offset its
+    /// live changes start at, and each value `keep` takes below it, as
+    /// `(key, value, offset, expires_at_millis)` in offset order. Register
+    /// the watch before calling this. `None` when no cache group of `shard`
+    /// runs here.
+    pub fn cache_watch_point(
+        &self,
+        shard: &ShardKey,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Vec<(String, Bytes, u64, u64)>)> {
+        let group = self.runtime.group(shard)?;
+        let (tail, entries) = group.cache_watch_point(keep)?;
+        let mut entries: Vec<_> = entries
+            .into_iter()
+            .map(|(key, held)| {
+                (
+                    key,
+                    held.value,
+                    held.version,
+                    held.expires_at.div_ceil(1000),
+                )
+            })
+            .collect();
+        entries.sort_by_key(|entry| entry.2);
+        Some((tail, entries))
+    }
+
     /// A counter's sum on this leader.
     pub async fn counter_read(
         &self,

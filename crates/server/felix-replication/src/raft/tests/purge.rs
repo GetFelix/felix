@@ -57,7 +57,7 @@ fn a_snapshot_without_a_floor_is_refused() {
 async fn stream_machine(dir: &std::path::Path) -> (Machine, DiskLog) {
     let log = open_log(dir, "m", 0, log_config());
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    let opened = Machine::open(snapshots, ShardKind::Stream, Some(&log)).await;
+    let opened = Machine::open(snapshots, ShardKind::Stream, Some(&log), None).await;
     (opened.expect("open").machine, log)
 }
 

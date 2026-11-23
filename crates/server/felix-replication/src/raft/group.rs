@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use bytes::Bytes;
 
-use super::cache::{Answer, CacheCommand};
+use super::cache::{Answer, CacheCommand, CacheWatch};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits, SkipClaim, Skips};
 use super::install::{self, Incoming, Piece};
@@ -683,6 +683,8 @@ pub(crate) struct Host {
     pub(crate) placed_budget: Arc<placed::Budget>,
     /// The highest placement incarnation the broker has heard of.
     pub(crate) acked: Arc<AtomicU64>,
+    /// Where a cache shard's member reports its changes for watches.
+    pub(crate) cache_changes: Option<Arc<dyn felix_storage::CacheObserver>>,
 }
 
 /// [`Pace`]'s mark for a time that has not come yet.
@@ -727,6 +729,7 @@ impl Group {
             placement,
             placed_budget,
             acked,
+            cache_changes,
         } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
@@ -777,7 +780,13 @@ impl Group {
             skips,
             cache,
             groups,
-        } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
+        } = Machine::open(
+            snapshots,
+            id.shard.kind,
+            Some(log.disk_log()),
+            cache_changes.map(|observer| CacheWatch::new(observer, Arc::clone(&id.shard))),
+        )
+        .await?;
         let purge_at = machine.purging(log.reader());
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
@@ -2338,6 +2347,18 @@ impl Group {
     /// time. When only the clock says the value expired, the delete is
     /// committed before the reader is told it is gone, so no later leader
     /// with a slower clock finds the key again.
+    /// A cache watch's live edge on this member, one past the last entry
+    /// applied, and every value `keep` takes below it, read under one hold
+    /// of the state's lock. `None` in a stream shard's group.
+    pub(crate) fn cache_watch_point(
+        &self,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Vec<(String, super::cache::Watched)>)> {
+        let cache = self.cache.as_ref()?;
+        let state = cache.read();
+        Some((state.applied() + 1, state.watched_entries(keep)))
+    }
+
     pub(crate) async fn cache_read(
         &self,
         key: &str,
