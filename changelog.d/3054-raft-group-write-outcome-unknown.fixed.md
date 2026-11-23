@@ -1,0 +1,1 @@
+On Raft, a consumer-group write whose entry was proposed but not seen applied (the wait ran out or the leader stopped) is answered outcome unknown (`quorum_timeout` or `leadership_lost`) instead of a retryable `shard_unavailable`.
