@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795395416702,
+  "lastUpdate": 1795396301825,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65676,6 +65676,58 @@ window.BENCHMARK_DATA = {
             "range": "13959.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809908.13\nmean: 803642.75\nstdev: 13959.65\ncv: 1.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f08d6e3adb57ef9cb91b2041da86219031add146",
+          "message": "test: fix four load-sensitive flakes (#2973)\n\nFixes #2941. Fixes #2943. Fixes #2959. Fixes #2945.",
+          "timestamp": "2026-11-23T00:59:01Z",
+          "tree_id": "9ae45ba9d72ff888d3c61c2fa22bd678b669857a",
+          "url": "https://github.com/GetFelix/felix/commit/f08d6e3adb57ef9cb91b2041da86219031add146"
+        },
+        "date": 1795396301040,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364412.3,
+            "range": "13989.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364412.30\nmean: 359068.98\nstdev: 13989.45\ncv: 3.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364412.3,
+            "range": "13989.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364412.30\nmean: 359068.98\nstdev: 13989.45\ncv: 3.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79738.72,
+            "range": "498.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79738.72\nmean: 79653.94\nstdev: 498.03\ncv: 0.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797387.15,
+            "range": "4980.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797387.15\nmean: 796539.40\nstdev: 4980.26\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
