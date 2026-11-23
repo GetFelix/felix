@@ -117,6 +117,12 @@ pub struct ShardAssignment {
     /// keeps re-sending a formed group's floor until they show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_voters: Option<RaftVoters>,
+    /// How each re-form of the group started its epoch, as the control
+    /// plane recorded them. A fresh copy placed past epoch 0 writes them
+    /// into its `raft-epoch`. Absent at epoch 0 and from a control plane
+    /// that predates them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_bases: Option<RaftBases>,
 }
 
 /// The epoch half of the control plane's record of the brokers placed in
@@ -132,6 +138,30 @@ pub struct PlacedEpoch {
 pub struct RaftFormed {
     pub incarnation: u64,
     pub epoch: u64,
+}
+
+/// [`ShardAssignment::raft_bases`]: the group is at epoch `bases.len()`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftBases {
+    pub incarnation: u64,
+    pub bases: Vec<RaftEpochBase>,
+}
+
+/// One re-form's base: its last log id, none for an empty base, and the
+/// epoch's first index.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftEpochBase {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_last: Option<RaftLogId>,
+    pub first_index: u64,
+}
+
+/// A log id with its group epoch.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftLogId {
+    pub index: u64,
+    pub epoch: u64,
+    pub term: u64,
 }
 
 /// The voters of a Raft group as the control plane last took them.
@@ -175,9 +205,49 @@ pub struct PendingSet {
 }
 
 impl ShardAssignment {
-    /// The group epoch the control plane's record is at, 0 without one.
+    /// The group epoch the control plane's record is at. Without a record,
+    /// as for a shard restored from an export, it is the number of bases
+    /// recorded at this incarnation: only a re-form adds one, so 0 means
+    /// the group never re-formed as far as the record knows (#2882).
     pub fn group_epoch(&self) -> u64 {
-        self.placed.map_or(0, |placed| placed.epoch)
+        match self.placed {
+            Some(placed) => placed.epoch,
+            None => self
+                .incarnation_bases()
+                .map_or(0, |bases| bases.len() as u64),
+        }
+    }
+
+    /// The bases of every re-form up to [`Self::group_epoch`], when the
+    /// record is past epoch 0 and holds one per epoch at this incarnation.
+    #[cfg(feature = "raft")]
+    pub fn epoch_bases(&self) -> Option<Vec<felix_storage::raft_copy::EpochBase>> {
+        let epoch = self.group_epoch();
+        let bases = self
+            .incarnation_bases()
+            .filter(|bases| epoch > 0 && bases.len() as u64 == epoch)?;
+        Some(
+            bases
+                .iter()
+                .map(|base| felix_storage::raft_copy::EpochBase {
+                    base_last: base
+                        .base_last
+                        .map(|last| felix_storage::raft_copy::EpochLogId {
+                            index: last.index,
+                            epoch: last.epoch,
+                            term: last.term,
+                        }),
+                    first_index: base.first_index,
+                })
+                .collect(),
+        )
+    }
+
+    fn incarnation_bases(&self) -> Option<&[RaftEpochBase]> {
+        self.raft_bases
+            .as_ref()
+            .filter(|held| held.incarnation == self.incarnation)
+            .map(|held| held.bases.as_slice())
     }
 
     /// The control plane has told the leader to stop serving at this
@@ -265,6 +335,7 @@ impl PreviousSet {
             targets_withheld: false,
             raft_formed: None,
             raft_voters: None,
+            raft_bases: None,
             placed: None,
         }
     }

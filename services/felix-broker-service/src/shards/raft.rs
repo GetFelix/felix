@@ -397,6 +397,7 @@ impl RaftShards {
         let broker = Arc::clone(&self.broker);
         let (shard, incarnation) = (key.clone(), assignment.incarnation);
         let written_commit = self.fleet.supports(fleet::RAFT_WRITTEN_COMMIT);
+        let epoch_bases = assignment.epoch_bases();
         // Sums the hybrid kept for this shard would be lost under an empty
         // group, so a shard with any is refused like a log with segments.
         if key.kind == ShardKind::Cache
@@ -447,6 +448,20 @@ impl RaftShards {
                     dir: dir.display().to_string(),
                 }
                 .into());
+            }
+            // Before the member opens, so nothing appends while the check
+            // runs. A copy placed fresh past epoch 0 has no `raft-epoch`
+            // and would never count in the group (#2882).
+            if let Some(bases) = &epoch_bases {
+                let fresh = felix_storage::raft_copy::write_fresh_epoch(
+                    &dir,
+                    incarnation,
+                    bases,
+                    storage.config().index_spacing_bytes,
+                )?;
+                if let felix_storage::raft_copy::FreshEpoch::Refused(why) = fresh {
+                    tracing::warn!(shard = ?shard, epoch = bases.len(), why, "a Raft copy without raft-epoch in a group past epoch 0 does not take the epoch; it never votes");
+                }
             }
             let config = LogConfig {
                 raft_log: true,
