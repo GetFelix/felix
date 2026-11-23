@@ -1904,9 +1904,16 @@ leader. A forward to a leader that is gone fails, and the client retries.
 
 ### Many groups electing at once
 
-A vote is a small file per shard, written whole and renamed into place,
-and a vote at a new term also writes the shard's replica state. That is
-two to four fsyncs per vote, and each group does its own.
+A vote is a small file per shard, the ballot, written whole and renamed
+into place: two fsyncs, the file's and its directory's, and each group does
+its own. A vote at a new term does not also wait for the shard's replica
+state. An open takes the term from a ballot ahead of the replica state
+(the ballot is written first for that reason), so the ballot alone makes
+the vote durable, and the next commit write carries the term into the
+replica state. That halved the fsyncs of nearly every vote in a storm,
+since a candidate's own vote and each vote it is granted are at a new term.
+The vote mark at the root is one synced write for every shard's queued
+marks, so it is shared across groups already.
 
 When every group on a broker loses its leader in the same moment, or many
 groups are formed together, every member reaches its election timeout in
@@ -1990,6 +1997,31 @@ worst case, with the limit pinned at the floor of 8 and every round lost:
 about 90 rounds for 700 groups whose leader's broker crashed. Usually the
 first member of a group to stand wins, and the limit climbs back by the
 elections that won once it is not cut.
+
+A deterministic model measures this: `ticker/tests/storm.rs` runs the
+real election bound on two live brokers whose groups all lost their leader
+to the third, on a mock clock, with one disk per broker that saves one vote
+at a time. Pre-vote, a candidate saving its own vote before it asks, and a
+voter saving before it answers are all modelled. On a disk held to 5 ms an
+fsync:
+
+| groups | fsyncs a vote, bound | all led | elections | highest term |
+|---|---|---|---|---|
+| 100 | 4, 64 | 4.5 s | 245 | 5 |
+| 500 | 4, 64 | 11.8 s | 600 | 4 |
+| 2,000 | 4, 64 | 42.7 s | 2,207 | 7 |
+| 100 | 2, 64 | 2.4 s | 210 | 5 |
+| 500 | 2, 64 | 6.9 s | 646 | 5 |
+| 2,000 | 2, 64 | 22.6 s | 2,347 | 7 |
+| 2,000 | 2, none | 54.8 s | 8,872 | 11 |
+
+With the bound, a group takes about one election, and the time to all led
+is the time the disks take to save two votes per group: the disk is the
+whole cost. Without it, members that cannot get their vote saved in time
+stand again, and four times the elections cost more than twice the
+fsyncs. `two_thousand_groups_elect_once_each_after_a_broker_dies` holds the
+2,000-group row to 30 s, and `storm::table` prints the rest (2 ms rows
+too).
 
 `GroupRuntime::election_load` and the gauges
 `felix_broker_raft_elections_in_flight` and
