@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use openraft::entry::RaftEntry;
-use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
+use openraft::error::{NetworkError, RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{Backoff, RPCOption, RaftNetworkFactory};
 use openraft::raft::{
@@ -329,7 +329,7 @@ impl Router {
         group: GroupId,
         mut body: Request,
         option: &RPCOption,
-    ) -> Result<Reply, Unreachable<ShardTypes>> {
+    ) -> Result<Reply, RPCError<ShardTypes>> {
         // A transport inside one process hands the message over as it is.
         // A token that went with it would be resolved by the follower's
         // append and tell the publisher the leader had written.
@@ -427,8 +427,8 @@ impl Router {
         }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
-            Ok(Err(refused)) => Err(Unreachable::new(&refused)),
-            Err(elapsed) => Err(Unreachable::new(&elapsed)),
+            Ok(Err(refused)) => Err(refusal_error(&refused)),
+            Err(elapsed) => Err(Unreachable::new(&elapsed).into()),
         }
     }
 }
@@ -470,8 +470,18 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
     }
 }
 
-fn wrong_reply() -> Unreachable<ShardTypes> {
-    Unreachable::new(&WrongReply)
+fn wrong_reply() -> RPCError<ShardTypes> {
+    Unreachable::new(&WrongReply).into()
+}
+
+/// What openraft is told of a refusal. A slow group's broker is up, and a
+/// busy group's replication must not back off for it (`Unreachable` ranks
+/// past openraft's backoff threshold, `Network` does not).
+pub(crate) fn refusal_error(refused: &Refused) -> RPCError<ShardTypes> {
+    match refused {
+        Refused::Slow(_) => NetworkError::new(refused).into(),
+        _ => Unreachable::new(refused).into(),
+    }
 }
 
 impl GroupRouter<ShardTypes, GroupId> for Router {
@@ -489,7 +499,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::Append(result) => Ok(result),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 
@@ -505,7 +515,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::Vote(response) => Ok(response),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 
@@ -521,7 +531,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::Vote(response) => Ok(response),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 
@@ -582,7 +592,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::TransferLeader(response) => Ok(response),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 

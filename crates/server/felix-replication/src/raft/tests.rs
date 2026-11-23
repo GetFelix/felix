@@ -1350,6 +1350,66 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
     assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
 }
 
+/// A transport whose answer to this group is always `Slow`.
+struct AlwaysSlow;
+
+#[async_trait]
+impl RaftTransport for AlwaysSlow {
+    async fn send(&self, _: RaftRequest) -> Result<RaftReply, Refused> {
+        Err(Refused::Slow(Box::new(super::network::Addressee {
+            group: group(0),
+            to: MemberId::new("b", 1),
+        })))
+    }
+}
+
+/// A group cut as `Slow` is late, not unreachable. An `Unreachable` error
+/// ranks past openraft's backoff threshold and would stall the group's
+/// replication to a broker that is up.
+#[tokio::test(start_paused = true)]
+async fn a_slow_answer_does_not_make_openraft_back_off() {
+    use openraft::errors::RPCError;
+    use openraft::network::RPCOption;
+    use openraft::raft::AppendEntriesRequest;
+    use openraft_multi::GroupRouter;
+    let (pace, _) = pace();
+    let router = super::network::Router::new(
+        Arc::new(AlwaysSlow),
+        Arc::new(pace),
+        Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
+        Arc::new(super::written::Reports::new()),
+        Arc::new(super::reach::Reach::new(
+            tokio::time::Instant::now(),
+            Duration::from_secs(1),
+        )),
+        Arc::new(super::reach::Refusals::new(group(0))),
+        Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
+    );
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
+        LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
+        true,
+    );
+    let append = AppendEntriesRequest {
+        vote,
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    };
+    let error = router
+        .append_entries(
+            MemberId::new("b", 1),
+            group(0),
+            append,
+            RPCOption::new(Duration::from_secs(1)),
+        )
+        .await
+        .expect_err("slow is an error");
+    assert!(
+        matches!(error, RPCError::Network(_)),
+        "a slow answer must rank low, got {error:?}"
+    );
+}
+
 /// Sending an entry again, to a member that did not take it or one catching
 /// up, does not make an idle group busy. Only an entry no append has
 /// carried before does (#2567).
