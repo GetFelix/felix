@@ -44,10 +44,10 @@ pub(crate) const MAX_BATCH: usize = 1024;
 #[derive(Default)]
 pub struct ReformPlans {
     plans: Mutex<Vec<Plan>>,
-    /// Per shard, the plan time and id of the newest plan whose epoch write
-    /// went through. An older plan is not applied after it: its first index
+    /// Per shard, the plan time, id and written epoch of the newest plan
+    /// whose epoch write went through. An older plan is not applied after it: its first index
     /// is lower on the time line, below offsets the newer epoch gave out.
-    written: Mutex<HashMap<ShardKey, (u64, String)>>,
+    written: Mutex<HashMap<ShardKey, (u64, String, u64)>>,
 }
 
 impl ReformPlans {
@@ -242,7 +242,8 @@ pub struct ReformRestore {
     /// (`RestoreAt::first_index`); 2^40 when not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_gap: Option<u64>,
-    /// Take an `offset_gap` below 2^32.
+    /// Take an `offset_gap` below 2^32, or a plan whose time line plus gap
+    /// is below the point's end (a control-plane clock far behind).
     #[serde(default)]
     pub accept_short_gap: bool,
 }
@@ -570,6 +571,25 @@ fn restore_at(planned: &PlannedRestore, shard: &ShardAssignment) -> Result<Resto
         return Err(format!(
             "the backup point {} read this shard at incarnation {}; the shard is at {}",
             restore.point, point.incarnation, shard.incarnation
+        ));
+    }
+    let line = RestoreAt {
+        end: point.end,
+        gap: planned.gap,
+        planned_at_millis: planned.planned_at_millis,
+    };
+    // Below the point's end the gap is silently dropped, so offsets past
+    // the point could be reused. Only an explicit accept takes that.
+    if !restore.accept_short_gap && line.first_index().is_some_and(|first| first < point.end) {
+        tracing::warn!(
+            shard = ?shard.key,
+            end = point.end,
+            planned_at_millis = planned.planned_at_millis,
+            "the control plane's clock puts the restore's time line below the point's end"
+        );
+        return Err(format!(
+            "the control plane's clock ({} ms) puts the time line plus gap below the point's              end {}; fix the clock, or accept it with --accept-short-gap",
+            planned.planned_at_millis, point.end
         ));
     }
     Ok(RestoreAt {

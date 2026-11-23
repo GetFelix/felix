@@ -943,7 +943,9 @@ mechanism:
   control plane's wall clock in Unix milliseconds, stamped once when the
   plan is made, so the re-plan after the stop reaches the same index. The
   offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also needs
-  `--accept-short-gap`). The point's `taken_at_millis` comes from the
+  `--accept-short-gap`, which also takes a plan whose line plus gap falls
+  below the point's end, as when the control plane's clock is far behind;
+  otherwise the plan is blocked). The point's `taken_at_millis` comes from the
   clock of the host that ran `felixctl backup-point`; it is shown in the
   plan and never used for the index.
 
@@ -989,8 +991,9 @@ mechanism:
   cases reuse an offset (`FelixRaftRestoreAfterBackup`,
   `FelixRaftRestoreLeaderMoved`), a gap at least as large as the offsets
   acknowledged after the point closes both (`FelixRaftRestoreGap`,
-  `FelixRaftRestoreGapShort`); the code's first index is at least the
-  model's. `FelixRaftRestoreRepeated.tla` checks two backups and three
+  `FelixRaftRestoreGapShort`). The code's first index is the larger of the
+  point's end and the time line plus the gap, so repeated restores rest on
+  `FelixRaftRestoreRepeated`, not on this model. `FelixRaftRestoreRepeated.tla` checks two backups and three
   restores, each planned on a clock off by up to a tick: no offset is given
   out twice (`FelixRaftRestoreRepeated`); without the line a second restore
   from one backup reuses one (`FelixRaftRestoreRepeatedNoTime`), and so does

@@ -929,7 +929,8 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftRestoreGap.cfg` | the restore offset gap: epoch 1 starts at least `Gap` = 2 past the point, at most two offsets are acknowledged after it, and the copied copy may stop leading | pass `BackedUpNeverReused`, `OffsetNeverReused`, `BaseKept`, `ReserveCovers` (4,656 distinct states, under a second) |
 | `FelixRaftRestoreGapShort.cfg` | the same with a gap of 1 | violate `OffsetNeverReused` |
 | `FelixRaftRestoreRepeated.cfg` | `FelixRaftRestoreRepeated.tla`: two backups and three restores, a backup may be taken from a restored epoch, each restore planned on a clock off true time by up to a tick; at most one offset per tick, the line rises two per tick, restores five ticks apart | pass `OffsetNeverReused` (5,650,196 distinct states, a few seconds) |
-| `FelixRaftRestoreRepeatedNoTime.cfg` | the same with the first index at the backup's end plus the gap, no time line | violate `OffsetNeverReused`: a second restore from one backup starts where the first did |
+| `FelixRaftRestoreRepeatedNoTime.cfg` | pins the old rule, flipping both `Line` (off) and `EndGap` (on): the first index at the backup's end plus the gap, no time line. `...EndGap.cfg` is the one-change twin | violate `OffsetNeverReused`: a second restore from one backup starts where the first did |
+| `FelixRaftRestoreRepeatedMinApart.cfg` | `...Repeated.cfg` with restores three ticks apart under a skew of one tick, below the four-times-skew boundary | violate `OffsetNeverReused`: a restore planned on a slow clock starts below an offset the earlier one gave out |
 | `FelixRaftRestoreRepeatedEndGap.cfg` | the same with the gap added past the backup's end as well as past the line | violate `OffsetNeverReused`: a backup of a restored epoch restores above the line, and an older backup restored after it starts below offsets it gave out |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
@@ -3695,8 +3696,8 @@ gap one short reuses an offset (`...GapShort.cfg`). The code takes the gap
 from `felixctl raft reform plan --offset-gap` (2^40 by default) and starts
 the epoch at max(point's offset + gap, ...) for a single restore, where the
 point's offset is the model's point + 1. The code's first index is at least
-that: it takes the time line `2^14 * plan time + gap`, and the point is
-below the line under the rate assumption.
+that: it takes the larger of the point's end and the time line
+`2^14 * plan time + gap`, and refuses a plan whose line is below the end.
 
 `FelixRaftRestoreRepeated.tla` checks restores that repeat. Every restored
 epoch starts on one line, `TimeRate * clock + Gap`, read from the planning
@@ -3704,7 +3705,8 @@ node's own clock. The line rises faster than the shard gives out offsets
 (`Rate` = `TimeRate` / 2), so an epoch started on it stays below it, and a
 later restore from any backup starts past everything earlier epochs gave
 out, provided the restores are far enough apart for the clock skew: with a
-skew of a tick, five ticks pass (`...Repeated.cfg`) and three do not.
+skew of a tick, five ticks pass (`...Repeated.cfg`) and three do not
+(`...RepeatedMinApart.cfg`).
 Without the line a second restore from one backup reuses offsets
 (`...RepeatedNoTime.cfg`); adding the gap past the backup's end as well
 lifts a restored epoch above the line, where an older backup restored after

@@ -130,14 +130,17 @@ directory gets a new storage id. A Raft cluster takes the steps under
 
 :::note[Offsets past the point on Raft]
 The re-form a Raft restore runs, `felixctl raft reform plan --restore-point
-FILE`, starts each shard's next epoch past the point by an offset gap (2^40
-by default, `--offset-gap N` to choose another, below 2^32 only with
-`--accept-short-gap`) plus 2^14 offsets for every millisecond between the
-point and the plan. Records acknowledged after the point are lost with the
-restore, but their offsets are not given out again, also when you restore
-from the same or an older point a second time, as long as no shard
-acknowledges 8 or more offsets per microsecond and the clocks of the machine
-that took the point and the control plane roughly agree. A reader that kept an
+FILE`, starts each shard's next epoch at the larger of the point's end and 2^14
+offsets for every millisecond of the control plane's clock at plan time plus
+an offset gap (2^40 by default, `--offset-gap N` to choose another, below
+2^32 only with `--accept-short-gap`). The point's own clock is not used.
+Records acknowledged after the point are lost with the restore, but their
+offsets are not given out again, also when you restore from the same or an
+older point a second time, as long as a shard has acknowledged at most 2^13
+offsets per millisecond on average since the last restore, and restores of
+one shard are more than four times the control-plane clock skew apart. A
+plan whose clock puts that line below the point's end is refused unless you
+pass `--accept-short-gap`. A reader that kept an
 offset past the point can tell from it that the record is gone, and new
 records never take it. The gap is a header in the next segment, not disk
 space.
@@ -219,7 +222,8 @@ offset gap above). Run these in order.
    under 8 offsets per microsecond and restores are more than four times
    the control-plane clock skew apart. The point's own time comes from the
    machine that took it and is only shown. A plan made before another plan
-   that already restored the shard is refused as `stale`; plan again.
+   that already restored the shard is refused as `stale`; use the plan that
+   won, or plan again once the control plane's clock is past its time.
 
 6. **Apply it.** The plan says it may lose records, because the wiped copies'
    votes are unknown, and what it loses is what was acknowledged after the

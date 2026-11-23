@@ -172,8 +172,13 @@ impl ReformPlans {
             let Some(SurveyStep::Planned(planned)) = &shard.outcome else {
                 continue;
             };
-            let newer = written.get(&shard.key).filter(|(at, by)| {
-                *at > plan.planned_at_millis || (*at == plan.planned_at_millis && by != &plan.id)
+            // A plan that surveyed a higher epoch than the one written
+            // already reflects that write, so a clock step back cannot
+            // make it stale. Ties in one ms go to the larger plan id.
+            let newer = written.get(&shard.key).filter(|(at, by, epoch)| {
+                shard.epoch < *epoch
+                    && (*at > plan.planned_at_millis
+                        || (*at == plan.planned_at_millis && *by > plan.id))
             });
             let again = shard
                 .apply
@@ -183,10 +188,14 @@ impl ReformPlans {
                 continue;
             }
             let accepted = accept_loss.contains(&shard.key);
-            let phase = if newer.is_some() {
+            let phase = if let Some((_, by, _)) = newer {
                 ended(
                     "stale",
-                    "a plan made after this one already wrote this shard's epoch; plan again",
+                    format!(
+                        "plan {by}, made after this one, already wrote this shard's epoch; \
+                         use that plan, or plan again once the control plane's clock is past \
+                         its time"
+                    ),
                 )
             } else if planned.needs_accept_loss && !accepted {
                 ended(
@@ -264,8 +273,10 @@ impl ReformPlans {
         };
         if written.is_ok() {
             let mut newest = self.written.lock();
-            if newest.get(key).is_none_or(|(at, _)| *at <= planned_at) {
-                newest.insert(key.clone(), (planned_at, id.to_string()));
+            if newest.get(key).is_none_or(|(at, ..)| *at <= planned_at)
+                && let Ok(epoch) = &written
+            {
+                newest.insert(key.clone(), (planned_at, id.to_string(), *epoch));
             }
         }
         let Some(apply) = &mut shard.apply else {

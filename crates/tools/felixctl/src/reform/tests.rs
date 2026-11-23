@@ -85,7 +85,6 @@ fn the_gap_flags_need_a_restore_point() {
     for bad in [
         &["--offset-gap", "8589934592"][..],
         &["--accept-short-gap"],
-        &["--restore-point", "p.json", "--accept-short-gap"],
         &["--restore-point", "p.json", "--offset-gap", "-1"],
     ] {
         let parsed = Cli::try_parse_from(

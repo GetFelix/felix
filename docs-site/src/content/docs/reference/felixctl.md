@@ -1603,7 +1603,7 @@ felixctl raft reform plan [OPTIONS]
 | `--scope` | `<SCOPE>` | `cluster` | `cluster` for every Raft shard, or `node ID` for the shards placed on one broker |
 | `--restore-point` | `<FILE>` | - | Re-form from the backup point in FILE, written by `felixctl backup-point` |
 | `--offset-gap` | `<N>` | - | Offsets past the time line (2^14 per millisecond of the control plane's clock at plan time) the next epoch starts at [default: 2^40] |
-| `--accept-short-gap` | - | - | Take an --offset-gap below 2^32 |
+| `--accept-short-gap` | - | - | Take an --offset-gap below 2^32, or a control-plane clock behind the point's end |
 
 Examples:
 

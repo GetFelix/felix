@@ -337,6 +337,70 @@ fn an_older_plan_is_not_applied_after_a_newer_one_wrote() {
     assert!(plans.take_due().is_empty());
 }
 
+/// After a backward clock step, a plan made on the epoch the newer write
+/// created is not stale; one made on the older epoch still is.
+#[test]
+fn a_backward_clock_step_does_not_block_a_plan_on_the_newer_epoch() {
+    let now = Instant::now();
+    let (plans, id) = planned(now, whole);
+    let at = {
+        let mut all = plans.plans.lock();
+        // The plan surveyed the epoch the earlier write created.
+        all[0].shards[0].epoch = 1;
+        all[0].planned_at_millis
+    };
+    plans
+        .written
+        .lock()
+        .insert(shard().key, (at + 60_000, "earlier".to_string(), 1));
+    assert_eq!(plans.apply(&id, &[], now), Ok(1));
+
+    let (plans, id) = planned(now, whole);
+    plans
+        .written
+        .lock()
+        .insert(shard().key, (at + 60_000, "later".to_string(), 1));
+    assert_eq!(plans.apply(&id, &[], now), Ok(0));
+    let state = apply_state(&plans, &id, now);
+    assert_eq!(state.state, "stale");
+    assert!(state.reason.unwrap().contains("later"));
+}
+
+/// Two plans stamped in one millisecond: exactly one of them wins, by id.
+#[test]
+fn plans_in_one_millisecond_are_ordered_by_id() {
+    let now = Instant::now();
+    let (plans, id) = planned(now, whole);
+    let at = plans.plans.lock()[0].planned_at_millis;
+    let key = shard().key;
+    plans
+        .written
+        .lock()
+        .insert(key.clone(), (at, "0".to_string(), 1));
+    assert_eq!(plans.apply(&id, &[], now), Ok(1));
+    let (plans, id) = planned(now, whole);
+    let at = plans.plans.lock()[0].planned_at_millis;
+    plans.written.lock().insert(key, (at, "z".repeat(40), 1));
+    assert_eq!(plans.apply(&id, &[], now), Ok(0));
+}
+
+/// A control-plane clock so far behind that the time line plus gap is below
+/// the point's end would drop the gap; it is refused unless accepted.
+#[test]
+fn a_time_line_below_the_point_end_is_refused_unless_accepted() {
+    let end = RESTORE_OFFSETS_PER_MILLI * felix_common::clock::wall_millis() + (1 << 41);
+    let mut request = restore(end, 3, None);
+    let planned = |request: ReformRestore| super::super::PlannedRestore {
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: felix_common::clock::wall_millis(),
+        request,
+    };
+    let why = super::super::restore_at(&planned(request.clone()), &shard()).unwrap_err();
+    assert!(why.contains("--accept-short-gap"), "{why}");
+    request.accept_short_gap = true;
+    assert!(super::super::restore_at(&planned(request), &shard()).is_ok());
+}
+
 /// A point that does not name the shard, names another incarnation of it,
 /// or ends where the copies' base does not, blocks the shard with a reason.
 #[test]
