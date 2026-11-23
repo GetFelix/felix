@@ -33,47 +33,22 @@ import re
 import subprocess
 import sys
 
-# The implementation of what docs/formal/FelixShard.tla models: the lease and
-# the heartbeats that renew it, the control plane's expiry clock, the write
-# paths that check the lease and the generation, the replication and quorum
-# mark, the reports and the control plane's answer to them, promotion, and the
-# planned handoff. Also the ingress routing that admits a write under the
-# fence, and the replica's persisted promise: the ballot, the accepted
-# generation and commit offset, and the generation history a fence answer
-# orders by. `accept_generation` and the open's choice between the ballot and
-# the replica state are in disk_log/ballot.rs for this reason. The rest of
-# disk_log is storage the model does not describe.
+# The implementation of what the models still kept for the hybrid engine
+# describe: FelixShardReads and FelixShardSessions (the serving path),
+# FelixShardMoveGiveUp and FelixPlacementPacing (the control plane's
+# placement), and FelixAtomicCommit and FelixGroups (the commit record and the
+# views that apply it, the dead-letter and cursor logs, and the cache index).
+# The lease, fence, promotion, ballot and storage-identity paths are not
+# listed: their model, FelixShard, is deleted and hybrid is frozen. The Raft
+# engine's models are paired separately.
 MODELLED = (
-    "services/felix-broker-service/src/cluster/lease",
-    "services/felix-broker-service/src/cluster/membership",
-    "crates/server/felix-replication/src",
-    "crates/server/felix-storage/src/disk_log/ballot",
-    "crates/server/felix-storage/src/disk_log/replica_state",
-    "crates/server/felix-storage/src/disk_log/epochs",
     "services/felix-broker-service/src/serving",
-    "services/felix-broker-service/src/shards/lifecycle",
-    "services/felix-broker-service/src/shards/routing",
-    "services/felix-controlplane-service/src/api/nodes/reports",
-    "services/felix-controlplane-service/src/cluster/membership",
     "services/felix-controlplane-service/src/cluster/placement",
-    # FelixAtomicCommit, FelixGroups and FelixShardSessions: the commit record
-    # and the views that apply it, the dead-letter and cursor logs a promotion
-    # fences, and the cache index. fleet.rs holds the feature gates that turn
-    # on promotion by suspicion.
     "crates/server/felix-broker/src/broker/commit",
     "crates/server/felix-broker/src/broker/publish",
     "crates/server/felix-broker/src/broker/shard_logs",
     "crates/server/felix-broker/src/queue/cursors",
     "crates/server/felix-storage/src/cache/log_cache",
-    "crates/server/felix-common/src/fleet",
-    # Storage identity and the clean-stop decision: which copy a follower is
-    # counted as, and when an unclean start rotates it. The internal handshake
-    # carries both to peers.
-    "crates/server/felix-storage/src/storage_identity",
-    "crates/server/felix-storage/src/run_state",
-    "services/felix-broker-service/src/node/storage",
-    "services/felix-broker-service/src/node/shutdown",
-    "crates/protocol/felix-wire/src/internal/handshake",
 )
 SPEC = "docs/formal/"
 MARKER = re.compile(r"^\s*Spec-Unaffected:\s*\S", re.MULTILINE)

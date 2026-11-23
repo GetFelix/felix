@@ -17,7 +17,6 @@ cp "$src/.github/workflows/ci.yml" "$work/.github/workflows/"
 echo 'EXTENDS Naturals, Sequences, FiniteSets, TLC' >"$work/docs/formal/FelixShard.tla"
 echo 'EXTENDS FelixShard' >"$work/docs/formal/FelixShardReads.tla"
 printf 'EXTENDS Naturals,\n  FelixShardReads\n' >"$work/docs/formal/FelixShardSessions.tla"
-echo 'Fig == INSTANCE FelixShard' >"$work/docs/formal/FelixShardFigure8.tla"
 echo 'EXTENDS Naturals' >"$work/docs/formal/FelixRaftSwitch.tla"
 echo 'CONSTANTS N = 3' >"$work/docs/formal/FelixRaftSwitchLag.cfg"
 echo '# A formal model' >"$work/docs/formal/README.md"
@@ -60,6 +59,8 @@ registered() {
     | awk 'NR == FNR { w[$1] = $2; next } w[$0] == "" || w[$0] <= 10' \
       <(sed -n '/^weights=(/,/^)/p' "$src/scripts/check_tla.sh" | tr -d '"') -
 }
+# A change that affects every configuration plans about 30 shards, capped at 30.
+all_shards() { [[ "$1" =~ ^'# shards: '([0-9]+)$ ]] && [ "${BASH_REMATCH[1]}" -ge 25 ]; }
 footer() { printf '# total: %s minutes\n# shards: %s' "$1" "$2"; }
 
 echo 'CONSTANTS N = 4' >"$work/docs/formal/FelixRaftSwitchLag.cfg"
@@ -85,18 +86,16 @@ git_ add -A
 git_ commit -qm shard
 bad=""
 got="$("$work/scripts/check_tla.sh" --affected base 2>/dev/null)"
-for want in FelixShard FelixShardLease FelixShardReadsNoRound FelixShardSessionsSubscriber FelixShardFigure8; do
+for want in FelixShardReadsNoRound FelixShardSessionsSubscriber; do
   if ! grep -qx "$want" <<<"$got"; then echo "FAIL base module: no $want"; bad=1; fi
 done
 if grep -q '^FelixRaft' <<<"$got"; then echo "FAIL base module: lists FelixRaft"; bad=1; fi
-walks="$("$work/scripts/check_tla.sh" --affected base --simulate 2>/dev/null)"
-if ! grep -qx FelixShardFencedCrashUnprobed <<<"$walks"; then echo "FAIL base module walks"; bad=1; fi
 if [ -n "$bad" ]; then failed=1; else echo "ok   base module"; fi
 git_ reset -q --hard base
 
-sed -i.bak 's/^  "FelixShardLease pass"$/  "FelixShardLease violates AtMostOneServing"/' "$work/scripts/check_tla.sh"
+sed -i.bak 's/^  "FelixShardReadsNoRound violates NoStaleRead"$/  "FelixShardReadsNoRound violates NoStaleGroupCommit"/' "$work/scripts/check_tla.sh"
 rm "$work/scripts/check_tla.sh.bak"
-check "registration line" "FelixShardLease
+check "registration line" "FelixShardReadsNoRound
 $(footer ? 1)"
 
 sed -i.bak 's/^  "FelixRaftSwitchLag 3"$/  "FelixRaftSwitchLag 4"/' "$work/scripts/check_tla.sh"
@@ -120,11 +119,11 @@ check "module_of mapping changed" "$(registered 'FelixRaftSleep[A-Za-z]*')
 $(footer ? ?)"
 
 # The default branch is not a mapping of one pattern: it is all of them.
-sed -i.bak 's/^    \*) echo FelixShard ;;$/    *) echo FelixRaft ;;/' "$work/scripts/check_tla.sh"
+sed -i.bak 's/^    \*) echo "no module for configuration $1" >&2; exit 1 ;;$/    *) echo FelixRaft ;;/' "$work/scripts/check_tla.sh"
 rm "$work/scripts/check_tla.sh.bak"
 git_ add -A
 git_ commit -qm default
-if [ "$("$work/scripts/check_tla.sh" --affected base 2>/dev/null | tail -1)" != "# shards: 30" ]; then
+if ! all_shards "$("$work/scripts/check_tla.sh" --affected base 2>/dev/null | tail -1)"; then
   echo "FAIL module_of default branch"
   failed=1
 else
@@ -141,7 +140,7 @@ rm "$work/scripts/check_tla.sh.bak"
 git_ add -A
 git_ commit -qm runner
 got="$("$work/scripts/check_tla.sh" --affected base 2>/dev/null)"
-if [ "$(tail -1 <<<"$got")" != "# shards: 30" ] || ! grep -qx FelixRaftSwitchLag <<<"$got"; then
+if ! all_shards "$(tail -1 <<<"$got")" || ! grep -qx FelixRaftSwitchLag <<<"$got"; then
   echo "FAIL runner logic: $(tail -2 <<<"$got" | tr '\n' ' ')"
   failed=1
 else
@@ -149,11 +148,11 @@ else
 fi
 git_ reset -q --hard base
 
-sed -i.bak 's/^    name: TLA+ walk (unprobed crash)$/    name: TLA+ walk (unprobed crashes)/' "$work/.github/workflows/ci.yml"
+sed -i.bak 's/^    name: TLA+ model (\${{ matrix.cfg }})$/    name: TLA+ heavy model (${{ matrix.cfg }})/' "$work/.github/workflows/ci.yml"
 rm "$work/.github/workflows/ci.yml.bak"
 git_ add -A
 git_ commit -qm workflow
-if [ "$("$work/scripts/check_tla.sh" --affected base 2>/dev/null | tail -1)" != "# shards: 30" ]; then
+if ! all_shards "$("$work/scripts/check_tla.sh" --affected base 2>/dev/null | tail -1)"; then
   echo "FAIL formal job in ci.yml"
   failed=1
 else

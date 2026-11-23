@@ -26,18 +26,15 @@ flowchart LR
 
 ## What is checked
 
-**TLA+ models.** `docs/formal/` holds thirteen modules. `FelixShard` models one
-shard on three brokers with a control plane, leases, majority acknowledgement,
-promotion fences, planned and cancelled moves, and replicas electing themselves
-under ballots. Others cover the generation-start record against the "Figure 8"
-loss from the Raft paper (a new leader that counts an older leader's entries as
-committed can lose them), reads and group sessions, atomic commit, head trim,
-consumer groups, placement pacing across shards, the unified fence used by
-every change of leader, and the Raft engine planned for 0.8 on the segment log,
-with the crash rules its log storage must keep. TLC checks every interleaving within the configured
-bounds. The invariants include `AckedHeldByLeader` (whoever serves a shard holds
-every record that was acknowledged), `AckedOnMajority`, `AckedSurvive`,
-`AtMostOneServing`, `OneLeaderPerGeneration`, `NoStaleRead`, `NoDuplicate` (a
+**TLA+ models.** `docs/formal/` holds the Raft engine's models: elections, the
+current-term commit rule from the "Figure 8" loss in the Raft paper (a new
+leader that counts an older leader's entries as committed can lose them),
+membership changes, leader leases, re-forming a group, reads, group sessions
+and the crash rules the segment log must keep. Beside them are atomic commit,
+head trim, consumer groups and placement pacing across shards. The hybrid
+engine's lease and fence models are deleted with it; the v0.7.0 tag has them. TLC checks every interleaving within the configured
+bounds. The invariants include `ElectionSafety` (one leader per term),
+`LeaderCompleteness` (a leader holds every committed record), `NoStaleRead`, `NoDuplicate` (a
 re-sent write is never in a log twice), `NoPartialCommit` and `CopiesWithinLimit`.
 The faults are in the model's actions: lease expiry and clock drift, crashes
 with and without storage surviving, message loss, a stale control-plane
@@ -181,13 +178,13 @@ gh workflow run dst-nightly.yml -R GetFelix/felix -f seeds=2000 -f modes=all
 Check the models. TLC needs Java 11 or later, or Docker or Podman:
 
 ```bash
-scripts/check_tla.sh FelixShardFigure8 FelixShardFigure8NoStartRecord   # a pass and its twin
-scripts/check_tla.sh                                                   # every registered configuration
-scripts/check_tla.sh --simulate                                        # the random walks
+scripts/check_tla.sh FelixRaft FelixRaftAckBeforeFlush   # a pass and its twin
+scripts/check_tla.sh                                     # every registered configuration
+scripts/check_tla.sh --simulate                          # the random walks
 ```
 
 The first command passes both because the second is expected to violate
-`AckedOnMajority`, and the script fails if it does not. The full run is long, so run it in Actions.
+its declared invariant, and the script fails if it does not. The full run is long, so run it in Actions.
 
 Run the history campaigns:
 
