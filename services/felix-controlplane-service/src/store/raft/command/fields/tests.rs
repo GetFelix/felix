@@ -208,6 +208,7 @@ fn assignment() -> ShardAssignment {
             report: Some(seal_report()),
         }),
         raft_copy_ids: any_map(1),
+        raft_target_counter: 4,
         raft_target: Some(crate::model::RaftTarget {
             counter: 1,
             members: any_map(1),
@@ -639,6 +640,7 @@ fn commands() -> Vec<MetaCommand> {
             assignment: assignment(),
             start_placed: true,
             hold_unformed: true,
+            keep_counter: true,
         },
         MetaCommand::PutShardAssignmentIf {
             seq_generation: true,
@@ -654,6 +656,7 @@ fn commands() -> Vec<MetaCommand> {
             record_previous: true,
             start_placed: true,
             hold_unformed: true,
+            keep_counter: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),
@@ -667,6 +670,7 @@ fn commands() -> Vec<MetaCommand> {
             elected_set: true,
             own_leader_set: true,
             hold_unformed: true,
+            keep_counter: true,
         },
         MetaCommand::TakePlacementLease { holder: s("h") },
         MetaCommand::DeleteShardAssignment { key: shard_key() },
@@ -855,6 +859,7 @@ fn commands() -> Vec<MetaCommand> {
             feature: s("f"),
             hold_unformed: true,
             hold_formed: true,
+            keep_counter: true,
         },
         MetaCommand::CreateResources {
             needs_identity: true,

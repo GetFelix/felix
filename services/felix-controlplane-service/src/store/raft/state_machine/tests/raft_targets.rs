@@ -260,6 +260,7 @@ async fn a_held_set_stays_held_when_a_proposer_sees_a_lower_level() {
             seq_generation: true,
             start_placed: true,
             hold_unformed: false,
+            keep_counter: false,
         });
         let refused = decode_result(&machine.apply(&unflagged).await).expect("result");
         assert!(
@@ -302,6 +303,7 @@ async fn a_finalize_at_level_45_holds_later_sets() {
         feature: felix_common::fleet::GENERATION_START.name().to_string(),
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     });
     let finalize = crate::store::raft::command::settle_for_level(&finalize, 45)
         .expect("settled")
@@ -319,6 +321,7 @@ async fn a_finalize_at_level_45_holds_later_sets() {
             seq_generation: true,
             start_placed: true,
             hold_unformed: false,
+            keep_counter: false,
         });
         let refused = decode_result(&machine.apply(&unflagged).await).expect("result");
         assert!(

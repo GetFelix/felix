@@ -171,6 +171,14 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         target.members.keys().collect::<Vec<_>>(),
         ["broker-x", "broker-z"]
     );
+    // The group's membership carries the first target's version and its
+    // leader takes only a newer one, so the count goes on past the move.
+    assert!(
+        target.counter > first.counter,
+        "the target after a set change is at {}, the dropped one was at {}",
+        target.counter,
+        first.counter
+    );
 
     // The group has not reported adding broker-z, so a set of broker-z
     // alone would name only a broker it never reached (#2905). That holds

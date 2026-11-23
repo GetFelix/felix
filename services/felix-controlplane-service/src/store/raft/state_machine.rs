@@ -190,13 +190,15 @@ impl MetadataStateMachine {
 
     /// The set holds an entry applies: the unformed hold as
     /// [`Self::holds_unformed`] decides, and the formed group's hold (#2905)
-    /// once the join floor is at the level that knows it. Every member
+    /// once the join floor is at the level that knows it. The target counter
+    /// is kept when the entry says so or the floor knows it. Every member
     /// reads the same floor at each entry, so all apply the same hold.
-    fn set_hold(&self, carried: bool) -> crate::store::memory::SetHold {
+    fn set_hold(&self, carried: bool, keep_counter: bool) -> crate::store::memory::SetHold {
         use crate::raft::AppStateMachine;
         crate::store::memory::SetHold {
             unformed: self.holds_unformed(carried),
             formed: self.join_floor() >= super::FORMED_SET_LEVEL,
+            counter: keep_counter || self.join_floor() >= super::TARGET_COUNTER_LEVEL,
         }
     }
 
@@ -419,12 +421,13 @@ impl MetadataStateMachine {
                 seq_generation,
                 start_placed,
                 hold_unformed,
+                keep_counter,
             } => store
                 .apply_put_shard_assignment(
                     assignment,
                     seq_generation,
                     start_placed,
-                    self.set_hold(hold_unformed),
+                    self.set_hold(hold_unformed, keep_counter),
                 )
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
@@ -438,7 +441,7 @@ impl MetadataStateMachine {
                     assignment,
                     expected_generation,
                     seq_generation,
-                    self.set_hold(false),
+                    self.set_hold(false, false),
                 )
                 .await
                 .map(assignment_written)
@@ -452,6 +455,7 @@ impl MetadataStateMachine {
                 record_previous,
                 start_placed,
                 hold_unformed,
+                keep_counter,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
@@ -461,7 +465,7 @@ impl MetadataStateMachine {
                     at_least,
                     record_previous,
                     start_placed,
-                    self.set_hold(hold_unformed),
+                    self.set_hold(hold_unformed, keep_counter),
                 )
                 .await
                 .map(assignment_written)
@@ -473,6 +477,7 @@ impl MetadataStateMachine {
                 elected_set,
                 own_leader_set,
                 hold_unformed,
+                keep_counter,
             } => store
                 .apply_adopt_elected_leader(
                     &key,
@@ -480,7 +485,7 @@ impl MetadataStateMachine {
                     &elected,
                     elected_set,
                     own_leader_set,
-                    self.set_hold(hold_unformed),
+                    self.set_hold(hold_unformed, keep_counter),
                 )
                 .await
                 .map(assignment_written)
@@ -602,7 +607,7 @@ impl MetadataStateMachine {
                     keep_ordered,
                     shard_incarnation,
                     true,
-                    self.set_hold(false).formed,
+                    self.set_hold(false, false).formed,
                     group_epoch,
                     self.keeps_epochs(keep_seed),
                 )
@@ -1012,6 +1017,7 @@ fn finalized_level(feature: String) -> u16 {
         feature,
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     }
     .version()
 }

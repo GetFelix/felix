@@ -31,6 +31,7 @@ fn assignment() -> ShardAssignment {
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,
@@ -116,7 +117,7 @@ fn a_set_change_keeps_the_list() {
         raft_ordered: None,
         ..before.clone()
     };
-    after.carry_raft_target(Some(&before));
+    after.carry_raft_target(Some(&before), true);
     after.carry_raft_ordered(Some(&before));
     assert_eq!(after.raft_target, None);
     order(
@@ -124,7 +125,8 @@ fn a_set_change_keeps_the_list() {
         &[("broker-a", 1), ("broker-b", 2), ("broker-d", 4)],
         true,
     );
-    assert_eq!(after.raft_target.as_ref().map(|t| t.counter), Some(1));
+    // The count goes on from the dropped target.
+    assert_eq!(after.raft_target.as_ref().map(|t| t.counter), Some(2));
     assert_eq!(
         after.ordered_voter_sets(),
         Some(vec![

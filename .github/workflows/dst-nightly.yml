@@ -12,8 +12,10 @@ name: Simulation sweep (nightly)
 # (FELIX_SIM_PLACEMENT=1), power cuts (FELIX_SIM_POWER_LOSS=1), power cuts on
 # brokers that do not sync (relaxed-power-loss), several brokers losing power
 # at once (majority-cut, majority-cut-relaxed) and wipes (wipe), and of the
-# Raft group simulation (raft, raft-clocks with skewed timers, and raft-wipe
-# and raft-restore with disk faults). The window
+# Raft group simulation (raft, raft-clocks with skewed timers, raft-wipe
+# and raft-restore with disk faults, and the power cuts of raft-power-loss,
+# raft-relaxed-power-loss, raft-majority-cut and raft-majority-cut-relaxed).
+# The window
 # moves 250 seeds a night, so eight nights cover seeds 1 to 2000 in every mode.
 #
 # A failing seed is sorted by its log. A history violation, an undecided key,
@@ -26,7 +28,8 @@ name: Simulation sweep (nightly)
 # summary.
 #
 # For the release gate, start a run by hand ("Run workflow") with modes `all`
-# and 2000 seeds, then again with modes `disks`; docs/simulation.md ("The nightly sweep") has the inputs.
+# and 2000 seeds, then again with modes `disks` and `raft-disks`;
+# docs/simulation.md ("The nightly sweep") has the inputs.
 
 on:
   schedule:
@@ -47,7 +50,7 @@ on:
         required: false
         default: "50"
       modes:
-        description: "Which nemeses: off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe, raft-restore (comma separated), all (the first four) or disks (the four after those; neither includes the raft modes)"
+        description: "Which nemeses: off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut, raft-majority-cut-relaxed (comma separated), all (the first four), disks (the four after those) or raft-disks (the four raft power modes)"
         required: false
         default: "off"
       parallel:
@@ -117,18 +120,20 @@ jobs:
               [{mode: "off", first: 1, seeds: 2000, shards: 50}]
               + [("clocks", "placement", "power-loss", "relaxed-power-loss",
                   "majority-cut", "majority-cut-relaxed", "wipe", "raft", "raft-clocks",
-                  "raft-wipe", "raft-restore")
+                  "raft-wipe", "raft-restore", "raft-power-loss", "raft-relaxed-power-loss",
+                  "raft-majority-cut", "raft-majority-cut-relaxed")
                   | {mode: ., first: $w, seeds: 250, shards: 5}]')
           else
-            # A matrix holds 256 jobs, so the eight modes of a 2000 seed gate
-            # take two dispatches: `all` and `disks`.
+            # A matrix holds 256 jobs, so the modes of a 2000 seed gate take
+            # several dispatches: `all`, `disks` and `raft-disks`.
             [ "$MODES" = all ] && MODES="off,clocks,placement,power-loss"
             [ "$MODES" = disks ] && MODES="relaxed-power-loss,majority-cut,majority-cut-relaxed,wipe"
+            [ "$MODES" = raft-disks ] && MODES="raft-power-loss,raft-relaxed-power-loss,raft-majority-cut,raft-majority-cut-relaxed"
             plan=$(jq -cn --arg modes "$MODES" --argjson first "$FIRST" \
               --argjson seeds "$SEEDS" --argjson shards "$SHARDS" '
               [($modes | split(",") | unique[]) | {mode: ., first: $first, seeds: $seeds, shards: $shards}]')
-            if [ "$(jq 'map(select(.mode | IN("off","clocks","placement","power-loss","relaxed-power-loss","majority-cut","majority-cut-relaxed","wipe","raft","raft-clocks","raft-wipe","raft-restore") | not)) | length' <<<"$plan")" != 0 ]; then
-              echo "modes must be from off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe, raft-restore, all (the first four) or disks (the four after those; neither includes the raft modes)"; exit 1
+            if [ "$(jq 'map(select(.mode | IN("off","clocks","placement","power-loss","relaxed-power-loss","majority-cut","majority-cut-relaxed","wipe","raft","raft-clocks","raft-wipe","raft-restore","raft-power-loss","raft-relaxed-power-loss","raft-majority-cut","raft-majority-cut-relaxed") | not)) | length' <<<"$plan")" != 0 ]; then
+              echo "modes must be from off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut, raft-majority-cut-relaxed, all (the first four), disks (the four after those) or raft-disks (the four raft power modes)"; exit 1
             fi
           fi
           if [ "$(jq 'map(.shards) | add' <<<"$plan")" -gt 256 ]; then

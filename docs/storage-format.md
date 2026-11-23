@@ -1945,9 +1945,12 @@ Written the same way as `replica`, and before it when a generation is raised,
 so the ballot is on disk before anything from that leader is stored or
 acknowledged. At the accepted generation only that leader is answered; see
 `docs/replication-design.md`, "Ballots". On open, a ballot at the generation
-in `replica` names its leader, one ahead of it is a raise that crashed between
-the two writes and its generation is taken, and one behind it, or none, names
-no leader. A file that is present and does not decode fails the open, as
+in `replica` names its leader, one ahead of it is a raise whose `replica`
+write has not happened yet and its generation is taken, and one behind it, or
+none, names no leader. A Raft log's vote (`DiskLog::save_vote`) relies on
+that: it writes only the ballot at a new generation, and the next commit write
+carries the generation into `replica`, so a vote costs one file's fsyncs
+(issue #2317). A file that is present and does not decode fails the open, as
 `replica` does. A separate file so that a build that predates ballots ignores
 it and still opens the shard.
 

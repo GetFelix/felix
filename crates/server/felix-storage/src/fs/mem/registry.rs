@@ -67,6 +67,17 @@ pub(in crate::fs) fn route(path: &Path) -> Option<Routed> {
     })
 }
 
+/// The registered root `path` is under, if any.
+pub(crate) fn root_of(path: &Path) -> Option<PathBuf> {
+    if !ANY.load(Ordering::Acquire) {
+        return None;
+    }
+    let roots = ROOTS.read();
+    path.ancestors()
+        .find(|ancestor| roots.contains_key(*ancestor))
+        .map(Path::to_path_buf)
+}
+
 /// Whether `path` is a directory above a registered root. Flushing it has
 /// nothing to flush, since the entry that leads to a simulated root is not
 /// simulated.

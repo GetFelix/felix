@@ -321,6 +321,20 @@ watches, and a client whose broker fails re-establishes against the promoted
 owner by offset. The rebuilt index and continued offset space are what make
 that resume land exactly where the old watch left off.
 
+**On a Raft cache shard** the same contract holds, with the group's log in
+place of the shard's. Every member that knows its leader serves watches,
+follower or leader, from the changes its applied entries make, so a watch
+needs no commit gate and survives a change of leader. The live edge is one
+past the last applied entry, and offsets are entry indexes. Three things
+differ. The edge is the serving member's own, so a watch on a follower that
+is behind can start from a value older than the leader's latest; the newer
+one follows as a change. The group keeps no change history, so a resume
+from below the edge is a resnapshot rather than a replay, and a resume from
+past it waits for the member to catch up. And a snapshot install replaces the
+state whole, so it ends the shard's watches as `cache_watch_lagged` at the
+first entry they were not told of, as does a member that loses its leader.
+See [per-shard-raft.md](per-shard-raft.md#cache-and-counters).
+
 ## Counters, beside the cache
 
 A counter is addressed like a cache key and routed like one, but lives in a

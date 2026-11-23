@@ -381,6 +381,7 @@ async fn the_join_floor_follows_apply_and_restore() {
             feature: jump_hash,
             hold_unformed: false,
             hold_formed: false,
+            keep_counter: false,
         }))
         .await;
 
@@ -554,6 +555,7 @@ async fn cache_entries_from_level_13_store_what_level_13_stores() {
             feature: feature.name().to_string(),
             hold_unformed: false,
             hold_formed: false,
+            keep_counter: false,
         })
         .await;
     }
@@ -717,6 +719,7 @@ async fn a_flagged_stream_create_decides_from_its_proposal() {
         feature,
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     })
     .await;
 
@@ -787,6 +790,7 @@ async fn stream_entries_from_a_level_8_proposer_store_what_level_8_stores() {
             feature: felix_common::fleet::STREAM_INCARNATIONS.name().to_string(),
             hold_unformed: false,
             hold_formed: false,
+            keep_counter: false,
         },
         MetaCommand::CreateStream {
             needs_identity: false,
@@ -953,6 +957,7 @@ async fn floor_of_is_the_floor_apply_raises() {
         feature: jump_hash,
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     };
     let source = machine();
     source.apply(&encode_command(&register)).await;

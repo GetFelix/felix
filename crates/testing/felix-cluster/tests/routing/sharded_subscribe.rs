@@ -168,6 +168,9 @@ async fn a_sharded_subscription_receives_every_record() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn an_unreachable_shard_refuses_the_subscription() {
+    if felix_cluster::skip_on_raft_until_3008() {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::new(STREAM, SHARDS)],

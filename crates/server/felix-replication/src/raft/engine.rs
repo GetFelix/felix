@@ -17,7 +17,7 @@ use crate::quorum::Unreadable;
 
 mod cache;
 
-pub use cache::{CacheCondition, CacheOp, CacheReply, ProducerRequest};
+pub use cache::{CacheCondition, CacheOp, CacheReply, CacheWatchPoint, ProducerRequest};
 
 const NO_GROUP: &str = "this broker holds no group for the shard";
 
@@ -381,6 +381,39 @@ impl RaftEngine {
         let group = self.runtime.group(shard);
         let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
         group.cache_read(key, timeout).await
+    }
+
+    /// Where a cache watch on `shard` joins this member: the offset its live
+    /// changes start at, and each value `keep` takes below it. Register the
+    /// watch before calling this. `None` when no cache group of `shard` runs
+    /// here.
+    pub fn cache_watch_point(
+        &self,
+        shard: &ShardKey,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<CacheWatchPoint> {
+        let group = self.runtime.group(shard)?;
+        let (tail, entries) = group.cache_watch_point(keep)?;
+        let mut entries: Vec<_> = entries
+            .into_iter()
+            .map(|(key, held)| felix_storage::CacheSnapshotEntry {
+                key,
+                value: held.value,
+                offset: held.version,
+                expires_at_millis: held.expires_at.div_ceil(1000),
+            })
+            .collect();
+        entries.sort_by_key(|entry| entry.offset);
+        Some(CacheWatchPoint { tail, entries })
+    }
+
+    /// End every cache watch `observer` holds on `shard` as lagged at this
+    /// member's live edge, for a member that can no longer say its state is
+    /// current. A no-op when no cache group of `shard` runs here.
+    pub fn end_cache_watches(&self, shard: &ShardKey, observer: &dyn felix_storage::CacheObserver) {
+        if let Some(group) = self.runtime.group(shard) {
+            group.end_cache_watches(observer);
+        }
     }
 
     /// A counter's sum on this leader.

@@ -147,11 +147,13 @@ pub enum MoveStep {
     /// Only `leader` changes: the group keeps its members, and once brokers
     /// follow placement its leader hands over to the one placement names.
     RaftLeader { from: String, to: String },
-    /// A follower of a Raft shard's group sits on a node marked internal:
-    /// `to` takes its place in the set, in one write. The group's leader adds
-    /// `to` as a learner and then swaps the voters through its membership
-    /// change, so the group is never below its replication factor.
-    RaftReplaceInternal { from: String, to: String },
+    /// A member of a Raft shard's group is swapped for `to`, a broker outside
+    /// the set, in one write: a follower on an internal, draining or lost
+    /// broker, or the leader's seat on an operator move outside the set, when
+    /// `to` is also named leader. The group's leader adds `to` as a learner
+    /// and then swaps the voters through its membership change, so the group
+    /// is never below its replication factor.
+    RaftReplace { from: String, to: String },
     /// A hybrid move left on a Raft shard is dropped. Its group never
     /// reports what the move waits for.
     RaftMoveDropped,
@@ -198,9 +200,30 @@ impl MoveStep {
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",
             Self::RaftLeader { .. } => "raft_leader",
-            Self::RaftReplaceInternal { .. } => "raft_replace_internal",
+            Self::RaftReplace { .. } => "raft_replace",
             Self::RaftMoveDropped => "raft_move_dropped",
         }
+    }
+}
+
+/// Why a Raft shard's member must leave its set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leaving {
+    /// Its broker is marked internal and holds no tenant shards.
+    Internal,
+    /// Its broker is draining, or outside the stream's allowed regions.
+    Draining,
+    /// Its broker has been down or gone for `restore_after_millis`.
+    Lost,
+}
+
+impl std::fmt::Display for Leaving {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Internal => "an internal node",
+            Self::Draining => "draining",
+            Self::Lost => "lost",
+        })
     }
 }
 
@@ -246,17 +269,16 @@ pub enum Blocked {
     /// until the leader reports the joint start, or the change is dropped
     /// (a timeout, a cancel, a failover).
     SetChangePending,
-    /// A Raft shard has a member on an internal node, and no live node
+    /// A Raft shard has a member that must leave (`why`), and no live node
     /// outside the set can take its place. The set stays as it is, below no
     /// quorum, until one registers.
-    NoReplacement { node: String },
-    /// A Raft shard has a member on an internal node, and another member is
-    /// not live. The internal member stays until it is, so the group can
-    /// finish the change.
-    MemberDown { node: String },
-    /// A Raft shard's member on an internal node is replaced once the control
-    /// plane has stored the group's target for its current set: one set
-    /// change at a time.
+    NoReplacement { node: String, why: Leaving },
+    /// A Raft shard has a member that must leave (`why`), and another member,
+    /// `node`, is not serving. The leaving member stays until it is, so the
+    /// group can finish the change.
+    MemberDown { node: String, why: Leaving },
+    /// A Raft shard's member is replaced once the control plane has stored
+    /// the group's target for its current set: one set change at a time.
     TargetUnsettled,
     /// A Raft shard's set stays until a leader of its group has reported:
     /// a second set with its own target could form beside the first (#2794).
@@ -308,13 +330,13 @@ impl std::fmt::Display for Blocked {
                 f,
                 "waiting for the leader to report its start acknowledged on both the old and the new replica set"
             ),
-            Self::NoReplacement { node } => write!(
+            Self::NoReplacement { node, why } => write!(
                 f,
-                "the copy on {node}, an internal node, has no live node to move to; it stays until one can take it"
+                "the copy on {node}, {why}, has no live node to move to; it stays until one can take it"
             ),
-            Self::MemberDown { node } => write!(
+            Self::MemberDown { node, why } => write!(
                 f,
-                "a copy is on an internal node; waiting for {node} to be live before replacing it"
+                "a copy must move off a broker that is {why}; waiting for {node} to serve before replacing it"
             ),
             Self::TargetUnsettled => write!(
                 f,

@@ -172,7 +172,7 @@ const AUDIT_LEVEL: u16 = 49;
 
 /// The metadata level that starts a re-formed Raft epoch
 /// (`MetaCommand::StartReformedEpoch`).
-const REFORM_EPOCH_LEVEL: u16 = 50;
+const REFORM_EPOCH_LEVEL: u16 = 51;
 
 /// The metadata level whose members keep every Raft target ordered in a
 /// shard's epoch (`ShardAssignment::raft_ordered`).
@@ -204,6 +204,10 @@ const REFORM_RECORD_LEVEL: u16 = 47;
 /// reporter its stored target vouches for, or a kept voter still placed
 /// while no target is stored (#2909).
 const VOUCHED_VOTERS_LEVEL: u16 = 48;
+
+/// A Raft shard's set change keeps the dropped target's counter
+/// (`ShardAssignment::raft_target_counter`).
+const TARGET_COUNTER_LEVEL: u16 = 50;
 
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
@@ -358,6 +362,7 @@ impl RaftStore {
         assignment.switch = None;
         assignment.raft_copy_ids.clear();
         assignment.raft_target = None;
+        assignment.raft_target_counter = 0;
         assignment.raft_floor = None;
         assignment.raft_formed = None;
         assignment.raft_voters = None;
@@ -1030,6 +1035,7 @@ impl ControlPlaneStore for RaftStore {
             // Set by `settle_for_level`, at the level the entry is gated on.
             hold_unformed: false,
             hold_formed: false,
+            keep_counter: false,
         };
         if self.handle.cluster_version().await < command.version() {
             return Err(StoreError::Conflict(
@@ -1200,6 +1206,7 @@ impl ControlPlaneStore for RaftStore {
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
                     start_placed: level >= PLACED_LEVEL,
                     hold_unformed: level >= FIRST_FORM_LEVEL,
+                    keep_counter: level >= TARGET_COUNTER_LEVEL,
                 },
             )
             .await?
@@ -1240,6 +1247,7 @@ impl ControlPlaneStore for RaftStore {
                     // since only a member that applied the start holds one.
                     start_placed: expected_generation.is_none() && level >= PLACED_LEVEL,
                     hold_unformed: level >= FIRST_FORM_LEVEL,
+                    keep_counter: level >= TARGET_COUNTER_LEVEL,
                 },
             )
             .await?
@@ -1275,6 +1283,7 @@ impl ControlPlaneStore for RaftStore {
                     elected_set: level >= ELECTED_SET_LEVEL,
                     own_leader_set: level >= OWN_LEADER_SET_LEVEL,
                     hold_unformed: level >= FIRST_FORM_LEVEL,
+                    keep_counter: level >= TARGET_COUNTER_LEVEL,
                 },
             )
             .await?

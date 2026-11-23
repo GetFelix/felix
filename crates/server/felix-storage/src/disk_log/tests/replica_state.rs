@@ -159,6 +159,35 @@ async fn a_given_up_generation_takes_no_leader_until_a_newer_one() {
     assert!(!log.gave_up());
 }
 
+/// A vote at a new generation is durable through its ballot alone, so it
+/// costs one file's fsyncs, not two (#2317). The open takes the generation
+/// from the ballot, and the next commit write carries it to `replica`.
+#[tokio::test]
+async fn a_vote_at_a_new_generation_writes_only_the_ballot() {
+    let dir = tempdir().expect("tempdir");
+    let on_disk = || {
+        crate::disk_log::replica_state::load(dir.path())
+            .expect("replica state")
+            .accepted_generation
+    };
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.save_vote(5, "broker-a", false).await.expect("vote");
+        assert_eq!(on_disk(), 0, "the vote waited for the replica state too");
+        log.save_vote(6, "broker-b", true).await.expect("vote");
+        assert_eq!(on_disk(), 0);
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-b"));
+    log.save_vote(6, "broker-a", true)
+        .await
+        .expect_err("a second committed leader after the restart");
+    log.save_vote(5, "broker-a", false)
+        .await
+        .expect_err("a lower generation after the restart");
+}
+
 /// A candidate that lost votes for itself, then follows the winner at the
 /// same term: openraft saves the committed vote over its own.
 #[tokio::test]

@@ -462,8 +462,13 @@ it, when the leader that stopped serves again at a new generation; with no
 move in progress it is 409 `not_moving`. A start, a cancel and an abandon on
 a shard that switched to Raft are 409 `switched`. On a cluster that runs
 durable streams on Raft, a start names another member of the shard's set
-leader in one write, answered with step `raft_leader`, and a destination
-outside the set is 409 `not_a_member`. Under `replica_election`, a start is
+leader in one write, answered with step `raft_leader`, and gives a
+destination outside the set the leader's seat, answered with step
+`raft_replace`; the shard's group then changes its membership. That second
+kind is 409 `member_down` while a member is not serving, `set_unsettled`
+while the group's target for its current set is not stored, and
+`not_a_member` while the destination is still being added, and `single_member`
+for a one-member group, which cannot be moved yet. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for
 the leader to report it on both sets; a cancel drops that change and keeps
 the old set (`pending_set_cancelled`).

@@ -762,7 +762,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// [`StoreError::Conflict`] when the shard moved past the plan (another
     /// incarnation or epoch, or a floor raised after it), when the base
     /// would give out an offset again, and on a Raft store below metadata
-    /// level 50. See `docs/per-shard-raft.md`, "Re-forming a group".
+    /// level 51. See `docs/per-shard-raft.md`, "Re-forming a group".
     async fn start_reformed_epoch(
         &self,
         key: &ShardKey,

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 50;
+pub const METADATA_VERSION: u16 = 51;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -242,6 +242,10 @@ pub enum MetaCommand {
         /// has not formed (`ShardAssignment::holds_unformed_set`, #2794).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_unformed: bool,
+        /// Level 50: a set change keeps the dropped Raft target's counter
+        /// (`ShardAssignment::carry_raft_target`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_counter: bool,
     },
     /// Write only if the shard is at `expected_generation` (`None`: has no
     /// assignment), checked as the command applies.
@@ -285,6 +289,9 @@ pub enum MetaCommand {
         /// Level 45: as for `PutShardAssignment`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_unformed: bool,
+        /// Level 50: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_counter: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
@@ -304,6 +311,9 @@ pub enum MetaCommand {
         /// Level 45: as for `PutShardAssignment`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_unformed: bool,
+        /// Level 50: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_counter: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
@@ -497,6 +507,11 @@ pub enum MetaCommand {
         /// stream. Set by `settle_for_level`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hold_formed: bool,
+        /// Level 50, read by nothing, like `hold_unformed`: a new cluster
+        /// keeps a Raft target's counter through a set change from before
+        /// its first stream. Set by `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_counter: bool,
     },
     /// Streams and caches created together: one entry, so every member
     /// applies all of them or, on a conflict or a missing namespace, none.
@@ -616,7 +631,7 @@ pub enum MetaCommand {
     },
     /// Start the next epoch of a Raft shard's group from a re-form plan,
     /// by compare and swap on its epoch
-    /// ([`crate::store::ControlPlaneStore::start_reformed_epoch`]). Level 50.
+    /// ([`crate::store::ControlPlaneStore::start_reformed_epoch`]). Level 51.
     StartReformedEpoch {
         key: ShardKey,
         start: crate::model::ReformEpochStart,
@@ -770,9 +785,9 @@ impl MetaCommand {
             Self::DeclareNodeDead { .. } => 42,
             // A member before level 49 would refuse the entry as unknown.
             Self::RecordAudit { .. } => 49,
-            // A member before level 50 would refuse the entry and keep the
+            // A member before level 51 would refuse the entry and keep the
             // old epoch where the others start the next one.
-            Self::StartReformedEpoch { .. } => 50,
+            Self::StartReformedEpoch { .. } => 51,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -1139,7 +1154,8 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// below it never does.
 ///
 /// From level 45 a fleet feature finalize carries `hold_unformed`, and from
-/// level 46 `hold_formed`; below each it never does. From level 47 a copy id
+/// level 46 `hold_formed` and from level 50 `keep_counter`; below each it
+/// never does. From level 47 a copy id
 /// report carries `keep_seed`.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
@@ -1196,6 +1212,7 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
         let flags = [
             ("hold_unformed", level >= super::FIRST_FORM_LEVEL),
             ("hold_formed", level >= super::FORMED_SET_LEVEL),
+            ("keep_counter", level >= super::TARGET_COUNTER_LEVEL),
         ];
         return Ok(edit_command_json(command, |object| {
             let mut edited = false;

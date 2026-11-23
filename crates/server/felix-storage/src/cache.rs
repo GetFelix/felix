@@ -282,6 +282,19 @@ pub trait StorageApi: Debug + Send + Sync {
 /// observer stays silent. Watches are served where writes are applied.
 pub trait CacheObserver: Debug + Send + Sync {
     fn cache_changed(&self, change: CacheChange);
+
+    /// Whether any change could reach a watcher now. A writer may skip
+    /// building a change while this is false: a watcher registered later
+    /// reads the state after its registration, which holds that change.
+    fn watching(&self) -> bool {
+        true
+    }
+
+    /// The shard's state was replaced as a whole, as a Raft member does when
+    /// it installs a snapshot, so the changes from `at` on are not reported
+    /// one by one. Each watcher of the shard ends as lagged at `at`.
+    fn cache_reset(&self, _tenant_id: &str, _namespace: &str, _cache: &str, _shard: u32, _at: u64) {
+    }
 }
 
 /// One applied cache write, as an observer sees it.

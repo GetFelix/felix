@@ -25,6 +25,9 @@ fn config() -> ClusterConfig {
 #[serial]
 #[tokio::test]
 async fn a_stream_homed_in_one_region_is_refused_by_another() {
+    if felix_cluster::skip_on_raft_until_3008() {
+        return;
+    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
 
     let assignments = cluster.shard_assignments().await.expect("assignments");

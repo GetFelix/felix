@@ -939,3 +939,153 @@ async fn joint_add(off_placement: bool) {
         broker.stop().await;
     }
 }
+
+fn heartbeat_for(shard: u32, to: &str) -> RaftRequest {
+    let leader = openraft::impls::leader_id_std::LeaderId::new(1, MemberId::new("a", 1));
+    let mut key = self::shard();
+    key.shard = shard;
+    RaftRequest {
+        group: GroupId::new(key, 0),
+        to: MemberId::new(to, 1),
+        beat: crate::raft::network::Beat::default(),
+        report: crate::raft::network::Ask::Nothing,
+        deadline: Duration::from_secs(1),
+        body: Request::Append(openraft::raft::AppendEntriesRequest {
+            vote: VoteOf::<ShardTypes>::from_leader_id(leader, true),
+            prev_log_id: None,
+            entries: Vec::new(),
+            leader_commit: None,
+        }),
+    }
+}
+
+/// A requester that keeps every Raft body it is asked to send, and answers
+/// each heartbeat as a member the peer does not hold.
+struct Recording {
+    offered: PeerCapabilities,
+    bodies: parking_lot::Mutex<Vec<bytes::Bytes>>,
+}
+
+impl crate::peer::PeerRequester for Recording {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        let InternalMessage::Raft(call) = message else {
+            panic!("not a Raft message");
+        };
+        self.bodies.lock().push(call.body.clone());
+        let refuse = |beat: RaftRequest| {
+            Err(Refused::NoSuchMember(Box::new(
+                crate::raft::network::Addressee {
+                    group: beat.group,
+                    to: beat.to,
+                },
+            )))
+        };
+        let body = match wire::is_beats(&call.body) {
+            true => {
+                let (beats, _) = wire::decode_beats(call.body).expect("decode");
+                let answers: Vec<_> = beats.into_iter().map(refuse).collect();
+                wire::encode_beats_reply(&answers)
+            }
+            false => wire::encode_reply(&refuse(wire::decode_request(call.body).expect("decode"))),
+        };
+        Ok(InternalMessage::RaftAnswer(
+            felix_wire::internal::RaftAnswer {
+                correlation_id: 0,
+                body,
+            },
+        ))
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<PeerCapabilities, PeerError> {
+        Ok(self.offered)
+    }
+}
+
+fn refused_shards(answers: &[Result<RaftReply, Refused>]) -> Vec<u32> {
+    answers
+        .iter()
+        .map(|answer| match answer {
+            Err(Refused::NoSuchMember(to)) => to.group.shard.shard,
+            _ => panic!("not this member's refusal"),
+        })
+        .collect()
+}
+
+/// A peer that has not offered `RAFT_BEATS` is sent each heartbeat on its
+/// own, byte for byte what it was always sent; one that has gets them in
+/// one message, and each answer goes back to its own group.
+#[tokio::test]
+async fn heartbeats_go_together_only_to_a_peer_that_offered_it() {
+    let book = Book::default();
+    book.lock()
+        .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
+    let beats = || (0..3).map(|n| heartbeat_for(n, "b")).collect::<Vec<_>>();
+    let wait = Duration::from_millis(1);
+
+    let older = Arc::new(Recording {
+        offered: PeerCapabilities::RAFT,
+        bodies: Default::default(),
+    });
+    let transport = PeerTransport::new(Arc::clone(&older), self::book(&book));
+    let answers = transport.send_beats(beats(), wait).await;
+    assert_eq!(refused_shards(&answers), vec![0, 1, 2]);
+    let alone: Vec<_> = beats()
+        .iter()
+        .map(|beat| wire::encode_request(beat).expect("encode"))
+        .collect();
+    let mut sent = older.bodies.lock().clone();
+    sent.sort();
+    let mut alone_sorted = alone.clone();
+    alone_sorted.sort();
+    assert_eq!(sent, alone_sorted);
+
+    let newer = Arc::new(Recording {
+        offered: PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS),
+        bodies: Default::default(),
+    });
+    let transport = PeerTransport::new(Arc::clone(&newer), self::book(&book));
+    let answers = transport.send_beats(beats(), wait).await;
+    assert_eq!(refused_shards(&answers), vec![0, 1, 2]);
+    let sent = newer.bodies.lock().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0], wire::encode_beats(&beats(), wait).expect("encode"));
+
+    // One heartbeat goes as it always did, to either.
+    let answers = transport
+        .send_beats(vec![heartbeat_for(7, "b")], wait)
+        .await;
+    assert_eq!(refused_shards(&answers), vec![7]);
+    assert_eq!(
+        newer.bodies.lock()[1],
+        wire::encode_request(&heartbeat_for(7, "b")).expect("encode")
+    );
+}
+
+/// Heartbeats together cross a real listener, which offers `RAFT_BEATS`
+/// with `RAFT` and answers each for its own group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeats_together_cross_a_real_listener() {
+    let book = Book::default();
+    let a = Broker::start("a", &book, true).await;
+    let b = Broker::start("b", &book, true).await;
+    let addr = book.lock()["b"];
+    let offered = crate::peer::PeerRequester::capabilities(&*a.pool, "b", addr)
+        .await
+        .expect("handshake");
+    assert!(offered.contains(PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS)));
+    let transport = PeerTransport::new(Arc::clone(&a.pool), self::book(&book));
+    let beats = (0..4).map(|n| heartbeat_for(n, "b")).collect();
+    let answers = transport.send_beats(beats, Duration::from_millis(1)).await;
+    assert_eq!(refused_shards(&answers), vec![0, 1, 2, 3]);
+    a.stop().await;
+    b.stop().await;
+}

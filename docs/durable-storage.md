@@ -1651,7 +1651,8 @@ That bit is format v2 of the file, written only for a committed vote, and
 `DiskLog::commit_vote` refuses one until the log's gate allows segment format
 v9 (in a cluster, `record_generations` finalized). Nothing in a broker commits
 a vote yet. A save writes the
-ballot before `replica`, so a crash at any step of it opens with the vote
+ballot before `replica` (a Raft log's `save_vote` leaves `replica` to its next
+commit write), so a crash at any step of it opens with the vote
 from before the save or the vote it saved, never a mark on a vote that did
 not reach the disk. See `docs/storage-format.md`, "`ballot`".
 

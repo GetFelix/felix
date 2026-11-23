@@ -182,7 +182,9 @@ impl ControlPlane {
                 runtime.handle().clone(),
                 liveness.clone(),
                 front,
-                engine.unwrap_or("hybrid").to_string(),
+                engine
+                    .unwrap_or(crate::config::default_engine())
+                    .to_string(),
             ))
             .await
             .context("start metadata group")??;

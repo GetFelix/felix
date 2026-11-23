@@ -564,6 +564,9 @@ pub(crate) async fn run<M: Member>(
     mut preferred: watch::Receiver<Option<String>>,
     stop: CancellationToken,
 ) {
+    // Logged when it changes, so a stalled change says why without a line
+    // per look.
+    let mut last: Option<Pass> = None;
     loop {
         let goal = target.borrow_and_update().clone();
         driver.placing.prefer(preferred.borrow_and_update().clone());
@@ -580,6 +583,15 @@ pub(crate) async fn run<M: Member>(
         }
         if let Pass::Refused(err) = &pass {
             tracing::warn!(member = %driver.member.me(), error = ?err, "a membership step was refused");
+        }
+        if last.as_ref() != Some(&pass) {
+            let version = goal
+                .as_ref()
+                .and_then(|told| told.target.as_ref())
+                .map(|target| target.version);
+            let term = goal.as_ref().map(|told| told.term);
+            tracing::info!(member = %driver.member.me(), ?pass, ?version, ?term, "membership driver");
+            last = Some(pass.clone());
         }
         let wait = driver.after(&pass);
         if pass == Pass::Closed {

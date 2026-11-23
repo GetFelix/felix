@@ -446,6 +446,7 @@ async fn a_first_assignment_is_listed_and_a_later_write_is_not(store: &dyn Contr
         placed: None,
         switch: None,
         raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
         raft_target: None,
         raft_floor: None,
         raft_formed: None,

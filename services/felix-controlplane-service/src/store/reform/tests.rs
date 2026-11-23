@@ -45,6 +45,7 @@ pub(crate) fn shard() -> ShardAssignment {
         }),
         switch: None,
         raft_copy_ids: members.clone(),
+        raft_target_counter: 0,
         raft_target: Some(RaftTarget {
             counter: 1,
             members: members.clone(),
