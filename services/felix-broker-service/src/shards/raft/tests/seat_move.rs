@@ -77,3 +77,89 @@ fn routes_skip_a_placed_leader_that_is_not_a_voter() {
     assert_eq!(moving.route("broker-a"), Some("broker-b"));
     assert_eq!(moving.route("broker-b"), Some("broker-c"));
 }
+
+/// **A member that was elected here but is not leading yet answers not
+/// ready, though the voter report still names others.** Forwarding would
+/// bounce between it and the voter that knows it leads.
+#[tokio::test]
+async fn an_elected_member_not_leading_yet_does_not_forward() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards.stall_leading(true);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the member leads", || {
+        shards
+            .runtime
+            .status(&orders)
+            .is_some_and(|status| status.role == Role::Leader)
+    })
+    .await;
+    assert_eq!(shards.leading(&orders), None);
+    shards.placed.lock().insert(
+        orders.clone(),
+        placed("broker-a", &["broker-b", "broker-c"]),
+    );
+    assert_eq!(
+        shards.dispatch(&orders, &|name| addr_of(name)),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A member that knows no leader and is not a reported voter forwards to
+/// one.** Its peers are absent, so it never hears a leader.
+#[tokio::test]
+async fn a_non_voter_member_with_no_leader_forwards_to_a_voter() {
+    let net = Arc::new(Loopback::default());
+    let member = Member::start_with(
+        &net,
+        "broker-a",
+        INCARNATION,
+        ConsistencyLevel::Quorum,
+        FsyncMode::None,
+        false,
+    )
+    .await;
+    let orders = key("orders", 0);
+    member.shards.take(&mut assignments([replicated()])).await;
+    until("the member opens", || member.shards.runtime.holds(&orders)).await;
+    assert!(
+        member
+            .shards
+            .runtime
+            .status(&orders)
+            .is_some_and(|status| status.leader_hint.is_none())
+    );
+    member.shards.placed.lock().insert(
+        orders.clone(),
+        placed("broker-a", &["broker-b", "broker-c"]),
+    );
+    match member.shards.dispatch(&orders, &|name| addr_of(name)) {
+        Some(Dispatch::Forward { node_id, .. }) => assert_eq!(node_id, "broker-b"),
+        other => panic!("expected a forward to broker-b, got {other:?}"),
+    }
+    stop(&[member]).await;
+}
+
+/// **Voters reported for another epoch count for nothing.**
+#[test]
+fn placement_ignores_voters_from_another_epoch() {
+    let mut moved = assigned(key("orders", 0), INCARNATION);
+    moved.raft_voters = Some(voters_on(&["broker-b"]));
+    assert_eq!(Placed::of(&moved).voters.len(), 1);
+    moved.raft_voters = Some(RaftVoters {
+        epoch: 1,
+        ..voters_on(&["broker-b"])
+    });
+    assert!(Placed::of(&moved).voters.is_empty());
+    moved.raft_voters = Some(RaftVoters {
+        incarnation: INCARNATION + 1,
+        ..voters_on(&["broker-b"])
+    });
+    assert!(Placed::of(&moved).voters.is_empty());
+}

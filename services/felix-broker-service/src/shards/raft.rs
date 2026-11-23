@@ -1505,16 +1505,20 @@ impl EngineShards for RaftShards {
         };
         // The hint, not the heard leader: a restarted follower forwards at
         // once, and a forward to a leader that is gone fails and is retried.
+        let heard = status.leader_hint.is_some();
         let leader = status
             .leader_hint
             .filter(|leader| *leader.broker != *self.local)
             .map(|leader| leader.broker);
         Some(match leader {
             // A copy the group has not made a voter yet learns the leader
-            // only from its first append: a reported voter knows it.
-            None if self.placed.lock().get(key).is_some_and(|placed| {
-                !placed.voters.is_empty() && !placed.voters.contains(&*self.local)
-            }) =>
+            // only from its first append: a reported voter knows it. A member
+            // that heard itself elected is not that copy: forwarding would
+            // bounce back until its term opens.
+            None if !heard
+                && self.placed.lock().get(key).is_some_and(|placed| {
+                    !placed.voters.is_empty() && !placed.voters.contains(&*self.local)
+                }) =>
             {
                 return self.dispatch_without_member(key, nodes);
             }
