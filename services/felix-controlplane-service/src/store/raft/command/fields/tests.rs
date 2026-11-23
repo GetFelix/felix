@@ -1220,3 +1220,92 @@ fn a_dropped_field_is_named_and_an_empty_one_is_not() {
     );
     assert!(dropped_fields(&decoded, &decoded).is_empty());
 }
+
+/// Every `const NAME_LEVEL: u16 = N;` the metadata store declares.
+fn declared_levels() -> Vec<(String, u16)> {
+    let sources = [
+        include_str!("../../../raft.rs"),
+        include_str!("../../command.rs"),
+    ];
+    let mut found = Vec::new();
+    for source in sources {
+        for line in source.lines() {
+            let Some(rest) = line.split("const ").nth(1) else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(": u16 = ") else {
+                continue;
+            };
+            if !name.ends_with("_LEVEL") {
+                continue;
+            }
+            let value = value.trim_end_matches(';').trim();
+            found.push((name.to_string(), value.parse().expect("a literal level")));
+        }
+    }
+    found
+}
+
+/// Two features that each take the next level merge cleanly (the version
+/// line is identical), so only a check on main sees the clash.
+#[test]
+fn no_two_features_claim_one_level() {
+    let mut owner: BTreeMap<u16, String> = BTreeMap::new();
+    for (name, level) in declared_levels() {
+        if let Some(other) = owner.insert(level, name.clone()) {
+            panic!(
+                "{other} and {name} both claim metadata level {level}; \
+                 give the newer feature the next free level and raise METADATA_VERSION"
+            );
+        }
+    }
+    assert!(owner.len() > 30, "the scan found too few level constants");
+    let top = *owner.keys().max().expect("levels");
+    assert!(
+        top <= METADATA_VERSION,
+        "{} is at level {top}, above METADATA_VERSION {METADATA_VERSION}",
+        owner[&top]
+    );
+}
+
+/// From level 11 on, a level is one feature, so the design doc's level
+/// table names each level once.
+#[test]
+fn the_level_table_names_one_feature_per_level() {
+    let doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/metadata-raft-design.md"
+    ));
+    let mut rows: BTreeMap<u16, String> = BTreeMap::new();
+    let mut in_table = false;
+    for line in doc.lines() {
+        if line.starts_with("| Field | Level |") {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if !line.starts_with('|') {
+            break;
+        }
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let Some(level) = cells.get(2).and_then(|cell| cell.parse::<u16>().ok()) else {
+            continue;
+        };
+        if level < 11 {
+            continue;
+        }
+        if let Some(other) = rows.insert(level, cells[1].to_string()) {
+            panic!(
+                "docs/metadata-raft-design.md lists level {level} for two features: \
+                 {other} and {}",
+                cells[1]
+            );
+        }
+    }
+    assert!(
+        rows.contains_key(&METADATA_VERSION),
+        "no row for METADATA_VERSION"
+    );
+}
