@@ -18,6 +18,7 @@
 
 mod net;
 mod opens;
+mod terms;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::net::{Links, Wire};
 use self::opens::Opens;
+use self::terms::Span;
 use crate::client::decode;
 use crate::run::Deadline;
 
@@ -188,6 +190,14 @@ pub struct RaftOutcome {
     /// How many terms a broker opened a shard in, over every shard. Each
     /// is checked against what Raft elected.
     pub terms_opened: usize,
+    /// How many times one member passed the leader lease check, as sampled
+    /// at each write and each second. `None` when the run's skewed clocks
+    /// are further apart than the lease is sized for, and no lease is
+    /// judged.
+    pub leases: Option<usize>,
+    /// What a person should read and no check fails on: shards that went
+    /// through more terms than the faults explain.
+    pub warnings: Vec<String>,
     pub history: History,
     /// What each member's live subscribers were handed, in delivery order.
     pub deliveries: Vec<Delivery>,
@@ -280,9 +290,11 @@ impl std::fmt::Display for RaftOutcome {
         writeln!(f, "{}", self.history.summary())?;
         writeln!(
             f,
-            "{} terms led, {} opened, {} live deliveries, trace {:016x}",
+            "{} terms led, {} opened, {} leases held, {} live deliveries, trace {:016x}",
             self.terms_led,
             self.terms_opened,
+            self.leases
+                .map_or_else(|| "no".into(), |leases| leases.to_string()),
             self.deliveries.len(),
             self.trace_hash()
         )?;
@@ -305,6 +317,9 @@ impl std::fmt::Display for RaftOutcome {
         }
         for finding in &self.findings {
             writeln!(f, "group: {finding}")?;
+        }
+        for warning in &self.warnings {
+            writeln!(f, "warning: {warning}")?;
         }
         Ok(())
     }
@@ -693,6 +708,13 @@ struct Sim {
     /// Per (shard, term): the member the watch saw lead it.
     led: Mutex<BTreeMap<(u32, u64), usize>>,
     opens: Arc<Opens>,
+    /// Whether the run's clocks let the lease be judged
+    /// ([`terms::lease_judged`]).
+    lease_judged: bool,
+    /// Samples in which one member passed the lease check.
+    leases: AtomicUsize,
+    /// Per shard: the lowest and highest term any member was seen at.
+    terms_seen: Mutex<BTreeMap<u32, Span>>,
     /// Per shard: the terms of the entries in its final read's log.
     committed_terms: Mutex<BTreeMap<u32, BTreeSet<u64>>>,
     /// What the run is doing, for the finding of a run that never ends.
@@ -908,6 +930,8 @@ impl Sim {
             };
             history.lists.insert(list(shard), spec);
         }
+        let shipped = RuntimeConfig::default();
+        let lease_judged = terms::lease_judged(&rates, shipped.lease, shipped.election_max);
         let sim = Arc::new(Self {
             members: members
                 .into_iter()
@@ -925,6 +949,9 @@ impl Sim {
             terms_led: AtomicUsize::new(0),
             led: Mutex::new(BTreeMap::new()),
             opens,
+            lease_judged,
+            leases: AtomicUsize::new(0),
+            terms_seen: Mutex::new(BTreeMap::new()),
             committed_terms: Mutex::new(BTreeMap::new()),
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
@@ -1017,6 +1044,7 @@ impl Sim {
         } else {
             (AckAt::Flushed, AnswerAt::Commit)
         };
+        self.check_serving(shard);
         // The term the member leads in, as the broker's admission reads it.
         let term = at.engine.open_term(&key);
         let proposed = at.engine.publish(
@@ -1251,6 +1279,79 @@ impl Sim {
                 });
             }
         }
+    }
+
+    /// No two members pass the leader lease check for `shard` at once
+    /// (`AtMostOneServing`). One that passes may acknowledge a write on its
+    /// own log and serve a read with no round. Read with no await in
+    /// between, so nothing moves under it.
+    fn check_serving(&self, shard: u32) {
+        if !self.lease_judged {
+            return;
+        }
+        let key = key(shard);
+        let serving: Vec<usize> = (0..self.members.len())
+            .filter(|member| {
+                let at = self.at(*member);
+                // A member whose power is out answers no one.
+                !at.down.is_cancelled()
+                    && at.runtime.status(&key).is_some_and(|status| {
+                        status.role == Role::Leader
+                            && at.engine.admit_local_ack(&key, status.term).is_ok()
+                    })
+            })
+            .collect();
+        if let Some(finding) = terms::two_serving(shard, &serving) {
+            self.finding(finding);
+        }
+        if !serving.is_empty() {
+            self.leases.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Copies agree on the term of every entry below their read bounds.
+    /// `final_reads` compares the values a client sees; this compares what
+    /// is under them, blank and membership entries included.
+    async fn check_terms_agree(&self, shard: u32, running: &[usize]) {
+        let mut logs = Vec::new();
+        for &member in running {
+            let at = self.at(member);
+            let Ok(bound) = at.engine.read_bound(&key(shard)) else {
+                continue;
+            };
+            let log = records_below(&at, shard, bound)
+                .await
+                .into_iter()
+                .map(|(offset, held)| (offset, held.generation))
+                .collect();
+            logs.push((member, log));
+        }
+        if let Some(finding) = terms::disagreement(shard, &logs) {
+            self.finding(finding);
+        }
+    }
+
+    /// Shards that went through more terms than the run's faults explain.
+    fn burned_terms(&self) -> Vec<String> {
+        let faults = self
+            .history
+            .lock()
+            .faults
+            .iter()
+            .filter(|fault| {
+                [
+                    "isolate ",
+                    "split off ",
+                    "power cut ",
+                    "wipe ",
+                    "restore ",
+                    "fail the next flush ",
+                ]
+                .iter()
+                .any(|kind| fault.what.starts_with(kind))
+            })
+            .count();
+        terms::burned(&self.terms_seen.lock(), faults)
     }
 
     /// Every open was a term Raft elected its broker in, with the blank
@@ -1562,6 +1663,7 @@ impl Sim {
                     let Some(status) = at.runtime.status(&key) else {
                         continue;
                     };
+                    Span::saw(&mut self.terms_seen.lock(), shard, status.term);
                     if status.role == Role::Leader {
                         let (first, led) = {
                             let mut leaders = self.led.lock();
@@ -1581,6 +1683,9 @@ impl Sim {
                     }
                     if self.disks != Disks::Off {
                         self.sample_flushed(member, shard, status.flushed);
+                    }
+                    if member == 0 {
+                        self.check_serving(shard);
                     }
                     let Ok(bound) = at.engine.read_bound(&key) else {
                         continue;
@@ -2328,6 +2433,7 @@ impl Sim {
                     Some(_) => {}
                 }
             }
+            self.check_terms_agree(shard, &running).await;
             let leader = self.leader(shard);
             if let Some(leader) = leader
                 && reads[leader].is_some()
@@ -2382,6 +2488,8 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
                 findings: vec![format!("the groups did not start: {err:#}")],
                 terms_led: 0,
                 terms_opened: 0,
+                leases: None,
+                warnings: Vec::new(),
                 history: History::default(),
                 deliveries: Vec::new(),
                 power: PowerCounts::default(),
@@ -2418,6 +2526,8 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
         findings: sim.findings.lock().clone(),
         terms_led: sim.terms_led.load(Ordering::Relaxed),
         terms_opened,
+        leases: sim.lease_judged.then(|| sim.leases.load(Ordering::Relaxed)),
+        warnings: sim.burned_terms(),
         history,
         deliveries: sim.deliveries.lock().clone(),
         power: *sim.power.lock(),
