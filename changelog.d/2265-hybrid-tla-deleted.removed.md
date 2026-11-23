@@ -1,0 +1,1 @@
+- Deleted the hybrid engine's TLA+ models: `FelixShard`'s configurations, `FelixShardUnified`, `FelixShardFigure8`, the two walk replays, and the nightly and per-push walks over them (#2265). `FelixShard.tla` stays only as the base of `FelixShardReads` and `FelixShardSessions`. The spec pairing check no longer lists hybrid-only paths.
