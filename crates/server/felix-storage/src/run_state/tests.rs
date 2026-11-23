@@ -246,11 +246,45 @@ fn a_watched_directory_forgets_its_boot_on_poison() {
     let mut fresh = counter(0);
     let first = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
     watch_poison(dir.path());
-    forget_watched();
+    forget_watched(dir.path());
     assert_eq!(
         read(dir.path(), first.id).expect("read"),
         relaxed_crash(None)
     );
+}
+
+/// The brokers of a simulation share one process, so a poisoned log forgets
+/// the boot of its own broker's root only. Another broker's strict run, then
+/// or later, still keeps its id after a crash, until its own log is poisoned.
+#[cfg(feature = "sim")]
+#[test]
+fn a_simulated_broker_forgets_only_its_own_boot_on_poison() {
+    let base = std::env::temp_dir().join(format!("felix-run-state-poison-{}", std::process::id()));
+    let (poisoned, other, later) = (base.join("b1"), base.join("b2"), base.join("b3"));
+    let mut fresh = counter(0);
+    let mut started = Vec::new();
+    for root in [&poisoned, &other] {
+        crate::sim_fs::register_root(root);
+        started.push(begin_in(root, ON_COMMIT, BOOT, &mut fresh).id);
+        watch_poison(root);
+    }
+    forget_watched(&poisoned.join("shards/s0"));
+    crate::sim_fs::register_root(&later);
+    let late = begin_in(&later, ON_COMMIT, BOOT, &mut fresh).id;
+    watch_poison(&later);
+    let strict = LastRun::Crashed {
+        relaxed: false,
+        boot: None,
+    };
+    let found = (
+        read(&poisoned, started[0]).expect("read"),
+        read(&other, started[1]).expect("read"),
+        read(&later, late).expect("read"),
+    );
+    for root in [&poisoned, &other, &later] {
+        crate::sim_fs::unregister_root(root);
+    }
+    assert_eq!(found, (relaxed_crash(None), strict, strict));
 }
 
 /// A poisoned `OnCommit` run names no boot, but its page cache is as

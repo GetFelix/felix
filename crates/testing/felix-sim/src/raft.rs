@@ -40,7 +40,7 @@ use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
 use felix_storage::raft_copy::{ControlPlaneCopy, CopyRoot, Rotation};
 use felix_storage::raft_log::term_of_generation;
-use felix_storage::{DiskLog, EphemeralCache, StorageId, sim_fs, storage_identity};
+use felix_storage::{DiskLog, EphemeralCache, StorageId, run_state, sim_fs, storage_identity};
 use parking_lot::{Mutex, RwLock};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -81,6 +81,11 @@ pub struct RaftSimConfig {
     /// Real time the whole run may take.
     pub real_time_limit: Duration,
     pub disks: Disks,
+    /// Once the faults start, every member's log segments ignore their
+    /// flushes, so the logs answer writes a power cut takes. A broken disk
+    /// that the power modes must catch. From the start, a cut would also
+    /// take the first segment's header and the member would refuse to open.
+    pub ignored_flushes: bool,
 }
 
 /// What happens to the members' disks while the faults run.
@@ -98,6 +103,42 @@ pub enum Disks {
     /// Wipe one shard's directory on a majority of members at once. Nothing
     /// brings that group back until an operator re-forms it (#2350).
     WipeMajority,
+    /// Some faults cut one member's power, inside its next log append when
+    /// one comes within [`APPEND_WITHIN`], and start it again on what its
+    /// disk kept. Every write is answered once it is fsynced or committed,
+    /// so a cut keeps every copy id and loses nothing a peer counted.
+    PowerLoss,
+    /// The cuts of [`Self::PowerLoss`] on a relaxed run: the streams' fsync
+    /// policy is `Periodic`, so a write is answered once a majority has
+    /// written it, and every cut rotates the member's copies.
+    RelaxedPowerLoss,
+    /// [`Self::PowerLoss`], and one or two times a run two members or a
+    /// majority lose power in the same instant.
+    MajorityCut,
+    /// [`Self::RelaxedPowerLoss`] with one cut of two members or a majority
+    /// in the last third of the faults. A cut majority rotates a majority of
+    /// every shard's voters, which closes the shards until a re-form (#2620).
+    MajorityCutRelaxed,
+}
+
+impl Disks {
+    /// Whether some faults cut members' power.
+    pub fn power(self) -> bool {
+        matches!(
+            self,
+            Self::PowerLoss | Self::RelaxedPowerLoss | Self::MajorityCut | Self::MajorityCutRelaxed
+        )
+    }
+
+    /// Whether writes are answered on a written majority, before an fsync.
+    pub fn relaxed(self) -> bool {
+        matches!(self, Self::RelaxedPowerLoss | Self::MajorityCutRelaxed)
+    }
+
+    /// Whether some faults cut several members at once.
+    pub fn together(self) -> bool {
+        matches!(self, Self::MajorityCut | Self::MajorityCutRelaxed)
+    }
 }
 
 /// How old a saved directory is before it is put back: older than the
@@ -109,6 +150,9 @@ pub const RESTORE_AGE: Duration = Duration::from_secs(8);
 const MARK_TRAIL: Duration = Duration::from_secs(7);
 /// How long a disk fault waits for its shards to heal before it is skipped.
 const HEAL_WAIT: Duration = Duration::from_secs(20);
+/// How long a power cut waits for an append to land in before it goes
+/// without one.
+const APPEND_WITHIN: Duration = crate::cluster::power::APPEND_WITHIN;
 
 impl Default for RaftSimConfig {
     fn default() -> Self {
@@ -120,6 +164,7 @@ impl Default for RaftSimConfig {
             run_limit: Duration::from_secs(360),
             real_time_limit: Duration::from_secs(900),
             disks: Disks::Off,
+            ignored_flushes: false,
         }
     }
 }
@@ -142,6 +187,22 @@ pub struct RaftOutcome {
     pub history: History,
     /// What each member's live subscribers were handed, in delivery order.
     pub deliveries: Vec<Delivery>,
+    pub power: PowerCounts,
+}
+
+/// What the power cuts of a run did, so a run shows they were injected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PowerCounts {
+    /// Members whose power was cut, counting each member of a cut together.
+    pub cuts: usize,
+    /// Cuts of several members in one instant.
+    pub together: usize,
+    /// Cuts that landed in an append and left a torn tail on the device.
+    pub torn: usize,
+    /// Torn tails the member's recovery repaired when it opened them again.
+    pub repaired: usize,
+    /// Copies that came back under a new copy id.
+    pub rotated: usize,
 }
 
 /// A record a member's broker handed a live subscriber.
@@ -221,6 +282,14 @@ impl std::fmt::Display for RaftOutcome {
             self.deliveries.len(),
             self.trace_hash()
         )?;
+        let power = self.power;
+        if power.cuts > 0 {
+            writeln!(
+                f,
+                "{} power cuts ({} together), {} torn tails, {} repaired, {} copies rotated",
+                power.cuts, power.together, power.torn, power.repaired, power.rotated
+            )?;
+        }
         for fault in &self.history.faults {
             writeln!(f, "  {:>8} ms  {}", fault.at / 1_000_000, fault.what)?;
         }
@@ -348,6 +417,77 @@ struct Save {
 enum Replace {
     Wipe,
     Restore(felix_storage::sim_fs::Saved),
+    /// The power went out. Each member's own [`Cut`].
+    PowerCut(Cut),
+}
+
+/// One member's power cut.
+struct Cut {
+    /// Per shard: its log's durable end at the cut, read in the same
+    /// instant. What the log had fsynced is on the device, and it can be
+    /// ahead of the flushed index the copy last reported, which a majority
+    /// cut must not miss.
+    durable: Vec<u64>,
+    /// The segment, below the data root, whose append the cut tore, and
+    /// where that append's whole records end.
+    torn: Option<(PathBuf, u64)>,
+    /// How many torn tails had been repaired, and segments opened, by the
+    /// reboot.
+    repaired_before: usize,
+    opened_before: usize,
+}
+
+/// When the power modes cut, drawn from the disk faults' stream.
+struct Cuts {
+    disks: Disks,
+    /// The earliest each cut of several members may run.
+    together: VecDeque<Instant>,
+    /// A relaxed cut of a majority closed every shard: nothing more to cut.
+    over: bool,
+}
+
+impl Cuts {
+    fn new(disks: Disks, rng: &mut Rng, end: Instant, length: Duration) -> Self {
+        let begun = end - length;
+        let together = match disks {
+            Disks::MajorityCut => {
+                let cuts = 1 + rng.below(2) as u32;
+                (1..=cuts)
+                    .map(|cut| begun + length * cut / (cuts + 1))
+                    .collect()
+            }
+            // Last, since a majority it cuts closes the shards.
+            Disks::MajorityCutRelaxed => VecDeque::from([begun + length * 2 / 3]),
+            _ => VecDeque::new(),
+        };
+        Self {
+            disks,
+            together,
+            over: false,
+        }
+    }
+
+    /// The members this round cuts, if it cuts: two or a majority once a
+    /// cut together is due, else one, 40% of rounds or when `due`.
+    fn next(&mut self, count: usize, due: bool, rng: &mut Rng) -> Option<Vec<usize>> {
+        if !self.disks.power() || self.over {
+            return None;
+        }
+        let first = |rng: &mut Rng| rng.below(count as u64) as usize;
+        if self
+            .together
+            .front()
+            .is_some_and(|at| Instant::now() >= *at)
+        {
+            self.together.pop_front();
+            let majority = count / 2 + 1;
+            let size = 2 + rng.below(majority as u64 - 1) as usize;
+            self.over = self.disks.relaxed() && size >= majority;
+            let first = first(rng);
+            return Some((0..size).map(|n| (first + n) % count).collect());
+        }
+        (due || rng.percent(40)).then(|| vec![first(rng)])
+    }
 }
 
 /// What a member's start opens its logs with.
@@ -364,6 +504,9 @@ struct Opening<'a> {
     /// Counts the storage ids minted, so a run repeats.
     minted: &'a AtomicU64,
     opens: &'a Arc<Opens>,
+    /// In the power modes, start a run record as a broker does, relaxed or
+    /// not, so a cut of a relaxed run gives the root a new storage id.
+    run: Option<bool>,
 }
 
 /// Start a member's runtime and broker and open its logs. The streams are
@@ -379,6 +522,7 @@ async fn open_member(opening: Opening<'_>) -> anyhow::Result<(Member, Vec<Option
         control_plane,
         minted,
         opens,
+        run,
     } = opening;
     let runtime = GroupRuntime::start(name(member), timers(rate), wire)
         .map_err(|err| anyhow::anyhow!("timers: {err:?}"))?;
@@ -398,7 +542,7 @@ async fn open_member(opening: Opening<'_>) -> anyhow::Result<(Member, Vec<Option
     };
     let (mut logs, mut ids, mut rotations) = (Vec::new(), Vec::new(), Vec::new());
     let root = if copies {
-        Some(open_copy_root(member, dir, control_plane, minted).await?)
+        Some(open_copy_root(member, dir, control_plane, minted, run).await?)
     } else {
         None
     };
@@ -449,6 +593,7 @@ async fn open_copy_root(
     dir: &Path,
     mut control_plane: Option<ControlPlaneCopy>,
     minted: &AtomicU64,
+    mut run: Option<bool>,
 ) -> anyhow::Result<CopyRoot> {
     let fresh = || {
         let mut id = [member as u8 + 1; 16];
@@ -456,7 +601,14 @@ async fn open_copy_root(
         id
     };
     loop {
-        let (registered, _) = storage_identity::load_or_create(dir, fresh)?;
+        // Once per start: a second record would read the first as a crash.
+        let registered = match run.take() {
+            Some(relaxed) => {
+                let boot = sim_fs::boot_id(dir).ok();
+                run_state::begin(dir, relaxed, None, boot, || false, fresh)?.id
+            }
+            None => storage_identity::load_or_create(dir, fresh)?.0,
+        };
         let stop = CancellationToken::new();
         let opened = open_root(
             dir,
@@ -555,6 +707,11 @@ struct Sim {
     /// Per (member, shard): its flushed index, sampled each second.
     flushed: Mutex<BTreeMap<(usize, u32), Samples>>,
     saves: Mutex<Vec<Save>>,
+    /// Shards a relaxed cut of a majority closed, with when: a majority of
+    /// their voters came back under new ids, so no leader can be elected
+    /// until a re-form.
+    closed: Mutex<BTreeMap<u32, u64>>,
+    power: Mutex<PowerCounts>,
 }
 
 /// A log record, as much of it as tells two apart: an old leader's entry
@@ -710,6 +867,7 @@ impl Sim {
                 control_plane: None,
                 minted: &minted,
                 opens: &opens,
+                run: config.disks.power().then_some(config.disks.relaxed()),
             };
             let (opened, _) = open_member(opening).await?;
             members.push(opened);
@@ -772,6 +930,8 @@ impl Sim {
             credit: Mutex::new(BTreeMap::new()),
             flushed: Mutex::new(BTreeMap::new()),
             saves: Mutex::new(Vec::new()),
+            closed: Mutex::new(BTreeMap::new()),
+            power: Mutex::new(PowerCounts::default()),
         });
         sim.opens.watch(&sim);
         Ok(sim)
@@ -814,6 +974,28 @@ impl Sim {
             .map(|(_, member)| member)
     }
 
+    /// Each member's role, term and whether it has `shard` open, for a
+    /// finding that has no leader to name.
+    fn roles(&self, shard: u32) -> String {
+        let key = key(shard);
+        let members: Vec<String> = (0..self.members.len())
+            .map(|member| {
+                let at = self.at(member);
+                match at.runtime.status(&key) {
+                    Some(status) => format!(
+                        "{} {:?} term {} open {:?}",
+                        name(member),
+                        status.role,
+                        status.term,
+                        at.engine.open_term(&key)
+                    ),
+                    None => format!("{} no group", name(member)),
+                }
+            })
+            .collect();
+        format!("{}: {}", list(shard), members.join(", "))
+    }
+
     /// Publish a fresh value to `shard` on `member` and record how it ended.
     /// Every error is recorded as unknown: a refused batch may still commit.
     async fn append(&self, process: usize, member: usize, shard: u32) -> bool {
@@ -821,8 +1003,15 @@ impl Sim {
         let at = self.at(member);
         let invoke = self.now();
         let payload = Bytes::from(value.to_le_bytes().to_vec());
-        // A Periodic shard publishes with the written-majority ack here.
         let key = key(shard);
+        // A relaxed run's streams are `Quorum` on `Periodic`: answered once
+        // a majority has written the batch. Otherwise at the commit, which
+        // the checker takes every acknowledged append to be (#2514).
+        let (ack, answer) = if self.disks.relaxed() {
+            (AckAt::Written, AnswerAt::Majority)
+        } else {
+            (AckAt::Flushed, AnswerAt::Commit)
+        };
         // The term the member leads in, as the broker's admission reads it.
         let term = at.engine.open_term(&key);
         let proposed = at.engine.publish(
@@ -831,15 +1020,25 @@ impl Sim {
             &key,
             term,
             vec![payload],
-            AckAt::Flushed,
-            // The checker takes every acknowledged append as committed
-            // (#2514).
-            AnswerAt::Commit,
+            ack,
+            answer,
             ANSWER,
         );
         let outcome = match proposed {
             Ok(proposed) => match proposed.complete().await {
+                // A member whose power went out answers no one.
+                Ok(_) if self.disks.power() && at.down.is_cancelled() => AppendOutcome::Info,
                 Ok(done) => {
+                    if let Some(&closed) = self.closed.lock().get(&shard)
+                        && invoke > closed
+                    {
+                        self.finding(format!(
+                            "{}: {} acknowledged a write after a majority of its voters \
+                             rotated",
+                            list(shard),
+                            name(member)
+                        ));
+                    }
                     let offset = done.offsets.map(|(first, _)| first);
                     self.acknowledged(&at, member, shard, value, offset).await;
                     AppendOutcome::Ok { offset }
@@ -884,7 +1083,10 @@ impl Sim {
         // A member stopped since it answered has closed its log.
         let stopped = at.down.is_cancelled();
         let bound = at.engine.read_bound(&key).unwrap_or(0);
-        if bound <= offset && !stopped {
+        // Answered on a written majority, a record may be neither committed
+        // nor flushed yet. Only the leader's own log must hold it.
+        let relaxed = self.disks.relaxed();
+        if bound <= offset && !stopped && !relaxed {
             self.finding(format!(
                 "{}: {} acknowledged offset {offset} with its read bound at {bound}",
                 list(shard),
@@ -909,6 +1111,9 @@ impl Sim {
                 list(shard),
                 name(member)
             ));
+        }
+        if relaxed {
+            return;
         }
         let holders = self.holders(shard, offset, &record).await;
         if holders < self.majority() {
@@ -944,7 +1149,17 @@ impl Sim {
             let at = self.at(member);
             // Status first: a record read after it is still the one that was
             // flushed, unless it was truncated, and only uncommitted records are.
-            let flushed = at.runtime.status(&key).and_then(|status| status.flushed);
+            // A member just started reports nothing flushed until it hears
+            // from a leader, though its log holds what it fsynced before.
+            let flushed = at
+                .runtime
+                .status(&key)
+                .and_then(|status| status.flushed)
+                .or_else(|| {
+                    let durable = at.logs[shard as usize].durable_offset();
+                    let index = durable.checked_sub(1)?;
+                    Some(LogPoint { term: 0, index })
+                });
             members.push((flushed, record_in(&at, shard, offset).await));
         }
         holders(record, offset, &members)
@@ -1168,6 +1383,7 @@ impl Sim {
                 .await;
         }
         let (mut round, mut replaced) = (0, false);
+        let mut cuts = Cuts::new(self.disks, &mut disk, end, length);
         while Instant::now() < end {
             round += 1;
             tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
@@ -1180,6 +1396,8 @@ impl Sim {
             let due = !replaced && round >= 2;
             if matches!(self.disks, Disks::Wipe | Disks::Restore) && (disk.percent(40) || due) {
                 replaced |= self.disk_fault(&mut disk).await;
+            } else if let Some(members) = cuts.next(self.members.len(), due, &mut disk) {
+                replaced |= self.power_fault(&members, &mut disk).await;
             } else {
                 self.link_fault(&mut rng, pick).await;
             }
@@ -1490,7 +1708,7 @@ impl Sim {
                 self.replace(&[save.member], scope, replace, rng).await;
                 true
             }
-            Disks::Off | Disks::WipeMajority => false,
+            _ => false,
         }
     }
 
@@ -1562,6 +1780,7 @@ impl Sim {
                 Replace::Restore(saved) => {
                     (sim_fs::restore(root, &scope.below(), saved), "restore")
                 }
+                Replace::PowerCut(_) => unreachable!("power cuts go through power_fault"),
             };
             match done {
                 Ok(()) => self.fault(format!("{what} {}", scope.describe(member))),
@@ -1575,6 +1794,160 @@ impl Sim {
         for (&member, covered) in members.iter().zip(covered) {
             self.reopen(member, scope, &replace, &covered, rng).await;
         }
+    }
+
+    /// Cut the power of `members`: of one inside its next append, of several
+    /// in one instant. Each starts again on what its disk kept. Waits first
+    /// for every shard to heal, so a cut never takes a copy a shard still
+    /// needs. Whether it cut.
+    async fn power_fault(&self, members: &[usize], rng: &mut Rng) -> bool {
+        if !self.wait_healed(Scope::Root, members[0]).await {
+            return false;
+        }
+        let cuts = match *members {
+            [member] => vec![self.cut_one(member, rng).await],
+            _ => {
+                // No await until every device is fixed: it is one instant.
+                let cuts = members.iter().map(|m| self.cut_now(*m, rng)).collect();
+                let names: Vec<_> = members.iter().map(|m| name(*m)).collect();
+                self.fault(format!("power cut {} together", names.join(" ")));
+                self.power.lock().together += 1;
+                cuts
+            }
+        };
+        if self.disks.relaxed() && members.len() >= self.majority() {
+            let now = self.now();
+            self.closed
+                .lock()
+                .extend((0..self.shards).map(|shard| (shard, now)));
+            self.fault("a majority of every shard's voters lost power on a relaxed run".into());
+        }
+        let mut stopped = Vec::new();
+        for (&member, cut) in members.iter().zip(cuts) {
+            stopped.push(self.stop_cut(member, cut).await);
+        }
+        tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
+        let covered = vec![0; self.shards as usize];
+        for (&member, cut) in members.iter().zip(stopped) {
+            let replace = Replace::PowerCut(cut);
+            self.reopen(member, Scope::Root, &replace, &covered, rng)
+                .await;
+        }
+        true
+    }
+
+    /// Cut `member`'s power now. Its peers hear nothing from it after.
+    fn cut_now(&self, member: usize, rng: &mut Rng) -> Cut {
+        let at = self.at(member);
+        let durable = at.logs.iter().map(DiskLog::durable_offset).collect();
+        if let Err(err) = sim_fs::cut_power(&self.dirs[member].0, rng.below(u64::MAX)) {
+            self.finding(format!("could not cut {}'s power: {err}", name(member)));
+        }
+        self.links.set_down(member, true);
+        at.down.cancel();
+        Cut {
+            durable,
+            torn: None,
+            repaired_before: 0,
+            opened_before: 0,
+        }
+    }
+
+    /// Cut `member`'s power inside its next append to a log segment, or
+    /// after [`APPEND_WITHIN`] with none in flight.
+    async fn cut_one(&self, member: usize, rng: &mut Rng) -> Cut {
+        let at = self.at(member);
+        let seed = rng.below(u64::MAX);
+        let fired = CancellationToken::new();
+        let slot = Arc::new(Mutex::new(None));
+        let on_cut = {
+            let (links, down, logs) = (self.links.clone(), at.down.clone(), at.logs.clone());
+            let (fired, slot) = (fired.clone(), slot.clone());
+            // Inside the member's write: stop it before it runs on.
+            move |segment: &Path, from: u64| {
+                let durable: Vec<u64> = logs.iter().map(DiskLog::durable_offset).collect();
+                links.set_down(member, true);
+                down.cancel();
+                *slot.lock() = Some((segment.to_path_buf(), from, durable));
+                fired.cancel();
+            }
+        };
+        if let Err(err) = sim_fs::arm_power_cut(&self.dirs[member].0, seed, on_cut) {
+            self.finding(format!("could not arm {}'s power cut: {err}", name(member)));
+        }
+        tokio::select! {
+            biased;
+            () = fired.cancelled() => {}
+            () = tokio::time::sleep(APPEND_WITHIN) => {}
+        }
+        let taken = slot.lock().take();
+        match taken {
+            Some((segment, from, durable)) => {
+                self.fault(format!(
+                    "power cut {} inside an append to {}",
+                    name(member),
+                    segment.display()
+                ));
+                Cut {
+                    durable,
+                    torn: Some((segment, from)),
+                    repaired_before: 0,
+                    opened_before: 0,
+                }
+            }
+            None => {
+                self.fault(format!(
+                    "power cut {} with no append in flight",
+                    name(member)
+                ));
+                self.cut_now(member, rng)
+            }
+        }
+    }
+
+    /// Stop a member whose power was cut, credit each copy with what it had
+    /// flushed, and put its disk back to what the device kept.
+    async fn stop_cut(&self, member: usize, mut cut: Cut) -> Cut {
+        let at = self.at(member);
+        at.runtime.shutdown().await;
+        for shard in 0..self.shards {
+            let bound = cut.durable[shard as usize];
+            let records = records_below(&at, shard, bound).await;
+            let mut credit = self.credit.lock();
+            let held = credit.entry((member, shard)).or_default();
+            held.bound = held.bound.max(bound);
+            held.records.extend(records);
+        }
+        for log in &at.logs {
+            let _ = log.close().await;
+        }
+        drop(at.root.lock().take());
+        let root = &self.dirs[member].0;
+        match sim_fs::reboot(root) {
+            Ok(true) => {}
+            Ok(false) => self.finding(format!("{}'s power cut never went off", name(member))),
+            Err(err) => self.finding(format!("could not reboot {}: {err}", name(member))),
+        }
+        // A segment whose name did not survive, or that holds nothing past
+        // the whole records of the append, leaves recovery nothing to repair.
+        cut.torn = cut.torn.filter(|(segment, from)| {
+            let len = sim_fs::file_len(root, segment).ok().flatten();
+            crate::cluster::power::needs_repair(len, *from)
+        });
+        let mut power = self.power.lock();
+        power.cuts += 1;
+        if let Some((segment, _)) = &cut.torn {
+            power.torn += 1;
+            drop(power);
+            self.fault(format!(
+                "{}'s {} came back with a torn tail",
+                name(member),
+                segment.display()
+            ));
+        }
+        cut.repaired_before = sim_fs::torn_tails_repaired(root).map_or(0, |t| t.len());
+        cut.opened_before = sim_fs::segments_opened(root).map_or(0, |o| o.len());
+        cut
     }
 
     /// Start `member` again after a disk fault and check what its copies
@@ -1600,6 +1973,7 @@ impl Sim {
             control_plane,
             minted: &self.minted,
             opens: &self.opens,
+            run: self.disks.power().then_some(self.disks.relaxed()),
         };
         let (mut opened, rotations) = match open_member(opening).await {
             Ok(opened) => opened,
@@ -1634,6 +2008,9 @@ impl Sim {
         for log in &opened.logs {
             held.push(log.tail_offset().await.unwrap_or(0));
         }
+        if let Replace::PowerCut(cut) = replace {
+            self.check_power_cut(member, cut, &opened, &rotations).await;
+        }
         *self.members[member].write() = Arc::new(opened);
         self.flushed.lock().retain(|(m, _), _| *m != member);
         self.links.replace(member, runtime);
@@ -1641,7 +2018,17 @@ impl Sim {
         let touched = scope.shards(self.shards);
         for (shard, rotation) in (0..self.shards).zip(rotations) {
             let at = shard as usize;
+            let relaxed = self.disks.relaxed();
             let finding = match (touched.contains(&shard), replace, &rotation) {
+                (_, Replace::PowerCut(_), None) if relaxed => {
+                    Some("kept its copy id after a power cut of a relaxed run".into())
+                }
+                (_, Replace::PowerCut(_), Some(rotation)) if !relaxed => Some(format!(
+                    "rotated its copy ({:?}) after a power cut of a run that answered only \
+                     synced writes",
+                    rotation.reason
+                )),
+                (_, Replace::PowerCut(_), _) => None,
                 (true, Replace::Wipe, None) => Some("kept its copy id on a wiped directory".into()),
                 (true, Replace::Restore(_), None) if held[at] < covered[at] => Some(format!(
                     "kept its copy id on a directory put back to {} entries, below the {} its \
@@ -1658,17 +2045,96 @@ impl Sim {
                 self.finding(format!("{}: {} {finding}", list(shard), name(member)));
             }
             match rotation {
-                Some(rotation) => self.fault(format!(
-                    "{}: {} rotated its copy ({:?})",
-                    list(shard),
-                    name(member),
-                    rotation.reason
-                )),
+                Some(rotation) => {
+                    if matches!(replace, Replace::PowerCut(_)) {
+                        self.power.lock().rotated += 1;
+                    }
+                    self.fault(format!(
+                        "{}: {} rotated its copy ({:?})",
+                        list(shard),
+                        name(member),
+                        rotation.reason
+                    ));
+                }
                 // It holds its records again.
                 None => {
                     self.credit.lock().remove(&(member, shard));
                 }
             }
+        }
+    }
+
+    /// What a member that lost power came back with. A copy that kept its
+    /// id holds every record it had flushed, so its log never answered a
+    /// write before the write was on the device. A torn append that
+    /// recovery opened again was repaired.
+    async fn check_power_cut(
+        &self,
+        member: usize,
+        cut: &Cut,
+        opened: &Member,
+        rotations: &[Option<Rotation>],
+    ) {
+        for (shard, rotation) in (0..self.shards).zip(rotations) {
+            if rotation.is_some() {
+                continue;
+            }
+            let Some((bound, credited)) = self
+                .credit
+                .lock()
+                .get(&(member, shard))
+                .map(|credit| (credit.bound, credit.records.clone()))
+            else {
+                continue;
+            };
+            let kept = records_below(opened, shard, bound).await;
+            let lost = credited
+                .iter()
+                .find(|(offset, record)| kept.get(offset) != Some(record));
+            if let Some((offset, _)) = lost {
+                self.finding(format!(
+                    "{}: {} lost offset {offset} in a power cut, which it had flushed ({} of {} \
+                     flushed records kept)",
+                    list(shard),
+                    name(member),
+                    credited
+                        .iter()
+                        .filter(|(o, r)| kept.get(o) == Some(r))
+                        .count(),
+                    credited.len()
+                ));
+            }
+        }
+        let Some((segment, _)) = &cut.torn else {
+            return;
+        };
+        // A rotated copy starts an empty log; the torn one is kept aside.
+        let rotated = (0..self.shards)
+            .zip(rotations)
+            .any(|(shard, rotation)| rotation.is_some() && segment.starts_with(shard_dir(shard)));
+        if rotated {
+            return;
+        }
+        let root = &self.dirs[member].0;
+        let opens = sim_fs::segments_opened(root).unwrap_or_default();
+        if !opens
+            .get(cut.opened_before..)
+            .is_some_and(|o| o.contains(segment))
+        {
+            return;
+        }
+        let repairs = sim_fs::torn_tails_repaired(root).unwrap_or_default();
+        if repairs
+            .get(cut.repaired_before..)
+            .is_some_and(|r| r.contains(segment))
+        {
+            self.power.lock().repaired += 1;
+        } else {
+            self.finding(format!(
+                "{} opened {} again after a power cut tore it and did not repair its tail",
+                name(member),
+                segment.display()
+            ));
         }
     }
 
@@ -1733,11 +2199,19 @@ impl Sim {
         }
     }
 
+    /// Whether a relaxed cut of a majority closed `shard`.
+    fn is_closed(&self, shard: u32) -> bool {
+        self.closed.lock().contains_key(&shard)
+    }
+
     /// After the heal every shard gets an open leader that acknowledges a
     /// write.
     async fn recover(&self) {
         let process = self.next_process.fetch_add(1, Ordering::Relaxed);
         for shard in 0..self.shards {
+            if self.is_closed(shard) {
+                continue;
+            }
             let deadline = Instant::now() + RECOVERY;
             let mut written = false;
             while !written && Instant::now() < deadline {
@@ -1759,6 +2233,12 @@ impl Sim {
     /// serves the same records. The leader's read is the list's final read.
     async fn final_reads(&self) {
         for shard in 0..self.shards {
+            // Nothing serves it, and what it held is not all on any voter.
+            if self.is_closed(shard) {
+                self.history.lock().unread_lists.insert(list(shard));
+                self.fault(format!("{}: closed until a re-form", list(shard)));
+                continue;
+            }
             let deadline = Instant::now() + RECOVERY;
             let mut reads = Vec::new();
             // A copy stopped by a failed flush serves nothing and is not
@@ -1779,7 +2259,7 @@ impl Sim {
                 let same = running
                     .iter()
                     .all(|member| reads[*member].is_some() && reads[*member] == reads[running[0]]);
-                if same || Instant::now() >= deadline {
+                if (same && self.leader(shard).is_some()) || Instant::now() >= deadline {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1829,6 +2309,7 @@ impl Sim {
                         "{}: no leader to take the final read from",
                         list(shard)
                     ));
+                    self.fault(self.roles(shard));
                 }
             }
         }
@@ -1859,6 +2340,7 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
                 terms_opened: 0,
                 history: History::default(),
                 deliveries: Vec::new(),
+                power: PowerCounts::default(),
             };
         }
     };
@@ -1894,6 +2376,7 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
         terms_opened,
         history,
         deliveries: sim.deliveries.lock().clone(),
+        power: *sim.power.lock(),
     }
 }
 
@@ -1931,6 +2414,11 @@ async fn drive(
         )));
     }
     phase("injecting faults");
+    if config.ignored_flushes {
+        for dir in &sim.dirs {
+            let _ = sim_fs::ignore_segment_flushes(&dir.0);
+        }
+    }
     // Forked after the nemesis, so a seed without the failed flush runs as
     // it did before.
     let (faults, flush, disk) = (rng.fork(), rng.fork(), rng.fork());
