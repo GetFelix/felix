@@ -11,8 +11,10 @@
 //! else the process is doing.
 //!
 //! The thread starts on the first job and exits after `IDLE` without one, so
-//! a broker holding many quiet shards does not hold threads for them. See
-//! `docs/storage-performance.md` for the measurements.
+//! a broker holding many quiet shards does not hold threads for them. A
+//! spinning thread polls for its next job only while jobs keep arriving
+//! within the spin window, so a quiet log parks instead of burning the window
+//! after every job. See `docs/storage-performance.md` for the measurements.
 
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,6 +32,10 @@ const IDLE: Duration = Duration::from_secs(10);
 /// finished.
 type Job = Box<dyn FnOnce(&AtomicUsize) + Send>;
 
+/// A job and when it was sent, which tells the thread how soon it came after
+/// the job before, whatever the thread's own wake-up cost.
+type Sent = (Instant, Job);
+
 /// Runs one log's jobs of one kind on a dedicated thread, one at a time, in
 /// the order they were submitted.
 pub(crate) struct LogThread {
@@ -43,7 +49,10 @@ pub(crate) struct LogThread {
     /// The running thread's queue, if there is a thread. Jobs are only sent
     /// under this lock, and the thread clears it under the same lock before
     /// exiting, so no job can be left behind in a queue nobody reads.
-    queue: Arc<Mutex<Option<mpsc::Sender<Job>>>>,
+    queue: Arc<Mutex<Option<mpsc::Sender<Sent>>>>,
+    /// The thread's polls, by how they ended.
+    #[cfg(test)]
+    polls: Arc<PollCounts>,
 }
 
 impl LogThread {
@@ -52,9 +61,10 @@ impl LogThread {
     }
 
     /// A thread for jobs shorter than a wake-up: after a job it polls for the
-    /// next for up to `spin` before parking, and a caller whose job is the only
-    /// one queued polls for its result as long before yielding. Back-to-back
-    /// jobs then pay neither wake-up.
+    /// next for up to `spin` before parking, as long as the job before came
+    /// within `spin` too, and a caller whose job is the only one queued polls
+    /// for its result as long before yielding. Back-to-back jobs then pay
+    /// neither wake-up, and jobs spaced wider than `spin` pay no polling.
     pub(crate) fn spinning(name: impl Into<String>, spin: Duration) -> Self {
         Self {
             spin,
@@ -69,7 +79,36 @@ impl LogThread {
             spin: Duration::ZERO,
             pending: Arc::new(AtomicUsize::new(0)),
             queue: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            polls: Arc::default(),
         }
+    }
+
+    /// Run `work` behind every job already submitted: on the calling thread
+    /// when none is pending, since there is nothing to queue behind, and on
+    /// the thread otherwise. For short work that only reads what earlier
+    /// jobs left. Skipping the hand-off saves a wake-up of the thread and of
+    /// the caller.
+    ///
+    /// On the calling thread `work` is told it may not wait, and gives `None`
+    /// where it would: the caller may be a group thread other groups' tasks
+    /// queue behind. It then runs on the thread, told it may. With `inline`
+    /// false it always runs on the thread.
+    pub(crate) async fn run_behind<T: Send + 'static>(
+        &self,
+        inline: bool,
+        work: impl Fn(bool) -> Option<io::Result<T>> + Send + 'static,
+    ) -> io::Result<T> {
+        if inline
+            && self.pending.load(Ordering::Acquire) == 0
+            && let Some(done) = work(false)
+        {
+            return done;
+        }
+        self.run(move || {
+            work(true).unwrap_or_else(|| Err(io::Error::other("work that may wait gave nothing")))
+        })
+        .await
     }
 
     /// Run `work` on the thread and return its result.
@@ -120,8 +159,11 @@ impl LogThread {
                 .await
                 .map_err(io::Error::other)?;
         }
+        // A current-thread runtime (a Raft group thread) has other groups'
+        // tasks to run, and polling here would hold them up.
         if alone
             && !self.spin.is_zero()
+            && !on_current_thread_runtime()
             && let Some(_spinning) = Spinning::enter()
         {
             let started = Instant::now();
@@ -143,23 +185,30 @@ impl LogThread {
     fn submit(&self, job: Job) -> Result<(), Job> {
         let mut queue = self.queue.lock();
         let job = match queue.as_ref() {
-            Some(sender) => match sender.send(job) {
+            Some(sender) => match sender.send((Instant::now(), job)) {
                 Ok(()) => return Ok(()),
-                Err(mpsc::SendError(job)) => job,
+                Err(mpsc::SendError((_, job))) => job,
             },
             None => job,
         };
         let (sender, receiver) = mpsc::channel();
         let slot = Arc::downgrade(&self.queue);
         let pending = Arc::clone(&self.pending);
-        let (idle, spin) = (self.idle, self.spin);
+        let spin = Spin {
+            window: self.spin,
+            #[cfg(test)]
+            polls: Arc::clone(&self.polls),
+        };
+        let idle = self.idle;
         let started = std::thread::Builder::new()
             .name(self.name.clone())
-            .spawn(move || serve(receiver, slot, &pending, idle, spin));
+            .spawn(move || serve(receiver, slot, &pending, idle, &spin));
         match started {
             Ok(_) => {
                 // The thread cannot exit before it takes the lock held here.
-                let result = sender.send(job).map_err(|mpsc::SendError(job)| job);
+                let result = sender
+                    .send((Instant::now(), job))
+                    .map_err(|mpsc::SendError((_, job))| job);
                 *queue = Some(sender);
                 result
             }
@@ -178,6 +227,12 @@ impl std::fmt::Debug for LogThread {
             .field("name", &self.name)
             .finish_non_exhaustive()
     }
+}
+
+fn on_current_thread_runtime() -> bool {
+    tokio::runtime::Handle::try_current().is_ok_and(|runtime| {
+        runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
+    })
 }
 
 /// Callers polling for a result right now, across every log.
@@ -211,17 +266,41 @@ impl Drop for Spinning {
     }
 }
 
+/// How long the thread polls for its next job before parking.
+struct Spin {
+    window: Duration,
+    #[cfg(test)]
+    polls: Arc<PollCounts>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct PollCounts {
+    /// Polls that found a job.
+    caught: std::sync::atomic::AtomicU64,
+    /// Polls that ran out the window and parked.
+    wasted: std::sync::atomic::AtomicU64,
+}
+
 /// The thread body. Returns when the log is dropped, or after `IDLE` with
 /// nothing to do.
 fn serve(
-    queue: mpsc::Receiver<Job>,
-    slot: Weak<Mutex<Option<mpsc::Sender<Job>>>>,
+    queue: mpsc::Receiver<Sent>,
+    slot: Weak<Mutex<Option<mpsc::Sender<Sent>>>>,
     pending: &AtomicUsize,
     idle: Duration,
-    spin: Duration,
+    spin: &Spin,
 ) {
+    // Whether the last job was sent within the window after the one before
+    // it finished. A job that came later says the log is not that busy, and
+    // the next one will likely be late too: polling for it would burn the
+    // whole window for nothing. Measured from the send, so a slow wake-up
+    // does not keep a busy log parking.
+    let mut busy = false;
+    let mut finished = Instant::now();
     loop {
-        let job = match poll(&queue, spin).map_or_else(|| queue.recv_timeout(idle), Ok) {
+        let polled = if busy { poll(&queue, spin) } else { None };
+        let (sent, job) = match polled.map_or_else(|| queue.recv_timeout(idle), Ok) {
             Ok(job) => job,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -239,20 +318,33 @@ fn serve(
                 }
             }
         };
+        busy = sent.saturating_duration_since(finished) < spin.window;
         // A panic is this job's failure, not the thread's: if it took the
         // thread down, jobs already queued behind it would fail with it.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(pending)));
+        finished = Instant::now();
     }
 }
 
-/// The next job, if one arrives within `spin`.
-fn poll(queue: &mpsc::Receiver<Job>, spin: Duration) -> Option<Job> {
+/// The next job, if one arrives within the spin window.
+fn poll(queue: &mpsc::Receiver<Sent>, spin: &Spin) -> Option<Sent> {
     let started = Instant::now();
     loop {
         match queue.try_recv() {
-            Ok(job) => return Some(job),
-            Err(mpsc::TryRecvError::Empty) if started.elapsed() < spin => std::hint::spin_loop(),
-            Err(_) => return None,
+            Ok(job) => {
+                #[cfg(test)]
+                spin.polls.caught.fetch_add(1, Ordering::Relaxed);
+                return Some(job);
+            }
+            Err(mpsc::TryRecvError::Empty) if started.elapsed() < spin.window => {
+                std::hint::spin_loop();
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                #[cfg(test)]
+                spin.polls.wasted.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => return None,
         }
     }
 }

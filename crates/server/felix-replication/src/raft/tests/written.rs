@@ -568,6 +568,60 @@ async fn led_with_a_learner() -> (Led, &'static str) {
     (led, other)
 }
 
+/// **A sole voter sends nothing for its writes, and starts sending once a
+/// member joins.** A group of one has no peer: its own written or synced
+/// copy is the majority, so a write costs no append, heartbeat or written
+/// report. There is no special case for one voter: openraft replicates to
+/// the members its membership names, so the first learner gets appends
+/// and, since a `Quorum` write has waited on the count, written reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_sends_nothing_until_a_member_joins() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const WRITES: usize = 100;
+    let mut cluster = Cluster::new(true);
+    cluster.open(0).await;
+    let runtime = cluster.runtime("a");
+    let formed = runtime.initialize(&shard(0), set(&["a"])).await;
+    formed.expect("initialize");
+    let leads = || {
+        let status = runtime.status(&shard(0))?;
+        let ready = status.role == Role::Leader && status.committed == status.last_index;
+        ready.then_some(status.member)
+    };
+    let leader = eventually(leads).await;
+    let engine = RaftEngine::new(runtime.clone());
+    let mut led = Led {
+        cluster,
+        leader,
+        engine,
+    };
+    let sent = || led.cluster.net.sent.load(Relaxed);
+    let before = sent();
+    for _ in 0..WRITES {
+        let written = led.prime().await;
+        let strict = led.acked(written, AckAt::Flushed).await;
+        strict.expect("acknowledged at its commit");
+    }
+    assert_eq!(
+        sent() - before,
+        0,
+        "a sole voter sent messages for its writes"
+    );
+    // Set by the waits above, so the learner's first appends ask for reports.
+    let group = led.group();
+    let asks = group.reports().ask();
+    assert_eq!(asks, crate::raft::network::Ask::Written);
+    let joined = group.raft().add_learner(member("c"), EmptyNode {}, true);
+    joined.await.expect("the learner joined");
+    let joined = sent();
+    assert!(joined > before, "the learner was sent nothing");
+    let written = led.prime().await;
+    led.told_by("c", written).await;
+    let reports = led.cluster.net.written_reports.lock().clone();
+    assert!(reports.iter().all(|from| from == "c"), "{reports:?}");
+    led.cluster.stop().await;
+}
+
 /// The acknowledgement comes while no follower has fsynced the record, so
 /// nothing has committed it, and it moves neither the commit index nor the
 /// read bound. A leader nobody waited on this way asks for no report.
@@ -929,5 +983,35 @@ async fn a_relaxed_leader_waits_for_strict_followers_to_write() {
     led.cluster.net.cut.lock().clear();
     let acked = led.acked(written, AckAt::Written).await;
     acked.expect("acknowledged");
+    led.cluster.stop().await;
+}
+
+/// **Followers on written-commit logs send no written report.** Their
+/// answer to an append comes once its entries are written, so the leader
+/// counts the answer, and a `Quorum` write costs no extra message or task
+/// per append.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relaxed_followers_answer_with_their_written_position() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const WRITES: u64 = 50;
+    let mut led = led_relaxed(&BROKERS).await;
+    let primed = led.prime().await;
+    led.cluster.committed_everywhere(0, primed.end - 1).await;
+    let reports = || led.cluster.net.written_reports.lock().len() as u64;
+    let (reported, appended) = (reports(), led.cluster.net.appends.load(Relaxed));
+    let mut last = primed;
+    for _ in 0..WRITES {
+        last = led.propose().await;
+        let acked = led.acked(last, AckAt::Written).await;
+        acked.expect("acknowledged");
+    }
+    led.told_by(led.others()[0], last).await;
+    led.told_by(led.others()[1], last).await;
+    let appends = led.cluster.net.appends.load(Relaxed) - appended;
+    let sent = reports() - reported;
+    assert_eq!(
+        sent, 0,
+        "{sent} written reports for {WRITES} writes and {appends} appends"
+    );
     led.cluster.stop().await;
 }

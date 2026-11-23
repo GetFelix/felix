@@ -1446,6 +1446,98 @@ async fn a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies() {
     );
 }
 
+/// **An entry put with a TTL on a Raft cache shard expires on the leader
+/// that takes over, and is never read after its expiry.** The expiry is the
+/// leader's stamp in the log, not a clock the new leader starts afresh, so a
+/// failover neither extends it nor drops an entry that has time left.
+#[tokio::test]
+#[serial]
+async fn a_raft_cache_entry_expires_on_time_across_a_failover() {
+    if !opted_in() {
+        return;
+    }
+    let config = ClusterConfig {
+        nodes: 3,
+        streams: Vec::new(),
+        caches: vec![felix_cluster::CacheSpec::quorum(CACHE, 1, 3)],
+        broker_env: vec![engine("raft")],
+        ..Default::default()
+    };
+    let mut cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let other = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("a follower")
+        .clone();
+
+    const SHORT_MS: u64 = 15_000;
+    let started = tokio::time::Instant::now();
+    felix_cluster::wait::until_some(ELECTED_WITHIN, "a ttl put to be acknowledged", || async {
+        cluster
+            .cache_put_ttl_via(&other, CACHE, "short", b"short", Some(SHORT_MS))
+            .await
+            .ok()
+    })
+    .await
+    .expect("put with a short ttl");
+    // The deadline is stamped before the ack, so a retried put that lands late
+    // still expires by `acked + SHORT_MS`.
+    let acked = tokio::time::Instant::now();
+    cache_put_acked(&cluster, &other, "plain", b"plain").await;
+    felix_cluster::wait::until_some(ELECTED_WITHIN, "a long ttl put", || async {
+        cluster
+            .cache_put_ttl_via(&other, CACHE, "long", b"long", Some(3_600_000))
+            .await
+            .ok()
+    })
+    .await
+    .expect("put with a long ttl");
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    leader_among(&cluster, &survivors).await;
+
+    // Elections may outlast the short ttl on a slow runner; when they do the
+    // test only checks the entry is gone, which is still the property.
+    let get = |node: &str, key: &str| {
+        let node = node.to_owned();
+        let key = key.to_owned();
+        let cluster = &cluster;
+        async move {
+            felix_cluster::wait::until_some(ELECTED_WITHIN, "a cache read", || async {
+                cluster.cache_get_via(&node, CACHE, &key).await.ok()
+            })
+            .await
+            .expect("read")
+        }
+    };
+    if started.elapsed() < Duration::from_millis(SHORT_MS - 3_000) {
+        assert_eq!(
+            get(&survivors[0], "short").await.as_deref(),
+            Some(b"short".as_slice()),
+            "an entry with time left was lost in the failover"
+        );
+    }
+
+    // Past the expiry, on both survivors, the entry never reads again.
+    tokio::time::sleep_until(acked + Duration::from_millis(SHORT_MS + 1_000)).await;
+    for _ in 0..5 {
+        for node in &survivors {
+            assert_eq!(get(node, "short").await, None, "read {node} after expiry");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    for node in &survivors {
+        assert_eq!(
+            get(node, "plain").await.as_deref(),
+            Some(b"plain".as_slice())
+        );
+        assert_eq!(get(node, "long").await.as_deref(), Some(b"long".as_slice()));
+    }
+}
+
 /// Bytes of segment files under `node`'s storage: what its logs hold on disk.
 fn segment_bytes(cluster: &Cluster, node: &str) -> u64 {
     fn walk(dir: &std::path::Path) -> u64 {

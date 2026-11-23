@@ -198,7 +198,7 @@ impl PeerConnection {
                 })
         {
             let closer = connection.clone();
-            tasks.push(tokio::spawn(async move {
+            tasks.push(connection.spawn_pump(async move {
                 felix_common::clock::sleep_until_unix(at).await;
                 closer.close(
                     crate::peer::server::CERT_EXPIRED_CLOSE_CODE.into(),
