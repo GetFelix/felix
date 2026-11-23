@@ -14,6 +14,7 @@ fn voters_on(brokers: &[&str]) -> RaftVoters {
             .enumerate()
             .map(|(copy, broker)| (broker.to_string(), copy as u64 + 1))
             .collect(),
+        starts: Default::default(),
     }
 }
 
