@@ -635,8 +635,8 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftWrittenCommitsReformJointDead.cfg` | a joint change from {a, b, c} to {a, b, d}, two brokers declared dead | `BaseAgrees` (no base entry differs from the committed one): expected to pass (#2661). Not registered: under `JointReformScope`, unfinished after six hours on a CI runner (335M distinct states, depth 21, run 45097934400) |
 | `FelixRaftWrittenCommitsReformJointDeadOneSet.cfg` | the same, with the gate counting the first voter set only | expected to violate `BaseAgrees` (#2661); a trace is reachable with these constants (c leads term 1 past the joint exit, writes the record to b and loses power; a and d commit in term 2 and die). Not registered: under `JointReformScope`, no violation in 242M distinct states, depth 21, before a CI runner's six hours ran out (run 45097934400); walked nightly (`tla-walk.yml`) |
 | `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: expected to pass (#2661). Not registered: under `ReformScope`, unfinished after six hours on a CI runner (169M distinct states, depth 23, run 45097934400); runs nightly (`tla-walk.yml`) |
-| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms | `BaseAgrees`: passes under `ReformScope` (4,403,190 distinct states, depth 37, 7 min 37 s on a CI runner, run 45097934400), but vacuously: with no crash or power cut, c, the term-1 leader, stops leading only by taking term 2, so its term-1 tail is never vouched for (#2729). Not registered |
-| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | expected to violate `BaseAgrees` (#2661), but passes under `ReformScope` with the same 4,403,190 distinct states as the gated configuration (4 min 55 s, run 45097934400): vacuous for the reason in the row above. With `MaxCrashes = 1` it violates `BaseAgrees` in 15 seconds (#2729). Not registered; walked nightly (`tla-walk.yml`) |
+| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms, one crash | pass (#2729): c leads term 1, holds a tail and crashes, so the tail is still term 1 at the re-form; a and b elect in term 2, commit and die. The dead are a majority, so the group is marked and c vouches only for its saved commit. Under `ReformScope`: 11,888,341 distinct states, depth 38, 19 min 30 s on a CI runner (run 45176967426) |
+| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | violate `BaseAgrees` (#2729): the crashed term-1 leader vouches for its term-1 tail over the term-2 commit the dead made. 39 s on a CI runner (run 45176967426), depth 20 |
 | `FelixRaftWrittenReformReplaced.cfg` | voters a1, b1, c1 with b2 a learner; b1's disk is replaced with nothing kept, c1 is declared dead, and a1, deposed, appends its term-1 tail to b2 | `BaseAgrees`: pass (#2671): voters are keyed by copy id, so b1's vote is unknown, {b1, c1} is a majority and the group is marked. Not registered, run by dispatch |
 | `FelixRaftWrittenReformReplacedHappens.cfg` | witness: the same scope, a re-form after b2 saved the deposed term 1 while term 2 committed | violates `NoDeposedAppend` (184k distinct states, 3 s) |
 | `FelixRaftWrittenReformReplacedFull.cfg` | `FelixRaftWrittenReformReplaced.cfg` without `ReplacedScope` and with reservations | `BaseAgrees`: pass. Not registered, run by dispatch |
@@ -3084,9 +3084,10 @@ and counting only the first voter set vouches for a stale tail
 (`FelixRaftWrittenCommitsReformJointDeadOneSet.cfg`). With the gate forced
 open, a copy holding a term-1 tail vouches for it over a term-2 commit the dead
 made (`FelixRaftWrittenReformGateOpen.cfg`; `FelixRaftWrittenReformGate.cfg`
-passes). These are the outcomes the configurations are built to show, not
-checked results: the two gate configurations are vacuous as written and the
-joint ones have not finished (see their rows above).
+passes). The leader holding that tail has to crash: with no crash it stops
+leading only by taking term 2, and its tail is never vouched for. The joint
+outcomes are what those configurations are built to show, not checked
+results: none has finished (see their rows above).
 
 Voter sets hold copy ids, not brokers. A vote is unknown unless the re-form
 read it from the copy that cast it: the copy in place, or the copy a power cut
