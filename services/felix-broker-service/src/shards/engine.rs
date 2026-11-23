@@ -55,6 +55,35 @@ impl StreamEngine {
         self.raft.get()?.leading(shard)
     }
 
+    /// This broker's member of `shard`'s Raft group as it last saw the group,
+    /// for `shard_inspect`.
+    pub(crate) fn raft_view(&self, shard: &ShardKey) -> Option<felix_wire::InspectedRaft> {
+        #[cfg(feature = "raft")]
+        {
+            use felix_replication::raft::Role;
+            let status = self.raft(shard)?.status(shard)?;
+            Some(felix_wire::InspectedRaft {
+                role: match status.role {
+                    Role::Leader => "leader",
+                    Role::Candidate => "candidate",
+                    Role::Follower => "follower",
+                    Role::Learner => "learner",
+                    Role::Stopped => "stopped",
+                }
+                .to_string(),
+                term: status.term,
+                leader: status.leader.map(|member| member.broker.to_string()),
+                last_index: status.last_index,
+                committed: status.committed,
+            })
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = shard;
+            None
+        }
+    }
+
     #[cfg(not(feature = "raft"))]
     pub fn raft_term(&self, _shard: &ShardKey) -> Option<u64> {
         None

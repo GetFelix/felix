@@ -13,8 +13,8 @@ pub use fields::{
     PublishRefusalReason, ShardKind, ShardOwner, StartPosition, StateChange, StreamRecord,
 };
 pub use inspect::{
-    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription,
-    ShardInspection, SubscriptionCursor, SubscriptionFilter,
+    InspectedAssignment, InspectedFence, InspectedLease, InspectedRaft, InspectedReplica,
+    InspectedSubscription, ShardInspection, SubscriptionCursor, SubscriptionFilter,
 };
 
 use bytes::Bytes;

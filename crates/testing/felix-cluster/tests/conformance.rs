@@ -263,7 +263,9 @@ async fn a_moved_shard_converges_on_the_new_owner() -> Result<()> {
 #[serial]
 #[tokio::test]
 async fn a_broker_that_cannot_renew_its_lease_stops_serving() -> Result<()> {
-    if felix_cluster::skip_on_raft_retire_with_hybrid("a hybrid lease assertion") {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "a broker that cannot renew its lease stops writing; Raft leadership rests on a quorum heard, not a lease",
+    ) {
         return Ok(());
     }
     let mut cluster = Cluster::start(config(3)).await?;

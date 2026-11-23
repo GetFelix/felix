@@ -106,7 +106,7 @@ pub use felix_wire::routing::ShardRouting;
 pub use felix_wire::{
     AckCopies, AckDurability, AckFsync, AckMode, AckPoint, BrokerEndpoint, CacheCondition,
     CursorErrorReason, ErrorCode, ErrorDetail, GroupRecord, InspectedAssignment, InspectedFence,
-    InspectedLease, InspectedReplica, InspectedSubscription, PublishRefusalReason, RecordHeaders,
-    RetryClass, ShardInspection, ShardKind, ShardOwner, StartPosition, StreamRecord,
+    InspectedLease, InspectedRaft, InspectedReplica, InspectedSubscription, PublishRefusalReason,
+    RecordHeaders, RetryClass, ShardInspection, ShardKind, ShardOwner, StartPosition, StreamRecord,
     SubscriptionCursor, SubscriptionFilter,
 };

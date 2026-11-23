@@ -145,6 +145,21 @@ pub(crate) fn default_engine() -> &'static str {
     }
 }
 
+/// Say a test skipped itself on Raft, where a green result would otherwise
+/// pass for a run. Written to the real stderr, which libtest does not capture,
+/// and appended to the job summary when CI names one.
+fn report_skip(reason: &str) {
+    use std::io::Write;
+    let thread = std::thread::current();
+    let line = format!("{}: {reason}", thread.name().unwrap_or("unnamed test"));
+    let _ = writeln!(std::io::stderr(), "{line}");
+    if let Some(summary) = std::env::var_os("GITHUB_STEP_SUMMARY")
+        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(summary)
+    {
+        let _ = writeln!(file, "- {line}");
+    }
+}
+
 /// True when the suite runs on Raft, for a test that moves a shard between
 /// brokers. A Raft shard's leader moves only within its voting set, and
 /// placement does not yet manage that set (#2235), so such a test runs on
@@ -152,7 +167,7 @@ pub(crate) fn default_engine() -> &'static str {
 pub fn skip_on_raft_until_moves_land() -> bool {
     let skip = default_engine() == "raft";
     if skip {
-        eprintln!("skipped on Raft: shard moves need membership from placement (#2235)");
+        report_skip("skipped on Raft: shard moves need membership from placement (#2235)");
     }
     skip
 }
@@ -163,7 +178,7 @@ pub fn skip_on_raft_until_moves_land() -> bool {
 pub fn skip_on_raft_until_3008() -> bool {
     let skip = default_engine() == "raft";
     if skip {
-        eprintln!("skipped on Raft: subscribe redirect, opening shards, region refusal (#3008)");
+        report_skip("skipped on Raft: subscribe redirect, opening shards, region refusal (#3008)");
     }
     skip
 }
@@ -173,7 +188,7 @@ pub fn skip_on_raft_until_3008() -> bool {
 pub fn skip_on_raft_retire_with_hybrid(reason: &str) -> bool {
     let skip = default_engine() == "raft";
     if skip {
-        eprintln!("skipped on Raft, retires with hybrid: {reason}");
+        report_skip(&format!("skipped on Raft, retires with hybrid: {reason}"));
     }
     skip
 }

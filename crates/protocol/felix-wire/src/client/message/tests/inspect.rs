@@ -42,6 +42,7 @@ fn fencing_leader() -> ShardInspection {
             state: "fencing".to_string(),
             halted: None,
         }],
+        raft: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn a_bare_inspection_carries_only_its_identity() {
         committed: None,
         accepted_generation: None,
         replicas: vec![],
+        raft: None,
     };
     let frame = Message::ShardInspectInfo {
         view: Box::new(view.clone()),
@@ -255,4 +257,28 @@ fn an_unfiltered_list_and_an_unowned_subscriber_stay_small() {
     ] {
         assert!(json.get(absent).is_none(), "{absent} in {json}");
     }
+}
+
+/// A Raft member's view rides beside the hybrid fields and round-trips.
+#[test]
+fn a_raft_members_view_round_trips() {
+    let mut view = fencing_leader();
+    view.raft = Some(crate::InspectedRaft {
+        role: "leader".to_string(),
+        term: 3,
+        leader: Some("broker-a".to_string()),
+        last_index: Some(12),
+        committed: Some(11),
+    });
+    let frame = Message::ShardInspectInfo {
+        view: Box::new(view.clone()),
+        request_id: 2,
+    }
+    .encode()
+    .expect("encode");
+    let Message::ShardInspectInfo { view: back, .. } = Message::decode(frame).expect("decode")
+    else {
+        panic!("wrong message");
+    };
+    assert_eq!(*back, view);
 }

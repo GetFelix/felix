@@ -10,7 +10,8 @@ use std::time::Duration;
 use felix_broker::Broker;
 use felix_replication::status::ShardStatus;
 use felix_wire::{
-    InspectedAssignment, InspectedFence, InspectedLease, InspectedReplica, ShardInspection,
+    InspectedAssignment, InspectedFence, InspectedLease, InspectedRaft, InspectedReplica,
+    ShardInspection,
 };
 
 use crate::serving::quic::handlers::publish::PublishContext;
@@ -37,6 +38,7 @@ pub(crate) struct Observed {
     pub(crate) accepted_generation: Option<u64>,
     /// How long until the next fence attempt, read off the board's deadline.
     pub(crate) fence_retry_in: Option<Duration>,
+    pub(crate) raft: Option<InspectedRaft>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +98,7 @@ pub(crate) async fn inspect(
     if let (Some(marks), Some(route)) = (publish_ctx.engine.marks(), &observed.route) {
         observed.committed = marks.offset(key, route.generation);
     }
+    observed.raft = publish_ctx.engine.raft_view(key);
     // Only a log this broker has open: opening one would create it.
     if key.kind == ShardKind::Stream
         && let Some(log) = broker.durable_storage().and_then(|storage| {
@@ -122,6 +125,7 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         committed,
         accepted_generation,
         fence_retry_in,
+        raft,
     } = observed;
     let tail = tail.or(status.as_ref().and_then(|status| status.tail));
     let lease_view = lease.map(|lease| InspectedLease {
@@ -147,6 +151,7 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
             committed,
             accepted_generation,
             replicas: Vec::new(),
+            raft,
         };
     };
 
@@ -272,6 +277,7 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         committed: committed.filter(|_| role == "leader"),
         accepted_generation,
         replicas,
+        raft,
     }
 }
 
