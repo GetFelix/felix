@@ -1,0 +1,1 @@
+- On a Raft shard, a subscribe to a broker with no member of the shard's group is redirected with `NotLeader` to the leader placement chose, as on the hybrid, instead of refused as still opening. A publish or subscribe that would forward to a Raft leader in a region with no bridge is refused with `region_not_routable` instead of forwarded.

@@ -1482,6 +1482,10 @@ impl EngineShards for RaftShards {
         self.runtime.hears_leader(key) == Some(true)
     }
 
+    fn holds(&self, key: &ShardKey) -> bool {
+        self.runtime.holds(key)
+    }
+
     fn leads_unheard(&self, key: &ShardKey) -> bool {
         self.leading(key).is_some() && self.runtime.hears_leader(key) == Some(false)
     }

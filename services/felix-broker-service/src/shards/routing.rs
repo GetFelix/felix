@@ -197,9 +197,35 @@ impl IngressRouter {
 
     /// Where another engine sends `key`, when one runs it here. A local
     /// answer has no place in the hybrid's fence and needs no broker lease.
+    ///
+    /// A forward into a region this broker has no bridge to is refused, as
+    /// the hybrid's routes refuse it: region policy does not depend on which
+    /// engine runs the shard.
     pub(crate) fn engine_dispatch(&self, key: &ShardKey) -> Option<Dispatch> {
         let nodes = |broker: &str| self.router.node_addr(broker);
-        self.engine_shards.get()?.dispatch(key, &nodes)
+        let dispatch = self.engine_shards.get()?.dispatch(key, &nodes)?;
+        if let Dispatch::Forward { node_id, .. } = &dispatch
+            && let Some(node) = self.router.node(node_id)
+            && !self.router.routes_to_region(&node.region)
+        {
+            return Some(Dispatch::Unavailable(Reason::RegionNotRoutable {
+                region: node.region,
+            }));
+        }
+        Some(dispatch)
+    }
+
+    /// Whether another engine holds a member of `key` on this broker.
+    pub(crate) fn engine_holds(&self, key: &ShardKey) -> bool {
+        self.engine_shards
+            .get()
+            .is_some_and(|engine| engine.holds(key))
+    }
+
+    /// Whether the cluster last reported `node_id` able to serve. `None` for
+    /// a node the catalog does not name.
+    pub(crate) fn node_live(&self, node_id: &str) -> Option<bool> {
+        self.router.node(node_id).map(|node| node.live)
     }
 
     /// Whether another engine serves `key`'s readers here without leading it.
@@ -860,6 +886,12 @@ pub trait EngineShards: Send + Sync {
     /// although it does not lead the shard: from the engine's log, up to
     /// what the engine committed here.
     fn serves_reads(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    /// Whether this broker holds a member of `key`'s group. A broker with
+    /// none routes by placement alone.
+    fn holds(&self, _key: &ShardKey) -> bool {
         false
     }
 
