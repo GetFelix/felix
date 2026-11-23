@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795420834578,
+  "lastUpdate": 1795421921893,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -84018,6 +84018,72 @@ window.BENCHMARK_DATA = {
             "range": "558.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 250.00\nmean: 565.20\nstdev: 558.62\ncv: 98.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55961c5dd4b8e77486d64b2b7723efb11dbc2e46",
+          "message": "feat(raft): send heartbeats for one broker together (#2939) (#2997)\n\n* feat(raft): send heartbeats for one broker together (#2939)\n\nThe runtime's transport now holds an append with no entries for up to\nbeat_window (1 ms by default) and sends every heartbeat for members on the\nsame broker as one Raft body (message 9), answered with one result per\nheartbeat in order, the pattern openraft#2390 shows. At most 512 go in one\nbody. Appends that carry entries and every other message go at once.\n\nThe batch goes only to a peer that offered the new RAFT_BEATS capability\n(1 << 28); any other, and a batch of one, gets each heartbeat as message 1,\nbyte for byte as before. The receiver answers every heartbeat at once and\nanswers a member silent for one window past the latest answer as slow, so\none stuck member cannot hold the rest up.\n\nThe wait only ages a leader's lease: openraft stamps the hand-off before\nthe wait and a follower's promise starts after it. The runtime refuses a\nwindow as long as the heartbeat.\n\n* fix(raft): a Slow answer maps to a low-backoff error, not Unreachable\n\n* raft: record why heartbeat coalescing leaves the model alone (#2939)\n\nSpec-Unaffected: coalescing only delays an entry-less append by at most beat_window (shorter than the heartbeat) or answers it Slow, which the leader counts as unanswered. The model's network already allows any delay or loss of a message, openraft stamps the lease's send time before the wait so the wait can only shorten a lease, and appends that carry entries never wait. Votes, terms, commit and lease rules are unchanged.",
+          "timestamp": "2026-11-23T08:13:24Z",
+          "tree_id": "86a72a8b35d6f53def9f6266f6288a16d766cf8a",
+          "url": "https://github.com/GetFelix/felix/commit/55961c5dd4b8e77486d64b2b7723efb11dbc2e46"
+        },
+        "date": 1795421902861,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 71.20\nstdev: 0.84\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 123,
+            "range": "2.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 123.00\nstdev: 2.12\ncv: 1.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 150,
+            "range": "258.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 263.40\nstdev: 258.06\ncv: 97.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.00\nstdev: 1.00\ncv: 1.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 189,
+            "range": "13.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 189.00\nmean: 189.40\nstdev: 13.35\ncv: 7.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 283,
+            "range": "676.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 283.00\nmean: 633.40\nstdev: 676.24\ncv: 106.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
