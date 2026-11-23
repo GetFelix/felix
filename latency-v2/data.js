@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795437722972,
+  "lastUpdate": 1795442640569,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -84678,6 +84678,72 @@ window.BENCHMARK_DATA = {
             "range": "298.77",
             "unit": "us",
             "extra": "trials: 5\nmedian: 372.00\nmean: 505.60\nstdev: 298.77\ncv: 59.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff2ee498a57d575271e4ac2e3892eb464e49b362",
+          "message": "docs(design): cross-shard atomic commits (#2953) (#2958)\n\n* docs(design): cross-shard atomic commits (#2953)\n\nDesign for commits across shards: home-shard coordinator, lock records on\nparticipants, one decision record as the commit point, applies through the\noutbox, and a done record. Covers the failure cases, lock semantics, the\ndedup fence, retention, RBAC and peer trust, wire, records and fleet feature.\n\nAdds an outline of docs/formal/FelixCrossShardCommit.tla with its invariants\nand twins. It parses; no configuration checks it yet.\n\n* docs(design): decide cross-shard commit questions, model-check the protocol (#2953)\n\nThe design now states the approved decisions: re-form with loss is a\nlimit listed by reform plan, home-stream deletion waits for open\ndecisions, key_locked refuses, participants re-check the token at\nprepare and apply only against a lock they granted, the answer comes at\nthe decision, event-less parts, the limits, and one record kind.\n\nPrepares and applies carry home's term and number, and a participant\nrefuses anything at or below the low-water mark it fenced, so a delayed\nprepare and apply after dedup expiry cannot write twice. key_locked is\ndecided at the write's place in the log.\n\nFelixCrossShardCommit.tla is now a checkable model with nine walk\nconfigurations: two that must pass (safety, and EventuallyRetired under\nfairness) and seven twins that must each violate one invariant.\n\n* docs(formal): total Max in FelixCrossShardCommit (TLC hit an empty CHOOSE)\n\n* docs(design): home never decides a commit at or below its low-water mark\n\nTLC found home committing an aborted commit whose abort retention had\ntrimmed, from grants collected before the trim.\n\n* docs(formal): narrow the NoFence and WriteCheckEarly walks so they reach their violation in budget\n\n* docs(formal): narrow the NoFirstWins walk too",
+          "timestamp": "2026-11-23T05:55:34-08:00",
+          "tree_id": "b4fcfdeac5a4b36a31ace29699f3516374c7146d",
+          "url": "https://github.com/GetFelix/felix/commit/ff2ee498a57d575271e4ac2e3892eb464e49b362"
+        },
+        "date": 1795442629527,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 69.60\nstdev: 0.55\ncv: 0.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 121.20\nstdev: 3.27\ncv: 2.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 147,
+            "range": "127.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 147.00\nmean: 202.80\nstdev: 127.01\ncv: 62.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.20\nstdev: 0.84\ncv: 0.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 200,
+            "range": "36.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 205.80\nstdev: 36.31\ncv: 17.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 460,
+            "range": "1020.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 460.00\nmean: 1051.40\nstdev: 1020.80\ncv: 97.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
