@@ -920,8 +920,13 @@ mechanism:
 - What this does not cover: offsets acknowledged after both the copy of
   the leader directories and the control-plane export. Neither the
   restored floor nor the restored reservations know of them, so a re-form
-  from a backup can hand them out again. Closing it needs a floor that is
-  not restored from the backup; until then the guide tells the operator
+  from a backup can hand them out again. The same holds for an offset
+  acknowledged before the copy if the copied copy stopped leading after
+  the point and fell behind its own reservation. `FelixRaftRestore.tla`
+  checks both, and that an offset gap past the point closes them while no
+  more offsets than the gap were acknowledged after it. Closing it needs
+  a floor that is not restored from the backup, or that gap; until then
+  the guide tells the operator
   that readers who kept offsets past the point must treat them as
   reassigned.
 

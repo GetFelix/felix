@@ -109,6 +109,7 @@ module_of() {
     FelixRaftFormedSet*) echo FelixRaftFormedSet ;;
     FelixRaftPlacement*) echo FelixRaftPlacement ;;
     FelixRaftReform*) echo FelixRaftReform ;;
+    FelixRaftRestore*) echo FelixRaftRestore ;;
     FelixRaftLease*) echo FelixRaftLease ;;
     FelixRaftSleep*) echo FelixRaftSleep ;;
     FelixRaftCache*) echo FelixRaftCache ;;
@@ -904,6 +905,12 @@ expectations=(
   "FelixRaftReformLearnerHoldsHappens violates NeverLearnerHolds"
   "FelixRaftReformDeadReforms violates NeverReformsWithoutDead"
   "FelixRaftReformDeadLoses violates NothingLost"
+  "FelixRaftRestore pass"
+  "FelixRaftRestoreGap pass"
+  "FelixRaftRestoreNoReserve violates BackedUpNeverReused"
+  "FelixRaftRestoreLeaderMoved violates BackedUpNeverReused"
+  "FelixRaftRestoreAfterBackup violates OffsetNeverReused"
+  "FelixRaftRestoreGapShort violates OffsetNeverReused"
   "FelixRaftSwitchGenZeroFull pass"
   "FelixRaftMembershipTerms pass"
   "FelixRaftLease pass"
@@ -1477,6 +1484,12 @@ weights=(
   "FelixRaftWrittenCommitsReform 2"
   "FelixRaftWrittenCommitsReformTermsFloorHolder 70"
   "FelixRaftReformTwoReformsTrailingFloor 9"
+  "FelixRaftRestore 1"
+  "FelixRaftRestoreNoReserve 1"
+  "FelixRaftRestoreLeaderMoved 1"
+  "FelixRaftRestoreAfterBackup 1"
+  "FelixRaftRestoreGap 1"
+  "FelixRaftRestoreGapShort 1"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
   "FelixRaftStreamPurgeSmall 12"
