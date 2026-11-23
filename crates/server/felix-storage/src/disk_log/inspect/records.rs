@@ -420,7 +420,7 @@ impl<'a> Walk<'a> {
         }
         // A segment that holds records must pick up where the last one ended.
         if let Some(previous) = self.expected
-            && previous != header.base_offset
+            && !header.may_follow(previous)
         {
             return self.fail(
                 id,

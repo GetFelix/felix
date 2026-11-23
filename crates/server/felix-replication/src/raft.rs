@@ -71,7 +71,7 @@ pub use membership::{Target, TargetVersion};
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, AnswerAt, Batch, Record, Sequenced};
-pub use reform::reform_report;
+pub use reform::{GapSnapshot, reform_report};
 pub use root::{RootOpened, RootReport, open_root};
 pub use runtime::{
     ElectionLoad, GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError,
@@ -80,8 +80,7 @@ pub use runtime::{
 #[cfg(any(test, feature = "testing"))]
 pub use testing::UncheckedRecord;
 
-/// The name `shard`'s marks go by at its data root. For tests.
-#[cfg(any(test, feature = "testing"))]
+/// The name `shard`'s marks go by at its data root.
 pub fn mark_name(shard: &crate::ShardKey) -> String {
     runtime::mark_name(shard)
 }

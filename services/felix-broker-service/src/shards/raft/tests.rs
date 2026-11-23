@@ -40,6 +40,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         raft_formed: None,
         raft_voters: None,
         raft_bases: None,
+        raft_seed: None,
         placed: None,
     }
 }
@@ -1448,6 +1449,106 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
     stop(&members).await;
 }
 
+/// **A backup point reads a Raft shard on its leader.** Only the member
+/// serving its term gives an end, one past the furthest entry it
+/// acknowledged, with that entry's term, so every acknowledged offset is
+/// below it; the others give their term only (#2995).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_point_reads_the_leaders_acknowledged_end() {
+    use crate::shards::routing::EngineShards;
+    let net = Arc::new(Loopback::default());
+    let orders = key("orders", 0);
+    let mut placed = replicated();
+    placed.leader = "broker-b".to_string();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, placed.clone()).await;
+    until("placement's leader serves its term", || {
+        members[1].shards.leading(&orders).is_some()
+    })
+    .await;
+    let term = members[1].shards.leading(&orders).expect("term");
+    let mut acknowledged = 0;
+    for payload in [&b"one"[..], b"two", b"three"] {
+        acknowledged = members[1].publish(term, payload).await;
+    }
+    until("every member holds the group", || {
+        members
+            .iter()
+            .all(|member| member.shards.backup_members().len() == 1)
+    })
+    .await;
+    for (at, member) in members.iter().enumerate() {
+        let [read] = member.shards.backup_members().try_into().expect("one");
+        assert_eq!(read.key, orders);
+        assert_eq!(read.incarnation, INCARNATION);
+        if at == 1 {
+            assert_eq!(read.term, term);
+            let end = read.committed_end.expect("the leader gives an end");
+            assert!(end > acknowledged, "{end} <= acknowledged {acknowledged}");
+            assert_eq!(read.end_term, Some(term), "the entry below the end");
+        } else {
+            assert_eq!(
+                read.committed_end, None,
+                "{} is not the leader",
+                member.name
+            );
+        }
+    }
+    stop(&members).await;
+}
+
+/// The end the leader of `orders` gives a backup point.
+fn backup_end(member: &Member) -> u64 {
+    use crate::shards::routing::EngineShards;
+    let [read] = member.shards.backup_members().try_into().expect("one");
+    read.committed_end.expect("the leader gives an end")
+}
+
+/// **A backup point covers a `Quorum` write answered on a written majority
+/// before its commit.** With every follower's fsync held the commit cannot
+/// pass the write, so a point at the commit index would leave out a write
+/// the publisher saw acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_point_covers_a_write_answered_before_its_commit() {
+    let periodic = FsyncMode::Periodic {
+        interval: Duration::from_millis(250),
+    };
+    let (_net, members, leader) = trio_fsync(ConsistencyLevel::Quorum, periodic).await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"q0").await;
+
+    let logs = follower_logs(&members, leader).await;
+    let held = futures::future::join_all(logs.iter().map(|log| log.hold_flushes())).await;
+    let answered = members[leader].publish_within(term, b"q1", Duration::from_secs(10));
+    let offset = answered.await.expect("answered before its commit");
+    assert!(members[leader].bound() <= offset, "it committed");
+    let end = backup_end(&members[leader]);
+    assert!(end > offset, "{end} <= acknowledged {offset}");
+    drop(held);
+    stop(&members).await;
+}
+
+/// **A backup point covers a `Leader` write answered on the lease before
+/// any follower holds it**: the point is what the leader acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_point_covers_a_write_answered_on_the_lease() {
+    let (net, members, _) = trio_at(ConsistencyLevel::Leader).await;
+    let (leader, _, offset, _) = answered_alone(&net, &members, "l1").await;
+    assert!(
+        members[leader].bound() <= offset,
+        "committed with nobody reachable"
+    );
+    let end = backup_end(&members[leader]);
+    assert!(end > offset, "{end} <= acknowledged {offset}");
+    net.cut.lock().clear();
+    stop(&members).await;
+}
+
 /// **A cache group on three brokers serves its placed leader's term**, as
 /// a stream's does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2137,7 +2238,15 @@ impl Member {
     /// A broker on `net` holding `sessions`, a `Quorum` cache on three
     /// brokers.
     async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
-        let root = tempfile::tempdir().expect("tempdir");
+        Self::start_cache_on(net, name, tempfile::tempdir().expect("tempdir")).await
+    }
+
+    /// [`Self::start_cache`] on a data root an earlier member left.
+    async fn start_cache_on(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        root: tempfile::TempDir,
+    ) -> Self {
         let broker = cache_broker_of(root.path(), "sessions", 3).await;
         Self::assemble(net, name, root, broker, no_fleet())
     }
@@ -3124,6 +3233,8 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
 
 mod groups;
 mod purge;
+mod reform;
+mod restore;
 mod retarget;
 mod retention;
 mod short_placement;
@@ -3146,6 +3257,7 @@ fn a_blank_copy_admits_only_the_brokers_in_the_group_now() {
         incarnation: INCARNATION,
         epoch,
         members: [("broker-a".to_string(), 1), ("broker-b".to_string(), 1)].into(),
+        starts: Default::default(),
     };
     moved.raft_voters = Some(voters(0));
     let (blank, current) = admitted(&moved);

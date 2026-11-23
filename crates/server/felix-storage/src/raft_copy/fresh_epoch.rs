@@ -51,7 +51,7 @@ pub fn write_fresh_epoch(
     }
     // Writing the current epoch over a stop marker keyed by an earlier one
     // would spend the marker, and the copy would rejoin under its old id.
-    if state_file::load(dir, stop_file::FILE_NAME)?.is_some() {
+    if stop_file::stopped(dir)?.is_some() {
         return Ok(FreshEpoch::Refused("a re-form stopped it"));
     }
     let want = EpochFile {

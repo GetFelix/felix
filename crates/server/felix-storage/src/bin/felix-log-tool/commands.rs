@@ -3,12 +3,14 @@
 //! All output is line-delimited JSON on stdout so a test harness or a benchmark
 //! script can consume it without parsing prose. Diagnostics go to stderr.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, ReadRange};
+use felix_storage::segment::{SEGMENT_HEADER_LEN, SegmentHeader, segment_file_name};
 
 use super::args::{BenchArgs, VerifyArgs, WriteArgs};
 use super::payload;
@@ -90,6 +92,8 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
     let tail = log.tail_offset().await.map_err(fail)?;
     let base = log.base_offset();
 
+    let gaps = gap_heads(&args.dir, &log)?;
+
     // Page through the whole log so memory stays bounded no matter how much
     // survived — the same discipline a follower catching up would use.
     let mut cursor = base;
@@ -130,16 +134,17 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
             }
             count += 1;
         }
-        // Offsets must be contiguous within and across pages.
+        // Offsets must be contiguous within and across pages, except across
+        // a gap a segment header names.
         for pair in page.windows(2) {
-            if pair[1].offset != pair[0].offset + 1 {
+            if !follows(pair[0].offset + 1, pair[1].offset, &gaps) {
                 return Err(format!(
                     "offset gap: {} followed by {}",
                     pair[0].offset, pair[1].offset
                 ));
             }
         }
-        if page[0].offset != cursor {
+        if !follows(cursor, page[0].offset, &gaps) {
             return Err(format!(
                 "expected offset {cursor} at the start of a page, got {}",
                 page[0].offset
@@ -186,6 +191,31 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
 /// The generation a generation-start record names, or `None` when its payload
 /// is shorter than the eight bytes it opens with. A switch seal's record
 /// carries more after them.
+/// The segments that start past a gap, by base offset, with the low 32 bits
+/// of where the header says the gap starts.
+fn gap_heads(dir: &std::path::Path, log: &DiskLog) -> Result<BTreeMap<u64, u32>, Failure> {
+    let mut gaps = BTreeMap::new();
+    for segment in log.segments() {
+        let path = dir.join(segment_file_name(segment.id));
+        let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
+        std::fs::File::open(&path)
+            .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header))
+            .map_err(|err| format!("{}: {err}", path.display()))?;
+        let header = SegmentHeader::decode(&header).map_err(|err| format!("{err}"))?;
+        if let Some(from) = header.follows_gap() {
+            gaps.insert(header.base_offset, from);
+        }
+    }
+    Ok(gaps)
+}
+
+/// Whether a record at `next` may follow the end `expected`: right after it,
+/// or as the first record of a segment whose header names a gap from there.
+/// The same rule recovery applies to segments.
+fn follows(expected: u64, next: u64, gaps: &BTreeMap<u64, u32>) -> bool {
+    next == expected || (next > expected && gaps.get(&next) == Some(&(expected as u32)))
+}
+
 pub(crate) fn generation_of(payload: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(payload.get(..8)?.try_into().ok()?))
 }

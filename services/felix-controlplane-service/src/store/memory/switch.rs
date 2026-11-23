@@ -392,12 +392,43 @@ pub(super) async fn record_raft_floors(
     raised
 }
 
+/// [`crate::store::ControlPlaneStore::start_reformed_epoch`]. Decided from
+/// the record and the command alone, so every member writes the same epoch.
+pub(super) async fn start_reformed_epoch(
+    store: &InMemoryStore,
+    key: &ShardKey,
+    start: &crate::model::ReformEpochStart,
+) -> StoreResult<crate::model::ShardAssignment> {
+    let mut state = store.shards.write().await;
+    let Some(existing) = state.records.get(key) else {
+        return Err(StoreError::NotFound("shard assignment".into()));
+    };
+    let mut stored = existing.clone();
+    stored
+        .start_reform(start)
+        .map_err(|err| StoreError::Conflict(err.to_string()))?;
+    // In place, like a copy id: the generation of a switched shard is the
+    // base its voters started from.
+    state.records.insert(key.clone(), stored.clone());
+    state.record(ShardAssignmentChangeOp::Updated, key, Some(stored.clone()));
+    Ok(stored)
+}
+
 /// Only the node a seal was ordered from reports it or gives it up.
 pub(super) fn not_sealer(node: &str) -> StoreError {
     StoreError::Conflict(format!("the seal was not ordered from {node}"))
 }
 
 impl InMemoryStore {
+    /// `StartReformedEpoch`.
+    pub(crate) async fn apply_start_reformed_epoch(
+        &self,
+        key: &ShardKey,
+        start: &crate::model::ReformEpochStart,
+    ) -> StoreResult<crate::model::ShardAssignment> {
+        start_reformed_epoch(self, key, start).await
+    }
+
     pub(crate) async fn apply_seal_shard(
         &self,
         key: &ShardKey,

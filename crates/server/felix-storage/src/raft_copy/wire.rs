@@ -144,11 +144,7 @@ impl From<&CopyRead> for WireCopy {
             committed: read.committed,
             vote: read.vote,
             reserved: read.reserved,
-            floor: read.floor.as_ref().map(|floor| WireFloor {
-                offset: floor.offset,
-                floor: floor.floor,
-                headers: floor.headers.to_vec(),
-            }),
+            floor: read.floor.as_ref().map(WireFloor::from),
             rotated_by: read.rotated_by.map(|by| match by {
                 RotatedBy::PowerCut { to } => WireRotated::PowerCut { to },
                 RotatedBy::Restore => WireRotated::Restore,
@@ -172,11 +168,7 @@ impl From<WireCopy> for CopyRead {
             committed: wire.committed,
             vote: wire.vote,
             reserved: wire.reserved,
-            floor: wire.floor.map(|floor| CarriedFloor {
-                offset: floor.offset,
-                floor: floor.floor,
-                headers: Bytes::from(floor.headers),
-            }),
+            floor: wire.floor.as_ref().map(CarriedFloor::from),
             rotated_by: wire.rotated_by.map(|by| match by {
                 WireRotated::PowerCut { to } => RotatedBy::PowerCut { to },
                 WireRotated::Restore => RotatedBy::Restore,
@@ -271,7 +263,14 @@ fn refused_reason(refused: &Refused<String>) -> String {
         Refused::Purged { broker, index } => {
             format!("the base ends at index {index}, which {broker} purged")
         }
+        Refused::NotAtPoint { base_end, point } => format!(
+            "the base ends at offset {base_end}, not at the backup point's {point}; run \
+             `felix-broker restore-point` with this point on the copied leader's directory"
+        ),
         Refused::NoIndexLeft => "every index is reserved".into(),
+        Refused::RestoreTooLate { planned_at_millis } => format!(
+            "the restore's first index at plan time {planned_at_millis} ms is past the last index"
+        ),
         Refused::NothingRead => "no copy was read".into(),
         Refused::NoVoters => "no broker with a copy id holds the base".into(),
     }
@@ -287,6 +286,10 @@ pub struct PlanView {
     /// `(index, epoch, term)` of the base's last entry; `None` when empty.
     pub base_last: Option<(u64, u64, u64)>,
     pub first_index: u64,
+    /// For a restore, the offsets past the point the new epoch leaves
+    /// unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_gap: Option<u64>,
     /// `(broker, copy id)`.
     pub voters: Vec<(String, u64)>,
     pub learners: Vec<String>,
@@ -322,6 +325,7 @@ impl PlanView {
             },
             base_last: plan.base_last.map(|l| (l.index, l.epoch, l.term)),
             first_index: plan.first_index,
+            offset_gap: plan.offset_gap,
             voters: plan
                 .voters
                 .iter()
@@ -360,5 +364,83 @@ fn marked_reason(marked: &Marked<String>) -> String {
             from(source),
             names(set)
         ),
+    }
+}
+
+/// One broker's part of an applied plan, sent with its `start` survey:
+/// what its copy is in the new epoch. See `docs/per-shard-raft.md`, "What a
+/// start needs".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireStart {
+    /// The copy id the plan made a voter; `None` for a learner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voter: Option<u64>,
+    /// The kept directory a voter's base is read from, as its broker
+    /// reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept: Option<String>,
+    /// The plan's highest floor, raised into every copy's `raft-floor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor: Option<WireFloor>,
+    #[serde(default)]
+    pub needs_accept_loss: bool,
+    /// Whether the operator named the shard with `--accept-loss`.
+    #[serde(default)]
+    pub accepted: bool,
+}
+
+/// Each placed broker's [`WireStart`] under the plan `reports` make, or
+/// `None` when they make none. `accepted` is the operator's `--accept-loss`.
+pub fn plan_starts(
+    record: &GroupRecord<String>,
+    reports: &BTreeMap<String, BrokerReport<String>>,
+    accepted: bool,
+) -> Option<BTreeMap<String, WireStart>> {
+    let plan = plan_reform(record, reports).ok()?;
+    let floor = plan.floor.as_ref().map(WireFloor::from);
+    let needs_accept_loss = plan.needs_accept_loss();
+    let start = |voter: Option<u64>, kept: Option<String>| WireStart {
+        voter,
+        kept,
+        floor: floor.clone(),
+        needs_accept_loss,
+        accepted,
+    };
+    let mut starts: BTreeMap<String, WireStart> = plan
+        .voters
+        .iter()
+        .map(|voter| {
+            let kept = match &voter.source {
+                Source::Current => None,
+                Source::Kept(path) => Some(path.display().to_string()),
+            };
+            (voter.broker.clone(), start(Some(voter.copy), kept))
+        })
+        .collect();
+    for learner in &plan.learners {
+        starts
+            .entry(learner.clone())
+            .or_insert_with(|| start(None, None));
+    }
+    Some(starts)
+}
+
+impl From<&CarriedFloor> for WireFloor {
+    fn from(floor: &CarriedFloor) -> Self {
+        Self {
+            offset: floor.offset,
+            floor: floor.floor,
+            headers: floor.headers.to_vec(),
+        }
+    }
+}
+
+impl From<&WireFloor> for CarriedFloor {
+    fn from(wire: &WireFloor) -> Self {
+        Self {
+            offset: wire.offset,
+            floor: wire.floor,
+            headers: Bytes::from(wire.headers.clone()),
+        }
     }
 }

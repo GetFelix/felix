@@ -243,6 +243,7 @@ fn assignment() -> ShardAssignment {
             incarnation: 1,
             epoch: 1,
             members: any_map(1),
+            starts: any_map(wire_start()),
         }),
         raft_bases: Some(crate::model::RaftBases {
             incarnation: 1,
@@ -255,6 +256,20 @@ fn assignment() -> ShardAssignment {
                 first_index: 1,
             }],
         }),
+    }
+}
+
+fn wire_start() -> felix_storage::raft_copy::WireStart {
+    felix_storage::raft_copy::WireStart {
+        voter: Some(1),
+        kept: Some(s("kept")),
+        floor: Some(felix_storage::raft_copy::WireFloor {
+            offset: 1,
+            floor: 1,
+            headers: vec![1],
+        }),
+        needs_accept_loss: true,
+        accepted: true,
     }
 }
 
@@ -693,6 +708,25 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RecordAudit {
             entries: vec![audit_entry()],
         },
+        MetaCommand::StartReformedEpoch {
+            key: shard_key(),
+            start: crate::model::ReformEpochStart {
+                incarnation: 1,
+                expected_epoch: 1,
+                planned_floor: Some(1),
+                base: crate::model::RaftEpochBase {
+                    base_last: Some(crate::model::RaftLogId {
+                        index: 1,
+                        epoch: 1,
+                        term: 1,
+                    }),
+                    first_index: 2,
+                },
+                voters: any_map(1),
+                dead: BTreeSet::from([s("b")]),
+                starts: any_map(wire_start()),
+            },
+        },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
             floors: vec![crate::model::RaftFloorReport {
@@ -913,6 +947,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
         MetaCommand::DeclareNodeDead { .. } => "declare_node_dead",
         MetaCommand::RecordAudit { .. } => "record_audit",
+        MetaCommand::StartReformedEpoch { .. } => "start_reformed_epoch",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",

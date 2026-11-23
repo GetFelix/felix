@@ -242,6 +242,14 @@ impl IngressRouter {
             .is_some_and(|engine| engine.leads_unheard(key))
     }
 
+    /// [`EngineShards::backup_members`] of the engine that runs shards here.
+    pub(crate) fn engine_backup_members(&self) -> Vec<BackupMember> {
+        self.engine_shards
+            .get()
+            .map(|engine| engine.backup_members())
+            .unwrap_or_default()
+    }
+
     /// Hold writes to a moving shard under `hold` rather than refusing them.
     pub fn with_move_hold(mut self, hold: MoveHold) -> Self {
         self.hold = hold;
@@ -854,6 +862,23 @@ fn newly_named<'a>(
 /// The shards an engine took in one pass, each with its stream's key mapping.
 pub type Taken = Vec<(ShardKey, felix_wire::routing::ShardRouting)>;
 
+/// One member another engine runs on this broker, as a backup point reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupMember {
+    pub key: ShardKey,
+    /// The stream or cache incarnation the group runs.
+    pub incarnation: u64,
+    /// The member's current term.
+    pub term: u64,
+    /// One past the furthest entry this member acknowledged (its commit
+    /// index, or a write answered before its commit), while it leads `term`
+    /// and serves it. Every write acknowledged before the read is below it.
+    pub committed_end: Option<u64>,
+    /// The term of the entry below `committed_end`, set with it. A restore
+    /// checks the copy's entry there against it.
+    pub end_term: Option<u64>,
+}
+
 /// Shards an engine other than the hybrid runs on this broker.
 pub trait EngineShards: Send + Sync {
     /// Take this engine's shards out of `assignments` and bring its members
@@ -899,6 +924,12 @@ pub trait EngineShards: Send + Sync {
     /// Its commit index has stopped, so it serves no reader.
     fn leads_unheard(&self, _key: &ShardKey) -> bool {
         false
+    }
+
+    /// Every member this engine runs here, for a backup point: its term, and
+    /// its committed end while it leads and serves that term.
+    fn backup_members(&self) -> Vec<BackupMember> {
+        Vec::new()
     }
 
     /// Hands over the feed's wake, for an engine that learns something

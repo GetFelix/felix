@@ -675,6 +675,22 @@ impl Cluster {
         purged.map(|purged| purged.index)
     }
 
+    /// The last entry `broker`'s member of group `n` has applied.
+    fn last_applied(&self, broker: &str, n: u32) -> Option<LogPoint> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let member = self.runtime(broker).group(&shard(n)).expect("group");
+        let applied = member.raft().metrics().borrow_watched().last_applied;
+        applied.map(|id| LogPoint {
+            term: **id.committed_leader_id(),
+            index: id.index,
+        })
+    }
+
+    /// The directory of `broker`'s copy of shard `n`.
+    fn dir(&self, broker: &str, n: u32) -> std::path::PathBuf {
+        self.root.path().join(broker).join(n.to_string())
+    }
+
     /// Stop every broker and close every log, as a process exit does.
     async fn stop(&mut self) {
         for runtime in self.runtimes() {

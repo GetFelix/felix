@@ -110,6 +110,8 @@ module_of() {
     FelixRaftFormedSet*) echo FelixRaftFormedSet ;;
     FelixRaftPlacement*) echo FelixRaftPlacement ;;
     FelixRaftReform*) echo FelixRaftReform ;;
+    FelixRaftRestoreRepeated*) echo FelixRaftRestoreRepeated ;;
+    FelixRaftRestore*) echo FelixRaftRestore ;;
     FelixRaftLease*) echo FelixRaftLease ;;
     FelixRaftSleep*) echo FelixRaftSleep ;;
     FelixRaftCache*) echo FelixRaftCache ;;
@@ -908,6 +910,17 @@ expectations=(
   "FelixRaftReformLearnerHoldsHappens violates NeverLearnerHolds"
   "FelixRaftReformDeadReforms violates NeverReformsWithoutDead"
   "FelixRaftReformDeadLoses violates NothingLost"
+  "FelixRaftRestore pass"
+  "FelixRaftRestoreGap pass"
+  "FelixRaftRestoreNoReserve violates BackedUpNeverReused"
+  "FelixRaftRestoreNoRaise violates RestoresAtPoint"
+  "FelixRaftRestoreLeaderMoved violates BackedUpNeverReused"
+  "FelixRaftRestoreAfterBackup violates OffsetNeverReused"
+  "FelixRaftRestoreGapShort violates OffsetNeverReused"
+  "FelixRaftRestoreRepeated pass"
+  "FelixRaftRestoreRepeatedNoTime violates OffsetNeverReused"
+  "FelixRaftRestoreRepeatedEndGap violates OffsetNeverReused"
+  "FelixRaftRestoreRepeatedMinApart violates OffsetNeverReused"
   "FelixRaftSwitchGenZeroFull pass"
   "FelixRaftMembershipTerms pass"
   "FelixRaftLease pass"
@@ -1489,6 +1502,17 @@ weights=(
   "FelixRaftWrittenReformGate 20"
   "FelixRaftWrittenReformVouchDeadFive 45"
   "FelixRaftReformTwoReformsTrailingFloor 9"
+  "FelixRaftRestore 1"
+  "FelixRaftRestoreNoReserve 1"
+  "FelixRaftRestoreNoRaise 1"
+  "FelixRaftRestoreLeaderMoved 1"
+  "FelixRaftRestoreAfterBackup 1"
+  "FelixRaftRestoreGap 1"
+  "FelixRaftRestoreGapShort 1"
+  "FelixRaftRestoreRepeated 1"
+  "FelixRaftRestoreRepeatedNoTime 1"
+  "FelixRaftRestoreRepeatedEndGap 1"
+  "FelixRaftRestoreRepeatedMinApart 1"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
   "FelixRaftStreamPurgeSmall 12"

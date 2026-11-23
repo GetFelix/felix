@@ -84,10 +84,7 @@ pub(crate) fn redirect_for(
         // leader, as the hybrid's does, and refuses one the cluster reports
         // down rather than send the client to it.
         crate::shards::routing::Dispatch::Forward { node_id, .. }
-            if ingress.is_some_and(|ingress| {
-                ingress.engine_dispatch(&key).is_some()
-                    && ingress.node_live(&node_id) == Some(false)
-            }) =>
+            if ingress.is_some_and(|ingress| ingress.node_live(&node_id) == Some(false)) =>
         {
             crate::shards::routing::Dispatch::Unavailable(
                 crate::shards::routing::Reason::OwnerUnavailable(

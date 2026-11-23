@@ -4,12 +4,15 @@
 //! "Re-forming a group".
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::io;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use felix_storage::raft_copy::{BrokerReport, MembershipReader, VoterSets, build_report};
-use felix_storage::raft_log::EntryCodec;
+use felix_storage::log::LogConfig;
+use felix_storage::raft_copy::{BrokerReport, GapFold, MembershipReader, VoterSets, build_report};
+use felix_storage::raft_log::{EntryCodec, LogPoint, StoredSnapshot};
 
 use super::codec::ShardCodec;
 use super::types::{MemberId, ShardTypes};
@@ -51,4 +54,40 @@ pub fn reform_report(
     leads: bool,
 ) -> io::Result<BrokerReport<Arc<str>>> {
     build_report(dir, index_spacing_bytes, probes, epoch, leads, &Memberships)
+}
+
+/// The snapshot a voter of a re-formed epoch stores at the gap's end, for
+/// [`felix_storage::raft_copy::CopyRoot::start_stopped`]: its copy's
+/// state folded through the base, with the epoch's voters as the
+/// membership. See `docs/per-shard-raft.md`, "A voter's snapshot at the
+/// gap's end is a fold".
+pub struct GapSnapshot {
+    kind: crate::ShardKind,
+    voters: BTreeSet<MemberId>,
+}
+
+impl GapSnapshot {
+    /// The fold for a shard of `kind` whose new epoch's voters are `voters`.
+    pub fn new(kind: crate::ShardKind, voters: BTreeSet<MemberId>) -> Self {
+        Self { kind, voters }
+    }
+}
+
+impl GapFold for GapSnapshot {
+    fn fold<'a>(
+        &'a self,
+        dir: &'a Path,
+        config: &'a LogConfig,
+        base: Option<LogPoint>,
+        gap_end: LogPoint,
+    ) -> Pin<Box<dyn Future<Output = io::Result<StoredSnapshot>> + Send + 'a>> {
+        Box::pin(super::machine::gap_snapshot(
+            dir,
+            config,
+            self.kind,
+            &self.voters,
+            base,
+            gap_end,
+        ))
+    }
 }

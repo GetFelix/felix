@@ -825,7 +825,7 @@ pub(super) async fn settled(
     // term it names. A refusal answers the publisher where a `Quorum` one
     // would be: a `Leader` write never waits longer than a `Quorum` one.
     let on_majority = match on_lease {
-        Some((_, on_lease)) if engine.admit_local_ack(&shard, written.generation).is_ok() => {
+        Some((_, on_lease)) if engine.admit_local_ack_of(&shard, written).is_ok() => {
             let _ = on_lease.send(written.end);
             None
         }

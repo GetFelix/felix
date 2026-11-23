@@ -730,6 +730,14 @@ impl ControlPlaneStore for InMemoryStore {
         Ok(self.nodes.read().await.dead.iter().cloned().collect())
     }
 
+    async fn start_reformed_epoch(
+        &self,
+        key: &ShardKey,
+        start: crate::model::ReformEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        switch::start_reformed_epoch(self, key, &start).await
+    }
+
     async fn record_audit(&self, entries: Vec<crate::audit::AuditEntry>) -> StoreResult<bool> {
         self.apply_record_audit(entries).await;
         Ok(true)
