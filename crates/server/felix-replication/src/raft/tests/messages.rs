@@ -105,19 +105,44 @@ async fn measure(relaxed: bool, in_flight: usize, writes: usize) {
         net.empty_appends.load(Relaxed),
         net.written_reports.lock().len(),
     );
-    let began = std::time::Instant::now();
+    let (began, spent) = (std::time::Instant::now(), cpu());
     run(writes).await;
-    let elapsed = began.elapsed();
+    let (elapsed, spent) = (began.elapsed(), cpu() - spent);
     let records = (writes * PER_WRITE) as f64;
     println!(
-        "relaxed {relaxed}, {in_flight} in flight: {:.4} messages, {:.4} appends, {:.4} empty appends, {:.4} written reports per record; {:.0} records/s",
+        "relaxed {relaxed}, {in_flight} in flight: {:.4} messages, {:.4} appends, {:.4} empty appends, {:.4} written reports per record; {:.2} us CPU per record; {:.0} records/s",
         (net.messages() - messages) as f64 / records,
         (net.appends.load(Relaxed) - appends) as f64 / records,
         (net.empty_appends.load(Relaxed) - empty) as f64 / records,
         (net.written_reports.lock().len() - written) as f64 / records,
+        spent.as_secs_f64() * 1e6 / records,
         records / elapsed.as_secs_f64(),
     );
     cluster.stop().await;
+}
+
+/// User plus system CPU this process has used.
+fn cpu() -> Duration {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage fills the struct it is handed.
+    let usage = unsafe {
+        libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr());
+        usage.assume_init()
+    };
+    let time = |t: libc::timeval| {
+        Duration::from_secs(t.tv_sec as u64) + Duration::from_micros(t.tv_usec as u64)
+    };
+    time(usage.ru_utime) + time(usage.ru_stime)
+}
+
+/// One run, as `FELIX_CPU_RELAXED` (default 1) and `FELIX_CPU_IN_FLIGHT`
+/// (default 32) say, for setting beside `driver::tests::cpu`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement"]
+async fn cpu_per_record() {
+    let relaxed = std::env::var("FELIX_CPU_RELAXED").map_or(true, |v| v == "1");
+    let in_flight = std::env::var("FELIX_CPU_IN_FLIGHT").map_or(32, |v| v.parse().expect("n"));
+    measure(relaxed, in_flight, 3_000).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

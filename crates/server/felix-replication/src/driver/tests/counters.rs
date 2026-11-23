@@ -183,7 +183,7 @@ async fn by_followers(broker: &Broker) -> QuorumMarks {
     QuorumMarks::with_fleet(Arc::new(fleet))
 }
 
-fn driver(
+pub(super) fn driver(
     requester: impl PeerRequester + Send + 'static,
     broker: &Arc<Broker>,
     router: &Arc<ShardRouter>,

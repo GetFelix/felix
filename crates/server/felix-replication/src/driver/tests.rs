@@ -6,6 +6,7 @@
 
 mod answers;
 mod counters;
+mod cpu;
 mod cursors;
 mod drain;
 mod election;
