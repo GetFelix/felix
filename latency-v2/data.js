@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795457601886,
+  "lastUpdate": 1795465498055,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -85140,6 +85140,72 @@ window.BENCHMARK_DATA = {
             "range": "825.86",
             "unit": "us",
             "extra": "trials: 5\nmedian: 288.00\nmean: 678.40\nstdev: 825.86\ncv: 121.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de30d2dfe426fe6c2d93faaf6684e24e513c0653",
+          "message": "fix(raft): redirect a subscribe with no member here, refuse forwards into an unbridged region (#3008) (#3036)\n\n* fix(raft): redirect a subscribe with no member here, refuse forwards into an unbridged region (#3008)\n\nA broker with no member of a Raft shard's group refused a subscribe as\nstill opening the shard. It now answers NotLeader naming the leader\nplacement chose, as the hybrid redirects to the owner, and refuses one the\ncluster reports down. A member that hears no leader still refuses\nretryably.\n\nA publish or subscribe that would forward to a Raft leader in a region\nwith no bridge is refused with region_not_routable, as the hybrid's\nroutes refuse it, instead of forwarded.\n\nRemoves the routing suite's Raft skips for #3008.\n\n* chore: record that the routing change leaves the models unaffected\n\nSpec-Unaffected: only where a broker holding no member of a Raft shard sends a request (redirect, forward, or a retryable refusal into an unbridged region) changes; which member accepts and acknowledges a write, and every modelled state, are unchanged.",
+          "timestamp": "2026-11-23T19:55:44Z",
+          "tree_id": "da11fde469c13f76b25b4bb127a43da600e256f5",
+          "url": "https://github.com/GetFelix/felix/commit/de30d2dfe426fe6c2d93faaf6684e24e513c0653"
+        },
+        "date": 1795465479475,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 65.60\nstdev: 1.14\ncv: 1.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 89,
+            "range": "14.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 95.00\nstdev: 14.65\ncv: 15.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 118,
+            "range": "45.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 147.40\nstdev: 45.89\ncv: 31.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.80\nstdev: 1.30\ncv: 1.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 190,
+            "range": "8.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 190.60\nstdev: 8.50\ncv: 4.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 836,
+            "range": "321.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 836.00\nmean: 722.20\nstdev: 321.45\ncv: 44.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
