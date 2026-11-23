@@ -425,6 +425,23 @@ impl RaftEngine {
         Some(CacheWatchPoint { tail, entries })
     }
 
+    /// [`Self::cache_watch_point`] for a watch that hands out the current
+    /// state, read once this member has applied everything committed when
+    /// the watch began. Followers serve watches, and a follower's applied
+    /// edge can trail a put its leader already acknowledged. `Ok(None)` when
+    /// no cache group of `shard` runs here; an error is retryable.
+    pub async fn cache_retained_point(
+        &self,
+        shard: &ShardKey,
+        keep: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<Option<CacheWatchPoint>, &'static str> {
+        if self.runtime.group(shard).is_none() {
+            return Ok(None);
+        }
+        self.runtime.read_barrier(shard).await?;
+        Ok(self.cache_watch_point(shard, keep))
+    }
+
     /// End every cache watch `observer` holds on `shard` as lagged at this
     /// member's live edge, for a member that can no longer say its state is
     /// current. A no-op when no cache group of `shard` runs here.

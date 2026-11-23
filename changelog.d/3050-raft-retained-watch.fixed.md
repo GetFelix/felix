@@ -1,0 +1,1 @@
+- A retained cache watch on a Raft shard now starts from every acknowledged put. A follower serving the watch took its snapshot from what it had applied, so a put its leader had just acknowledged could be missing from the retained set. The join now passes the group's read barrier first, and is refused as retryable when it cannot (#3050).
