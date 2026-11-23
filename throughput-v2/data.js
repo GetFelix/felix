@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795383898191,
+  "lastUpdate": 1795395416702,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65624,6 +65624,58 @@ window.BENCHMARK_DATA = {
             "range": "15163.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1609123.06\nmean: 1614240.20\nstdev: 15163.48\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "940bc1a52254d4475cd3379630a4c917e6cdd500",
+          "message": "release: reproducible Linux x86_64 server archive, rebuilt and compared in CI (#2961)\n\n* release: build the Linux x86_64 server archive reproducibly and rebuild it to compare (#2799)\n\n* release: record runner image, refuse CARGO_ENCODED_RUSTFLAGS, tighten reproduce docs (#2799)",
+          "timestamp": "2026-11-22T16:40:18-08:00",
+          "tree_id": "0441b02b5ba73a1e35e44420df6e2f8d4b93d4a5",
+          "url": "https://github.com/GetFelix/felix/commit/940bc1a52254d4475cd3379630a4c917e6cdd500"
+        },
+        "date": 1795395416150,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346840.2,
+            "range": "10759.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346840.20\nmean: 349084.49\nstdev: 10759.26\ncv: 3.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346840.2,
+            "range": "10759.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346840.20\nmean: 349084.49\nstdev: 10759.26\ncv: 3.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80990.81,
+            "range": "1395.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80990.81\nmean: 80364.28\nstdev: 1395.96\ncv: 1.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809908.13,
+            "range": "13959.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809908.13\nmean: 803642.75\nstdev: 13959.65\ncv: 1.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
