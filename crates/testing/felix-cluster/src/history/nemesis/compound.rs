@@ -161,8 +161,9 @@ pub(super) fn pick_control_plane_crash(
 }
 
 /// Cut `node` off from its peers through the partition file and from the
-/// control plane through its proxy, then wait for the control plane to give
-/// its shards to someone else.
+/// control plane through its proxy, then wait for its shards to fail over:
+/// on hybrid the control plane gives them to someone else, on Raft each
+/// group elects a member other than `node`.
 pub(super) async fn isolate(cluster: &mut Cluster, node: &str) -> Result<()> {
     cluster.partition_node(node)?;
     for fault in crate::Fault::partition(Endpoint::node(node), Endpoint::ControlPlane) {
@@ -176,11 +177,15 @@ pub(super) async fn isolate(cluster: &mut Cluster, node: &str) -> Result<()> {
             let Ok(owners) = cluster.shard_owners().await else {
                 return false;
             };
-            let mut led: Vec<String> = owners
-                .into_iter()
-                .filter(|(_, leader)| leader == node)
-                .map(|(shard, _)| shard)
-                .collect();
+            let mut led: Vec<String> = if cluster.raft() {
+                raft_still_led(cluster, owners.into_keys(), node).await
+            } else {
+                owners
+                    .into_iter()
+                    .filter(|(_, leader)| leader == node)
+                    .map(|(shard, _)| shard)
+                    .collect()
+            };
             led.sort();
             let done = led.is_empty();
             *still_led.lock().expect("still-led lock") = led;
@@ -194,6 +199,30 @@ pub(super) async fn isolate(cluster: &mut Cluster, node: &str) -> Result<()> {
             still_led.lock().expect("still-led lock").join(", ")
         )
     })
+}
+
+/// The shards among `keys` that no member other than `node` leads yet, each
+/// with why. Placement names no Raft leader, so the groups are asked. Only
+/// shard 0 is, the one [`Cluster::raft_serving`] reads.
+async fn raft_still_led(
+    cluster: &Cluster,
+    keys: impl Iterator<Item = String>,
+    node: &str,
+) -> Vec<String> {
+    let mut led = Vec::new();
+    for key in keys {
+        // `kind/tenant/namespace/name/shard`
+        let parts: Vec<&str> = key.split('/').collect();
+        let [kind, _, _, name, "0"] = parts[..] else {
+            continue;
+        };
+        match cluster.raft_serving(kind, name).await {
+            Ok((leader, _)) if leader != node => {}
+            Ok((leader, term)) => led.push(format!("{key} ({leader} at term {term})")),
+            Err(why) => led.push(format!("{key} ({why})")),
+        }
+    }
+    led
 }
 
 pub(super) async fn rejoin(cluster: &mut Cluster, node: &str) -> Result<()> {

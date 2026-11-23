@@ -408,9 +408,9 @@ async fn raft_ready_to_elect(
 
 /// [`await_election`] on Raft, where a broker logs no fenced open: each shard
 /// in `led` needs a member other than `killed` that leads at a later term,
-/// holds a majority through its commit index and serves a probe. Each such
-/// leader goes into `opens` at its term, so rule 21 sees two brokers that
-/// ever led one shard in the same term.
+/// holds a majority through its commit index, serves a probe and logged its
+/// open at that term. The opens come from the broker logs, as on hybrid, so
+/// rule 21 sees every member that opened a term, not just the one probed.
 async fn raft_await_election(
     cluster: &Cluster,
     campaign: &Campaign,
@@ -456,12 +456,24 @@ async fn raft_await_election(
             };
             match probe(campaign, workload, status.kind, &status.name, addr).await {
                 Ok(()) => {
-                    opens.insert(Opened {
+                    // Rule 21 reads only what the brokers logged. The
+                    // leader that took the probe must have logged its open.
+                    let mut stood = BTreeSet::new();
+                    super::leaders::read_current(cluster, opens, &mut stood);
+                    let logged = Opened {
                         name: status.name.clone(),
                         shard: status.shard,
                         generation: term,
                         node: leader.clone(),
-                    });
+                    };
+                    if !opens.contains(&logged) {
+                        last.insert(
+                            shard,
+                            format!("{leader} serves at term {term} but logged no open for it"),
+                        );
+                        still.push(status);
+                        continue;
+                    }
                     lines.push(format!(
                         "{shard}: {leader} elected at term {term} (was {killed} at {}), serving \
                          {:.1}s after the kill with the control plane down",

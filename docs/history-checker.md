@@ -559,8 +559,10 @@ commit index, and the leader takes the probe. The stuck line then names the
 leader's term rather than a generation. The fault views the nemesis picks from
 and the final reads follow the elected leader in the same way, and
 `ElectWithoutControlPlane` waits for a member other than the killed one to
-lead at a later term. Each leader it sees there goes into rule 21 at its term,
-since a Raft broker logs no fenced open.
+lead at a later term and to have logged its open. A Raft member logs the same
+`a majority took the fence; opening the shard for writes` line as the hybrid
+driver when its term opens, with the term as `generation`, so rule 21 reads
+Raft opens from the broker logs like any other.
 
 The probe append and get are recorded in the history under a client number of
 their own, one past the workload's clients, so the checker holds them to the
