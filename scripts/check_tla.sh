@@ -582,6 +582,11 @@ expectations=(
   "FelixRaftWrittenReformVouchDead pass"
   "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
   "FelixRaftWrittenReformReplacedHappens violates NoDeposedAppend"
+  "FelixRaftWrittenReformVouchDeadFive pass"
+  "FelixRaftWrittenReformGate pass"
+  "FelixRaftWrittenCommitsReformJointDead pass"
+  "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
+  "FelixRaftWrittenCommitsReformJointCutDead pass"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"
@@ -1204,12 +1209,10 @@ fi
 # on a box, queue still growing), FelixRaftWrittenReformReplacedFull and
 # FelixRaftReformReplacedDisk are not registered: they run past a pull
 # request's time; run them as a TLA workflow dispatch.
-# FelixRaftWrittenReform{VouchDeadFive,Gate,GateOpen} and
-# FelixRaftWrittenCommitsReformJoint{Dead,DeadOneSet,CutDead} are not
-# registered: in main run 43961999904 none finished in its CI runner's time
-# (the two Joint{Dead,DeadOneSet} filled the runner's disk past 440M distinct
-# states), and neither twin had violated. VouchDeadFive and JointCutDead run
-# nightly (tla-walk.yml); the two twins are walked there (#2729).
+# FelixRaftWrittenReformGateOpen is not registered: with MaxCrashes = 0 the
+# term-1 leader holding the stale tail can never step down without learning
+# term 2, so the gate never decides and it has the same states as
+# FelixRaftWrittenReformGate (#2729).
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly
@@ -1476,6 +1479,11 @@ weights=(
   "FelixRaftWrittenCommitsPowerCut 24"
   "FelixRaftWrittenCommitsReform 2"
   "FelixRaftWrittenCommitsReformTermsFloorHolder 70"
+  "FelixRaftWrittenReformVouchDeadFive 120"
+  "FelixRaftWrittenReformGate 5"
+  "FelixRaftWrittenCommitsReformJointDead 120"
+  "FelixRaftWrittenCommitsReformJointDeadOneSet 120"
+  "FelixRaftWrittenCommitsReformJointCutDead 120"
   "FelixRaftReformTwoReformsTrailingFloor 9"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
