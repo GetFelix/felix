@@ -393,13 +393,13 @@ run_cell() {
         idx=$((idx + 1))
       fi
       made=$((made + this)); total=$((total + this)); nb=$((nb + 1))
-      ready=0
+      ready=0; st=
       for ((w = 0; w < IDLE_BATCH_WAIT_SECS; w += 3)); do
         st=$(on "$CP_BOX" repl "$dir" 2>/dev/null || true)
         case "$st" in "under=0 shards=$total "*) case "$st" in *none:*) ;; *) ready=1 ;; esac ;; esac
         if [ "$ready" = 1 ] && [ "$side" = raft ]; then
           for b in "${brokers[@]}"; do
-            e=$(on "$b" engine "$dir"); n=${e#*raft_dirs=}; n=${n%% *}
+            e=$(on "$b" engine "$dir" 2>/dev/null || true); n=${e#*raft_dirs=}; n=${n%% *}
             [ "$n" -ge "$total" ] || ready=0
           done
         fi
