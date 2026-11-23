@@ -2341,12 +2341,6 @@ impl Group {
         }
     }
 
-    /// `key`'s value and version, if it has an unexpired one.
-    ///
-    /// Expiry is judged at the later of this leader's clock and the log's
-    /// time. When only the clock says the value expired, the delete is
-    /// committed before the reader is told it is gone, so no later leader
-    /// with a slower clock finds the key again.
     /// A cache watch's live edge on this member, one past the last entry
     /// applied, and every value `keep` takes below it, read under one hold
     /// of the state's lock. `None` in a stream shard's group.
@@ -2359,6 +2353,30 @@ impl Group {
         Some((state.applied() + 1, state.watched_entries(keep)))
     }
 
+    /// End `observer`'s watches of this cache group as lagged at the live
+    /// edge. Under the state's lock, so no change lands between the edge
+    /// and the ending.
+    pub(crate) fn end_cache_watches(&self, observer: &dyn felix_storage::CacheObserver) {
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        let state = cache.read();
+        let shard = &self.id.shard;
+        observer.cache_reset(
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+            state.applied() + 1,
+        );
+    }
+
+    /// `key`'s value and version, if it has an unexpired one.
+    ///
+    /// Expiry is judged at the later of this leader's clock and the log's
+    /// time. When only the clock says the value expired, the delete is
+    /// committed before the reader is told it is gone, so no later leader
+    /// with a slower clock finds the key again.
     pub(crate) async fn cache_read(
         &self,
         key: &str,

@@ -263,75 +263,88 @@ pub(crate) async fn handle_cache_watch_message(
         return Ok(true);
     }
 
-    let Some(log) = broker
-        .cache()
-        .shard_log(
-            &request.tenant_id,
-            &request.namespace,
-            &request.cache,
-            shard,
-        )
-        .await
-    else {
-        subscriptions.release();
-        responder
-            .send(
-                ClientError::new(
-                    felix_wire::ErrorCode::Storage,
-                    "the cache shard's log could not be opened",
+    // A shard a Raft group runs here joins at the group's applied edge. Only
+    // committed entries are applied, so no gate applies, and there is no
+    // shard log to replay from: its base is the edge itself, so a resume
+    // from below it is answered with a resnapshot.
+    let wants_entries = request.retained || request.from_offset.is_some();
+    let raft = raft_join(&publish_ctx.engine, &shard_key, &filter, wants_entries);
+    let (log, tail, base, gate) = match &raft {
+        Some(join) => (None, join.tail, join.tail, None),
+        None => {
+            let Some(log) = broker
+                .cache()
+                .shard_log(
+                    &request.tenant_id,
+                    &request.namespace,
+                    &request.cache,
+                    shard,
                 )
-                .with_retry(felix_wire::RetryClass::Retry)
-                .into_message(),
-            )
-            .await?;
-        return Ok(true);
-    };
-    // The applied frontier where the cache reports one: a write already in
-    // the log but not yet applied is in no snapshot, and with the log's tail
-    // its change would arrive below the live edge and be dropped.
-    let applied = broker
-        .cache()
-        .applied_through(
-            &request.tenant_id,
-            &request.namespace,
-            &request.cache,
-            shard,
-        )
-        .await;
-    let tail = match (log.tail_offset().await, applied) {
-        (Ok(tail), Ok(applied)) => applied.map_or(tail, |applied| applied.min(tail)),
-        (Err(err), _) | (_, Err(err)) => {
-            subscriptions.release();
-            responder
-                .send(
-                    ClientError::new(
-                        felix_wire::ErrorCode::Storage,
-                        format!("the cache shard's log could not be read: {err}"),
+                .await
+            else {
+                subscriptions.release();
+                responder
+                    .send(
+                        ClientError::new(
+                            felix_wire::ErrorCode::Storage,
+                            "the cache shard's log could not be opened",
+                        )
+                        .with_retry(felix_wire::RetryClass::Retry)
+                        .into_message(),
                     )
-                    .with_retry(felix_wire::RetryClass::Retry)
-                    .into_message(),
+                    .await?;
+                return Ok(true);
+            };
+            // The applied frontier where the cache reports one: a write
+            // already in the log but not yet applied is in no snapshot, and
+            // with the log's tail its change would arrive below the live edge
+            // and be dropped.
+            let applied = broker
+                .cache()
+                .applied_through(
+                    &request.tenant_id,
+                    &request.namespace,
+                    &request.cache,
+                    shard,
                 )
-                .await?;
-            return Ok(true);
+                .await;
+            let tail = match (log.tail_offset().await, applied) {
+                (Ok(tail), Ok(applied)) => applied.map_or(tail, |applied| applied.min(tail)),
+                (Err(err), _) | (_, Err(err)) => {
+                    subscriptions.release();
+                    responder
+                        .send(
+                            ClientError::new(
+                                felix_wire::ErrorCode::Storage,
+                                format!("the cache shard's log could not be read: {err}"),
+                            )
+                            .with_retry(felix_wire::RetryClass::Retry)
+                            .into_message(),
+                        )
+                        .await?;
+                    return Ok(true);
+                }
+            };
+            let base = log.readable_base();
+
+            // Everything the catch-up hands out is below the tail, so on a
+            // `Quorum` cache it waits for the mark to get there first.
+            let gate = CommitGate {
+                broker: Arc::clone(&broker),
+                key: shard_key,
+                engine: Arc::clone(&publish_ctx.engine),
+                timeout: publish_ctx.quorum_timeout,
+            };
+            if let Err(err) = gate.wait(tail).await {
+                subscriptions.release();
+                responder
+                    .send(ClientError::from_anyhow(&anyhow::Error::new(err)).into_message())
+                    .await?;
+                return Ok(true);
+            }
+            (Some(log), tail, base, Some(gate))
         }
     };
-    let base = log.readable_base();
-
-    // Everything the catch-up hands out is below the tail, so on a `Quorum`
-    // cache it waits for the mark to get there first.
-    let gate = CommitGate {
-        broker: Arc::clone(&broker),
-        key: shard_key,
-        engine: Arc::clone(&publish_ctx.engine),
-        timeout: publish_ctx.quorum_timeout,
-    };
-    if let Err(err) = gate.wait(tail).await {
-        subscriptions.release();
-        responder
-            .send(ClientError::from_anyhow(&anyhow::Error::new(err)).into_message())
-            .await?;
-        return Ok(true);
-    }
 
     // What fills the gap between the requested position and the live edge.
     enum CatchUp {
@@ -386,8 +399,9 @@ pub(crate) async fn handle_cache_watch_message(
     // never be. Entries at or past the tail are left out: they were applied
     // after the watcher registered, so their changes arrive live, and writing
     // them here would double them.
-    let snapshot = match catch_up {
-        CatchUp::Snapshot => {
+    let snapshot = match (&catch_up, raft) {
+        (CatchUp::Snapshot, Some(join)) => Some(join.entries),
+        (CatchUp::Snapshot, None) => {
             match snapshot_entries(broker.cache(), &request, shard, &filter, tail).await {
                 Ok(entries) => Some(entries),
                 Err(err) => {
@@ -403,7 +417,7 @@ pub(crate) async fn handle_cache_watch_message(
                 }
             }
         }
-        _ => None,
+        (_, _) => None,
     };
     let retained_count = request
         .retained
@@ -454,9 +468,11 @@ pub(crate) async fn handle_cache_watch_message(
         .await?;
 
     let catch_up_result = match (catch_up, snapshot) {
-        (CatchUp::Replay { from }, _) => {
-            write_replayed_changes(&mut event_send, &log, &filter, from, tail).await
-        }
+        (CatchUp::Replay { from }, _) => match &log {
+            Some(log) => write_replayed_changes(&mut event_send, log, &filter, from, tail).await,
+            // A Raft shard replays nothing: its base is its tail.
+            None => Ok(()),
+        },
         (CatchUp::Snapshot, Some(entries)) => write_snapshot(&mut event_send, entries).await,
         _ => Ok(()),
     };
@@ -492,6 +508,37 @@ pub(crate) async fn handle_cache_watch_message(
         revoked,
     ));
     Ok(true)
+}
+
+/// Where a watch joins a cache shard a Raft group runs here.
+struct RaftJoin {
+    tail: u64,
+    entries: Vec<felix_storage::CacheSnapshotEntry>,
+}
+
+/// The join point of `key`'s Raft group on this broker, read after the
+/// watch registered. `None` when the hybrid runs the shard. Values are read
+/// only when `entries` asks for them.
+fn raft_join(
+    engine: &crate::shards::routing::StreamEngine,
+    key: &crate::shards::ShardKey,
+    filter: &CacheWatchFilter,
+    entries: bool,
+) -> Option<RaftJoin> {
+    #[cfg(feature = "raft")]
+    {
+        let keep = |name: &str| entries && filter.matches(name);
+        let point = engine.raft(key)?.cache_watch_point(key, &keep)?;
+        Some(RaftJoin {
+            tail: point.tail,
+            entries: point.entries,
+        })
+    }
+    #[cfg(not(feature = "raft"))]
+    {
+        let _ = (engine, key, filter, entries);
+        None
+    }
 }
 
 /// What a watch of a `Quorum` cache waits on before handing out a change.
@@ -672,7 +719,8 @@ async fn run_watch_delivery(
     subscriptions: Arc<super::publish::IdentityLimits>,
     // The watch's id, when the client offered `FEATURE_SHARD_MOVED`.
     shard_moved: Option<u64>,
-    gate: CommitGate,
+    // `None` on a Raft shard, whose changes are committed before they apply.
+    gate: Option<CommitGate>,
     // The credential the watch was opened with, and the last frame to send
     // when it is revoked.
     revoked: Option<(crate::serving::revocation::Revocable, Message)>,
@@ -703,7 +751,11 @@ async fn run_watch_delivery(
                     // to detect.
                     continue;
                 }
-                if !gate.wait_live(event.offset + 1).await {
+                let committed = match &gate {
+                    Some(gate) => gate.wait_live(event.offset + 1).await,
+                    None => true,
+                };
+                if !committed {
                     // Not committed here, and this broker has stopped serving
                     // the shard: the client resumes from this change wherever
                     // it is served now. Without `shard_moved` a reset, which a

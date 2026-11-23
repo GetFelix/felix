@@ -255,6 +255,9 @@ impl RaftShards {
             stall_ends: tokio::sync::watch::Sender::new(false),
         });
         runtime.report_to(Arc::clone(&leading), Arc::clone(&leading));
+        if let Some(hub) = broker.cache_watches() {
+            runtime.report_cache_changes(Arc::clone(hub) as Arc<dyn felix_storage::CacheObserver>);
+        }
         let shards = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             engine: RaftEngine::new(runtime.clone()),
@@ -1082,6 +1085,15 @@ impl EngineShards for RaftShards {
                             None,
                         )
                         .await;
+                }
+                // A cache watch here would go quiet, which reads as a quiet
+                // key. It ends as lagged, so the client re-watches from
+                // where it stopped once some member follows a leader.
+                if leaderless
+                    && key.kind == ShardKind::Cache
+                    && let Some(hub) = self.broker.cache_watches()
+                {
+                    self.engine.end_cache_watches(key, hub.as_ref());
                 }
             }
             let streams: Vec<ShardKey> = assignments

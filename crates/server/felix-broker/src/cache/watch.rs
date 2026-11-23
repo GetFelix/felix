@@ -216,13 +216,12 @@ impl CacheWatchHub {
 }
 
 impl felix_storage::CacheObserver for CacheWatchHub {
-    /// Called with the shard's write lock held, so it must not block: every
-    /// enqueue is a `try_send`, and a full queue (by entries or by bytes)
-    /// ends that watcher rather than stalling the writer.
     fn watching(&self) -> bool {
         self.watching.load(Ordering::Acquire) != 0
     }
 
+    /// Ends the shard's watchers as lagged at `at`. Removing them drops
+    /// their senders, so each drains what was queued and then reports `at`.
     fn cache_reset(&self, tenant_id: &str, namespace: &str, cache: &str, shard: u32, at: u64) {
         let key = (
             tenant_id.to_string(),
@@ -244,6 +243,9 @@ impl felix_storage::CacheObserver for CacheWatchHub {
         }
     }
 
+    /// Called with the shard's write lock held, so it must not block: every
+    /// enqueue is a `try_send`, and a full queue (by entries or by bytes)
+    /// ends that watcher rather than stalling the writer.
     fn cache_changed(&self, change: felix_storage::CacheChange) {
         if self.watching.load(Ordering::Acquire) == 0 {
             return;

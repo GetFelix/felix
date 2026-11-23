@@ -17,9 +17,7 @@ use crate::quorum::Unreadable;
 
 mod cache;
 
-pub use cache::{
-    CacheCondition, CacheOp, CacheReply, CacheWatchEntry, CacheWatchPoint, ProducerRequest,
-};
+pub use cache::{CacheCondition, CacheOp, CacheReply, CacheWatchPoint, ProducerRequest};
 
 const NO_GROUP: &str = "this broker holds no group for the shard";
 
@@ -369,11 +367,10 @@ impl RaftEngine {
         group.cache_read(key, timeout).await
     }
 
-    /// Where a cache watch on `shard` joins this member: the offset its
-    /// live changes start at, and each value `keep` takes below it, in
-    /// offset order. Register
-    /// the watch before calling this. `None` when no cache group of `shard`
-    /// runs here.
+    /// Where a cache watch on `shard` joins this member: the offset its live
+    /// changes start at, and each value `keep` takes below it. Register the
+    /// watch before calling this. `None` when no cache group of `shard` runs
+    /// here.
     pub fn cache_watch_point(
         &self,
         shard: &ShardKey,
@@ -383,7 +380,7 @@ impl RaftEngine {
         let (tail, entries) = group.cache_watch_point(keep)?;
         let mut entries: Vec<_> = entries
             .into_iter()
-            .map(|(key, held)| CacheWatchEntry {
+            .map(|(key, held)| felix_storage::CacheSnapshotEntry {
                 key,
                 value: held.value,
                 offset: held.version,
@@ -392,6 +389,15 @@ impl RaftEngine {
             .collect();
         entries.sort_by_key(|entry| entry.offset);
         Some(CacheWatchPoint { tail, entries })
+    }
+
+    /// End every cache watch `observer` holds on `shard` as lagged at this
+    /// member's live edge, for a member that can no longer say its state is
+    /// current. A no-op when no cache group of `shard` runs here.
+    pub fn end_cache_watches(&self, shard: &ShardKey, observer: &dyn felix_storage::CacheObserver) {
+        if let Some(group) = self.runtime.group(shard) {
+            group.end_cache_watches(observer);
+        }
     }
 
     /// A counter's sum on this leader.
