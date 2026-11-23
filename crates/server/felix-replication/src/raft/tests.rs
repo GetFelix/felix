@@ -148,6 +148,11 @@ struct Net {
     lose_entries_from: parking_lot::Mutex<Option<u64>>,
     /// While set, every vote request is lost. Pre-votes still go through.
     lose_votes: std::sync::atomic::AtomicBool,
+    /// Brokers whose vote and pre-vote requests are lost, so they cannot
+    /// stand. What else they send goes through.
+    unheard_candidates: parking_lot::Mutex<HashSet<String>>,
+    /// Vote and pre-vote requests handed to the transport, by sender.
+    asks: parking_lot::Mutex<HashMap<String, u32>>,
     /// While set, a granted pre-vote's answer comes back late, after every
     /// refusal sent with it.
     late_pre_vote_grants: std::sync::atomic::AtomicBool,
@@ -239,6 +244,20 @@ impl RaftTransport for Net {
             tokio::time::sleep(Duration::from_secs_f64(bytes as f64 / 125_000_000.0)).await;
         }
         let broker: &str = &request.to().broker;
+        let asker = match &request.body {
+            Request::Vote(rpc) | Request::PreVote(rpc) => Some(rpc.vote.leader_id().node_id()),
+            _ => None,
+        };
+        if let Some(asker) = asker {
+            *self
+                .asks
+                .lock()
+                .entry(asker.broker.to_string())
+                .or_default() += 1;
+            if self.unheard_candidates.lock().contains(&*asker.broker) {
+                return Err(Refused::Unreachable("lost".into()));
+            }
+        }
         let loses = |only: &Option<String>| only.as_deref().is_none_or(|only| only == broker);
         if request.beat.gap > timers().heartbeat.as_millis() as u64
             && loses(&self.lose_idle_to.lock())
