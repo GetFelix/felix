@@ -101,12 +101,12 @@ jobs:
             configs: FelixShardShortCopySeatAnyKeys FelixShardShortCopyStaged
           - family: short-copy-staged-votes
             configs: FelixShardShortCopyStagedVotes FelixShardShortCopyStagedVotesSetOnly
-          # Two re-form twins that found no violation in 235M and 458M
-          # distinct states exhaustively (#2729). A walk reaches a violation
-          # fast if one is reachable. Not finding one is reported, not a
-          # failure, until the twins are shown to violate or dropped.
+          # A re-form twin with no violation in 242M distinct states
+          # exhaustively (#2729). A walk reaches a violation fast if one is
+          # reachable. Not finding one is reported, not a failure, until the
+          # twin is shown to violate or dropped.
           - family: reform-gate-twins
-            configs: FelixRaftWrittenReformGateOpen FelixRaftWrittenCommitsReformJointDeadOneSet
+            configs: FelixRaftWrittenCommitsReformJointDeadOneSet
             report-only: true
           # The cross-shard commit design (docs/cross-shard-commit.md), not
           # built yet. Each twin drops one rule and must find its violation.
@@ -222,11 +222,10 @@ jobs:
           - FelixRaftWrittenFailover
           - FelixRaftReformTwoReformsOldRestore
           - FelixRaftReformKeptTerms
-          # The two passes that check OffsetNeverReused across a joint change
-          # and with five voters. Neither finished in 4 h 53 min on a runner
-          # (#2729); two siblings filled the runner's disk, hence the cleanup.
+          # The pass that checks OffsetNeverReused across a joint change. It
+          # did not finish in six hours on a runner (#2729); two siblings
+          # filled the runner's disk, hence the cleanup.
           - FelixRaftWrittenCommitsReformJointCutDead
-          - FelixRaftWrittenReformVouchDeadFive
     steps:
       - name: Checkout
         uses: actions/checkout@v7
