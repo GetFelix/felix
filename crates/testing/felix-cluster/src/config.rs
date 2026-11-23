@@ -112,10 +112,21 @@ impl Default for ClusterConfig {
 impl ClusterConfig {
     /// Whether any broker starts with `FELIX_SHARD_ENGINE=raft`.
     pub(crate) fn raft_brokers(&self) -> bool {
-        std::iter::once(&self.broker_env)
-            .chain(&self.node_env)
-            .flatten()
-            .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft")
+        default_engine() == "raft"
+            || std::iter::once(&self.broker_env)
+                .chain(&self.node_env)
+                .flatten()
+                .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft")
+    }
+}
+
+/// The shard engine brokers start with unless a test names one, from
+/// `FELIX_TEST_SHARD_ENGINE` (`raft` or `hybrid`). Hybrid when unset, so a
+/// suite moves to Raft by CI setting the variable, one suite at a time.
+pub(crate) fn default_engine() -> &'static str {
+    match std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() {
+        Ok("raft") => "raft",
+        _ => "hybrid",
     }
 }
 
