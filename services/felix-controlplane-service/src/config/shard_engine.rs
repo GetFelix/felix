@@ -5,10 +5,11 @@ use anyhow::{Result, anyhow};
 
 /// The engine a cluster's shards replicate with. Recorded once, when the
 /// metadata group forms; after that the record wins over this setting.
+/// Raft by default; the hybrid is deprecated and goes away in 0.8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShardEngine {
-    #[default]
     Hybrid,
+    #[default]
     Raft,
 }
 

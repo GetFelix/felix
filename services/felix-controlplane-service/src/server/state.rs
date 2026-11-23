@@ -104,6 +104,12 @@ async fn open_store(
         changes_limit: config.changes_limit,
         change_retention_max_rows: config.change_retention_max_rows,
     };
+    if config.shard_engine == crate::config::ShardEngine::Hybrid {
+        tracing::warn!(
+            "FELIX_SHARD_ENGINE=hybrid is deprecated: the hybrid shard engine is frozen and will \
+             be removed; new clusters run Raft (leave FELIX_SHARD_ENGINE unset)"
+        );
+    }
     match config.storage {
         StorageBackend::Memory => Ok((
             Arc::new(

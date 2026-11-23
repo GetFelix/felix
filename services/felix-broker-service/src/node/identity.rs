@@ -11,10 +11,13 @@ use anyhow::Result;
 
 use crate::cluster::controlplane_group as group;
 use crate::cluster::credential::NodeCredential;
+use crate::config::ShardEngine;
 
 /// Ask the control plane for its identity, until it answers, and judge the
 /// directory at `root` against it. Returns the group the directory is
 /// recorded under, which the catalog sync holds snapshots to.
+///
+/// `engine` is what [`group::admit`] compares with the cluster's.
 ///
 /// A broker with no credential cannot ask and skips the check, as its
 /// catalog sync, refused on every poll, cannot apply anything either.
@@ -23,6 +26,7 @@ pub(super) async fn admit(
     base_url: &str,
     credential: &Option<NodeCredential>,
     root: &Path,
+    engine: Option<ShardEngine>,
 ) -> Result<Option<String>> {
     let Some(credential) = credential else {
         tracing::warn!(
@@ -32,5 +36,5 @@ pub(super) async fn admit(
         return Ok(None);
     };
     let identity = group::await_identity(client, base_url, credential).await;
-    group::admit(root, &identity)
+    group::admit(root, &identity, engine.map(ShardEngine::as_str))
 }

@@ -163,12 +163,15 @@ broker keeps retrying either way and starts once the control plane answers.
 ### This broker runs another shard engine
 
 ```
-ERROR this broker runs shard engine hybrid but the cluster was formed with raft; set FELIX_SHARD_ENGINE=raft on this broker (the control plane's record does not change)
+ERROR this broker runs shard engine raft but the cluster was formed with hybrid; set FELIX_SHARD_ENGINE=hybrid on this broker (the control plane's record does not change)
 ```
 
 The control plane records the cluster's shard engine when the cluster forms,
 and a broker whose engine differs refuses to start. Set `FELIX_SHARD_ENGINE` on
-the broker to the engine the message names.
+the broker to the engine the message names. Raft is the default, so this
+usually means the cluster was formed with `FELIX_SHARD_ENGINE=hybrid`, which is
+deprecated. To move such a cluster to Raft, start it again on empty data
+directories with `FELIX_SHARD_ENGINE` unset everywhere.
 
 ### A peer is refused
 

@@ -1,5 +1,14 @@
 use super::*;
 
+/// [`super::admit`] for a hybrid broker that registers.
+fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> {
+    admit_as(root, identity, "hybrid")
+}
+
+fn admit_as(root: &Path, identity: &Identity, engine: &str) -> Result<Option<String>> {
+    super::admit(root, identity, Some(engine))
+}
+
 fn identity(group_id: Option<&str>, engine: &str) -> Identity {
     Identity {
         group_id: group_id.map(str::to_owned),
@@ -285,6 +294,16 @@ fn a_raft_broker_is_admitted_by_a_raft_cluster_only() {
     admit_as(dir.path(), &identity(None, "raft"), "raft").expect("admitted");
     let err = admit_as(dir.path(), &identity(None, "hybrid"), "raft").expect_err("refused");
     assert!(err.to_string().contains("runs shard engine raft"), "{err}");
+}
+
+/// A broker that does not register shares no shard, so a standalone broker
+/// starts against a control plane of either engine.
+#[test]
+fn a_broker_that_does_not_register_is_not_compared() {
+    for cluster in ["raft", "hybrid"] {
+        let dir = tempfile::tempdir().expect("dir");
+        super::admit(dir.path(), &identity(None, cluster), None).expect("admitted");
+    }
 }
 
 #[test]
