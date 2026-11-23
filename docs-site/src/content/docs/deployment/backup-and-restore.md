@@ -136,10 +136,10 @@ explain why.
 :::caution[Never touch one shard directory]
 Do not delete, empty, move or restore a single shard directory under a broker's
 data directory. To recover a broker's storage, stop the broker and replace or
-wipe its whole data directory. The broker keeps its storage id, its copy trust
-and its kept ballots in the data directory root, so if only a shard directory
-changes, it still reports that shard's copy as kept and trusted, and a
-promotion can count an empty copy and lose an acknowledged write
+wipe its whole data directory. On the deprecated hybrid engine the broker keeps its storage id, its copy
+trust and its kept ballots in the data directory root, so if only a shard
+directory changes, it still reports that shard's copy as kept and trusted,
+and a promotion can count an empty copy and lose an acknowledged write
 ([#2376](https://github.com/GetFelix/felix/issues/2376)). Raft detects a
 shard directory put back to an older state, except one put back to a state
 from the last second with no election since. That window is longer while the
@@ -175,8 +175,9 @@ every copy of a shard is rebuilt this way: that is the fleet-wide case above.
 
 Keep taking backup points and copying the leaders' shard directories as
 described above, and keep the metadata backups. `felixctl backup-point` and the
-live copies change nothing on the cluster, and the points and copies are what
-the whole-cluster restore will use once it ships.
+live copies change nothing on the cluster, and the whole-cluster restore in
+[#2983](https://github.com/GetFelix/felix/issues/2983) is being built to
+restore from them.
 
 ## See also
 
