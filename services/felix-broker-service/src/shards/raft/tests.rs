@@ -1443,6 +1443,56 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
     stop(&members).await;
 }
 
+/// **A backup point reads a Raft shard on its leader.** Only the member
+/// serving its term gives an end, one past its commit index, so every
+/// acknowledged offset is below it; the others give their term only (#2995).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_point_reads_the_leaders_commit_index() {
+    use crate::shards::routing::EngineShards;
+    let net = Arc::new(Loopback::default());
+    let orders = key("orders", 0);
+    let mut placed = replicated();
+    placed.leader = "broker-b".to_string();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    form_on(&all, placed.clone()).await;
+    until("placement's leader serves its term", || {
+        members[1].shards.leading(&orders).is_some()
+    })
+    .await;
+    let term = members[1].shards.leading(&orders).expect("term");
+    let mut acknowledged = 0;
+    for payload in [&b"one"[..], b"two", b"three"] {
+        acknowledged = members[1].publish(term, payload).await;
+    }
+    until("every member holds the group", || {
+        members
+            .iter()
+            .all(|member| member.shards.backup_members().len() == 1)
+    })
+    .await;
+    for (at, member) in members.iter().enumerate() {
+        let [read] = member.shards.backup_members().try_into().expect("one");
+        assert_eq!(read.key, orders);
+        assert_eq!(read.incarnation, INCARNATION);
+        if at == 1 {
+            assert_eq!(read.term, term);
+            let end = read.committed_end.expect("the leader gives an end");
+            assert!(end > acknowledged, "{end} <= acknowledged {acknowledged}");
+        } else {
+            assert_eq!(
+                read.committed_end, None,
+                "{} is not the leader",
+                member.name
+            );
+        }
+    }
+    stop(&members).await;
+}
+
 /// **A cache group on three brokers serves its placed leader's term**, as
 /// a stream's does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

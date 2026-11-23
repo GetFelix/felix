@@ -62,9 +62,11 @@ impl BackupPoint<'_> {
         for _ in 0..COLLECTION_ATTEMPTS {
             let snapshot = assignment_snapshot(admin).await?;
             let nodes = node_addresses(admin).await?;
-            let mut shards = Vec::new();
+            // A Raft shard's leader is whichever member won its election, not
+            // the broker placement names, so every broker is asked.
+            let (mut shards, raft) = collect_raft(&http, self, &nodes, &snapshot.items).await?;
             let mut leaders: BTreeMap<&str, Vec<&Assignment>> = BTreeMap::new();
-            for assignment in &snapshot.items {
+            for assignment in snapshot.items.iter().filter(|a| !raft.contains(&a.key())) {
                 leaders
                     .entry(assignment.leader.as_str())
                     .or_default()
@@ -307,6 +309,19 @@ struct BrokerOffsets {
     shards: Vec<BrokerShard>,
     #[serde(default)]
     skipped: Vec<BrokerSkipped>,
+    /// Every Raft member the broker holds, with its term.
+    #[serde(default)]
+    raft_members: Vec<RaftMember>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftMember {
+    tenant_id: String,
+    namespace: String,
+    name: String,
+    shard: u32,
+    kind: String,
+    term: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,6 +335,10 @@ struct BrokerShard {
     /// Absent from a broker that predates incarnations.
     #[serde(default)]
     incarnation: u64,
+    /// `raft` when the Raft engine runs the shard: `generation` is then the
+    /// leader's term.
+    #[serde(default)]
+    engine: Option<String>,
     logs: PointLogs,
 }
 
@@ -331,6 +350,128 @@ struct BrokerSkipped {
     shard: u32,
     kind: String,
     reason: String,
+}
+
+type Key<'a> = (&'a str, &'a str, &'a str, &'a str, u32);
+
+/// Collect the point of every shard the Raft engine runs, asking every
+/// broker until each such shard has a leader at its newest term. Returns
+/// those shards and their keys; the rest are read from placement's leader.
+async fn collect_raft<'a>(
+    http: &reqwest::Client,
+    point: &BackupPoint<'_>,
+    nodes: &[NodeAddress],
+    assigned: &'a [Assignment],
+) -> Result<(Vec<PointShard>, std::collections::HashSet<Key<'a>>)> {
+    let mut ids: Vec<&str> = nodes.iter().map(|n| n.node_id.as_str()).collect();
+    ids.extend(point.brokers.keys().map(String::as_str));
+    ids.sort_unstable();
+    ids.dedup();
+    let mut backoff = BROKER_BACKOFF;
+    let mut last = String::new();
+    for attempt in 1..=BROKER_ATTEMPTS {
+        let mut answers = Vec::new();
+        // A broker that does not answer is left out: if it leads a Raft
+        // shard, that shard has no leader in this round and is asked again.
+        for id in &ids {
+            let url = broker_url(id, nodes, &point.brokers, point.metrics_port)?;
+            if let Ok(offsets) = fetch_offsets(http, &url).await {
+                answers.push((id.to_string(), offsets));
+            }
+        }
+        let raft = raft_keys(assigned, &answers);
+        let on_raft: Vec<&Assignment> = assigned
+            .iter()
+            .filter(|a| raft.contains(&a.key()))
+            .collect();
+        match match_raft(&on_raft, &answers) {
+            Ok(shards) => return Ok((shards, raft)),
+            Err(missing) => last = missing.join(", "),
+        }
+        if attempt < BROKER_ATTEMPTS {
+            tokio::time::sleep(backoff).await;
+            backoff *= 2;
+        }
+    }
+    bail!("no Raft leader had committed offsets to give for: {last}")
+}
+
+/// The assignments some broker holds a Raft member of.
+fn raft_keys<'a>(
+    assigned: &'a [Assignment],
+    answers: &[(String, BrokerOffsets)],
+) -> std::collections::HashSet<Key<'a>> {
+    assigned
+        .iter()
+        .map(Assignment::key)
+        .filter(|key| {
+            answers.iter().any(|(_, offsets)| {
+                offsets
+                    .raft_members
+                    .iter()
+                    .any(|m| (&*m.tenant_id, &*m.namespace, &*m.kind, &*m.name, m.shard) == *key)
+            })
+        })
+        .collect()
+}
+
+/// Each Raft shard's entry, from the broker that leads it at the highest
+/// term any member reported. A broker leading at a lower term may be deposed
+/// without knowing it, and its commit index may then miss a write the newer
+/// leader acknowledged.
+fn match_raft(
+    assigned: &[&Assignment],
+    answers: &[(String, BrokerOffsets)],
+) -> Result<Vec<PointShard>, Vec<String>> {
+    let mut shards = Vec::new();
+    let mut missing = Vec::new();
+    for assignment in assigned {
+        let key = assignment.key();
+        let newest = answers
+            .iter()
+            .flat_map(|(_, offsets)| &offsets.raft_members)
+            .filter(|m| (&*m.tenant_id, &*m.namespace, &*m.kind, &*m.name, m.shard) == key)
+            .map(|m| m.term)
+            .max()
+            .unwrap_or(0);
+        let led = answers.iter().find_map(|(broker, offsets)| {
+            offsets
+                .shards
+                .iter()
+                .find(|s| {
+                    s.engine.as_deref() == Some("raft")
+                        && s.generation == newest
+                        && (&*s.tenant_id, &*s.namespace, &*s.kind, &*s.name, s.shard) == key
+                })
+                .map(|found| (broker, found))
+        });
+        match led {
+            Some((broker, found)) => shards.push(PointShard {
+                tenant_id: assignment.tenant_id.clone(),
+                namespace: assignment.namespace.clone(),
+                name: assignment.stream.clone(),
+                shard: assignment.shard,
+                kind: assignment.kind.clone(),
+                leader: broker.clone(),
+                generation: assignment.generation,
+                incarnation: found.incarnation,
+                logs: found.logs,
+            }),
+            None => missing.push(format!(
+                "{}/{}/{}/{} ({}): no member serves term {newest} as leader",
+                assignment.tenant_id,
+                assignment.namespace,
+                assignment.stream,
+                assignment.shard,
+                assignment.kind
+            )),
+        }
+    }
+    if missing.is_empty() {
+        Ok(shards)
+    } else {
+        Err(missing)
+    }
 }
 
 /// Ask `leader` until it has an answer for every shard assigned to it.
@@ -437,7 +578,6 @@ fn match_leader(
 /// Whether any shard's leader or generation differs between two reads, or
 /// a shard came or went.
 fn leadership_changed(before: &[Assignment], after: &[Assignment]) -> bool {
-    type Key<'a> = (&'a str, &'a str, &'a str, &'a str, u32);
     fn index(items: &[Assignment]) -> HashMap<Key<'_>, (&str, u64)> {
         items
             .iter()

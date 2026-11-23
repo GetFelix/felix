@@ -902,7 +902,11 @@ mechanism:
 
 - `felixctl backup-point` reads each shard's committed offsets from its
   leader, and the operator copies the leaders' shard directories while they
-  run. The point is the base: every record at or below it was acknowledged
+  run. Every broker is asked, since the elected leader need not be the one
+  placement names. The point is read only from a member serving its term
+  at the newest term any member reports, as one past its commit index: a
+  leader at an older term may be deposed without knowing it, and a new one
+  knows the commit index only once it has committed in its own term. The point is the base: every record at or below it was acknowledged
   and is in the copied directory.
 - `felix-broker restore-point` rotates the storage id and cuts each
   restored leader copy back to the point. The broker's next open of the

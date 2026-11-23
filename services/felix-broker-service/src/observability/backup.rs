@@ -33,11 +33,49 @@ impl BackupOffsets {
             node_id: self.node_id.clone(),
             shards: Vec::new(),
             skipped: Vec::new(),
+            raft_members: Vec::new(),
         };
         let Some(ingress) = &self.ingress else {
             return response;
         };
+        // A Raft shard's point is its leader's commit index, which is also
+        // the index a restore cuts the copy to and a re-form plan reads as
+        // the base's end. Every member is listed with its term, so the
+        // collector can tell a deposed leader that has not heard yet from
+        // the current one.
+        let mut members = ingress.engine_backup_members();
+        members.sort_by(|a, b| a.key.cmp(&b.key));
+        for member in &members {
+            let key = &member.key;
+            response.raft_members.push(RaftMember {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                name: key.stream.clone(),
+                shard: key.shard,
+                kind: kind_name(key.kind),
+                term: member.term,
+            });
+            if let Some(end) = member.committed_end {
+                response.shards.push(ShardOffsets {
+                    tenant_id: key.tenant_id.clone(),
+                    namespace: key.namespace.clone(),
+                    name: key.stream.clone(),
+                    shard: key.shard,
+                    kind: kind_name(key.kind),
+                    generation: member.term,
+                    incarnation: member.incarnation,
+                    engine: Some("raft"),
+                    logs: LogOffsets {
+                        records: end,
+                        group_cursors: None,
+                        group_dead_letters: None,
+                        counters: None,
+                    },
+                });
+            }
+        }
         let mut led = ingress.led_shards();
+        led.retain(|(key, _)| !members.iter().any(|member| member.key == *key));
         led.sort();
         for (key, generation) in led {
             match self.shard(ingress, &key, generation).await {
@@ -49,6 +87,7 @@ impl BackupOffsets {
                     kind: kind_name(key.kind),
                     generation,
                     incarnation,
+                    engine: None,
                     logs,
                 }),
                 Err(reason) => response.skipped.push(SkippedShard {
@@ -145,6 +184,19 @@ pub(crate) struct OffsetsResponse {
     shards: Vec<ShardOffsets>,
     /// Shards this broker leads but has no committed answer for right now.
     skipped: Vec<SkippedShard>,
+    /// Every Raft member held here, led or not, with its term.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    raft_members: Vec<RaftMember>,
+}
+
+#[derive(Debug, Serialize)]
+struct RaftMember {
+    tenant_id: String,
+    namespace: String,
+    name: String,
+    shard: u32,
+    kind: &'static str,
+    term: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -159,6 +211,10 @@ struct ShardOffsets {
     /// restore cuts that incarnation's directories. Left out when 0.
     #[serde(skip_serializing_if = "is_zero")]
     incarnation: u64,
+    /// `raft` for a shard the Raft engine runs; `generation` is then the
+    /// leader's term, and `records` one past its commit index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<&'static str>,
     logs: LogOffsets,
 }
 

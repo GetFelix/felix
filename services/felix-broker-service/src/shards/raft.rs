@@ -1534,6 +1534,33 @@ impl EngineShards for RaftShards {
             .is_some_and(|status| status.leader.is_some())
     }
 
+    /// The leader's commit index, read only once its term is served: a new
+    /// leader learns the commit index by committing in its own term, so
+    /// before that it may sit below a write the previous leader acknowledged.
+    fn backup_members(&self) -> Vec<super::routing::BackupMember> {
+        let commits: HashMap<ShardKey, u64> = self
+            .runtime
+            .led_commits()
+            .into_iter()
+            .map(|(group, at)| ((*group.shard).clone(), at.index + 1))
+            .collect();
+        self.held_copies()
+            .into_iter()
+            .filter_map(|held| {
+                let status = self.runtime.status(&held.key)?;
+                let committed_end = (self.leading(&held.key) == Some(status.term))
+                    .then(|| commits.get(&held.key).copied())
+                    .flatten();
+                Some(super::routing::BackupMember {
+                    key: held.key,
+                    incarnation: held.incarnation,
+                    term: status.term,
+                    committed_end,
+                })
+            })
+            .collect()
+    }
+
     fn leads_unheard(&self, key: &ShardKey) -> bool {
         self.leading(key).is_some()
             && self
