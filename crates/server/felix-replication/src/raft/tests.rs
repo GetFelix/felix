@@ -22,6 +22,7 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod beats;
 mod cache;
 mod change;
 mod commit;
@@ -190,6 +191,18 @@ struct Net {
     /// refused, and when it did.
     heal_after_beat: parking_lot::Mutex<Option<String>>,
     healed_after_beat: parking_lot::Mutex<Option<std::time::Instant>>,
+    /// Heartbeat batches handed to the transport, and the heartbeats in
+    /// them. Each heartbeat in one is also counted in `sent`.
+    beat_batches: std::sync::atomic::AtomicU64,
+    batched_beats: std::sync::atomic::AtomicU64,
+}
+
+impl Net {
+    /// Messages that would cross a link: a batch of heartbeats is one.
+    fn messages(&self) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.sent.load(Relaxed) - self.batched_beats.load(Relaxed) + self.beat_batches.load(Relaxed)
+    }
 }
 
 impl Net {
@@ -345,6 +358,17 @@ impl RaftTransport for Net {
             tokio::time::sleep(slow).await;
         }
         answer
+    }
+
+    async fn send_beats(
+        &self,
+        beats: Vec<RaftRequest>,
+        _wait: Duration,
+    ) -> Vec<Result<RaftReply, Refused>> {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.beat_batches.fetch_add(1, Relaxed);
+        self.batched_beats.fetch_add(beats.len() as u64, Relaxed);
+        super::network::send_each(self, beats).await
     }
 }
 
