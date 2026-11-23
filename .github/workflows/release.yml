@@ -127,7 +127,9 @@ jobs:
 
   linux-x86_64:
     name: Linux x86_64 binaries
-    runs-on: ubuntu-latest
+    # Pinned: the linker and C compiler are part of the output, and the
+    # rebuild must run on the same image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
@@ -153,34 +155,25 @@ jobs:
         with:
           toolchain: "1.99.1"
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
-      - name: Build release binaries
+      # No rust-cache here or in the rebuild: a cache restored from another
+      # path or run is exactly what the byte comparison below must not trust.
+      - name: Record the runner image
         run: |
-          cargo build --release --locked \
-            -p felix-broker-service --bin felix-broker \
-            -p felix-controlplane-service --bin felix-controlplane
+          out="${GITHUB_WORKSPACE}/dist"
+          mkdir -p "$out"
+          { echo "ImageVersion=${ImageVersion:-unknown}"; echo "ImageOS=${ImageOS:-unknown}"
+            cat /etc/os-release; } | tee "$out/felix-${RELEASE_TAG}-linux-x86_64.build.build-env.txt" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Package release archive
-        run: |
-          set -euxo pipefail
-
-          archive_root="felix-${RELEASE_TAG}-linux-x86_64"
-          mkdir -p "dist/${archive_root}"
-
-          cp target/release/felix-broker "dist/${archive_root}/"
-          cp target/release/felix-controlplane "dist/${archive_root}/"
-          cp README.md LICENSE "dist/${archive_root}/"
-
-          tar -C dist -czf "dist/${archive_root}.tar.gz" "${archive_root}"
-          rm -rf "dist/${archive_root}"
+      - name: Build the release archive
+        run: scripts/build_server_archive.sh "${RELEASE_TAG}" dist
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v7
         with:
           name: felix-${{ env.RELEASE_TAG }}-linux-x86_64
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.build-env.txt
           if-no-files-found: error
 
       # A tag and a version that disagree ship artifacts labelled with neither,
@@ -215,12 +208,95 @@ jobs:
           echo "--- release notes ---"
           cat release-notes.md
 
+  # The same commit built again, in a different directory on a different runner,
+  # then compared byte for byte. A mismatch means the archive depends on
+  # something other than the source, and nothing is published.
+  linux-x86_64-rebuild:
+    name: Linux x86_64 rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: A ref other than the tag is only for a dry run
+        if: ${{ inputs.ref != '' && !inputs.dry_run && !inputs.nightly }}
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          echo "::error::ref=${REF} without dry_run would publish ${RELEASE_TAG} from a commit that is not the tag."
+          exit 1
+
+      # A different path from the first build, so a path leaking into the
+      # binaries shows up as a mismatch.
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ env.SOURCE_REF }}
+          path: rebuild/src
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Record the runner image
+        run: |
+          out="${GITHUB_WORKSPACE}/rebuild/dist"
+          mkdir -p "$out"
+          { echo "ImageVersion=${ImageVersion:-unknown}"; echo "ImageOS=${ImageOS:-unknown}"
+            cat /etc/os-release; } | tee "$out/felix-${RELEASE_TAG}-linux-x86_64.rebuild.build-env.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the release archive
+        working-directory: rebuild/src
+        run: scripts/build_server_archive.sh "${RELEASE_TAG}" ../dist
+
+      - name: Upload the rebuilt archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: rebuild-felix-${{ env.RELEASE_TAG }}-linux-x86_64
+          path: |
+            rebuild/dist/*.tar.gz
+            rebuild/dist/*.build-env.txt
+          if-no-files-found: error
+
+  reproducible-check:
+    name: Archive is reproducible
+    needs: [linux-x86_64, linux-x86_64-rebuild]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Download both builds
+        uses: actions/download-artifact@v8
+        with:
+          path: builds
+
+      - name: Compare sha256
+        run: |
+          set -euo pipefail
+          name="felix-${RELEASE_TAG}-linux-x86_64.tar.gz"
+          a=$(sha256sum "builds/felix-${RELEASE_TAG}-linux-x86_64/${name}" | cut -d' ' -f1)
+          b=$(sha256sum "builds/rebuild-felix-${RELEASE_TAG}-linux-x86_64/${name}" | cut -d' ' -f1)
+          echo "build:   $a"
+          echo "rebuild: $b"
+          # A floating runner image rolling out between the two jobs shows here.
+          grep -H . builds/*/*.build-env.txt | grep -E "ImageVersion|PRETTY_NAME" || true
+          if [ "$a" != "$b" ]; then
+            echo "::error::two builds of ${RELEASE_TAG} differ; the archive is not reproducible"
+            exit 1
+          fi
+
   # The release itself: one SHA256SUMS over both server archives, signed once,
   # then published. Downstream jobs wait on this, not on the builds, so the two
   # archives build in parallel.
   server-release:
     name: Server release
-    needs: [linux-x86_64, linux-aarch64]
+    needs: [linux-x86_64, linux-aarch64, reproducible-check]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
