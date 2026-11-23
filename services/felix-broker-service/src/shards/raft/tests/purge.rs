@@ -69,6 +69,23 @@ async fn purge(member: &Member) -> Option<u64> {
         .await
 }
 
+/// Run purge passes on `shards` until one reports, as the retention loop
+/// does. A pass reports only a purge openraft ran within its wait, and a
+/// loaded device can take longer.
+async fn purged_on(shards: &RaftShards) -> u64 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(at) = shards.runtime.purge_below_floor(&key("orders", 0)).await {
+            return at;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no purge pass reported"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// `member` answers a resume from `offset` with "too old". A read it serves
 /// fails at once. Any other refusal means it cannot answer yet (a restarted
 /// member still learning who leads), so it is asked again.
@@ -144,8 +161,8 @@ async fn a_member_behind_a_purge_installs_the_snapshot_and_keeps_the_floor() {
     } = cut_and_trimmed().await;
     let orders = key("orders", 0);
     assert_eq!(
-        purge(&members[2]).await,
-        Some(floor - 1),
+        purged_on(&members[2].shards).await,
+        floor - 1,
         "a follower purges uncapped"
     );
 
@@ -188,7 +205,7 @@ async fn no_member_is_read_below_the_floor_after_a_purge() {
         ..
     } = cut_and_trimmed().await;
     let orders = key("orders", 0);
-    assert_eq!(purge(&members[2]).await, Some(floor - 1));
+    assert_eq!(purged_on(&members[2].shards).await, floor - 1);
     let mut moved = replicated();
     moved.leader = "broker-c".to_string();
     for member in &members {
@@ -269,10 +286,10 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
         net.answered_by(members[1].name) >= before + 2
     })
     .await;
-    let purged = purge(&members[0]).await;
+    let purged = purged_on(&members[0].shards).await;
     assert!(
-        purged.is_some_and(|at| at < held),
-        "the leader purged to {purged:?}, past broker-b's {held}"
+        purged < held,
+        "the leader purged to {purged}, past broker-b's {held}"
     );
     net.starved.lock().clear();
     let orders = key("orders", 0);
@@ -468,8 +485,14 @@ async fn a_member_restarted_after_a_purge_serves_from_its_floor() {
             .expect("trimmed");
         let log = shards.log_of(&orders).await.expect("log");
         until("the trim applies", || log.readable_base() == floor).await;
-        let purged = shards.runtime.purge_below_floor(&orders).await;
-        assert!(purged.is_some_and(|at| at < floor), "purged to {purged:?}");
+        // A pass reports only a purge that ran. One the device holds past
+        // the pass's wait is reported by a later pass.
+        let held = log.hold_head_trims().await;
+        let early = shards.runtime.purge_below_floor(&orders).await;
+        assert_eq!(early, None, "a pass reported a purge that had not run");
+        drop(held);
+        let purged = purged_on(&shards).await;
+        assert!(purged < floor, "purged to {purged}");
         until("the purge drops the early segments", || {
             log.segments()
                 .first()
