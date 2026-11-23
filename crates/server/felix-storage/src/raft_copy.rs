@@ -76,6 +76,7 @@ pub use report::{MembershipReader, VoterSets, build_report};
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use rotated_by::RotatedBy;
+pub use start::GapFold;
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"

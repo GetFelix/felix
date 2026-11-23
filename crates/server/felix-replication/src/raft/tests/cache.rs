@@ -1844,3 +1844,133 @@ async fn each_cache_write_answers_by_its_condition_and_a_ttl_runs_on_the_stamps(
     assert_eq!(read.expect("read"), None);
     cluster.stop().await;
 }
+
+/// A deadline no test clock reaches.
+const FAR: u64 = 1 << 62;
+
+/// A cache shard's snapshot at a re-form's gap end on every member, folded
+/// from its copy as it is after the group stopped.
+async fn gap_snapshots(
+    cluster: &Cluster,
+    base: LogPoint,
+    gap_end: LogPoint,
+    voters: &BTreeSet<MemberId>,
+) -> Vec<felix_storage::raft_log::StoredSnapshot> {
+    let mut folded = Vec::new();
+    for broker in BROKERS {
+        let snapshot = super::super::machine::gap_snapshot(
+            &cluster.dir(broker, N),
+            &log_config(),
+            ShardKind::Cache,
+            voters,
+            Some(base),
+            gap_end,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{broker}: {err}"));
+        folded.push(snapshot);
+    }
+    folded
+}
+
+/// **A voter's snapshot at a re-form's gap end holds the cache as of the
+/// base, whatever snapshot its copy folded from.** One member snapshots
+/// part way and the others fold from their whole log; every fold is the
+/// state the group held, TTL deadlines, conditional-put versions and
+/// producer answers included, at the gap's end with the new voters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_re_forms_gap_snapshot_folds_the_cache_through_the_base() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let one = write(&cluster, 10, put("k", b"one", 1)).await;
+    write(
+        &cluster,
+        20,
+        CacheCommand::Put {
+            key: "brief".into(),
+            value: Bytes::from_static(b"ttl"),
+            // Past the leader's clock, so its expiry task leaves it.
+            expires_at: FAR,
+            cond: Condition::Absent,
+            request: request(2),
+        },
+    )
+    .await;
+    let mid = write(&cluster, 30, add("n", 5, 3)).await;
+    cluster.committed_everywhere(N, mid).await;
+    cluster.snapshot("b", N, mid).await;
+    let two = write(
+        &cluster,
+        40,
+        CacheCommand::Put {
+            key: "k".into(),
+            value: Bytes::from_static(b"two"),
+            expires_at: 0,
+            cond: Condition::Version(one),
+            request: request(4),
+        },
+    )
+    .await;
+    let last = write(&cluster, 50, add("n", 2, 5)).await;
+    cluster.committed_everywhere(N, last).await;
+    let before = agreed(&cluster).await;
+    let base = eventually(|| {
+        BROKERS
+            .iter()
+            .map(|broker| cluster.last_applied(broker, N))
+            .collect::<Option<Vec<_>>>()
+            .filter(|applied| applied.iter().all(|at| at.index == last))
+            .map(|applied| applied[0])
+    })
+    .await;
+    cluster.stop().await;
+
+    let gap_end = LogPoint {
+        term: base.term,
+        index: base.index + 100,
+    };
+    let voters: BTreeSet<_> = [MemberId::new("a", 9), MemberId::new("d", 4)].into();
+    let folded = gap_snapshots(&cluster, base, gap_end, &voters).await;
+    for snapshot in &folded {
+        assert_eq!(
+            snapshot.last.map(|last| (last.term, last.index)),
+            Some((gap_end.term, gap_end.index))
+        );
+        assert_eq!(snapshot.data, before, "the fold is the group's state");
+        let membership = super::super::machine::snapshot_membership(&snapshot.meta)
+            .expect("meta")
+            .expect("a membership");
+        assert_eq!(membership, (gap_end.index, vec![voters.clone()]));
+    }
+    let state = super::super::cache::CacheState::restore(&folded[1].data, true).expect("restore");
+    assert!(matches!(
+        state.read("k", 0),
+        super::super::cache::Read::Value { version, .. } if version == two
+    ));
+    assert!(matches!(
+        state.read("brief", FAR - 1),
+        super::super::cache::Read::Value { .. }
+    ));
+    assert!(!matches!(
+        state.read("brief", FAR),
+        super::super::cache::Read::Value { .. }
+    ));
+    assert_eq!(state.sum("n"), Some(7));
+    assert_eq!(state.answer(7, 4), Some(Answer::Written { version: two }));
+
+    // A snapshot past the base holds entries the re-form drops.
+    let below = LogPoint {
+        term: base.term,
+        index: mid - 1,
+    };
+    let refused = super::super::machine::gap_snapshot(
+        &cluster.dir("b", N),
+        &log_config(),
+        ShardKind::Cache,
+        &voters,
+        Some(below),
+        gap_end,
+    )
+    .await;
+    assert!(refused.is_err(), "folded below its snapshot");
+}

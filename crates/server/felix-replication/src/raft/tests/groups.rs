@@ -337,3 +337,80 @@ async fn an_ambiguous_group_write_steps_the_leader_down() {
     let mut cluster = led.cluster;
     cluster.stop().await;
 }
+
+/// **A voter's snapshot at a re-form's gap end holds the stream shard's
+/// group table as of the base.** One member folds from a snapshot part
+/// way, the others from their whole log, and all store the same bytes:
+/// the table the group folded, at the gap's end, with the new voters.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_re_forms_gap_snapshot_folds_the_group_table_through_the_base() {
+    let led = led().await;
+    let mut last = 0;
+    for write in &writes() {
+        let written = led
+            .engine
+            .propose_group(&shard(0), led.term, 1_700_000_000, write)
+            .await
+            .expect("written");
+        led.engine
+            .await_commit(&shard(0), written, PATIENCE)
+            .await
+            .expect("committed");
+        last = written.end - 1;
+    }
+    let mut cluster = led.cluster;
+    let folded = eventually(|| {
+        let tables: Vec<_> = BROKERS
+            .iter()
+            .map(|broker| table_on(&cluster, broker))
+            .collect();
+        tables
+            .iter()
+            .all(|table| table.applied() == last)
+            .then(|| tables[0].clone())
+    })
+    .await;
+    cluster.snapshot("b", 0, last - 3).await;
+    let base = eventually(|| {
+        BROKERS
+            .iter()
+            .map(|broker| cluster.last_applied(broker, 0))
+            .collect::<Option<Vec<_>>>()
+            .filter(|applied| applied.windows(2).all(|pair| pair[0] == pair[1]))
+            .map(|applied| applied[0])
+    })
+    .await;
+    cluster.stop().await;
+
+    let gap_end = LogPoint {
+        term: base.term,
+        index: base.index + 100,
+    };
+    let voters: BTreeSet<_> = [MemberId::new("a", 9), MemberId::new("d", 4)].into();
+    let mut stored = Vec::new();
+    for broker in BROKERS {
+        let snapshot = super::super::machine::gap_snapshot(
+            &cluster.dir(broker, 0),
+            &log_config(),
+            ShardKind::Stream,
+            &voters,
+            Some(base),
+            gap_end,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{broker}: {err}"));
+        let data =
+            super::super::stream_snapshot::StreamSnapshot::decode(&snapshot.data).expect("decode");
+        assert_eq!(data.groups, folded, "{broker}");
+        let membership = super::super::machine::snapshot_membership(&snapshot.meta)
+            .expect("meta")
+            .expect("a membership");
+        assert_eq!(
+            membership,
+            (gap_end.index, vec![voters.clone()]),
+            "{broker}"
+        );
+        stored.push(snapshot);
+    }
+    assert!(stored.windows(2).all(|pair| pair[0] == pair[1]));
+}

@@ -244,6 +244,39 @@ fn learner() -> WireStart {
     }
 }
 
+/// A fold whose snapshot is `b"folded"` at `gap_end` moved by `.0`.
+struct Given(u64);
+
+/// The fold the tests start with.
+const FOLD: Given = Given(0);
+
+impl crate::raft_copy::GapFold for Given {
+    fn fold<'a>(
+        &'a self,
+        _dir: &'a Path,
+        _config: &'a crate::log::LogConfig,
+        _base: Option<crate::raft_log::LogPoint>,
+        gap_end: crate::raft_log::LogPoint,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::io::Result<crate::raft_log::StoredSnapshot>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(crate::raft_log::StoredSnapshot {
+                last: Some(crate::raft_log::SnapshotId {
+                    term: gap_end.term,
+                    index: gap_end.index + self.0,
+                }),
+                meta: bytes::Bytes::new(),
+                data: bytes::Bytes::from_static(b"folded"),
+            })
+        })
+    }
+}
+
 async fn start_stopped(
     copies: &CopyRoot,
     dir: &Path,
@@ -251,16 +284,7 @@ async fn start_stopped(
     wire: &WireStart,
 ) -> std::io::Result<()> {
     copies
-        .start_stopped(
-            SHARD,
-            dir,
-            1,
-            bases,
-            wire,
-            bytes::Bytes::new(),
-            bytes::Bytes::new(),
-            &config(),
-        )
+        .start_stopped(SHARD, dir, 1, bases, wire, &FOLD, &config())
         .await
 }
 
@@ -314,6 +338,30 @@ async fn a_started_voter_keeps_its_copy_id_and_its_base() {
     assert_eq!(opened.rotation.map(|rotation| rotation.reason), None);
     assert_eq!(opened.copy, copy);
     assert_eq!(group_epoch(&dir).expect("epoch"), Some(1));
+    let stored = crate::raft_log::snapshot::read(&dir)
+        .expect("read")
+        .expect("a snapshot");
+    assert_eq!(stored.data.as_ref(), b"folded");
+    assert_eq!(stored.last.map(|last| last.index), Some(9));
+}
+
+/// A fold that answers a snapshot anywhere but the gap's end is refused,
+/// and the copy stays mid-start, so it never opens.
+#[tokio::test]
+async fn a_voter_refuses_a_snapshot_folded_off_the_gaps_end() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = stopped_copy(&copies, &dir).await;
+    let voter = WireStart {
+        voter: Some(copy),
+        ..learner()
+    };
+    copies
+        .start_stopped(SHARD, &dir, 1, bases(0), &voter, &Given(1), &config())
+        .await
+        .expect_err("stored a misplaced snapshot");
+    assert!(building(&dir).expect("marker"));
 }
 
 /// Only a copy stopped in the epoch just before the new one starts, so a

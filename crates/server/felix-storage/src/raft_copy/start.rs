@@ -71,6 +71,25 @@ pub(crate) struct Start {
     pub(crate) data: Bytes,
 }
 
+/// Folds a voter's snapshot at the gap's end, which the start stores at
+/// `first_index - 1`: the copy's stored snapshot with every entry after it
+/// through the base applied, and the new voters as the membership. The
+/// state machine is not this crate's, so the caller supplies it. Run on the
+/// voter's own directory once its log ends at the base, so the fold reads
+/// the base and nothing a start cut. See `docs/per-shard-raft.md`, "A
+/// voter's snapshot at the gap's end is a fold".
+pub trait GapFold: Send + Sync {
+    /// The snapshot at `gap_end` for the copy in `dir`, whose log ends at
+    /// `base` (`None`: it holds no entry).
+    fn fold<'a>(
+        &'a self,
+        dir: &'a Path,
+        config: &'a LogConfig,
+        base: Option<LogPoint>,
+        gap_end: LogPoint,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<StoredSnapshot>> + Send + 'a>>;
+}
+
 /// What a copy's start takes from the re-form driver rather than the plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CopyStart {
@@ -149,8 +168,8 @@ impl CopyRoot {
     /// Start `dir`, the copy of `shard` (its mark name) a re-form stopped,
     /// in the epoch `bases` ends, as the `start` survey's `wire` says. The
     /// bases come from the shard's `placed` record, never the survey. A
-    /// voter's snapshot at the gap's end is `meta` and `data`; a learner's
-    /// are unused. Run again over a start that crashed, it redoes every
+    /// voter's snapshot at the gap's end is what `fold` builds; a learner
+    /// does not call it. Run again over a start that crashed, it redoes every
     /// step. See `docs/per-shard-raft.md`, "What a start needs".
     #[allow(
         clippy::too_many_arguments,
@@ -163,8 +182,7 @@ impl CopyRoot {
         incarnation: u64,
         bases: Vec<EpochBase>,
         wire: &WireStart,
-        meta: Bytes,
-        data: Bytes,
+        fold: &dyn GapFold,
         config: &LogConfig,
     ) -> io::Result<()> {
         let label = dir.display();
@@ -237,10 +255,10 @@ impl CopyRoot {
             accept_loss: AcceptLoss(wire.needs_accept_loss),
             kept,
             floor: wire.floor.as_ref().map(CarriedFloor::from),
-            meta,
-            data,
+            meta: Bytes::new(),
+            data: Bytes::new(),
         };
-        start_copy(dir, &start, config).await
+        start_with(dir, &start, config, Some(fold)).await
     }
 }
 
@@ -268,6 +286,17 @@ pub(crate) fn building(dir: &Path) -> io::Result<bool> {
 /// or the one copied from [`Start::kept`], is cut back to the base's last
 /// log id, and must then end there in the base's term.
 pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) -> io::Result<()> {
+    start_with(dir, start, config, None).await
+}
+
+/// [`start_copy`], with a voter's snapshot at the gap's end from `fold`
+/// in place of [`Start::meta`] and [`Start::data`].
+async fn start_with(
+    dir: &Path,
+    start: &Start,
+    config: &LogConfig,
+    fold: Option<&dyn GapFold>,
+) -> io::Result<()> {
     let index_spacing_bytes = config.index_spacing_bytes;
     let base = *start
         .epoch
@@ -410,6 +439,27 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
         carried_floor::raise(dir, floor.clone())?;
         step()?;
     }
+    // After the floor is raised, so a stream snapshot carries it to a
+    // learner that installs from this voter.
+    let folded = match (start.role, gap_end, fold) {
+        (Role::Voter, Some(index), Some(fold)) => {
+            let term = base.base_last.map_or(0, |last| last.term);
+            let at = LogPoint { term, index };
+            let base_last = base.base_last.map(|last| LogPoint {
+                term: last.term,
+                index: last.index,
+            });
+            let folded = fold.fold(dir, config, base_last, at).await?;
+            if folded.last != Some(SnapshotId { term, index }) {
+                return Err(invalid(format!(
+                    "{label}: the snapshot folded for the gap's end {index} is at {:?}",
+                    folded.last
+                )));
+            }
+            Some(folded)
+        }
+        _ => None,
+    };
     // Before the purged id: a purged id at the gap's end reads as the base
     // only under the epoch that made the gap.
     epoch_file::store(dir, &start.epoch)?;
@@ -421,11 +471,11 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
         let generation = crate::raft_log::generation_of(term)?;
         crate::raft_log::snapshot::store_in(
             dir,
-            &StoredSnapshot {
+            &folded.unwrap_or_else(|| StoredSnapshot {
                 last: Some(SnapshotId { term, index }),
                 meta: start.meta.clone(),
                 data: start.data.clone(),
-            },
+            }),
         )?;
         step()?;
         crate::raft_log::store_purged(dir, index, generation)?;

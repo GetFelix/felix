@@ -452,6 +452,140 @@ pub(crate) fn base_snapshot(
     })
 }
 
+/// A voter's snapshot at a re-formed epoch's gap end, `gap_end`: the
+/// stored snapshot of the copy in `dir` with every entry after it through
+/// `base` applied, and `voters` as the membership, held at `gap_end`. The
+/// log must end at `base`. Every voter holds the same base, so every voter
+/// folds the same state whatever snapshot it starts from.
+///
+/// A stored snapshot past `base` is refused: it holds entries the re-form
+/// drops. The one exception is this fold itself, stored by a start that
+/// crashed after storing it, which is returned as it is.
+pub(crate) async fn gap_snapshot(
+    dir: &std::path::Path,
+    config: &felix_storage::log::LogConfig,
+    kind: ShardKind,
+    voters: &std::collections::BTreeSet<super::types::MemberId>,
+    base: Option<LogPoint>,
+    gap_end: LogPoint,
+) -> io::Result<StoredSnapshot> {
+    let label = dir.display().to_string();
+    let at = Some((gap_end.term, gap_end.index));
+    let meta: Bytes = serde_json::to_vec(&StoredMeta {
+        last_applied: at,
+        membership_at: at,
+        membership: StoredMembership {
+            version: super::codec::MEMBERSHIP_VERSION,
+            voters: vec![voters.clone()],
+            learners: std::collections::BTreeSet::new(),
+            target: Some(super::membership::TargetVersion::default()),
+        },
+    })
+    .map_err(io::Error::other)?
+    .into();
+    let last = Some(SnapshotId {
+        term: gap_end.term,
+        index: gap_end.index,
+    });
+    let snapshots = SnapshotStore::open(dir)?;
+    let stored = snapshots.current().await?;
+    let from = match stored.as_ref().and_then(|stored| stored.last) {
+        Some(id) if base.is_none_or(|base| id.index > base.index) => {
+            if let Some(stored) = stored.filter(|stored| stored.last == last && stored.meta == meta)
+            {
+                return Ok(stored);
+            }
+            return Err(invalid(format!(
+                "{label}: its snapshot at {} is past the base {base:?}",
+                id.index
+            )));
+        }
+        Some(id) => id.index + 1,
+        None => 0,
+    };
+    let data = stored.map(|stored| stored.data).unwrap_or_default();
+    let log = DiskLog::open(dir, &label, config.clone()).map_err(io::Error::other)?;
+    let folded = fold_through(&log, kind, data, from, base, gap_end).await;
+    let closed = log.close().await.map_err(io::Error::other);
+    let data = folded?;
+    closed?;
+    Ok(StoredSnapshot { last, meta, data })
+}
+
+/// The state machine's data after the entries `from..=base` of `log` are
+/// applied over `data`, for [`gap_snapshot`].
+async fn fold_through(
+    log: &DiskLog,
+    kind: ShardKind,
+    data: Bytes,
+    from: u64,
+    base: Option<LogPoint>,
+    gap_end: LogPoint,
+) -> io::Result<Bytes> {
+    let applied = from > 0;
+    let mut groups = ShardGroups::default();
+    let mut cache = None;
+    match kind {
+        ShardKind::Stream => groups.reset(StreamSnapshot::decode(&data)?.groups),
+        ShardKind::Cache => cache = Some(restore(data, applied).await?),
+    }
+    if let Some(base) = base {
+        let raft = felix_storage::raft_log::RaftLog::<ShardTypes, ShardCodec>::new(
+            log.clone(),
+            ShardCodec,
+        )?;
+        let mut reader = raft.reader();
+        let mut next = from;
+        while next <= base.index {
+            let end = base.index.min(next.saturating_add(FOLD_READ - 1));
+            let entries = reader.try_get_log_entries(next..end + 1).await?;
+            if entries.len() as u64 != end + 1 - next {
+                return Err(invalid(format!(
+                    "{}: the log has no entries {next}..={end} to fold the re-form's snapshot from",
+                    log.label()
+                )));
+            }
+            for entry in entries {
+                let EntryPayload::Normal(command) = &entry.payload else {
+                    continue;
+                };
+                let index = entry.log_id.index;
+                if let Some(cache) = &mut cache {
+                    let decoded = CacheCommand::decode(&command.payload)?;
+                    cache.apply(index, command.timestamp_micros, &decoded);
+                } else if command.group {
+                    let decoded = GroupEntry::decode(&command.payload)
+                        .map_err(|err| invalid(format!("a group entry does not decode: {err}")))?;
+                    let (term, index) = term_index(&entry.log_id);
+                    groups.apply(term, index, &decoded);
+                }
+            }
+            next = end + 1;
+        }
+    }
+    if let Some(mut cache) = cache {
+        return cpu(move || cache.cut().snapshot()).await;
+    }
+    let cuts = log
+        .forgotten_cuts_from(gap_end.index + 1)
+        .await
+        .map_err(io::Error::other)?;
+    let purge = log
+        .carried_floor()
+        .and(log.head_trim())
+        .map(|trim| CarriedFloor {
+            offset: trim.offset,
+            floor: trim.floor,
+            headers: trim.headers,
+        });
+    Ok(StreamSnapshot {
+        cuts,
+        groups: groups.table().clone(),
+        purge,
+    }
+    .encode())
+}
+
 fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
     SnapshotMetaOf::<ShardTypes> {
         last_log_id: state.last_applied,
