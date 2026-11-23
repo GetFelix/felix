@@ -265,6 +265,13 @@ pub fn start_due(dir: &Path, epoch: u64) -> io::Result<bool> {
     Ok(super::stop_file::stopped(dir)?.is_some_and(|stopped| stopped.epoch + 1 == epoch))
 }
 
+/// Whether the copy in `dir` is started in `epoch`: it names the epoch and
+/// no start is under way. A start writes `raft-epoch` before its last
+/// steps, so the epoch alone does not say the start finished.
+pub fn started_in(dir: &Path, epoch: u64) -> io::Result<bool> {
+    Ok(super::group_epoch(dir)? == Some(epoch) && !building(dir)?)
+}
+
 /// `kept` as a directory in `dir`'s `.kept`, the only place a start reads a
 /// base from.
 fn kept_beside(dir: &Path, kept: &Path) -> io::Result<PathBuf> {
