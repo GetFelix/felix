@@ -3,6 +3,7 @@
 //! and the bounds on a range read.
 
 mod append_and_read;
+mod cancelled_flush;
 mod commit;
 mod conditional;
 #[cfg(feature = "raft")]

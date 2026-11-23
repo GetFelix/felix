@@ -84,10 +84,12 @@ impl LogInner {
             // and may not be reported until every one of them is on disk.
             let mut result = Some(Ok(()));
             if let Some(retired) = retired.as_ref() {
-                result = crate::io::uring_fsync::fsync(Arc::clone(retired)).await;
+                let on_failure = self.flush_failure_recorder(had_pending_seal);
+                result = crate::io::uring_fsync::fsync(Arc::clone(retired), on_failure).await;
             }
             if matches!(result, Some(Ok(()))) {
-                result = crate::io::uring_fsync::fsync(Arc::clone(&handle)).await;
+                let on_failure = self.flush_failure_recorder(had_pending_seal);
+                result = crate::io::uring_fsync::fsync(Arc::clone(&handle), on_failure).await;
             }
             result
         } else {
@@ -193,6 +195,20 @@ impl LogInner {
         self.check_healthy()?;
 
         Ok(durable_upto)
+    }
+
+    /// Poisons the log for a failed sync, from wherever the failure is
+    /// seen. Handed to the io_uring thread, which runs it when it reaps the
+    /// completion: this flush's caller may have stopped waiting by then.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(super) fn flush_failure_recorder(
+        self: &Arc<Self>,
+        had_pending_seal: bool,
+    ) -> Box<dyn FnOnce(&std::io::Error) + Send> {
+        let log = Arc::clone(self);
+        Box::new(move |err| {
+            log.record_flush_failure(had_pending_seal, &StorageError::SyncFailed(err.to_string()));
+        })
     }
 
     /// Whether a flush now would have nothing to do: no unsynced bytes in the

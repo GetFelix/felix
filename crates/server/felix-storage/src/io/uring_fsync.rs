@@ -131,7 +131,18 @@ struct Submission {
     file: Arc<File>,
     op: Op,
     reply: oneshot::Sender<io::Result<()>>,
+    on_failure: Option<OnFailure>,
+    /// An errno reported in place of the kernel's result.
+    #[cfg(test)]
+    fail_with: i32,
 }
+
+/// Runs on the ring's thread when a flush fails, before the reply is sent.
+///
+/// The caller may have stopped waiting by then, and a failed sync must still
+/// stop its log: the kernel may have dropped the pages, and the next fsync
+/// would report success having written nothing.
+pub(crate) type OnFailure = Box<dyn FnOnce(&io::Error) + Send>;
 
 #[derive(Clone, Copy)]
 enum Op {
@@ -142,10 +153,54 @@ enum Op {
     PollReadable,
 }
 
-/// Operations the kernel may still be using, keyed by flush id. The reply is
-/// taken when a submit error fails the waiter early; the file stays until the
-/// completion is reaped.
-type Waiting = HashMap<u64, (Arc<File>, Option<oneshot::Sender<io::Result<()>>>)>;
+/// Operations the kernel may still be using, keyed by flush id.
+type Waiting = HashMap<u64, InFlight>;
+
+/// One operation in the ring. The reply and hook are taken when a submit
+/// error fails it early; the file stays until the completion is reaped.
+struct InFlight {
+    _file: Arc<File>,
+    reply: Option<oneshot::Sender<io::Result<()>>>,
+    on_failure: Option<OnFailure>,
+    #[cfg(test)]
+    fail_with: i32,
+}
+
+impl InFlight {
+    fn complete(&mut self, outcome: io::Result<()>) {
+        if let Some(reply) = self.reply.take() {
+            complete(reply, self.on_failure.take(), outcome);
+        }
+    }
+}
+
+/// Report an outcome, running the failure hook first so the log is stopped
+/// before any waiter hears about it, and whether or not one still listens.
+fn complete(
+    reply: oneshot::Sender<io::Result<()>>,
+    on_failure: Option<OnFailure>,
+    outcome: io::Result<()>,
+) {
+    if let (Err(err), Some(on_failure)) = (&outcome, on_failure) {
+        on_failure(err);
+    }
+    let _ = reply.send(outcome);
+}
+
+/// The next fsync of `target` waits on `gate` becoming readable instead,
+/// then fails with `errno`. Holds a flush in the ring as long as a test
+/// likes, and fails it where it is reaped.
+#[cfg(test)]
+pub(crate) fn hold_and_fail_next_fsync(target: Arc<File>, gate: Arc<File>, errno: i32) {
+    *HELD.lock().expect("held") = Some((target, gate, errno));
+}
+
+/// The file whose fsync to hold, the gate to hold it on, and the errno.
+#[cfg(test)]
+type Held = (Arc<File>, Arc<File>, i32);
+
+#[cfg(test)]
+static HELD: std::sync::Mutex<Option<Held>> = std::sync::Mutex::new(None);
 
 /// Whether flushes should go through `io_uring`.
 ///
@@ -198,8 +253,9 @@ pub(crate) fn available() -> bool {
 /// `fdatasync` the file through the ring.
 ///
 /// `None` means the ring is unavailable and the caller should use its own
-/// fallback.
-pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
+/// fallback; nothing was attempted and `on_failure` does not run. Otherwise
+/// `on_failure` runs on any failure, even if this future was dropped.
+pub(crate) async fn fsync(file: Arc<File>, on_failure: OnFailure) -> Option<io::Result<()>> {
     // Checked first so a missing ring falls back before the fault hooks run:
     // the fallback runs them itself.
     ring()?;
@@ -212,6 +268,7 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
             tokio::time::sleep(delay).await;
         }
         if let Some(err) = crate::fault::injected_failure() {
+            on_failure(&err);
             return Some(Err(err));
         }
     }
@@ -219,24 +276,47 @@ pub(crate) async fn fsync(file: Arc<File>) -> Option<io::Result<()>> {
     if let Some(os) = super::os_file(&file) {
         super::power_loss::observe_file(os, super::SyncKind::Uring);
     }
-    submit(file, Op::Fsync).await
+    submit_to(ring()?, file, Op::Fsync, Some(on_failure)).await
 }
 
 /// Wait through the ring for `file` to become readable.
 #[cfg(test)]
 async fn poll_readable(file: Arc<File>) -> Option<io::Result<()>> {
-    submit_to(ring()?, file, Op::PollReadable).await
+    submit_to(ring()?, file, Op::PollReadable, None).await
 }
 
-async fn submit(file: Arc<File>, op: Op) -> Option<io::Result<()>> {
-    submit_to(ring()?, file, op).await
-}
-
-async fn submit_to(ring: &Ring, file: Arc<File>, op: Op) -> Option<io::Result<()>> {
+async fn submit_to(
+    ring: &Ring,
+    file: Arc<File>,
+    op: Op,
+    on_failure: Option<OnFailure>,
+) -> Option<io::Result<()>> {
     let (reply, wait) = oneshot::channel();
+    #[allow(unused_mut)]
+    let mut submission = Submission {
+        file,
+        op,
+        reply,
+        on_failure,
+        #[cfg(test)]
+        fail_with: 0,
+    };
+    #[cfg(test)]
+    {
+        let mut held = HELD.lock().expect("held");
+        if matches!(op, Op::Fsync)
+            && let Some((target, gate, errno)) =
+                held.take_if(|(target, ..)| Arc::ptr_eq(target, &submission.file))
+        {
+            drop(target);
+            submission.file = gate;
+            submission.op = Op::PollReadable;
+            submission.fail_with = errno;
+        }
+    }
     // A send failure means the service thread is gone, which is the same
     // situation as no ring at all.
-    if ring.tx.send(Submission { file, op, reply }).is_err() {
+    if ring.tx.send(submission).is_err() {
         return None;
     }
     ring.wake.signal();
@@ -375,15 +455,13 @@ impl Service {
         // Otherwise the ring cannot be trusted to report what happened, and
         // nothing outstanding can be called durable.
         let fail = || Err(io::Error::new(err.kind(), err.to_string()));
-        for (_file, reply) in self.waiting.values_mut() {
-            if let Some(reply) = reply.take() {
-                let _ = reply.send(fail());
-            }
+        for in_flight in self.waiting.values_mut() {
+            in_flight.complete(fail());
         }
         // Never pushed, so these are safe to drop. Failing them now keeps a
         // ring whose slots are all held by failed entries from parking them.
         for submission in self.backlog.drain(..) {
-            let _ = submission.reply.send(fail());
+            complete(submission.reply, submission.on_failure, fail());
         }
     }
 
@@ -400,13 +478,18 @@ impl Service {
                 self.wake.arm(&mut self.uring);
                 continue;
             }
-            if let Some((_file, Some(reply))) = self.waiting.remove(&id) {
-                let outcome = if result < 0 {
+            if let Some(mut in_flight) = self.waiting.remove(&id) {
+                #[cfg(test)]
+                let result = if in_flight.fail_with != 0 {
+                    -in_flight.fail_with
+                } else {
+                    result
+                };
+                in_flight.complete(if result < 0 {
                     Err(io::Error::from_raw_os_error(-result))
                 } else {
                     Ok(())
-                };
-                let _ = reply.send(outcome);
+                });
             }
         }
         completions.len()
@@ -441,7 +524,16 @@ fn push(
     if !pushed {
         return Err(submission);
     }
-    waiting.insert(id, (submission.file, Some(submission.reply)));
+    waiting.insert(
+        id,
+        InFlight {
+            _file: submission.file,
+            reply: Some(submission.reply),
+            on_failure: submission.on_failure,
+            #[cfg(test)]
+            fail_with: submission.fail_with,
+        },
+    );
     Ok(())
 }
 

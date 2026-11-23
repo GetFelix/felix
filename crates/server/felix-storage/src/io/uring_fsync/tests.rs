@@ -38,7 +38,7 @@ async fn a_new_flush_is_not_held_behind_an_outstanding_one() {
 
     let dir = tempdir().expect("dir");
     let file = temp_file(dir.path(), "log");
-    let flushed = tokio::time::timeout(Duration::from_secs(2), fsync(file)).await;
+    let flushed = tokio::time::timeout(Duration::from_secs(2), fsync(file, Box::new(|_| {}))).await;
 
     writer.write_all(b"x").expect("release gate");
     let released = held.await.expect("join");
@@ -112,7 +112,7 @@ async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
     let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
         reader,
     ))));
-    let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable));
+    let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable, None));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         !held.is_finished(),
@@ -124,7 +124,7 @@ async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
     let file = temp_file(dir.path(), "log");
     let flushed = tokio::time::timeout(
         Duration::from_secs(2),
-        submit_to(ring, Arc::clone(&file), Op::Fsync),
+        submit_to(ring, Arc::clone(&file), Op::Fsync, None),
     )
     .await
     .expect("the flush waiter was never answered");
@@ -146,7 +146,7 @@ async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
 
     let after = tokio::time::timeout(
         Duration::from_secs(2),
-        submit_to(ring, Arc::clone(&file), Op::Fsync),
+        submit_to(ring, Arc::clone(&file), Op::Fsync, None),
     )
     .await
     .expect("a flush after the error was never answered");
@@ -166,15 +166,18 @@ async fn a_busy_ring_delays_flushes_rather_than_failing_them() {
     let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
         reader,
     ))));
-    let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable));
+    let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable, None));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     ring.submit_fault.store(libc::EBUSY, Ordering::SeqCst);
     let dir = tempdir().expect("dir");
     let file = temp_file(dir.path(), "log");
-    let flushed = tokio::time::timeout(Duration::from_secs(2), submit_to(ring, file, Op::Fsync))
-        .await
-        .expect("the flush waiter was never answered");
+    let flushed = tokio::time::timeout(
+        Duration::from_secs(2),
+        submit_to(ring, file, Op::Fsync, None),
+    )
+    .await
+    .expect("the flush waiter was never answered");
     assert!(matches!(flushed, Some(Ok(()))), "flush: {flushed:?}");
 
     writer.write_all(b"x").expect("release gate");
@@ -205,7 +208,7 @@ async fn concurrent_flush_latency() {
                 for _ in 0..500 {
                     (&*file).write_all(&[0u8; 4096]).expect("write");
                     let start = Instant::now();
-                    let outcome = fsync(Arc::clone(&file)).await;
+                    let outcome = fsync(Arc::clone(&file), Box::new(|_| {})).await;
                     assert!(matches!(outcome, Some(Ok(()))), "{outcome:?}");
                     samples.push(start.elapsed());
                 }
@@ -226,4 +229,40 @@ async fn concurrent_flush_latency() {
             p(0.99)
         );
     }
+}
+
+/// A flush that fails after its caller stopped waiting still reports the
+/// failure: the hook runs where the completion is reaped.
+#[tokio::test]
+async fn a_failure_reaped_after_the_caller_left_still_runs_the_hook() {
+    if ring().is_none() {
+        eprintln!("io_uring unavailable; skipping");
+        return;
+    }
+    let (reader, mut writer) = std::io::pipe().expect("pipe");
+    let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
+        reader,
+    ))));
+    let dir = tempdir().expect("dir");
+    let file = temp_file(dir.path(), "log");
+    hold_and_fail_next_fsync(Arc::clone(&file), gate, libc::EIO);
+
+    let (failed_tx, failed) = std::sync::mpsc::channel();
+    let flush = tokio::spawn(fsync(
+        file,
+        Box::new(move |err: &io::Error| {
+            let _ = failed_tx.send(err.raw_os_error());
+        }),
+    ));
+    // Let the flush reach the ring, then give up on it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!flush.is_finished(), "the held flush completed early");
+    flush.abort();
+    let _ = flush.await;
+
+    writer.write_all(b"x").expect("release gate");
+    let reported = failed
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the failure was lost with the caller");
+    assert_eq!(reported, Some(libc::EIO));
 }

@@ -682,10 +682,11 @@ Four properties:
 
    The flush thread poisons the log itself, before it replies. A caller
    that stopped waiting on the flush (a dropped future, a runtime shutting
-   down) cannot leave a failed sync unrecorded. The io_uring flusher is the
-   exception for now: there the caller still records the failure, so a
-   dropped flush can lose it
-   ([#2492](https://github.com/GetFelix/felix/issues/2492)).
+   down) cannot leave a failed sync unrecorded. The io_uring flusher gives
+   the same guarantee: its thread poisons the log when it reaps a failed
+   completion, before it replies. A roll started by `roll_now` runs in its
+   own task, so a caller that gives up cannot leave the roll slot taken or a
+   failed roll unrecorded.
 
    Failing to open a directory to sync it is not a failed sync. No sync was
    issued, so nothing can have been dropped, and the operation just fails.
@@ -731,6 +732,9 @@ Four properties:
 
    > `a_failed_flush_poisons_the_log_after_its_caller_gives_up` (in
    > `disk_log/tests/durability.rs`) drops a flush during a failing sync.
+   > `a_dropped_uring_flush_that_fails_still_poisons_the_log` (in
+   > `disk_log/tests/cancelled_flush.rs`, Linux) does the same through the
+   > ring, failing the fsync only after the flush was dropped.
    > `a_failed_node_record_sync_is_not_retried` (in
    > `disk_log/tests/flush_failures.rs`) fails the file sync and then the
    > directory sync of each node record, and
