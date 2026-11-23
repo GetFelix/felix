@@ -33,6 +33,7 @@ mod idempotent;
 mod identity;
 mod lease;
 mod membership;
+mod messages;
 mod propose;
 mod purge;
 mod quiet_log;
