@@ -767,8 +767,8 @@ under the cache store's root, where its member lives.
 **Applying a plan.** The epoch write, the stop, compare and start rounds
 (`store/reform/apply.rs`, and the broker's `stop_for_reform`), `felixctl
 raft reform apply` and `POST /v1/raft/reform/plans/{id}/apply` are built.
-The broker's start of a stopped copy at the new epoch is not yet, so an
-applied shard waits at `starting`. A survey carries a `kind`
+The broker's start of a stopped copy at the new epoch is not yet built, so
+an applied shard waits at `starting`; what it will do is below. A survey carries a `kind`
 (`survey`, `stop` or `start`) and so does its answer; a broker that predates
 the kind answers a stop as a read-only survey, without the kind, so the
 control plane ignores the answer and the stop round fails after 30 s with
@@ -806,20 +806,89 @@ control plane still never calls a broker:
    that cannot apply it is ever asked to: a member below that level would
    refuse the entry and keep the old epoch while the others start the next.
 4. **Start.** Each listed broker sees the new epoch in its shard feed and
-   runs `raft_copy::start_copy` on its stopped copy, with
-   `Start::of(plan, accepted)`: a voter keeps the base and gets the gap at
-   `first_index - 1`, a learner keeps a prefix of the base or empties. The
-   member then opens at the new epoch. A fresh learner placed later gets its
-   `raft-epoch` before it can vote (#2882).
+   runs `raft_copy::start_copy` on its stopped copy, then opens the member
+   at the new epoch. A fresh learner placed later gets its `raft-epoch`
+   before it can vote (#2882).
 
-A crash between any two steps is safe. Before the write, the stopped copies
-stay stopped and a second `apply` (or a new plan) finishes the group. After
-it, the start is idempotent under `reform-building`, and the epoch write
-cannot land twice: the second one finds the group one epoch on, which the
-control plane reads as written when the record holds this plan's base and
-voters. So a request dropped while its write is in flight leaves nothing
-stuck: the write goes back to due and the next request writes it again or
-finds it written.
+A crash between the stop and the write leaves the copies stopped, and a
+second `apply` (or a new plan) finishes the group. The epoch write cannot
+land twice: the second one finds the group one epoch on, which the control
+plane reads as written when the record holds this plan's base and voters.
+So a request dropped while its write is in flight leaves nothing stuck: the
+write goes back to due and the next request writes it again or finds it
+written.
+
+**What a start needs.** A broker cannot plan on its own: the plan reads
+every broker's copy. So the `start` survey carries this broker's part of
+the plan in an optional `start` field, which a survey of any other kind
+leaves out, so an older broker and the `survey` and `stop` rounds see
+byte-identical JSON:
+
+- `role`: `voter` with the copy id the plan named, or `learner`. A
+  voter whose directory now holds another copy id does not start; it waits
+  stopped, and the shard stays at `starting`.
+- `kept`: the kept directory the base is read from, sent only to the
+  source broker when the plan's source is a kept copy.
+- `floor`: the plan's highest floor with its trim's headers, raised into
+  every copy's `raft-floor`.
+- `needs_accept_loss` and `accepted`: whether the plan needs the loss
+  accepted and whether the operator named the shard. A start with the
+  first and not the second is refused, as `AcceptLoss::of` refuses it.
+
+The epoch's bases come from the shard feed, not the survey: the `placed`
+record the epoch write made. The broker starts only when that record's
+epoch is the survey's epoch, so a survey cannot start a copy into an epoch
+the store did not record.
+
+**A learner always empties.** A learner keeps a prefix only where its terms
+match the base's at every index (`base_terms`). The reports carry terms at
+the probed indexes only, so the control plane does not know where each of
+the base's terms starts, and a prefix check against a guess could keep a
+divergent log. The start survey therefore sends no `base_terms`, and every
+learner holding a record empties its log and catches up from the new
+leader by snapshot. It costs a transfer, never a disagreement at the base.
+Sending exact terms needs the source to report where each of its terms
+starts, which is left for later.
+
+**A voter's snapshot at the gap's end is a fold.** A voter's purged id sits
+at `first_index - 1`, so the member applies nothing at or below it: the
+snapshot stored there must hold the state machine as of the base, not the
+empty data a switch from the hybrid writes. A stream shard's snapshot holds
+its group table and the cuts it must still refuse; a cache shard's holds
+the cache. The broker builds it like a purge snapshot: the copy's stored
+snapshot, with every entry after it through the base's last index applied,
+and the new voters as the membership at the gap's end. The state machine is
+deterministic and every voter holds the same base, so every voter stores
+the same state whatever snapshot its fold began from, and a learner that installs it from the leader gets the
+same state.
+
+**The marks follow the start.** A start can leave a log below its marks: a
+learner empties, a voter cuts what it held past the base. The copy's next
+open would then rotate it for a log below its marks, and a voter rotated
+to a new copy id is no longer the voter the seed names. So before
+`start_copy` runs the broker lowers the copy's log mark to the base's last
+entry for a voter and to nothing for a learner, as a truncation lowers the
+mark before it cuts. A voter's log after the start ends at its purged id
+in the base's term, at or above that mark. The vote mark is untouched.
+
+**Crash points.** Each step is synced before the next, and the start is
+resumed from the feed, not from the survey answer:
+
+- After the stop, before the write: the copies stay stopped. A second
+  `apply` (or a new plan) re-reads them.
+- After the write, before a broker sees it: the feed carries the epoch on
+  the next pass; the broker starts then.
+- After the mark is lowered, before `reform-building`: the mark is below
+  the log, which opens. The start is run again from the feed, since the
+  copy's `raft-epoch` is still the old one.
+- Under `reform-building`: the directory does not open and no plan reads
+  it. The next pass runs the start again, which redoes every step.
+- After `reform-building` is removed, before the member opens: the copy's
+  `raft-epoch` is the new one, so the stop marker is spent and the open is
+  an ordinary one.
+- After the member opens, before the answer reaches the control plane: the
+  `start` survey is asked again, and answered once the copy's `raft-epoch`
+  names the new epoch.
 
 **A restore from a backup point is a re-form.** A whole-cluster restore
 rotates every broker's storage id, so every Raft copy comes back with a new
