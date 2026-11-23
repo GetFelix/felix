@@ -39,6 +39,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         targets_withheld: false,
         raft_formed: None,
         raft_voters: None,
+        raft_bases: None,
         placed: None,
     }
 }
@@ -437,6 +438,74 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
         .await;
     assert_eq!(shards.held_copies().len(), 1);
     assert_eq!(shards.led_floors().len(), 1);
+    shards.shutdown().await;
+}
+
+fn reformed_once() -> crate::shards::watch::RaftBases {
+    use crate::shards::watch::{RaftBases, RaftEpochBase, RaftLogId};
+    RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: Some(RaftLogId {
+                index: 9,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index: 20,
+        }],
+    }
+}
+
+/// **A copy placed fresh past epoch 0 takes the record's epoch before its
+/// member opens.** Without a `raft-epoch` it would never send its copy id,
+/// so it would stay a learner for good (#2882).
+#[tokio::test]
+async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut placed = assigned(orders.clone(), INCARNATION);
+    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.raft_bases = Some(reformed_once());
+    shards.take(&mut assignments([placed])).await;
+    assert!(shards.runtime.status(&orders).is_some(), "open");
+    assert_eq!(
+        felix_storage::raft_copy::group_epoch(&orders_dir(&broker)).expect("read"),
+        Some(1)
+    );
+    let held = shards.held_copies();
+    assert_eq!(held.len(), 1, "the copy id is reported");
+    assert_eq!(held[0].epoch, 1);
+    shards.shutdown().await;
+}
+
+/// **A shard restored from an export has no placed record, but its bases
+/// still say it re-formed.** Read as epoch 0, a copy without `raft-epoch`
+/// would send its copy id and could vote (#2882).
+#[tokio::test]
+async fn a_view_without_a_placed_record_reads_the_epoch_off_its_bases() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    assert_eq!(shards.held_copies().len(), 1);
+
+    let mut restored = assigned(orders.clone(), INCARNATION);
+    restored.raft_bases = Some(reformed_once());
+    assert_eq!(restored.group_epoch(), 1);
+    shards.take(&mut assignments([restored.clone()])).await;
+    assert!(
+        shards.held_copies().is_empty(),
+        "no copy id at an unknown epoch"
+    );
+
+    // Bases of another incarnation say nothing of this one.
+    restored.raft_bases.as_mut().expect("bases").incarnation = INCARNATION + 1;
+    assert_eq!(restored.group_epoch(), 0);
+    shards.take(&mut assignments([restored])).await;
+    assert_eq!(shards.held_copies().len(), 1);
     shards.shutdown().await;
 }
 

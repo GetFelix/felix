@@ -1,0 +1,1 @@
+- The backup and restore guide says restoring a whole Raft cluster from a backup point is not supported yet (every shard answers "not ready"), and describes the rebuild of one broker's copy that works today (#2983).

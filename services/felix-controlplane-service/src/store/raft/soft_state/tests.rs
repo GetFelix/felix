@@ -547,7 +547,10 @@ async fn two_member_group() -> Vec<Member> {
             },
         );
         settings.heartbeat_interval = Duration::from_millis(100);
-        settings.election_timeout = (Duration::from_secs(1), Duration::from_secs(2));
+        // Leadership moves here only when a test moves it. A timer near the
+        // heartbeat interval fires on a loaded machine whenever a heartbeat
+        // is late, and the group changes leader under the test.
+        settings.election_timeout = (Duration::from_secs(20), Duration::from_secs(30));
         let handle = RaftHandle::start(
             settings,
             std::sync::Arc::clone(&machine) as std::sync::Arc<dyn AppStateMachine>,

@@ -1118,8 +1118,8 @@ next counter whenever an id changes. A report names the reporting process's
 registration incarnation and is refused from any other process, so a late
 retry of a wiped copy's old id cannot replace its successor's. From metadata
 level 41 it also names the stream incarnation of the copy's group, and a shard
-that started on Raft (a durable stream's shard on a cluster whose engine is
-Raft, with no switch record) takes only such a report. A restore can
+that started on Raft (a durable stream's or a cache's shard on a cluster
+whose engine is Raft, with no switch record) takes only such a report. A restore can
 bring back ids a broker has since replaced, so a broker reports its id again
 every 30 seconds until the feed's target names its copy. Today only a copy-id report moves
 the counter; a set change will too once Raft shards are placed. Both are written
@@ -1830,8 +1830,9 @@ report's joint start is dropped, which keeps a change pending; finalizing
 #### Raft shards
 
 On a cluster whose `shard_engine` is `raft` (read from the cluster identity,
-so every instance agrees), a durable stream's shard is run by a Raft group
-that elects its own leader and keeps its own members. Placement places a new
+so every instance agrees), a durable stream's shard and every cache's shard
+are run by a Raft group that elects its own leader and keeps its own members.
+A Raft broker always has a disk, so its cache is a log and runs as a group. Placement places a new
 shard as above, and the brokers form its group from that set. After that it
 only says which member it wants leading:
 

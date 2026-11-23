@@ -1008,7 +1008,8 @@ directory restored from a backup older than the epoch.
 
 The broker reads the group epoch the control plane's record is at from
 `placed.epoch` in the shard assignments it watches. Absent reads as 0, the
-same as the control plane's floor check reads it. For each
+same as the control plane's floor check reads it, unless the record holds
+re-form bases (below). For each
 member it holds, it checks both:
 
 | The copy's `raft-epoch` | The record's epoch | Floor report | Copy id report |
@@ -1026,25 +1027,40 @@ for an epoch other than its record's (`OtherEpoch`), but a broker that
 sent one at epoch 0 would retry it forever and the group's floor would
 stay where it was.
 
-The check runs on the broker, against its own view, so two gaps remain
-until the control plane checks the epoch in the copy id report itself
-(#2882):
+The broker reads the epoch from `placed`. A shard restored from an export
+has no `placed` record, so the broker then counts the re-form bases the
+record holds for the shard's incarnation (`raft_bases`): only a re-form
+adds one, so a restored shard that re-formed is not read as epoch 0. The
+control plane's own checks still read a missing `placed` as epoch 0, so
+the floor of such a shard is refused until a new record starts. A backup
+taken before the group's first re-form has no bases either, and its shards
+read as epoch 0; the copies that did re-form then prove another epoch and
+count nowhere.
 
-- A view can be older than the record. A broker first named in a later
-  epoch is safe, because the write that names it also adds it to that
-  epoch's placed record. A broker named in both epochs whose directory came
-  back from an old backup can still read an epoch-0 view and send its copy
-  id.
-- An import drops every shard's placed record, so a shard restored after a
-  re-form reads as epoch 0.
+The control plane also refuses a copy id report whose epoch is not its
+record's (from metadata level 47), which covers a broker named in both
+epochs whose directory came back from an old backup and that reads a stale
+epoch-0 view.
 
-Neither is reachable yet: no group leaves epoch 0 until the re-form
-command ships (#2250).
+**A learner placed fresh takes the record's epoch.** Before its member
+opens, a broker whose view is past epoch 0 and holds one base per epoch for
+the shard's incarnation writes `raft-epoch` from those bases into the
+copy's directory, if the directory holds nothing but its copy id and an
+empty log: no entry, vote, reservation, saved commit or snapshot, no kept
+copy and no stop marker. The copy then proves the epoch, sends its copy
+id, joins the target as a learner, and catches up from the leader, whose
+log already starts past the epoch's gap. A file this wrote from a view an
+epoch behind is replaced the same way while the directory still holds
+nothing. `raft_copy::write_fresh_epoch` holds the rules.
 
-Such a copy stays a learner until something writes its `raft-epoch`. Only
-a re-form start writes one into a copy that has served (a rotation writes
-one into the fresh directory it makes), which is what lets a stop marker
-keyed by epoch 0 on a copy without the file hold until that start.
+A directory that holds anything is left without the file and never
+counts: it is a restore older than the epoch, and its log or vote may be
+from an epoch it was never part of. A stop marker refuses it too: a copy
+without `raft-epoch` is stopped at epoch 0, and naming a later epoch over
+it would spend the marker and let it rejoin under its old copy id. Such a
+copy stays out of the group until a re-form places it, whose learner start
+empties it. Besides that start and a rotation, which carries the file into
+the fresh directory it makes, nothing else writes `raft-epoch`.
 
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take
@@ -5397,6 +5413,10 @@ on the hybrid.
   stream Raft paths answer it: a write may still commit. Writes carry no
   client producer id yet, so a client retry after one may apply twice, as
   on the hybrid.
+- **Placement** treats a cache shard like a Raft stream shard: a drain,
+  balance or operator move is one write that names another member as
+  leader, and a hybrid move left on the shard is dropped
+  (`docs/control-plane.md`, "Raft shards").
 - **Not served yet:** a keyed cache watch on a Raft cache shard. It reads
   the hybrid store, which never opens the member's directory (#2792).
 
