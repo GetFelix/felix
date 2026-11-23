@@ -61,6 +61,11 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
             "leadership never moved ({} terms led)",
             outcome.terms_led
         ))
+    } else if outcome.terms_opened <= shards as usize {
+        Some(format!(
+            "no shard opened in a second term ({} terms opened)",
+            outcome.terms_opened
+        ))
     } else if outcome.deliveries.len() < MIN_DELIVERIES {
         Some(format!("{} live deliveries", outcome.deliveries.len()))
     } else if history.acknowledged() < MIN_ACKNOWLEDGED {
