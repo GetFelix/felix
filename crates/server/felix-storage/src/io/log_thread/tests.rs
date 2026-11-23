@@ -255,3 +255,113 @@ fn dispatch_overhead() {
         }
     }
 }
+
+/// Jobs spaced wider than the spin window find the thread parked: polling
+/// for them after every job would burn the window each time for nothing.
+#[tokio::test]
+async fn a_quiet_thread_parks_without_polling() {
+    let appender = LogThread::spinning("test-append", Duration::from_micros(200));
+    for _ in 0..20 {
+        appender.run(|| Ok(())).await.expect("run");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let wasted = appender.polls.wasted.load(Ordering::Relaxed);
+    assert!(
+        wasted <= 1,
+        "{wasted} polls of 20 spaced jobs found nothing"
+    );
+}
+
+/// Jobs that keep coming within the window are still polled for, so a busy
+/// log pays no wake-up between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_thread_polls_for_its_next_job() {
+    let appender = Arc::new(LogThread::spinning("test-append", Duration::from_millis(5)));
+    let caught = Arc::new(AtomicUsize::new(0));
+    // A held job lets the others queue up, so they arrive back to back.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let first = {
+        let appender = Arc::clone(&appender);
+        tokio::spawn(async move {
+            appender
+                .run(move || {
+                    let _ = held.recv();
+                    Ok(())
+                })
+                .await
+        })
+    };
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let appender = Arc::clone(&appender);
+        let caught = Arc::clone(&caught);
+        tasks.push(tokio::spawn(async move {
+            appender
+                .run(move || {
+                    caught.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                })
+                .await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    release.send(()).expect("release");
+    first.await.expect("join").expect("run");
+    for task in tasks {
+        task.await.expect("join").expect("run");
+    }
+    assert_eq!(caught.load(Ordering::Relaxed), 16);
+    let polled = appender.polls.caught.load(Ordering::Relaxed);
+    assert!(
+        polled >= 16,
+        "only {polled} of 16 queued jobs were polled for"
+    );
+}
+
+/// With nothing pending, work that only has to follow earlier jobs runs on
+/// the caller; behind a pending job it waits its turn on the thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_behind_waits_only_for_pending_jobs() {
+    let appender = Arc::new(LogThread::new("test-append"));
+    let caller = std::thread::current().id();
+    let ran_on = appender
+        .run_behind(true, |_| Some(Ok(std::thread::current().id())))
+        .await
+        .expect("run");
+    assert_eq!(ran_on, caller, "nothing was pending");
+
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let first = {
+        let appender = Arc::clone(&appender);
+        let done = Arc::clone(&done);
+        tokio::spawn(async move {
+            appender
+                .run(move || {
+                    let _ = held.recv();
+                    done.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        })
+    };
+    while appender.pending.load(Ordering::SeqCst) == 0 {
+        tokio::task::yield_now().await;
+    }
+    let behind = {
+        let appender = Arc::clone(&appender);
+        let done = Arc::clone(&done);
+        tokio::spawn(async move {
+            appender
+                .run_behind(true, move |_| Some(Ok(done.load(Ordering::SeqCst))))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    release.send(()).expect("release");
+    first.await.expect("join").expect("run");
+    assert!(
+        behind.await.expect("join").expect("run"),
+        "it ran before the job ahead of it"
+    );
+}

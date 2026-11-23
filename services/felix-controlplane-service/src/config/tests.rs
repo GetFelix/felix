@@ -265,17 +265,17 @@ fn api_ui_path_must_not_shadow_the_api() {
 
 #[serial]
 #[test]
-fn the_shard_engine_defaults_to_hybrid_and_refuses_unknown_values() {
+fn the_shard_engine_defaults_to_raft_and_refuses_unknown_values() {
     let _env = clear_felix_env();
     let config = ControlPlaneConfig::from_env().expect("from_env");
-    assert_eq!(config.shard_engine, ShardEngine::Hybrid);
-
-    unsafe {
-        env::set_var("FELIX_SHARD_ENGINE", "raft");
-    }
-    let config = ControlPlaneConfig::from_env().expect("raft");
     assert_eq!(config.shard_engine, ShardEngine::Raft);
     assert_eq!(config.shard_engine.as_str(), "raft");
+
+    unsafe {
+        env::set_var("FELIX_SHARD_ENGINE", "hybrid");
+    }
+    let config = ControlPlaneConfig::from_env().expect("hybrid");
+    assert_eq!(config.shard_engine, ShardEngine::Hybrid);
 
     unsafe {
         env::set_var("FELIX_SHARD_ENGINE", "paxos");

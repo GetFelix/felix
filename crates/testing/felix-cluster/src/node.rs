@@ -29,6 +29,9 @@ pub struct BrokerNode {
     /// The ports picked for [`ClusterConfig::tcp_listeners`](crate::ClusterConfig::tcp_listeners),
     /// by env var name.
     tcp_ports: Vec<(String, u16)>,
+    /// Whether the ports were pinned by the caller rather than picked, so a
+    /// respawn after a lost port race keeps them.
+    fixed_ports: bool,
     /// `None` once the node has been stopped.
     process: Option<Child>,
 }
@@ -71,6 +74,13 @@ impl BrokerNode {
     /// and cache are rooted in, inside [`Self::data_dir`].
     pub fn storage_dir(&self) -> PathBuf {
         storage_dir(&self.data_dir)
+    }
+
+    /// The (client, internal) addresses to respawn on: the same ones if the
+    /// caller pinned them, else `None` for fresh picks.
+    pub(crate) fn pinned_ports(&self) -> Option<(SocketAddr, SocketAddr)> {
+        self.fixed_ports
+            .then_some((self.client_addr, self.internal_addr))
     }
 
     /// Take the child handle, leaving the node stopped. `None` if it already was.

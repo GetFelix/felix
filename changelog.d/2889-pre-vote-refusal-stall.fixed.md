@@ -1,0 +1,1 @@
+A Raft follower that voted for a leader whose appends never reached it no longer drops its pre-vote round on that leader's refusal. The refusal named the leader's vote committed, which openraft ranked above the follower's own copy of it, so a leader that answered pre-votes but delivered no append could keep its group from electing a successor (#2889).

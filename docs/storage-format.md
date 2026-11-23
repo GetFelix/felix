@@ -1557,8 +1557,11 @@ restore. Two copies can still lack it: a learner placed fresh into a group
 past epoch 0, and a directory restored from a backup older than the
 group's epoch. Their epoch is unknown: the broker sends neither a floor
 report nor a copy id for one while the control plane's record is past
-epoch 0, so it does not become a voter until a start writes the file. See
-`docs/per-shard-raft.md`, "A copy's group epoch".
+epoch 0, so it does not become a voter. Before a fresh learner's member
+opens, the broker writes the file from the control plane's recorded bases,
+but only into a directory holding nothing but its copy id and an empty
+log, with no stop marker or kept copy. See `docs/per-shard-raft.md`, "A
+copy's group epoch".
 
 ```text
  0   4  magic        u32  "FLEP"

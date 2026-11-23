@@ -6,7 +6,6 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use super::Cluster;
 use super::kept_logs::set_aside_log;
-use super::startup::MAX_SPAWN_ATTEMPTS;
 use crate::node::{new_boot, power_loss_image, storage_fault_file};
 
 /// How long a broker told to lose power has to build its image and die. The
@@ -122,30 +121,8 @@ impl Cluster {
             set_aside_log(&self.nodes[*index].data_dir);
             self.respawn(*index)?;
         }
-        // A restarted broker can lose a port race like a single restart can
-        // (see `restart_node`). Only that exit is retried.
         for index in stopped {
-            let mut attempts = 1;
-            loop {
-                match self.await_placeable(index).await {
-                    Err(_)
-                        if attempts < MAX_SPAWN_ATTEMPTS
-                            && self.nodes[index].exited().is_some()
-                            && self.nodes[index].lost_port_race() =>
-                    {
-                        attempts += 1;
-                        tracing::warn!(
-                            node_id = %self.nodes[index].node_id,
-                            "broker lost a port after a power loss; starting it again"
-                        );
-                        self.respawn(index)?;
-                    }
-                    result => {
-                        result?;
-                        break;
-                    }
-                }
-            }
+            self.await_placeable_retrying(index).await?;
         }
         Ok(())
     }

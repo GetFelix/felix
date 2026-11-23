@@ -294,6 +294,9 @@ sha256sum -c SHA256SUMS
 The signature is keyless: the certificate names the release workflow run, so
 there is no key to fetch. Releases before this was added have no bundle.
 
+To check that the x86_64 archive matches the source, see
+[Reproduce a release](/security/reproducible-builds/).
+
 ## Docker (Alternative)
 
 Released images are on GHCR (`ghcr.io/getfelix`) and pull without credentials. The commands work

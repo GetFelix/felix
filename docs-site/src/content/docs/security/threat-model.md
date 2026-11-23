@@ -353,9 +353,12 @@ the bootstrap listener, behind a separate operator token.
 
 ## Supply chain
 
-Release archives are built once in GitHub Actions. Nothing yet rebuilds them
-to check the bytes match the source
-([#2799](https://github.com/GetFelix/felix/issues/2799)). Known advisory
+The Linux x86_64 server archive is built reproducibly. The release builds it
+twice on separate runners and refuses to publish unless the two sha256 match,
+and you can rebuild it yourself
+([Reproduce a release](/security/reproducible-builds/),
+[#2799](https://github.com/GetFelix/felix/issues/2799)). The aarch64 archive
+and the container images are not covered yet. Known advisory
 exceptions are recorded with reasons in
 [`deny.toml`](https://github.com/GetFelix/felix/blob/main/deny.toml).
 

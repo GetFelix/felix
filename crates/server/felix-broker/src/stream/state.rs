@@ -1187,6 +1187,11 @@ impl Stall {
         self.0.send_replace(stalled);
     }
 
+    /// Whether releases are to be held, whether or not one is yet.
+    pub(crate) fn is_set(&self) -> bool {
+        *self.0.borrow()
+    }
+
     /// Whether a task is held here now.
     pub(crate) fn holds(&self) -> bool {
         *self.0.borrow() && self.0.receiver_count() > 0

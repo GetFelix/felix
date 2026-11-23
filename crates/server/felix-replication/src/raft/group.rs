@@ -25,6 +25,7 @@ use bytes::Bytes;
 use super::cache::{Answer, CacheCommand, CacheWatch};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits, SkipClaim, Skips};
+use super::executor::Placed;
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
@@ -35,7 +36,7 @@ use super::network::{
     Router, term_of,
 };
 use super::propose::{
-    self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
+    self, AckAt, Batch, Clock, Heard, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
 };
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
@@ -84,7 +85,7 @@ pub(crate) struct Group {
     /// which a confirmed read must wait to have applied.
     answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
     /// The data root's mark log, when the member has one. Its
-    /// vouched-unsynced marker is synced before this member's unsynced write
+    /// vouched-unsynced marker is synced before a strict log's unsynced write
     /// is told to a leader or counted here, so a power cut rotates the copy.
     root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.
@@ -175,10 +176,12 @@ pub(crate) struct Group {
     stop: CancellationToken,
     /// The read-index rounds the shard's reads share.
     reads: Arc<ReadRounds<Round>>,
-    /// The runtime the group was opened on, where its openraft core runs.
-    /// The publish task starts there, not on the first publisher's runtime,
-    /// which may end while the group lives on.
+    /// Where the group's openraft core runs: its group thread, or else the
+    /// runtime it was opened on. The publish task starts there, not on the
+    /// first publisher's runtime, which may end while the group lives on.
     runtime: tokio::runtime::Handle,
+    /// Its place on a group thread, held while the group lives.
+    _thread: Option<Placed>,
 }
 
 /// The runtime's clock and timers, as a group needs them to say when its
@@ -195,6 +198,8 @@ pub(crate) struct Timers {
     pub(crate) lease: u64,
     /// [`super::RuntimeConfig::max_elections_at_once`].
     pub(crate) max_elections_at_once: usize,
+    /// [`super::RuntimeConfig::commit_hold`].
+    pub(crate) commit_hold: Duration,
 }
 
 impl Timers {
@@ -685,6 +690,9 @@ pub(crate) struct Host {
     pub(crate) acked: Arc<AtomicU64>,
     /// Where a cache shard's member reports its changes for watches.
     pub(crate) cache_changes: Option<Arc<dyn felix_storage::CacheObserver>>,
+    /// The group thread its tasks run on. `None` runs them on the runtime
+    /// the group is opened on.
+    pub(crate) thread: Option<Placed>,
 }
 
 /// [`Pace`]'s mark for a time that has not come yet.
@@ -730,7 +738,13 @@ impl Group {
             placed_budget,
             acked,
             cache_changes,
+            thread,
         } = host;
+        let runtime = thread
+            .as_ref()
+            .map_or_else(tokio::runtime::Handle::current, |thread| {
+                thread.handle().clone()
+            });
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
             RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
@@ -807,11 +821,21 @@ impl Group {
                 Arc::clone(&config),
             ),
             group: id.clone(),
+            commit_hold: timers.commit_hold,
         };
         let lag_threshold = config.replication_lag_threshold;
-        let raft = Raft::new(member.clone(), config, network, log.clone(), machine)
-            .await
-            .map_err(|err| OpenError::Raft(err.to_string()))?;
+        let started = Raft::new(member.clone(), config, network, log.clone(), machine);
+        // Started on its group thread, openraft spawns all its tasks there.
+        let started = match &thread {
+            // Aborted if this open is dropped, as awaiting it here would be.
+            Some(thread) => {
+                tokio_util::task::AbortOnDropHandle::new(thread.handle().spawn(started))
+                    .await
+                    .map_err(|err| OpenError::Raft(err.to_string()))?
+            }
+            None => started.await,
+        };
+        let raft = started.map_err(|err| OpenError::Raft(err.to_string()))?;
         // A sole voter's promise binds nobody else, so it stands at once
         // too. The newest set must
         // name this member alone, and the committed one no other voter:
@@ -840,7 +864,7 @@ impl Group {
         let stop = CancellationToken::new();
         let leadership = Arc::new(Leadership::new(Arc::clone(&id.shard), host));
         // Ends on `stop`, or when the group's core is gone.
-        tokio::spawn(lead::run(
+        runtime.spawn(lead::run(
             Arc::clone(&leadership),
             raft.clone(),
             commits.clone(),
@@ -899,7 +923,8 @@ impl Group {
             client_writes: Arc::default(),
             stop,
             reads: Arc::default(),
-            runtime: tokio::runtime::Handle::current(),
+            runtime,
+            _thread: thread,
         })
     }
 
@@ -1444,8 +1469,8 @@ impl Group {
     /// the report goes out as soon as the entries are written. On a log
     /// that fsyncs before it answers, an answer that is ready first says
     /// more, and the report is dropped. A written-commit log answers at the
-    /// write, and the report follows a successful answer: the leader acks
-    /// on it without waiting for its commit to be applied.
+    /// write, so its answer is the report and nothing else is sent: the
+    /// leader counts it ([`Reports::answered`]).
     async fn answer(self: &Arc<Self>, body: Request, report: Ask) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
@@ -1460,23 +1485,9 @@ impl Group {
             }),
             _ => None,
         };
-        let Some((leader, last)) = asked else {
+        let Some((leader, last)) = asked.filter(|_| !self.log.written_commit()) else {
             return self.dispatch(body).await;
         };
-        if self.log.written_commit() {
-            let reply = self.dispatch(body).await;
-            if matches!(&reply, Ok(Reply::Append(Ok(_)))) {
-                // Spawned, so the answer does not wait on the report's round
-                // trip. The written position already holds `last`, so the
-                // wait inside is immediate; the bound covers a stopped log.
-                let group = Arc::clone(self);
-                let within = Duration::from_millis(2 * self.pace.timers.heartbeat);
-                self.runtime.spawn(async move {
-                    let _ = tokio::time::timeout(within, group.tell_written(leader, last)).await;
-                });
-            }
-            return reply;
-        }
         let answer = self.dispatch(body);
         let tell = self.tell_written(leader, last);
         tokio::pin!(answer, tell);
@@ -1711,7 +1722,8 @@ impl Group {
     }
 
     /// Queue `batch` behind every batch queued before it and answer where
-    /// it landed, once its records are as far as `batch.ack` asks.
+    /// it landed, once its records are as far as `batch.ack` asks, or at
+    /// its apply when `heard` says so.
     ///
     /// The batch is queued by the call, not by the first poll of what it
     /// returns. Dropping that future takes nothing back: the batch is still
@@ -1725,12 +1737,16 @@ impl Group {
     pub(crate) fn propose(
         &self,
         batch: Batch,
+        heard: Heard,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         #[cfg(any(test, feature = "testing"))]
         self.proposed.fetch_add(1, Ordering::Relaxed);
         let split = match self.cache {
             Some(_) => Err(propose::not_a_stream()),
-            None => propose::split(batch),
+            None => propose::split(batch).map(|(proposal, mut waiting)| {
+                waiting.heard = heard;
+                (proposal, waiting)
+            }),
         };
         self.queue(split)
     }
@@ -1793,6 +1809,12 @@ impl Group {
     /// Cancelled when the member is shut down.
     pub(crate) fn stopped(&self) -> CancellationToken {
         self.stop.clone()
+    }
+
+    /// Where this group's tasks run: its group thread, or the runtime it
+    /// was opened on.
+    pub(crate) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
     }
 
     /// The commit table as the state machine publishes it.
@@ -2545,13 +2567,7 @@ impl Group {
         // an append that publishes in between, and that append behind the
         // first: the caller and the member's log would both stop for good.
         let positions = *self.positions.borrow();
-        // Pre-vote keeps a cut-off member at its term, so openraft names the
-        // last leader forever. A follower counts on it only as long as it
-        // would refuse a pre-vote for it.
-        let live = match metrics.state {
-            ServerState::Leader => self.leads_heard(&metrics),
-            _ => self.pace.follows_live_leader(self.pace.timers.now()),
-        };
+        let live = self.leader_live(&metrics);
         let leader_hint = metrics.current_leader.clone();
         GroupStatus {
             member: self.member.clone(),
@@ -2568,6 +2584,26 @@ impl Group {
             client_writes: self.client_writes.load(Ordering::Relaxed),
             membership: self.membership_progress(),
         }
+    }
+
+    /// Whether the leader openraft names is one this member counts on now.
+    /// Pre-vote keeps a cut-off member at its term, so openraft names the
+    /// last leader forever. A follower counts on it only as long as it
+    /// would refuse a pre-vote for it.
+    fn leader_live(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
+        match metrics.state {
+            ServerState::Leader => self.leads_heard(metrics),
+            _ => self.pace.follows_live_leader(self.pace.timers.now()),
+        }
+    }
+
+    /// [`GroupStatus::leader`]`.is_some()`, read without cloning the metrics.
+    pub(crate) fn hears_leader(&self) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let live = self.leader_live(&metrics);
+        live && metrics.current_leader.is_some()
     }
 
     /// The committed log id, while this member leads its group.
@@ -2609,6 +2645,7 @@ impl Group {
 
     /// Every member of the latest membership this member holds, voters and
     /// learners.
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn members(&self) -> BTreeSet<MemberId> {
         use openraft::async_runtime::watch::WatchReceiver;
         let metrics = self.raft.metrics();

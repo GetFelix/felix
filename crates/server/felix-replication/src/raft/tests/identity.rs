@@ -51,7 +51,7 @@ impl Roots {
 /// How long a publish answered on a written majority may take.
 const ANSWERED: Duration = Duration::from_secs(10);
 
-/// Set in the process that poisons a log for [`flush_failed_copy`].
+/// Set in the process that poisons a log, see [`ran_in_poisoning_process`].
 const POISONING_PROCESS: &str = "FELIX_TEST_POISONING_PROCESS";
 
 /// A copy id is minted where the copy is, so the broker that forms a group
@@ -512,10 +512,21 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
 
 /// A copy syncs its root's vouched-unsynced marker before its written
 /// position reaches a leader, and the leader does before it counts its own
-/// unsynced write. A copy whose marker does not sync says nothing, so its
-/// root still shows every record it was counted for as synced.
+/// unsynced write. A copy whose marker does not sync sends no written
+/// report. The leader still counts its answers to appends, which on this
+/// fsync-on-commit log come after the fsync, so it is never counted past
+/// what it has synced.
+///
+/// It poisons a log, so the body runs in a process of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
+    if ran_in_poisoning_process(
+        "raft::tests::identity::a_written_report_leaves_only_after_the_roots_marker_is_synced",
+    )
+    .await
+    {
+        return;
+    }
     let mut cluster = Cluster::new(true);
     let roots = Roots::new();
     let mut members = BTreeSet::new();
@@ -568,8 +579,12 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
         .group(&shard(0))
         .expect("group");
     let deadline = tokio::time::Instant::now() + PATIENCE;
+    let reported = |broker: &str| {
+        let reports = cluster.net.written_reports.lock();
+        reports.iter().any(|from| from == broker)
+    };
     // The first wait makes the leader ask; later appends carry the ask.
-    while group.reports().from(&member_of(telling)).is_none() {
+    while !reported(telling) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "no written report arrived"
@@ -601,10 +616,61 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
         "the leader counted its own unsynced write before its marker"
     );
     assert!(!vouched(silent));
-    assert_eq!(
-        group.reports().from(&member_of(silent)),
-        None,
+    assert!(
+        !reported(silent),
         "a copy whose marker did not sync reported"
+    );
+    // Its answers still count, but only once its fsync is through: with the
+    // next flush failing, a write it holds is never counted.
+    let positions = cluster
+        .runtime(silent)
+        .group(&shard(0))
+        .expect("group")
+        .positions();
+    let counted = || group.reports().from(&member_of(silent));
+    assert!(
+        counted().is_some(),
+        "the unmarked copy's answers were not counted"
+    );
+    let log = &logs[BROKERS
+        .iter()
+        .position(|broker| *broker == silent)
+        .expect("silent")];
+    log.fail_flush_past(log.tail_offset().await.expect("tail"));
+    let held = positions.borrow().written.expect("written").index;
+    let batch = Batch {
+        expected: None,
+        trim: None,
+        commit: false,
+        records: vec![Record {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(b"unsynced"),
+            headers: None,
+        }],
+        ack: AckAt::Written,
+        term: None,
+        producer: None,
+        publisher: None,
+    };
+    let written = engine.propose(&shard(0), batch).await.expect("written");
+    engine
+        .await_quorum_ack(&shard(0), written, AckAt::Written, PATIENCE)
+        .await
+        .expect("acknowledged by the leader and the marked copy");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while positions.borrow().written.is_none_or(|at| at.index <= held) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unmarked copy never wrote the entry"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Long enough for an answer at the write to have been counted.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let counted = counted().expect("counted");
+    assert!(
+        counted.index <= held,
+        "an unmarked copy counted at {counted:?}, past its fsync at index {held}"
     );
 
     cluster.stop().await;
@@ -1070,27 +1136,38 @@ fn segment_lengths(dir: &Path) -> Vec<(std::path::PathBuf, u64)> {
         .collect()
 }
 
+/// Run the test `name` again in a child process and check it passed, unless
+/// this is that child. True when the caller should return: a poisoned log is
+/// counted for the whole process and never forgotten, and the replica tests
+/// in this binary attest no trusted copy once one is.
+async fn ran_in_poisoning_process(name: &str) -> bool {
+    if std::env::var_os(POISONING_PROCESS).is_some() {
+        return false;
+    }
+    let name = name.to_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(std::env::current_exe().expect("this binary"))
+            .args(["--exact", &name, "--nocapture"])
+            .env(POISONING_PROCESS, "1")
+            .output()
+            .expect("child")
+    })
+    .await
+    .expect("join");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // "1 passed": a filter that matched nothing also exits 0.
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 /// The body of the two tests above. `marker_fails` fails the poison marker
 /// write and cuts F1's log back to its last sync before the reopen.
 async fn flush_failed_copy(name: &str, marker_fails: bool) {
-    if std::env::var_os(POISONING_PROCESS).is_none() {
-        let name = name.to_owned();
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(std::env::current_exe().expect("this binary"))
-                .args(["--exact", &name, "--nocapture"])
-                .env(POISONING_PROCESS, "1")
-                .output()
-                .expect("child")
-        })
-        .await
-        .expect("join");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // "1 passed": a filter that matched nothing also exits 0.
-        assert!(
-            output.status.success() && stdout.contains("1 passed"),
-            "{stdout}\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    if ran_in_poisoning_process(name).await {
         return;
     }
     let mut cluster = Cluster::new(true);
@@ -1200,10 +1277,31 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     log.fail_flush_past(log.tail_offset().await.expect("tail"));
     cluster.net.cut.lock().insert(other.into());
     cluster.net.muted.lock().insert(other.into());
+    // The failing flush would answer the append with an error at once, and
+    // the answer beats the written report, which is then dropped. Hold the
+    // flush until the report has left.
+    let reported = |net: &Net| {
+        net.written_reports
+            .lock()
+            .iter()
+            .filter(|from| from.as_str() == failing)
+            .count()
+    };
+    let before_r = reported(&cluster.net);
+    let held = log.hold_flushes().await;
     let r = engine
         .propose(&shard(0), batch(b"R"))
         .await
         .expect("written");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while reported(&cluster.net) == before_r {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never reported R written"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    drop(held);
     engine
         .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
         .await

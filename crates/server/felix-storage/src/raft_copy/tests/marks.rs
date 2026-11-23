@@ -394,3 +394,33 @@ async fn a_hung_batch_holds_batched_appends() {
         .await
         .expect("a write after the stall");
 }
+
+/// Callers that arrive while the vouched-unsynced marker is syncing wait for
+/// that sync, and so does one that gave up on it: one write in all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_vouched_marker_syncs_once_for_concurrent_and_cancelled_callers() {
+    let root = Root::new();
+    let log = open(&root);
+    let stalled = log.stall_vouch().await;
+    let waiting: Vec<_> = (0..8)
+        .map(|_| {
+            let log = log.clone();
+            tokio::spawn(async move { log.vouch_unsynced().await })
+        })
+        .collect();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    drop(stalled);
+    for caller in waiting {
+        caller.await.expect("join").expect("vouch");
+    }
+    assert_eq!(log.vouch_writes(), 1);
+
+    // As the early-ack race does: polled once, then dropped mid-write.
+    let fresh = Root::new();
+    let log = open(&fresh);
+    for _ in 0..20 {
+        let _ = tokio::time::timeout(std::time::Duration::ZERO, log.vouch_unsynced()).await;
+    }
+    log.vouch_unsynced().await.expect("vouch");
+    assert_eq!(log.vouch_writes(), 1);
+}

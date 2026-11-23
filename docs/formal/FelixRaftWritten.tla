@@ -378,16 +378,20 @@ Ack(i, j) ==
           /\ match' = [match EXCEPT ![i][j] = p]
     /\ UNCHANGED <<election, log, synced, commitIdx, committed, wrote, acked, lost, gone, used, floor>>
 
-\* The written report: the id of the sender's last entry, fsynced or not.
-\* Nothing ties it to the sender's vote or to the leader's term.
+\* The written report: the id of an entry the sender holds, fsynced or not.
+\* A strict follower names its last entry. A relaxed follower's answer to
+\* an append names that append's last entry, which may be below entries the
+\* same write took. Nothing ties it to the sender's vote or to the leader's
+\* term.
 Report(i, j) ==
     /\ i # j
     /\ j \notin gone
     /\ role[i] = "leader"
     /\ ~Reserve \/ reserve[j] >= LastIdx(j)
-    /\ LET id == [term |-> LastTerm(j), idx |-> LastIdx(j)]
-       IN /\ id # wrote[i][j]
-          /\ wrote' = [wrote EXCEPT ![i][j] = id]
+    /\ \E q \in 1..LastIdx(j) :
+        LET id == [term |-> log[j][q].term, idx |-> q]
+        IN /\ id # wrote[i][j]
+           /\ wrote' = [wrote EXCEPT ![i][j] = id]
     /\ UNCHANGED <<election, raft, acked, lost, gone, used, floor>>
 
 \* The early acknowledgement: a record of the leader's own term that a
@@ -449,9 +453,10 @@ Crash(s) ==
 \* starts with an empty log and no vote. It never votes, campaigns or
 \* answers as that seat again; adding the new copy needs a membership
 \* change, which this model does not make. The leader keeps whatever it
-\* already heard from the old copy. The broker rotates only a copy that
-\* vouched for an unsynced record, and rotates it even when the cut took
-\* nothing; this model rotates every cut copy and cuts only unsynced tails.
+\* already heard from the old copy. The broker rotates a copy whose root's
+\* run is relaxed, as every written-commit copy's is, or that vouched for an
+\* unsynced record, and rotates it even when the cut took nothing; this
+\* model rotates every cut copy and cuts only unsynced tails.
 PowerCut(s) ==
     /\ used.cuts < MaxPowerCuts
     /\ s \notin gone

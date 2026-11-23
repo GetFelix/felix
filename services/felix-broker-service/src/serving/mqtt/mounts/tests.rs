@@ -64,6 +64,7 @@ fn four_shard_ingress(routing: felix_wire::routing::ShardRouting) -> Arc<Ingress
                 targets_withheld: false,
                 raft_formed: None,
                 raft_voters: None,
+                raft_bases: None,
                 placed: None,
             };
             (key, assignment)

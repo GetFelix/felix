@@ -1037,7 +1037,7 @@ falls further behind than that has to take a new snapshot.
 ### Cluster identity
 
 A Raft group records its identity once, when it forms: a random `group_id`
-and the `shard_engine` (`hybrid` or `raft`) from `FELIX_SHARD_ENGINE` on the
+and the `shard_engine` (`raft`, the default, or the deprecated `hybrid`) from `FELIX_SHARD_ENGINE` on the
 instance that proposes it. The first record applied wins, and nothing changes
 it afterwards, so racing proposers on a new group are settled by log order. A
 background task on each instance proposes it while the group has none, and
@@ -1118,8 +1118,8 @@ next counter whenever an id changes. A report names the reporting process's
 registration incarnation and is refused from any other process, so a late
 retry of a wiped copy's old id cannot replace its successor's. From metadata
 level 41 it also names the stream incarnation of the copy's group, and a shard
-that started on Raft (a durable stream's shard on a cluster whose engine is
-Raft, with no switch record) takes only such a report. A restore can
+that started on Raft (a durable stream's or a cache's shard on a cluster
+whose engine is Raft, with no switch record) takes only such a report. A restore can
 bring back ids a broker has since replaced, so a broker reports its id again
 every 30 seconds until the feed's target names its copy. Today only a copy-id report moves
 the counter; a set change will too once Raft shards are placed. Both are written
@@ -1830,8 +1830,9 @@ report's joint start is dropped, which keeps a change pending; finalizing
 #### Raft shards
 
 On a cluster whose `shard_engine` is `raft` (read from the cluster identity,
-so every instance agrees), a durable stream's shard is run by a Raft group
-that elects its own leader and keeps its own members. Placement places a new
+so every instance agrees), a durable stream's shard and every cache's shard
+are run by a Raft group that elects its own leader and keeps its own members.
+A Raft broker always has a disk, so its cache is a log and runs as a group. Placement places a new
 shard as above, and the brokers form its group from that set. After that it
 only says which member it wants leading:
 
@@ -3027,7 +3028,7 @@ be a member; it is legitimately 0 during a drain.
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
 | `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
-| `shard_engine` | `FELIX_SHARD_ENGINE` | `hybrid` |
+| `shard_engine` | `FELIX_SHARD_ENGINE` | `raft` |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than

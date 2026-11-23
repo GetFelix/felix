@@ -616,7 +616,7 @@ Once finalized, a Raft shard on a broker whose `fsync_mode` is `periodic` or
 `none` counts an entry toward its commit once the entry is written, and its
 log fsyncs on the broker's periodic schedule (once a second under `none`)
 instead of on every commit. That
-is the same loss window the default engine has under `periodic`: a power cut
+is the same loss window the hybrid engine has under `periodic`: a power cut
 of a majority of a shard's brokers before the flush can take records that
 were acknowledged. A broker applies it when it next opens a shard, so a shard
 already open keeps fsyncing on commit until its broker restarts. Brokers on
@@ -916,7 +916,8 @@ keeps retrying in each case and never starts without the check.
 ### The cluster's shard engine
 
 The same record holds the cluster's **shard engine**, the engine that
-replicates durable stream shards: `hybrid` (the default) or `raft`. The
+replicates durable stream shards: `raft` (the default) or the deprecated
+`hybrid`. The
 control plane takes it from its own `FELIX_SHARD_ENGINE` when the group
 forms and never changes it. Changing `FELIX_SHARD_ENGINE` on the control
 plane later only logs a warning.

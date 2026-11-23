@@ -1,0 +1,1 @@
+A Raft copy placed fresh into a group past its first epoch takes the group epoch from the control plane's record before its member opens, so it can be promoted to voter. A directory holding any log entry, vote or reservation, or stopped by a re-form, is refused and never votes. A shard restored from an export reads its epoch from its recorded re-form bases instead of as epoch 0.

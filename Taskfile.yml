@@ -24,7 +24,7 @@ tasks:
       # misplaced `#[cfg]` on felix-common's modules reached main past a lint
       # that only ever ran `--all-features`.
       - "cargo check -p felix-common"
-      # Without `raft`, as every release builds it.
+      # On its own defaults, without `raft`: the broker service turns it on.
       - "cargo check -p felix-replication"
       # felix-broker must not depend on openraft, and openraft's types stay
       # in the Raft log adapter, the per-shard runtime and the control
@@ -88,6 +88,13 @@ tasks:
         done
         cargo test -p felix-cluster "${args[@]}"
         cargo test -p felix-cluster --doc
+  # The raft:: suite with groups on the runtime that opens them, as on a
+  # broker under four cores. The workspace run takes the machine's count.
+  test:raft-no-group-threads:
+    env:
+      FELIX_TEST_RAFT_GROUP_THREADS: "0"
+    cmds:
+      - "cargo test -p felix-replication --lib raft:: -- --test-threads 4"
   # A test that has failed under load and passed alone, run hundreds of
   # times with every core busy. CI runs it after the suite.
   test:stress:

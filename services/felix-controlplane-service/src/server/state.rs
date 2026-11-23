@@ -104,6 +104,10 @@ async fn open_store(
         changes_limit: config.changes_limit,
         change_retention_max_rows: config.change_retention_max_rows,
     };
+    // A Raft group warns once its record is known, since the record wins.
+    if config.storage == StorageBackend::Memory {
+        crate::config::warn_if_hybrid(config.shard_engine.as_str());
+    }
     match config.storage {
         StorageBackend::Memory => Ok((
             Arc::new(
