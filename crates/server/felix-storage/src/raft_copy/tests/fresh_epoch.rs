@@ -114,6 +114,24 @@ async fn a_stopped_copy_is_refused() {
     assert!(stopped(&dir).expect("read").is_some());
 }
 
+/// A marker a start spent (the copy names a later epoch) refuses nothing:
+/// the started copy's `raft-epoch` is its own and is left alone.
+#[tokio::test]
+async fn a_spent_stop_marker_is_not_a_stop() {
+    let root = Root::new();
+    let dir = opened_once(&root).await;
+    stop(&dir, None).expect("stop");
+    epoch_file::store(
+        &dir,
+        &EpochFile {
+            incarnation: INCARNATION,
+            bases: bases(1),
+        },
+    )
+    .expect("epoch");
+    assert_eq!(write(&dir, 1), FreshEpoch::Named);
+}
+
 #[tokio::test]
 async fn a_reservation_or_a_kept_copy_is_refused() {
     let root = Root::new();

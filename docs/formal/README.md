@@ -631,12 +631,12 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftWrittenCommitsReformTermsHappens.cfg` | witness, with no broker dead: a re-form after a term-2 election cuts the longest copy read | violate `NeverCutsAcrossTerms` (21.8k distinct states, 1 second) |
 | `FelixRaftWrittenCommitsReformTermsVoteOnly.cfg` | witness: a vote in a term that wrote nothing cuts every copy, so a committed entry a read copy holds is lost (reported as "cut by a vote", needs `--accept-loss`) | violate `LossNeedsLostDisk` (387k distinct states, 4 seconds) |
 | `FelixRaftWrittenReformVouchDead.cfg` | the vouch rule with the commit on fsynced copies (`WrittenCommits` off), `Reserve`, one term and one broker declared dead | pass (#2661): a leads term 1, a and b fsync and reserve its first entry, a commits it, a is declared dead and c loses power. The dead broker is a minority of the voters, so b still vouches for its whole log and the base keeps the entry |
-| `FelixRaftWrittenReformVouchDeadFive.cfg` | the vouch rule with five voters, two terms and two brokers declared dead | expected to pass (#2661): the dead are a minority, so T stands. Not registered: unfinished after 4 h 53 min on a CI runner (23.8M distinct states, depth 18); runs nightly (`tla-walk.yml`), checks `OffsetNeverReused` |
-| `FelixRaftWrittenCommitsReformJointDead.cfg` | a joint change from {a, b, c} to {a, b, d}, two brokers declared dead | `BaseAgrees` (no base entry differs from the committed one): expected to pass (#2661). Not registered: filled a CI runner's disk after 3 h 25 min (443M distinct states, depth 20) |
-| `FelixRaftWrittenCommitsReformJointDeadOneSet.cfg` | the same, with the gate counting the first voter set only | expected to violate `BaseAgrees` (#2661). Not registered: no violation in 458M distinct states before a CI runner's disk filled (4 h 18 min). Not yet shown to violate (possibly vacuous), see #2729; walked nightly (`tla-walk.yml`) |
-| `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: expected to pass (#2661). Not registered: unfinished after 4 h 53 min on a CI runner (175M distinct states, depth 20); runs nightly (`tla-walk.yml`) |
-| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms | `BaseAgrees`: expected to pass (#2661). Not registered: unfinished after 3 h 41 min on a CI runner (223M distinct states, depth 34) |
-| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | expected to violate `BaseAgrees` (#2661). Not registered: no violation in 235M distinct states, depth 35, after 3 h 56 min on a CI runner. Not yet shown to violate (possibly vacuous), see #2729; walked nightly (`tla-walk.yml`) |
+| `FelixRaftWrittenReformVouchDeadFive.cfg` | the vouch rule with five voters, two terms and two brokers declared dead | violate `NeverLosesCommitted` (#3023): the dead are a minority, so T stands, but a term-2 candidacy that wins nothing raises T above every entry, so no copy vouches past its saved commit and the committed blank is cut. This is the cut by a vote that `FelixRaftWrittenCommitsReformTermsVoteOnly.cfg` shows; the planner reports it as `cut_by_vote` and a start needs `--accept-loss`. Under `ReformScope` with `MaxWrites = 0`: 3,967,898 distinct states, 44 min 24 s on a CI runner (run 45176967426); with a record, 3 h 56 min (run 45097934400) |
+| `FelixRaftWrittenCommitsReformJointDead.cfg` | a joint change from {a, b, c} to {a, b, d}, two brokers declared dead | `BaseAgrees` (no base entry differs from the committed one): expected to pass (#2661). Not registered: under `JointReformScope`, unfinished after six hours on a CI runner (335M distinct states, depth 21, run 45097934400) |
+| `FelixRaftWrittenCommitsReformJointDeadOneSet.cfg` | the same, with the gate counting the first voter set only | expected to violate `BaseAgrees` (#2661); a trace is reachable with these constants (c leads term 1 past the joint exit, writes the record to b and loses power; a and d commit in term 2 and die). Not registered: under `JointReformScope`, no violation in 242M distinct states, depth 21, before a CI runner's six hours ran out (run 45097934400); walked nightly (`tla-walk.yml`) |
+| `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: expected to pass (#2661). Not registered: under `ReformScope`, unfinished after six hours on a CI runner (169M distinct states, depth 23, run 45097934400); runs nightly (`tla-walk.yml`) |
+| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms, one crash | pass (#2729): c leads term 1, holds a tail and crashes, so the tail is still term 1 at the re-form; a and b elect in term 2, commit and die. The dead are a majority, so the group is marked and c vouches only for its saved commit. Under `ReformScope`: 11,888,341 distinct states, depth 38, 19 min 30 s on a CI runner (run 45176967426) |
+| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | violate `BaseAgrees` (#2729): the crashed term-1 leader vouches for its term-1 tail over the term-2 commit the dead made. 39 s on a CI runner (run 45176967426), depth 20 |
 | `FelixRaftWrittenReformReplaced.cfg` | voters a1, b1, c1 with b2 a learner; b1's disk is replaced with nothing kept, c1 is declared dead, and a1, deposed, appends its term-1 tail to b2 | `BaseAgrees`: pass (#2671): voters are keyed by copy id, so b1's vote is unknown, {b1, c1} is a majority and the group is marked. Not registered, run by dispatch |
 | `FelixRaftWrittenReformReplacedHappens.cfg` | witness: the same scope, a re-form after b2 saved the deposed term 1 while term 2 committed | violates `NoDeposedAppend` (184k distinct states, 3 s) |
 | `FelixRaftWrittenReformReplacedFull.cfg` | `FelixRaftWrittenReformReplaced.cfg` without `ReplacedScope` and with reservations | `BaseAgrees`: pass. Not registered, run by dispatch |
@@ -922,6 +922,17 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReformReplacedDisk.cfg` | `Kept`, one rotation that can replace the disk with nothing kept but the reservation (#2671), one broker declared dead, two terms | pass the same as `...TrailingFloor.cfg`. Not registered, run by dispatch |
 | `FelixRaftReformReplacedDiskByBroker.cfg` | the same with a vote counted as read when any copy of its broker was read (`VoteByBroker`): A holds x at term 1, C commits f at the same index in term 2 with b, b's disk is replaced, C is declared dead | violate `OffsetNeverReused` (10.5M distinct states, depth 15, 5 min on 4 workers) |
 | `FelixRaftReformReplacedDiskLost.cfg` | the same with the disk lost outright, reservation included (`ReplacedReserve <- LostReserve`), and one term: A commits x with b, A's disk is lost, b is declared dead | violate `OffsetNeverReused`: the documented residual of a trailing floor |
+| `FelixRaftRestore.cfg` | `FelixRaftRestore.tla`: a restore from a backup point with no offset gap. Epoch 0 acknowledges up to four offsets, ahead of its commit and of the commit the copy saves, the point is read from the leader's acknowledged mark, its directory is copied while it still leads, the control plane is exported at any time, the cut saves the point as committed, and epoch 1 starts above the point, the restored floor and the copied reservation (step 2), with no offset gap | pass `BackedUpNeverReused`, `BaseKept`, `ReserveCovers`, `RestoresAtPoint` (25,737 distinct states, under a second) |
+| `FelixRaftRestoreNoReserve.cfg` | the same with the first index leaving out the copied reservation | violate `BackedUpNeverReused` |
+| `FelixRaftRestoreNoRaise.cfg` | the same where the cut only lowers the copy's saved commit | violate `RestoresAtPoint`: a copy that holds the point but saved its commit below it is refused at the point |
+| `FelixRaftRestoreLeaderMoved.cfg` | the same where the copied copy stops leading after the point and falls behind its reservation before the copy | violate `BackedUpNeverReused`: an offset acknowledged before the copy is given out again. Closed by the gap |
+| `FelixRaftRestoreAfterBackup.cfg` | `FelixRaftRestore.cfg` checked against every offset epoch 0 acknowledged | violate `OffsetNeverReused`: an offset acknowledged after both the copy and the export, the documented residual |
+| `FelixRaftRestoreGap.cfg` | the restore offset gap: epoch 1 starts at least `Gap` = 2 past the point, at most two offsets are acknowledged after it, and the copied copy may stop leading | pass `BackedUpNeverReused`, `OffsetNeverReused`, `BaseKept`, `ReserveCovers`, `RestoresAtPoint` (72,328 distinct states, under a second) |
+| `FelixRaftRestoreGapShort.cfg` | the same with a gap of 1 | violate `OffsetNeverReused` |
+| `FelixRaftRestoreRepeated.cfg` | `FelixRaftRestoreRepeated.tla`: two backups and three restores, a backup may be taken from a restored epoch, each restore planned on a clock off true time by up to a tick; at most one offset per tick, the line rises two per tick, restores five ticks apart | pass `OffsetNeverReused` (5,650,196 distinct states, a few seconds) |
+| `FelixRaftRestoreRepeatedNoTime.cfg` | pins the old rule, flipping both `Line` (off) and `EndGap` (on): the first index at the backup's end plus the gap, no time line. `...EndGap.cfg` is the one-change twin | violate `OffsetNeverReused`: a second restore from one backup starts where the first did |
+| `FelixRaftRestoreRepeatedMinApart.cfg` | `...Repeated.cfg` with restores three ticks apart under a skew of one tick, below the four-times-skew boundary | violate `OffsetNeverReused`: a restore planned on a slow clock starts below an offset the earlier one gave out |
+| `FelixRaftRestoreRepeatedEndGap.cfg` | the same with the gap added past the backup's end as well as past the line | violate `OffsetNeverReused`: a backup of a restored epoch restores above the line, and an older backup restored after it starts below offsets it gave out |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.1M distinct states) |
@@ -3073,7 +3084,10 @@ the re-form read, so T is still the highest elected term and the rule keeps
 a whole log as before. a commits entry 1, fsynced and reserved on a and b,
 and is declared dead before b learns the commit; c loses power. b's last
 entry has term T, so the base keeps entry 1
-(`FelixRaftWrittenReformVouchDead.cfg`). Once the dead hold a majority of a
+(`FelixRaftWrittenReformVouchDead.cfg`). A minority of dead does not stop the
+cut by a vote: with five voters and two dead, a term-2 candidacy that wins
+nothing still cuts a committed entry (`FelixRaftWrittenReformVouchDeadFive.cfg`,
+#3023), and the command asks for `--accept-loss`. Once the dead hold a majority of a
 voter set, a term T' above every vote read could have elected a leader
 among them, so no copy vouches past its saved commit and the floor. The voter
 sets are the ones the re-form can know: the seed voters, both halves of every
@@ -3084,9 +3098,10 @@ and counting only the first voter set vouches for a stale tail
 (`FelixRaftWrittenCommitsReformJointDeadOneSet.cfg`). With the gate forced
 open, a copy holding a term-1 tail vouches for it over a term-2 commit the dead
 made (`FelixRaftWrittenReformGateOpen.cfg`; `FelixRaftWrittenReformGate.cfg`
-passes). None of these four configurations has finished on a CI runner yet,
-so these are the outcomes they are built to show, not checked results (see
-their rows above).
+passes). The leader holding that tail has to crash: with no crash it stops
+leading only by taking term 2, and its tail is never vouched for. The joint
+outcomes are what those configurations are built to show, not checked
+results: none has finished (see their rows above).
 
 Voter sets hold copy ids, not brokers. A vote is unknown unless the re-form
 read it from the copy that cast it: the copy in place, or the copy a power cut
@@ -3667,6 +3682,46 @@ above every entry read, no acknowledged record a read copy holds below its
 epoch's cap is lost. Not modelled with `Kept`: `Reserve = "none"`, and the
 "cut by a vote" flag the command reports
 (`FelixRaftWrittenCommitsReformTermsVoteOnly.cfg` shows the case).
+
+**Restoring from a backup point (#2250).** `FelixRaftRestore.tla` is a
+small model of its own for the offsets of a whole-cluster restore. The
+backup reads the point from the leader, copies that leader's directory and
+exports the control plane, and the restore starts epoch 1 at
+max(point + 1 + `Gap`, restored floor + 1, copied reservation + 1). Every
+copy raises its reservation before a write passes it. With no gap (`Gap` = 0),
+`FelixRaftRestore.cfg` shows that nothing acknowledged by the time of the
+copy is given out again (`BackedUpNeverReused`), and only through the
+reservation (`...NoReserve.cfg`). The point is the leader's acknowledged
+mark, which can be past its commit and past the commit the copy saved, so
+the cut saves the point as committed; a cut that only lowers the saved
+commit leaves the plan refusing a copy that holds the point
+(`...NoRaise.cfg`, `RestoresAtPoint`). Two cases reuse an offset with no gap: one
+acknowledged after both the copy and the export (`...AfterBackup.cfg`, the
+documented residual), and one acknowledged before the copy when the copied
+copy stopped leading after the point and fell behind its own reservation
+(`...LeaderMoved.cfg`). The restore offset gap closes both while no more
+than `Gap` offsets were acknowledged after the point (`...Gap.cfg`), and a
+gap one short reuses an offset (`...GapShort.cfg`). The code takes the gap
+from `felixctl raft reform plan --offset-gap` (2^40 by default) and starts
+the epoch at max(point's offset + gap, ...) for a single restore, where the
+point's offset is the model's point + 1. The code's first index is at least
+that: it takes the larger of the point's end and the time line
+`2^14 * plan time + gap`, and refuses a plan whose line is below the end.
+The cut's check that the entry below the point is of the point's term is not
+modelled: no copy in the model holds another leader's entries.
+
+`FelixRaftRestoreRepeated.tla` checks restores that repeat. Every restored
+epoch starts on one line, `TimeRate * clock + Gap`, read from the planning
+node's own clock. The line rises faster than the shard gives out offsets
+(`Rate` = `TimeRate` / 2), so an epoch started on it stays below it, and a
+later restore from any backup starts past everything earlier epochs gave
+out, provided the restores are far enough apart for the clock skew: with a
+skew of a tick, five ticks pass (`...Repeated.cfg`) and three do not
+(`...RepeatedMinApart.cfg`).
+Without the line a second restore from one backup reuses offsets
+(`...RepeatedNoTime.cfg`); adding the gap past the backup's end as well
+lifts a restored epoch above the line, where an older backup restored after
+it lands below its offsets (`...RepeatedEndGap.cfg`).
 
 One finding of this module is open. The design does not say how a copy
 comes back after an apply stopped it, did not finish, and the group

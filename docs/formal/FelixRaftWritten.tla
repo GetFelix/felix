@@ -630,6 +630,28 @@ ReplacedScope ==
     /\ used'.crashes > used.crashes =>
             dead # {} /\ \E s \in Servers : role[s] = "leader" /\ role'[s] # "leader"
 
+\* The scope of the vouch-gate configurations (#2729), an ACTION_CONSTRAINT
+\* that keeps each one's scenario and drops interleavings none of their
+\* invariants reads: one candidate per term, no early acknowledgement (the
+\* acked history feeds none of them), no written report unless it can count
+\* toward a commit (WrittenCommits, an id of the leader's term), and a broker
+\* is declared dead only once something committed.
+ReformScope ==
+    /\ \A c \in Servers : (term'[c] > term[c] /\ role'[c] = "candidate")
+            => \A s \in Servers \ {c} : term[s] < term'[c]
+    /\ acked' # acked => commitIdx' # commitIdx
+    /\ ~WrittenCommits => wrote' = wrote
+    /\ \A i, j \in Servers : wrote'[i][j] # wrote[i][j] =>
+            wrote'[i][j] = NoId \/ wrote'[i][j].term = term[i]
+    /\ dead' # dead => committed # <<>>
+
+\* The joint configurations that check BaseAgrees only also commit on written
+\* reports alone: with WrittenCommits a report counts every entry an
+\* acknowledged match would, and the match feeds nothing else they check.
+JointReformScope ==
+    /\ ReformScope
+    /\ \A i, j \in Servers : match'[i][j] <= match[i][j] \/ match'[i][j] = 0
+
 ----------------------------------------------------------------------------
 
 TypeOK ==

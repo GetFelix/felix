@@ -22,7 +22,7 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod copy_file;
-mod epoch_file;
+pub(crate) mod epoch_file;
 mod fresh_epoch;
 mod gate;
 mod judge;
@@ -31,6 +31,7 @@ mod placement_ack;
 mod reclaim;
 mod reform;
 mod report;
+mod restore;
 mod rotated_by;
 #[cfg_attr(
     not(test),
@@ -71,6 +72,7 @@ pub(crate) use reform::{
     BrokerCopies, CopyRead, KeptLog, kept_logs, read_copies, read_copy, read_kept,
 };
 pub use report::{MembershipReader, VoterSets, build_report};
+pub use restore::restore_copy;
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
@@ -81,8 +83,12 @@ pub(crate) use rotated_by::RotatedBy;
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
+pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
-pub use vouch::{BrokerReport, GroupRecord, VoterId};
+pub use vouch::{
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RESTORE_OFFSETS_PER_MILLI,
+    RestoreAt, VoterId,
+};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
@@ -92,7 +98,7 @@ pub(crate) use vouch::{
 };
 pub use wire::{
     PlanView, REPORT_VERSION, SurveyStep, VersionMismatch, WireBase, WireCopy, WireFloor,
-    WireReport, WireRotated, first_probes, survey_step,
+    WireReport, WireRotated, WireStart, first_probes, plan_starts, survey_step,
 };
 
 use std::path::Path;

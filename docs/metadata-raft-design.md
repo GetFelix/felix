@@ -1202,6 +1202,7 @@ the field itself, on every member alike, or refuses the command:
 | `record_raft_floors` `vouched_voters` | 48 | vouched voters (#2909). The proposer sets it for the floor report at 48 and above. Below it voters count from any reporter, as at 46 |
 | `record_audit`, snapshot `audit` | 49 | audit records (#2806). Nothing proposes the command below 49, and the leader refuses it with 409 there too, so records stay in each member's `felix_audit` log only. Applying one marks 49 as used, so a member rolled back below it refuses the snapshot |
 | assignment writes and adopts `keep_counter`, finalizing `keep_counter`, assignment `raft_target_counter`, and in the snapshot | 50 | Raft target counter kept through a set change (#2235). The proposer sets `keep_counter` on assignment writes at 50 and above, and `settle_for_level` on a finalize; the apply also keeps the counter once the join floor is at 50. Below it a set change starts the counter at 1 again, so the target that follows names a version the group already holds and its leader never acts on it |
+| `start_reformed_epoch` | 51 | a Raft group's re-form epoch write (#2250). The proposer refuses it with 409 below 51 and so does the leader, since a member below it would refuse the entry and keep the old epoch while the others start the next one. The apply decides it from the shard record and the command alone |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

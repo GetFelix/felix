@@ -163,6 +163,7 @@ fn the_manifest_round_trips_and_leaves_out_logs_a_shard_does_not_have() {
                 counters: Some(3),
             },
             incarnation: 0,
+            end_term: None,
         }],
     };
     let json = serde_json::to_value(&manifest).expect("json");
@@ -174,4 +175,60 @@ fn the_manifest_round_trips_and_leaves_out_logs_a_shard_does_not_have() {
     let back: Manifest = serde_json::from_value(json).expect("parse");
     assert_eq!(back, manifest);
     assert!(render_summary(&back).contains("t/ns/prices/0 (cache)"));
+}
+
+fn raft_answer(term: u64, leads: Option<u64>) -> BrokerOffsets {
+    let member = serde_json::json!({ "tenant_id": "t", "namespace": "ns", "name": "orders",
+        "shard": 0, "kind": "stream", "term": term });
+    let shards: Vec<serde_json::Value> = leads
+        .map(|records| {
+            serde_json::json!({ "tenant_id": "t", "namespace": "ns", "name": "orders", "shard": 0,
+                "kind": "stream", "generation": term, "incarnation": 4, "engine": "raft",
+                "end_term": term - 1, "logs": { "records": records } })
+        })
+        .into_iter()
+        .collect();
+    answer(serde_json::json!({ "shards": shards, "raft_members": [member] }))
+}
+
+/// **A Raft shard is read on the member that leads it, wherever placement
+/// put the leader (#2995).** Placement names `a`; `b` won the election.
+#[test]
+fn a_raft_shard_is_read_on_its_elected_leader() {
+    let assigned = [
+        assignment("orders", 0, "a", 3),
+        assignment("other", 0, "a", 1),
+    ];
+    let answers = vec![
+        ("a".to_string(), raft_answer(7, None)),
+        ("b".to_string(), raft_answer(7, Some(42))),
+    ];
+    let raft = raft_keys(&assigned, &answers);
+    assert!(raft.contains(&assigned[0].key()));
+    assert!(!raft.contains(&assigned[1].key()), "not a Raft shard");
+
+    let shards = match_raft(&[&assigned[0]], &answers).expect("point");
+    assert_eq!(shards.len(), 1);
+    assert_eq!(shards[0].leader, "b");
+    assert_eq!(shards[0].logs.records, 42);
+    assert_eq!(shards[0].incarnation, 4);
+    assert_eq!(shards[0].end_term, Some(6), "the term below the point");
+    assert_eq!(
+        shards[0].generation, 3,
+        "placement's generation, not the term"
+    );
+}
+
+/// **A leader at an older term than some member reports is not read.** It
+/// may be deposed without knowing it, its commit index below a write the
+/// newer leader acknowledged.
+#[test]
+fn a_leader_behind_a_newer_term_is_not_read() {
+    let assigned = [assignment("orders", 0, "a", 3)];
+    let answers = vec![
+        ("a".to_string(), raft_answer(7, Some(40))),
+        ("b".to_string(), raft_answer(8, None)),
+    ];
+    let missing = match_raft(&[&assigned[0]], &answers).expect_err("no leader at term 8");
+    assert!(missing[0].contains("term 8"), "{missing:?}");
 }

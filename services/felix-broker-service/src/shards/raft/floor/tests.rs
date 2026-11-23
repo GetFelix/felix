@@ -334,6 +334,7 @@ fn a_marked_group_is_settled_only_with_its_voters_shown() {
         incarnation,
         epoch,
         members: [("broker-a".to_string(), copy)].into(),
+        starts: Default::default(),
     };
     assert!(!super::settled(
         None,

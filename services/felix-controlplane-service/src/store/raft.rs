@@ -170,6 +170,10 @@ const DECLARE_DEAD_LEVEL: u16 = 42;
 /// (`MetaCommand::RecordAudit`).
 const AUDIT_LEVEL: u16 = 49;
 
+/// The metadata level that starts a re-formed Raft epoch
+/// (`MetaCommand::StartReformedEpoch`).
+const REFORM_EPOCH_LEVEL: u16 = 51;
+
 /// The metadata level whose members keep every Raft target ordered in a
 /// shard's epoch (`ShardAssignment::raft_ordered`).
 const RAFT_ORDERED_LEVEL: u16 = 39;
@@ -954,6 +958,33 @@ impl ControlPlaneStore for RaftStore {
 
     async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>> {
         self.local()?.declared_dead().await
+    }
+
+    async fn start_reformed_epoch(
+        &self,
+        key: &ShardKey,
+        start: crate::model::ReformEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < REFORM_EPOCH_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {REFORM_EPOCH_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::StartReformedEpoch {
+                key: key.clone(),
+                start,
+            })
+            .await?
+        {
+            MetaResponse::Assignment { assignment } => Ok(assignment),
+            _ => Err(unexpected_shape("assignment")),
+        }
     }
 
     async fn record_audit(&self, entries: Vec<crate::audit::AuditEntry>) -> StoreResult<bool> {

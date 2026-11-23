@@ -110,6 +110,8 @@ module_of() {
     FelixRaftFormedSet*) echo FelixRaftFormedSet ;;
     FelixRaftPlacement*) echo FelixRaftPlacement ;;
     FelixRaftReform*) echo FelixRaftReform ;;
+    FelixRaftRestoreRepeated*) echo FelixRaftRestoreRepeated ;;
+    FelixRaftRestore*) echo FelixRaftRestore ;;
     FelixRaftLease*) echo FelixRaftLease ;;
     FelixRaftSleep*) echo FelixRaftSleep ;;
     FelixRaftCache*) echo FelixRaftCache ;;
@@ -581,6 +583,9 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
   "FelixRaftWrittenReformVouchDead pass"
+  "FelixRaftWrittenReformGate pass"
+  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
+  "FelixRaftWrittenReformVouchDeadFive violates NeverLosesCommitted"
   "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
   "FelixRaftWrittenReformReplacedHappens violates NoDeposedAppend"
   "FelixRaftBatch pass"
@@ -905,6 +910,17 @@ expectations=(
   "FelixRaftReformLearnerHoldsHappens violates NeverLearnerHolds"
   "FelixRaftReformDeadReforms violates NeverReformsWithoutDead"
   "FelixRaftReformDeadLoses violates NothingLost"
+  "FelixRaftRestore pass"
+  "FelixRaftRestoreGap pass"
+  "FelixRaftRestoreNoReserve violates BackedUpNeverReused"
+  "FelixRaftRestoreNoRaise violates RestoresAtPoint"
+  "FelixRaftRestoreLeaderMoved violates BackedUpNeverReused"
+  "FelixRaftRestoreAfterBackup violates OffsetNeverReused"
+  "FelixRaftRestoreGapShort violates OffsetNeverReused"
+  "FelixRaftRestoreRepeated pass"
+  "FelixRaftRestoreRepeatedNoTime violates OffsetNeverReused"
+  "FelixRaftRestoreRepeatedEndGap violates OffsetNeverReused"
+  "FelixRaftRestoreRepeatedMinApart violates OffsetNeverReused"
   "FelixRaftSwitchGenZeroFull pass"
   "FelixRaftMembershipTerms pass"
   "FelixRaftLease pass"
@@ -1109,7 +1125,6 @@ walks=(
   "FelixShardFencedCrashUnprobed pass"
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
   "FelixShardElectUncleanContinuingDoubtedFull pass"
-  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
   "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
   "FelixCrossShardCommit pass"
   "FelixCrossShardCommitLive pass"
@@ -1214,12 +1229,10 @@ fi
 # on a box, queue still growing), FelixRaftWrittenReformReplacedFull and
 # FelixRaftReformReplacedDisk are not registered: they run past a pull
 # request's time; run them as a TLA workflow dispatch.
-# FelixRaftWrittenReform{VouchDeadFive,Gate,GateOpen} and
 # FelixRaftWrittenCommitsReformJoint{Dead,DeadOneSet,CutDead} are not
-# registered: in main run 43961999904 none finished in its CI runner's time
-# (the two Joint{Dead,DeadOneSet} filled the runner's disk past 440M distinct
-# states), and neither twin had violated. VouchDeadFive and JointCutDead run
-# nightly (tla-walk.yml); the two twins are walked there (#2729).
+# registered: under their scopes none finished in six hours on a CI runner
+# (run 45097934400; 335M, 242M and 169M distinct states). JointCutDead runs
+# nightly and JointDeadOneSet is walked there (tla-walk.yml, #2729).
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly
@@ -1486,7 +1499,20 @@ weights=(
   "FelixRaftWrittenCommitsPowerCut 24"
   "FelixRaftWrittenCommitsReform 2"
   "FelixRaftWrittenCommitsReformTermsFloorHolder 70"
+  "FelixRaftWrittenReformGate 20"
+  "FelixRaftWrittenReformVouchDeadFive 45"
   "FelixRaftReformTwoReformsTrailingFloor 9"
+  "FelixRaftRestore 1"
+  "FelixRaftRestoreNoReserve 1"
+  "FelixRaftRestoreNoRaise 1"
+  "FelixRaftRestoreLeaderMoved 1"
+  "FelixRaftRestoreAfterBackup 1"
+  "FelixRaftRestoreGap 1"
+  "FelixRaftRestoreGapShort 1"
+  "FelixRaftRestoreRepeated 1"
+  "FelixRaftRestoreRepeatedNoTime 1"
+  "FelixRaftRestoreRepeatedEndGap 1"
+  "FelixRaftRestoreRepeatedMinApart 1"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
   "FelixRaftStreamPurgeSmall 12"

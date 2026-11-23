@@ -170,6 +170,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(api::raft_reform::get_plan),
         )
         .route(
+            "/v1/raft/reform/plans/{plan_id}/apply",
+            axum::routing::post(api::raft_reform::apply_plan),
+        )
+        .route(
             "/v1/nodes/{node_id}/reform/surveys",
             axum::routing::get(api::raft_reform::surveys),
         )

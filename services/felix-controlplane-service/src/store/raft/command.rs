@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 50;
+pub const METADATA_VERSION: u16 = 51;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -629,6 +629,13 @@ pub enum MetaCommand {
     RecordAudit {
         entries: Vec<crate::audit::AuditEntry>,
     },
+    /// Start the next epoch of a Raft shard's group from a re-form plan,
+    /// by compare and swap on its epoch
+    /// ([`crate::store::ControlPlaneStore::start_reformed_epoch`]). Level 51.
+    StartReformedEpoch {
+        key: ShardKey,
+        start: crate::model::ReformEpochStart,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -778,6 +785,9 @@ impl MetaCommand {
             Self::DeclareNodeDead { .. } => 42,
             // A member before level 49 would refuse the entry as unknown.
             Self::RecordAudit { .. } => 49,
+            // A member before level 51 would refuse the entry and keep the
+            // old epoch where the others start the next one.
+            Self::StartReformedEpoch { .. } => 51,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -1158,6 +1168,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             "declaring a node dead"
         } else if gated == RECORD_AUDIT_OP {
             "an audit record"
+        } else if gated == REFORM_EPOCH_OP {
+            "a Raft group's re-form"
         } else {
             "a shard's switch to Raft"
         };
@@ -1320,6 +1332,9 @@ const DECLARE_DEAD_OP: &str = "declare_node_dead";
 /// Audit entries, by op.
 const RECORD_AUDIT_OP: &str = "record_audit";
 
+/// A re-form's epoch compare and swap, by op.
+const REFORM_EPOCH_OP: &str = "start_reformed_epoch";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
     SWITCH_OPS.contains(&op)
@@ -1327,6 +1342,7 @@ fn is_gated(op: &str) -> bool {
         || op == FLOORS_OP
         || op == DECLARE_DEAD_OP
         || op == RECORD_AUDIT_OP
+        || op == REFORM_EPOCH_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.
