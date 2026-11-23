@@ -67,9 +67,10 @@ fn a_plan_is_written_only_after_every_broker_stopped() {
     );
 
     assert_eq!(answer_all(&plans, now, SurveyKind::Stop, whole), 3);
-    let due = plans.take_due();
+    let mut due = plans.take_due();
     assert_eq!(due.len(), 1, "the compare passed");
-    let (_, key, start) = &due[0];
+    let due = due.remove(0);
+    let (key, start) = (&due.key, &due.start);
     assert_eq!(key, &shard().key);
     assert_eq!((start.incarnation, start.expected_epoch), (3, 0));
     assert_eq!(start.base.base_last.map(|l| l.index), Some(4));
@@ -77,7 +78,7 @@ fn a_plan_is_written_only_after_every_broker_stopped() {
     assert_eq!(apply_state(&plans, &id, now).state, "writing");
     assert!(plans.take_due().is_empty(), "a write is taken once");
 
-    plans.written(&id, key, Ok(1));
+    due.answer(Ok(1));
     let view = apply_state(&plans, &id, now);
     assert_eq!((view.state.as_str(), view.epoch), ("starting", Some(1)));
     assert_eq!(answer_all(&plans, now, SurveyKind::Start, whole), 3);
@@ -167,9 +168,34 @@ fn a_refused_write_ends_the_shard() {
     let (plans, id) = planned(now, whole);
     plans.apply(&id, &[], now).unwrap();
     answer_all(&plans, now, SurveyKind::Stop, whole);
-    let (_, key, _) = plans.take_due().remove(0);
-    plans.written(&id, &key, Err("the group is at epoch 1, not 0".to_string()));
+    let due = plans.take_due().remove(0);
+    due.answer(Err("the group is at epoch 1, not 0".to_string()));
     let view = apply_state(&plans, &id, now);
     assert_eq!(view.state, "failed");
     assert!(plans.surveys_for("a", now).is_empty(), "no start is asked");
+}
+
+/// A request dropped while its epoch write is in flight hands the write
+/// back, so the next request writes it (or finds it written) instead of the
+/// shard staying at `writing`.
+#[test]
+fn a_write_whose_request_was_dropped_is_taken_again() {
+    let now = Instant::now();
+    let (plans, id) = planned(now, whole);
+    plans.apply(&id, &[], now).unwrap();
+    answer_all(&plans, now, SurveyKind::Stop, whole);
+    let first = plans.take_due();
+    assert_eq!(first.len(), 1);
+    assert!(plans.take_due().is_empty(), "taken once while in flight");
+    drop(first);
+    assert_eq!(apply_state(&plans, &id, now).state, "writing");
+
+    let again = plans.take_due();
+    assert_eq!(again.len(), 1, "the dropped write is due again");
+    again.into_iter().for_each(|due| due.answer(Ok(1)));
+    assert_eq!(apply_state(&plans, &id, now).state, "starting");
+    assert!(
+        plans.take_due().is_empty(),
+        "an answered write is not redone"
+    );
 }

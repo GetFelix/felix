@@ -814,7 +814,11 @@ control plane still never calls a broker:
 A crash between any two steps is safe. Before the write, the stopped copies
 stay stopped and a second `apply` (or a new plan) finishes the group. After
 it, the start is idempotent under `reform-building`, and the epoch write
-cannot land twice: the second one finds the group one epoch on.
+cannot land twice: the second one finds the group one epoch on, which the
+control plane reads as written when the record holds this plan's base and
+voters. So a request dropped while its write is in flight leaves nothing
+stuck: the write goes back to due and the next request writes it again or
+finds it written.
 
 **A restore from a backup point is a re-form.** A whole-cluster restore
 rotates every broker's storage id, so every Raft copy comes back with a new

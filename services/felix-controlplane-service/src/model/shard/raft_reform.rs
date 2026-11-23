@@ -255,6 +255,17 @@ impl ShardAssignment {
         )
     }
 
+    /// Whether this record is the one `start` writes: the next epoch with
+    /// its base and voters, for its incarnation.
+    pub(crate) fn started_by(&self, start: &ReformEpochStart) -> bool {
+        self.incarnation == start.incarnation
+            && self.group_epoch() == start.expected_epoch + 1
+            && self.raft_bases.as_ref().and_then(|held| held.bases.last()) == Some(&start.base)
+            && self.raft_seed.as_ref().is_some_and(|seed| {
+                seed.epoch == start.expected_epoch + 1 && seed.members == start.voters
+            })
+    }
+
     /// Start the next epoch of the group, as the re-form's epoch compare
     /// and swap writes it in one command: the next [`super::PlacedInEpoch`]
     /// record, `base` appended to the bases, `voters` as the new epoch's

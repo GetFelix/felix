@@ -42,7 +42,9 @@ enum Phase {
     },
     /// The compare passed; the next request writes it.
     Due(ReformEpochStart),
-    Writing,
+    /// Taken by one request's [`InFlight`]; back to `Due` if that request
+    /// is dropped before the store answers.
+    Writing(ReformEpochStart),
     /// The epoch is written; waiting for each broker to start it. There is
     /// no timeout: a broker starts from its feed whether or not it answers.
     Starting {
@@ -106,7 +108,7 @@ impl ShardApply {
                 None,
                 waiting(&|b| reports.contains_key(b)),
             ),
-            Phase::Due(_) | Phase::Writing => ("writing", None, None, Vec::new()),
+            Phase::Due(_) | Phase::Writing(_) => ("writing", None, None, Vec::new()),
             Phase::Starting { epoch, started } => (
                 "starting",
                 None,
@@ -190,7 +192,7 @@ impl ReformPlans {
     }
 
     /// Take every epoch write a compare made due, marking each in flight.
-    fn take_due(&self) -> Vec<(String, ShardKey, ReformEpochStart)> {
+    fn take_due(&self) -> Vec<InFlight<'_>> {
         let mut plans = self.plans.lock();
         let mut due = Vec::new();
         for plan in plans.iter_mut() {
@@ -198,16 +200,38 @@ impl ReformPlans {
                 let Some(apply) = &mut shard.apply else {
                     continue;
                 };
-                if let Phase::Due(_) = apply.phase {
-                    let Phase::Due(start) = std::mem::replace(&mut apply.phase, Phase::Writing)
-                    else {
-                        unreachable!()
-                    };
-                    due.push((plan.id.clone(), shard.key.clone(), start));
+                if let Phase::Due(start) = &apply.phase {
+                    let start = start.clone();
+                    apply.phase = Phase::Writing(start.clone());
+                    due.push(InFlight {
+                        plans: self,
+                        id: plan.id.clone(),
+                        key: shard.key.clone(),
+                        start,
+                        answered: false,
+                    });
                 }
             }
         }
         due
+    }
+
+    /// Put a write whose request was dropped back to `Due`, so the next
+    /// request writes it again. The write is a compare and swap and
+    /// [`write_due`] reads a refusal that finds this start already written
+    /// as written, so doing it twice is safe.
+    fn unwrite(&self, id: &str, key: &ShardKey) {
+        let mut plans = self.plans.lock();
+        let apply = plans
+            .iter_mut()
+            .find(|p| p.id == id)
+            .and_then(|p| p.shards.iter_mut().find(|s| &s.key == key))
+            .and_then(|s| s.apply.as_mut());
+        if let Some(apply) = apply
+            && let Phase::Writing(start) = &apply.phase
+        {
+            apply.phase = Phase::Due(start.clone());
+        }
     }
 
     fn written(&self, id: &str, key: &ShardKey, written: Result<u64, String>) {
@@ -232,6 +256,32 @@ impl ReformPlans {
             }
             Err(why) => ended("failed", format!("the epoch write was refused: {why}")),
         };
+    }
+}
+
+/// An epoch write one request took. Dropped unanswered, it goes back to
+/// `Due`; otherwise a request cancelled mid-write would leave its shard at
+/// `writing` for good.
+pub(super) struct InFlight<'a> {
+    plans: &'a ReformPlans,
+    pub(super) id: String,
+    pub(super) key: ShardKey,
+    pub(super) start: ReformEpochStart,
+    answered: bool,
+}
+
+impl InFlight<'_> {
+    fn answer(mut self, written: Result<u64, String>) {
+        self.answered = true;
+        self.plans.written(&self.id, &self.key, written);
+    }
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if !self.answered {
+            self.plans.unwrite(&self.id, &self.key);
+        }
     }
 }
 
@@ -363,16 +413,23 @@ fn compare(
 
 /// Commit every due epoch write and move its shard to the start round.
 pub(super) async fn write_due(plans: &ReformPlans, store: &dyn ControlPlaneStore) {
-    for (id, key, start) in plans.take_due() {
-        let written = store
-            .start_reformed_epoch(&key, start)
+    for due in plans.take_due() {
+        let written = match store
+            .start_reformed_epoch(&due.key, due.start.clone())
             .await
-            .map(|shard| shard.group_epoch())
-            .map_err(|err| err.to_string());
+        {
+            Ok(shard) => Ok(shard.group_epoch()),
+            // A write committed for a request that was dropped before it
+            // answered is refused the second time: the group moved on.
+            Err(err) => match store.get_shard_assignment(&due.key).await {
+                Ok(shard) if shard.started_by(&due.start) => Ok(shard.group_epoch()),
+                _ => Err(err.to_string()),
+            },
+        };
         if let Err(why) = &written {
-            tracing::warn!(shard = ?key, error = %why, "a re-form's epoch write was refused");
+            tracing::warn!(shard = ?due.key, error = %why, "a re-form's epoch write was refused");
         }
-        plans.written(&id, &key, written);
+        due.answer(written);
     }
 }
 

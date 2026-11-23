@@ -1,6 +1,8 @@
 //! A copy a re-form stopped: it never opens as itself again, and rejoins
 //! only under a new copy id.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::*;
 use crate::raft_log::RaftLog;
 use crate::raft_log::tests::writes::append;
@@ -12,6 +14,13 @@ const LABEL: &str = "t/ns/orders/0";
 
 /// A copy that voted and holds two records, then stopped.
 async fn stopped_copy(copies: &CopyRoot, dir: &Path) -> u64 {
+    let copy = voted_copy(copies, dir).await;
+    stop(dir, Some(1)).expect("stop");
+    copy
+}
+
+/// A copy that voted and holds two records, closed.
+async fn voted_copy(copies: &CopyRoot, dir: &Path) -> u64 {
     let opened = copies
         .open_copy(SHARD, dir, LABEL, config())
         .await
@@ -28,8 +37,59 @@ async fn stopped_copy(copies: &CopyRoot, dir: &Path) -> u64 {
     opened.marks.vote(vote(2, "1", true)).await.expect("mark");
     drop(log);
     opened.log.close().await.expect("close");
-    stop(dir, Some(1)).expect("stop");
     opened.copy
+}
+
+/// A re-form compares the plan from the post-stop reads with the one the
+/// operator read, so the stop marker must not change what a read sees:
+/// the copy reads the same, and three such copies plan the same.
+#[tokio::test]
+async fn a_stopped_copy_reads_and_plans_as_it_did_before_the_stop() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = voted_copy(&copies, &dir).await;
+    let probes = BTreeSet::from([0, 1, 2]);
+    let plan = |read: &CopyRead| {
+        let reports: BTreeMap<_, _> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| {
+                // The test root keeps no `raft-copy` in the directory;
+                // the report names the copy as a broker would.
+                let mut current = read.clone();
+                current.copy = Some(copy);
+                let report = BrokerReport {
+                    leads: false,
+                    names: BTreeSet::new(),
+                    memberships: Some(Vec::new()),
+                    copies: BrokerCopies {
+                        current,
+                        kept: vec![],
+                    },
+                };
+                (name, report)
+            })
+            .collect();
+        let record = GroupRecord {
+            incarnation: 1,
+            bases: Vec::new(),
+            floor: None,
+            offset_floor: None,
+            placed: Some(BTreeSet::from(["a", "b", "c"])),
+            dead: BTreeSet::new(),
+            seed: Some(BTreeSet::from([("a", copy), ("b", copy), ("c", copy)])),
+            ordered: Some(Vec::new()),
+        };
+        plan_reform(&record, &reports)
+    };
+    let before = read_copy(&dir, 4096, &probes).expect("read");
+    let planned = plan(&before).expect("a plan");
+
+    stop(&dir, Some(1)).expect("stop");
+    assert!(stopped(&dir).expect("marker").is_some());
+    let after = read_copy(&dir, 4096, &probes).expect("read");
+    assert_eq!(after, before);
+    assert_eq!(plan(&after).expect("a plan"), planned);
 }
 
 #[tokio::test]

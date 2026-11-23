@@ -73,12 +73,17 @@ async fn a_reform_starts_the_next_epoch_once(store: &dyn ControlPlaneStore) {
         "the feed carries the new epoch"
     );
 
-    let again = store.start_reformed_epoch(&shard.key, plan).await;
+    let again = store.start_reformed_epoch(&shard.key, plan.clone()).await;
     assert!(
         matches!(&again, Err(StoreError::Conflict(why)) if why.contains("epoch 1")),
         "{again:?}"
     );
     assert_eq!(read(store, &shard.key).await, held);
+    // The refusal reads as written for the plan that wrote it, so a write
+    // whose request was dropped after it committed is not reported failed.
+    assert!(held.started_by(&plan));
+    assert!(!shard.started_by(&plan));
+    assert!(!held.started_by(&start(&shard, 0, 11)), "another base");
 
     // Another incarnation's plan never lands, whatever its epoch.
     let stale = ReformEpochStart {
