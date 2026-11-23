@@ -17,7 +17,9 @@ use crate::quorum::Unreadable;
 
 mod cache;
 
-pub use cache::{CacheCondition, CacheOp, CacheReply, ProducerRequest};
+pub use cache::{
+    CacheCondition, CacheOp, CacheReply, CacheWatchEntry, CacheWatchPoint, ProducerRequest,
+};
 
 const NO_GROUP: &str = "this broker holds no group for the shard";
 
@@ -368,30 +370,28 @@ impl RaftEngine {
     }
 
     /// Where a cache watch on `shard` joins this member: the offset its
-    /// live changes start at, and each value `keep` takes below it, as
-    /// `(key, value, offset, expires_at_millis)` in offset order. Register
+    /// live changes start at, and each value `keep` takes below it, in
+    /// offset order. Register
     /// the watch before calling this. `None` when no cache group of `shard`
     /// runs here.
     pub fn cache_watch_point(
         &self,
         shard: &ShardKey,
         keep: &dyn Fn(&str) -> bool,
-    ) -> Option<(u64, Vec<(String, Bytes, u64, u64)>)> {
+    ) -> Option<CacheWatchPoint> {
         let group = self.runtime.group(shard)?;
         let (tail, entries) = group.cache_watch_point(keep)?;
         let mut entries: Vec<_> = entries
             .into_iter()
-            .map(|(key, held)| {
-                (
-                    key,
-                    held.value,
-                    held.version,
-                    held.expires_at.div_ceil(1000),
-                )
+            .map(|(key, held)| CacheWatchEntry {
+                key,
+                value: held.value,
+                offset: held.version,
+                expires_at_millis: held.expires_at.div_ceil(1000),
             })
             .collect();
-        entries.sort_by_key(|entry| entry.2);
-        Some((tail, entries))
+        entries.sort_by_key(|entry| entry.offset);
+        Some(CacheWatchPoint { tail, entries })
     }
 
     /// A counter's sum on this leader.

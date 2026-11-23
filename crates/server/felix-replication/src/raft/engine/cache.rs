@@ -13,6 +13,26 @@ use crate::raft::cache::{Answer, CacheCommand, Condition, Request};
 /// with none, so a client's id can never collide with one.
 const ANONYMOUS: u64 = 1 << 63;
 
+/// Where a cache watch joins a Raft cache shard's member. See
+/// [`RaftEngine::cache_watch_point`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheWatchPoint {
+    /// Changes from this offset on reach the watch live.
+    pub tail: u64,
+    pub entries: Vec<CacheWatchEntry>,
+}
+
+/// One key's value below a [`CacheWatchPoint`]'s tail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheWatchEntry {
+    pub key: String,
+    pub value: bytes::Bytes,
+    /// The entry index of the put that wrote it.
+    pub offset: u64,
+    /// Zero is never.
+    pub expires_at_millis: u64,
+}
+
 /// A cache or counter write to a Raft cache shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheOp {

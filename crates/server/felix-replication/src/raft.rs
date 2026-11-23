@@ -59,7 +59,10 @@ mod written;
 pub use deliver::{IdempotentPublish, RaftReads};
 #[cfg(any(test, feature = "testing"))]
 pub use draws::{TimerSeed, seed_timers};
-pub use engine::{CacheCondition, CacheOp, CacheReply, ProducerRequest, RaftEngine};
+pub use engine::{
+    CacheCondition, CacheOp, CacheReply, CacheWatchEntry, CacheWatchPoint, ProducerRequest,
+    RaftEngine,
+};
 pub use group::driver::MembershipProgress;
 pub use group::placed::Placement;
 pub use membership::{Target, TargetVersion};
