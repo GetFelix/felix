@@ -39,10 +39,34 @@ fn a_broker_with_no_engine_setting_runs_raft() {
     assert_eq!(ALL.resolve(hybrid).expect("asked"), ShardEngine::Hybrid);
 }
 
-/// A standalone broker runs the hybrid path when it was not asked for an
-/// engine, and is refused when it was asked for Raft.
+/// A standalone broker with durable storage runs its durable shards as
+/// Raft groups of one; it needs no node id and no internal listener. The
+/// hybrid stays selectable by name.
 #[test]
-fn a_standalone_broker_runs_hybrid_unless_raft_was_asked_for() {
+fn a_standalone_durable_broker_runs_raft() {
+    let standalone = RaftPrerequisites {
+        membership: false,
+        peer_transport: false,
+        ..ALL
+    };
+    assert_eq!(standalone.missing(), None);
+    assert_eq!(
+        standalone.resolve(None).expect("resolve"),
+        ShardEngine::Raft
+    );
+    let asked = standalone.resolve(Some(ShardEngine::Raft)).expect("asked");
+    assert_eq!(asked, ShardEngine::Raft);
+    let hybrid = standalone
+        .resolve(Some(ShardEngine::Hybrid))
+        .expect("hybrid");
+    assert_eq!(hybrid, ShardEngine::Hybrid);
+}
+
+/// A standalone broker in memory has nothing durable for an engine to run,
+/// so it still starts with no setting, and is refused when asked for Raft,
+/// naming the durable storage it lacks.
+#[test]
+fn a_standalone_broker_in_memory_starts_unless_raft_was_asked_for() {
     let standalone = RaftPrerequisites {
         membership: false,
         peer_transport: false,
@@ -56,10 +80,9 @@ fn a_standalone_broker_runs_hybrid_unless_raft_was_asked_for() {
     let err = standalone
         .resolve(Some(ShardEngine::Raft))
         .expect_err("refused");
-    assert!(
-        err.to_string()
-            .contains("FELIX_SHARD_ENGINE=raft is refused"),
-        "{err}"
+    assert_eq!(
+        err.to_string(),
+        "FELIX_SHARD_ENGINE=raft is refused: it needs durable storage (FELIX_DURABLE_STORAGE_DIR)"
     );
 }
 
@@ -116,13 +139,6 @@ fn a_raft_broker_missing_a_prerequisite_is_refused() {
                 ..ALL
             },
             "cargo feature",
-        ),
-        (
-            RaftPrerequisites {
-                membership: false,
-                ..ALL
-            },
-            "FELIX_NODE_ID",
         ),
         (
             RaftPrerequisites {

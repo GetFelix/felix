@@ -135,6 +135,7 @@ where
         shard_engine,
         shard_engine_setting,
         raft_prerequisites.missing(),
+        durable_config.is_some(),
     );
     // Only a broker that registers shares shards, so only its engine has to
     // be the cluster's.
@@ -357,8 +358,13 @@ where
         .as_ref()
         .map(|membership| membership.features.clone())
         .unwrap_or_default();
+    // A standalone broker on Raft is its whole fleet.
+    let standalone_raft =
+        config.membership.is_none() && shard_engine == crate::config::ShardEngine::Raft;
     let fleet = Arc::new(match &view {
         Some(view) => felix_common::fleet::FleetGate::seeded(reported, &view.fleet),
+        #[cfg(feature = "raft")]
+        None if standalone_raft => crate::shards::raft::standalone::fleet_of_one(),
         None => felix_common::fleet::FleetGate::new(reported),
     });
     // Shared between the replication driver, which advances it, and the publish
@@ -387,7 +393,16 @@ where
         broker.leave_durable_streams_to_engines();
     }
     #[cfg(feature = "raft")]
-    let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
+    let raft_shards = if standalone_raft {
+        cluster::start_standalone_raft_shards(
+            shard_raft,
+            &broker,
+            &engine,
+            &fleet,
+            storage_id,
+            &sync_shutdown,
+        )?
+    } else if shard_engine == crate::config::ShardEngine::Raft {
         cluster::start_raft_shards(
             &config, shard_raft, &cluster, &peers, &broker, &engine, &fleet,
         )?
@@ -836,10 +851,17 @@ fn log_shard_engine(
     engine: crate::config::ShardEngine,
     setting: Option<crate::config::ShardEngine>,
     raft_missing: Option<&str>,
+    durable: bool,
 ) {
     use crate::config::ShardEngine;
     match (engine, setting) {
         (ShardEngine::Raft, _) => tracing::info!("durable stream shards run on Raft"),
+        // Every stream and cache is in memory, and no engine runs any.
+        (ShardEngine::Hybrid, None) if !durable => {
+            tracing::info!(
+                "no durable storage (FELIX_DURABLE_STORAGE_DIR): streams and caches are kept in memory"
+            )
+        }
         (ShardEngine::Hybrid, Some(_)) => tracing::warn!(
             "FELIX_SHARD_ENGINE=hybrid is deprecated: the hybrid shard engine is frozen and \
              will be removed; new clusters run Raft (leave FELIX_SHARD_ENGINE unset)"
@@ -849,7 +871,7 @@ fn log_shard_engine(
         (ShardEngine::Hybrid, None) => tracing::warn!(
             why = raft_missing.unwrap_or_default(),
             "durable stream shards run on the deprecated hybrid engine, which will be removed; \
-             to run Raft, set FELIX_NODE_ID, FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR"
+             this build has no Raft engine"
         ),
     }
 }

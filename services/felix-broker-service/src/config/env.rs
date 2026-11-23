@@ -780,9 +780,7 @@ impl RaftPrerequisites {
     pub(crate) fn missing(&self) -> Option<&'static str> {
         if !self.compiled {
             Some("this build has no Raft engine (cargo feature `raft`)")
-        } else if !self.membership {
-            Some("it needs a cluster identity (FELIX_NODE_ID)")
-        } else if !self.peer_transport {
+        } else if self.membership && !self.peer_transport {
             Some("it needs the broker-internal listener (FELIX_INTERNAL_BIND)")
         } else if !self.durable_storage {
             Some("it needs durable storage (FELIX_DURABLE_STORAGE_DIR)")
@@ -792,11 +790,13 @@ impl RaftPrerequisites {
     }
 
     /// The engine this broker runs for `setting`. Unset is Raft wherever
-    /// Raft can run. A broker with a cluster identity that cannot run Raft
-    /// is refused rather than run the hybrid engine: the control plane
+    /// Raft can run, standalone included: there each durable shard is a
+    /// Raft group of one. A broker with a cluster identity that cannot run
+    /// Raft is refused rather than run the hybrid engine: the control plane
     /// would place shards on it beside Raft peers. A standalone broker
-    /// shares no shard, so it runs the hybrid path until the hybrid is
-    /// removed. Asking for Raft where it cannot run is refused too.
+    /// without durable storage has no durable shard to run, and one built
+    /// without Raft has only the hybrid. Asking for Raft where it cannot
+    /// run is refused too.
     pub(crate) fn resolve(&self, setting: Option<ShardEngine>) -> Result<ShardEngine> {
         match (setting, self.missing()) {
             (Some(ShardEngine::Raft), Some(missing)) => {
