@@ -64,6 +64,7 @@ async fn harness() -> Harness {
         placement_wakes: Default::default(),
         move_policy: Default::default(),
         new_cluster: Default::default(),
+        audit: Default::default(),
     };
     Harness {
         app: build_router(state).into_service(),

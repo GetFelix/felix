@@ -171,6 +171,39 @@ async fn batches_go_out_in_hand_over_order_whoever_hears_first() {
     );
 }
 
+/// **A committed batch with nothing held ahead of it is fanned out on its
+/// publisher's task, before its answer, once each and in order.** Left to a
+/// release task, every publish would wake one more task; the single-thread
+/// runtime has not run any other task when `complete` returns.
+#[tokio::test]
+async fn a_batch_with_nothing_held_goes_out_on_its_publishers_task() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    for (at, payload) in [b"a", b"b", b"c"].into_iter().enumerate() {
+        let engine_ = Arc::clone(&engine);
+        let proposed = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(payload)],
+                Duration::MAX,
+                move |_| engine_.propose(1),
+            )
+            .expect("handed over");
+        engine.commit(at, Ok(()));
+        let outcome = proposed.complete().await.expect("committed");
+        let offset = at as u64;
+        assert_eq!(outcome.offsets, Some((offset, offset)));
+        let envelope = receiver.try_recv().expect("delivered before the answer");
+        assert_eq!(envelope.base_offset(), Some(offset));
+        assert_eq!(envelope.payloads(), [Bytes::from_static(payload)]);
+        assert!(receiver.try_recv().is_err(), "delivered twice");
+    }
+    assert!(!handle.state.held.is_busy());
+    assert!(handle.state.proposals.is_idle());
+    nothing(&mut receiver).await;
+}
+
 /// **Nothing is delivered before the engine says it is committed, and a
 /// batch the engine cannot vouch for is never delivered and holds up
 /// nothing behind it.** A write a later leader cut ends in such an error.

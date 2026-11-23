@@ -129,7 +129,7 @@ as claimed until they lapse and then delivers them again. Those rebuilt claims
 do not count against `FELIX_GROUP_MAX_IN_FLIGHT`, so the new leader keeps
 handing out new records meanwhile.
 
-On the default engine claims are kept in the leader's memory, so this holds
+On the hybrid engine claims are kept in the leader's memory, so this holds
 while the shard's leader stays put; after a failover the group resumes from its
 durable position.
 
@@ -291,7 +291,7 @@ whatever the group has in play, from any consumer of the group: claims do not
 yet say who holds them. On a Raft shard an extension is written to the log and
 survives a failover (see [A member that restarts](#a-member-that-restarts)); a
 delay is the leader's memory there too, so a new leader holds the record for the
-visibility of the delivery it was nacked from. On the default engine extensions
+visibility of the delivery it was nacked from. On the hybrid engine extensions
 and delays are the leader's memory, so a failover hands those records out from
 the group's durable position, sooner than asked. A consumer dead letter is durable and replicates with the shard.
 The broker caps visibility, extensions and delays at

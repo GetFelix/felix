@@ -15,6 +15,8 @@ to the rest of the section:
   with the exact setting for each item, plus rotation and monitoring.
 - [Authentication and RBAC](/security/authentication/): token exchange, Felix
   tokens, bootstrap, the RBAC model, revocation and lease tokens.
+- [Audit log](/security/audit-log/): the control plane's record of who changed
+  what, and what it can and cannot prove.
 - [Reporting a vulnerability](/security/reporting/).
 
 :::note[Security maturity]
@@ -171,9 +173,12 @@ plane.
   peers encrypt but do not authenticate each other and the internal network
   is trusted.
 - **Client certificates from the Python, TypeScript, C and C# clients.**
-- **Audit logging** ([#2806](https://github.com/GetFelix/felix/issues/2806)),
-  **and quotas beyond the publish rate.** Subscriptions, cache use and storage
+- **Quotas beyond the publish rate.** Subscriptions, cache use and storage
   are not limited per tenant.
+- **Audit records of data access and broker actions.** The
+  [audit log](/security/audit-log/) records control-plane changes and
+  refusals. Publishes, subscribes and broker-side actions such as a trim are
+  not in it.
 
 The [threat model](/security/threat-model/) lists every other open item with
 its issue.

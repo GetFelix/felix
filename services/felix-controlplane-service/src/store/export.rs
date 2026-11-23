@@ -72,6 +72,11 @@ pub struct ExportedState {
     /// snapshots and left out while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) declared_dead: Vec<crate::model::DeclaredDead>,
+    /// Committed audit records (level 49). Absent from older snapshots and
+    /// left out while none was ever recorded. An import keeps the group's
+    /// own log instead of this one.
+    #[serde(default, skip_serializing_if = "crate::audit::AuditLog::is_empty")]
+    pub(super) audit: crate::audit::AuditLog,
     /// Each shard's last replica report. In a Raft snapshot because failover
     /// promotes on them: a member restored without them could not replace a
     /// dead leader whose last report predates the snapshot, since that leader
@@ -398,6 +403,7 @@ pub async fn export_state_from(
         refresh_tokens: Vec::new(),
         fleet_enabled: store.enabled_fleet_features().await?,
         declared_dead: store.declared_dead().await?,
+        audit: crate::audit::AuditLog::default(),
         replica_reports: store.list_replica_reports().await?,
         principal_revocations: all_principal_revocations(store).await?,
         stream_tombstones: store.stream_tombstones().await?,

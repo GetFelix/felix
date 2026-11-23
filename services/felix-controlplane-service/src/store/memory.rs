@@ -116,6 +116,8 @@ pub struct InMemoryStore {
     /// the records and the log position as one value, or a change committed
     /// between the two reads is missed by every consumer that resumes from it.
     nodes: Arc<RwLock<NodeState>>,
+    /// Committed audit records (`crate::audit`).
+    audit: Arc<RwLock<crate::audit::AuditLog>>,
     /// Shard ownership and its change log, under one lock for the same reason
     /// as `nodes`: a snapshot must read records and log position as one value.
     shards: Arc<RwLock<ShardState>>,
@@ -388,6 +390,17 @@ impl InMemoryStore {
         nodes::register_node(self, node, rule).await
     }
 
+    /// `RecordAudit`: append, on every member alike.
+    pub(crate) async fn apply_record_audit(&self, entries: Vec<crate::audit::AuditEntry>) {
+        self.audit.write().await.append(entries);
+    }
+
+    /// The audit log, for an import to keep (an import replaces the store,
+    /// never its record of who did what).
+    pub(crate) async fn audit_log(&self) -> crate::audit::AuditLog {
+        self.audit.read().await.clone()
+    }
+
     /// `DeclareNodeDead`, decided against this member's node record.
     pub(crate) async fn apply_declare_node_dead(
         &self,
@@ -452,6 +465,7 @@ impl InMemoryStore {
             cache_tombstones: Arc::new(RwLock::new(HashMap::default())),
             deleted_stream_names: Default::default(),
             deleted_cache_names: Default::default(),
+            audit: Default::default(),
             nodes: Arc::new(RwLock::new(NodeState {
                 records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
@@ -714,6 +728,19 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn declared_dead(&self) -> StoreResult<Vec<crate::model::DeclaredDead>> {
         Ok(self.nodes.read().await.dead.iter().cloned().collect())
+    }
+
+    async fn record_audit(&self, entries: Vec<crate::audit::AuditEntry>) -> StoreResult<bool> {
+        self.apply_record_audit(entries).await;
+        Ok(true)
+    }
+
+    async fn audit_records(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> StoreResult<crate::audit::AuditPage> {
+        Ok(self.audit.read().await.page(after, limit))
     }
 
     async fn reform(
@@ -1097,6 +1124,10 @@ impl ControlPlaneStore for InMemoryStore {
                 "store already holds state; import requires overwrite".to_string(),
             ));
         }
+        // An operator's import replaces the store, never its record of who
+        // did what (the Raft apply keeps the group's the same way).
+        let mut state = state;
+        state.audit = self.audit_log().await;
         InMemoryStore::import_state(self, state).await?;
         Ok(crate::store::ImportOutcome::Imported)
     }

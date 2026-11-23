@@ -665,3 +665,41 @@ fn a_copy_id_report_at_epoch_zero_is_the_old_wire_form() {
     let (_, needs) = decode_command_with_level(&report(Some(0))).expect("decode");
     assert!(needs < super::super::REFORM_RECORD_LEVEL);
 }
+
+/// An audit record is refused below level 49: an older member would refuse
+/// the entry as unknown and diverge from the members that applied it.
+#[test]
+fn an_audit_record_is_refused_below_level_49() {
+    let record = encode_command(&MetaCommand::RecordAudit {
+        entries: vec![crate::audit::AuditEntry {
+            at_ms: 1,
+            member: "1".to_string(),
+            listener: "api".to_string(),
+            peer: None,
+            method: "POST".to_string(),
+            route: "/v1/x".to_string(),
+            path: "/v1/x".to_string(),
+            tenant: None,
+            subject: None,
+            actor: None,
+            cert_sha256: None,
+            credential: "none".to_string(),
+            status: 204,
+            refusal: None,
+            suppressed: 0,
+        }],
+    });
+    let level = super::super::AUDIT_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    assert_eq!(op_of(&record).as_deref(), Some(RECORD_AUDIT_OP));
+    assert!(depends_on_level(&record));
+    let refused = settle_for_level(&record, level - 1).expect_err("below the level");
+    assert!(
+        matches!(
+            decode_result(&refused),
+            Ok(Err(MetaError::Conflict(message))) if message.contains("audit record")
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(settle_for_level(&record, level), Ok(None));
+}

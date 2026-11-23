@@ -96,6 +96,7 @@ impl Cluster {
             placement_wakes: Default::default(),
             move_policy: Default::default(),
             new_cluster: Default::default(),
+            audit: Default::default(),
         };
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

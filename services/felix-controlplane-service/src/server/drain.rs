@@ -29,6 +29,9 @@ pub(super) struct Running {
     pub(super) metrics_task: JoinHandle<std::io::Result<()>>,
     /// Resolves on a termination signal after the first.
     pub(super) second_signal: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
+    /// Closed after the listeners and before the Raft node, so the records of
+    /// the last requests served still commit.
+    pub(super) audit: crate::audit::AuditSink,
 }
 
 impl Running {
@@ -48,6 +51,7 @@ impl Running {
             peer_shutdown,
             metrics_task,
             second_signal,
+            audit,
         } = self;
 
         // Step 1b: keep serving while load balancers notice. Without this the
@@ -115,6 +119,10 @@ impl Running {
                 .await
         {
             task.abort();
+        }
+
+        if !budget.drain("audit_records", audit.close()).await {
+            tracing::warn!(target: crate::audit::AUDIT_TARGET, "audit records still queued when the drain budget ran out");
         }
 
         if let Some(task) = raft_metrics_task {

@@ -358,6 +358,21 @@ pub(crate) enum Command {
     )]
     Features(FeaturesCommand),
 
+    /// Read the control plane's audit log of who did what (control plane)
+    #[command(
+        subcommand,
+        long_about = "The control plane records every change made through its API and every \
+                      refused request: who asked, from where, what, and the answer. Records \
+                      are committed through the control plane's Raft log and numbered without \
+                      gaps; it keeps the newest 10,000. Reading needs a control-plane token \
+                      allowed audit.view on the cluster.",
+        after_long_help = "Examples:
+  felixctl audit ls
+  felixctl audit ls --after 1200 --limit 50
+  felixctl audit ls --follow --json"
+    )]
+    Audit(AuditCommand),
+
     /// Record every shard's committed offsets as a backup point (control plane)
     #[command(
         name = "backup-point",
@@ -1434,6 +1449,33 @@ pub(crate) enum PlacementCommand {
 pub(crate) enum DataCommand {
     #[command(external_subcommand)]
     Run(Vec<OsString>),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AuditCommand {
+    /// List audit records, oldest first
+    #[command(
+        visible_alias = "list",
+        long_about = "List audit records after a sequence number, oldest first. With --follow, \
+                      keep polling for new records; with --json, print one record per line, \
+                      ready to ship to a log store. A warning on stderr says when records were \
+                      trimmed before they were read.",
+        after_long_help = "Examples:
+  felixctl audit ls
+  felixctl audit ls --after 1200 --limit 50
+  felixctl audit ls --follow --json"
+    )]
+    Ls {
+        /// Start after this sequence number (0 lists from the oldest kept)
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+        /// Records per request, up to 1000
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        /// Keep polling for new records until interrupted
+        #[arg(long)]
+        follow: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

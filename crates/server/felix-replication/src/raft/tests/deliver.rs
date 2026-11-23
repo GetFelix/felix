@@ -12,8 +12,8 @@ use tokio::sync::oneshot;
 
 use super::super::deliver::{Proposed, settled};
 use super::super::lease;
-use super::super::propose::Unacknowledged;
-use super::commit::{Led, led, lost};
+use super::super::propose::{Heard, Unacknowledged};
+use super::commit::{Led, led, led_with, lost};
 use super::propose::cut_after_first;
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -526,7 +526,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             producer: None,
             publisher: None,
         };
-        let written = engine.propose_reaching(&shard(0), batch);
+        let written = engine.propose_reaching(&shard(0), batch, Heard::Written);
         let written = async move {
             let written = written.await;
             let _ = landing.send(());
@@ -882,6 +882,39 @@ async fn a_followers_subscriber_gets_what_its_member_applied() {
         ]
     );
     nothing(&mut receiver).await;
+    led.cluster.stop().await;
+}
+
+/// **A follower's fanout runs on the broker runtime, not its group's
+/// thread.** A pass can hand a page of records to many subscribers without
+/// yielding, and every group on the thread would wait behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_followers_fanout_runs_off_its_group_thread() {
+    let threads = RuntimeConfig {
+        group_threads: 2,
+        ..timers()
+    };
+    let mut led = led_with(threads).await;
+    let follower = led.followers().next().expect("a follower");
+    assert!(
+        !led.cluster
+            .runtime(&follower)
+            .group_thread_loads()
+            .is_empty()
+    );
+    let (broker, _handle) = broker_on_log_of(&led, &follower).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let one = led.cluster.write(0, b"one").await;
+    assert_eq!(
+        records(&mut receiver, 1).await,
+        [(one, Bytes::from_static(b"one"))]
+    );
+    let on = super::FOLLOWED_ON.lock().clone();
+    assert!(!on.is_empty());
+    assert!(
+        on.iter().all(|name| !name.starts_with("felix-raft-group-")),
+        "ran on {on:?}"
+    );
     led.cluster.stop().await;
 }
 
@@ -1776,6 +1809,13 @@ async fn records_between_group_entries_in_one_apply_run_count_no_drop() {
             .await
             .expect("written");
     }
+    // Released with the tail still uncommitted, the applier takes the run
+    // in pieces as the commits land, and it never outgrows the history.
+    eventually(|| {
+        let status = led.cluster.runtime(&led.leader.broker).status(&shard(0))?;
+        (status.last_index.is_some() && status.committed == status.last_index).then_some(())
+    })
+    .await;
     drop(held);
 
     // The claim only matters if the run outgrows what a bounded history
@@ -1799,4 +1839,69 @@ async fn records_between_group_entries_in_one_apply_run_count_no_drop() {
         previous = Some(offset);
     }
     led.cluster.stop().await;
+}
+
+/// A future that counts its polls: one per wake of the task running it.
+struct Counted<F> {
+    run: std::pin::Pin<Box<F>>,
+    polls: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl<F: std::future::Future> std::future::Future for Counted<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        self.polls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.run.as_mut().poll(cx)
+    }
+}
+
+/// **A publish answered at its commit wakes its publisher at the write and
+/// at the commit, not for the flush in between, and is fanned out before
+/// its answer.** The commit covers the flush, so waiting on both is one
+/// more wake per publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_answered_at_its_commit_does_not_wait_for_the_flush_too() {
+    let mut cluster = Cluster::new(true);
+    let (engine, _) = sole_voter(&mut cluster).await;
+    let (broker, handle) = broker_on(&engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let polls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    const PUBLISHES: u64 = 50;
+    let mut last = None;
+    for _ in 0..PUBLISHES {
+        let proposed = engine.publish(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            vec![Bytes::from_static(b"w")],
+            AckAt::Flushed,
+            AnswerAt::Commit,
+            PATIENCE,
+        );
+        let run = Box::pin(proposed.expect("proposed").complete());
+        let polls = Arc::clone(&polls);
+        let outcome = tokio::spawn(Counted { run, polls }).await;
+        let (first, _) = outcome
+            .expect("joined")
+            .expect("committed")
+            .offsets
+            .expect("offsets");
+        let envelope = receiver.try_recv().expect("delivered before the answer");
+        assert_eq!(envelope.base_offset(), Some(first));
+        assert!(last.is_none_or(|last| first == last + 1), "out of order");
+        last = Some(first);
+    }
+    let polls = polls.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        polls < 4 * PUBLISHES,
+        "{polls} polls for {PUBLISHES} publishes"
+    );
+    assert!(receiver.try_recv().is_err(), "delivered twice");
+    cluster.stop().await;
 }

@@ -1037,7 +1037,7 @@ falls further behind than that has to take a new snapshot.
 ### Cluster identity
 
 A Raft group records its identity once, when it forms: a random `group_id`
-and the `shard_engine` (`hybrid` or `raft`) from `FELIX_SHARD_ENGINE` on the
+and the `shard_engine` (`raft`, the default, or the deprecated `hybrid`) from `FELIX_SHARD_ENGINE` on the
 instance that proposes it. The first record applied wins, and nothing changes
 it afterwards, so racing proposers on a new group are settled by log order. A
 background task on each instance proposes it while the group has none, and
@@ -1118,8 +1118,8 @@ next counter whenever an id changes. A report names the reporting process's
 registration incarnation and is refused from any other process, so a late
 retry of a wiped copy's old id cannot replace its successor's. From metadata
 level 41 it also names the stream incarnation of the copy's group, and a shard
-that started on Raft (a durable stream's shard on a cluster whose engine is
-Raft, with no switch record) takes only such a report. A restore can
+that started on Raft (a durable stream's or a cache's shard on a cluster
+whose engine is Raft, with no switch record) takes only such a report. A restore can
 bring back ids a broker has since replaced, so a broker reports its id again
 every 30 seconds until the feed's target names its copy. Today only a copy-id report moves
 the counter; a set change will too once Raft shards are placed. Both are written
@@ -1830,8 +1830,9 @@ report's joint start is dropped, which keeps a change pending; finalizing
 #### Raft shards
 
 On a cluster whose `shard_engine` is `raft` (read from the cluster identity,
-so every instance agrees), a durable stream's shard is run by a Raft group
-that elects its own leader and keeps its own members. Placement places a new
+so every instance agrees), a durable stream's shard and every cache's shard
+are run by a Raft group that elects its own leader and keeps its own members.
+A Raft broker always has a disk, so its cache is a log and runs as a group. Placement places a new
 shard as above, and the brokers form its group from that set. After that it
 only says which member it wants leading:
 
@@ -2955,6 +2956,7 @@ Control plane:
 | `felix_shard_move_fence_seconds` | histogram: fence to cut-over, as this instance observed it |
 | `felix_shard_reconcile_failures_total` | passes that could not read the catalog at all |
 | `felix_controlplane_auth_rejected_total{reason}` | credentials turned away by any authenticated endpoint, token exchange and token refresh included: `missing_token`, `malformed_token`, `invalid_token`, `tenant_mismatch`, `forbidden`, `actor_refused` for an exchange's `actor_token` that does not verify or lacks `token.delegate`, or a gateway (on the exchange or on `/token/delegate`) whose token predates a revocation of it or that current RBAC no longer grants `token.delegate`, and `refresh_refused` for a refresh token that is unknown, expired, revoked, spent or has the wrong secret (replays and wrong secrets are also counted on their own, below). Each is also an `info` log line with the reason and the message the caller saw, never the token. A rising `invalid_token` or `forbidden` is a broker with a stale credential, or something that is not a broker |
+| `felix_audit_records_dropped_total{reason}` | audit records not committed: `rate_limited` (refusals and requests without a verified credential, over 20 a second per member), `busy` (more than 4,096 queued), `store` (the Raft write failed), `level_pending` (a member below metadata level 49), `closed` (shutting down). Each is also an `error` line at target `felix_audit` carrying the record. See `docs-site/src/content/docs/security/audit-log.md` |
 | `felix_refresh_token_grace_reuses_total` | spent refresh tokens presented again with the right secret within `FELIX_REFRESH_REUSE_GRACE_SECONDS`, answered with a working token instead of a revoked chain: retries of refreshes whose answer was lost, and concurrent refreshes. A steady rate is a client refreshing one chain from two places |
 | `felix_refresh_token_replays_total` | spent refresh tokens presented again. Each one revoked its whole rotation chain. Nobody legitimately does this, so any increase is a stolen token or a client that retried a refresh it already completed; alert on it |
 | `felix_refresh_token_bad_secret_total` | refresh tokens presented with a real token id and the wrong secret. The token is spent anyway, so guessing costs the guesser the token; any increase means someone holds half a credential |
@@ -3026,7 +3028,7 @@ be a member; it is legitimately 0 during a drain.
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
 | `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
-| `shard_engine` | `FELIX_SHARD_ENGINE` | `hybrid` |
+| `shard_engine` | `FELIX_SHARD_ENGINE` | `raft` |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than

@@ -61,6 +61,7 @@ impl Default for Placement {
 /// its permit again ahead of the others.
 pub(crate) struct Budget {
     permits: Arc<Semaphore>,
+    #[cfg(any(test, feature = "testing"))]
     total: usize,
     gap: Duration,
     next: parking_lot::Mutex<Option<Instant>>,
@@ -74,6 +75,7 @@ impl Budget {
         let total = placement.permits.max(1);
         Self {
             permits: Arc::new(Semaphore::new(total)),
+            #[cfg(any(test, feature = "testing"))]
             total,
             gap: Duration::from_secs(1) / placement.starts_per_second.max(1),
             next: parking_lot::Mutex::new(None),

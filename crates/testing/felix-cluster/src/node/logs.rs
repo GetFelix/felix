@@ -26,6 +26,9 @@ const FAILURE_LOG_TOPICS: &[&str] = &[
     "replicat",
     "quorum",
     "halted",
+    "fsync",
+    "sync",
+    "poison",
 ];
 
 impl BrokerNode {

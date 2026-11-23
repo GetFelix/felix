@@ -193,7 +193,12 @@ a thread of their own, with the segment lock released during the `write` (see
 
 The thread polls for its next append for 20 µs before it parks, and a caller
 whose append is the only one queued polls as long for its result, so
-back-to-back appends pay no wake-up on either side.
+back-to-back appends pay no wake-up on either side. The thread polls only
+while the last append was sent within those 20 µs of the one before it
+finishing. On a quiet log, where the next append comes a full fsync later, it
+parks at once instead of burning the window after every append. A flush with
+no append queued takes its bound on the caller instead of handing it to the
+thread, which saves the hand-off and the thread's poll after it.
 
 The caller hears its result before the thread writes any index entries, and
 the batch is freed by the caller that allocated it, so a lone publisher waits

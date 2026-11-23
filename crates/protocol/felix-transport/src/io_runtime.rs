@@ -8,7 +8,7 @@
 //! immediately and never migrate cores; see [`EndpointRole`] for which
 //! endpoints share one. `FELIX_IO_RUNTIME_THREADS` sets the pool size (derived
 //! from the listener count on macOS, `0` elsewhere); `0` restores drivers to
-//! the app runtime.
+//! the app runtime the endpoint was bound on.
 
 use std::sync::{Arc, OnceLock};
 
@@ -39,9 +39,10 @@ pub(crate) enum EndpointRole {
     Client,
 }
 
-/// `quinn::Runtime` that runs driver tasks on the dedicated I/O runtime.
-/// Timers and the UDP socket are created in that runtime's context so they
-/// register with its reactor; application-facing stream futures are unaffected.
+/// `quinn::Runtime` that runs driver tasks on one fixed runtime: the dedicated
+/// I/O runtime, or the one the endpoint was bound on. Timers and the UDP socket
+/// are created in that runtime's context so they register with its reactor;
+/// application-facing stream futures are unaffected.
 #[derive(Debug)]
 struct IoRuntime {
     handle: tokio::runtime::Handle,
@@ -103,20 +104,31 @@ pub fn plan_server_endpoints(count: usize) {
     }
 }
 
+/// Where an endpoint's quinn drivers and its connections' pump tasks run.
+pub(crate) struct EndpointRuntime {
+    pub(crate) quinn: Arc<dyn quinn::Runtime>,
+    /// The dedicated I/O runtime, when isolation is on.
+    pub(crate) io: Option<tokio::runtime::Handle>,
+    /// The runtime the endpoint was bound on.
+    pub(crate) app: Option<tokio::runtime::Handle>,
+}
+
 /// The quinn runtime new endpoints should use, honouring the isolation switch.
-/// Also returns the chosen handle so the endpoint can offer it to pump tasks.
-pub(crate) fn quinn_runtime(
-    role: EndpointRole,
-) -> (Arc<dyn quinn::Runtime>, Option<tokio::runtime::Handle>) {
-    match io_runtime_handle(role) {
-        Some(handle) => (
-            Arc::new(IoRuntime {
-                handle: handle.clone(),
-            }),
-            Some(handle),
-        ),
-        None => (Arc::new(quinn::TokioRuntime), None),
-    }
+///
+/// Without isolation, drivers still go to the runtime current at bind, not
+/// the one current at spawn: quinn's `TokioRuntime` spawns a connection's
+/// driver from whatever task dials it, and a Raft group thread that dials a
+/// peer would otherwise carry that connection's I/O for its whole life.
+pub(crate) fn quinn_runtime(role: EndpointRole) -> EndpointRuntime {
+    let app = tokio::runtime::Handle::try_current().ok();
+    let io = io_runtime_handle(role);
+    let quinn: Arc<dyn quinn::Runtime> = match io.as_ref().or(app.as_ref()) {
+        Some(handle) => Arc::new(IoRuntime {
+            handle: handle.clone(),
+        }),
+        None => Arc::new(quinn::TokioRuntime),
+    };
+    EndpointRuntime { quinn, io, app }
 }
 
 /// Which runtime in a pool of `pool_len` an endpoint gets. The last one is

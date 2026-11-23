@@ -72,6 +72,7 @@ use crate::model::{
         admin::remove_grouping,
         admin::revoke_principal_refresh_tokens,
         crate::auth::revocation::principal_revocation_changes,
+        crate::audit::list_audit,
         signing_keys::list_signing_keys,
         signing_keys::stage_signing_key,
         signing_keys::activate_signing_key,
@@ -138,6 +139,9 @@ use crate::model::{
     ),
     components(schemas(
         DeclaredDead,
+        crate::audit::AuditEntry,
+        crate::audit::AuditRecord,
+        crate::audit::AuditPage,
         raft_reform::ReformScope,
         raft_reform::CreateReformPlanRequest,
         raft_reform::CreateReformPlanResponse,
@@ -293,7 +297,8 @@ use crate::model::{
         (name = "resources", description = "Streams and caches created together, all or none"),
         (name = "nodes", description = "Broker membership"),
         (name = "raft", description = "Raft group re-form plans"),
-        (name = "placement", description = "Shard moves and placement, for operators")
+        (name = "placement", description = "Shard moves and placement, for operators"),
+        (name = "audit", description = "Who did what on the control plane")
     )
 )]
 pub struct ApiDoc;

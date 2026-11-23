@@ -533,7 +533,7 @@ On a Raft stream shard a poll's claims (offsets, attempts, the member, the
 visibility) are a group entry in the shard's log, applied before the poll is
 answered, so the next leader holds them. It records them as held on a
 connection older than any of its own, so a member's first `reclaim` there takes
-them back. On the default engine claims and members live in the shard leader's
+them back. On the hybrid engine claims and members live in the shard leader's
 memory, so after a failover there is nothing to reclaim: the group resumes from
 its durable position.
 
@@ -677,7 +677,7 @@ where it stands. In `group_info`, `committed` is left out for a group with no
 cursor, `tail` is the shard's committed tail, so `tail - committed` is how far
 behind the group is, and `owed` counts records owed again after a nack or a
 lapsed claim. `owed` is the leader's memory, and so is `in_flight` on the
-default engine: a snapshot that starts again from zero when the shard changes
+hybrid engine: a snapshot that starts again from zero when the shard changes
 leader. On a Raft shard `in_flight` starts from the claims the new leader rebuilt.
 
 ### GroupAck / GroupNack
@@ -738,14 +738,14 @@ delivery. The extension is refused with `stale_claim` (`fatal`: retrying cannot
 bring the claim back) once that claim no longer stands: it lapsed, the record
 was handed out again at another attempt (a reclaim by the same member keeps
 the attempt, so the delivery still stands), or a seek, eviction, or a
-failover on the default engine rebuilt the group's in-flight state. Without the check, a consumer
+failover on the hybrid engine rebuilt the group's in-flight state. Without the check, a consumer
 that lost a record could extend the claim of whoever holds it now, and keep it
 from the group should that consumer die. A record nacked with a delay is not a
 claim and cannot be extended either.
 
 On a Raft stream shard an extension is a group entry like a poll's claims, and
 the next leader holds the record for the whole extension again from when it
-takes over. On the default engine an extension is the leader's memory, like
+takes over. On the hybrid engine an extension is the leader's memory, like
 every claim, and a failover redelivers the record from the group's durable
 position, sooner than the extension said. A
 group's in-flight state is not evicted while a claim stands, however long.

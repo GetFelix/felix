@@ -636,6 +636,14 @@ the run, since no member restarts. The run then also checks that:
 this way. The stopped copy coming back needs a restart, which the run does
 not have yet (issue #2300).
 
+A broker that sees a poisoned log rewrites the run record of every data root
+it holds, so a crash after it takes a new storage id. The brokers of a
+simulation, and the tests of one binary, share a process, so under the `sim`
+feature each simulated root keeps that state for its own broker until its next
+power cut. Without that, one run's failed flush made every later power cut in
+the process rotate copies. `a_failed_flush_leaves_a_later_runs_power_cuts_alone`
+runs the two in that order.
+
 **Disk faults.** `FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1` open every
 member the way a broker does: its data root through the restore gate
 (`open_root`), and each shard directory as a copy (`open_copy`), so the first

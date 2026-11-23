@@ -236,8 +236,8 @@ impl AppStateMachine for Metadata {
         Vec::new()
     }
     async fn restore(&self, _snapshot: &[u8]) {}
-    fn peer_may_propose(&self, command: &[u8]) -> bool {
-        crate::store::raft::command::peer_may_propose(command)
+    fn peer_may_propose(&self, command: &[u8], caller: Option<crate::raft::NodeId>) -> bool {
+        crate::store::raft::command::peer_may_propose(command, caller)
     }
 }
 
@@ -283,5 +283,54 @@ async fn a_peer_cannot_propose_an_import() {
         propose(r#"{"v":1,"op":"create_tenant"}"#).await,
         StatusCode::SERVICE_UNAVAILABLE
     );
+    handle.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn a_peer_cannot_propose_audit_records_for_another_member() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut settings = RaftSettings::new(
+        1,
+        dir.path().into(),
+        PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: Some(TOKEN.to_string()),
+            previous_token: None,
+            next_token: None,
+            tls: None,
+        },
+    );
+    settings.write_timeout = Duration::from_millis(200);
+    let handle = RaftHandle::start(settings, Arc::new(Metadata))
+        .await
+        .expect("start");
+    let router = handle.rpc_router();
+    // The member a certificate named, as `require_member` leaves it.
+    let propose = async |caller: Option<u64>, member: &str| {
+        let body = format!(
+            r#"{{"v":1,"op":"record_audit","entries":[{{"at_ms":1,"member":"{member}","listener":"api","method":"POST","route":"/v1/x","path":"/v1/x","credential":"none","status":204}}]}}"#
+        );
+        let mut request = Request::post(format!("{PEER_PREFIX}/propose"))
+            .header(CLUSTER_ID_HEADER, "test-cluster")
+            .header("authorization", format!("Bearer {TOKEN}"))
+            .body(Body::from(body))
+            .expect("request");
+        if let Some(caller) = caller {
+            request
+                .extensions_mut()
+                .insert(crate::raft::peer::PeerMember(caller));
+        }
+        router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response")
+            .status()
+    };
+    assert_eq!(propose(Some(2), "3").await, StatusCode::FORBIDDEN);
+    // Its own records go on to the log (no leader here, so 503).
+    assert_eq!(propose(Some(2), "2").await, StatusCode::SERVICE_UNAVAILABLE);
+    // No certificate names the caller: the name is the sender's word.
+    assert_eq!(propose(None, "3").await, StatusCode::SERVICE_UNAVAILABLE);
     handle.shutdown().await.expect("shutdown");
 }

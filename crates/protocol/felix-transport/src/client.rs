@@ -7,8 +7,9 @@ use anyhow::{Context, Result};
 use quinn::{ClientConfig, Endpoint};
 
 use crate::config::TransportConfig;
+use crate::connection::PumpRuntimes;
 use crate::connection::QuicConnection;
-use crate::io_runtime::{EndpointRole, quinn_runtime};
+use crate::io_runtime::{EndpointRole, EndpointRuntime, quinn_runtime};
 use crate::socket::{effective_udp_buffer_bytes, warn_if_udp_buffers_were_clamped};
 
 /// QUIC client endpoint wrapper.
@@ -35,8 +36,8 @@ pub struct QuicClient {
     // Variant of the client config used when connecting to a loopback peer;
     // see [`TransportConfig::loopback_initial_mtu`].
     loopback_config: Option<ClientConfig>,
-    // See `QuicServer::io_handle`.
-    io_handle: Option<tokio::runtime::Handle>,
+    // See `QuicServer::pumps`.
+    pumps: PumpRuntimes,
 }
 
 impl QuicClient {
@@ -69,7 +70,11 @@ impl QuicClient {
                 config
             });
         client_config.transport_config(Arc::new(quinn_transport));
-        let (runtime, io_handle) = quinn_runtime(EndpointRole::Client);
+        let EndpointRuntime {
+            quinn: runtime,
+            io,
+            app,
+        } = quinn_runtime(EndpointRole::Client);
         let mut endpoint = Endpoint::new(transport.quinn_endpoint_config(), None, socket, runtime)
             .context("bind QUIC client")?;
         endpoint.set_default_client_config(client_config);
@@ -77,7 +82,7 @@ impl QuicClient {
             endpoint,
             _transport: transport,
             loopback_config,
-            io_handle,
+            pumps: PumpRuntimes { io, app },
         })
     }
 
@@ -95,6 +100,6 @@ impl QuicClient {
                 .context("initiate QUIC connection")?,
         };
         let connection = connecting.await.context("establish QUIC connection")?;
-        Ok(QuicConnection::new(connection, self.io_handle.clone()))
+        Ok(QuicConnection::new(connection, self.pumps.clone()))
     }
 }

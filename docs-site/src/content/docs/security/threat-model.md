@@ -29,7 +29,7 @@ as the project's own account, not an audit.
 | Another tenant | A valid token for a different tenant. | To read or disturb your tenant. |
 | A compromised broker or storage machine | Everything on that machine: its node token, internal-port certificate, lease key file, segments on disk, and the tokens of clients connected to it. | To forge records, act as other brokers, or widen its reach to tenants or shards it does not serve. |
 | A compromised control-plane member | Its Raft store (signing keys, RBAC), its member certificate, and the Raft peer token if one is set. | To mint tokens, rewrite metadata, or take over the group. |
-| An operator | Bootstrap and Raft peer tokens, cluster-scope grants, shell access. | Mistakes are the usual risk. A malicious operator is out of scope: Felix has no audit log yet ([#2806](https://github.com/GetFelix/felix/issues/2806)). |
+| An operator | Bootstrap and Raft peer tokens, cluster-scope grants, shell access. | Mistakes are the usual risk. Every control-plane change is in the [audit log](/security/audit-log/), committed through the metadata Raft log so one member cannot rewrite it. An operator with shell access to a majority of members can still change it. |
 
 ## Trust boundaries
 
@@ -353,9 +353,12 @@ the bootstrap listener, behind a separate operator token.
 
 ## Supply chain
 
-Release archives are built once in GitHub Actions. Nothing yet rebuilds them
-to check the bytes match the source
-([#2799](https://github.com/GetFelix/felix/issues/2799)). Known advisory
+The Linux x86_64 server archive is built reproducibly. The release builds it
+twice on separate runners and refuses to publish unless the two sha256 match,
+and you can rebuild it yourself
+([Reproduce a release](/security/reproducible-builds/),
+[#2799](https://github.com/GetFelix/felix/issues/2799)). The aarch64 archive
+and the container images are not covered yet. Known advisory
 exceptions are recorded with reasons in
 [`deny.toml`](https://github.com/GetFelix/felix/blob/main/deny.toml).
 

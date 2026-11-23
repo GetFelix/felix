@@ -1200,6 +1200,7 @@ the field itself, on every member alike, or refuses the command:
 | finalizing `hold_formed`, assignment `raft_voters`, floor report `voters`, and in the snapshot | 46 | formed-set voters (#2905). `settle_for_level` sets `hold_formed` on a finalize at 46 and above, and the proposer drops `voters` from each floor report below 46, so no member keeps a group's reported voters or refuses a formed group's set change they do not keep a majority of |
 | `record_raft_copy_id` `group_epoch` and `keep_seed`, assignment `raft_seed` and `raft_bases`, and in the snapshot | 47 | re-form seed and bases, and the copy id's report epoch (#2882). The proposer sets `group_epoch` (epoch 0 is left out) and refuses the report with 409 below 47 when it names an epoch; `settle_for_level` sets `keep_seed`. Below it no member keeps the epoch's seed or bases, and a copy id reported from another epoch is not refused |
 | `record_raft_floors` `vouched_voters` | 48 | vouched voters (#2909). The proposer sets it for the floor report at 48 and above. Below it voters count from any reporter, as at 46 |
+| `record_audit`, snapshot `audit` | 49 | audit records (#2806). Nothing proposes the command below 49, and the leader refuses it with 409 there too, so records stay in each member's `felix_audit` log only. Applying one marks 49 as used, so a member rolled back below it refuses the snapshot |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

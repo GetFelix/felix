@@ -401,6 +401,7 @@ impl Group {
                     placement_wakes: Arc::clone(&setup.placement_wakes),
                     move_policy: Default::default(),
                     new_cluster: Default::default(),
+                    audit: felix_controlplane_service::audit::AuditSink::new(id.to_string()),
                 };
                 let api_listener = tokio::net::TcpListener::bind(api)
                     .await

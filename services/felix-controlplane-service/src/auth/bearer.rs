@@ -82,6 +82,7 @@ impl Refusal {
 /// Never the token, never the key. What is logged is the reason and the
 /// message the caller also sees.
 pub(crate) fn refused(reason: Refusal, message: &str) -> ApiError {
+    crate::audit::note_refusal(reason.label());
     metrics::counter!(AUTH_REJECTED_TOTAL, "reason" => reason.label()).increment(1);
     tracing::info!(
         reason = reason.label(),
@@ -280,8 +281,15 @@ async fn verify_against(
         }
         Err(ref err) => return Err(api_internal("failed to load signing keys", err)),
     };
-    verify_token_for(&keys, tenant_id, bearer, LEEWAY_SECS, &api_audiences())
-        .map_err(|_| refused(Refusal::InvalidToken, "invalid token"))
+    let claims = verify_token_for(&keys, tenant_id, bearer, LEEWAY_SECS, &api_audiences())
+        .map_err(|_| refused(Refusal::InvalidToken, "invalid token"))?;
+    crate::audit::note_verified(
+        "felix_token",
+        &claims.tid,
+        &claims.sub,
+        claims.act.as_ref().map(|actor| actor.sub.as_str()),
+    );
+    Ok(claims)
 }
 
 /// The audiences the API accepts: its own, and the broker's only while

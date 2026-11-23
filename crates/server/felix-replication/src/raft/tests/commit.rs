@@ -1483,7 +1483,13 @@ async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
     applied_on(&led.cluster, &led.leader.broker, at + 2).await;
     led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
     *led.cluster.net.lose_entries_from.lock() = None;
-    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    // The lapse is the leader's own, so wait for it to say so; a fixed sleep
+    // is short whenever the machine is slow to run the leader's timers.
+    eventually(|| {
+        let status = led.cluster.runtime(&led.leader.broker).status(&shard(0))?;
+        status.leader.is_none().then_some(())
+    })
+    .await;
     assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
     let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
     assert!(
@@ -1492,11 +1498,38 @@ async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
     );
     assert_eq!(led.engine.read_bound(&shard(0)), Ok(at));
 
+    // Healed, the followers have heard no leader for longer than an
+    // election timeout and neither holds the last piece, so either may win
+    // an election before the leader's next append reaches them and rightly
+    // discard it. The leader's appends are held until a follower has stood
+    // twice, as a loaded machine can delay them, and the followers' asks are
+    // lost so the leader is the one to commit the piece.
+    let asked = |net: &Net| {
+        let asks = net.asks.lock();
+        led.followers()
+            .map(|broker| asks.get(&broker).copied().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let before = asked(&led.cluster.net);
+    led.cluster
+        .net
+        .unheard_candidates
+        .lock()
+        .extend(led.followers());
+    led.cluster.net.lose_appends.store(true, Relaxed);
     led.heal();
+    eventually(|| {
+        let now = asked(&led.cluster.net);
+        let stood_twice = |(now, before): (&u32, &u32)| now - before >= 4;
+        now.iter().zip(&before).any(stood_twice).then_some(())
+    })
+    .await;
+    led.cluster.net.lose_appends.store(false, Relaxed);
     assert_eq!(
         led.engine.await_commit(&shard(0), written, PATIENCE).await,
         Ok(())
     );
+    led.cluster.net.unheard_candidates.lock().clear();
     for broker in BROKERS {
         let commits = applied_on(&led.cluster, broker, at + 3).await;
         assert!(commits.read_bound() >= at + 3, "{broker}");
@@ -1509,4 +1542,40 @@ async fn a_lapsed_lease_mid_batch_keeps_readers_out_of_it() {
         .collect();
     assert!(inside.is_empty(), "bounds inside the batch: {inside:?}");
     led.cluster.stop().await;
+}
+
+/// **A commit goes to the followers on the next append.** Without the
+/// ticker no heartbeat goes out, so every entry-less append here carries a
+/// commit and nothing else. openraft would send one per follower per write;
+/// held for the write after it, nearly none go. The hold is long so a
+/// loaded machine still writes within it. The last commit, with no write
+/// after it, reaches every follower once the hold ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_commit_goes_to_the_followers_on_the_next_append() {
+    const WRITES: u64 = 50;
+    let config = RuntimeConfig {
+        commit_hold: Duration::from_millis(150),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(config, false);
+    cluster.open(0).await;
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members())
+        .await
+        .expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"first").await;
+    let before = cluster.net.empty_appends.load(Relaxed);
+    let mut last = 0;
+    for _ in 0..WRITES {
+        last = cluster.write(0, b"record").await;
+    }
+    let empty = cluster.net.empty_appends.load(Relaxed) - before;
+    assert!(
+        empty < WRITES / 5,
+        "{empty} entry-less appends for {WRITES} writes"
+    );
+    cluster.committed_everywhere(0, last).await;
+    cluster.stop().await;
 }

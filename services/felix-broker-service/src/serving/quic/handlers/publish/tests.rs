@@ -202,6 +202,7 @@ fn ingress_with_replicas(leader: &str, servable: bool, replicas: Vec<String>) ->
         targets_withheld: false,
         raft_formed: None,
         raft_voters: None,
+        raft_bases: None,
         placed: None,
     };
     let assignments: HashMap<crate::shards::ShardKey, crate::shards::watch::ShardAssignment> =

@@ -45,12 +45,6 @@ pub(crate) struct Identity {
     pub(crate) adopts_existing: bool,
 }
 
-/// The shard engine this broker runs: its `FELIX_SHARD_ENGINE`, which the
-/// start has already checked parses.
-pub(crate) fn own_shard_engine() -> &'static str {
-    crate::config::shard_engine().map_or("hybrid", crate::config::ShardEngine::as_str)
-}
-
 /// What a start does with the control plane's group id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
@@ -188,12 +182,17 @@ pub(crate) fn unrecorded_message(current: &str) -> String {
     )
 }
 
-/// The refusal for a broker whose engine is not the cluster's.
+/// The refusal for a broker whose engine is not the cluster's. It names
+/// what to fix rather than the deprecated hybrid setting.
 pub(crate) fn engine_message(own: &str, cluster: &str) -> String {
-    format!(
-        "this broker runs shard engine {own} but the cluster was formed with {cluster}; set \
-         FELIX_SHARD_ENGINE={cluster} on this broker (the control plane's record does not change)"
-    )
+    let fix = if cluster == "raft" {
+        "leave FELIX_SHARD_ENGINE unset and give the broker what Raft needs: FELIX_NODE_ID, \
+         FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR"
+    } else {
+        "the hybrid engine is deprecated and a Raft broker cannot join this cluster; form a new \
+         cluster on Raft (docs/hybrid-retirement.md)"
+    };
+    format!("this broker runs shard engine {own} but the cluster was formed with {cluster}; {fix}")
 }
 
 /// Ask the control plane for its identity once.
@@ -274,19 +273,30 @@ pub(crate) async fn await_identity(
     }
 }
 
-/// Judge the data directory at `root` against the control plane's `identity`
-/// and, for a new directory, record its group. Returns the group the
-/// directory is recorded under, which the catalog sync holds snapshots to.
-pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> {
-    admit_as(root, identity, own_shard_engine())
-}
-
-/// [`admit`] for a broker that runs shard engine `engine`.
-pub(crate) fn admit_as(root: &Path, identity: &Identity, engine: &str) -> Result<Option<String>> {
+/// Refuse a broker whose shard engine `engine` is not the cluster's.
+pub(crate) fn check_engine(identity: &Identity, engine: &str) -> Result<()> {
     anyhow::ensure!(
         identity.shard_engine == engine,
         engine_message(engine, &identity.shard_engine)
     );
+    Ok(())
+}
+
+/// Judge the data directory at `root` against the control plane's `identity`
+/// and, for a new directory, record its group. Returns the group the
+/// directory is recorded under, which the catalog sync holds snapshots to.
+///
+/// `engine` is the shard engine this broker runs, which must be the
+/// cluster's. `None` is a broker that does not register, shares no shard,
+/// and is not compared.
+pub(crate) fn admit(
+    root: &Path,
+    identity: &Identity,
+    engine: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(engine) = engine {
+        check_engine(identity, engine)?;
+    }
     let stored = read(root)?;
     let current = identity.group_id.as_deref().unwrap_or_default();
     match decide(

@@ -105,16 +105,19 @@ impl FromRequestParts<RaftMember> for Node {
 /// landing on a follower forwards to the leader and a caller may point at
 /// **any** member. 403 for a command no member may send for another
 /// ([`super::AppStateMachine::peer_may_propose`]): an import of the whole
-/// store is the operator's alone. 503 only when the bounded write budget runs
+/// store is the operator's alone, and an audit record names the member that
+/// sent it. 503 only when the bounded write budget runs
 /// out: no leader, or no quorum.
-async fn propose(Node(handle): Node, body: axum::body::Bytes) -> Response {
-    if !handle.app.peer_may_propose(&body) {
-        metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "operator_only")
+async fn propose(Node(handle): Node, from: Caller, body: axum::body::Bytes) -> Response {
+    let caller = caller(&from).map(|PeerMember(id)| *id);
+    if !handle.app.peer_may_propose(&body, caller) {
+        metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "command")
             .increment(1);
-        tracing::warn!("a peer proposal of an operator-only command refused");
+        tracing::warn!(?caller, "a peer proposal this member may not send refused");
         return (
             StatusCode::FORBIDDEN,
-            "this command is the operator's and is never taken from a raft peer",
+            "this command is the operator's, or speaks for another member, and is not taken \
+             from this raft peer",
         )
             .into_response();
     }

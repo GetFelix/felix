@@ -99,6 +99,8 @@ export default defineConfig({
             { label: 'Threat Model', slug: 'security/threat-model' },
             { label: 'Hardening a Deployment', slug: 'security/hardening' },
             { label: 'Authentication and RBAC', slug: 'security/authentication' },
+            { label: 'Audit Log', slug: 'security/audit-log' },
+            { label: 'Reproduce a Release', slug: 'security/reproducible-builds' },
             { label: 'Reporting a Vulnerability', slug: 'security/reporting' },
           ],
         },

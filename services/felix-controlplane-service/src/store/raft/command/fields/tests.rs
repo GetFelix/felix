@@ -410,8 +410,32 @@ fn log<T>(item: T) -> ExportedLog<T> {
     }
 }
 
+/// An audit entry with every optional field set.
+fn audit_entry() -> crate::audit::AuditEntry {
+    crate::audit::AuditEntry {
+        at_ms: 1,
+        member: s("1"),
+        listener: s("api"),
+        peer: Some(s("127.0.0.1:1")),
+        method: s("POST"),
+        route: s("/v1/tenants/{tenant_id}"),
+        path: s("/v1/tenants/t"),
+        tenant: Some(s("t")),
+        subject: Some(s("p")),
+        actor: Some(s("g")),
+        cert_sha256: Some(s("00")),
+        credential: s("felix_token"),
+        status: 403,
+        refusal: Some(s("forbidden")),
+        suppressed: 1,
+    }
+}
+
 fn exported() -> ExportedState {
+    let mut audit = crate::audit::AuditLog::default();
+    audit.append(vec![audit_entry()]);
     ExportedState {
+        audit,
         deleted_stream_names: vec![stream_key()],
         deleted_cache_names: vec![cache_key()],
         cluster_identity: Some(crate::store::identity::ClusterIdentity {
@@ -662,6 +686,9 @@ fn commands() -> Vec<MetaCommand> {
             keep_seed: true,
         },
         MetaCommand::DeclareNodeDead { node_id: s("b") },
+        MetaCommand::RecordAudit {
+            entries: vec![audit_entry()],
+        },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
             floors: vec![crate::model::RaftFloorReport {
@@ -880,6 +907,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordRaftCopyId { .. } => "record_raft_copy_id",
         MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
         MetaCommand::DeclareNodeDead { .. } => "declare_node_dead",
+        MetaCommand::RecordAudit { .. } => "record_audit",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",
