@@ -335,7 +335,7 @@ async fn reads_through_a_failover(engine: Engine) {
     cluster.stop_node(&first).await.expect("kill the leader");
     let live: Vec<String> = nodes.into_iter().filter(|node| *node != first).collect();
     let second = engine.next_leader(&cluster, &first, &live).await;
-    let mut producer = Producer::connect(&cluster, &second, &topic)
+    let producer = Producer::connect(&cluster, &second, &topic)
         .await
         .with_id(id);
     let expected: Vec<(i64, String)> = offsets
@@ -343,13 +343,51 @@ async fn reads_through_a_failover(engine: Engine) {
         .enumerate()
         .map(|(i, offset)| (*offset, format!("r{i}")))
         .collect();
-    assert_eq!(
-        producer.fetch_until_served(offsets[0]).await,
-        expected,
-        "the next leader moved or lost a committed record"
-    );
-    let after = producer.latest_until_served().await;
-    assert!(after >= latest, "latest went back from {latest} to {after}");
+    // A new leader can answer its first fetch with an empty success before
+    // its commit bound covers the records replicated before the kill, so an
+    // empty or short answer is "not settled yet". If the records never
+    // arrive within the budget the test still fails, and that is a real bug.
+    let producer = tokio::sync::Mutex::new(producer);
+    let last: tokio::sync::Mutex<Vec<(i64, String)>> = tokio::sync::Mutex::new(Vec::new());
+    let (producer_ref, last_ref, expected_ref, first_offset) =
+        (&producer, &last, &expected, offsets[0]);
+    wait::until(
+        Duration::from_secs(60),
+        "the next leader to serve every committed record",
+        || async move {
+            let got = producer_ref.lock().await.fetch_until_served(first_offset).await;
+            let settled = got == *expected_ref;
+            *last_ref.lock().await = got;
+            settled
+        },
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "the next leader moved or lost a committed record: {error}; last answer {:?}, expected {expected:?}",
+            last.try_lock().map(|l| l.clone())
+        )
+    });
+    let mut producer = producer.into_inner();
+    let latest_before = latest;
+    let latest_seen = tokio::sync::Mutex::new(0i64);
+    let (producer_ref, seen_ref) = (&tokio::sync::Mutex::new(&mut producer), &latest_seen);
+    wait::until(
+        Duration::from_secs(60),
+        "the next leader's latest offset to cover the old leader's",
+        || async move {
+            let after = producer_ref.lock().await.latest_until_served().await;
+            *seen_ref.lock().await = after;
+            after >= latest_before
+        },
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "latest went back from {latest}: {error}; last answer {:?}",
+            latest_seen.try_lock().map(|v| *v)
+        )
+    });
 
     let next = producer.send_ok(5).await;
     assert!(next >= latest, "offset {next} was already handed out");
