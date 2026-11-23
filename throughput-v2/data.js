@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795465502975,
+  "lastUpdate": 1795468907106,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67132,6 +67132,58 @@ window.BENCHMARK_DATA = {
             "range": "16980.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1620993.81\nmean: 1624399.60\nstdev: 16980.24\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "94477473c1173303419b1bdbb46acf63914cb2ad",
+          "message": "test(cluster): triage the rest suite on Raft (#3016) (#3040)\n\n* test(cluster): rest on Raft reads the Raft term and leader, skips named product gaps (#3016)\n\ndiscovery compares a Raft shard's owner generation to the leader's term;\nseed_endpoints waits with wait_for_replication instead of a hybrid metric.\nTests failing on unbuilt Raft work skip there with skip_on_raft_until,\nnaming #3008, #3030, #3031 or #3032; they still run on hybrid.\n\nSpec-Unaffected: test harness and docs only\n\n* docs(wire): a Raft shard's generation is 0 from a broker holding no member of it\n\nSpec-Unaffected: doc comment and protocol.md only",
+          "timestamp": "2026-11-23T12:56:49-08:00",
+          "tree_id": "28e5a6a155e999e309b6bac7d5fb1386679048f1",
+          "url": "https://github.com/GetFelix/felix/commit/94477473c1173303419b1bdbb46acf63914cb2ad"
+        },
+        "date": 1795468906409,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354487.72,
+            "range": "14538.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354487.72\nmean: 352884.24\nstdev: 14538.37\ncv: 4.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354487.72,
+            "range": "14538.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354487.72\nmean: 352884.24\nstdev: 14538.37\ncv: 4.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81287.99,
+            "range": "816.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81287.99\nmean: 81425.71\nstdev: 816.85\ncv: 1.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812879.9,
+            "range": "8168.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812879.90\nmean: 814257.07\nstdev: 8168.47\ncv: 1.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
