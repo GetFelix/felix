@@ -4424,33 +4424,40 @@ an older control plane added:
   staged or copied. The group's leader then hands its leadership there (see
   "Leaders follow placement").
 - A drain moves every shard the draining broker leads to a live member, so
-  its shutdown hand-off finishes. Its follower copies stay, since a member
-  leaves a group only through a membership change. A shard with no other
-  live member, such as one at replication factor 1, keeps its leader and
-  shows as waiting with "no live node can take this shard".
-- A follower on a node marked internal is replaced: one write swaps it for a
-  live node outside the set, once the control plane has stored the group's
-  target for the current set, so the group's leader adds the new member as a
-  learner and then changes the voters (see "Membership"). With no such node
-  the set stays and the shard waits.
+  its shutdown hand-off finishes. A shard with no other live member, such
+  as one at replication factor 1, keeps its leader and shows as waiting
+  with "no live node can take this shard".
+- A follower that must leave is replaced: one on a draining broker, on a
+  node marked internal, or on a broker down or gone for
+  `restore_after_millis`. One write swaps it for a live node outside the
+  set, once the control plane has stored the group's target for the current
+  set and every other member is serving, so the group's leader adds the new
+  member as a learner and then changes the voters (see "Membership"). A lost
+  member goes first. With no such node the set stays and the shard waits.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement
   counts no unplaceable shard. With no live member left the name stays.
 - A leader-only write keeps the shard's Raft target and its version, so it
   does not cancel a membership change in flight.
-- An operator move to a broker that is not a member is refused with
-  `not_a_member`.
+- An operator move to a broker outside the set gives it the leader's seat
+  and names it leader, in one write. The group's leader adds it as a
+  learner, grows the voters to the target plus itself, and hands leadership
+  to a voter both keep, which shrinks the voters; placement's leader rule
+  then hands leadership to the new broker once it has caught up. It is
+  refused while a member is not serving (`member_down`), while the target is
+  not stored for the current set (`set_unsettled`), and while the
+  destination is still a learner (`not_a_member`).
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 
-So **placement replaces a Raft shard's broker only for an internal node;** removing any other broker that holds Raft shards is not supported. While a group converges to a swapped set, a broker counts
+So a broker that holds Raft shards can be drained and removed, or replaced once it has been gone for `restore_after_millis`: each of its copies is swapped for another broker, one shard member at a time. A removed copy keeps its directory, since nothing deletes it yet. While a group converges to a swapped set, a broker counts
 the shards it holds whose voters are not the brokers placement names in
 `felix_broker_raft_shards_off_placement`, and logs each one once at warn
 level. Requests that reach a broker with no formed member go to the leader
-placement names, which is wrong once placement and the group differ, so do
-not remove a broker that holds Raft shards. `docs/control-plane.md`, "Raft
-shards", has the placement side.
+placement names, which is wrong while placement and the group differ, so
+wait for the gauge to reach zero before stopping a drained broker.
+`docs/control-plane.md`, "Raft shards", has the placement side.
 
 #### Changing a formed group's set
 

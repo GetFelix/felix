@@ -1752,3 +1752,168 @@ async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
     }
     cluster.shutdown().await;
 }
+
+/// Four brokers and one three-copy shard, so every set change has a broker
+/// outside the set to swap in.
+fn four_broker_raft_cluster() -> ClusterConfig {
+    ClusterConfig {
+        nodes: 4,
+        ..raft_cluster()
+    }
+}
+
+/// The shard's stored assignment: placement's leader and followers, and the
+/// voters its group's leader last reported, by broker.
+async fn stored_set(cluster: &Cluster) -> (String, Vec<String>, Vec<String>) {
+    let assignments = cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store
+        .list_shard_assignments()
+        .await
+        .expect("assignments");
+    let shard = assignments
+        .into_iter()
+        .find(|a| a.key.stream == STREAM && a.key.shard == 0)
+        .expect("shard 0 is placed");
+    let voters = shard
+        .raft_voters
+        .map(|voters| voters.members.into_keys().collect())
+        .unwrap_or_default();
+    (shard.leader, shard.replicas, voters)
+}
+
+/// Waits until the group's reported voters are exactly `want`.
+async fn voters_become(cluster: &Cluster, want: &[String], within: Duration) {
+    let mut want = want.to_vec();
+    want.sort();
+    felix_cluster::wait::until(within, "the group to report the new voters", || async {
+        stored_set(cluster).await.2 == want
+    })
+    .await
+    .unwrap_or_else(|err| panic!("voters never became {want:?}: {err:#}"));
+}
+
+/// **An operator move outside a Raft shard's set swaps the leader's seat.**
+/// The destination joins as a learner, the voters change through joint
+/// consensus, the old leader hands its leadership on before it leaves, and
+/// the new broker ends up leading with every acknowledged record, including
+/// those published during the change.
+#[tokio::test]
+#[serial]
+async fn an_operator_move_outside_the_set_hands_the_leaders_seat_over() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    let (old_leader, followers, _) = stored_set(&cluster).await;
+    let mut members: Vec<String> = followers.clone();
+    members.push(old_leader);
+    voters_become(&cluster, &members, converged_within).await;
+    let outsider = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+
+    let mut acked = Vec::new();
+    for n in 0..5 {
+        let payload = format!("before-{n}").into_bytes();
+        publish_acked(&cluster, &followers[0], &payload).await;
+        acked.push(payload);
+    }
+    let step = cluster
+        .start_move(STREAM, 0, &outsider)
+        .await
+        .expect("a move outside the set is taken");
+    assert_eq!(step, "raft_replace");
+    for n in 0..5 {
+        let payload = format!("during-{n}").into_bytes();
+        publish_acked(&cluster, &followers[0], &payload).await;
+        acked.push(payload);
+    }
+
+    let mut want = followers.clone();
+    want.push(outsider.clone());
+    voters_become(&cluster, &want, converged_within).await;
+    felix_cluster::wait::until(converged_within, "the moved-to broker to lead", || async {
+        cluster
+            .metric(&outsider, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|led| led >= 1.0)
+    })
+    .await
+    .expect("leadership follows placement onto the new member");
+
+    let held = replay_holding(&cluster, &outsider, &acked).await;
+    for payload in &acked {
+        assert_eq!(copies(&held, payload), 1, "{payload:?} once on {outsider}");
+    }
+    cluster.shutdown().await;
+}
+
+/// **A drained broker's follower copy is replaced, and the broker can then
+/// go.** Placement swaps it for the broker outside the set; once the group
+/// reports the new voters, killing the drained broker costs no write.
+#[tokio::test]
+#[serial]
+async fn a_drained_brokers_follower_copy_is_replaced_so_the_broker_can_go() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    let (leader, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(leader.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let drained = followers[0].clone();
+    let outsider = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+
+    let mut acked = Vec::new();
+    for n in 0..5 {
+        let payload = format!("before-{n}").into_bytes();
+        publish_acked(&cluster, &leader, &payload).await;
+        acked.push(payload);
+    }
+    cluster.drain_node(&drained).await.expect("drain");
+    felix_cluster::wait::until(converged_within, "placement to swap the copy", || async {
+        cluster.place_shards().await;
+        let (leader, replicas, _) = stored_set(&cluster).await;
+        leader != drained && !replicas.contains(&drained)
+    })
+    .await
+    .expect("the drained follower leaves the set");
+    let want: Vec<String> = members
+        .iter()
+        .filter(|node| **node != drained)
+        .cloned()
+        .chain(std::iter::once(outsider.clone()))
+        .collect();
+    voters_become(&cluster, &want, converged_within).await;
+
+    cluster
+        .kill_node(&drained)
+        .expect("kill the drained broker");
+    let (now_leader, _, _) = stored_set(&cluster).await;
+    let payload = b"after-the-drain".to_vec();
+    publish_acked(&cluster, &now_leader, &payload).await;
+    acked.push(payload);
+    let held = replay_holding(&cluster, &outsider, &acked).await;
+    for payload in &acked {
+        assert_eq!(copies(&held, payload), 1, "{payload:?} once on {outsider}");
+    }
+    cluster.shutdown().await;
+}

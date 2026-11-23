@@ -112,9 +112,15 @@ pub enum Refused {
     /// The shard's engine is Raft. The control plane no longer places it, so
     /// there is nothing to move, cancel or give up here.
     Switched,
-    /// A Raft shard's leader moves only to a voting member of its set, and
-    /// the destination is not one.
+    /// A Raft shard's destination is a learner of its group: a change that
+    /// adds it is still in progress.
     NotAMember(String),
+    /// A Raft shard's set cannot change yet: the group's target for its
+    /// current set is not stored, or the group has not formed on it.
+    SetUnsettled,
+    /// A Raft shard's set cannot change while this member is not serving:
+    /// the joint change needs a majority of both sets.
+    MemberDown(String),
 }
 
 impl Refused {
@@ -138,6 +144,8 @@ impl Refused {
             Self::SetChangePending => "set_change_pending",
             Self::Switched => "switched",
             Self::NotAMember(_) => "not_a_member",
+            Self::SetUnsettled => "set_unsettled",
+            Self::MemberDown(_) => "member_down",
         }
     }
 }
@@ -193,7 +201,15 @@ impl std::fmt::Display for Refused {
             ),
             Self::NotAMember(node) => write!(
                 f,
-                "node {node} is not a voting member of this Raft shard; its leader moves only within its set"
+                "node {node} is still being added to this Raft shard's group; move it once the change is done"
+            ),
+            Self::SetUnsettled => write!(
+                f,
+                "this Raft shard's membership target for its current set is not stored yet, or its group has not formed; a set change waits for it"
+            ),
+            Self::MemberDown(node) => write!(
+                f,
+                "member {node} of this Raft shard is not serving; its set changes once it is"
             ),
         }
     }
@@ -306,9 +322,12 @@ pub fn start_move(
     })
 }
 
-/// Name `destination`, a member of a Raft shard's set, its leader: one write
-/// that changes nothing else. Nothing is copied, so no move slot is taken. A leader that is down may be moved too,
-/// since this only says which member placement wants leading.
+/// Name `destination` a Raft shard's leader. A member of the set: one write
+/// that changes nothing else, so no move slot is taken, and a leader that is
+/// down may be moved too, since this only says which member placement wants
+/// leading. A broker outside the set: one write that gives it the leader's
+/// seat, and the group's leader carries the change out through its
+/// membership (`raft_leaders::seat_moved`).
 fn raft_leader_move(
     catalog: &Catalog<'_>,
     existing: &ShardAssignment,
@@ -316,10 +335,11 @@ fn raft_leader_move(
     replication_factor: u32,
     home: Option<&String>,
 ) -> Result<OperatorStep, Refused> {
-    if !existing.replicas.iter().any(|node| node == destination)
-        || existing.learners.contains(destination)
-    {
+    if existing.learners.contains(destination) {
         return Err(Refused::NotAMember(destination.to_string()));
+    }
+    if !existing.replicas.iter().any(|node| node == destination) {
+        return raft_seat_move(catalog, existing, destination, replication_factor, home);
     }
     // The set stays, so the spread does too.
     let zones =
@@ -337,6 +357,42 @@ fn raft_leader_move(
         assignment: super::raft_leaders::led_by(existing, destination),
         expected_generation: existing.generation,
         zones,
+    })
+}
+
+/// Give a Raft shard's leader seat to `destination`, outside its set. Every
+/// member must be serving, since the group's leader runs the change, and
+/// the set must be settled: one set change at a time.
+fn raft_seat_move(
+    catalog: &Catalog<'_>,
+    existing: &ShardAssignment,
+    destination: &str,
+    replication_factor: u32,
+    home: Option<&String>,
+) -> Result<OperatorStep, Refused> {
+    let serving = |node: &str| lifecycle_of(catalog, node).is_some_and(|l| l.is_serving());
+    if let Some(down) = existing.nodes().find(|node| !serving(node)) {
+        return Err(Refused::MemberDown(down.clone()));
+    }
+    let max_shards = catalog
+        .nodes
+        .iter()
+        .find(|node| node.node_id == destination)
+        .and_then(|node| node.spec.capacity.max_shards);
+    if let Some(max) = max_shards
+        && roles_on(catalog, destination) >= max
+    {
+        return Err(Refused::AtCapacity(destination.to_string()));
+    }
+    super::raft_leaders::seat_open(existing).map_err(|_| Refused::SetUnsettled)?;
+    Ok(OperatorStep {
+        step: MoveStep::RaftReplace {
+            from: existing.leader.clone(),
+            to: destination.to_string(),
+        },
+        assignment: super::raft_leaders::seat_moved(existing, destination),
+        expected_generation: existing.generation,
+        zones: zone_impact(catalog, existing, destination, replication_factor, home),
     })
 }
 

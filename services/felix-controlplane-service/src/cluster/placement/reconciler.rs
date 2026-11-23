@@ -660,24 +660,26 @@ pub(super) async fn apply_pass(
 
     for (key, reason) in plan.waiting() {
         outcome.waiting += 1;
-        if let super::Blocked::MemberDown { node } = reason {
-            outcome.on_internal += 1;
+        if let super::Blocked::MemberDown { node, why } = reason {
+            outcome.on_internal += usize::from(*why == super::Leaving::Internal);
             tracing::warn!(
                 kind = %key.kind,
                 name = %key.stream,
                 shard = key.shard,
                 node = %node,
-                "a shard's copy is on an internal node and cannot be replaced while another member is down",
+                why = %why,
+                "a shard's copy must move and cannot be replaced while another member is down",
             );
         }
-        if let super::Blocked::NoReplacement { node } = reason {
-            outcome.on_internal += 1;
+        if let super::Blocked::NoReplacement { node, why } = reason {
+            outcome.on_internal += usize::from(*why == super::Leaving::Internal);
             tracing::warn!(
                 kind = %key.kind,
                 name = %key.stream,
                 shard = key.shard,
                 node = %node,
-                "a shard's copy is on an internal node and no live node can take its place",
+                why = %why,
+                "a shard's copy must move and no live node can take its place",
             );
         }
         // Waiting on a catch-up or a drain is what a move in progress looks

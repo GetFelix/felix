@@ -438,6 +438,18 @@ fn plan_once(
         if let Some(existing) = current.get(&key)
             && raft_leaders::on_raft(existing, raft_streams, durable)
         {
+            // Internal first: its gauge counts it whether it is draining or not.
+            let leaving = |id: &str| {
+                if is_internal(id) {
+                    Some(super::Leaving::Internal)
+                } else if is_draining(id) {
+                    Some(super::Leaving::Draining)
+                } else if is_lost(id) {
+                    Some(super::Leaving::Lost)
+                } else {
+                    None
+                }
+            };
             let decision = raft_leaders::raft_step(
                 existing,
                 replication_factor,
@@ -446,7 +458,7 @@ fn plan_once(
                 &counted,
                 &mut leaders,
                 &mut moves,
-                &is_internal,
+                &leaving,
                 &eligible,
                 &mut load,
             );

@@ -173,7 +173,7 @@ fn a_raft_member_set_with_an_internal_node_gets_a_replacement_in_one_pass() {
 
     let (_, step, written) = plan.moves().next().expect("a set change");
     assert!(
-        matches!(step, MoveStep::RaftReplaceInternal { from, to } if from == "core" && to == "c"),
+        matches!(step, MoveStep::RaftReplace { from, to } if from == "core" && to == "c"),
         "{step:?}"
     );
     // The group stays at its factor, and the leader and the other member stay.
@@ -207,7 +207,7 @@ fn a_raft_member_set_keeps_an_internal_node_when_no_replacement_exists() {
     assert!(
         matches!(
             plan.waiting().next(),
-            Some((_, Blocked::NoReplacement { node })) if node == "core"
+            Some((_, Blocked::NoReplacement { node, .. })) if node == "core"
         ),
         "{plan:?}"
     );
@@ -291,7 +291,7 @@ fn the_replacement_keeps_the_sets_zone_spread() {
 
     let (_, step, _) = plan.moves().next().expect("a set change");
     assert!(
-        matches!(step, MoveStep::RaftReplaceInternal { to, .. } if to == "d"),
+        matches!(step, MoveStep::RaftReplace { to, .. } if to == "d"),
         "{step:?}"
     );
 }
@@ -307,7 +307,7 @@ fn a_down_member_holds_the_swap_visibly_until_it_returns() {
     let held = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
     assert_eq!(held.moves().count(), 0, "{held:?}");
     assert!(
-        matches!(held.waiting().next(), Some((_, Blocked::MemberDown { node })) if node == "b"),
+        matches!(held.waiting().next(), Some((_, Blocked::MemberDown { node, .. })) if node == "b"),
         "{held:?}"
     );
 
@@ -412,8 +412,5 @@ fn an_internal_leader_moves_before_its_internal_follower_is_swapped() {
     next.raft_target = existing.raft_target.clone();
     let second = plan_with(&streams, &[], &nodes, &[next], &NothingCaughtUp, raft());
     let (_, step, _) = second.moves().next().expect("a swap");
-    assert!(
-        matches!(step, MoveStep::RaftReplaceInternal { .. }),
-        "{step:?}"
-    );
+    assert!(matches!(step, MoveStep::RaftReplace { .. }), "{step:?}");
 }

@@ -1834,29 +1834,44 @@ so every instance agrees), a durable stream's shard and every cache's shard
 are run by a Raft group that elects its own leader and keeps its own members.
 A Raft broker always has a disk, so its cache is a log and runs as a group. Placement places a new
 shard as above, and the brokers form its group from that set. After that it
-only says which member it wants leading:
+says which member it wants leading, and swaps one member at a time when a
+copy has to move:
 
 | Event | Hybrid shard | Raft shard |
 | --- | --- | --- |
-| Balance, drain or operator move | Stage, fence, cut over | One write that changes only `leader`, to another member |
-| Destination outside the set | Copied in first | Refused (`not_a_member`), never chosen |
+| Balance, drain or operator move to a member | Stage, fence, cut over | One write that changes only `leader`, to another member |
+| Operator move outside the set | Copied in first | One write that gives the destination the leader's seat and names it leader |
 | Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
-| Follower on a draining broker | Replaced | Stays |
-| Follower on an internal node | Replaced | Replaced: one write swaps it for a live node outside the set |
+| Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
+| Follower on an internal node | Replaced | Replaced, the same way |
+| Follower lost past `restore_after_millis` | Replaced | Replaced, the same way |
 
-A follower on an internal node is the one case where placement changes a Raft
-shard's set. With the leader off the internal node and the group's target
-stored for its current set, one write replaces that follower with the live
-node outside the set that holds the fewest shards, so the set keeps its size.
-The write changes the stored target, and the group's leader adds the new
-member as a learner, waits for it to catch up and only then swaps the voters
-through joint consensus, so the group never has fewer voters than its
-replication factor and never loses its quorum. A write is decided only on a target
-stored for the current set and with every other member live, so a pass stores
-one target change per shard; the group may fold swaps queued behind it into one
-joint change, which joint consensus keeps safe. The new member is chosen to keep the
-set's zone spread where it can. At most 16 shards change a pass. With no such node the shard waits
-and the set stays; a drain still leaves followers where they are.
+A set change is one write that swaps one member for a live node outside the
+set, so the set keeps its size. The write changes the stored target, and the
+group's leader adds the new member as a learner, waits for it to catch up and
+only then swaps the voters through joint consensus, so the group never has
+fewer voters than its replication factor and never loses its quorum. When the
+leader's own seat moves, it grows the voters to the target plus itself, hands
+leadership to a voter the target keeps, and that voter shrinks the set
+([per-shard-raft.md](per-shard-raft.md), "The driver").
+
+For a follower, the replacement is the live node outside the set that holds
+the fewest shards, chosen to keep the set's zone spread where it can, and a
+lost member is swapped before a draining or internal one. A write is decided
+only on a target stored for the current set, after the group has formed on
+it, and with every other member serving, so a pass stores one target change
+per shard; the group may fold swaps queued behind it into one joint change,
+which joint consensus keeps safe. At most 16 shards change a pass. With no
+such node the shard waits and the set stays (`NoReplacement`), and a member
+that is down holds it too (`MemberDown`). A leader on a broker that must go is
+renamed to a live member first, and its copy is swapped out as a follower on
+a later pass.
+
+An operator move outside the set is refused with `set_unsettled` while the
+target is not stored for the current set or the group has not formed,
+`member_down` while a member is not serving, and `not_a_member` while the
+destination is still a learner from an earlier change. A removed copy keeps
+its directory: nothing deletes it yet.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
@@ -1874,7 +1889,10 @@ shard".
 > `a_balance_pass_moves_a_raft_leader_in_one_write`,
 > `a_drain_moves_every_raft_leader_off_the_broker_in_one_pass`,
 > `a_dead_raft_leader_is_renamed_to_a_live_member`,
-> `an_operator_moves_a_raft_leader_only_to_a_member` and
+> `an_operator_moves_a_raft_leader_to_a_member_in_one_write`,
+> `an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat`,
+> `a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set`,
+> `a_raft_follower_lost_past_the_delay_is_replaced` and
 > `a_drain_on_a_raft_cluster_finishes_through_the_store`.
 
 #### Adopting an elected leader
@@ -2450,9 +2468,13 @@ already moving (`already_moving`); its leader down (`leader_unavailable`,
 failover places it); or a move limit reached (`move_limit`). A start, a
 cancel and an abandon on a shard that switched to Raft are all refused (409
 `switched`): the control plane no longer places it. On a Raft shard
-(see [Raft shards](#raft-shards)) the destination must be a member of the
-set (409 `not_a_member`), the start is the whole move (`raft_leader`), and
-it takes no move slot. Any other move is held to
+(see [Raft shards](#raft-shards)) the start is the whole move and takes no
+move slot: to a member it names that member leader (`raft_leader`), and
+outside the set it gives the destination the leader's seat
+(`raft_replace`). The second is refused while a member is not serving (409
+`member_down`), while the group's target is not stored for its current set
+(409 `set_unsettled`), and while the destination is still a learner (409
+`not_a_member`). Any other move is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 
