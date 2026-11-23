@@ -1,7 +1,8 @@
 //! Re-form plan routes. The plans themselves, and why they live on the
 //! metadata Raft leader, are in [`crate::store::reform`].
 pub use crate::store::reform::{
-    ReformAnswer, ReformPlanView, ReformScope, ReformShardView, ReformSurvey,
+    ReformAnswer, ReformApplyView, ReformPlanView, ReformScope, ReformShardView, ReformSurvey,
+    SurveyKind,
 };
 
 use axum::Json;

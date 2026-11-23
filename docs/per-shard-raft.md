@@ -764,8 +764,14 @@ every cache shard runs a group (see "Serving a cache shard from its group"),
 and it loses its majority the same way. A broker reads a cache shard's copy
 under the cache store's root, where its member lives.
 
-**Applying a plan.** The epoch write is built; the stop and start rounds
-and the `felixctl` command are not yet. The design:
+**Applying a plan.** The epoch write and the stop, compare and start
+rounds are built (`store/reform/apply.rs`, and the broker's
+`stop_for_reform`). The broker's start of a stopped copy at the new epoch
+and the `felixctl` command are not yet. A survey carries a `kind`
+(`survey`, `stop` or `start`) and so does its answer; a broker that predates
+the kind answers a stop as a read-only survey, without the kind, so the
+control plane ignores the answer and the stop round fails after 30 s with
+nothing written. The design:
 
 ```bash
 felixctl raft reform apply <plan-id>                              # re-form every group the plan marks `reform`

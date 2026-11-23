@@ -6,7 +6,10 @@
 //! post their reports. Plans live on the metadata Raft leader, so a poll or
 //! answer that lands on any member reaches the plan; a leader change or a
 //! restart loses them, and the operator plans again.
-//! `docs/per-shard-raft.md`, "Re-forming a group".
+//!
+//! Applying a plan runs on the same channel: a stop round, a compare, the
+//! epoch write and a start round ([`apply`]). `docs/per-shard-raft.md`,
+//! "Re-forming a group" and "Applying a plan".
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
@@ -18,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::model::{ShardAssignment, ShardKey};
+
 use crate::store::{ControlPlaneStore, StoreResult};
+pub use apply::ReformApplyView;
 
 /// How long a round waits for every broker before planning without the
 /// ones that did not answer, which blocks their shards.
@@ -72,10 +77,21 @@ impl ReformPlans {
         plan.shards.iter_mut().for_each(|s| s.settle(now));
         let shards: Vec<ReformShardView> = plan.shards.iter().map(ShardSurvey::view).collect();
         let surveying = shards.iter().any(|s| s.state == "surveying");
+        let applied = shards.iter().any(|s| s.apply.is_some());
+        let applying = plan
+            .shards
+            .iter()
+            .any(|s| s.apply.as_ref().is_some_and(|a| !a.ended()));
+        let state = match (surveying, applied, applying) {
+            (true, _, _) => "surveying",
+            (_, _, true) => "applying",
+            (_, true, false) => "applied",
+            _ => "done",
+        };
         Some(ReformPlanView {
             plan_id: plan.id.clone(),
             scope: plan.scope.clone(),
-            state: if surveying { "surveying" } else { "done" }.to_string(),
+            state: state.to_string(),
             shards,
         })
     }
@@ -87,6 +103,14 @@ impl ReformPlans {
         for plan in plans.iter_mut() {
             for shard in &mut plan.shards {
                 shard.settle(now);
+                if let Some(apply) = &shard.apply {
+                    if out.len() < MAX_BATCH
+                        && let Some(survey) = apply.survey_for(&plan.id, shard, node)
+                    {
+                        out.push(survey);
+                    }
+                    continue;
+                }
                 if shard.outcome.is_none()
                     && shard.asked_brokers.contains(node)
                     && !shard.reports.contains_key(node)
@@ -94,6 +118,7 @@ impl ReformPlans {
                 {
                     out.push(ReformSurvey {
                         plan_id: plan.id.clone(),
+                        kind: SurveyKind::Survey,
                         round: shard.round,
                         key: shard.key.clone(),
                         incarnation: shard.incarnation,
@@ -126,7 +151,16 @@ impl ReformPlans {
                 ignored += 1;
                 continue;
             };
+            if shard.apply.is_some() {
+                if apply::record(shard, node, answer, now) {
+                    accepted += 1;
+                } else {
+                    ignored += 1;
+                }
+                continue;
+            }
             let current = shard.outcome.is_none()
+                && answer.kind == SurveyKind::Survey
                 && shard.round == answer.round
                 && shard.asked_brokers.contains(node)
                 && !shard.reports.contains_key(node);
@@ -157,7 +191,8 @@ pub enum ReformScope {
 pub struct ReformPlanView {
     pub plan_id: String,
     pub scope: ReformScope,
-    /// `surveying` until every shard has an answer, then `done`.
+    /// `surveying` until every shard has an answer, then `done`; once
+    /// applied, `applying` until every applied shard ended, then `applied`.
     pub state: String,
     pub shards: Vec<ReformShardView>,
 }
@@ -180,15 +215,37 @@ pub struct ReformShardView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     pub plan: Option<PlanView>,
+    /// How far `apply` got, once the plan is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apply: Option<ReformApplyView>,
+}
+
+/// What a survey asks a broker to do. A broker that predates a kind reads
+/// every survey as a read-only `survey` and answers without the kind, so
+/// its answer to a stop or start is ignored and the round times out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SurveyKind {
+    /// Read the copy, changing nothing.
+    #[default]
+    Survey,
+    /// Stop the member unless it leads the epoch, then read the copy.
+    Stop,
+    /// Answer once the copy has started the survey's epoch.
+    Start,
 }
 
 /// One survey a broker is asked to answer.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReformSurvey {
     pub plan_id: String,
+    #[serde(default)]
+    pub kind: SurveyKind,
     pub round: u32,
     pub key: ShardKey,
     pub incarnation: u64,
+    /// The group epoch surveyed or stopped; for a `start`, the epoch the
+    /// copy is to start.
     pub epoch: u64,
     /// Indexes to read each copy's term at.
     pub probes: BTreeSet<u64>,
@@ -198,6 +255,8 @@ pub struct ReformSurvey {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReformAnswer {
     pub plan_id: String,
+    #[serde(default)]
+    pub kind: SurveyKind,
     pub round: u32,
     pub key: ShardKey,
     #[schema(value_type = Object)]
@@ -221,15 +280,38 @@ pub enum ReformRequest {
         node_id: String,
         answers: Vec<ReformAnswer>,
     },
+    Apply {
+        plan_id: String,
+        /// Shards whose plan needs the loss accepted that the operator named.
+        #[serde(default)]
+        accept_loss: Vec<ShardKey>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReformReply {
-    Created { plan_id: String },
-    Plan { plan: Option<ReformPlanView> },
-    Surveys { surveys: Vec<ReformSurvey> },
-    Recorded { accepted: usize, ignored: usize },
+    Created {
+        plan_id: String,
+    },
+    Plan {
+        plan: Option<ReformPlanView>,
+    },
+    Surveys {
+        surveys: Vec<ReformSurvey>,
+    },
+    Recorded {
+        accepted: usize,
+        ignored: usize,
+    },
+    /// `applying` shards started their stop round.
+    Applied {
+        applying: usize,
+    },
+    /// The plan cannot be applied; the reason says why.
+    NotApplied {
+        reason: String,
+    },
 }
 
 struct Plan {
@@ -251,6 +333,7 @@ struct ShardSurvey {
     started: Instant,
     reports: BTreeMap<String, BrokerReport<String>>,
     outcome: Option<SurveyStep>,
+    apply: Option<apply::ShardApply>,
 }
 
 impl ShardSurvey {
@@ -283,11 +366,16 @@ impl ShardSurvey {
             started: now,
             reports: BTreeMap::new(),
             outcome,
+            apply: None,
         }
     }
 
     /// Plan once every asked broker answered, or the round timed out.
     fn settle(&mut self, now: Instant) {
+        if self.apply.is_some() {
+            apply::settle(self, now);
+            return;
+        }
         let Some(record) = &self.record else { return };
         if self.outcome.is_some() {
             return;
@@ -347,6 +435,7 @@ impl ShardSurvey {
             round: self.round,
             waiting_on,
             plan,
+            apply: self.apply.as_ref().map(|apply| apply.view(self)),
         }
     }
 }
@@ -359,7 +448,7 @@ pub(crate) async fn answer(
     request: ReformRequest,
 ) -> StoreResult<ReformReply> {
     let now = Instant::now();
-    Ok(match request {
+    let reply = match request {
         ReformRequest::Create { scope } => {
             let shards = in_scope(store.list_shard_assignments().await?, &scope);
             let dead = store.dead_nodes().await?;
@@ -377,7 +466,18 @@ pub(crate) async fn answer(
             let (accepted, ignored) = plans.record(&node_id, answers, now);
             ReformReply::Recorded { accepted, ignored }
         }
-    })
+        ReformRequest::Apply {
+            plan_id,
+            accept_loss,
+        } => match plans.apply(&plan_id, &accept_loss, now) {
+            Ok(applying) => ReformReply::Applied { applying },
+            Err(reason) => ReformReply::NotApplied { reason },
+        },
+    };
+    // Any request can be the one that finished a stop round, so each
+    // writes the epochs it made due.
+    apply::write_due(plans, store).await;
+    Ok(reply)
 }
 
 /// The Raft shards `scope` covers: stream and cache shards with a record of
@@ -396,5 +496,6 @@ fn in_scope(shards: Vec<ShardAssignment>, scope: &ReformScope) -> Vec<ShardAssig
         .collect()
 }
 
+mod apply;
 #[cfg(test)]
 pub(crate) mod tests;

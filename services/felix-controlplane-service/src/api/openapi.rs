@@ -146,6 +146,8 @@ use crate::model::{
         raft_reform::CreateReformPlanRequest,
         raft_reform::CreateReformPlanResponse,
         raft_reform::ReformShardView,
+        raft_reform::ReformApplyView,
+        raft_reform::SurveyKind,
         raft_reform::ReformPlanView,
         raft_reform::ReformSurvey,
         raft_reform::ReformSurveysResponse,

@@ -109,6 +109,7 @@ fn report(current: WireCopy) -> WireReport {
 pub(crate) fn answer(survey: &ReformSurvey, current: WireCopy) -> ReformAnswer {
     ReformAnswer {
         plan_id: survey.plan_id.clone(),
+        kind: survey.kind,
         round: survey.round,
         key: survey.key.clone(),
         report: report(current),
