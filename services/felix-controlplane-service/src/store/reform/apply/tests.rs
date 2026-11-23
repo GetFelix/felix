@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::super::tests::{LOG, answer, copy, shard};
 use super::super::{ReformPlans, ReformRestore, ReformScope, RestoreShard, SurveyKind};
 use super::*;
-use felix_storage::raft_copy::{DEFAULT_OFFSET_GAP, MIN_OFFSET_GAP};
+use felix_storage::raft_copy::{DEFAULT_OFFSET_GAP, MIN_OFFSET_GAP, RESTORE_OFFSETS_PER_MILLI};
 
 const NODES: [&str; 3] = ["a", "b", "c"];
 
@@ -251,6 +251,8 @@ fn a_start_survey_carries_each_brokers_part_of_the_plan() {
 fn restore(end: u64, incarnation: u64, offset_gap: Option<u64>) -> ReformRestore {
     ReformRestore {
         point: "nightly".to_string(),
+        // A minute old, so the time term is part of every first index.
+        taken_at_millis: felix_common::clock::wall_millis() - 60_000,
         shards: vec![RestoreShard {
             key: shard().key,
             incarnation,
@@ -274,24 +276,29 @@ fn restore_plan(now: Instant, restore: ReformRestore) -> (ReformPlans, String) {
     (plans, id)
 }
 
-/// The epoch a restore writes starts the point plus the gap past it, so
-/// the gap is in the store before any copy opens the epoch.
+/// The epoch a restore writes starts the point plus the gap plus the time
+/// term past it, so all of it is in the store before any copy opens the
+/// epoch, and the post-stop re-plan reaches the index the operator read.
 #[test]
 fn a_restore_writes_its_epoch_past_the_point_plus_the_gap() {
     let now = Instant::now();
     for (gap, written) in [(None, DEFAULT_OFFSET_GAP), (Some(1 << 33), 1 << 33)] {
         let (plans, id) = restore_plan(now, restore(5, 3, gap));
         let view = plans.view(&id, now).unwrap();
-        assert_eq!(view.restore.as_ref().map(|r| r.offset_gap), Some(written));
+        let stamped = view.restore.clone().expect("a restore");
+        assert_eq!(stamped.offset_gap, written);
+        let elapsed = stamped.restored_at_millis - stamped.taken_at_millis;
+        assert!(elapsed >= 60_000);
+        let first = 5 + written + RESTORE_OFFSETS_PER_MILLI * elapsed;
         let plan = view.shards[0].plan.clone().expect("planned");
-        assert_eq!(plan.first_index, 5 + written);
+        assert_eq!(plan.first_index, first);
         assert_eq!(plan.offset_gap, Some(written));
 
         assert_eq!(plans.apply(&id, &[], now), Ok(1));
         answer_all(&plans, now, SurveyKind::Stop, whole);
         let due = plans.take_due();
         assert_eq!(due.len(), 1);
-        assert_eq!(due[0].start.base.first_index, 5 + written);
+        assert_eq!(due[0].start.base.first_index, first);
         assert_eq!(due[0].start.base.base_last.map(|l| l.index), Some(4));
     }
 }

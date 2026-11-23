@@ -130,13 +130,17 @@ directory gets a new storage id. A Raft cluster takes the steps under
 
 :::note[Offsets past the point on Raft]
 The re-form a Raft restore runs, `felixctl raft reform plan --restore-point
-FILE`, starts each shard's next epoch at least an offset gap past the point:
-2^40 by default, `--offset-gap N` to choose another, and below 2^32 only with
-`--accept-short-gap`. Records acknowledged after the point are lost with the
-restore, but their offsets are not given out again unless more than the gap
-were acknowledged on one shard after the point. A reader that kept an offset
-past the point can tell from it that the record is gone, and new records
-never take it. The gap is a header in the next segment, not disk space.
+FILE`, starts each shard's next epoch past the point by an offset gap (2^40
+by default, `--offset-gap N` to choose another, below 2^32 only with
+`--accept-short-gap`) plus 2^14 offsets for every millisecond between the
+point and the plan. Records acknowledged after the point are lost with the
+restore, but their offsets are not given out again, also when you restore
+from the same or an older point a second time, as long as no shard
+acknowledges 8 or more offsets per microsecond and the clocks of the machine
+that took the point and the control plane roughly agree. A reader that kept an
+offset past the point can tell from it that the record is gone, and new
+records never take it. The gap is a header in the next segment, not disk
+space.
 :::
 
 ### Restoring a Raft cluster
@@ -208,8 +212,9 @@ offset gap above). Run these in order.
    A shard is `blocked`, with the reason, if the point does not name it, names
    another incarnation of it, or no restored copy ends at the point. Fix the
    cause (usually a missing or uncut leader copy) and plan again.
-   `--offset-gap N` sets the gap; the default 2^40 is right unless more than
-   that many records were acknowledged on one shard after the point.
+   `--offset-gap N` sets the gap; the default 2^40 is right for almost every
+   cluster. It covers clock skew between the machine that took the point and
+   the control plane, about 18 hours of it at the default.
 
 6. **Apply it.** The plan says it may lose records, because the wiped copies'
    votes are unknown, and what it loses is what was acknowledged after the

@@ -49,7 +49,7 @@ fn point_file() -> tempfile::NamedTempFile {
 }
 
 #[test]
-fn a_restore_point_names_each_shards_end_and_the_gap() {
+fn a_restore_point_names_each_shards_end_its_time_and_the_gap() {
     let file = point_file();
     let path = file.path().to_str().expect("utf-8 path");
     let shards = json!([{
@@ -58,12 +58,15 @@ fn a_restore_point_names_each_shards_end_and_the_gap() {
     }]);
     assert_eq!(
         args(&["--restore-point", path]).expect("body"),
-        json!({ "scope": "cluster", "restore": { "point": "nightly", "shards": shards } })
+        json!({
+            "scope": "cluster",
+            "restore": { "point": "nightly", "taken_at_millis": 1, "shards": shards },
+        })
     );
     assert_eq!(
         args(&["--restore-point", path, "--offset-gap", "8589934592"]).expect("body")["restore"],
         json!({
-            "point": "nightly", "shards": shards,
+            "point": "nightly", "taken_at_millis": 1, "shards": shards,
             "offset_gap": 8_589_934_592_u64, "accept_short_gap": false,
         })
     );

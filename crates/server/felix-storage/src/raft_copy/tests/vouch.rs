@@ -960,12 +960,19 @@ fn restored_trio(
     (rec, reports)
 }
 
+/// A restore at `end` with `gap`, planned the instant its point was taken.
+fn restore_from(end: u64, gap: u64) -> RestoreAt {
+    RestoreAt {
+        end,
+        gap,
+        taken_at_millis: 1_000,
+        restored_at_millis: 1_000,
+    }
+}
+
 #[test]
 fn a_restore_starts_its_epoch_past_the_point_plus_the_gap() {
-    let (rec, reports) = restored_trio(RestoreAt {
-        end: 6,
-        gap: DEFAULT_OFFSET_GAP,
-    });
+    let (rec, reports) = restored_trio(restore_from(6, DEFAULT_OFFSET_GAP));
     let plan = plan(&rec, reports);
     assert_eq!(plan.base_end(), 6);
     assert_eq!(plan.first_index, 6 + DEFAULT_OFFSET_GAP);
@@ -985,16 +992,73 @@ fn a_restore_starts_its_epoch_past_the_point_plus_the_gap() {
 #[test]
 fn a_leader_that_moved_after_the_point_needs_the_gap() {
     let acked_after = 6..=9;
-    let (rec, reports) = restored_trio(RestoreAt { end: 6, gap: 0 });
+    let (rec, reports) = restored_trio(restore_from(6, 0));
     let plan_without = plan(&rec, reports);
     assert_eq!(plan_without.first_index, 8);
     assert!(acked_after.contains(&plan_without.first_index));
 
     for gap in [4, DEFAULT_OFFSET_GAP] {
-        let (rec, reports) = restored_trio(RestoreAt { end: 6, gap });
+        let (rec, reports) = restored_trio(restore_from(6, gap));
         let first = plan(&rec, reports).first_index;
         assert!(first > *acked_after.end(), "gap {gap}: first index {first}");
     }
+}
+
+/// Restoring from one backup twice: everything the second restore reads
+/// (the copy, the floor, the reservation, the earlier bases) is what the
+/// first read, so only the plan's time tells them apart. The first epoch
+/// acknowledged offsets at the most the rate allows until the second
+/// restore, and the second starts past every one of them.
+#[test]
+fn a_second_restore_from_the_same_backup_starts_past_the_first() {
+    let backup = restore_from(6, DEFAULT_OFFSET_GAP);
+    let first_restore = RestoreAt {
+        restored_at_millis: backup.taken_at_millis + 60_000,
+        ..backup
+    };
+    let (rec, reports) = restored_trio(first_restore);
+    let first = plan(&rec, reports).first_index;
+
+    let between = 3_600_000;
+    let second_restore = RestoreAt {
+        restored_at_millis: first_restore.restored_at_millis + between,
+        ..backup
+    };
+    let (rec, reports) = restored_trio(second_restore);
+    let second = plan(&rec, reports).first_index;
+    let last_acked = first + RESTORE_OFFSETS_PER_MILLI * between - 1;
+    assert!(second > last_acked, "{second} <= {last_acked}");
+}
+
+/// Restoring from a newer backup, then from an older one: the older point
+/// is behind by what the shard wrote between the two points, which the
+/// rate bounds, so its longer time term still starts it past the first
+/// restore's epoch.
+#[test]
+fn a_restore_from_an_older_backup_starts_past_a_newer_ones_epoch() {
+    let older = RestoreAt {
+        end: 1_000,
+        gap: DEFAULT_OFFSET_GAP,
+        taken_at_millis: 10_000,
+        restored_at_millis: 0,
+    };
+    let written = 5_000;
+    let newer = RestoreAt {
+        end: older.end + RESTORE_OFFSETS_PER_MILLI * written,
+        taken_at_millis: older.taken_at_millis + written,
+        ..older
+    };
+    let first = RestoreAt {
+        restored_at_millis: newer.taken_at_millis + 1_000,
+        ..newer
+    };
+    let between = 2_000;
+    let second = RestoreAt {
+        restored_at_millis: first.restored_at_millis + between,
+        ..older
+    };
+    let last_acked = first.first_index().unwrap() + RESTORE_OFFSETS_PER_MILLI * between - 1;
+    assert!(second.first_index().unwrap() > last_acked);
 }
 
 /// A copy cut anywhere but the point is refused rather than re-formed: below
@@ -1002,10 +1066,7 @@ fn a_leader_that_moved_after_the_point_needs_the_gap() {
 #[test]
 fn a_restore_whose_base_misses_the_point_refuses() {
     for point in [5, 7] {
-        let (rec, reports) = restored_trio(RestoreAt {
-            end: point,
-            gap: DEFAULT_OFFSET_GAP,
-        });
+        let (rec, reports) = restored_trio(restore_from(point, DEFAULT_OFFSET_GAP));
         let reports: BTreeMap<_, _> = reports.into_iter().collect();
         assert_eq!(
             plan_reform(&rec, &reports),
@@ -1016,10 +1077,7 @@ fn a_restore_whose_base_misses_the_point_refuses() {
 
 #[test]
 fn a_gap_past_the_last_index_refuses() {
-    let (rec, reports) = restored_trio(RestoreAt {
-        end: 6,
-        gap: u64::MAX - 5,
-    });
+    let (rec, reports) = restored_trio(restore_from(6, u64::MAX - 5));
     let reports: BTreeMap<_, _> = reports.into_iter().collect();
     assert_eq!(plan_reform(&rec, &reports), Err(Refused::NoIndexLeft));
 }

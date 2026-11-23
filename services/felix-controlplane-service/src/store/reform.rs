@@ -57,9 +57,12 @@ impl ReformPlans {
         now: Instant,
     ) -> String {
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let restore = restore.map(|restore| {
-            let gap = restore.offset_gap.unwrap_or(DEFAULT_OFFSET_GAP);
-            (restore, gap)
+        // Stamped once: the post-stop compare re-plans with this restore
+        // and must reach the same first index.
+        let restore = restore.map(|request| PlannedRestore {
+            gap: request.offset_gap.unwrap_or(DEFAULT_OFFSET_GAP),
+            restored_at_millis: felix_common::clock::wall_millis(),
+            request,
         });
         let shards = shards
             .iter()
@@ -72,9 +75,11 @@ impl ReformPlans {
         plans.push(Plan {
             id: id.clone(),
             scope,
-            restore: restore.map(|(restore, offset_gap)| ReformRestoreView {
-                point: restore.point,
-                offset_gap,
+            restore: restore.map(|planned| ReformRestoreView {
+                point: planned.request.point,
+                offset_gap: planned.gap,
+                taken_at_millis: planned.request.taken_at_millis,
+                restored_at_millis: planned.restored_at_millis,
             }),
             shards,
         });
@@ -220,11 +225,13 @@ pub struct ReformPlanView {
 pub struct ReformRestore {
     /// The point's name, as `felixctl backup-point` wrote it.
     pub point: String,
+    /// The point's barrier in UTC milliseconds (`taken_at_millis` in the
+    /// point's manifest).
+    pub taken_at_millis: u64,
     /// The point's offset for each shard's log.
     pub shards: Vec<RestoreShard>,
-    /// Offsets past the point the next epoch leaves unused; 2^40 when not
-    /// given. More offsets than this acknowledged after the point can be
-    /// given out again.
+    /// Offsets past the point the next epoch leaves unused, on top of the
+    /// time term (`RestoreAt::first_index`); 2^40 when not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_gap: Option<u64>,
     /// Take an `offset_gap` below 2^32.
@@ -237,8 +244,8 @@ impl ReformRestore {
     pub(crate) fn refused(&self) -> Option<String> {
         match self.offset_gap {
             Some(gap) if gap < MIN_OFFSET_GAP && !self.accept_short_gap => Some(format!(
-                "an offset gap of {gap} is below {MIN_OFFSET_GAP}: offsets acknowledged after \
-                 the point past the gap can be given out again; accept it with \
+                "an offset gap of {gap} is below {MIN_OFFSET_GAP}: clock skew or a lagging \
+                 leader past the gap can give offsets out again; accept it with \
                  accept_short_gap"
             )),
             _ => None,
@@ -262,6 +269,17 @@ pub struct RestoreShard {
 pub struct ReformRestoreView {
     pub point: String,
     pub offset_gap: u64,
+    pub taken_at_millis: u64,
+    /// When the plan was made, in UTC milliseconds. The first index grows
+    /// with the time since the point (`RestoreAt::first_index`).
+    pub restored_at_millis: u64,
+}
+
+/// A plan's restore, with the gap and the time it was planned at.
+struct PlannedRestore {
+    request: ReformRestore,
+    gap: u64,
+    restored_at_millis: u64,
 }
 
 /// One shard's line in a plan.
@@ -419,14 +437,14 @@ impl ShardSurvey {
     fn new(
         shard: &ShardAssignment,
         dead: &BTreeSet<String>,
-        restore: Option<&(ReformRestore, u64)>,
+        restore: Option<&PlannedRestore>,
         now: Instant,
     ) -> Self {
         let record = shard.reform_record(dead).map_err(|err| err.to_string());
         let record = match restore {
             None => record,
-            Some((restore, gap)) => record.and_then(|mut record| {
-                record.restore = Some(restore_at(restore, *gap, shard)?);
+            Some(restore) => record.and_then(|mut record| {
+                record.restore = Some(restore_at(restore, shard)?);
                 Ok(record)
             }),
         };
@@ -530,11 +548,8 @@ impl ShardSurvey {
 /// Where the point puts `shard`, refused unless it names the shard at its
 /// incarnation: restoring a shard the point does not hold would cut it to
 /// nothing.
-fn restore_at(
-    restore: &ReformRestore,
-    gap: u64,
-    shard: &ShardAssignment,
-) -> Result<RestoreAt, String> {
+fn restore_at(planned: &PlannedRestore, shard: &ShardAssignment) -> Result<RestoreAt, String> {
+    let restore = &planned.request;
     let Some(point) = restore.shards.iter().find(|p| p.key == shard.key) else {
         return Err(format!(
             "the backup point {} does not name this shard",
@@ -549,7 +564,9 @@ fn restore_at(
     }
     Ok(RestoreAt {
         end: point.end,
-        gap,
+        gap: planned.gap,
+        taken_at_millis: restore.taken_at_millis,
+        restored_at_millis: planned.restored_at_millis,
     })
 }
 

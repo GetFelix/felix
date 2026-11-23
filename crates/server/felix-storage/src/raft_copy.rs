@@ -86,7 +86,8 @@ pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, buil
 pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
 pub use vouch::{
-    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RestoreAt, VoterId,
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RESTORE_OFFSETS_PER_MILLI,
+    RestoreAt, VoterId,
 };
 #[allow(
     unused_imports,

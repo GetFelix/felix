@@ -935,27 +935,50 @@ mechanism:
 - The new epoch's first index is
 
   ```text
-  max(point + offset gap, restored floor + 1, restored reservation + 1)
+  max(point + offset gap + 2^14 * (plan time - point time),
+      restored floor + 1, restored reservation + 1)
   ```
 
-  together with the other bounds every re-form takes. `point` is the
-  point's offset (one past its last record), and the offset gap defaults to
-  2^40 (`--offset-gap N`; below 2^32 it also needs `--accept-short-gap`).
-  The gap covers two cases the restored files cannot: offsets acknowledged
-  after both the directory copy and the control-plane export, which neither
-  the restored floor nor the restored reservations know of, and an offset
-  acknowledged before the copy when the copied leader stepped down after
-  the point and fell behind its own reservation while the others went on.
+  together with the other bounds every re-form takes, with the times in
+  milliseconds. `point` is the point's offset (one past its last record),
+  and the offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also
+  needs `--accept-short-gap`). The point time is the manifest's
+  `taken_at_millis`, read before any offset. The plan time is stamped once
+  by the control plane when the plan is made, so the re-plan after the stop
+  reaches the same index.
+
+  The restored files cannot tell three cases from a clean restore: offsets
+  acknowledged after the directory copy and the control-plane export,
+  an offset acknowledged before the copy when the copied leader stepped
+  down after the point and fell behind its own reservation, and offsets
+  an earlier restore from the same or an older backup acknowledged. Two
+  restores from one backup read the same copy, floor, reservation and
+  bases, so only the plan time tells them apart. The time term is added,
+  not taken as a max, so the second starts 2^14 offsets per millisecond
+  between the two plans past the first, which is past everything the first
+  epoch acknowledged. A restore from an older backup is behind a newer one
+  by what the shard wrote between the two points, and its longer time term
+  makes that up. The gap absorbs a copied leader's lag, clock skew between
+  the two stamps, and the millisecond rounding at the point.
+
+  This holds while a shard acknowledges fewer than 8 offsets per
+  microsecond sustained (half the term's rate, which covers rounding each
+  stamp to a millisecond), and while the clocks that stamp points and plans
+  disagree by much less than the time between two restores. A year-old
+  backup moves the first index about 2^49 past the point.
   The first index is written in the epoch's base before any copy opens it,
   so a crash mid-restore and every later re-form keep it.
-  `FelixRaftRestore.tla` checks the rule: with no gap both cases reuse an
-  offset (`FelixRaftRestoreAfterBackup`, `FelixRaftRestoreLeaderMoved`),
-  and a gap at least as large as the offsets acknowledged after the point
-  closes both (`FelixRaftRestoreGap`, `FelixRaftRestoreGapShort`).
-- What this does not cover: more offsets acknowledged after the point than
-  the gap. Those can be given out again, and readers who kept offsets that
-  far past the point must treat them as reassigned. At the default gap that
-  is 2^40 records on one shard between the point and the outage.
+  `FelixRaftRestore.tla` checks the rule: with no gap the first two cases
+  reuse an offset (`FelixRaftRestoreAfterBackup`,
+  `FelixRaftRestoreLeaderMoved`), a gap at least as large as the offsets
+  acknowledged after the point closes both (`FelixRaftRestoreGap`,
+  `FelixRaftRestoreGapShort`), and two restores from one backup reuse an
+  offset without the time term and stay apart with it
+  (`FelixRaftRestoreRepeatedNoTime`, `FelixRaftRestoreRepeated`).
+- What this does not cover: a shard acknowledging faster than that rate,
+  or a plan stamped by a clock running behind the earlier restore's. Either
+  can give an offset out again, and readers who kept offsets past the point
+  must then treat them as reassigned.
 - The gap costs no space. The first append past it starts a segment whose
   header carries `FOLLOWS_GAP` and the low 32 bits of where the gap starts
   (`docs/storage-format.md`), so neither the segments nor the sparse

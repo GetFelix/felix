@@ -218,8 +218,8 @@ pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
         return Err(fail(
             Exit::Usage,
             format!(
-                "--offset-gap {gap} is below {MIN_OFFSET_GAP}: more offsets than the gap \
-                 acknowledged after the point would be given out again; add \
+                "--offset-gap {gap} is below {MIN_OFFSET_GAP}: clock skew or a lagging \
+                 leader past the gap would give offsets out again; add \
                  --accept-short-gap to take it"
             ),
         ));
@@ -260,7 +260,9 @@ pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
             })
         })
         .collect();
-    let mut restore = json!({ "point": point.name, "shards": shards });
+    let mut restore = json!({
+        "point": point.name, "taken_at_millis": point.taken_at_millis, "shards": shards,
+    });
     if let Some(gap) = args.offset_gap {
         restore["offset_gap"] = json!(gap);
         restore["accept_short_gap"] = json!(args.accept_short_gap);

@@ -55,14 +55,21 @@ pub struct GroupRecord<B> {
 }
 
 /// The offset gap a restore leaves past its point when the operator names
-/// none. Offsets acknowledged after the point that neither the restored
-/// floor nor the restored reservations know of are reissued only if more
-/// than this many were acknowledged (`FelixRaftRestoreGap`).
+/// none, on top of the time term. It covers a copied leader that fell
+/// behind after the point (`FelixRaftRestoreGap`) and about 18 hours of
+/// clock skew between the point's and the plan's stamps.
 pub const DEFAULT_OFFSET_GAP: u64 = 1 << 40;
 
 /// The smallest gap the control plane takes without the operator accepting
 /// a short one by name.
 pub const MIN_OFFSET_GAP: u64 = 1 << 32;
+
+/// The most offsets one shard is taken to acknowledge per millisecond of
+/// wall time (16 per microsecond). A restore starts this many offsets per
+/// millisecond past its point, counted from the point's time to the
+/// restore's, so a second restore from the same or an older backup starts
+/// past everything the first one acknowledged.
+pub const RESTORE_OFFSETS_PER_MILLI: u64 = 1 << 14;
 
 /// A re-form from a backup point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +79,32 @@ pub struct RestoreAt {
     pub end: u64,
     /// How many offsets past `end` the new epoch leaves unused.
     pub gap: u64,
+    /// The point's barrier, in UTC milliseconds: taken before any offset
+    /// was read.
+    pub taken_at_millis: u64,
+    /// When the restore's plan was made, in UTC milliseconds. Fixed once per
+    /// plan, so every reading of the plan gives the same first index.
+    pub restored_at_millis: u64,
+}
+
+impl RestoreAt {
+    /// The lowest first index the restore takes:
+    /// `end + gap + RESTORE_OFFSETS_PER_MILLI * (restored_at - taken_at)`.
+    ///
+    /// The time term is added, not taken as a max: two restores from one
+    /// backup differ only in `restored_at`, so the second starts
+    /// `RESTORE_OFFSETS_PER_MILLI` times the time between them past the
+    /// first. That covers every offset the first acknowledged while the
+    /// shard stays under that rate; the gap absorbs clock skew between the
+    /// two stamps and a copied leader that fell behind after the point.
+    /// `docs/per-shard-raft.md`, "A restore from a backup point is a
+    /// re-form".
+    pub fn first_index(&self) -> Option<u64> {
+        let elapsed = self.restored_at_millis.saturating_sub(self.taken_at_millis);
+        self.end
+            .checked_add(self.gap)?
+            .checked_add(elapsed.checked_mul(RESTORE_OFFSETS_PER_MILLI)?)
+    }
 }
 
 /// One broker's answer.
@@ -498,16 +531,12 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max(earlier.unwrap_or(0))
         .max(held.unwrap_or(0))
         .max(carried.unwrap_or(0));
-    // A copied leader can lag past its own reservation after the point is
-    // read, and offsets acknowledged after the copy are in no restored
-    // file. The gap is what keeps either from being given out again.
+    // Offsets acknowledged after the copy, by the lost cluster or by an
+    // earlier restore from this backup, are in no restored file, and a
+    // copied leader can lag past its own reservation after the point is
+    // read. The restore's first index is past all of them.
     let first_index = match record.restore {
-        Some(restore) => first_index.max(
-            restore
-                .end
-                .checked_add(restore.gap)
-                .ok_or(Refused::NoIndexLeft)?,
-        ),
+        Some(restore) => first_index.max(restore.first_index().ok_or(Refused::NoIndexLeft)?),
         None => first_index,
     };
 

@@ -152,6 +152,8 @@ async fn replan(
         restore: Some(RestoreAt {
             end: point,
             gap: DEFAULT_OFFSET_GAP,
+            taken_at_millis: 0,
+            restored_at_millis: 0,
         }),
     };
     let mut asked = first_probes(&record);

@@ -79,7 +79,7 @@ async fn a_short_offset_gap_is_refused_unless_accepted() {
     };
     let restore = |gap: u64, accept: bool| {
         serde_json::json!({
-            "point": "nightly", "shards": [],
+            "point": "nightly", "taken_at_millis": 1, "shards": [],
             "offset_gap": gap, "accept_short_gap": accept,
         })
     };
