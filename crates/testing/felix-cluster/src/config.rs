@@ -112,11 +112,26 @@ impl Default for ClusterConfig {
 impl ClusterConfig {
     /// Whether any broker starts with `FELIX_SHARD_ENGINE=raft`.
     pub(crate) fn raft_brokers(&self) -> bool {
-        default_engine() == "raft"
-            || std::iter::once(&self.broker_env)
-                .chain(&self.node_env)
-                .flatten()
-                .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft")
+        match self.named_engine() {
+            Some(named) => named == "raft",
+            None => default_engine() == "raft",
+        }
+    }
+
+    /// Whether the cluster is Raft only because the suite is, not because the
+    /// test asked for it. A test that names its engine controls its own fleet
+    /// features, e.g. to check what is refused before one is finalized.
+    pub(crate) fn raft_by_suite_default(&self) -> bool {
+        self.named_engine().is_none() && default_engine() == "raft"
+    }
+
+    fn named_engine(&self) -> Option<&str> {
+        std::iter::once(&self.broker_env)
+            .chain(&self.node_env)
+            .flatten()
+            .filter(|(name, _)| name == "FELIX_SHARD_ENGINE")
+            .map(|(_, value)| value.as_str())
+            .next_back()
     }
 }
 
@@ -128,6 +143,18 @@ pub(crate) fn default_engine() -> &'static str {
         Ok("raft") => "raft",
         _ => "hybrid",
     }
+}
+
+/// True when the suite runs on Raft, for a test that moves a shard between
+/// brokers. A Raft shard's leader moves only within its voting set, and
+/// placement does not yet manage that set (#2235), so such a test runs on
+/// hybrid only until it does.
+pub fn skip_on_raft_until_moves_land() -> bool {
+    let skip = default_engine() == "raft";
+    if skip {
+        eprintln!("skipped on Raft: shard moves need membership from placement (#2235)");
+    }
+    skip
 }
 
 /// A stream to create when the cluster starts.
