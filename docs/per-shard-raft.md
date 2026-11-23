@@ -3385,6 +3385,18 @@ shard's placement names as leader. That broker holds a member, and answers
 with the group's leader when it is not the leader itself. A member placed
 here that is not open yet is answered `not_ready`.
 
+During a move outside the set, placement names the destination leader
+before the group has added it. Until its learner hears from the leader, the
+destination knows no leader to forward to. So while placement's leader is
+not among the voters the group's leader last reported for the shard, a
+broker with no member, or with a member that knows no leader and is not a
+reported voter, forwards to a reported voter instead (#3011). That voter
+knows the leader. Before any report, placement's leader is used as before.
+
+> `services/felix-broker-service/src/shards/raft/tests/seat_move.rs`,
+> `a_destination_with_no_member_forwards_to_a_reported_voter`,
+> `routes_skip_a_placed_leader_that_is_not_a_voter`.
+
 When the broker stops, every member is stopped and its log closed before
 storage is flushed.
 
