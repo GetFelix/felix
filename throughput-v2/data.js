@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795425903212,
+  "lastUpdate": 1795428751920,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66456,6 +66456,58 @@ window.BENCHMARK_DATA = {
             "range": "38166.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 800314.98\nmean: 789909.52\nstdev: 38166.62\ncv: 4.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d98f99b5b5bf939a202374dfefec76923968a3f4",
+          "message": "test(cluster): kafka failover read waits for the new leader to settle (#3026)\n\n* test(cluster): wait for the next leader to serve committed records before asserting (#3025)\n\n* test(kafka): fail at once when the new leader serves a record that is not a prefix of the committed ones (#3025)",
+          "timestamp": "2026-11-23T10:05:31Z",
+          "tree_id": "a14b812f1c9fdca25886d9ca33540d62f58ae258",
+          "url": "https://github.com/GetFelix/felix/commit/d98f99b5b5bf939a202374dfefec76923968a3f4"
+        },
+        "date": 1795428751034,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351732.54,
+            "range": "17309.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351732.54\nmean: 350757.48\nstdev: 17309.98\ncv: 4.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351732.54,
+            "range": "17309.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351732.54\nmean: 350757.48\nstdev: 17309.98\ncv: 4.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79874.14,
+            "range": "4767.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79874.14\nmean: 77627.83\nstdev: 4767.89\ncv: 6.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798741.41,
+            "range": "47678.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798741.41\nmean: 776278.33\nstdev: 47678.94\ncv: 6.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
