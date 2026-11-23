@@ -307,12 +307,14 @@ already reconstructs the state a retained start shortcuts, and serving both
 would deliver every value twice.
 
 On a Raft cache shard any member serves a watch, and a follower's applied
-state can trail a put its leader already acknowledged. A retained join
-therefore passes the group's read barrier first, the same one a history read
-uses: the follower applies the leader's read index before it takes the
-snapshot, so the retained set holds every put acknowledged before the watch
-began. A barrier that cannot complete (no leader known, no answer in time) is
-refused as retryable.
+state can trail a put its leader already acknowledged. A join that hands
+out state, a retained watch or a resume from below the edge (answered with a
+resnapshot), therefore passes the group's read barrier first, the same one a
+history read uses: the follower applies the leader's read index before it
+takes the snapshot, so the set holds every put acknowledged before the watch
+began. A live-only watch hands out no state and skips the barrier. A barrier
+that cannot complete (no leader known, no answer in time) is refused as
+retryable.
 
 **TTL expiry is a change.** When an entry's TTL passes, the shard's leader
 writes a delete for it in its next expiry pass (see [TTL](#ttl): at most 1024

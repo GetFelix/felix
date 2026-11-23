@@ -268,15 +268,7 @@ pub(crate) async fn handle_cache_watch_message(
     // shard log to replay from: its base is the edge itself, so a resume
     // from below it is answered with a resnapshot.
     let wants_entries = request.retained || request.from_offset.is_some();
-    let raft = match raft_join(
-        &publish_ctx.engine,
-        &shard_key,
-        &filter,
-        wants_entries,
-        request.retained,
-    )
-    .await
-    {
+    let raft = match raft_join(&publish_ctx.engine, &shard_key, &filter, wants_entries).await {
         Ok(raft) => raft,
         Err(why) => {
             drop(watch);
@@ -577,14 +569,13 @@ struct RaftJoin {
 
 /// The join point of `key`'s Raft group on this broker, read after the
 /// watch registered. `None` when the hybrid runs the shard. Values are read
-/// only when `entries` asks for them. A `retained` join first passes the
+/// only when `entries` asks for them, and then the join first passes the
 /// group's read barrier; its error is retryable.
 async fn raft_join(
     engine: &crate::shards::routing::StreamEngine,
     key: &crate::shards::ShardKey,
     filter: &CacheWatchFilter,
     entries: bool,
-    retained: bool,
 ) -> Result<Option<RaftJoin>, &'static str> {
     #[cfg(feature = "raft")]
     {
@@ -592,10 +583,11 @@ async fn raft_join(
         let Some(raft) = engine.raft(key) else {
             return Ok(None);
         };
-        // Current state has to include every put acknowledged before the
-        // watch began, and this member may be a follower that has not
-        // applied it yet.
-        let point = if retained {
+        // Handed-out state (a retained set, or a resume's resnapshot) has to
+        // include every put acknowledged before the watch began, and this
+        // member may be a follower that has not applied it yet. A live-only
+        // watch hands out none.
+        let point = if entries {
             raft.cache_retained_point(key, &keep).await?
         } else {
             raft.cache_watch_point(key, &keep)
@@ -607,7 +599,7 @@ async fn raft_join(
     }
     #[cfg(not(feature = "raft"))]
     {
-        let _ = (engine, key, filter, entries, retained);
+        let _ = (engine, key, filter, entries);
         Ok(None)
     }
 }
