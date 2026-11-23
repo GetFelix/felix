@@ -1497,6 +1497,68 @@ async fn a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies() {
     );
 }
 
+/// **A cut-off cache leader acknowledges nothing the group loses.** The
+/// cache is `Leader`, so a put is answered on the leader's lease. Once the
+/// lease and the longest election timeout have run out, a put the old leader
+/// still answers must be in the cache the group agrees on after the heal.
+/// The caches' half of `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease`.
+#[tokio::test]
+#[serial]
+async fn a_cut_off_cache_leader_acknowledges_nothing_the_group_loses() {
+    if !opted_in() {
+        return;
+    }
+    let config = ClusterConfig {
+        nodes: 3,
+        streams: Vec::new(),
+        caches: vec![felix_cluster::CacheSpec::replicated(CACHE, 1, 3)],
+        broker_env: vec![engine("raft")],
+        ..Default::default()
+    };
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    cache_put_acked(&cluster, &leader, "before", b"before").await;
+
+    cluster.partition_node(&leader).expect("partition");
+    // Longer than the lease (1.5 s) and the longest election timeout (2 s).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let mut acked = vec!["before".to_string()];
+    for i in 0..3 {
+        let key = format!("cut-off-{i}");
+        let put = cluster.cache_put_via(&leader, CACHE, &key, key.as_bytes());
+        if matches!(
+            tokio::time::timeout(Duration::from_secs(3), put).await,
+            Ok(Ok(_))
+        ) {
+            acked.push(key);
+        }
+    }
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+    for i in 0..5 {
+        let key = format!("theirs-{i}");
+        cache_put_acked(&cluster, &elected, &key, key.as_bytes()).await;
+        acked.push(key);
+    }
+
+    cluster.heal_partitions().expect("heal");
+    cache_put_acked(&cluster, &leader, "healed", b"healed").await;
+    acked.push("healed".to_string());
+    for key in &acked {
+        let found = felix_cluster::wait::until_some(ELECTED_WITHIN, "a cache read", || async {
+            cluster.cache_get_via(&elected, CACHE, key).await.ok()
+        })
+        .await
+        .expect("read");
+        assert_eq!(
+            found.as_deref(),
+            Some(key.as_bytes()),
+            "{key} was acknowledged and is lost"
+        );
+    }
+}
+
 /// **An entry put with a TTL on a Raft cache shard expires on the leader
 /// that takes over, and is never read after its expiry.** The expiry is the
 /// leader's stamp in the log, not a clock the new leader starts afresh, so a

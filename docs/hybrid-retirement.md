@@ -287,11 +287,11 @@ live in the Raft groups simulation, `felix-sim/src/raft.rs`, run by
 | `election-settles` | Kept. Every shard has a leader after the heal | Landed: `Sim::recover`, each shard acknowledges a write within 30 s of the heal |
 | `one-leader-per-generation` | One leader per term (`ElectionSafety`) | Landed: `Sim::watch`, "both led term" |
 | `acked-held-by-leader` | Kept (`LeaderCompleteness`) | Landed: `Sim::acknowledged` and `Sim::watch` (an acknowledged or served offset is flushed on a majority), `Sim::final_reads` |
-| `at-most-one-serving` | No two brokers pass the lease check for a shard at one time. The leader lease (#2249) has landed, so this now has something to check | Missing |
+| `at-most-one-serving` | No two brokers pass the lease check for a shard at one time. The leader lease (#2249) has landed, so this now has something to check | Landed: `Sim::check_serving`, read in one step before every write and each second. A run whose skewed timers exceed what the lease is sized for is not judged |
 | `adopted-matches-opened` | Retired. Nothing is adopted. Its replacement checks that a broker opens a shard at a term only if Raft elected it at that term and its blank entry is committed (Gaps, 4) | Landed: `felix-sim/src/raft/opens.rs`. Every open the engine reports is judged: a majority has flushed an entry of the term when it opens, one broker per term, the broker the watch saw lead that term, and an entry of that term in the final log |
-| `record-generations-agree` | Kept above the base: copies agree on the term of every entry. Below the base the generation is not compared, by design | Missing. `Sim::final_reads` compares values, not entry terms |
-| `generation-burn` (warning) | Kept as a term-burn warning. It catches election storms, which sleep makes more likely | Missing. `terms_led` feeds only the vacuity check |
-| `torn-tail-repaired` | Unchanged | Missing. The Raft simulation has no power-loss mode yet (#2954) |
+| `record-generations-agree` | Kept above the base: copies agree on the term of every entry. Below the base the generation is not compared, by design | Landed: `Sim::check_terms_agree` after the final reads, below each member's read bound |
+| `generation-burn` (warning) | Kept as a term-burn warning. It catches election storms, which sleep makes more likely | Landed: `RaftOutcome::warnings`, from the lowest and highest term the watch saw per shard |
+| `torn-tail-repaired` | Unchanged | Landed: `Sim::check_power_cut` in the power modes (#2989). `raft_seed_1233_with_power_loss` tears and repairs tails |
 | New with #2239 | `SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep` | Missing, with #2239. `AsleepIsLevel` is modelled (`FelixRaftSleep.cfg`) |
 
 ### History checker
@@ -313,7 +313,7 @@ The Raft cluster tests are in `felix-cluster/tests/raft_shards.rs`.
 | `failures/replica_election.rs`, `failures/replica_set.rs` | Retired. Elections are checked by the simulator and by the control-plane-down failover test of #2233 | Retired. Landed in their place: `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged` |
 | `scale/failover_heal.rs` | Ported. No flag | Missing |
 | `failures/majority_ack.rs`, `failures/failover.rs` | Ported: an acknowledged record survives its leader. The cases about reports and finalizing are retired | Landed: `a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies`, `a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged`, `a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies` |
-| `failures/promotion_fence.rs`, `failures/joint_fence.rs`, `failures/fencing.rs`, `failures/fenced_caches.rs` | Retired as mechanism tests. One ported test each for streams and caches: a deposed leader acknowledges nothing | Streams landed: `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease`. Caches missing |
+| `failures/promotion_fence.rs`, `failures/joint_fence.rs`, `failures/fencing.rs`, `failures/fenced_caches.rs` | Retired as mechanism tests. One ported test each for streams and caches: a deposed leader acknowledges nothing | Landed: `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease` for streams, `a_cut_off_cache_leader_acknowledges_nothing_the_group_loses` for caches |
 | `failures/wiped.rs` | Ported: a wiped copy comes back as a learner and an acknowledged record survives (#2250) | Missing on clusters. The simulator wipes copies (`raft_seed_2_with_wipes`) |
 | `routing/generation_start.rs` | Ported: the blank entry of a term takes no offset a consumer sees | Missing |
 | `failures/lease_free_reads.rs`, `failures/lease_free_sessions.rs` | Ported: a `Quorum` read or a group commit on a deposed leader is refused | Missing |
