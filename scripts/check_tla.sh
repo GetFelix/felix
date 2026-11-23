@@ -101,6 +101,7 @@ module_of() {
     FelixShardReads*) echo FelixShardReads ;;
     FelixShardSessions*) echo FelixShardSessions ;;
     FelixAtomicCommit*) echo FelixAtomicCommit ;;
+    FelixCrossShardCommit*) echo FelixCrossShardCommit ;;
     FelixHeadTrim*) echo FelixHeadTrim ;;
     FelixGroups*) echo FelixGroups ;;
     FelixRaftMembership*) echo FelixRaftMembership ;;
@@ -1110,6 +1111,15 @@ walks=(
   "FelixShardElectUncleanContinuingDoubtedFull pass"
   "FelixRaftWrittenReformGateOpen violates BaseAgrees"
   "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
+  "FelixCrossShardCommit pass"
+  "FelixCrossShardCommitLive pass"
+  "FelixCrossShardCommitNoFirstWins violates Atomicity"
+  "FelixCrossShardCommitReleaseOnTimeout violates Atomicity"
+  "FelixCrossShardCommitTrimUndone violates Atomicity"
+  "FelixCrossShardCommitNoFence violates NoDoubleApply"
+  "FelixCrossShardCommitWriteCheckEarly violates PreconditionsHeld"
+  "FelixCrossShardCommitApplyWithoutLock violates NoForgedApply"
+  "FelixCrossShardCommitNoTokenCheck violates NoForgedApply"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ] || [ -n "${affected_walks:-}" ]; then registered=("${walks[@]}"); fi

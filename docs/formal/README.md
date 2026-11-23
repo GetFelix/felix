@@ -4969,6 +4969,15 @@ per family:
 | `FelixShardShortCopyStagedVotesSetOnly.cfg` | its twin, fence ids without the staged copy (#1635's proposed fix) | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashUnprobed.cfg` | a follower crash with a new identity, the first leader not yet knowing either follower's identity (the table above). Per push | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardFencedCrashCountsUnnamed.cfg` | its twin, counting a replica the report named no identity for. Per push | violate `AckedHeldByLeader` |
+| `FelixCrossShardCommit.cfg` | `FelixCrossShardCommit.tla`, the [cross-shard commit](../cross-shard-commit.md) design: a home shard and two participants as Raft groups with a leader change each, two txns, messages lost, duplicated and delayed, lock asks at any time, dedup ids forgotten under the fence, home retention, a single-shard write, and a forger on the internal port | pass `Atomicity`, `NoDoubleApply`, `PreconditionsHeld`, `NoForgedApply` |
+| `FelixCrossShardCommitLive.cfg` | the same without the forger, under fairness | pass `EventuallyRetired` |
+| `FelixCrossShardCommitNoFirstWins.cfg` | every decision record acts on its own | violate `Atomicity` |
+| `FelixCrossShardCommitReleaseOnTimeout.cfg` | a lock released on its timer | violate `Atomicity` |
+| `FelixCrossShardCommitTrimUndone.cfg` | retention trims a decision before done | violate `Atomicity` |
+| `FelixCrossShardCommitNoFence.cfg` | no term or low-water fence, ids forgotten at will | violate `NoDoubleApply` |
+| `FelixCrossShardCommitWriteCheckEarly.cfg` | a single-shard write checks for locks when proposed, not at its place in the log | violate `PreconditionsHeld` |
+| `FelixCrossShardCommitApplyWithoutLock.cfg` | an apply written with no lock | violate `NoForgedApply` |
+| `FelixCrossShardCommitNoTokenCheck.cfg` | a prepare granted on the peer credential alone | violate `NoForgedApply` |
 
 Every walk except the short-copy configurations (which set `Ballots` and
 `FenceEveryChange` to `FALSE`) runs with ballots and every change of leader
