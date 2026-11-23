@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795457604919,
+  "lastUpdate": 1795465502975,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67080,6 +67080,58 @@ window.BENCHMARK_DATA = {
             "range": "10193.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1237883.41\nmean: 1236281.36\nstdev: 10193.32\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de30d2dfe426fe6c2d93faaf6684e24e513c0653",
+          "message": "fix(raft): redirect a subscribe with no member here, refuse forwards into an unbridged region (#3008) (#3036)\n\n* fix(raft): redirect a subscribe with no member here, refuse forwards into an unbridged region (#3008)\n\nA broker with no member of a Raft shard's group refused a subscribe as\nstill opening the shard. It now answers NotLeader naming the leader\nplacement chose, as the hybrid redirects to the owner, and refuses one the\ncluster reports down. A member that hears no leader still refuses\nretryably.\n\nA publish or subscribe that would forward to a Raft leader in a region\nwith no bridge is refused with region_not_routable, as the hybrid's\nroutes refuse it, instead of forwarded.\n\nRemoves the routing suite's Raft skips for #3008.\n\n* chore: record that the routing change leaves the models unaffected\n\nSpec-Unaffected: only where a broker holding no member of a Raft shard sends a request (redirect, forward, or a retryable refusal into an unbridged region) changes; which member accepts and acknowledges a write, and every modelled state, are unchanged.",
+          "timestamp": "2026-11-23T19:55:44Z",
+          "tree_id": "da11fde469c13f76b25b4bb127a43da600e256f5",
+          "url": "https://github.com/GetFelix/felix/commit/de30d2dfe426fe6c2d93faaf6684e24e513c0653"
+        },
+        "date": 1795465502228,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 652597.28,
+            "range": "65133.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 652597.28\nmean: 662167.15\nstdev: 65133.89\ncv: 9.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 652597.28,
+            "range": "65133.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 652597.28\nmean: 662167.15\nstdev: 65133.89\ncv: 9.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162099.38,
+            "range": "1698.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162099.38\nmean: 162439.96\nstdev: 1698.02\ncv: 1.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1620993.81,
+            "range": "16980.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1620993.81\nmean: 1624399.60\nstdev: 16980.24\ncv: 1.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
