@@ -270,7 +270,42 @@ pub(crate) async fn handle_cache_watch_message(
     let wants_entries = request.retained || request.from_offset.is_some();
     let raft = raft_join(&publish_ctx.engine, &shard_key, &filter, wants_entries);
     let (log, tail, base, gate) = match &raft {
-        Some(join) => (None, join.tail, join.tail, None),
+        Some(join) => {
+            let mut tail = join.tail;
+            // A resume from past the edge is an offset another member gave
+            // out, so this one is behind: wait for it to apply that far. The
+            // watch registered at the old edge, so every change from there on
+            // is queued and none is missed by joining at `from`.
+            if let (false, Some(from)) = (request.retained, request.from_offset)
+                && from > tail
+            {
+                if !raft_reaches(
+                    &publish_ctx.engine,
+                    &shard_key,
+                    from,
+                    publish_ctx.quorum_timeout,
+                )
+                .await
+                {
+                    subscriptions.release();
+                    responder
+                        .send(
+                            ClientError::unavailable(
+                                &crate::shards::routing::Reason::NotReady,
+                                format!(
+                                    "this member has applied only up to {tail}, short of the \
+                                     resume offset {from}; retry"
+                                ),
+                            )
+                            .into_message(),
+                        )
+                        .await?;
+                    return Ok(true);
+                }
+                tail = from;
+            }
+            (None, tail, tail, None)
+        }
         None => {
             let Some(log) = broker
                 .cache()
@@ -538,6 +573,37 @@ fn raft_join(
     {
         let _ = (engine, key, filter, entries);
         None
+    }
+}
+
+/// Wait, up to `timeout`, until `key`'s Raft member here has applied every
+/// entry below `from`. False when it has not, or no longer runs the shard.
+async fn raft_reaches(
+    engine: &crate::shards::routing::StreamEngine,
+    key: &crate::shards::ShardKey,
+    from: u64,
+    timeout: std::time::Duration,
+) -> bool {
+    #[cfg(feature = "raft")]
+    {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let tail = engine
+                .raft(key)
+                .and_then(|raft| raft.cache_watch_point(key, &|_| false))
+                .map(|point| point.tail);
+            match tail {
+                Some(tail) if tail >= from => return true,
+                None => return false,
+                Some(_) if tokio::time::Instant::now() >= deadline => return false,
+                Some(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+            }
+        }
+    }
+    #[cfg(not(feature = "raft"))]
+    {
+        let _ = (engine, key, from, timeout);
+        false
     }
 }
 

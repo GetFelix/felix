@@ -842,6 +842,15 @@ impl RaftShards {
     /// until it has stopped.
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
+        // The hub keys watches by shard, not incarnation: a watch left here
+        // would go quiet, or, once the cache is made again, drop the new
+        // group's low indexes as duplicates. Ended after the member stopped,
+        // so no change is applied behind it.
+        if key.kind == ShardKind::Cache
+            && let Some(hub) = self.broker.cache_watches()
+        {
+            hub.end_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard, None);
+        }
         self.epochs.lock().remove(key);
         self.recorded_epochs.lock().remove(key);
         self.formed_marks.lock().remove(key);

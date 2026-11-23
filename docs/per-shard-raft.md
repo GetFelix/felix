@@ -5566,8 +5566,7 @@ on the hybrid.
   balance or operator move is one write that names another member as
   leader, and a hybrid move left on the shard is dropped
   (`docs/control-plane.md`, "Raft shards").
-- **Watches** are served by any member that knows its leader, as a
-  subscribe is. Each member reports the changes its applied entries make
+- **Watches** are served by any member that knows its leader. Each member reports the changes its applied entries make
   to the broker's watch hub, under the state's lock, and a change's offset
   is its entry's index, which is also the version a put writes. Only
   committed entries apply, so a watch is never handed a change a failover
@@ -5575,10 +5574,18 @@ on the hybrid.
   changes leader. A retry, a refused conditional write and a delete of an
   absent key change nothing and report nothing. A watch joins at the
   member's applied edge, read under the same lock as the values a retained
-  watch is handed. The group keeps no change history to replay, so a resume
-  from below the edge is answered with `resnapshot` and each key's current
-  value. A snapshot install, and a member left with no leader, end the
+  watch is handed. That edge is the member's own, so a follower that is
+  behind can hand a retained watch a value older than one the client just
+  read from the leader. The newer value is committed and arrives as a
+  change once the follower applies it; nothing is lost. The group keeps no
+  change history to replay, so a resume from below the edge is answered
+  with `resnapshot` and each key's current value. A resume from past the
+  edge, an offset a member further ahead gave out, waits for this one to
+  apply that far, up to the publish quorum timeout, and is then refused as
+  retryable. A snapshot install, and a member left with no leader, end the
   shard's watches as lagged at the first change they were not told of.
+  Closing a member, when its cache is deleted or made again, ends them
+  outright.
   See [cache-on-log.md](cache-on-log.md#watch).
 
 ## Moving a shard from the hybrid to Raft

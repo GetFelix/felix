@@ -6,6 +6,7 @@ use super::*;
 use crate::shards::ShardKey;
 use crate::shards::raft::RaftShards;
 use crate::shards::raft::tests as fixture;
+use crate::shards::routing::EngineShards;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 const ORDERS: &str = "orders";
@@ -24,7 +25,7 @@ fn cache_key() -> ShardKey {
 struct RaftCache {
     _root: tempfile::TempDir,
     broker: Arc<felix_broker::Broker>,
-    _shards: Arc<RaftShards>,
+    shards: Arc<RaftShards>,
     engine: Arc<crate::shards::routing::StreamEngine>,
 }
 
@@ -44,7 +45,7 @@ impl RaftCache {
         Self {
             _root: root,
             broker,
-            _shards: shards,
+            shards,
             engine,
         }
     }
@@ -93,7 +94,10 @@ impl RaftCache {
         let (client, client_conn, connection) = connection().await?;
         let publish_ctx = build_publish_context(
             Arc::clone(&self.broker),
-            &BrokerConfig::default(),
+            &BrokerConfig {
+                publish_quorum_timeout_ms: 300,
+                ..BrokerConfig::default()
+            },
             ClusterContext {
                 engine: Arc::clone(&self.engine),
                 ..ClusterContext::default()
@@ -181,6 +185,21 @@ impl Events {
         .context("the event stream ended")
     }
 
+    /// Wait for the stream to finish with nothing more on it.
+    async fn ended(&mut self) {
+        let end = tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::serving::quic::codec::read_message_limited(
+                &mut self.stream,
+                64 * 1024,
+                &mut self.scratch,
+            ),
+        )
+        .await
+        .expect("the event stream did not end");
+        assert!(matches!(end, Ok(None)), "{end:?}");
+    }
+
     /// The next change, as key, value and offset.
     async fn change(&mut self) -> Result<(Option<Vec<u8>>, u64)> {
         match self.next().await? {
@@ -234,7 +253,7 @@ async fn a_raft_cache_shard_serves_a_watch() -> Result<()> {
 /// **A resume joins at the applied edge.** From the edge it is handed
 /// nothing until the next change; from below it, the key's current value
 /// with `resnapshot`, since a Raft shard keeps no change history to replay;
-/// from past it, the cursor error.
+/// from past an edge this member never reaches, a retryable refusal.
 #[tokio::test]
 async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     let cache = RaftCache::start().await;
@@ -273,10 +292,119 @@ async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
 
     let (refused, _) = cache.watch(false, Some(cache.edge() + 5)).await?;
     assert!(
-        matches!(refused, Message::SubscribeCursorError { .. }),
+        matches!(
+            refused,
+            Message::Error {
+                code: Some(felix_wire::ErrorCode::ShardUnavailable),
+                retry: Some(felix_wire::RetryClass::Retry),
+                ..
+            }
+        ),
         "{refused:?}"
     );
     Ok(())
+}
+
+/// **A resume on a member behind the one that named the offset waits for
+/// it to apply that far**, then joins there: a lagged client told to resume
+/// at the next change by one member can re-watch on a slower one.
+#[tokio::test]
+async fn a_raft_cache_watch_resume_past_the_edge_waits_for_it() -> Result<()> {
+    let cache = Arc::new(RaftCache::start().await);
+    let from = cache.edge() + 1;
+    let watching = tokio::spawn({
+        let cache = Arc::clone(&cache);
+        async move { cache.watch(false, Some(from)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let below = cache.write(RaftCache::put("k", b"one")).await;
+    let at = cache.write(RaftCache::put("k", b"two")).await;
+    let (started, events) = tokio::time::timeout(TIMEOUT, watching).await???;
+    assert!(
+        matches!(
+            started,
+            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset == from
+        ),
+        "{started:?}"
+    );
+    // The first change at or past `from`, whichever write made it.
+    let first = if below >= from {
+        (Some(b"one".to_vec()), below)
+    } else {
+        (Some(b"two".to_vec()), at)
+    };
+    assert_eq!(events.expect("events").change().await?, first);
+    Ok(())
+}
+
+/// **Closing a Raft cache member ends its watches**: left in the hub, a
+/// watch would go quiet, which reads as a quiet key.
+#[tokio::test]
+async fn closing_a_raft_cache_member_ends_its_watches() -> Result<()> {
+    let cache = RaftCache::start().await;
+    let (_, events) = cache.watch(false, None).await?;
+    let mut events = events.expect("events");
+    cache.shards.take(&mut fixture::assignments([])).await;
+    events.ended().await;
+    let hub = cache.broker.cache_watches().expect("a hub");
+    assert_eq!(hub.registered_watchers("t1", "ns", ORDERS, 0), 0);
+    Ok(())
+}
+
+/// **A cache made again ends the old one's watches.** The hub keys watches
+/// by shard alone, so a watch left from the old incarnation would see the
+/// new group's low indexes and drop them as already delivered.
+#[tokio::test]
+async fn a_remade_raft_cache_ends_the_old_watches() -> Result<()> {
+    let cache = RaftCache::start().await;
+    for _ in 0..3 {
+        cache.write(RaftCache::put("k", b"old")).await;
+    }
+    let (_, events) = cache.watch(false, Some(cache.edge())).await?;
+    let mut events = events.expect("events");
+    let remade = fixture::assigned(cache_key(), fixture::INCARNATION + 1);
+    cache.shards.take(&mut fixture::assignments([remade])).await;
+    events.ended().await;
+    let hub = cache.broker.cache_watches().expect("a hub");
+    assert_eq!(hub.registered_watchers("t1", "ns", ORDERS, 0), 0);
+    Ok(())
+}
+
+/// **A feed pass that finds a cache member with no leader ends its watches
+/// as lagged**, at the first change they were not told of.
+#[tokio::test]
+async fn a_leaderless_raft_cache_member_ends_its_watches() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::cache_broker(root.path(), ORDERS).await;
+    let shards = fixture::shards(&broker);
+    let key = cache_key();
+    let assignment = fixture::assigned(key.clone(), fixture::INCARNATION);
+    // Opened but never formed, so it follows no leader.
+    shards
+        .take(&mut fixture::assignments([assignment.clone()]))
+        .await;
+    let engine = fixture::engine(&shards);
+    let raft = engine.raft(&key).expect("a member here");
+    let edge = raft
+        .cache_watch_point(&key, &|_| false)
+        .expect("a cache group")
+        .tail;
+    let hub = Arc::clone(broker.cache_watches().expect("a hub"));
+    let mut watch = hub.register(
+        "t1",
+        "ns",
+        ORDERS,
+        0,
+        CacheWatchFilter::Key("k".to_string()),
+        8,
+    );
+    shards.take(&mut fixture::assignments([assignment])).await;
+    let end = tokio::time::timeout(Duration::from_secs(5), watch.recv())
+        .await
+        .expect("the watch was not ended");
+    assert!(end.is_none());
+    assert_eq!(watch.lagged(), Some(edge));
+    EngineShards::shutdown(&*shards).await;
 }
 
 /// **A member that can no longer say its state is current ends its watches
