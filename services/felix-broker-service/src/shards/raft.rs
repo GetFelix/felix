@@ -1576,6 +1576,10 @@ impl EngineShards for RaftShards {
         self.runtime.hears_leader(key) == Some(true)
     }
 
+    fn holds(&self, key: &ShardKey) -> bool {
+        self.runtime.holds(key)
+    }
+
     /// One past the furthest entry the leader acknowledged, read only once
     /// its term is served: a new leader learns the commit index by
     /// committing in its own term, so before that it may sit below a write

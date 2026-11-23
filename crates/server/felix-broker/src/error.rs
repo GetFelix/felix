@@ -228,6 +228,11 @@ pub enum BrokerError {
     /// from its majority. Nothing was written; retry.
     #[error("the shard's engine has not settled a batch for {waited:?}; retry")]
     ProposalsStalled { waited: std::time::Duration },
+    /// The engine took the write but its wait for the commit ended without
+    /// one: it may still commit, under this leader or the next. `timed_out`
+    /// when the wait ran out rather than the leader stopping.
+    #[error("the write was proposed and may still commit: {detail}")]
+    WriteUnsettled { timed_out: bool, detail: String },
 }
 
 /// Why [`BrokerError::NotReadable`].

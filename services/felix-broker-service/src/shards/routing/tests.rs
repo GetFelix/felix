@@ -1514,3 +1514,145 @@ fn an_elected_leadership_is_laid_over_the_assignment_until_named() {
     assert_eq!(laid[&key(0)].leader, "broker-a");
     assert!(elections.is_empty());
 }
+
+/// Another engine running `key(0)`, which places its leader on `leader` and
+/// holds a member here when `member` is set. Forwards like the Raft engine.
+struct PlacedOn {
+    leader: &'static str,
+    member: bool,
+}
+
+impl EngineShards for PlacedOn {
+    fn take<'a>(
+        &'a self,
+        _assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
+        Box::pin(async { Taken::new() })
+    }
+
+    fn dispatch(
+        &self,
+        _key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch> {
+        Some(Dispatch::Forward {
+            node_id: self.leader.to_string(),
+            advertise_addr: nodes(self.leader)?,
+            generation: 0,
+            incarnation: 0,
+        })
+    }
+
+    fn holds(&self, _key: &ShardKey) -> bool {
+        self.member
+    }
+}
+
+/// An ingress router on `broker-a` (us-west-2) whose shard 0 another engine
+/// runs as `engine` says, with `broker-b` in `b_region` and `b_live`.
+fn engine_ingress(engine: PlacedOn, b_region: &str, b_live: bool) -> IngressRouter {
+    let mut nodes = catalog();
+    let b = nodes.get_mut("broker-b").expect("broker-b");
+    b.region = b_region.to_string();
+    b.live = b_live;
+    let router = Arc::new(ShardRouter::new(
+        "broker-a",
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    router.publish(routing_table_from(&HashMap::default(), &nodes), &nodes);
+    let lifecycle = ShardLifecycle::new("broker-a");
+    let ingress = IngressRouter::new(router, Arc::clone(lifecycle.fence()));
+    ingress.set_engine_shards(Arc::new(engine));
+    ingress
+}
+
+fn subscribe_answer(ingress: &IngressRouter) -> Option<felix_wire::Message> {
+    crate::serving::quic::handlers::redirect::redirect_for(
+        Some(ingress),
+        None,
+        "t1",
+        "ns",
+        "orders",
+        0,
+        crate::shards::ShardKind::Stream,
+        felix_wire::FEATURE_REDIRECT,
+    )
+}
+
+/// **Another engine's leader in an unbridged region is refused as the
+/// hybrid's is**, for a publish and a subscribe alike, instead of forwarded.
+#[test]
+fn another_engines_leader_in_an_unbridged_region_is_refused() {
+    let engine = || PlacedOn {
+        leader: "broker-b",
+        member: false,
+    };
+    let refused = engine_ingress(engine(), "eu-west-1", true);
+    assert_eq!(
+        dispatch(Some(&refused), &key(0)),
+        Dispatch::Unavailable(Reason::RegionNotRoutable {
+            region: "eu-west-1".to_string()
+        })
+    );
+    let answer = subscribe_answer(&refused);
+    assert!(
+        matches!(&answer, Some(felix_wire::Message::Error { message, .. }) if message.contains("eu-west-1")),
+        "{answer:?}"
+    );
+
+    let same_region = engine_ingress(engine(), "us-west-2", true);
+    assert!(matches!(
+        dispatch(Some(&same_region), &key(0)),
+        Dispatch::Forward { .. }
+    ));
+}
+
+/// **A subscribe to a broker with no member of another engine's shard is
+/// redirected to the placed leader**, as the hybrid redirects to the owner.
+/// A member that has not heard its leader still refuses retryably, and a
+/// placed leader the cluster reports down is refused rather than named.
+#[test]
+fn a_subscribe_without_a_member_is_redirected_to_the_placed_leader() {
+    let redirected = engine_ingress(
+        PlacedOn {
+            leader: "broker-b",
+            member: false,
+        },
+        "us-west-2",
+        true,
+    );
+    let answer = subscribe_answer(&redirected);
+    assert!(
+        matches!(&answer, Some(felix_wire::Message::NotLeader { node_id, .. }) if node_id == "broker-b"),
+        "{answer:?}"
+    );
+
+    let member = engine_ingress(
+        PlacedOn {
+            leader: "broker-b",
+            member: true,
+        },
+        "us-west-2",
+        true,
+    );
+    let answer = subscribe_answer(&member);
+    assert!(
+        matches!(&answer, Some(felix_wire::Message::Error { message, .. }) if message.contains("still opening")),
+        "{answer:?}"
+    );
+
+    let down = engine_ingress(
+        PlacedOn {
+            leader: "broker-b",
+            member: false,
+        },
+        "us-west-2",
+        false,
+    );
+    let answer = subscribe_answer(&down);
+    assert!(
+        matches!(&answer, Some(felix_wire::Message::Error { message, .. }) if message.contains("not live")),
+        "{answer:?}"
+    );
+}

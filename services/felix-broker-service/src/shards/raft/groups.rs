@@ -10,7 +10,7 @@ use felix_broker::{
 };
 use felix_common::random::HashMap;
 use felix_replication::engine::{CommitError, Written};
-use felix_replication::raft::RaftEngine;
+use felix_replication::raft::{GroupWriteError, RaftEngine};
 
 use super::Lead;
 use crate::shards::{ShardKey, ShardKind};
@@ -70,7 +70,7 @@ impl GroupConsensus for OnRaft {
             .engine
             .propose_group(&shard_of(key), term, now_micros(), entry)
             .await
-            .map_err(broker_error)?;
+            .map_err(proposal_error)?;
         Ok(Proposed {
             term: written.generation,
             index: written.end - 1,
@@ -117,6 +117,19 @@ fn broker_error(err: CommitError) -> BrokerError {
     }
 }
 
+/// A proposal's error: retryable only when the entry was provably not
+/// appended. Otherwise it may commit, and a retry could apply a redrive,
+/// a delete or a claim twice.
+fn proposal_error(err: GroupWriteError) -> BrokerError {
+    if !err.may_commit {
+        return broker_error(err.error);
+    }
+    BrokerError::WriteUnsettled {
+        timed_out: matches!(err.error, CommitError::TimedOut { .. }),
+        detail: err.error.to_string(),
+    }
+}
+
 fn shard_of(key: &GroupKey) -> ShardKey {
     ShardKey {
         tenant_id: key.tenant_id.clone(),
@@ -143,3 +156,6 @@ fn now_micros() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_micros() as u64)
 }
+
+#[cfg(test)]
+mod tests;
