@@ -306,6 +306,7 @@ async fn stopped_group() -> Stopped {
         incarnation: INCARNATION,
         epoch: 1,
         members: [("broker-a".to_string(), copy)].into(),
+        starts: Default::default(),
     });
     let wire = WireStart {
         voter: Some(copy),
@@ -408,6 +409,26 @@ async fn a_stopped_copy_starts_in_its_re_formed_epoch_and_opens() {
     assert!(group.read_start().await.is_none());
 
     group.feed().await;
+    group.opened_at_the_new_epoch().await;
+}
+
+/// **A metadata leader change between the epoch write and the start survey
+/// loses that leader's plan, and the copy still starts**: its part of the
+/// plan is in the committed seed, so the feed alone starts it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_lost_with_the_metadata_leader_starts_from_the_record() {
+    let mut group = stopped_group().await;
+    group.next.raft_seed.as_mut().expect("seed").starts =
+        [("broker-a".to_string(), group.wire.clone())].into();
+    group.feed().await;
+    assert!(
+        group.shards.reform_starts.lock().is_empty(),
+        "a start survey was read"
+    );
+    assert!(
+        group.shards.runtime.status(&group.key).is_some(),
+        "not opened"
+    );
     group.opened_at_the_new_epoch().await;
 }
 

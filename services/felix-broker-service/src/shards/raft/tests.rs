@@ -3207,6 +3207,7 @@ fn a_blank_copy_admits_only_the_brokers_in_the_group_now() {
         incarnation: INCARNATION,
         epoch,
         members: [("broker-a".to_string(), 1), ("broker-b".to_string(), 1)].into(),
+        starts: Default::default(),
     };
     moved.raft_voters = Some(voters(0));
     let (blank, current) = admitted(&moved);

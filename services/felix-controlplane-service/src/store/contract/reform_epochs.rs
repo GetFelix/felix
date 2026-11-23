@@ -32,6 +32,17 @@ fn start(shard: &ShardAssignment, expected_epoch: u64, first_index: u64) -> Refo
         },
         voters: [("broker-x".to_string(), 41)].into(),
         dead: Default::default(),
+        starts: [(
+            "broker-x".to_string(),
+            felix_storage::raft_copy::WireStart {
+                voter: Some(41),
+                kept: None,
+                floor: None,
+                needs_accept_loss: false,
+                accepted: false,
+            },
+        )]
+        .into(),
     }
 }
 
@@ -61,6 +72,9 @@ async fn a_reform_starts_the_next_epoch_once(store: &dyn ControlPlaneStore) {
     assert_eq!(bases.bases, vec![plan.base]);
     let seed = held.raft_seed.as_ref().expect("seed");
     assert_eq!((seed.epoch, &seed.members), (1, &plan.voters));
+    // In the committed record, so a broker finds its start after a
+    // metadata leader change drops the leader's plans.
+    assert_eq!(seed.starts, plan.starts);
     let changes = store
         .shard_assignment_changes(before)
         .await

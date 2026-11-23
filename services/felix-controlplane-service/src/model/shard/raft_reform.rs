@@ -24,6 +24,13 @@ pub struct RaftSeed {
     pub epoch: u64,
     /// Copy id by node id, one per voter.
     pub members: BTreeMap<String, u64>,
+    /// For an epoch a re-form started, each placed broker's part of the
+    /// plan by node id. It is in the committed record, not only in the
+    /// metadata leader's memory, so a broker finds its start after a
+    /// leader change or restart. Empty at epoch 0.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schema(value_type = Object)]
+    pub starts: BTreeMap<String, felix_storage::raft_copy::WireStart>,
 }
 
 /// How each re-form of a Raft shard's group started its epoch, oldest
@@ -85,6 +92,11 @@ pub struct ReformEpochStart {
     /// set, not the one it reads, so every member writes the same record.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub dead: BTreeSet<String>,
+    /// Each placed broker's part of the plan, written into the new epoch's
+    /// [`RaftSeed::starts`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schema(value_type = Object)]
+    pub starts: BTreeMap<String, felix_storage::raft_copy::WireStart>,
 }
 
 /// Why a re-form's next epoch was not written.
@@ -217,6 +229,7 @@ impl ShardAssignment {
                 incarnation,
                 epoch,
                 members: first.members.clone(),
+                starts: BTreeMap::new(),
             });
         }
     }
@@ -253,7 +266,11 @@ impl ShardAssignment {
             start.planned_floor,
             start.base,
             start.voters.clone(),
-        )
+        )?;
+        if let Some(seed) = &mut self.raft_seed {
+            seed.starts = start.starts.clone();
+        }
+        Ok(())
     }
 
     /// Whether this record is the one `start` writes: the next epoch with
@@ -367,6 +384,7 @@ impl ShardAssignment {
             incarnation: self.incarnation,
             epoch: current + 1,
             members: voters,
+            starts: BTreeMap::new(),
         });
         self.start_raft_ordered();
         Ok(())

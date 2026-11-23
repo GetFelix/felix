@@ -727,6 +727,7 @@ fn a_reform_epoch_start_is_refused_below_level_50() {
             },
             voters: [("a".to_string(), 7)].into(),
             dead: Default::default(),
+            starts: Default::default(),
         },
     });
     let level = super::super::REFORM_EPOCH_LEVEL;

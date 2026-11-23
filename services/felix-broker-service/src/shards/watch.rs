@@ -176,6 +176,10 @@ pub struct RaftVoters {
     pub epoch: u64,
     /// Copy id by node id.
     pub members: std::collections::BTreeMap<String, u64>,
+    /// On a re-formed epoch's seed, each placed broker's part of the plan by
+    /// node id, as the epoch write committed it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub starts: std::collections::BTreeMap<String, felix_storage::raft_copy::WireStart>,
 }
 
 /// A Raft shard's target as the control plane sends it.

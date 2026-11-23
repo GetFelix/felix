@@ -801,12 +801,13 @@ control plane still never calls a broker:
    floor raised since the plan, and the base checks of
    `ShardAssignment::start_reformed_epoch` hold. It writes the next
    `placed` record, appends the base to `raft_bases`, sets the voters as
-   the epoch's seed and starts an empty ordered list, in one write the shard
-   feed carries to every broker. The command is level 50, so no member
+   the epoch's seed with each broker's part of the plan (`raft_seed.starts`)
+   and starts an empty ordered list, in one write the shard feed carries to
+   every broker. The command is level 50, so no member
    that cannot apply it is ever asked to: a member below that level would
    refuse the entry and keep the old epoch while the others start the next.
 4. **Start.** Each listed broker sees the new epoch in its shard feed and,
-   with the `start` survey's part of the plan, runs
+   with its part of the plan from the seed, runs
    `CopyRoot::start_stopped` on its stopped copy, then opens the member at
    the new epoch. A fresh learner placed later gets its `raft-epoch`
    before it can vote (#2882).
@@ -820,10 +821,14 @@ write goes back to due and the next request writes it again or finds it
 written.
 
 **What a start needs.** A broker cannot plan on its own: the plan reads
-every broker's copy. So the `start` survey carries this broker's part of
-the plan in an optional `start` field, which a survey of any other kind
+every broker's copy. So the epoch write records each broker's part of the
+plan in the seed's `starts`, keyed by node id, and the `start` survey also
+carries it in an optional `start` field, which a survey of any other kind
 leaves out, so an older broker and the `survey` and `stop` rounds see
-byte-identical JSON:
+byte-identical JSON. The broker takes the seed's part first. Plans live only
+in the metadata leader's memory, so a leader change after the write would
+otherwise leave a broker that had not polled yet with no start and its copy
+stopped for good:
 
 - `role`: `voter` with the copy id the plan named, or `learner`. A
   voter whose directory now holds another copy id does not start; it waits
@@ -838,8 +843,8 @@ byte-identical JSON:
 
 The epoch's bases come from the shard feed, not the survey: the `placed`
 record the epoch write made. The broker starts only when that record's
-epoch is the survey's epoch, so a survey cannot start a copy into an epoch
-the store did not record.
+epoch is the seed's or the survey's epoch, so a survey cannot start a copy
+into an epoch the store did not record.
 
 **A learner always empties.** A learner keeps a prefix only where its terms
 match the base's at every index (`base_terms`). The reports carry terms at
@@ -877,12 +882,15 @@ mark before it cuts. A voter's log after the start ends at its purged id
 in the base's term, at or above that mark. The vote mark is untouched.
 
 **Crash points.** Each step is synced before the next, and the start is
-resumed from the feed, not from the survey answer:
+resumed from the feed, not from the survey answer. The feed carries each
+broker's part of the plan, so none of these needs the plan that started it:
 
 - After the stop, before the write: the copies stay stopped. A second
   `apply` (or a new plan) re-reads them.
 - After the write, before a broker sees it: the feed carries the epoch on
-  the next pass; the broker starts then.
+  the next pass; the broker starts then. A metadata leader change or restart
+  here drops the plan and its `start` survey, and changes nothing: the
+  broker's part of the plan is in the record the new leader serves.
 - After the mark is lowered, before `reform-building`: the mark is below
   the log, which opens. The start is run again from the feed, since the
   copy's `raft-epoch` is still the old one.
@@ -893,7 +901,8 @@ resumed from the feed, not from the survey answer:
   an ordinary one.
 - After the member opens, before the answer reaches the control plane: the
   `start` survey is asked again, and answered once the copy's `raft-epoch`
-  names the new epoch.
+  names the new epoch. After a metadata leader change nothing asks; the
+  plan's view then reads 404 and the epoch shows in the shard record.
 
 **A restore from a backup point is a re-form.** A whole-cluster restore
 rotates every broker's storage id, so every Raft copy comes back with a new
@@ -963,6 +972,8 @@ Plans live on the metadata Raft leader, in memory, for its term. A plan
 asked through a follower is forwarded to the leader, and so are broker
 answers. A leader change drops every plan (the read answers 404 with "plan
 again"), and since a plan changes nothing, planning again is always safe.
+An applied plan whose epoch was written needs nothing from its plan after
+that: each broker starts from the record.
 A control plane without the routes answers 404, and one whose metadata
 leader runs a version without them answers 409.
 

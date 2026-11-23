@@ -56,6 +56,7 @@ pub(crate) fn shard() -> ShardAssignment {
             incarnation: 3,
             epoch: 0,
             members: members.clone(),
+            starts: Default::default(),
         }),
         raft_bases: None,
         raft_ordered: Some(RaftOrdered {

@@ -242,6 +242,7 @@ fn assignment() -> ShardAssignment {
             incarnation: 1,
             epoch: 1,
             members: any_map(1),
+            starts: any_map(wire_start()),
         }),
         raft_bases: Some(crate::model::RaftBases {
             incarnation: 1,
@@ -254,6 +255,20 @@ fn assignment() -> ShardAssignment {
                 first_index: 1,
             }],
         }),
+    }
+}
+
+fn wire_start() -> felix_storage::raft_copy::WireStart {
+    felix_storage::raft_copy::WireStart {
+        voter: Some(1),
+        kept: Some(s("kept")),
+        floor: Some(felix_storage::raft_copy::WireFloor {
+            offset: 1,
+            floor: 1,
+            headers: vec![1],
+        }),
+        needs_accept_loss: true,
+        accepted: true,
     }
 }
 
@@ -705,6 +720,7 @@ fn commands() -> Vec<MetaCommand> {
                 },
                 voters: any_map(1),
                 dead: BTreeSet::from([s("b")]),
+                starts: any_map(wire_start()),
             },
         },
         MetaCommand::RecordRaftFloors {

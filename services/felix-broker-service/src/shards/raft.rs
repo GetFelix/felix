@@ -393,10 +393,11 @@ impl RaftShards {
     /// earlier incarnation refuses this one's messages. Its pre-vote answer
     /// would otherwise say blank for a directory the new group never touched.
     /// Start this broker's stopped copy in `dir` in the epoch the shard's
-    /// `placed` record names, as the `start` survey for that epoch says.
+    /// `placed` record names, with this broker's part of the plan from the
+    /// epoch's seed, or from the `start` survey when the seed has none.
     /// The bases and voters come from the record, never the survey, so a
     /// survey cannot start a copy into an epoch the store did not record.
-    /// A copy that is not stopped in the epoch before, or has no survey
+    /// A copy that is not stopped in the epoch before, or has no start
     /// yet, is left alone: its open then refuses it as stopped and the
     /// next pass tries again. Run again after a crash, the start resumes.
     async fn start_reformed(
@@ -412,13 +413,20 @@ impl RaftShards {
         };
         let epoch = bases.len() as u64;
         let incarnation = assignment.incarnation;
-        let Some(wire) = self
-            .reform_starts
-            .lock()
-            .get(key)
-            .filter(|planned| planned.incarnation == incarnation && planned.epoch == epoch)
-            .map(|planned| planned.start.clone())
-        else {
+        // The record's start first: the survey's lives only on the metadata
+        // leader, so a leader change before this broker polled loses it.
+        let recorded = assignment
+            .raft_seed
+            .as_ref()
+            .filter(|seed| seed.incarnation == incarnation && seed.epoch == epoch)
+            .and_then(|seed| seed.starts.get(self.local.as_str()).cloned());
+        let Some(wire) = recorded.or_else(|| {
+            self.reform_starts
+                .lock()
+                .get(key)
+                .filter(|planned| planned.incarnation == incarnation && planned.epoch == epoch)
+                .map(|planned| planned.start.clone())
+        }) else {
             return Ok(());
         };
         let due = {

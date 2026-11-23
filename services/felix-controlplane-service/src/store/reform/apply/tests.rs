@@ -215,6 +215,8 @@ fn a_write_whose_request_was_dropped_is_taken_again() {
 
 /// A broker cannot plan alone, so its `start` survey carries its part of
 /// the plan; the other kinds leave the field out, as an older broker reads them.
+/// The epoch write carries the same parts, so a broker that never got its
+/// survey (the metadata leader changed) finds its start in the record.
 #[test]
 fn a_start_survey_carries_each_brokers_part_of_the_plan() {
     let now = Instant::now();
@@ -226,11 +228,19 @@ fn a_start_survey_carries_each_brokers_part_of_the_plan() {
         assert!(json.get("start").is_none(), "{json}");
     }
     answer_all(&plans, now, SurveyKind::Stop, whole);
-    plans.take_due().remove(0).answer(Ok(1));
+    let due = plans.take_due().remove(0);
+    let written = due.start.starts.clone();
+    due.answer(Ok(1));
     let mut asked = 0;
-    for survey in NODES.iter().flat_map(|node| plans.surveys_for(node, now)) {
+    for node in NODES {
+        let survey = plans.surveys_for(node, now).remove(0);
         assert_eq!(survey.kind, SurveyKind::Start);
         let start = survey.start.expect("a start carries the plan");
+        assert_eq!(
+            written.get(node),
+            Some(&start),
+            "{node}: not in the epoch write"
+        );
         assert!(start.voter.is_some(), "every copy holds the base");
         assert!(!start.needs_accept_loss);
         asked += 1;

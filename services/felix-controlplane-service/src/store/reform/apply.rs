@@ -345,11 +345,12 @@ pub(super) fn settle(shard: &mut ShardSurvey, now: Instant) {
                 .map(String::as_str)
                 .collect();
             if missing.is_empty() {
-                let next = compare(shard, &apply.planned, reports);
-                if matches!(next, Phase::Due(_))
+                let mut next = compare(shard, &apply.planned, reports);
+                if let Phase::Due(due) = &mut next
                     && let Some(record) = &shard.record
                 {
                     starts = plan_starts(record, reports, apply.accepted);
+                    due.starts = starts.clone().unwrap_or_default();
                 }
                 Some(next)
             } else if now.duration_since(*started) >= ROUND_TIMEOUT {
@@ -413,6 +414,7 @@ fn compare(
                 },
                 voters: now.voters.iter().cloned().collect(),
                 dead: record.dead.clone(),
+                starts: BTreeMap::new(),
             })
         }
         SurveyStep::Planned(_) => ended(

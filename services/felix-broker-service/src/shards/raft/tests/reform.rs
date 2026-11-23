@@ -135,6 +135,7 @@ pub(super) fn next_epoch(mut placed: ShardAssignment, view: &PlanView) -> ShardA
         incarnation: INCARNATION,
         epoch: 1,
         members: view.voters.iter().cloned().collect(),
+        starts: Default::default(),
     });
     placed
 }

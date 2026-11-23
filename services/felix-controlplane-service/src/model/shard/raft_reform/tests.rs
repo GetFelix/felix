@@ -169,6 +169,7 @@ fn seed(incarnation: u64, epoch: u64, pairs: &[(&str, u64)]) -> RaftSeed {
         incarnation,
         epoch,
         members: copies(pairs),
+        starts: BTreeMap::new(),
     }
 }
 
@@ -474,6 +475,7 @@ fn a_plan_for_another_incarnation_is_refused() {
         base: base(Some((40, 0, 5)), 45),
         voters: copies(&[("a", 11), ("b", 12)]),
         dead: set(&["c"]),
+        starts: BTreeMap::new(),
     };
     let before = a.clone();
     assert_eq!(
