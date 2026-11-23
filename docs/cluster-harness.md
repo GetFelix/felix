@@ -618,23 +618,23 @@ being discarded, so that reason exists to be quoted.
 `FELIX_TEST_RAFT_SHARDS=1` is set; CI runs them in their own job. The default
 broker build includes the Raft engine.
 
-Raft is the default shard engine, but the harness starts every broker with
-`FELIX_SHARD_ENGINE=hybrid` so the hybrid tests keep running until the hybrid
-is deleted (`docs/hybrid-retirement.md`). A test that wants Raft sets the
-engine in `broker_env` or `node_env`, which override it.
+Raft is the default shard engine, and the harness starts every broker and the
+control plane on it. A test that wants another engine sets
+`FELIX_SHARD_ENGINE` in `broker_env` or `node_env`, which override the
+default.
 
-`FELIX_TEST_SHARD_ENGINE=raft` makes Raft the harness default for a whole run:
-brokers and the control plane start on Raft, the cluster finalizes every
-`raft_*` fleet feature as a new cluster does, and the tests that need hybrid
-behaviour or unbuilt Raft work skip with a reason. Unset or `hybrid` keeps the
-hybrid default. On Raft, `Cluster::wait_for_replication` waits for the member
-that leads the stream's shard 0 (each broker's `shard_inspect` answer carries
-its member's role, leader and log index) and for a majority of the group to
-hold the log through the leader's last entry. A test that skips on Raft prints
-its reason to stderr without `--nocapture` and to the job summary when
-`GITHUB_STEP_SUMMARY` is set, so a green Raft run can be told from a skipped
-one. CI runs `rest` and `routing` this way in jobs that report
-without failing the build (#2982).
+`FELIX_TEST_SHARD_ENGINE=hybrid` runs a whole suite on the hybrid engine,
+which stays until the hybrid is deleted (`docs/hybrid-retirement.md`). Unset
+or `raft` runs Raft: the cluster finalizes every `raft_*` fleet feature as a
+new cluster does, and the tests that need hybrid behaviour or unbuilt Raft
+work skip with a reason. On Raft, `Cluster::wait_for_replication` waits for
+the member that leads the stream's shard 0 (each broker's `shard_inspect`
+answer carries its member's role, leader and log index) and for a majority of
+the group to hold the log through the leader's last entry. A test that skips
+on Raft prints its reason to stderr without `--nocapture` and to the job
+summary when `GITHUB_STEP_SUMMARY` is set, so a green Raft run can be told
+from a skipped one. CI runs every suite on Raft, which gates a merge, and on
+the hybrid, which reports without failing the build.
 
 ```bash
 cargo build -p felix-broker-service --bin felix-broker

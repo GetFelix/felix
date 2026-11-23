@@ -2326,7 +2326,9 @@ behind the `raft` cargo feature of `felix-replication`, which the broker
 service turns on by default. A broker with a node id runs it unless
 `FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
 the internal listener or durable storage. A standalone broker, with no node
-id, does not run it.
+id, does not run it until single-voter Raft (#3000) lands. The cluster
+test suites run on Raft by default too; the hybrid runs report only (see
+`docs/hybrid-retirement.md`).
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:
