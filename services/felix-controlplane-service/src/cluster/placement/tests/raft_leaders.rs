@@ -442,6 +442,123 @@ fn a_grown_one_member_raft_shard_shrinks_once_the_destination_votes() {
     assert!(written.replicas.is_empty());
 }
 
+/// `broker-a` live and `broker-b` in `lifecycle`.
+fn a_live_b(lifecycle: NodeLifecycle) -> Vec<Node> {
+    let mut nodes = live(&["broker-a", "broker-b"]);
+    nodes[1].status.lifecycle = lifecycle;
+    nodes
+}
+
+/// **An RF 1 move whose destination dies before it votes is undone.** The
+/// set goes back to the leader alone, which the group's one reported voter
+/// keeps a majority of, so the shard does not wait on a learner that will
+/// never catch up. A draining or departed destination is undone the same
+/// way.
+#[test]
+fn a_one_member_raft_move_is_undone_when_its_learner_is_lost() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let learning = vec![single_grown(&["broker-a"])];
+    for lifecycle in [
+        NodeLifecycle::Down,
+        NodeLifecycle::Draining,
+        NodeLifecycle::Left,
+    ] {
+        let nodes = a_live_b(lifecycle);
+        let plan = plan_with(&streams, &[], &nodes, &learning, &NothingCaughtUp, raft());
+        let (_, step, written) = plan.moves().next().expect("the undo");
+        assert_eq!(
+            step,
+            &MoveStep::RaftMoveUndone {
+                node: "broker-b".to_string()
+            },
+            "{lifecycle:?}"
+        );
+        assert_eq!(written.leader, "broker-a");
+        assert!(written.replicas.is_empty());
+    }
+}
+
+/// **Once the destination votes, a down one is not dropped.** Either set of
+/// one needs its vote in a group of two, so placement names the shard
+/// stranded and leaves it for the broker to come back or a re-form. A
+/// draining voter still serves and votes for its own removal, so the move
+/// is undone.
+#[test]
+fn a_one_member_raft_move_is_stranded_once_a_down_destination_votes() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let voting = vec![single_grown(&["broker-a", "broker-b"])];
+
+    let nodes = a_live_b(NodeLifecycle::Down);
+    let plan = plan_with(&streams, &[], &nodes, &voting, &NothingCaughtUp, raft());
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    assert!(
+        matches!(
+            plan.waiting().next(),
+            Some((_, Blocked::MoveStranded { node })) if node == "broker-b"
+        ),
+        "{plan:?}"
+    );
+
+    let nodes = a_live_b(NodeLifecycle::Draining);
+    let plan = plan_with(&streams, &[], &nodes, &voting, &NothingCaughtUp, raft());
+    let (_, step, written) = plan.moves().next().expect("the undo");
+    assert!(matches!(step, MoveStep::RaftMoveUndone { .. }), "{plan:?}");
+    assert_eq!(written.leader, "broker-a");
+}
+
+/// **A drain of the old broker finishes the move, not blocks it.** With a
+/// live destination the shard waits for it to vote and then shrinks to
+/// it, as for any move.
+#[test]
+fn a_draining_leader_of_a_one_member_raft_move_still_shrinks_to_the_destination() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let mut nodes = live(&["broker-a", "broker-b"]);
+    nodes[0].status.lifecycle = NodeLifecycle::Draining;
+    let voting = vec![single_grown(&["broker-a", "broker-b"])];
+    let plan = plan_with(&streams, &[], &nodes, &voting, &NothingCaughtUp, raft());
+    let (_, _, written) = plan.moves().next().expect("the shrink");
+    assert_eq!(written.leader, "broker-b");
+    assert!(written.replicas.is_empty());
+}
+
+/// **An operator moves an RF 1 shard back while its destination learns.**
+/// Naming the old leader again undoes the move; once the destination votes
+/// and is down, that needs its vote and is refused.
+#[test]
+fn an_operator_moves_a_one_member_raft_shard_back() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let learning = vec![single_grown(&["broker-a"])];
+    let nodes = live(&["broker-a", "broker-b"]);
+    let catalog = Catalog {
+        streams: &streams,
+        caches: &[],
+        nodes: &nodes,
+        existing: &learning,
+        caught_up: &NothingCaughtUp,
+        policy: raft(),
+    };
+    let step = start_move(&catalog, &learning[0].key, "broker-a").expect("an undo");
+    assert_eq!(
+        step.step,
+        MoveStep::RaftMoveUndone {
+            node: "broker-b".to_string()
+        }
+    );
+    assert!(step.assignment.replicas.is_empty());
+
+    let voting = vec![single_grown(&["broker-a", "broker-b"])];
+    let nodes = a_live_b(NodeLifecycle::Down);
+    let catalog = Catalog {
+        nodes: &nodes,
+        existing: &voting,
+        ..catalog
+    };
+    assert_eq!(
+        start_move(&catalog, &voting[0].key, "broker-a").unwrap_err(),
+        Refused::MemberDown("broker-b".to_string())
+    );
+}
+
 /// One set change at a time, and only with every member serving: the joint
 /// change needs a majority of both sets.
 #[test]

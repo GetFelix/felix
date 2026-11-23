@@ -1880,7 +1880,11 @@ destination alone as the set and its leader, and the group hands it
 leadership and drops the old copy. A set of the destination alone any
 earlier would make its empty copy the whole group, so the store holds it
 until then. A second move is refused with `set_unsettled` while the set is
-over the factor. A removed copy keeps
+over the factor. A move back to the old broker, or a destination that stops
+being live before it votes, undoes the move (`raft_move_undone`). A
+destination that votes and then goes down strands the shard, which
+placement reports, until it is back or the group is re-formed without it;
+`docs/per-shard-raft.md` has the steps. A removed copy keeps
 its directory: nothing deletes it yet.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names

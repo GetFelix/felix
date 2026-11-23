@@ -4779,6 +4779,20 @@ an older control plane added:
   one voter has no voter to share with the next set. Placement shrinks the
   set to the destination once the leader reports its copy voting, and the
   store's formed-set hold refuses that write any earlier (#3012).
+- An RF 1 move is undone, back to the old broker alone, when the destination
+  stops being live before it votes (down, draining or gone), or when an
+  operator moves the shard back to the old broker (step `raft_move_undone`).
+  The store takes that write because the old broker is a reported voter.
+  This is also how a drain of the old broker gets past a move that cannot
+  finish. A draining destination that already votes is undone the same way,
+  since it still serves and can vote for its own removal.
+- Once the destination votes, the group has two voters and either set of one
+  needs both. If the destination is then down, placement waits and says why
+  ("votes in this group of two and is not serving"), and an operator move
+  back is refused with `member_down`.
+  The shard serves again when the broker comes back, or after a re-form
+  without it ([Re-forming a group](#re-forming-a-group)): `felixctl raft
+  reform plan --scope node <destination>`, then `felixctl raft reform apply`.
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 

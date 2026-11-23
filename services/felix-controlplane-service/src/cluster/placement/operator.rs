@@ -253,6 +253,9 @@ pub fn start_move(
         });
     }
     if existing.leader == destination {
+        if super::raft_leaders::on_raft(existing, catalog.policy.raft_streams, durable) {
+            return raft_move_back(catalog, existing, destination, replication_factor);
+        }
         return Err(Refused::AlreadyLeads(destination.to_string()));
     }
     if let Some(halt) = catalog.caught_up.halted(key, destination) {
@@ -361,6 +364,34 @@ fn raft_leader_move(
         assignment: super::raft_leaders::led_by(existing, destination),
         expected_generation: existing.generation,
         zones,
+    })
+}
+
+/// Move an RF 1 shard mid-move back to its leader, `destination`: the
+/// destination leaves the set again. Once it votes the group needs its vote
+/// to remove it, so a voting destination that is not serving is refused.
+fn raft_move_back(
+    catalog: &Catalog<'_>,
+    existing: &ShardAssignment,
+    destination: &str,
+    replication_factor: u32,
+) -> Result<OperatorStep, Refused> {
+    let Some((node, assignment)) =
+        super::raft_leaders::single_move_undone(existing, replication_factor)
+    else {
+        return Err(Refused::AlreadyLeads(destination.to_string()));
+    };
+    if existing.reports_voting(node) && !lifecycle_of(catalog, node).is_some_and(|l| l.is_serving())
+    {
+        return Err(Refused::MemberDown(node.to_string()));
+    }
+    Ok(OperatorStep {
+        step: MoveStep::RaftMoveUndone {
+            node: node.to_string(),
+        },
+        assignment,
+        expected_generation: existing.generation,
+        zones: None,
     })
 }
 

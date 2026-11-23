@@ -75,7 +75,9 @@ pub(super) fn raft_step<'a>(
     if let Some(dropped) = drop_hybrid_move(existing, replication_factor) {
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
     }
-    if let Some(decision) = finish_single_move(existing, replication_factor, moves) {
+    if let Some(decision) =
+        finish_single_move(existing, replication_factor, is_live, is_serving, moves)
+    {
         return decision;
     }
     let leader = existing.leader.as_str();
@@ -158,16 +160,32 @@ pub(super) fn raft_step<'a>(
 /// destination's copy voting, the set shrinks to it and it leads. Until
 /// then the shard waits, and nothing else changes its set or leader, so the
 /// one broker the move is for stays the replica.
+///
+/// A destination that stops being live (down, draining, gone) is dropped
+/// again ([`single_move_undone`]) while it has not voted or still serves,
+/// so it can vote for its own removal; that is also how a drain of the old
+/// broker gets past a move that cannot finish. One that votes and is down
+/// cannot be: either set of one needs its vote, so the shard reports
+/// [`Blocked::MoveStranded`] and waits for it or for a re-form.
 fn finish_single_move(
     existing: &ShardAssignment,
     replication_factor: u32,
+    is_live: &dyn Fn(&str) -> bool,
+    is_serving: &dyn Fn(&str) -> bool,
     moves: &mut Moves,
 ) -> Option<Decision> {
-    let [to] = existing.replicas.as_slice() else {
-        return None;
-    };
-    if replication_factor.max(1) != 1 {
-        return None;
+    let to = single_move_destination(existing, replication_factor)?;
+    if !is_live(to) {
+        if existing.reports_voting(to) && !is_serving(to) {
+            return Some(Decision::Waiting(Blocked::MoveStranded {
+                node: to.to_string(),
+            }));
+        }
+        let (node, undone) = single_move_undone(existing, replication_factor)?;
+        let step = MoveStep::RaftMoveUndone {
+            node: node.to_string(),
+        };
+        return Some(spend_replacement(moves, step, undone));
     }
     if let Err(blocked) = seat_open(existing) {
         return Some(Decision::Waiting(blocked));
@@ -175,28 +193,63 @@ fn finish_single_move(
     // The store refuses the shrink on the same check: a set of the
     // destination alone, before its copy votes, would let that empty copy
     // form a second group (#2905).
-    let next = BTreeSet::from([to.clone()]);
+    let next = BTreeSet::from([to.to_string()]);
     if existing.holds_formed_set(&next) {
         return Some(Decision::Waiting(Blocked::Unapplied));
     }
-    if moves.paused() {
-        return Some(Decision::Waiting(Blocked::Paused));
-    }
-    if moves.raft_replacements >= RAFT_REPLACEMENTS_PER_PASS {
-        return Some(Decision::Waiting(Blocked::MoveLimit));
-    }
-    moves.raft_replacements += 1;
-    Some(Decision::Move(
+    Some(spend_replacement(
+        moves,
         MoveStep::RaftReplace {
             from: existing.leader.clone(),
-            to: to.clone(),
+            to: to.to_string(),
         },
         ShardAssignment {
-            leader: to.clone(),
+            leader: to.to_string(),
             replicas: Vec::new(),
             ..existing.renamed()
         },
     ))
+}
+
+/// The destination of an RF 1 move in progress: the one replica of a
+/// shard whose factor is 1.
+fn single_move_destination(existing: &ShardAssignment, replication_factor: u32) -> Option<&str> {
+    match existing.replicas.as_slice() {
+        [to] if replication_factor.max(1) == 1 => Some(to),
+        _ => None,
+    }
+}
+
+/// The write that drops an RF 1 move's destination, back to the leader
+/// alone. The store takes it: the leader is a reported voter, so the set of
+/// it alone keeps a majority. Once the destination votes, the group needs
+/// its vote to remove it, so callers undo a voting one only while it
+/// serves. Returns the destination and the write; `None` when the shard is
+/// not mid-move.
+pub(super) fn single_move_undone(
+    existing: &ShardAssignment,
+    replication_factor: u32,
+) -> Option<(&str, ShardAssignment)> {
+    let to = single_move_destination(existing, replication_factor)?;
+    Some((
+        to,
+        ShardAssignment {
+            replicas: Vec::new(),
+            ..existing.renamed()
+        },
+    ))
+}
+
+/// Takes a set change's slot for this pass, or says why it waits.
+fn spend_replacement(moves: &mut Moves, step: MoveStep, next: ShardAssignment) -> Decision {
+    if moves.paused() {
+        return Decision::Waiting(Blocked::Paused);
+    }
+    if moves.raft_replacements >= RAFT_REPLACEMENTS_PER_PASS {
+        return Decision::Waiting(Blocked::MoveLimit);
+    }
+    moves.raft_replacements += 1;
+    Decision::Move(step, next)
 }
 
 /// Swaps a follower that must leave for a live node outside the set.
