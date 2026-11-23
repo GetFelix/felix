@@ -97,6 +97,13 @@ impl ShardRouter {
             .map(|node| node.advertise_addr)
     }
 
+    /// Whether this node may forward to `region`: its own, or one it has a
+    /// bridge to. The same policy [`Self::resolve`] refuses a remote leader by.
+    pub fn routes_to_region(&self, region: &str) -> bool {
+        self.regions
+            .can_route(&self.local_region, &region.to_string())
+    }
+
     /// What the last publish knew about `node_id`, as [`Self::node_addr`]
     /// but with its region and liveness.
     pub fn node(&self, node_id: &str) -> Option<NodeRef> {

@@ -306,6 +306,10 @@ impl ClientError {
             // majority. A retry lands once it can, or on the next leader.
             E::ProposalsStalled { .. } => Self::new(ErrorCode::ShardUnavailable, message)
                 .with_reason(felix_wire::shard_unavailable_reason::NOT_READY),
+            // Proposed, so it may commit: answered as the stream writes'
+            // engine errors are.
+            E::WriteUnsettled { timed_out: true, .. } => Self::new(ErrorCode::QuorumTimeout, message),
+            E::WriteUnsettled { .. } => Self::new(ErrorCode::LeadershipLost, message),
             E::NotReadable { reason, .. } | E::StateNotReadable(reason) => {
                 use felix_wire::shard_unavailable_reason as wire;
                 let why = match reason {

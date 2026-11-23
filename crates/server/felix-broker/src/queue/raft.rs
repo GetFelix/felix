@@ -57,7 +57,9 @@ pub trait GroupConsensus: Send + Sync {
     ///
     /// Any error means nothing was appended in `term`. An implementation that
     /// cannot tell must stop leading `term` before it returns the error, so
-    /// whatever it did append is settled by the next term's read index.
+    /// whatever it did append is settled by the next term's read index, and
+    /// answer [`BrokerError::WriteUnsettled`]: the entry may still commit
+    /// under the next leader, so the client must not be told to retry.
     fn propose(
         &self,
         key: &GroupKey,
@@ -726,7 +728,10 @@ impl<C: GroupConsensus> RaftGroups<C> {
                 return Err(err);
             }
         };
-        self.consensus.applied(key, proposed, deadline).await?;
+        self.consensus
+            .applied(key, proposed, deadline)
+            .await
+            .map_err(unsettled)?;
         if groups.read().tracker(&key.group) != Some(cre) {
             // The apply path forgot the tracker: the table will take none of
             // its writes, so none of its claims stands.
@@ -744,7 +749,10 @@ impl<C: GroupConsensus> RaftGroups<C> {
         deadline: Instant,
     ) -> Result<()> {
         let proposed = self.propose(key, term, entry).await?;
-        self.consensus.applied(key, proposed, deadline).await
+        self.consensus
+            .applied(key, proposed, deadline)
+            .await
+            .map_err(unsettled)
     }
 
     async fn propose(&self, key: &GroupKey, term: u64, entry: &GroupEntry) -> Result<Proposed> {
@@ -996,6 +1004,15 @@ fn check_handed_out(tracker: &GroupTracker, offset: u64) -> Result<()> {
         offset,
         next: tracker.high_water(),
     })
+}
+
+/// A write's error once its entry is proposed. The entry is in the log and
+/// may commit, so whatever ended the wait, retrying could write it twice.
+fn unsettled(err: BrokerError) -> BrokerError {
+    BrokerError::WriteUnsettled {
+        timed_out: matches!(err, BrokerError::ProposalsStalled { .. }),
+        detail: err.to_string(),
+    }
 }
 
 #[cfg(test)]
