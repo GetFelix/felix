@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795433295262,
+  "lastUpdate": 1795433664531,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66612,6 +66612,58 @@ window.BENCHMARK_DATA = {
             "range": "82000.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1281437.18\nmean: 1249697.25\nstdev: 82000.11\ncv: 6.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "18d411521c5c3ce7bd1e5f19e2a6d960b5fd5a2c",
+          "message": "ci(deps): bump actions/create-github-app-token (#3020)\n\nBumps the actions-minor-and-patch group with 1 update: [actions/create-github-app-token](https://github.com/actions/create-github-app-token).\n\n\nUpdates `actions/create-github-app-token` from 3.3.0 to 3.4.0\n- [Release notes](https://github.com/actions/create-github-app-token/releases)\n- [Changelog](https://github.com/actions/create-github-app-token/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/actions/create-github-app-token/compare/64ab729a6294000f5aa4a4bc0b73d1f32bc45510...f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc)\n\n---\nupdated-dependencies:\n- dependency-name: actions/create-github-app-token\n  dependency-version: 3.4.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: actions-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-23T03:24:50-08:00",
+          "tree_id": "135733de3050b59c95470aca028d599cbd335841",
+          "url": "https://github.com/GetFelix/felix/commit/18d411521c5c3ce7bd1e5f19e2a6d960b5fd5a2c"
+        },
+        "date": 1795433664012,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 499515.27,
+            "range": "31392.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499515.27\nmean: 514956.38\nstdev: 31392.89\ncv: 6.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 499515.27,
+            "range": "31392.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499515.27\nmean: 514956.38\nstdev: 31392.89\ncv: 6.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124120,
+            "range": "8296.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124120.00\nmean: 120491.29\nstdev: 8296.81\ncv: 6.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1241200,
+            "range": "82968.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1241200.00\nmean: 1204912.93\nstdev: 82968.12\ncv: 6.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
