@@ -112,6 +112,10 @@ pub(crate) struct RaftShards {
     carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Limits the warning for a shard whose open waits on the open-file limit.
     held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
+    /// This broker's part of each applied re-form plan, from the latest
+    /// `start` survey, keyed by shard with the incarnation and the epoch it
+    /// starts. The feed pass starts a stopped copy from it.
+    reform_starts: Arc<parking_lot::Mutex<HashMap<ShardKey, reform_survey::PlannedStart>>>,
     /// The data root, once the restore gate has passed it. No member opens
     /// before.
     root: std::sync::OnceLock<Arc<CopyRoot>>,
@@ -282,6 +286,7 @@ impl RaftShards {
             carried_over: parking_lot::Mutex::default(),
             short_warned: parking_lot::Mutex::default(),
             held_warn: parking_lot::Mutex::default(),
+            reform_starts: Arc::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
             formable: parking_lot::Mutex::default(),
@@ -387,6 +392,73 @@ impl RaftShards {
     /// The group's epoch is the stream's incarnation, so a member of an
     /// earlier incarnation refuses this one's messages. Its pre-vote answer
     /// would otherwise say blank for a directory the new group never touched.
+    /// Start this broker's stopped copy in `dir` in the epoch the shard's
+    /// `placed` record names, as the `start` survey for that epoch says.
+    /// The bases and voters come from the record, never the survey, so a
+    /// survey cannot start a copy into an epoch the store did not record.
+    /// A copy that is not stopped in the epoch before, or has no survey
+    /// yet, is left alone: its open then refuses it as stopped and the
+    /// next pass tries again. Run again after a crash, the start resumes.
+    async fn start_reformed(
+        &self,
+        key: &ShardKey,
+        assignment: &ShardAssignment,
+        root: &CopyRoot,
+        dir: &std::path::Path,
+        config: &LogConfig,
+    ) -> anyhow::Result<()> {
+        let Some(bases) = assignment.epoch_bases() else {
+            return Ok(());
+        };
+        let epoch = bases.len() as u64;
+        let incarnation = assignment.incarnation;
+        let Some(wire) = self
+            .reform_starts
+            .lock()
+            .get(key)
+            .filter(|planned| planned.incarnation == incarnation && planned.epoch == epoch)
+            .map(|planned| planned.start.clone())
+        else {
+            return Ok(());
+        };
+        let due = {
+            let dir = dir.to_path_buf();
+            tokio::task::spawn_blocking(move || felix_storage::raft_copy::start_due(&dir, epoch))
+                .await??
+        };
+        if !due {
+            return Ok(());
+        }
+        let voters = assignment
+            .raft_seed
+            .as_ref()
+            .filter(|seed| seed.incarnation == incarnation && seed.epoch == epoch)
+            .map(|seed| {
+                seed.members
+                    .iter()
+                    .map(|(broker, copy)| MemberId::new(broker.as_str(), *copy))
+                    .collect::<BTreeSet<_>>()
+            });
+        let Some(voters) = voters else {
+            // A voter's snapshot names the epoch's voters; without them a
+            // start would fold one that names nobody.
+            return Ok(());
+        };
+        let fold = felix_replication::raft::GapSnapshot::new(key.kind, voters);
+        root.start_stopped(
+            &felix_replication::raft::mark_name(key),
+            dir,
+            incarnation,
+            bases,
+            &wire,
+            &fold,
+            config,
+        )
+        .await?;
+        tracing::info!(shard = ?key, epoch, voter = wire.voter.is_some(), "started a stopped Raft copy in its re-formed epoch");
+        Ok(())
+    }
+
     async fn open_member(
         &self,
         key: &ShardKey,
@@ -485,6 +557,9 @@ impl RaftShards {
         self.claims.fetch_add(1, Ordering::AcqRel);
         let (dir, config) = claim.context("claim task")??;
         let retention_interval = config.retention_check_interval;
+        self.start_reformed(key, assignment, root, &dir, &config)
+            .await
+            .context("start the re-formed copy")?;
         admit(&self.runtime, key, assignment);
         let opened = self
             .runtime

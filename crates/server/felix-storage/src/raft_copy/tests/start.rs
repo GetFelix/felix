@@ -680,3 +680,63 @@ fn a_start_from_a_plan_carries_its_floor() {
     assert_eq!(started.floor, Some(floor));
     assert_eq!(started.accept_loss, AcceptLoss::assumed(false));
 }
+
+/// What a fold saw in the voter's directory when the start ran it.
+#[derive(Default)]
+struct Seen(parking_lot::Mutex<Option<Option<crate::raft_log::StoredSnapshot>>>);
+
+impl crate::raft_copy::GapFold for Seen {
+    fn fold<'a>(
+        &'a self,
+        dir: &'a Path,
+        _config: &'a crate::log::LogConfig,
+        _base: Option<LogPoint>,
+        gap_end: LogPoint,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = std::io::Result<crate::raft_log::StoredSnapshot>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            *self.0.lock() = Some(crate::raft_log::snapshot::read(dir)?);
+            Ok(crate::raft_log::StoredSnapshot {
+                last: Some(crate::raft_log::SnapshotId {
+                    term: gap_end.term,
+                    index: gap_end.index,
+                }),
+                meta: bytes::Bytes::new(),
+                data: bytes::Bytes::from_static(b"folded"),
+            })
+        })
+    }
+}
+
+/// A voter rebuilt from a kept copy folds from the kept copy's snapshot,
+/// which its log may be purged below, and stores the fold at the gap's end.
+#[tokio::test]
+async fn a_voter_from_a_kept_copy_folds_from_its_snapshot() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    let snapshot = crate::raft_log::StoredSnapshot {
+        last: Some(crate::raft_log::SnapshotId { term: 1, index: 2 }),
+        meta: bytes::Bytes::from_static(b"meta"),
+        data: bytes::Bytes::from_static(b"kept state"),
+    };
+    crate::raft_log::snapshot::store_in(kept.path(), &snapshot).expect("snapshot");
+    let dir = tempfile::tempdir().expect("dir");
+    log_in_terms(dir.path(), &[3, 3]).await;
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    let seen = Seen::default();
+    crate::raft_copy::start::start_with(dir.path(), &from_kept, &config(), Some(&seen))
+        .await
+        .expect("start");
+
+    assert_eq!(seen.0.lock().clone(), Some(Some(snapshot)));
+    let stored = crate::raft_log::snapshot::read(dir.path())
+        .expect("read")
+        .expect("a snapshot");
+    assert_eq!(stored.data.as_ref(), b"folded");
+}

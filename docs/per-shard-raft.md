@@ -719,8 +719,8 @@ the groups of one broker or the whole cluster, and it has two steps:
   any group whose facts differ from the plan, so nothing is done that the
   operator did not see.
 
-**Running a plan.** `plan` is built; `apply` is not yet (see "Applying a
-plan" below). Run
+**Running a plan.** `plan` and `apply` are built (see "Applying a plan"
+below). Run
 
 ```bash
 felixctl raft reform plan                          # every Raft shard
@@ -765,10 +765,9 @@ and it loses its majority the same way. A broker reads a cache shard's copy
 under the cache store's root, where its member lives.
 
 **Applying a plan.** The epoch write, the stop, compare and start rounds
-(`store/reform/apply.rs`, and the broker's `stop_for_reform`), `felixctl
-raft reform apply` and `POST /v1/raft/reform/plans/{id}/apply` are built.
-The broker's start of a stopped copy at the new epoch is not yet built, so
-an applied shard waits at `starting`; what it will do is below. A survey carries a `kind`
+(`store/reform/apply.rs`, and the broker's `stop_for_reform` and
+`start_reformed`), `felixctl raft reform apply` and `POST
+/v1/raft/reform/plans/{id}/apply` are built. A survey carries a `kind`
 (`survey`, `stop` or `start`) and so does its answer; a broker that predates
 the kind answers a stop as a read-only survey, without the kind, so the
 control plane ignores the answer and the stop round fails after 30 s with
@@ -805,9 +804,10 @@ control plane still never calls a broker:
    feed carries to every broker. The command is level 50, so no member
    that cannot apply it is ever asked to: a member below that level would
    refuse the entry and keep the old epoch while the others start the next.
-4. **Start.** Each listed broker sees the new epoch in its shard feed and
-   runs `raft_copy::start_copy` on its stopped copy, then opens the member
-   at the new epoch. A fresh learner placed later gets its `raft-epoch`
+4. **Start.** Each listed broker sees the new epoch in its shard feed and,
+   with the `start` survey's part of the plan, runs
+   `CopyRoot::start_stopped` on its stopped copy, then opens the member at
+   the new epoch. A fresh learner placed later gets its `raft-epoch`
    before it can vote (#2882).
 
 A crash between the stop and the write leaves the copies stopped, and a
@@ -855,9 +855,13 @@ at `first_index - 1`, so the member applies nothing at or below it: the
 snapshot stored there must hold the state machine as of the base, not the
 empty data a switch from the hybrid writes. A stream shard's snapshot holds
 its group table and the cuts it must still refuse; a cache shard's holds
-the cache. The broker builds it like a purge snapshot: the copy's stored
-snapshot, with every entry after it through the base's last index applied,
-and the new voters as the membership at the gap's end. The state machine is
+the cache. The broker builds it like a purge snapshot
+(`felix_replication::raft::GapSnapshot`): the copy's stored snapshot, with
+every entry after it through the base's last index applied, and the new
+voters (the record's seed) as the membership at the gap's end. It runs once
+the voter's log ends at the base, after a kept directory is copied in and
+anything past the base is cut, so it never folds an entry the re-form
+drops; a stored snapshot past the base is refused. The state machine is
 deterministic and every voter holds the same base, so every voter stores
 the same state whatever snapshot its fold began from, and a learner that installs it from the leader gets the
 same state.

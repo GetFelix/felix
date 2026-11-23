@@ -54,6 +54,7 @@ fn assignment(key: ShardKey, leader: &str, generation: u64) -> ShardAssignment {
         raft_formed: None,
         raft_voters: None,
         raft_bases: None,
+        raft_seed: None,
         placed: None,
     }
 }

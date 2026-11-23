@@ -84,6 +84,7 @@ fn show(ingress: &IngressRouter, leader: &str, generation: u64) {
             raft_formed: None,
             raft_voters: None,
             raft_bases: None,
+            raft_seed: None,
             placed: None,
         },
     )]

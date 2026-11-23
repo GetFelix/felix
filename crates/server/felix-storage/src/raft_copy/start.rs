@@ -193,15 +193,7 @@ impl CopyRoot {
                 "{label}: a start needs the new epoch's base"
             )));
         };
-        // Only the stopped copy of the epoch before, or a start of this one
-        // that did not finish, so a survey never starts a served copy.
-        let resumable = if building(dir)? {
-            let at = super::group_epoch(dir)?.unwrap_or(0);
-            at + 1 == new || at == new
-        } else {
-            super::stop_file::stopped(dir)?.is_some_and(|stopped| stopped.epoch + 1 == new)
-        };
-        if !resumable {
+        if !start_due(dir, new)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("{label}: not a copy stopped in the epoch before {new}"),
@@ -262,6 +254,17 @@ impl CopyRoot {
     }
 }
 
+/// Whether the copy in `dir` is one a start of epoch `epoch` may run on:
+/// stopped in the epoch before, or mid-start of this one or of the epoch
+/// before's. A served copy, or one already started, is not.
+pub fn start_due(dir: &Path, epoch: u64) -> io::Result<bool> {
+    if building(dir)? {
+        let at = super::group_epoch(dir)?.unwrap_or(0);
+        return Ok(at + 1 == epoch || at == epoch);
+    }
+    Ok(super::stop_file::stopped(dir)?.is_some_and(|stopped| stopped.epoch + 1 == epoch))
+}
+
 /// `kept` as a directory in `dir`'s `.kept`, the only place a start reads a
 /// base from.
 fn kept_beside(dir: &Path, kept: &Path) -> io::Result<PathBuf> {
@@ -291,7 +294,7 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
 
 /// [`start_copy`], with a voter's snapshot at the gap's end from `fold`
 /// in place of [`Start::meta`] and [`Start::data`].
-async fn start_with(
+pub(super) async fn start_with(
     dir: &Path,
     start: &Start,
     config: &LogConfig,
@@ -590,7 +593,7 @@ fn empty_log(dir: &Path) -> io::Result<()> {
     crate::io::sync_dir(dir)
 }
 
-/// Rebuild `dir`'s log from `kept`'s segments and durable mark. Each file is
+/// Rebuild `dir`'s log from `kept`'s segments, durable mark and snapshot. Each file is
 /// copied under a temporary name and synced, and only then are they renamed
 /// into place, so the directory never holds part of a file under a log
 /// file's name. A cut part way leaves the marker, and the start run again
@@ -630,7 +633,14 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
         crate::fs::rename(dir.join(format!("{name}{COPYING}")), dir.join(name))?;
     }
     crate::io::sync_dir(dir)?;
-    step()
+    step()?;
+    // The fold at the gap's end starts from the kept copy's snapshot: its
+    // log may be purged below it.
+    if let Some(snapshot) = crate::raft_log::snapshot::read(kept)? {
+        crate::raft_log::snapshot::store_in(dir, &snapshot)?;
+        step()?;
+    }
+    Ok(())
 }
 
 /// Cut every record at or after `end` from `dir`'s log.

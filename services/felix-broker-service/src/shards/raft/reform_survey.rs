@@ -61,6 +61,16 @@ pub(crate) struct Survey {
     pub(crate) start: Option<WireStart>,
 }
 
+/// This broker's part of an applied plan for one shard, from a `start`
+/// survey.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedStart {
+    pub(crate) incarnation: u64,
+    /// The epoch the start begins.
+    pub(crate) epoch: u64,
+    pub(crate) start: WireStart,
+}
+
 #[derive(Debug, Deserialize)]
 struct Surveys {
     surveys: Vec<Survey>,
@@ -168,7 +178,20 @@ impl RaftShards {
             .into_iter()
             .map(|led| (led.key, led.incarnation, led.epoch))
             .collect();
+        let starts = Arc::clone(&self.reform_starts);
         Arc::new(move |survey: &Survey| {
+            if survey.kind == SurveyKind::Start
+                && let Some(start) = &survey.start
+            {
+                starts.lock().insert(
+                    survey.key.clone(),
+                    PlannedStart {
+                        incarnation: survey.incarnation,
+                        epoch: survey.epoch,
+                        start: start.clone(),
+                    },
+                );
+            }
             let dir = reform_dir(&broker, &survey.key, survey.incarnation)?;
             // A start is answered once the copy holds the new epoch, which
             // the start writes before the member opens.

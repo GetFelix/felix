@@ -76,12 +76,12 @@ pub use report::{MembershipReader, VoterSets, build_report};
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use rotated_by::RotatedBy;
-pub use start::GapFold;
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
+pub use start::{GapFold, start_due};
 pub use stop_file::{StoppedCopy, stop, stopped};
 pub use vouch::{BrokerReport, GroupRecord, VoterId};
 #[allow(

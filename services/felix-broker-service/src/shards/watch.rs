@@ -123,6 +123,11 @@ pub struct ShardAssignment {
     /// that predates them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_bases: Option<RaftBases>,
+    /// The voters a re-form started the group's epoch with. A copy the
+    /// re-form starts as a voter names them in its snapshot at the gap's
+    /// end. Absent from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_seed: Option<RaftVoters>,
 }
 
 /// The epoch half of the control plane's record of the brokers placed in
@@ -336,6 +341,7 @@ impl PreviousSet {
             raft_formed: None,
             raft_voters: None,
             raft_bases: None,
+            raft_seed: None,
             placed: None,
         }
     }
