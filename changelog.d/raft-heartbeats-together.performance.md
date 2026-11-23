@@ -1,0 +1,1 @@
+- Raft heartbeats for members on one broker that go out within 1 ms are sent as one message (`RuntimeConfig::beat_window`), behind the new `RAFT_BEATS` peer capability. 24 idle groups cost a broker 6 Raft messages a second instead of 72 in the unit harness. A peer without the capability gets each heartbeat on its own (#2939).

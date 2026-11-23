@@ -168,6 +168,7 @@ never have dialled the one that shipped to it.
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
 | `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 | `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | reads `RecordSequencedForwardPublish`, a sequenced forward whose records each take their own sequence from the one named (see "A forward that names its producer"). A Raft leader proposes them together in one proposal and answers once all commit. An MQTT listener on a member of the shard's group sends a batch that way only to a leader that offered it, and record by record otherwise |
+| `1 << 28` | `RAFT_BEATS` | reads a Raft body that holds many groups' heartbeats (message 9, "Heartbeats together" under "Raft messages") and answers it with one result per heartbeat, in order. Offered with `RAFT` by every listener that runs the group runtime; to a peer without it each heartbeat goes on its own, byte for byte as before |
 | `1 << 27` | `CLIENT_CERTS` | reads a forward wrapped in `ClientCertified` and checks the client's certificate chain against its own client CA (see "Client certificates across a forward"). Offered only by a broker with `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`; a forward goes in the envelope only to a peer that offered it |
 
 #### Storage identity
@@ -1291,7 +1292,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 | Field | Layout |
 | --- | --- |
 | layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
-| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index |
+| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index, 9 heartbeats together (see below; its header differs after the deadline) |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
 | member | broker (name), copy id `u64` |
@@ -1401,6 +1402,35 @@ The answer has the same first byte, then:
 | 17 no such member | the group and member. The broker holds no member for that copy and epoch |
 | 18 stopped | the group and member, and a reason |
 | 19 no snapshots | the group and member |
+| 21 slow | the group and member. Only inside a heartbeats answer: the member had not answered by the time the others had. Its broker is up |
+
+#### Heartbeats together
+
+To a peer that offered `RAFT_BEATS`, a broker sends the heartbeats it hands
+off for members on that peer within a short window (1 ms by default) as one
+`Raft` body:
+
+| Field | Layout |
+| --- | --- |
+| layout | `u8`, 6 |
+| message | `u8` 9 |
+| deadline | `u32`: the longest of the heartbeats' deadlines, in milliseconds, where a listener reads every body's |
+| wait | `u32`: how long, in microseconds, the listener waits for a member once another has answered |
+| count | `u16`, 1 to 512 |
+| heartbeats | `count` times: a `u32` length, then a whole message 1 body as above |
+
+Anything but a message 1 body inside refuses the whole body. The answer is
+the layout byte, `u8` 7, a `u16` count equal to the request's, then each
+heartbeat's whole answer body behind a `u32` length, in the request's order.
+A sender refuses an answer with any other count. A listener that cannot read
+the body answers once, with an ordinary unreachable answer, which the sender
+takes as every heartbeat's.
+
+The listener hands every heartbeat to its member at once. Until the first
+answers, all wait: the broker is slow, not one member. After that, a member
+silent for `wait` past the latest answer is answered 21 slow, so one stuck
+member holds the rest up by no more than the window. A single heartbeat, and
+every heartbeat to a peer without the capability, goes as message 1.
 
 A body that does not read is answered as unreachable. A count larger than the
 bytes left can hold is refused before anything is sized from it, and so are

@@ -44,7 +44,9 @@ produce, and a transactional producer. A three-broker cluster test in
 partition of a topic whose shards are led by different brokers, and follows a
 shard move. `crates/testing/felix-cluster/tests/failures/kafka_produce.rs`
 re-sends an idempotent producer's batches to a promoted leader and to a move's
-destination.
+destination, and checks that Fetch and ListOffsets return the same records at
+the same offsets after the leader changes. It runs against hybrid shards and,
+with `FELIX_TEST_RAFT_SHARDS=1`, against Raft shards.
 
 > `kcat_consumes_every_partition_from_the_beginning_and_from_an_offset`,
 > `kcat_receives_a_record_published_while_its_fetch_waits`,
@@ -56,7 +58,9 @@ destination.
 > `kcat_produces_idempotently`,
 > `kcat_produces_keyed_records_and_the_value_is_kept`,
 > `kcat_transactional_producer_is_refused_readably`,
-> `an_idempotent_kafka_producer_lands_each_record_once_through_failover_and_a_move`.
+> `an_idempotent_kafka_producer_lands_each_record_once_through_failover_and_a_move`,
+> `kafka_fetch_and_list_offsets_hold_through_a_failover`,
+> `kafka_fetch_and_list_offsets_hold_through_a_failover_on_a_raft_shard`.
 
 ## What does not work
 

@@ -12,7 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use openraft::entry::RaftEntry;
-use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
+use openraft::error::{NetworkError, RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{Backoff, RPCOption, RaftNetworkFactory};
 use openraft::raft::{
@@ -179,6 +179,10 @@ pub enum Refused {
     /// one would purge records it was never sent. No member takes one.
     #[error("{0} takes no snapshot: a shard's records are only in its log")]
     NoSnapshots(Box<Addressee>),
+    /// Sent with other groups' heartbeats, the member had not answered by
+    /// the time the others had. Its broker is up; the member may be busy.
+    #[error("{0} did not answer while the other heartbeats sent with it did")]
+    Slow(Box<Addressee>),
 }
 
 /// The member a message was for. Boxed in [`Refused`] to keep the error
@@ -204,9 +208,34 @@ impl fmt::Display for Addressee {
 /// Raft capability; it answers [`Refused::Unreachable`] instead.
 ///
 /// [`handle`]: super::GroupRuntime::handle
+///
+/// [`send_beats`](Self::send_beats) takes heartbeats for members on one
+/// broker that were sent within a short window, and answers each in order.
+/// By default it sends each on its own.
 #[async_trait]
 pub trait RaftTransport: Send + Sync + 'static {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused>;
+
+    /// Heartbeats (appends with no entries) for members on one broker, all
+    /// to go at once: one answer for each, in the same order. `wait` is how
+    /// long the receiver waits for a member's answer once the others have
+    /// answered.
+    async fn send_beats(
+        &self,
+        beats: Vec<RaftRequest>,
+        wait: Duration,
+    ) -> Vec<Result<RaftReply, Refused>> {
+        let _ = wait;
+        send_each(self, beats).await
+    }
+}
+
+/// Sends each heartbeat on its own, all at once.
+pub(crate) async fn send_each<T: RaftTransport + ?Sized>(
+    transport: &T,
+    beats: Vec<RaftRequest>,
+) -> Vec<Result<RaftReply, Refused>> {
+    futures::future::join_all(beats.into_iter().map(|beat| transport.send(beat))).await
 }
 
 /// A transport whose peers are not there: every vote is granted and every
@@ -300,7 +329,7 @@ impl Router {
         group: GroupId,
         mut body: Request,
         option: &RPCOption,
-    ) -> Result<Reply, Unreachable<ShardTypes>> {
+    ) -> Result<Reply, RPCError<ShardTypes>> {
         // A transport inside one process hands the message over as it is.
         // A token that went with it would be resolved by the follower's
         // append and tell the publisher the leader had written.
@@ -387,6 +416,8 @@ impl Router {
                 self.reach.answered(&to.broker);
                 self.refusals.refused(&to.broker);
             }
+            // The broker answered for the other groups in the batch.
+            Ok(Err(Refused::Slow(_))) => self.reach.answered(&to.broker),
             Ok(_) => {
                 self.reach.answered(&to.broker);
                 if self.refusals.answered(&to.broker, self.reach.now()) {
@@ -396,8 +427,8 @@ impl Router {
         }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
-            Ok(Err(refused)) => Err(Unreachable::new(&refused)),
-            Err(elapsed) => Err(Unreachable::new(&elapsed)),
+            Ok(Err(refused)) => Err(refusal_error(&refused)),
+            Err(elapsed) => Err(Unreachable::new(&elapsed).into()),
         }
     }
 }
@@ -450,8 +481,18 @@ pub(crate) fn pre_vote_answer(mut answer: VoteResponse<ShardTypes>) -> VoteRespo
     answer
 }
 
-fn wrong_reply() -> Unreachable<ShardTypes> {
-    Unreachable::new(&WrongReply)
+fn wrong_reply() -> RPCError<ShardTypes> {
+    Unreachable::new(&WrongReply).into()
+}
+
+/// What openraft is told of a refusal. A slow group's broker is up, and a
+/// busy group's replication must not back off for it (`Unreachable` ranks
+/// past openraft's backoff threshold, `Network` does not).
+pub(crate) fn refusal_error(refused: &Refused) -> RPCError<ShardTypes> {
+    match refused {
+        Refused::Slow(_) => NetworkError::new(refused).into(),
+        _ => Unreachable::new(refused).into(),
+    }
 }
 
 impl GroupRouter<ShardTypes, GroupId> for Router {
@@ -469,7 +510,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::Append(result) => Ok(result),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 
@@ -485,7 +526,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::Vote(response) => Ok(response),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 
@@ -501,7 +542,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::Vote(response) => Ok(pre_vote_answer(response)),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 
@@ -562,7 +603,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .await?
         {
             Reply::TransferLeader(response) => Ok(response),
-            _ => Err(wrong_reply().into()),
+            _ => Err(wrong_reply()),
         }
     }
 

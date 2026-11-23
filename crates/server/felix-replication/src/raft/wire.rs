@@ -48,6 +48,9 @@ const WRITTEN: u8 = 7;
 /// Sent only once the fleet finalized `raft_follower_read`, so a peer that
 /// predates it is never asked.
 const READ_INDEX: u8 = 8;
+/// Many groups' heartbeats for members on one broker, each a whole body of
+/// its own. Sent only to a peer that offered `RAFT_BEATS`.
+pub(crate) const BEATS: u8 = 9;
 
 /// The second byte of an answer.
 const APPENDED: u8 = 1;
@@ -56,17 +59,27 @@ const SNAPSHOT_TAKEN: u8 = 3;
 const TRANSFERRED: u8 = 4;
 const WRITTEN_TAKEN: u8 = 5;
 const READ_INDEX_TAKEN: u8 = 6;
+/// The answer to `BEATS`: one answer body for each heartbeat, in order.
+const BEATS_TAKEN: u8 = 7;
 const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
 const NO_SNAPSHOTS: u8 = 19;
 const OTHER_COPY: u8 = 20;
+/// Only inside `BEATS_TAKEN`, which only a peer that offered `RAFT_BEATS`
+/// is sent.
+const SLOW: u8 = 21;
 
 /// Most members one voter set or the learners may name. Far more than a
 /// shard's copies; it bounds what a peer can make this broker allocate.
 const MAX_MEMBERS: usize = 64;
 /// Most voter sets: two during a joint change.
 const MAX_CONFIGS: usize = 2;
+/// The most heartbeats one `BEATS` body holds.
+pub(crate) const MAX_BEATS: usize = 512;
+/// The fewest bytes one heartbeat takes inside a `BEATS` body: its length,
+/// then at least the fixed part of a request header.
+const MIN_BEAT_BYTES: usize = 4 + 23;
 /// Longest reason a refusal carries. Longer ones are cut.
 const MAX_REASON_BYTES: usize = 1024;
 /// Smallest encoded entry: a log id and a payload tag.
@@ -435,6 +448,10 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
             put_addressee(buf, to)?;
             buf.put_u64(*copy);
         }
+        Err(Refused::Slow(to)) => {
+            buf.put_u8(SLOW);
+            put_addressee(buf, to)?;
+        }
     }
     Ok(())
 }
@@ -481,10 +498,129 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
             let to = take_addressee(&mut buf)?;
             Err(Refused::OtherCopy(to, take_u64(&mut buf)?))
         }
+        SLOW => Err(Refused::Slow(take_addressee(&mut buf)?)),
         other => return Err(invalid(format!("{other} is not a Raft answer"))),
     };
     expect_empty(&buf)?;
     Ok(reply.map(RaftReply))
+}
+
+/// Whether `body` is a `BEATS` body, by its second byte.
+pub(crate) fn is_beats(body: &[u8]) -> bool {
+    body.get(1) == Some(&BEATS)
+}
+
+/// Heartbeats for members on one broker as one body: the layout byte, the
+/// tag, the longest of their deadlines where every request names one, the
+/// receiver's wait in microseconds, a count, then each heartbeat's whole
+/// body behind its length.
+pub(crate) fn encode_beats(beats: &[RaftRequest], wait: Duration) -> io::Result<Bytes> {
+    if beats.is_empty() || beats.len() > MAX_BEATS {
+        return Err(invalid(format!(
+            "{} heartbeats do not go in one body",
+            beats.len()
+        )));
+    }
+    let deadline = beats
+        .iter()
+        .map(|beat| beat.deadline)
+        .max()
+        .unwrap_or_default();
+    let mut buf = BytesMut::new();
+    buf.put_u8(LAYOUT);
+    buf.put_u8(BEATS);
+    buf.put_u32(u32::try_from(deadline.as_millis()).unwrap_or(u32::MAX));
+    buf.put_u32(u32::try_from(wait.as_micros()).unwrap_or(u32::MAX));
+    buf.put_u16(beats.len() as u16);
+    for beat in beats {
+        if !matches!(&beat.body, Request::Append(rpc) if rpc.entries.is_empty()) {
+            return Err(invalid("only a heartbeat goes in a heartbeats body".into()));
+        }
+        let body = encode_request(beat)?;
+        buf.put_u32(len_u32(body.len())?);
+        buf.extend_from_slice(&body);
+    }
+    Ok(buf.freeze())
+}
+
+/// The heartbeats in a `BEATS` body, and how long to wait for a member
+/// once the others have answered. Anything but a heartbeat inside refuses
+/// the whole body.
+pub(crate) fn decode_beats(mut buf: Bytes) -> io::Result<(Vec<RaftRequest>, Duration)> {
+    expect_layout(&mut buf)?;
+    if take_u8(&mut buf)? != BEATS {
+        return Err(invalid("not a heartbeats body".into()));
+    }
+    let _deadline = take_u32(&mut buf)?;
+    let wait = Duration::from_micros(u64::from(take_u32(&mut buf)?));
+    let count = usize::from(take_u16(&mut buf)?);
+    if count == 0 || count > MAX_BEATS {
+        return Err(invalid(format!("{count} heartbeats do not go in one body")));
+    }
+    if buf.remaining() < count * MIN_BEAT_BYTES {
+        return Err(short());
+    }
+    let mut beats = Vec::with_capacity(count);
+    for _ in 0..count {
+        let body = take_block(&mut buf)?;
+        let beat = decode_request(body)?;
+        if !matches!(&beat.body, Request::Append(rpc) if rpc.entries.is_empty()) {
+            return Err(invalid("a heartbeats body holds something else".into()));
+        }
+        beats.push(beat);
+    }
+    expect_empty(&buf)?;
+    Ok((beats, wait))
+}
+
+/// One answer body for each heartbeat of a `BEATS` body, in its order.
+pub(crate) fn encode_beats_reply(answers: &[Result<RaftReply, Refused>]) -> Bytes {
+    let mut buf = BytesMut::new();
+    buf.put_u8(LAYOUT);
+    buf.put_u8(BEATS_TAKEN);
+    buf.put_u16(answers.len() as u16);
+    for answer in answers {
+        let body = encode_reply(answer);
+        buf.put_u32(body.len() as u32);
+        buf.extend_from_slice(&body);
+    }
+    buf.freeze()
+}
+
+/// The answers to a `BEATS` body of `count` heartbeats. Any other count is
+/// refused: an answer must not be matched to the wrong group.
+pub(crate) fn decode_beats_reply(
+    mut buf: Bytes,
+    count: usize,
+) -> io::Result<Vec<Result<RaftReply, Refused>>> {
+    if buf.get(1) != Some(&BEATS_TAKEN) {
+        // The whole body refused, as one it could not read is.
+        return match decode_reply(buf)? {
+            Err(refused) => {
+                let reason = refused.to_string();
+                Ok((0..count)
+                    .map(|_| Err(Refused::Unreachable(reason.clone())))
+                    .collect())
+            }
+            Ok(_) => Err(invalid(
+                "a heartbeats body was answered with one answer".into(),
+            )),
+        };
+    }
+    expect_layout(&mut buf)?;
+    buf.advance(1);
+    let answered = usize::from(take_u16(&mut buf)?);
+    if answered != count {
+        return Err(invalid(format!(
+            "{answered} answers came back for {count} heartbeats"
+        )));
+    }
+    let mut answers = Vec::with_capacity(count);
+    for _ in 0..count {
+        answers.push(decode_reply(take_block(&mut buf)?)?);
+    }
+    expect_empty(&buf)?;
+    Ok(answers)
 }
 
 fn put_append_result(buf: &mut BytesMut, result: &AppendResult<ShardTypes>) -> io::Result<()> {

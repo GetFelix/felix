@@ -10,15 +10,17 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec, wait};
+use kafka_protocol::messages::fetch_request::{FetchPartition, FetchTopic};
+use kafka_protocol::messages::list_offsets_request::{ListOffsetsPartition, ListOffsetsTopic};
 use kafka_protocol::messages::produce_request::{PartitionProduceData, TopicProduceData};
 use kafka_protocol::messages::{
-    InitProducerIdRequest, ProduceRequest, RequestHeader, SaslAuthenticateRequest,
-    SaslHandshakeRequest, TopicName,
+    FetchRequest, InitProducerIdRequest, ListOffsetsRequest, ProduceRequest, RequestHeader,
+    SaslAuthenticateRequest, SaslHandshakeRequest, TopicName,
 };
 use kafka_protocol::protocol::{Decodable, Encodable, HeaderVersion, Request, StrBytes};
 use kafka_protocol::records::{
-    Compression, NO_PARTITION_LEADER_EPOCH, Record, RecordBatchEncoder, RecordEncodeOptions,
-    TimestampType,
+    Compression, NO_PARTITION_LEADER_EPOCH, Record, RecordBatchDecoder, RecordBatchEncoder,
+    RecordEncodeOptions, TimestampType,
 };
 use serial_test::serial;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -237,6 +239,127 @@ async fn a_kafka_epoch_bump_on_a_raft_shard_survives_failover() {
     cluster.shutdown().await;
 }
 
+/// The shard engine a Kafka test runs on.
+#[derive(Clone, Copy, PartialEq)]
+enum Engine {
+    Hybrid,
+    Raft,
+}
+
+impl Engine {
+    fn broker_env(self) -> Vec<(String, String)> {
+        match self {
+            Engine::Hybrid => Vec::new(),
+            Engine::Raft => vec![super::raft::engine()],
+        }
+    }
+
+    /// The broker leading the shard among `among`.
+    async fn leader(self, cluster: &Cluster, among: &[String]) -> String {
+        match self {
+            Engine::Hybrid => cluster.owner(STREAM).await.expect("owner"),
+            Engine::Raft => super::raft::leader_among(cluster, among).await,
+        }
+    }
+
+    /// The leader once none of `gone` is.
+    async fn next_leader(self, cluster: &Cluster, gone: &str, live: &[String]) -> String {
+        match self {
+            Engine::Hybrid => new_owner(cluster, &[gone]).await,
+            Engine::Raft => super::raft::leader_among(cluster, live).await,
+        }
+    }
+}
+
+/// **A Kafka consumer reads what was produced, at the offsets the producer
+/// was told, before and after the leader changes.** ListOffsets and Fetch are
+/// bounded by what the shard has committed, so a new leader that answered
+/// from a stale or settling bound would show a gap, a reused offset or a
+/// record that moved.
+#[serial]
+#[tokio::test]
+async fn kafka_fetch_and_list_offsets_hold_through_a_failover() {
+    reads_through_a_failover(Engine::Hybrid).await;
+}
+
+#[serial]
+#[tokio::test]
+async fn kafka_fetch_and_list_offsets_hold_through_a_failover_on_a_raft_shard() {
+    reads_through_a_failover(Engine::Raft).await;
+}
+
+async fn reads_through_a_failover(engine: Engine) {
+    if engine == Engine::Raft && !super::raft::opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        kafka: true,
+        broker_env: engine.broker_env(),
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let topic = format!("{}.{STREAM}", cluster.namespace);
+    let nodes = cluster.node_ids();
+
+    let first = engine.leader(&cluster, &nodes).await;
+    let mut producer = Producer::connect(&cluster, &first, &topic).await;
+    let mut offsets = Vec::new();
+    for sequence in 0..5 {
+        offsets.push(producer.send_ok(sequence).await);
+    }
+    if engine == Engine::Hybrid {
+        wait_until_replicated(&cluster, &first).await;
+    }
+    let id = producer.id;
+
+    let latest = producer.latest_until_served().await;
+    assert!(
+        latest > offsets[4],
+        "latest {latest} is not past {offsets:?}"
+    );
+    assert!(producer.earliest().await <= offsets[0]);
+    assert_eq!(
+        producer.fetch_until_served(offsets[2]).await,
+        [
+            (offsets[2], "r2".to_string()),
+            (offsets[3], "r3".to_string()),
+            (offsets[4], "r4".to_string()),
+        ],
+        "a fetch from the middle on the first leader"
+    );
+    assert!(producer.fetch_until_served(latest).await.is_empty());
+
+    cluster.stop_node(&first).await.expect("kill the leader");
+    let live: Vec<String> = nodes.into_iter().filter(|node| *node != first).collect();
+    let second = engine.next_leader(&cluster, &first, &live).await;
+    let mut producer = Producer::connect(&cluster, &second, &topic)
+        .await
+        .with_id(id);
+    let expected: Vec<(i64, String)> = offsets
+        .iter()
+        .enumerate()
+        .map(|(i, offset)| (*offset, format!("r{i}")))
+        .collect();
+    assert_eq!(
+        producer.fetch_until_served(offsets[0]).await,
+        expected,
+        "the next leader moved or lost a committed record"
+    );
+    let after = producer.latest_until_served().await;
+    assert!(after >= latest, "latest went back from {latest} to {after}");
+
+    let next = producer.send_ok(5).await;
+    assert!(next >= latest, "offset {next} was already handed out");
+    assert_eq!(
+        producer.fetch_until_served(latest).await,
+        [(next, "r5".to_string())]
+    );
+    cluster.shutdown().await;
+}
+
 /// A Kafka connection speaking as one idempotent producer.
 struct Producer {
     stream: TcpStream,
@@ -385,6 +508,90 @@ impl Producer {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+    }
+
+    /// Records from `offset` on, as `(offset, value)`, retried while the
+    /// broker is still taking the shard on.
+    async fn fetch_until_served(&mut self, offset: i64) -> Vec<(i64, String)> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let request = FetchRequest::default()
+                .with_max_wait_ms(500)
+                .with_min_bytes(0)
+                .with_max_bytes(1 << 24)
+                .with_session_epoch(-1)
+                .with_topics(vec![
+                    FetchTopic::default()
+                        .with_topic(TopicName(StrBytes::from_string(self.topic.clone())))
+                        .with_partitions(vec![
+                            FetchPartition::default()
+                                .with_partition(0)
+                                .with_fetch_offset(offset)
+                                .with_partition_max_bytes(1 << 20),
+                        ]),
+                ]);
+            let response = self.call(&request, 11).await;
+            let partition = &response.responses[0].partitions[0];
+            if partition.error_code == 0 {
+                let Some(bytes) = partition.records.clone().filter(|b| !b.is_empty()) else {
+                    return Vec::new();
+                };
+                return RecordBatchDecoder::decode_all(&mut bytes.clone())
+                    .expect("decode")
+                    .into_iter()
+                    .flat_map(|set| set.records)
+                    .filter(|record| record.offset >= offset)
+                    .map(|record| {
+                        let value = record.value.unwrap_or_default();
+                        (record.offset, String::from_utf8_lossy(&value).into_owned())
+                    })
+                    .collect();
+            }
+            assert!(
+                RETRIABLE.contains(&partition.error_code) && tokio::time::Instant::now() < deadline,
+                "fetch from {offset} answered {}",
+                partition.error_code
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn list_offset(&mut self, timestamp: i64) -> (i16, i64) {
+        let request = ListOffsetsRequest::default().with_topics(vec![
+            ListOffsetsTopic::default()
+                .with_name(TopicName(StrBytes::from_string(self.topic.clone())))
+                .with_partitions(vec![
+                    ListOffsetsPartition::default()
+                        .with_partition_index(0)
+                        .with_timestamp(timestamp),
+                ]),
+        ]);
+        let response = self.call(&request, 1).await;
+        let partition = &response.topics[0].partitions[0];
+        (partition.error_code, partition.offset)
+    }
+
+    /// The log end offset, retried while the broker is still taking the
+    /// shard on.
+    async fn latest_until_served(&mut self) -> i64 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let (error, offset) = self.list_offset(-1).await;
+            if error == 0 {
+                return offset;
+            }
+            assert!(
+                RETRIABLE.contains(&error) && tokio::time::Instant::now() < deadline,
+                "ListOffsets answered {error}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn earliest(&mut self) -> i64 {
+        let (error, offset) = self.list_offset(-2).await;
+        assert_eq!(error, 0);
+        offset
     }
 
     async fn call<R: Request>(&mut self, request: &R, version: i16) -> R::Response {

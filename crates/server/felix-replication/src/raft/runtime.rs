@@ -128,6 +128,13 @@ pub struct RuntimeConfig {
     /// `heartbeat`. See docs/per-shard-raft.md, "A commit goes on the next
     /// append".
     pub commit_hold: Duration,
+    /// How long a heartbeat waits for others to the same broker, so the
+    /// heartbeats of every group handed off within it go as one message.
+    /// Appends that carry entries never wait. It only ages a leader's lease:
+    /// the lease counts from when openraft handed the heartbeat off, before
+    /// this wait. Shorter than `heartbeat`; zero sends each on its own. See
+    /// docs/per-shard-raft.md, "Heartbeats sent together".
+    pub beat_window: Duration,
 }
 
 impl Default for RuntimeConfig {
@@ -154,6 +161,7 @@ impl Default for RuntimeConfig {
             max_elections_at_once: 64,
             group_threads: default_group_threads(),
             commit_hold: Duration::from_millis(1),
+            beat_window: Duration::from_millis(1),
         }
     }
 }
@@ -224,6 +232,11 @@ impl RuntimeConfig {
         if self.commit_hold >= self.heartbeat {
             return Err(InvalidTimers(
                 "the commit hold is not shorter than the heartbeat".into(),
+            ));
+        }
+        if self.beat_window >= self.heartbeat {
+            return Err(InvalidTimers(
+                "the heartbeat window is not shorter than the heartbeat".into(),
             ));
         }
         if self.idle_heartbeat < self.heartbeat {
@@ -566,6 +579,8 @@ struct Inner {
     registry: Arc<Registry>,
     /// Who is told when a shard opens and closes here.
     host: OnceLock<Arc<dyn EngineHost>>,
+    /// See [`GroupRuntime::report_cache_changes`].
+    cache_changes: OnceLock<Arc<dyn felix_storage::CacheObserver>>,
     /// The clock cache shards opened from here on stamp by.
     clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
@@ -640,7 +655,7 @@ impl GroupRuntime {
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
-                transport,
+                transport: super::beats::Beats::wrap(transport, config.beat_window),
                 clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
@@ -654,6 +669,7 @@ impl GroupRuntime {
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
                 host: OnceLock::new(),
+                cache_changes: OnceLock::new(),
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
                 mark_roots: parking_lot::Mutex::default(),
@@ -682,6 +698,13 @@ impl GroupRuntime {
         F: WriteFence + ?Sized + 'static,
     {
         self.set_host(Arc::new(Host::new(serving, fence)));
+    }
+
+    /// Tell `observer` of every change a cache shard's applied entries make
+    /// here, for cache watches. Call it before the first
+    /// [`Self::open_copy`], as [`Self::report_to`]. Only the first call counts.
+    pub fn report_cache_changes(&self, observer: Arc<dyn felix_storage::CacheObserver>) {
+        let _ = self.inner.cache_changes.set(observer);
     }
 
     #[cfg(test)]
@@ -933,6 +956,7 @@ impl GroupRuntime {
             placement: inner.placement.clone(),
             placed_budget: Arc::clone(&inner.placed_budget),
             acked: Arc::clone(&inner.acked),
+            cache_changes: inner.cache_changes.get().cloned(),
             thread: inner.threads.as_ref().map(GroupThreads::place),
         };
         let raft = match group.shard.kind {

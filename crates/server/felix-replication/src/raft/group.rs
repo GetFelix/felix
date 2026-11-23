@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use bytes::Bytes;
 
-use super::cache::{Answer, CacheCommand};
+use super::cache::{Answer, CacheCommand, CacheWatch};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits, SkipClaim, Skips};
 use super::executor::Placed;
@@ -688,6 +688,8 @@ pub(crate) struct Host {
     pub(crate) placed_budget: Arc<placed::Budget>,
     /// The highest placement incarnation the broker has heard of.
     pub(crate) acked: Arc<AtomicU64>,
+    /// Where a cache shard's member reports its changes for watches.
+    pub(crate) cache_changes: Option<Arc<dyn felix_storage::CacheObserver>>,
     /// The group thread its tasks run on. `None` runs them on the runtime
     /// the group is opened on.
     pub(crate) thread: Option<Placed>,
@@ -735,6 +737,7 @@ impl Group {
             placement,
             placed_budget,
             acked,
+            cache_changes,
             thread,
         } = host;
         let runtime = thread
@@ -791,7 +794,13 @@ impl Group {
             skips,
             cache,
             groups,
-        } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
+        } = Machine::open(
+            snapshots,
+            id.shard.kind,
+            Some(log.disk_log()),
+            cache_changes.map(|observer| CacheWatch::new(observer, Arc::clone(&id.shard))),
+        )
+        .await?;
         let purge_at = machine.purging(log.reader());
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
@@ -2352,6 +2361,36 @@ impl Group {
                 timeout,
             }),
         }
+    }
+
+    /// A cache watch's live edge on this member, one past the last entry
+    /// applied, and every value `keep` takes below it, read under one hold
+    /// of the state's lock. `None` in a stream shard's group.
+    pub(crate) fn cache_watch_point(
+        &self,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Vec<(String, super::cache::Watched)>)> {
+        let cache = self.cache.as_ref()?;
+        let state = cache.read();
+        Some((state.applied() + 1, state.watched_entries(keep)))
+    }
+
+    /// End `observer`'s watches of this cache group as lagged at the live
+    /// edge. Under the state's lock, so no change lands between the edge
+    /// and the ending.
+    pub(crate) fn end_cache_watches(&self, observer: &dyn felix_storage::CacheObserver) {
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        let state = cache.read();
+        let shard = &self.id.shard;
+        observer.cache_reset(
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+            state.applied() + 1,
+        );
     }
 
     /// `key`'s value and version, if it has an unexpired one.
