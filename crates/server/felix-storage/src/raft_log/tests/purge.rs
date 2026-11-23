@@ -391,3 +391,80 @@ async fn the_first_index_reader_follows_a_purge() {
     raft.purge(log_id(3, 40)).await.expect("purge");
     assert_eq!(first(), 41);
 }
+
+/// A re-formed voter keeps its base, gets a purged id at the gap's end, and
+/// its first append lands past the gap. Every record of the base stays
+/// readable below the gap, across a reopen. A log whose tail is not the
+/// latest base's end starts afresh at the append, as after any purge past
+/// its end: what lies between could be entries a snapshot folded.
+#[tokio::test]
+async fn a_re_formed_voters_base_stays_below_the_gap() {
+    use crate::raft_copy::epoch_file::{self, EpochBase, EpochFile, EpochLogId};
+    use crate::raft_log::purged::{self, Purged};
+
+    let first = 12 + (1 << 40);
+    for (base_end, keeps) in [(12, true), (11, false)] {
+        let dir = tempdir().expect("dir");
+        let mut raft = open(&dir);
+        append_flushed(&mut raft, &thirty()[..12]).await;
+        raft.disk_log().close().await.expect("close");
+        drop(raft);
+        let base = EpochBase {
+            base_last: Some(EpochLogId {
+                index: base_end - 1,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index: first,
+        };
+        epoch_file::store(
+            dir.path(),
+            &EpochFile {
+                incarnation: 1,
+                bases: vec![base],
+            },
+        )
+        .expect("epoch");
+        purged::store(
+            dir.path(),
+            &Purged {
+                index: first - 1,
+                generation: 2,
+            },
+        )
+        .expect("purged");
+
+        let mut raft = open(&dir);
+        let next = normal(3, first, "next");
+        append_flushed(&mut raft, std::slice::from_ref(&next)).await;
+        assert_eq!(all(&raft).await.expect("read"), std::slice::from_ref(&next));
+        raft.disk_log().close().await.expect("close");
+        drop(raft);
+
+        let raft = open(&dir);
+        // Paged, as a reader steps over the gap.
+        let mut offsets: Vec<Offset> = Vec::new();
+        loop {
+            let start = offsets
+                .last()
+                .map_or(raft.disk_log().base_offset(), |last| last + 1);
+            let page = raft
+                .disk_log()
+                .read_range(ReadRange {
+                    start,
+                    max_bytes: usize::MAX,
+                })
+                .await
+                .expect("read")
+                .records;
+            if page.is_empty() {
+                break;
+            }
+            offsets.extend(page.iter().map(|record| record.offset));
+        }
+        let mut expected: Vec<Offset> = if keeps { (0..12).collect() } else { vec![] };
+        expected.push(first);
+        assert_eq!(offsets, expected, "base end {base_end}");
+        assert_eq!(all(&raft).await.expect("read"), [next]);
+    }
+}

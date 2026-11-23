@@ -89,6 +89,8 @@ pub const OLDEST_READABLE_VERSION: u16 = 2;
 
 /// Bytes occupied by a segment file header.
 pub const SEGMENT_HEADER_LEN: u64 = 32;
+/// The one segment header flag: see [`SegmentHeader::follows_gap`].
+pub const FOLLOWS_GAP: u16 = 1;
 /// Bytes occupied by a record header before v9, excluding its payload.
 pub const RECORD_HEADER_LEN: u64 = 28;
 /// Bytes occupied by a v9 record header: [`RECORD_HEADER_LEN`] plus the
@@ -127,13 +129,17 @@ pub type DecodeResult<T> = std::result::Result<T, Corruption>;
 ///  8   8  base_offset        u64  logical offset of the segment's first record
 /// 16   8  created_at_micros  u64
 /// 24   4  header_crc         u32  crc32 over bytes 0..24
-/// 28   4  reserved           u32  must be zero
+/// 28   4  gap_from           u32  see `follows_gap`; zero without the flag
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentHeader {
     pub base_offset: Offset,
     pub created_at_micros: u64,
+    /// `0`, or [`FOLLOWS_GAP`].
     pub flags: u16,
+    /// With [`FOLLOWS_GAP`], the low 32 bits of the offset the gap starts
+    /// at. See [`Self::follows_gap`].
+    pub gap_from: u32,
     /// The layout version the segment was written with. Only a v3 segment
     /// may hold producer marks.
     pub version: u16,
@@ -150,8 +156,31 @@ impl SegmentHeader {
             base_offset,
             created_at_micros,
             flags: 0,
+            gap_from: 0,
             version,
         }
+    }
+
+    /// A header for a segment at `base_offset` that starts past the end of
+    /// the one before it, across a re-form's gap from `gap_from`.
+    pub fn past_gap(mut self, gap_from: Offset) -> Self {
+        self.flags |= FOLLOWS_GAP;
+        self.gap_from = gap_from as u32;
+        self
+    }
+
+    /// The low 32 bits of where the gap before this segment starts, when it
+    /// follows one. Recovery accepts the hole only when the segment before
+    /// ends there.
+    pub fn follows_gap(&self) -> Option<u32> {
+        (self.flags & FOLLOWS_GAP != 0).then_some(self.gap_from)
+    }
+
+    /// Whether this segment may start at `base_offset` when the segment
+    /// before it ends at `expected`.
+    pub(crate) fn may_follow(&self, expected: Offset) -> bool {
+        self.base_offset == expected
+            || (self.base_offset > expected && self.follows_gap() == Some(expected as u32))
     }
 
     /// Whether records with producer marks may be written to this segment.
@@ -193,6 +222,7 @@ impl SegmentHeader {
         buf[16..24].copy_from_slice(&self.created_at_micros.to_be_bytes());
         let checksum = crc32(&[&buf[0..24]]);
         buf[24..28].copy_from_slice(&checksum.to_be_bytes());
+        buf[28..32].copy_from_slice(&self.gap_from.to_be_bytes());
         buf
     }
 
@@ -213,7 +243,7 @@ impl SegmentHeader {
             }));
         }
         let flags = read_u16(buf, 6);
-        if flags != 0 {
+        if flags & !FOLLOWS_GAP != 0 {
             return Err(Corruption::new(CorruptionKind::SegmentFlags {
                 found: flags,
             }));
@@ -230,6 +260,11 @@ impl SegmentHeader {
             base_offset: read_u64(buf, 8),
             created_at_micros: read_u64(buf, 16),
             flags,
+            gap_from: if flags & FOLLOWS_GAP != 0 {
+                read_u32(buf, 28)
+            } else {
+                0
+            },
             version,
         })
     }

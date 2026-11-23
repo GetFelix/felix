@@ -865,6 +865,44 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Keep every record and go on at `first`, past the tail: the offsets
+    /// between are a gap no record takes. Reads step over it as over any
+    /// offset that holds no record.
+    ///
+    /// For a re-formed voter, whose epoch starts at `first` above the base it
+    /// keeps. The old segment is sealed and a new one starts at `first`, with
+    /// a header that tells recovery where the gap begins; see
+    /// `docs/storage-format.md`, "Gap segments". Refused with
+    /// [`StorageError::OutsideLog`] when `first` is not past the tail.
+    #[cfg(feature = "raft")]
+    pub(crate) async fn open_gap(&self, first: Offset) -> Result<()> {
+        let inner = Arc::clone(&self.inner);
+        let fence = inner.fence_rolls().await?;
+        let _flush_guard = inner.durability.lock_flushes().await;
+        let operation = Arc::clone(&inner);
+        felix_common::blocking::spawn(move || {
+            let _fence = fence;
+            let _appends = operation.append_lock.lock();
+            let mut segments = operation.segments.write();
+            segments.check_open()?;
+            operation.sync_pending_seal()?;
+            if let Err(err) = segments.roll_past_gap(first) {
+                operation.poison_after_writer_failure(&segments);
+                return operation.poison_on_sync_failure("a segment rollover", Err(err));
+            }
+            operation.note_sealed_before(segments.active().id());
+            // Everything below `first` is synced: the seal took the records
+            // and the gap holds none.
+            operation.durability.note_durable(first);
+            let snapshot = operation.snapshot(&segments);
+            drop(segments);
+            operation.store_snapshot(snapshot);
+            Ok(())
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
     /// Cut the log back to `offset` to put a copy of it back as it stood at
     /// a backup point. Offline only: run against a copy, with no broker
     /// serving it.

@@ -207,14 +207,41 @@ file:
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
 | 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, `7` for one that holds a trim record, `8` for one that holds a record with a key and headers, or `9` for one whose records carry a generation (see [Generations](#generations)); `2` is still read |
-| 6 | 2 | `flags` | `0`; any other value is rejected |
+| 6 | 2 | `flags` | `0`, or `1` (`FOLLOWS_GAP`) for a segment past a gap (see [Gap segments](#gap-segments)); any other bit is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
 | 24 | 4 | `header_crc` | CRC-32 (IEEE) over bytes `0..24` |
-| 28 | 4 | `reserved` | `0` |
+| 28 | 4 | `gap_from` | with `FOLLOWS_GAP`, the low 32 bits of the offset the gap starts at; else `0` |
 
 The header is written once and fsynced before any record claims to live in the
 segment, so damage here is never a torn write. It is always an error.
+
+### Gap segments
+
+A re-formed Raft voter keeps the records of its base and starts its new
+epoch at a first index above them (see [`raft-epoch`](#raft-epoch-a-raft-copys-group-epoch)).
+The offsets between are a gap that no record takes. When its first append
+lands there, the log seals its active segment and starts a new one at the
+first index, with `FOLLOWS_GAP` set and `gap_from` holding the offset the
+sealed segment ends at. No record is written for the gap, so its size does
+not matter.
+
+Reads step over the gap as over any offset without a record: a read from
+inside it, or from below it, returns the records past it next. Recovery
+accepts a segment that starts above where the one before it ends only when
+its header has `FOLLOWS_GAP` and `gap_from` matches that end. Any other gap
+is still a lost segment and fatal, including one just below a gap segment.
+
+The sealed segment is synced before the gap segment is created, and the gap
+segment's header is synced before anything is appended to it. A crash before
+its header is on disk leaves the log as it was, and the next append makes
+the gap again. A crash after it leaves an empty segment past the gap, which
+recovery keeps.
+
+Only a log whose tail is the end of its latest re-form's base gets a gap.
+Any other Raft log asked to start past its tail, as after a purge past its
+end, drops its records and starts afresh, because the indexes between could
+be entries a snapshot covered.
 
 ### Record
 
@@ -905,7 +932,7 @@ delete the file and sync the directory first.
 | --- | --- |
 | Unknown `magic` | Reject: `CorruptionKind::SegmentMagic` / `IndexMagic` |
 | Unknown `version` | Reject: `SegmentVersion` / `IndexVersion`. Never "best effort" |
-| Non-zero `flags` | Reject: `SegmentFlags`. Unknown bits may change the layout behind them, so they are not masked off |
+| `flags` other than `FOLLOWS_GAP` | Reject: `SegmentFlags`. Unknown bits may change the layout behind them, so they are not masked off |
 | Bad header CRC | Reject: `SegmentHeaderChecksum` |
 | Short read | `Truncated { needed, available }`: the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
@@ -1582,7 +1609,8 @@ A record carries its term but not its epoch, so the epoch of the entry at
 an index is derived from these bases: in a copy at epoch E, it is the
 highest epoch e at or below E whose first index is at or below the index.
 An index from epoch e's base end up to its first index is a gap that no
-record takes. Below every base, it is epoch 0. Log ids are compared by
+record takes; see [Gap segments](#gap-segments) for how a voter's log
+holds it. Below every base, it is epoch 0. Log ids are compared by
 (epoch, term), then index, so every term of an epoch is above every term
 of an earlier one.
 
