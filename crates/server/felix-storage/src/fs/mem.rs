@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 
 pub(super) use file::Flags;
 pub(crate) use file::MemFile;
-pub(crate) use registry::{claim, in_memory, register, tree_at, unregister};
+pub(crate) use registry::{claim, in_memory, register, root_of, tree_at, unregister};
 pub(super) use registry::{is_above_a_root, route};
 
 /// One registered root and everything below it.
@@ -51,6 +51,11 @@ pub(crate) struct Tree {
     /// How many power cuts this machine has come back from. Each is a new
     /// boot, which is what a relaxed run's crash record is compared against.
     boots: std::sync::atomic::AtomicU64,
+    /// A log of this broker was poisoned since its last boot. A process
+    /// keeps that in a global, but the brokers of a simulation share one
+    /// process, so each root keeps its own. See
+    /// [`crate::run_state::watch_poison`].
+    poisoned: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -167,6 +172,7 @@ impl Tree {
             opened: Mutex::new(Opened::default()),
             flush_fault: Mutex::new(FlushFault::default()),
             boots: std::sync::atomic::AtomicU64::new(0),
+            poisoned: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -503,7 +509,20 @@ impl Tree {
         state.pending.clear();
         self.opened.lock().since_reboot.clear();
         self.boots.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // The broker comes back as a new process.
+        self.poisoned
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         true
+    }
+
+    /// Count a poisoned log of this broker, until its next boot.
+    pub(crate) fn note_poisoned(&self) {
+        self.poisoned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn poisoned(&self) -> bool {
+        self.poisoned.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The number of reboots after a power cut so far.
