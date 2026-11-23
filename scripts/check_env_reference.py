@@ -62,6 +62,9 @@ NOT_OPERATIONAL = {
     # Overrides the Raft group thread count, which is derived from the
     # machine, for tests and A/B runs. Documented in `docs/per-shard-raft.md`.
     "FELIX_TEST_RAFT_GROUP_THREADS",
+    # The cluster harness's default shard engine for a suite. Documented in
+    # `docs/cluster-harness.md`.
+    "FELIX_TEST_SHARD_ENGINE",
     "FELIX_TEST_TIMEOUT_SCALE",
 }
 
