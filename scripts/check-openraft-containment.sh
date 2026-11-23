@@ -21,9 +21,9 @@ if ! depends_on_openraft felix-controlplane-service; then
   fail=1
 fi
 
-# felix-broker-service is the broker binary. Per-shard Raft will make it
-# depend on openraft on purpose; remove it from this list in that change.
-for package in felix-broker felix-broker-service; do
+# felix-broker-service, the broker binary, depends on openraft on purpose:
+# per-shard Raft is its default engine.
+for package in felix-broker; do
   if depends_on_openraft "$package"; then
     echo "error: $package depends on openraft:" >&2
     cargo tree --locked -p "$package" -e normal -i openraft >&2 || true

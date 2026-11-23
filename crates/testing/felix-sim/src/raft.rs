@@ -662,6 +662,9 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
             ..shipped.placement
         },
         max_elections_at_once: shipped.max_elections_at_once,
+        // The simulator runs on one simulated runtime, never group threads.
+        group_threads: 0,
+        commit_hold: at(shipped.commit_hold),
     }
 }
 

@@ -2908,8 +2908,10 @@ What is modelled:
 - A broker's log is what it has written. `synced` is how far that is on disk.
   A process crash keeps the whole log, because the kernel has it. A power cut
   keeps a prefix no shorter than `synced`.
-- A written report is the id (term and index) of the sender's last entry. The
-  leader keeps the latest one from each member and can act on it after the
+- A written report is the id (term and index) of an entry the sender holds:
+  its last one for a strict follower, or, for a relaxed follower, whose
+  answer is its report, the last one of the append it answered. The leader
+  keeps the latest one from each member and can act on it after the
   member's log has changed. Nothing ties a report to the sender's vote, and
   nothing clears reports at an election: the term on the log id is the whole
   defence.

@@ -79,6 +79,11 @@ struct Inner {
     compact_floor: AtomicU64,
     /// The root's vouched-unsynced marker was synced in this process.
     vouched: AtomicBool,
+    /// Held across the marker's write, so callers that arrive while it is
+    /// in flight wait for that one instead of each syncing their own.
+    vouching: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
+    vouch_writes: AtomicU64,
     #[cfg(any(test, feature = "fault-injection"))]
     fail_vouch: AtomicBool,
     /// Write-held by a test to stall the marker's sync.
@@ -194,6 +199,9 @@ impl MarkLog {
                 held: watch::channel(false).0,
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
                 vouched: AtomicBool::new(false),
+                vouching: Arc::default(),
+                #[cfg(test)]
+                vouch_writes: AtomicU64::new(0),
                 #[cfg(any(test, feature = "fault-injection"))]
                 fail_vouch: AtomicBool::new(false),
                 #[cfg(any(test, feature = "fault-injection"))]
@@ -234,8 +242,19 @@ impl MarkLog {
         }
         #[cfg(any(test, feature = "fault-injection"))]
         let _stalled = self.inner.stall_vouch.read().await;
+        // Every publish calls this until the first sync lands, and each
+        // sync is two full flushes that stall the device for everyone. The
+        // guard goes with the write, so a caller that gives up (the commit
+        // usually wins its race) does not let the next one start another.
+        let vouching = Arc::clone(&self.inner.vouching).lock_owned().await;
+        if self.inner.vouched.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
+            let _vouching = vouching;
+            #[cfg(test)]
+            inner.vouch_writes.fetch_add(1, Ordering::Relaxed);
             crate::run_state::record_vouched_unsynced(&inner.root).map_err(io::Error::other)?;
             inner.vouched.store(true, Ordering::Release);
             Ok(())
@@ -262,6 +281,11 @@ impl MarkLog {
 
     pub(crate) fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    #[cfg(test)]
+    pub(crate) fn vouch_writes(&self) -> u64 {
+        self.inner.vouch_writes.load(Ordering::Relaxed)
     }
 
     pub(crate) fn witness_dir(&self) -> Option<&Path> {

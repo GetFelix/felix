@@ -27,11 +27,16 @@ pub(super) const RAFT_LEADERS_PER_PASS: usize = 64;
 pub(super) const RAFT_REPLACEMENTS_PER_PASS: usize = 16;
 
 /// Whether placement treats `existing` as a shard a Raft group runs: a
-/// durable stream's shard on a cluster that runs those on Raft. A shard that
+/// durable stream's shard or a cache's shard on a cluster that runs shards on
+/// Raft. A cache counts as durable: a Raft broker always has a disk, so its
+/// cache is a log and every cache shard runs as a group. A shard that
 /// switched from the hybrid is left out, since the store takes no placement
 /// write for it.
 pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: bool) -> bool {
-    raft_streams && durable && existing.key.kind == ShardKind::Stream && !existing.switched()
+    raft_streams
+        && durable
+        && matches!(existing.key.kind, ShardKind::Stream | ShardKind::Cache)
+        && !existing.switched()
 }
 
 /// What to do about a Raft shard that has an assignment.

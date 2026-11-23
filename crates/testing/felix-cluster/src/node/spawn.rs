@@ -100,6 +100,9 @@ pub(crate) fn spawn_broker(
         .env("FELIX_INTERNAL_BIND", internal_addr.to_string())
         .env("FELIX_BROKER_METRICS_BIND", metrics_addr.to_string())
         .env("FELIX_DURABLE_STORAGE_DIR", &storage)
+        // Pinned so the hybrid tests keep running until hybrid is deleted;
+        // a Raft test sets the engine in `broker_env`, which comes later.
+        .env("FELIX_SHARD_ENGINE", "hybrid")
         .env(
             "FELIX_CONTROLPLANE_SYNC_INTERVAL_MS",
             config.sync_interval_ms.to_string(),
@@ -166,6 +169,7 @@ pub(crate) fn spawn_broker(
         kafka_addr,
         data_dir,
         tcp_ports,
+        fixed_ports: same_ports.is_some(),
         process: Some(process),
     })
 }

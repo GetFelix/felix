@@ -238,3 +238,63 @@ async fn write(log: &DiskLog, offset: u64) -> PendingAppend {
         .expect("append")
         .expect("at the tail")
 }
+
+/// A Raft log syncs no more than the plain log for the same appends under
+/// `OnCommit`: one flush per append waited on alone, and one for every
+/// append that waited together. The vote, reservation and marks add no sync
+/// per append.
+#[tokio::test]
+async fn a_raft_append_costs_one_shared_flush_like_a_plain_append() {
+    const APPENDS: u64 = 20;
+    let plain_dir = tempdir().expect("dir");
+    let plain = DiskLog::open(
+        plain_dir.path(),
+        "t/ns/plain/0",
+        LogConfig {
+            raft_log: false,
+            ..config()
+        },
+    )
+    .expect("open");
+    for index in 0..APPENDS {
+        plain
+            .append(&[record(
+                RecordMark::None,
+                format!("command-{index}").as_bytes(),
+            )])
+            .await
+            .expect("append");
+    }
+
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let log = raft.disk_log().clone();
+    for index in 0..APPENDS {
+        let entry = normal(1, index, &format!("command-{index}"));
+        let flushed = append(&mut raft, &[entry]).await.expect("append");
+        flushed.await.expect("flush");
+    }
+    assert_eq!(
+        plain.flushes(),
+        APPENDS,
+        "the plain log, one append at a time"
+    );
+    assert_eq!(
+        log.flushes(),
+        plain.flushes(),
+        "the Raft log, one append at a time"
+    );
+
+    // Appends that wait together share one flush.
+    let held = log.hold_flushes().await;
+    let mut waiting = Vec::new();
+    for index in APPENDS..APPENDS + 8 {
+        let entry = normal(1, index, "command");
+        waiting.push(append(&mut raft, &[entry]).await.expect("append"));
+    }
+    drop(held);
+    for flushed in waiting {
+        flushed.await.expect("flush");
+    }
+    assert_eq!(log.flushes(), APPENDS + 1, "eight waiting appends");
+}

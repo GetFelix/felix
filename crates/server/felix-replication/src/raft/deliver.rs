@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 
 use super::commit::SkipClaim;
 use super::engine::RaftEngine;
-use super::propose::{AckAt, AnswerAt, Batch, Record, Sequenced, Unacknowledged};
+use super::propose::{AckAt, AnswerAt, Batch, Heard, Record, Sequenced, Unacknowledged};
 use crate::engine::{CommitError, Written};
 use crate::{ShardKey, ShardKind};
 
@@ -425,6 +425,14 @@ impl RaftEngine {
             let count = records.len() as u64;
             let Attribution { publisher, headers } = attribution;
             let records = with_headers(records, headers, timestamp_micros);
+            // Answered at the commit, which covers the flush
+            // ([`AckAt::Flushed`]), the publisher is woken once, by
+            // openraft's answer at the apply. A wait for the write or the
+            // flush first is one more wake each.
+            let (ack, heard) = match (&on_lease, &on_majority) {
+                (None, None) => (AckAt::Written, Heard::Applied),
+                _ => (ack, Heard::Written),
+            };
             let batch = Batch {
                 records,
                 ack,
@@ -436,7 +444,7 @@ impl RaftEngine {
                 publisher,
             };
             let skips = engine.claim_skips(&shard);
-            let written = engine.propose_reaching(&shard, batch);
+            let written = engine.propose_reaching(&shard, batch, heard);
             let batch = Proposed {
                 skips,
                 shard,
@@ -591,10 +599,10 @@ impl RaftEngine {
             publisher,
         };
         let skips = self.claim_skips(shard);
-        let written = self.propose_reaching(shard, batch);
+        let written = self.propose_reaching(shard, batch, Heard::Written);
         // On a task of its own, so the turn is given up when the batch is
         // written whether or not its publisher has started waiting.
-        let written = tokio::spawn(async move {
+        let written = self.group_runtime(shard).spawn(async move {
             let written = written.await;
             drop(turn);
             written
@@ -666,11 +674,17 @@ impl RaftEngine {
     /// subscribers from the log, and readers waiting at the bound (history
     /// reads) look again. Ends when the group stops or the stream closes.
     /// `None` when this broker holds no member of the shard.
+    ///
+    /// Runs on the broker runtime, not the group's thread: one pass can fan
+    /// out a page of records to many subscribers without yielding, and the
+    /// releases it starts run where it does.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
-        Some(tokio::spawn(async move {
+        Some(self.home_runtime().spawn(async move {
             let mut failures = 0u32;
             loop {
+                #[cfg(test)]
+                super::tests::followed_on(std::thread::current().name());
                 stream.release_committed();
                 stream.appended().notify_waiters();
                 let recheck = match stream.deliver_from_log().await {

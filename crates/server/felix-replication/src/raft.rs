@@ -28,6 +28,7 @@ mod commit;
 mod deliver;
 mod draws;
 mod engine;
+mod executor;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
@@ -45,6 +46,7 @@ mod read_rounds;
 mod reform;
 mod root;
 mod runtime;
+mod sleep;
 mod stream_snapshot;
 pub mod switch;
 #[cfg(any(test, feature = "testing"))]

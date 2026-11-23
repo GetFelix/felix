@@ -286,11 +286,12 @@ dirties pages faster than the device takes them, Linux throttles it inside
 `write()` for up to hundreds of milliseconds. A reactor thread caught there
 stalls every task scheduled on it. So each log also has an append thread, with
 the same lifecycle as its flush thread, and every append runs there in
-submission order, which is offset order. The publisher awaits the result.
-The thread polls for its next append for 20 µs before it parks, and a caller
-alone in the queue polls as long for its result, so back-to-back appends do
-not pay a wake-up on either side. The caller hears its result before the
-thread writes any index entries, and frees its batch itself.
+submission order, which is offset order. The publisher awaits the result. The
+thread polls for its next append for 20 µs before it parks, and a caller alone
+in the queue polls as long for its result, so back-to-back appends do not pay a
+wake-up on either side. The thread polls only while appends keep arriving within
+that window, so a quiet log parks straight away. The caller hears its result
+before the thread writes any index entries, and frees its batch itself.
 
 The batch is encoded and given its place under the segment lock, written with
 the lock released, and made visible under the lock again. A reader or a flush
@@ -317,7 +318,8 @@ A flush takes its bound on the append thread too, behind the appends already
 queued there, so one flush covers every append in flight. Taken on the caller,
 it would miss the appends still queued, and each would wait for a flush of its
 own. The cost is that a flush also waits for an append whose `write` the kernel
-is holding.
+is holding. When no append is queued or running there is nothing to wait
+behind, and the flush takes its bound on the caller without waking the thread.
 
 An append whose caller gives up before the append thread starts on it is
 skipped and spends no offsets. Once started, the batch is written and kept

@@ -78,8 +78,10 @@ impl RaftStore {
     }
 }
 
-/// The record wins: a mismatch is reported and nothing else changes.
+/// The record wins: a mismatch, and a hybrid record, are reported and
+/// nothing else changes.
 fn warn_on_engine_mismatch(recorded: &ClusterIdentity, configured: &str) {
+    crate::config::warn_if_hybrid(&recorded.shard_engine);
     if recorded.shard_engine != configured {
         tracing::warn!(
             recorded = %recorded.shard_engine,

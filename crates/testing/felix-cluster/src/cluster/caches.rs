@@ -19,6 +19,19 @@ impl Cluster {
         key: &str,
         value: &[u8],
     ) -> Result<()> {
+        self.cache_put_ttl_via(node_id, cache, key, value, None)
+            .await
+    }
+
+    /// As [`Self::cache_put_via`], expiring the entry after `ttl_ms`.
+    pub async fn cache_put_ttl_via(
+        &self,
+        node_id: &str,
+        cache: &str,
+        key: &str,
+        value: &[u8],
+        ttl_ms: Option<u64>,
+    ) -> Result<()> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
@@ -31,7 +44,7 @@ impl Cluster {
                 cache,
                 key,
                 bytes::Bytes::copy_from_slice(value),
-                None,
+                ttl_ms,
             )
             .await
             .with_context(|| format!("cache put {cache}/{key} via {node_id}"))

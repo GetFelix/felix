@@ -922,7 +922,13 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // Counted here, entry by entry, so each record's count rides to its
         // publisher however long the run.
         let mut skipped = Vec::new();
+        // Answered after the publish below, so a publisher woken by its
+        // answer finds its commit already published and is not woken again.
+        let mut answers = Vec::new();
         while let Some(next) = entries.next().await {
+            // A long run gives the thread up now and then: on a group
+            // thread the other groups' tasks wait behind it.
+            tokio::task::consume_budget().await;
             let (entry, responder) = match next {
                 Ok(next) => next,
                 Err(err) => {
@@ -990,9 +996,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 let seen = longest.entry(Arc::as_ptr(&self.hold) as usize).or_default();
                 *seen = (*seen).max(entries_seen);
             }
-            if let Some(responder) = responder {
-                responder.send(Applied);
-            }
+            answers.extend(responder);
         }
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
@@ -1000,7 +1004,10 @@ impl RaftStateMachine<ShardTypes> for Machine {
         if skips.applied(bound, &skipped, || self.publish()) {
             self.wake();
         }
-        // After the publish, so the run's waiters are not held by it.
+        for responder in answers {
+            responder.send(Applied);
+        }
+        // After the publish and the answers, so neither is held by it.
         self.fold_back(written);
         applied
     }
