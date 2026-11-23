@@ -5,11 +5,14 @@
 use std::collections::BTreeMap;
 
 use felix_storage::raft_copy::{
-    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, PlanView, RestoreAt, SurveyStep, VoterId,
-    WireStart, first_probes, plan_starts, survey_step,
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, PlanView, RESTORE_OFFSETS_PER_MILLI, RestoreAt,
+    SurveyStep, VoterId, WireStart, first_probes, plan_starts, survey_step,
 };
 
 use super::reform::{next_epoch, read, start, survey};
+
+/// The control plane's clock when the restores here are planned, in Unix ms.
+const PLANNED_AT: u64 = 1_800_000_000_000;
 use super::*;
 use crate::shards::raft::reform_survey::SurveyKind;
 use crate::shards::routing::EngineShards;
@@ -152,8 +155,7 @@ async fn replan(
         restore: Some(RestoreAt {
             end: point,
             gap: DEFAULT_OFFSET_GAP,
-            taken_at_millis: 0,
-            restored_at_millis: 0,
+            planned_at_millis: PLANNED_AT,
         }),
     };
     let mut asked = first_probes(&record);
@@ -233,7 +235,11 @@ async fn a_group_restored_at_a_backup_point_re_forms_at_it() {
         Some(point),
         "{view:?}"
     );
-    assert_eq!(view.first_index, point + DEFAULT_OFFSET_GAP, "{view:?}");
+    assert_eq!(
+        view.first_index,
+        RESTORE_OFFSETS_PER_MILLI * PLANNED_AT + DEFAULT_OFFSET_GAP,
+        "{view:?}"
+    );
 
     let next = next_epoch(placed, &view);
     let now = start(&members, &orders, &next, &starts).await;
@@ -374,7 +380,11 @@ async fn a_cache_group_restored_at_a_backup_point_re_forms_at_it() {
     }
     let members = restart(&net, root, leader_name, true, &placed).await;
     let (view, starts) = replan(&members, &sessions, seed, point).await;
-    assert_eq!(view.first_index, point + DEFAULT_OFFSET_GAP, "{view:?}");
+    assert_eq!(
+        view.first_index,
+        RESTORE_OFFSETS_PER_MILLI * PLANNED_AT + DEFAULT_OFFSET_GAP,
+        "{view:?}"
+    );
 
     let next = next_epoch(placed, &view);
     let now = start(&members, &sessions, &next, &starts).await;

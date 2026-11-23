@@ -960,14 +960,32 @@ fn restored_trio(
     (rec, reports)
 }
 
-/// A restore at `end` with `gap`, planned the instant its point was taken.
+/// A restore at `end` with `gap`, planned at the Unix epoch, so the time
+/// line adds nothing past the gap.
 fn restore_from(end: u64, gap: u64) -> RestoreAt {
     RestoreAt {
         end,
         gap,
-        taken_at_millis: 1_000,
-        restored_at_millis: 1_000,
+        planned_at_millis: 0,
     }
+}
+
+const R: u64 = RESTORE_OFFSETS_PER_MILLI;
+
+/// The fastest a shard is taken to give out offsets: half the time line's
+/// slope.
+const RATE: u64 = R / 2;
+
+/// The first index `restored_trio` plans for `restore`.
+fn restored_first(restore: RestoreAt) -> u64 {
+    let (rec, reports) = restored_trio(restore);
+    plan(&rec, reports).first_index
+}
+
+/// The last offset an epoch starting at `first` at `start` gives out by
+/// `now`, at the fastest rate allowed.
+fn last_given(first: u64, start: u64, now: u64) -> u64 {
+    first + RATE * (now - start)
 }
 
 #[test]
@@ -975,90 +993,132 @@ fn a_restore_starts_its_epoch_past_the_point_plus_the_gap() {
     let (rec, reports) = restored_trio(restore_from(6, DEFAULT_OFFSET_GAP));
     let plan = plan(&rec, reports);
     assert_eq!(plan.base_end(), 6);
-    assert_eq!(plan.first_index, 6 + DEFAULT_OFFSET_GAP);
+    assert_eq!(plan.first_index, DEFAULT_OFFSET_GAP);
     assert_eq!(plan.offset_gap, Some(DEFAULT_OFFSET_GAP));
     assert!(
         plan.needs_accept_loss(),
         "the rotated copies' votes are unknown"
     );
+
+    let at = RestoreAt {
+        planned_at_millis: 1_000,
+        ..restore_from(6, DEFAULT_OFFSET_GAP)
+    };
+    assert_eq!(restored_first(at), R * 1_000 + DEFAULT_OFFSET_GAP);
 }
 
 /// `FelixRaftRestoreLeaderMoved`: `a` stopped leading after the point and
 /// fell behind, `b` and `c` acknowledged 6..=9, and `a`'s directory was
 /// copied with its reservation still at 7. Neither restored file knows of
-/// 8 or 9, so with no gap the new epoch gives out 8 again. A gap of at
-/// least the four offsets acknowledged after the point closes it
-/// (`FelixRaftRestoreGap`).
+/// 8 or 9, so a restore planned with no time line gives out 8 again. The
+/// lost cluster gave those out before the plan, below the line.
 #[test]
-fn a_leader_that_moved_after_the_point_needs_the_gap() {
+fn a_leader_that_moved_after_the_point_is_below_the_time_line() {
     let acked_after = 6..=9;
-    let (rec, reports) = restored_trio(restore_from(6, 0));
-    let plan_without = plan(&rec, reports);
-    assert_eq!(plan_without.first_index, 8);
-    assert!(acked_after.contains(&plan_without.first_index));
+    let first = restored_first(restore_from(6, 0));
+    assert_eq!(first, 8);
+    assert!(acked_after.contains(&first));
 
-    for gap in [4, DEFAULT_OFFSET_GAP] {
-        let (rec, reports) = restored_trio(restore_from(6, gap));
-        let first = plan(&rec, reports).first_index;
-        assert!(first > *acked_after.end(), "gap {gap}: first index {first}");
-    }
+    let at = RestoreAt {
+        planned_at_millis: 1,
+        ..restore_from(6, 0)
+    };
+    assert!(restored_first(at) > *acked_after.end());
 }
 
-/// Restoring from one backup twice: everything the second restore reads
-/// (the copy, the floor, the reservation, the earlier bases) is what the
-/// first read, so only the plan's time tells them apart. The first epoch
-/// acknowledged offsets at the most the rate allows until the second
-/// restore, and the second starts past every one of them.
+/// Fable's first case: restore backup B, take backup A 17 hours later
+/// from the restored epoch (so A ends past B's end plus 2^40), restore A,
+/// then restore B again an hour after that. B's second epoch starts on the
+/// time line, past everything A's epoch gave out.
 #[test]
-fn a_second_restore_from_the_same_backup_starts_past_the_first() {
-    let backup = restore_from(6, DEFAULT_OFFSET_GAP);
-    let first_restore = RestoreAt {
-        restored_at_millis: backup.taken_at_millis + 60_000,
-        ..backup
-    };
-    let (rec, reports) = restored_trio(first_restore);
-    let first = plan(&rec, reports).first_index;
-
-    let between = 3_600_000;
-    let second_restore = RestoreAt {
-        restored_at_millis: first_restore.restored_at_millis + between,
-        ..backup
-    };
-    let (rec, reports) = restored_trio(second_restore);
-    let second = plan(&rec, reports).first_index;
-    let last_acked = first + RESTORE_OFFSETS_PER_MILLI * between - 1;
-    assert!(second > last_acked, "{second} <= {last_acked}");
-}
-
-/// Restoring from a newer backup, then from an older one: the older point
-/// is behind by what the shard wrote between the two points, which the
-/// rate bounds, so its longer time term still starts it past the first
-/// restore's epoch.
-#[test]
-fn a_restore_from_an_older_backup_starts_past_a_newer_ones_epoch() {
-    let older = RestoreAt {
-        end: 1_000,
+fn an_older_backup_restored_after_a_newer_one_starts_past_it() {
+    let t0 = 1_800_000_000_000;
+    let hour = 3_600_000;
+    let b = RestoreAt {
+        end: 6,
         gap: DEFAULT_OFFSET_GAP,
-        taken_at_millis: 10_000,
-        restored_at_millis: 0,
+        planned_at_millis: t0,
     };
-    let written = 5_000;
-    let newer = RestoreAt {
-        end: older.end + RESTORE_OFFSETS_PER_MILLI * written,
-        taken_at_millis: older.taken_at_millis + written,
-        ..older
+    let b_first = restored_first(b);
+    let a_taken = t0 + 17 * hour;
+    let a_end = last_given(b_first, t0, a_taken);
+    assert!(a_end >= b.end + DEFAULT_OFFSET_GAP);
+
+    let t1 = a_taken + 60_000;
+    let a_first = RestoreAt {
+        end: a_end,
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: t1,
+    }
+    .first_index()
+    .unwrap()
+    .max(a_end + 1);
+    let t2 = t1 + hour;
+    let again = restored_first(RestoreAt {
+        planned_at_millis: t2,
+        ..b
+    });
+    let given = last_given(a_first, t1, t2);
+    assert!(again > given, "{again} <= {given}");
+}
+
+/// Fable's second case: two drills of one backup. The point's time comes
+/// from the operator's host, which may run ahead of the control plane;
+/// the first index never reads it, so the drills differ by their plan
+/// times alone.
+#[test]
+fn two_drills_of_one_backup_never_share_an_offset() {
+    let backup = restore_from(6, DEFAULT_OFFSET_GAP);
+    let t1 = 1_800_000_000_000;
+    let first = restored_first(RestoreAt {
+        planned_at_millis: t1,
+        ..backup
+    });
+    let t2 = t1 + 60_000;
+    let second = restored_first(RestoreAt {
+        planned_at_millis: t2,
+        ..backup
+    });
+    let given = last_given(first, t1, t2);
+    assert!(second > given, "{second} <= {given}");
+}
+
+/// The control-plane leader that plans the second restore runs a slower
+/// clock. A skew of `s` on each plan costs `4 s` of true time between the
+/// restores at half the line's slope; a second restore 20 minutes later
+/// with clocks 5 minutes off either way still starts past the first epoch.
+#[test]
+fn a_slower_leader_clock_within_the_bound_starts_past_the_first() {
+    let t1 = 1_800_000_000_000;
+    let skew = 5 * 60_000;
+    let between = 4 * skew + 1;
+    let first = restored_first(RestoreAt {
+        planned_at_millis: t1 + skew,
+        ..restore_from(6, DEFAULT_OFFSET_GAP)
+    });
+    let t2 = t1 + between;
+    let second = restored_first(RestoreAt {
+        planned_at_millis: t2 - skew,
+        ..restore_from(6, DEFAULT_OFFSET_GAP)
+    });
+    let given = last_given(first, t1, t2);
+    assert!(second > given, "{second} <= {given}");
+}
+
+#[test]
+fn a_plan_time_past_the_last_index_refuses() {
+    let late = RestoreAt {
+        planned_at_millis: u64::MAX / R + 1,
+        ..restore_from(6, 0)
     };
-    let first = RestoreAt {
-        restored_at_millis: newer.taken_at_millis + 1_000,
-        ..newer
-    };
-    let between = 2_000;
-    let second = RestoreAt {
-        restored_at_millis: first.restored_at_millis + between,
-        ..older
-    };
-    let last_acked = first.first_index().unwrap() + RESTORE_OFFSETS_PER_MILLI * between - 1;
-    assert!(second.first_index().unwrap() > last_acked);
+    let (rec, reports) = restored_trio(late);
+    let reports: BTreeMap<_, _> = reports.into_iter().collect();
+    assert_eq!(
+        plan_reform(&rec, &reports),
+        Err(Refused::RestoreTooLate {
+            planned_at_millis: late.planned_at_millis
+        })
+    );
 }
 
 /// A copy cut anywhere but the point is refused rather than re-formed: below
@@ -1077,9 +1137,15 @@ fn a_restore_whose_base_misses_the_point_refuses() {
 
 #[test]
 fn a_gap_past_the_last_index_refuses() {
-    let (rec, reports) = restored_trio(restore_from(6, u64::MAX - 5));
+    let (rec, reports) = restored_trio(RestoreAt {
+        planned_at_millis: 1,
+        ..restore_from(6, u64::MAX - 5)
+    });
     let reports: BTreeMap<_, _> = reports.into_iter().collect();
-    assert_eq!(plan_reform(&rec, &reports), Err(Refused::NoIndexLeft));
+    assert!(matches!(
+        plan_reform(&rec, &reports),
+        Err(Refused::RestoreTooLate { .. })
+    ));
 }
 
 /// The control plane wrote the restore's epoch and went down before every

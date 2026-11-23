@@ -109,6 +109,7 @@ module_of() {
     FelixRaftFormedSet*) echo FelixRaftFormedSet ;;
     FelixRaftPlacement*) echo FelixRaftPlacement ;;
     FelixRaftReform*) echo FelixRaftReform ;;
+    FelixRaftRestoreRepeated*) echo FelixRaftRestoreRepeated ;;
     FelixRaftRestore*) echo FelixRaftRestore ;;
     FelixRaftLease*) echo FelixRaftLease ;;
     FelixRaftSleep*) echo FelixRaftSleep ;;
@@ -913,6 +914,7 @@ expectations=(
   "FelixRaftRestoreGapShort violates OffsetNeverReused"
   "FelixRaftRestoreRepeated pass"
   "FelixRaftRestoreRepeatedNoTime violates OffsetNeverReused"
+  "FelixRaftRestoreRepeatedEndGap violates OffsetNeverReused"
   "FelixRaftSwitchGenZeroFull pass"
   "FelixRaftMembershipTerms pass"
   "FelixRaftLease pass"
@@ -1494,6 +1496,7 @@ weights=(
   "FelixRaftRestoreGapShort 1"
   "FelixRaftRestoreRepeated 1"
   "FelixRaftRestoreRepeatedNoTime 1"
+  "FelixRaftRestoreRepeatedEndGap 1"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
   "FelixRaftStreamPurgeSmall 12"

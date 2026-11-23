@@ -18,8 +18,8 @@ use crate::store::ControlPlaneStore;
 /// One shard's line of an applied plan.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReformApplyView {
-    /// `stopping`, `writing`, `starting`, `started`, `skipped`, `changed`,
-    /// `left_alone` or `failed`.
+    /// `stopping`, `writing`, `starting`, `started`, `skipped`, `stale`,
+    /// `changed`, `left_alone` or `failed`.
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -166,11 +166,15 @@ impl ReformPlans {
         if plan.shards.iter().any(|s| s.outcome.is_none()) {
             return Err("the plan is still surveying".to_string());
         }
+        let written = self.written.lock();
         let mut applying = 0;
         for shard in &mut plan.shards {
             let Some(SurveyStep::Planned(planned)) = &shard.outcome else {
                 continue;
             };
+            let newer = written.get(&shard.key).filter(|(at, by)| {
+                *at > plan.planned_at_millis || (*at == plan.planned_at_millis && by != &plan.id)
+            });
             let again = shard
                 .apply
                 .as_ref()
@@ -179,7 +183,12 @@ impl ReformPlans {
                 continue;
             }
             let accepted = accept_loss.contains(&shard.key);
-            let phase = if planned.needs_accept_loss && !accepted {
+            let phase = if newer.is_some() {
+                ended(
+                    "stale",
+                    "a plan made after this one already wrote this shard's epoch; plan again",
+                )
+            } else if planned.needs_accept_loss && !accepted {
                 ended(
                     "skipped",
                     "the plan may lose acknowledged records; name the shard with --accept-loss",
@@ -247,13 +256,18 @@ impl ReformPlans {
 
     fn written(&self, id: &str, key: &ShardKey, written: Result<u64, String>) {
         let mut plans = self.plans.lock();
-        let Some(shard) = plans
-            .iter_mut()
-            .find(|p| p.id == id)
-            .and_then(|p| p.shards.iter_mut().find(|s| &s.key == key))
-        else {
+        let Some((planned_at, shard)) = plans.iter_mut().find(|p| p.id == id).and_then(|p| {
+            let at = p.planned_at_millis;
+            p.shards.iter_mut().find(|s| &s.key == key).map(|s| (at, s))
+        }) else {
             return;
         };
+        if written.is_ok() {
+            let mut newest = self.written.lock();
+            if newest.get(key).is_none_or(|(at, _)| *at <= planned_at) {
+                newest.insert(key.clone(), (planned_at, id.to_string()));
+            }
+        }
         let Some(apply) = &mut shard.apply else {
             return;
         };

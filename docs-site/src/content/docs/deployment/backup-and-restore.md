@@ -212,9 +212,14 @@ offset gap above). Run these in order.
    A shard is `blocked`, with the reason, if the point does not name it, names
    another incarnation of it, or no restored copy ends at the point. Fix the
    cause (usually a missing or uncut leader copy) and plan again.
-   `--offset-gap N` sets the gap; the default 2^40 is right for almost every
-   cluster. It covers clock skew between the machine that took the point and
-   the control plane, about 18 hours of it at the default.
+   The new epoch starts at 2^14 offsets per millisecond of the control
+   plane's clock at plan time, plus a gap (`--offset-gap N`, 2^40 by
+   default). That keeps a later restore, from this backup or an older one,
+   past every offset an earlier restore gave out, as long as a shard stays
+   under 8 offsets per microsecond and restores are more than four times
+   the control-plane clock skew apart. The point's own time comes from the
+   machine that took it and is only shown. A plan made before another plan
+   that already restored the shard is refused as `stale`; plan again.
 
 6. **Apply it.** The plan says it may lose records, because the wiped copies'
    votes are unknown, and what it loses is what was acknowledged after the

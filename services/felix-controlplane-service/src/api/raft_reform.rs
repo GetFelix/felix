@@ -31,7 +31,8 @@ use crate::store::reform::{MAX_BATCH, ReformReply, ReformRequest};
 ///
 /// With `restore`, each shard re-forms from a backup point: its base must
 /// end at the point, and its next epoch starts at least `offset_gap` past
-/// it. A gap below 2^32 is refused unless `accept_short_gap` is set.
+/// 2^14 times the control plane's clock (Unix ms) at plan creation. A gap
+/// below 2^32 is refused unless `accept_short_gap` is set.
 ///
 /// Brokers are surveyed in the background; read the plan with
 /// `GET /v1/raft/reform/plans/{plan_id}`. Requires `node.manage` on

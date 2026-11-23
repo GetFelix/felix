@@ -935,50 +935,71 @@ mechanism:
 - The new epoch's first index is
 
   ```text
-  max(point + offset gap + 2^14 * (plan time - point time),
-      restored floor + 1, restored reservation + 1)
+  max(2^14 * plan time + offset gap, point, restored floor + 1,
+      restored reservation + 1)
   ```
 
-  together with the other bounds every re-form takes, with the times in
-  milliseconds. `point` is the point's offset (one past its last record),
-  and the offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also
-  needs `--accept-short-gap`). The point time is the manifest's
-  `taken_at_millis`, read before any offset. The plan time is stamped once
-  by the control plane when the plan is made, so the re-plan after the stop
-  reaches the same index.
+  together with the other bounds every re-form takes. The plan time is the
+  control plane's wall clock in Unix milliseconds, stamped once when the
+  plan is made, so the re-plan after the stop reaches the same index. The
+  offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also needs
+  `--accept-short-gap`). The point's `taken_at_millis` comes from the
+  clock of the host that ran `felixctl backup-point`; it is shown in the
+  plan and never used for the index.
 
   The restored files cannot tell three cases from a clean restore: offsets
   acknowledged after the directory copy and the control-plane export,
   an offset acknowledged before the copy when the copied leader stepped
   down after the point and fell behind its own reservation, and offsets
-  an earlier restore from the same or an older backup acknowledged. Two
+  an earlier restore, from this backup or any other, acknowledged. Two
   restores from one backup read the same copy, floor, reservation and
-  bases, so only the plan time tells them apart. The time term is added,
-  not taken as a max, so the second starts 2^14 offsets per millisecond
-  between the two plans past the first, which is past everything the first
-  epoch acknowledged. A restore from an older backup is behind a newer one
-  by what the shard wrote between the two points, and its longer time term
-  makes that up. The gap absorbs a copied leader's lag, clock skew between
-  the two stamps, and the millisecond rounding at the point.
+  bases, so the index cannot come from them.
 
-  This holds while a shard acknowledges fewer than 8 offsets per
-  microsecond sustained (half the term's rate, which covers rounding each
-  stamp to a millisecond), and while the clocks that stamp points and plans
-  disagree by much less than the time between two restores. A year-old
-  backup moves the first index about 2^49 past the point.
+  It comes from a time line instead. The assumption: a shard gives out at
+  most 2^13 offsets per millisecond (8 per microsecond, half the line's
+  slope R = 2^14), counting every offset a re-form skips. Epoch 0 starts
+  near 0, far below the line. Every restored epoch starts on the line at
+  its plan time, and the line rises twice as fast as the epoch can give
+  out offsets, so at any time t every offset ever given out is below
+  `R * t + gap` plus what skew added. A later restore planned at t2 starts
+  at `R * t2 + gap`, past all of them. Skew is what is left: if the
+  control-plane node that planned the earlier restore ran S ahead and the
+  one planning the later one (another leader, after a leader change) runs
+  S behind, the later restore needs `(R - R/2) * Δ > 2 * R * S` of true
+  time Δ between them, that is Δ > 4 S. With clocks within a minute, that
+  is four minutes between restores; stopping every broker, restoring the
+  files and planning again takes longer.
+
+  The gap is added to the line, never to the point: a backup taken from a
+  restored epoch ends near the line, and adding the gap past its end would
+  start the next epoch a gap above the line, where the lead shrinks only
+  at R/2 per millisecond (about 37 hours for 2^40) and an older backup
+  restored before then lands below it. The first index costs about 2^54
+  at today's Unix time and stays below 2^63 for thousands of years; a
+  plan time whose index would overflow is refused.
+
   The first index is written in the epoch's base before any copy opens it,
-  so a crash mid-restore and every later re-form keep it.
-  `FelixRaftRestore.tla` checks the rule: with no gap the first two cases
-  reuse an offset (`FelixRaftRestoreAfterBackup`,
+  so a crash mid-restore and every later re-form keep it. The control plane
+  also refuses to apply a plan made before another plan whose epoch write
+  for the same shard went through (state `stale`). The write itself
+  compares the epoch, so this only matters when the record went back, as
+  when the metadata is restored while the leader still holds the older
+  plan; plans live in the leader's memory, so a new leader starts clean.
+  `FelixRaftRestore.tla` checks a single restore: with no gap the first two
+  cases reuse an offset (`FelixRaftRestoreAfterBackup`,
   `FelixRaftRestoreLeaderMoved`), a gap at least as large as the offsets
   acknowledged after the point closes both (`FelixRaftRestoreGap`,
-  `FelixRaftRestoreGapShort`), and two restores from one backup reuse an
-  offset without the time term and stay apart with it
-  (`FelixRaftRestoreRepeatedNoTime`, `FelixRaftRestoreRepeated`).
-- What this does not cover: a shard acknowledging faster than that rate,
-  or a plan stamped by a clock running behind the earlier restore's. Either
-  can give an offset out again, and readers who kept offsets past the point
-  must then treat them as reassigned.
+  `FelixRaftRestoreGapShort`); the code's first index is at least the
+  model's. `FelixRaftRestoreRepeated.tla` checks two backups and three
+  restores, each planned on a clock off by up to a tick: no offset is given
+  out twice (`FelixRaftRestoreRepeated`); without the line a second restore
+  from one backup reuses one (`FelixRaftRestoreRepeatedNoTime`), and so does
+  adding the gap past the backup's end (`FelixRaftRestoreRepeatedEndGap`).
+- What this does not cover: a shard giving out offsets faster than 2^13
+  per millisecond sustained, or two restores closer together than four
+  times the skew between the clocks that planned them. Either can give an
+  offset out again, and readers who kept offsets past the point must then
+  treat them as reassigned.
 - The gap costs no space. The first append past it starts a segment whose
   header carries `FOLLOWS_GAP` and the low 32 bits of where the gap starts
   (`docs/storage-format.md`), so neither the segments nor the sparse

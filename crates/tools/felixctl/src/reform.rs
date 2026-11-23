@@ -218,8 +218,7 @@ pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
         return Err(fail(
             Exit::Usage,
             format!(
-                "--offset-gap {gap} is below {MIN_OFFSET_GAP}: clock skew or a lagging \
-                 leader past the gap would give offsets out again; add \
+                "--offset-gap {gap} is below {MIN_OFFSET_GAP}; add \
                  --accept-short-gap to take it"
             ),
         ));

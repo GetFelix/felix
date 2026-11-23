@@ -1596,9 +1596,8 @@ pub(crate) struct ReformPlanArgs {
     /// Re-form from the backup point in FILE, written by `felixctl backup-point`
     #[arg(long, value_name = "FILE")]
     pub(crate) restore_point: Option<PathBuf>,
-    /// Offsets past the point the next epoch leaves unused, on top of 2^14 per
-    /// millisecond since the point. Covers clock skew and a lagging leader
-    /// [default: 2^40]
+    /// Offsets past the time line (2^14 per millisecond of the control plane's
+    /// clock at plan time) the next epoch starts at [default: 2^40]
     #[arg(long, value_name = "N", requires = "restore_point")]
     pub(crate) offset_gap: Option<u64>,
     /// Take an --offset-gap below 2^32

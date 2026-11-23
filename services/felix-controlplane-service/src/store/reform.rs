@@ -10,7 +10,7 @@
 //! Applying a plan runs on the same channel: a stop round, a compare, the
 //! epoch write and a start round ([`apply`]). `docs/per-shard-raft.md`,
 //! "Re-forming a group" and "Applying a plan".
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use felix_storage::raft_copy::{
@@ -44,6 +44,10 @@ pub(crate) const MAX_BATCH: usize = 1024;
 #[derive(Default)]
 pub struct ReformPlans {
     plans: Mutex<Vec<Plan>>,
+    /// Per shard, the plan time and id of the newest plan whose epoch write
+    /// went through. An older plan is not applied after it: its first index
+    /// is lower on the time line, below offsets the newer epoch gave out.
+    written: Mutex<HashMap<ShardKey, (u64, String)>>,
 }
 
 impl ReformPlans {
@@ -58,10 +62,11 @@ impl ReformPlans {
     ) -> String {
         let id = uuid::Uuid::new_v4().simple().to_string();
         // Stamped once: the post-stop compare re-plans with this restore
-        // and must reach the same first index.
+        // and must reach the same first index, and apply orders plans by it.
+        let planned_at_millis = felix_common::clock::wall_millis();
         let restore = restore.map(|request| PlannedRestore {
             gap: request.offset_gap.unwrap_or(DEFAULT_OFFSET_GAP),
-            restored_at_millis: felix_common::clock::wall_millis(),
+            planned_at_millis,
             request,
         });
         let shards = shards
@@ -79,8 +84,9 @@ impl ReformPlans {
                 point: planned.request.point,
                 offset_gap: planned.gap,
                 taken_at_millis: planned.request.taken_at_millis,
-                restored_at_millis: planned.restored_at_millis,
+                planned_at_millis: planned.planned_at_millis,
             }),
+            planned_at_millis,
             shards,
         });
         id
@@ -219,19 +225,21 @@ pub struct ReformPlanView {
 
 /// A plan that re-forms each shard from a backup point: the restored copy
 /// is the base, cut back to the point, and the next epoch starts at least
-/// `offset_gap` past it. `docs/per-shard-raft.md`, "A restore from a
+/// `offset_gap` past 2^14 times the plan's time in Unix milliseconds.
+/// `docs/per-shard-raft.md`, "A restore from a
 /// backup point is a re-form".
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ReformRestore {
     /// The point's name, as `felixctl backup-point` wrote it.
     pub point: String,
     /// The point's barrier in UTC milliseconds (`taken_at_millis` in the
-    /// point's manifest).
+    /// point's manifest), by the clock of the host that took it. Shown, not
+    /// used for the first index.
     pub taken_at_millis: u64,
     /// The point's offset for each shard's log.
     pub shards: Vec<RestoreShard>,
-    /// Offsets past the point the next epoch leaves unused, on top of the
-    /// time term (`RestoreAt::first_index`); 2^40 when not given.
+    /// How far past the time line the next epoch starts
+    /// (`RestoreAt::first_index`); 2^40 when not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_gap: Option<u64>,
     /// Take an `offset_gap` below 2^32.
@@ -244,8 +252,7 @@ impl ReformRestore {
     pub(crate) fn refused(&self) -> Option<String> {
         match self.offset_gap {
             Some(gap) if gap < MIN_OFFSET_GAP && !self.accept_short_gap => Some(format!(
-                "an offset gap of {gap} is below {MIN_OFFSET_GAP}: clock skew or a lagging \
-                 leader past the gap can give offsets out again; accept it with \
+                "an offset gap of {gap} is below {MIN_OFFSET_GAP}; accept it with \
                  accept_short_gap"
             )),
             _ => None,
@@ -270,16 +277,17 @@ pub struct ReformRestoreView {
     pub point: String,
     pub offset_gap: u64,
     pub taken_at_millis: u64,
-    /// When the plan was made, in UTC milliseconds. The first index grows
-    /// with the time since the point (`RestoreAt::first_index`).
-    pub restored_at_millis: u64,
+    /// The control plane's wall clock when the plan was made, in Unix
+    /// milliseconds. The first index is at least 2^14 times it plus the gap
+    /// (`RestoreAt::first_index`).
+    pub planned_at_millis: u64,
 }
 
 /// A plan's restore, with the gap and the time it was planned at.
 struct PlannedRestore {
     request: ReformRestore,
     gap: u64,
-    restored_at_millis: u64,
+    planned_at_millis: u64,
 }
 
 /// One shard's line in a plan.
@@ -414,6 +422,8 @@ struct Plan {
     id: String,
     scope: ReformScope,
     restore: Option<ReformRestoreView>,
+    /// The control plane's wall clock at creation, in Unix milliseconds.
+    planned_at_millis: u64,
     shards: Vec<ShardSurvey>,
 }
 
@@ -565,8 +575,7 @@ fn restore_at(planned: &PlannedRestore, shard: &ShardAssignment) -> Result<Resto
     Ok(RestoreAt {
         end: point.end,
         gap: planned.gap,
-        taken_at_millis: restore.taken_at_millis,
-        restored_at_millis: planned.restored_at_millis,
+        planned_at_millis: planned.planned_at_millis,
     })
 }
 

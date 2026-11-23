@@ -268,6 +268,9 @@ fn refused_reason(refused: &Refused<String>) -> String {
              `felix-broker restore-point` with this point on the copied leader's directory"
         ),
         Refused::NoIndexLeft => "every index is reserved".into(),
+        Refused::RestoreTooLate { planned_at_millis } => format!(
+            "the restore's first index at plan time {planned_at_millis} ms is past the last index"
+        ),
         Refused::NothingRead => "no copy was read".into(),
         Refused::NoVoters => "no broker with a copy id holds the base".into(),
     }

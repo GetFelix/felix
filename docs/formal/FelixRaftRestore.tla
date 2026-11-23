@@ -18,33 +18,28 @@
 (*   Export    -- the control plane is exported, with the floor it had     *)
 (*                then. It can come before or after the other two.         *)
 (*                                                                         *)
-(* Restore replaces the whole cluster with the backup: the running epoch   *)
-(* stops for good, the copied directory is cut back to the point, and the  *)
-(* re-form starts the next epoch at                                        *)
+(* Restore replaces the whole cluster with the backup: epoch 0 stops for   *)
+(* good, the copied directory is cut back to the point, and the re-form    *)
+(* starts epoch 1 at                                                       *)
 (*                                                                         *)
-(*   max(point + 1 + Gap + TimeRate * (now - pointAt),                     *)
-(*       floor + 1, reservation + 1)                                       *)
+(*   max(point + 1 + Gap, floor + 1, reservation + 1)                      *)
 (*                                                                         *)
 (* where the floor and the reservation are the restored ones. Gap is the  *)
 (* restore offset gap, 2^40 by default (`raft reform plan --offset-gap`);  *)
 (* Gap = 0 is a restore with none. The code's point is the point's offset, *)
-(* one past its last record, so point + 1 here is that offset. pointAt is  *)
-(* the clock when the point was read and now the clock at the restore;     *)
-(* TimeRate is RESTORE_OFFSETS_PER_MILLI. The shard acknowledges at most   *)
-(* Rate offsets per tick (Tick), across every epoch.                       *)
-(* The restored epoch then gives out offsets from its first index          *)
-(* (NewWrite). Restore can run again, from the same backup, up to          *)
-(* MaxRestores times: everything restored is the same, only now differs.   *)
+(* one past its last record, so point + 1 here is that offset. The gap     *)
+(* holds only while no more than Gap offsets were acknowledged after the   *)
+(* point: MaxAfter bounds it.                                              *)
+(* Epoch 1 then gives out offsets from its first index (NewWrite).         *)
 (*                                                                         *)
 (* Checked:                                                                *)
 (*                                                                         *)
 (*   BackedUpNeverReused -- no offset acknowledged by the time the         *)
 (*                         directory was copied is given out again by      *)
 (*                         epoch 1. What the design as built claims.       *)
-(*   OffsetNeverReused   -- no offset epoch 0 or an earlier restore        *)
-(*                         acknowledged, before or after the backup, is    *)
-(*                         given out again. Needs the gap, and the time    *)
-(*                         term once a restore repeats.                    *)
+(*   OffsetNeverReused   -- no offset epoch 0 acknowledged, before or      *)
+(*                         after the backup, is given out again. Needs the *)
+(*                         gap.                                            *)
 (*   BaseKept            -- epoch 1 starts above the point.                *)
 (*                                                                         *)
 (* Knobs:                                                                  *)
@@ -66,17 +61,13 @@ CONSTANTS
     MaxNew,         \* offsets epoch 1 gives out at most
     Step,           \* how far past the write a reservation raise goes
     Gap,            \* the restore offset gap
-    Rate,           \* offsets acknowledged per tick at most
-    TimeRate,       \* offsets per tick the first index adds since the point
-    MaxTime,        \* ticks at most
-    MaxRestores,    \* restores at most
     NoReserve,
     LeaderMoves
 
 \* Not yet set. An integer, so TLC can compare it with offsets.
 None == -1
 
-ASSUME Step >= 1 /\ Gap \in Nat /\ MaxAfter >= 1 /\ Rate >= 1 /\ MaxRestores >= 1
+ASSUME Step >= 1 /\ Gap \in Nat /\ MaxAfter >= 1
 
 VARIABLES
     acked,      \* epoch 0's highest acknowledged offset
@@ -88,24 +79,15 @@ VARIABLES
     bkReserve,  \* the reservation in the copied directory
     copiedAt,   \* acked when the directory was copied
     bkFloor,    \* the floor in the export
-    first,      \* the restored epoch's first index, None before a restore
-    newN,       \* offsets the restored epoch gave out
-    prior,      \* offsets earlier restored epochs gave out
-    restores,   \* restores so far
-    now,        \* the clock
-    burst,      \* offsets acknowledged in this tick
-    pointAt,    \* the clock when the point was read
-    restoredAt  \* the clock at the last restore
+    first,      \* epoch 1's first index, None before the restore
+    newN        \* offsets epoch 1 gave out
 
 vars == <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt,
-          bkFloor, first, newN, prior, restores, now, burst, pointAt, restoredAt>>
-
-\* What no step but the named ones changes.
-Clocked == <<prior, restores, now, pointAt, restoredAt>>
+          bkFloor, first, newN>>
 
 Max(S) == CHOOSE x \in S : \A y \in S : y <= x
 
-Running == restores = 0
+Running == first = None
 
 Init ==
     /\ acked = 0
@@ -119,12 +101,6 @@ Init ==
     /\ bkFloor = None
     /\ first = None
     /\ newN = 0
-    /\ prior = {}
-    /\ restores = 0
-    /\ now = 0
-    /\ burst = 0
-    /\ pointAt = None
-    /\ restoredAt = None
 
 \* The copy writes its next index: a leader past the commit, a follower that
 \* fell behind only up to it. The reservation is raised and synced first.
@@ -134,8 +110,7 @@ Write ==
     /\ written < MaxWrites
     /\ written' = written + 1
     /\ reserve' = IF written + 1 > reserve THEN written + Step ELSE reserve
-    /\ UNCHANGED <<acked, leads, floor, point, bkReserve, copiedAt, bkFloor, first, newN, burst>>
-    /\ UNCHANGED Clocked
+    /\ UNCHANGED <<acked, leads, floor, point, bkReserve, copiedAt, bkFloor, first, newN>>
 
 \* Epoch 0 acknowledges its next offset. While the copy leads it wrote the
 \* entry first; once it stopped leading the others commit without it.
@@ -144,18 +119,14 @@ Commit ==
     /\ acked < MaxWrites
     /\ point = None \/ acked < point + MaxAfter
     /\ ~leads \/ written > acked
-    /\ burst < Rate
     /\ acked' = acked + 1
-    /\ burst' = burst + 1
     /\ UNCHANGED <<written, reserve, leads, floor, point, bkReserve, copiedAt, bkFloor, first, newN>>
-    /\ UNCHANGED Clocked
 
 \* The floor trails: a leader reports some commit offset it reached.
 Report ==
     /\ Running
     /\ \E f \in (floor + 1)..acked : floor' = f
-    /\ UNCHANGED <<acked, written, reserve, leads, point, bkReserve, copiedAt, bkFloor, first, newN, burst>>
-    /\ UNCHANGED Clocked
+    /\ UNCHANGED <<acked, written, reserve, leads, point, bkReserve, copiedAt, bkFloor, first, newN>>
 
 StepDown ==
     /\ Running
@@ -163,17 +134,14 @@ StepDown ==
     /\ leads
     /\ point # None
     /\ leads' = FALSE
-    /\ UNCHANGED <<acked, written, reserve, floor, point, bkReserve, copiedAt, bkFloor, first, newN, burst>>
-    /\ UNCHANGED Clocked
+    /\ UNCHANGED <<acked, written, reserve, floor, point, bkReserve, copiedAt, bkFloor, first, newN>>
 
 TakePoint ==
     /\ Running
     /\ point = None
     /\ leads
     /\ point' = acked
-    /\ pointAt' = now
-    /\ UNCHANGED <<acked, written, reserve, leads, floor, bkReserve, copiedAt, bkFloor, first, newN, burst>>
-    /\ UNCHANGED <<prior, restores, now, restoredAt>>
+    /\ UNCHANGED <<acked, written, reserve, leads, floor, bkReserve, copiedAt, bkFloor, first, newN>>
 
 CopyDir ==
     /\ Running
@@ -181,62 +149,40 @@ CopyDir ==
     /\ bkReserve = None
     /\ bkReserve' = reserve
     /\ copiedAt' = acked
-    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkFloor, first, newN, burst>>
-    /\ UNCHANGED Clocked
+    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkFloor, first, newN>>
 
 Export ==
     /\ Running
     /\ bkFloor = None
     /\ bkFloor' = floor
-    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt, first, newN, burst>>
-    /\ UNCHANGED Clocked
+    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt, first, newN>>
 
 FirstIndex ==
-    Max({point + 1 + Gap + TimeRate * (now - pointAt), bkFloor + 1}
+    Max({point + 1 + Gap, bkFloor + 1}
         \cup (IF NoReserve THEN {} ELSE {bkReserve + 1}))
 
-NewOffsets == IF newN = 0 THEN {} ELSE first..(first + newN - 1)
-
-\* Each restore starts from the same backup; the epoch it replaces stops.
-\* Two restores are at least a tick apart: each one stops the brokers,
-\* restores their data and plans again, which takes far longer than a
-\* millisecond.
 Restore ==
-    /\ restores < MaxRestores
-    /\ restoredAt = None \/ now > restoredAt
-    /\ restoredAt' = now
+    /\ Running
     /\ point # None /\ bkReserve # None /\ bkFloor # None
     /\ first' = FirstIndex
-    /\ prior' = prior \cup NewOffsets
-    /\ newN' = 0
-    /\ restores' = restores + 1
-    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt, bkFloor, burst>>
-    /\ UNCHANGED <<now, pointAt>>
+    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt, bkFloor, newN>>
 
 NewWrite ==
     /\ first # None
     /\ newN < MaxNew
-    /\ burst < Rate
     /\ newN' = newN + 1
-    /\ burst' = burst + 1
     /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt, bkFloor, first>>
-    /\ UNCHANGED Clocked
-
-Tick ==
-    /\ now < MaxTime
-    /\ now' = now + 1
-    /\ burst' = 0
-    /\ UNCHANGED <<acked, written, reserve, leads, floor, point, bkReserve, copiedAt, bkFloor, first, newN>>
-    /\ UNCHANGED <<prior, restores, pointAt, restoredAt>>
 
 Next ==
     \/ Write \/ Commit \/ Report \/ StepDown
     \/ TakePoint \/ CopyDir \/ Export
-    \/ Restore \/ NewWrite \/ Tick
+    \/ Restore \/ NewWrite
 
 Spec == Init /\ [][Next]_vars
 
 -----------------------------------------------------------------------------
+
+NewOffsets == IF newN = 0 THEN {} ELSE first..(first + newN - 1)
 
 \* Every count is at or below a synced reservation, on the copy that wrote it.
 ReserveCovers == written <= reserve
@@ -244,7 +190,7 @@ ReserveCovers == written <= reserve
 BackedUpNeverReused ==
     copiedAt # None => NewOffsets \cap 1..copiedAt = {}
 
-OffsetNeverReused == NewOffsets \cap (1..acked \cup prior) = {}
+OffsetNeverReused == NewOffsets \cap 1..acked = {}
 
 BaseKept == first # None => first > point
 

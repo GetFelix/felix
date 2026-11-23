@@ -251,7 +251,7 @@ fn a_start_survey_carries_each_brokers_part_of_the_plan() {
 fn restore(end: u64, incarnation: u64, offset_gap: Option<u64>) -> ReformRestore {
     ReformRestore {
         point: "nightly".to_string(),
-        // A minute old, so the time term is part of every first index.
+        // Shown only: the first index never reads the point's time.
         taken_at_millis: felix_common::clock::wall_millis() - 60_000,
         shards: vec![RestoreShard {
             key: shard().key,
@@ -276,20 +276,21 @@ fn restore_plan(now: Instant, restore: ReformRestore) -> (ReformPlans, String) {
     (plans, id)
 }
 
-/// The epoch a restore writes starts the point plus the gap plus the time
-/// term past it, so all of it is in the store before any copy opens the
-/// epoch, and the post-stop re-plan reaches the index the operator read.
+/// The epoch a restore writes starts on the time line at the control
+/// plane's plan time plus the gap, so all of it is in the store before any
+/// copy opens the epoch, and the post-stop re-plan reaches the index the
+/// operator read. The point's own time is shown, never used.
 #[test]
-fn a_restore_writes_its_epoch_past_the_point_plus_the_gap() {
+fn a_restore_writes_its_epoch_past_the_time_line_plus_the_gap() {
     let now = Instant::now();
     for (gap, written) in [(None, DEFAULT_OFFSET_GAP), (Some(1 << 33), 1 << 33)] {
+        let before = felix_common::clock::wall_millis();
         let (plans, id) = restore_plan(now, restore(5, 3, gap));
         let view = plans.view(&id, now).unwrap();
         let stamped = view.restore.clone().expect("a restore");
         assert_eq!(stamped.offset_gap, written);
-        let elapsed = stamped.restored_at_millis - stamped.taken_at_millis;
-        assert!(elapsed >= 60_000);
-        let first = 5 + written + RESTORE_OFFSETS_PER_MILLI * elapsed;
+        assert!(stamped.planned_at_millis >= before);
+        let first = RESTORE_OFFSETS_PER_MILLI * stamped.planned_at_millis + written;
         let plan = view.shards[0].plan.clone().expect("planned");
         assert_eq!(plan.first_index, first);
         assert_eq!(plan.offset_gap, Some(written));
@@ -301,6 +302,39 @@ fn a_restore_writes_its_epoch_past_the_point_plus_the_gap() {
         assert_eq!(due[0].start.base.first_index, first);
         assert_eq!(due[0].start.base.base_last.map(|l| l.index), Some(4));
     }
+}
+
+/// Fable's fourth case: two plans from one backup, the newer applied
+/// first. The older one's first index is lower on the time line, below
+/// offsets the newer epoch gives out, so it is not applied after it.
+#[test]
+fn an_older_plan_is_not_applied_after_a_newer_one_wrote() {
+    let now = Instant::now();
+    let (plans, older) = restore_plan(now, restore(5, 3, None));
+    let newer = plans.create(
+        ReformScope::Cluster,
+        Some(restore(5, 3, None)),
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
+    answer_all(&plans, now, SurveyKind::Survey, whole);
+    {
+        let mut all = plans.plans.lock();
+        let plan = all.iter_mut().find(|p| p.id == newer).unwrap();
+        plan.planned_at_millis += 1;
+    }
+    assert_eq!(plans.apply(&newer, &[], now), Ok(1));
+    answer_all(&plans, now, SurveyKind::Stop, whole);
+    plans
+        .take_due()
+        .into_iter()
+        .for_each(|due| due.answer(Ok(1)));
+    assert_eq!(apply_state(&plans, &newer, now).state, "starting");
+
+    assert_eq!(plans.apply(&older, &[], now), Ok(0));
+    assert_eq!(apply_state(&plans, &older, now).state, "stale");
+    assert!(plans.take_due().is_empty());
 }
 
 /// A point that does not name the shard, names another incarnation of it,
