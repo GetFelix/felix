@@ -292,7 +292,11 @@ impl RaftShards {
 
 /// The directory of `key`'s copy at `incarnation`. A cache shard's copy
 /// lives under the cache store's root, as `open_member` claims it.
-fn reform_dir(broker: &felix_broker::Broker, key: &ShardKey, incarnation: u64) -> Option<PathBuf> {
+pub(super) fn reform_dir(
+    broker: &felix_broker::Broker,
+    key: &ShardKey,
+    incarnation: u64,
+) -> Option<PathBuf> {
     let (tenant, namespace, name, shard) = (&key.tenant_id, &key.namespace, &key.stream, key.shard);
     match key.kind {
         ShardKind::Stream => broker
