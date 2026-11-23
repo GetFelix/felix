@@ -402,6 +402,7 @@ fn accept_loss_needs_the_operator_for_a_lossy_plan() {
         voters: Vec::new(),
         learners: Vec::new(),
         first_index: 0,
+        offset_gap: None,
         top: (0, 0),
         marked: marked.then_some(crate::raft_copy::Marked::Unknown(
             crate::raft_copy::VoterSource::Seed,
@@ -837,6 +838,7 @@ fn a_start_from_a_plan_carries_its_floor() {
         voters: Vec::new(),
         learners: Vec::new(),
         first_index: 7,
+        offset_gap: None,
         top: (0, 0),
         marked: None,
         cut_by_vote: false,

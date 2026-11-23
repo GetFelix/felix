@@ -1592,7 +1592,7 @@ felixctl raft reform apply 3f2a9c
 
 #### `felixctl raft reform plan`
 
-Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again. A survey still running after 5 minutes prints what it has and exits with an error.
+Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again. A survey still running after 5 minutes prints what it has and exits with an error. With --restore-point, each shard re-forms from the backup point after `felix-broker restore-point`: a shard whose base does not end at the point is blocked, and the next epoch gives out no offset below the point plus --offset-gap.
 
 ```text
 felixctl raft reform plan [OPTIONS]
@@ -1601,6 +1601,9 @@ felixctl raft reform plan [OPTIONS]
 | Option | Value | Default | Description |
 | --- | --- | --- | --- |
 | `--scope` | `<SCOPE>` | `cluster` | `cluster` for every Raft shard, or `node ID` for the shards placed on one broker |
+| `--restore-point` | `<FILE>` | - | Re-form from the backup point in FILE, written by `felixctl backup-point` |
+| `--offset-gap` | `<N>` | - | Offsets past the point the next epoch leaves unused. Offsets acknowledged after the point, more than this many, can be given out again [default: 2^40] |
+| `--accept-short-gap` | - | - | Take an --offset-gap below 2^32 |
 
 Examples:
 
@@ -1608,6 +1611,7 @@ Examples:
 felixctl raft reform plan
 felixctl raft reform plan --scope cluster
 felixctl raft reform plan --scope node broker-2 --json
+felixctl raft reform plan --restore-point nightly.backup-point.json
 ```
 
 #### `felixctl raft reform apply`

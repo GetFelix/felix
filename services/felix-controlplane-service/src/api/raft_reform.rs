@@ -1,8 +1,8 @@
 //! Re-form plan routes. The plans themselves, and why they live on the
 //! metadata Raft leader, are in [`crate::store::reform`].
 pub use crate::store::reform::{
-    ReformAnswer, ReformApplyView, ReformPlanView, ReformScope, ReformShardView, ReformSurvey,
-    SurveyKind,
+    ReformAnswer, ReformApplyView, ReformPlanView, ReformRestore, ReformRestoreView, ReformScope,
+    ReformShardView, ReformSurvey, RestoreShard, SurveyKind,
 };
 
 use axum::Json;
@@ -29,6 +29,10 @@ use crate::store::reform::{MAX_BATCH, ReformReply, ReformRequest};
 )]
 /// Start a read-only re-form plan for the Raft shards in `scope`.
 ///
+/// With `restore`, each shard re-forms from a backup point: its base must
+/// end at the point, and its next epoch starts at least `offset_gap` past
+/// it. A gap below 2^32 is refused unless `accept_short_gap` is set.
+///
 /// Brokers are surveyed in the background; read the plan with
 /// `GET /v1/raft/reform/plans/{plan_id}`. Requires `node.manage` on
 /// `cluster:*`.
@@ -38,11 +42,16 @@ pub(crate) async fn create_plan(
     Json(request): Json<CreateReformPlanRequest>,
 ) -> Result<Json<CreateReformPlanResponse>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
+    if let Some(reason) = request.restore.as_ref().and_then(ReformRestore::refused) {
+        return Err(api_validation_error(&reason));
+    }
     let request = ReformRequest::Create {
         scope: request.scope,
+        restore: request.restore,
     };
     match ask(&state, request).await? {
         ReformReply::Created { plan_id } => Ok(Json(CreateReformPlanResponse { plan_id })),
+        ReformReply::NotCreated { reason } => Err(api_validation_error(&reason)),
         _ => Err(unexpected()),
     }
 }
@@ -173,6 +182,9 @@ pub(crate) async fn reports(
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateReformPlanRequest {
     pub scope: ReformScope,
+    /// Re-form from a backup point instead of from the copies as they are.
+    #[serde(default)]
+    pub restore: Option<ReformRestore>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

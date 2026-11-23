@@ -33,6 +33,72 @@ fn the_scope_is_the_cluster_or_one_node() {
     }
 }
 
+/// A backup point as `felixctl backup-point` writes it, in a temp file.
+fn point_file() -> tempfile::NamedTempFile {
+    let point = json!({
+        "format_version": 1, "name": "nightly", "taken_at_millis": 1, "metadata_version": 4,
+        "shards": [{
+            "tenant_id": "t1", "namespace": "ns", "name": "orders", "shard": 2,
+            "kind": "stream", "leader": "broker-1", "generation": 3, "incarnation": 5,
+            "logs": {"records": 120, "counters": 4},
+        }],
+    });
+    let file = tempfile::NamedTempFile::new().expect("temp file");
+    std::fs::write(file.path(), point.to_string()).expect("write point");
+    file
+}
+
+#[test]
+fn a_restore_point_names_each_shards_end_and_the_gap() {
+    let file = point_file();
+    let path = file.path().to_str().expect("utf-8 path");
+    let shards = json!([{
+        "key": {"tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 2, "kind": "stream"},
+        "incarnation": 5, "end": 120,
+    }]);
+    assert_eq!(
+        args(&["--restore-point", path]).expect("body"),
+        json!({ "scope": "cluster", "restore": { "point": "nightly", "shards": shards } })
+    );
+    assert_eq!(
+        args(&["--restore-point", path, "--offset-gap", "8589934592"]).expect("body")["restore"],
+        json!({
+            "point": "nightly", "shards": shards,
+            "offset_gap": 8_589_934_592_u64, "accept_short_gap": false,
+        })
+    );
+    let short = &["--restore-point", path, "--offset-gap", "1000"][..];
+    let err = args(short).expect_err("a short gap is refused");
+    assert!(err.to_string().contains("--accept-short-gap"), "{err}");
+    let accepted = [short, &["--accept-short-gap"]].concat();
+    assert_eq!(
+        args(&accepted).expect("body")["restore"]["offset_gap"],
+        json!(1000)
+    );
+}
+
+#[test]
+fn the_gap_flags_need_a_restore_point() {
+    for bad in [
+        &["--offset-gap", "8589934592"][..],
+        &["--accept-short-gap"],
+        &["--restore-point", "p.json", "--accept-short-gap"],
+        &["--restore-point", "p.json", "--offset-gap", "-1"],
+    ] {
+        let parsed = Cli::try_parse_from(
+            ["felixctl", "raft", "reform", "plan"]
+                .into_iter()
+                .chain(bad.iter().copied()),
+        );
+        assert!(parsed.is_err(), "{bad:?}");
+    }
+    let missing = args(&["--restore-point", "/nonexistent/p.json"]).expect_err("no file");
+    assert!(
+        missing.to_string().contains("read the backup point"),
+        "{missing}"
+    );
+}
+
 fn shard(stream: &str, state: &str) -> Value {
     json!({
         "key": {"tenant_id": "t1", "namespace": "ns", "stream": stream, "shard": 0, "kind": "stream"},
@@ -199,4 +265,15 @@ fn an_apply_prints_each_applied_shard_with_its_state() {
     assert!(text.contains("waiting on b"), "{text}");
     assert!(!text.contains("t1/ns/left/0"), "{text}");
     assert!(applying(&plan));
+}
+
+#[test]
+fn a_restore_plan_says_its_point_and_gap() {
+    let plan = json!({
+        "plan_id": "p1", "scope": "cluster", "state": "done", "shards": [],
+        "restore": {"point": "nightly", "offset_gap": 1_099_511_627_776_u64},
+    });
+    assert!(render_plan(&plan).contains(
+        "restore from backup point nightly: no offset below the point plus 1099511627776"
+    ));
 }

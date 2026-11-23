@@ -24,10 +24,12 @@
 (*                                                                         *)
 (*   max(point + 1 + Gap, floor + 1, reservation + 1)                      *)
 (*                                                                         *)
-(* where the floor and the reservation are the restored ones. Gap = 0 is   *)
-(* the design as built. A positive Gap is the restore offset gap decided   *)
-(* for #2250 and not built yet (default 2^40). It holds only while no more *)
-(* than Gap offsets were acknowledged after the point: MaxAfter bounds it. *)
+(* where the floor and the reservation are the restored ones. Gap is the  *)
+(* restore offset gap, 2^40 by default (`raft reform plan --offset-gap`);  *)
+(* Gap = 0 is a restore with none. The code's point is the point's offset, *)
+(* one past its last record, so point + 1 here is that offset. The gap     *)
+(* holds only while no more than Gap offsets were acknowledged after the   *)
+(* point: MaxAfter bounds it.                                              *)
 (* Epoch 1 then gives out offsets from its first index (NewWrite).         *)
 (*                                                                         *)
 (* Checked:                                                                *)
@@ -58,7 +60,7 @@ CONSTANTS
     MaxAfter,       \* offsets acknowledged after the point at most
     MaxNew,         \* offsets epoch 1 gives out at most
     Step,           \* how far past the write a reservation raise goes
-    Gap,            \* the restore offset gap, 0 as built
+    Gap,            \* the restore offset gap
     NoReserve,
     LeaderMoves
 

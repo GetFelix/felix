@@ -96,6 +96,7 @@ fn record(
         // id [`copy`] gives.
         seed: Some(set(placed)),
         ordered: Some(Vec::new()),
+        restore: None,
     }
 }
 
@@ -933,4 +934,121 @@ fn a_recorded_seed_with_every_broker_read_is_unmarked() {
     let reports: BTreeMap<_, _> = reports().into_iter().collect();
     let unseeded = plan_reform(&rec, &reports).expect("a plan");
     assert_eq!(unseeded.marked, Some(Marked::Unknown(VoterSource::Seed)));
+}
+
+/// A whole-cluster restore as `FelixRaftRestore.tla` has it: `a` was the
+/// leader, its directory was copied and cut back to the point at 6, `b` and
+/// `c` lost their copies. The restored floor names index 3 and the copy
+/// reserved up to 7.
+fn restored_trio(
+    restore: RestoreAt,
+) -> (
+    GroupRecord<&'static str>,
+    Vec<(&'static str, BrokerReport<&'static str>)>,
+) {
+    let mut rec = record(&["a", "b", "c"], &[], &[], floor(3, 0, 1));
+    rec.restore = Some(restore);
+    let cut = kept(
+        reserved(copy("a", &[1; 6], Some(5), Some(1)), 7),
+        RotatedBy::Restore,
+    );
+    let reports = vec![
+        ("a", report(blank(), vec![cut])),
+        ("b", report(blank(), vec![])),
+        ("c", report(blank(), vec![])),
+    ];
+    (rec, reports)
+}
+
+#[test]
+fn a_restore_starts_its_epoch_past_the_point_plus_the_gap() {
+    let (rec, reports) = restored_trio(RestoreAt {
+        end: 6,
+        gap: DEFAULT_OFFSET_GAP,
+    });
+    let plan = plan(&rec, reports);
+    assert_eq!(plan.base_end(), 6);
+    assert_eq!(plan.first_index, 6 + DEFAULT_OFFSET_GAP);
+    assert_eq!(plan.offset_gap, Some(DEFAULT_OFFSET_GAP));
+    assert!(
+        plan.needs_accept_loss(),
+        "the rotated copies' votes are unknown"
+    );
+}
+
+/// `FelixRaftRestoreLeaderMoved`: `a` stopped leading after the point and
+/// fell behind, `b` and `c` acknowledged 6..=9, and `a`'s directory was
+/// copied with its reservation still at 7. Neither restored file knows of
+/// 8 or 9, so with no gap the new epoch gives out 8 again. A gap of at
+/// least the four offsets acknowledged after the point closes it
+/// (`FelixRaftRestoreGap`).
+#[test]
+fn a_leader_that_moved_after_the_point_needs_the_gap() {
+    let acked_after = 6..=9;
+    let (rec, reports) = restored_trio(RestoreAt { end: 6, gap: 0 });
+    let plan_without = plan(&rec, reports);
+    assert_eq!(plan_without.first_index, 8);
+    assert!(acked_after.contains(&plan_without.first_index));
+
+    for gap in [4, DEFAULT_OFFSET_GAP] {
+        let (rec, reports) = restored_trio(RestoreAt { end: 6, gap });
+        let first = plan(&rec, reports).first_index;
+        assert!(first > *acked_after.end(), "gap {gap}: first index {first}");
+    }
+}
+
+/// A copy cut anywhere but the point is refused rather than re-formed: below
+/// it drops acknowledged records, above it keeps ones the point left out.
+#[test]
+fn a_restore_whose_base_misses_the_point_refuses() {
+    for point in [5, 7] {
+        let (rec, reports) = restored_trio(RestoreAt {
+            end: point,
+            gap: DEFAULT_OFFSET_GAP,
+        });
+        let reports: BTreeMap<_, _> = reports.into_iter().collect();
+        assert_eq!(
+            plan_reform(&rec, &reports),
+            Err(Refused::NotAtPoint { base_end: 6, point })
+        );
+    }
+}
+
+#[test]
+fn a_gap_past_the_last_index_refuses() {
+    let (rec, reports) = restored_trio(RestoreAt {
+        end: 6,
+        gap: u64::MAX - 5,
+    });
+    let reports: BTreeMap<_, _> = reports.into_iter().collect();
+    assert_eq!(plan_reform(&rec, &reports), Err(Refused::NoIndexLeft));
+}
+
+/// The control plane wrote the restore's epoch and went down before every
+/// copy opened it, so the operator plans again without naming the point.
+/// The written base carries the gap, and the next epoch starts past it.
+#[test]
+fn the_gap_outlives_a_crash_mid_restore() {
+    let first = 6 + DEFAULT_OFFSET_GAP;
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 5,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: first,
+    }];
+    let rec = record(&["a", "b", "c"], &[], &bases, None);
+    let a = at_epoch(copy("a", &[1; 6], Some(5), Some(1)), &bases);
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", report(a, vec![])),
+            ("b", report(blank(), vec![])),
+            ("c", report(blank(), vec![])),
+        ],
+    );
+    assert_eq!(plan.base_end(), 6);
+    assert_eq!(plan.first_index, first);
+    assert_eq!(plan.offset_gap, None);
 }

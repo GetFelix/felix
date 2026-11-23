@@ -1539,11 +1539,16 @@ pub(crate) enum ReformCommand {
                       so and names them. The plan changes nothing on any broker or in the \
                       control plane. It is kept by the control-plane leader only, so after \
                       a leader change, plan again. A survey still running after 5 minutes \
-                      prints what it has and exits with an error.",
+                      prints what it has and exits with an error. With --restore-point, \
+                      each shard re-forms from the backup point after `felix-broker \
+                      restore-point`: a shard whose base does not end at the point is \
+                      blocked, and the next epoch gives out no offset below the point plus \
+                      --offset-gap.",
         after_long_help = "Examples:
   felixctl raft reform plan
   felixctl raft reform plan --scope cluster
-  felixctl raft reform plan --scope node broker-2 --json"
+  felixctl raft reform plan --scope node broker-2 --json
+  felixctl raft reform plan --restore-point nightly.backup-point.json"
     )]
     Plan(ReformPlanArgs),
     /// Carry out a plan: stop the copies, check the plan still holds, start the next epoch
@@ -1588,6 +1593,16 @@ pub(crate) struct ReformPlanArgs {
         default_values_t = ["cluster".to_string()]
     )]
     pub(crate) scope: Vec<String>,
+    /// Re-form from the backup point in FILE, written by `felixctl backup-point`
+    #[arg(long, value_name = "FILE")]
+    pub(crate) restore_point: Option<PathBuf>,
+    /// Offsets past the point the next epoch leaves unused. Offsets acknowledged
+    /// after the point, more than this many, can be given out again [default: 2^40]
+    #[arg(long, value_name = "N", requires = "restore_point")]
+    pub(crate) offset_gap: Option<u64>,
+    /// Take an --offset-gap below 2^32
+    #[arg(long, requires = "offset_gap")]
+    pub(crate) accept_short_gap: bool,
 }
 
 /// `backup-point NAME`.

@@ -52,6 +52,7 @@ fn record(members: &[Member], key: &ShardKey) -> GroupRecord<String> {
         dead: BTreeSet::new(),
         seed: Some(seed.clone()),
         ordered: Some(vec![seed]),
+        restore: None,
     }
 }
 

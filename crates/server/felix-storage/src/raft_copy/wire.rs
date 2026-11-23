@@ -263,6 +263,10 @@ fn refused_reason(refused: &Refused<String>) -> String {
         Refused::Purged { broker, index } => {
             format!("the base ends at index {index}, which {broker} purged")
         }
+        Refused::NotAtPoint { base_end, point } => format!(
+            "the base ends at offset {base_end}, not at the backup point's {point}; run \
+             `felix-broker restore-point` with this point on the copied leader's directory"
+        ),
         Refused::NoIndexLeft => "every index is reserved".into(),
         Refused::NothingRead => "no copy was read".into(),
         Refused::NoVoters => "no broker with a copy id holds the base".into(),
@@ -279,6 +283,10 @@ pub struct PlanView {
     /// `(index, epoch, term)` of the base's last entry; `None` when empty.
     pub base_last: Option<(u64, u64, u64)>,
     pub first_index: u64,
+    /// For a restore, the offsets past the point the new epoch leaves
+    /// unused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_gap: Option<u64>,
     /// `(broker, copy id)`.
     pub voters: Vec<(String, u64)>,
     pub learners: Vec<String>,
@@ -314,6 +322,7 @@ impl PlanView {
             },
             base_last: plan.base_last.map(|l| (l.index, l.epoch, l.term)),
             first_index: plan.first_index,
+            offset_gap: plan.offset_gap,
             voters: plan
                 .voters
                 .iter()

@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use felix_storage::raft_copy::{
-    BrokerReport, GroupRecord, PlanView, SurveyStep, WireReport, WireStart, first_probes,
-    survey_step,
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, PlanView, RestoreAt, SurveyStep,
+    WireReport, WireStart, first_probes, survey_step,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -51,14 +51,19 @@ impl ReformPlans {
     pub(crate) fn create(
         &self,
         scope: ReformScope,
+        restore: Option<ReformRestore>,
         shards: &[ShardAssignment],
         dead: &BTreeSet<String>,
         now: Instant,
     ) -> String {
         let id = uuid::Uuid::new_v4().simple().to_string();
+        let restore = restore.map(|restore| {
+            let gap = restore.offset_gap.unwrap_or(DEFAULT_OFFSET_GAP);
+            (restore, gap)
+        });
         let shards = shards
             .iter()
-            .map(|s| ShardSurvey::new(s, dead, now))
+            .map(|s| ShardSurvey::new(s, dead, restore.as_ref(), now))
             .collect();
         let mut plans = self.plans.lock();
         if plans.len() >= MAX_PLANS {
@@ -67,6 +72,10 @@ impl ReformPlans {
         plans.push(Plan {
             id: id.clone(),
             scope,
+            restore: restore.map(|(restore, offset_gap)| ReformRestoreView {
+                point: restore.point,
+                offset_gap,
+            }),
             shards,
         });
         id
@@ -92,6 +101,7 @@ impl ReformPlans {
         Some(ReformPlanView {
             plan_id: plan.id.clone(),
             scope: plan.scope.clone(),
+            restore: plan.restore.clone(),
             state: state.to_string(),
             shards,
         })
@@ -193,10 +203,65 @@ pub enum ReformScope {
 pub struct ReformPlanView {
     pub plan_id: String,
     pub scope: ReformScope,
+    /// Set when the plan re-forms from a backup point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<ReformRestoreView>,
     /// `surveying` until every shard has an answer, then `done`; once
     /// applied, `applying` until every applied shard ended, then `applied`.
     pub state: String,
     pub shards: Vec<ReformShardView>,
+}
+
+/// A plan that re-forms each shard from a backup point: the restored copy
+/// is the base, cut back to the point, and the next epoch starts at least
+/// `offset_gap` past it. `docs/per-shard-raft.md`, "A restore from a
+/// backup point is a re-form".
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReformRestore {
+    /// The point's name, as `felixctl backup-point` wrote it.
+    pub point: String,
+    /// The point's offset for each shard's log.
+    pub shards: Vec<RestoreShard>,
+    /// Offsets past the point the next epoch leaves unused; 2^40 when not
+    /// given. More offsets than this acknowledged after the point can be
+    /// given out again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_gap: Option<u64>,
+    /// Take an `offset_gap` below 2^32.
+    #[serde(default)]
+    pub accept_short_gap: bool,
+}
+
+impl ReformRestore {
+    /// Why the request is refused, if it is.
+    pub(crate) fn refused(&self) -> Option<String> {
+        match self.offset_gap {
+            Some(gap) if gap < MIN_OFFSET_GAP && !self.accept_short_gap => Some(format!(
+                "an offset gap of {gap} is below {MIN_OFFSET_GAP}: offsets acknowledged after \
+                 the point past the gap can be given out again; accept it with \
+                 accept_short_gap"
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// One shard in a backup point.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RestoreShard {
+    pub key: ShardKey,
+    /// The incarnation the point read the shard at.
+    #[serde(default)]
+    pub incarnation: u64,
+    /// Where the shard's restored log ends.
+    pub end: u64,
+}
+
+/// The restore a plan was made for.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ReformRestoreView {
+    pub point: String,
+    pub offset_gap: u64,
 }
 
 /// One shard's line in a plan.
@@ -276,6 +341,8 @@ pub struct ReformAnswer {
 pub enum ReformRequest {
     Create {
         scope: ReformScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restore: Option<ReformRestore>,
     },
     View {
         plan_id: String,
@@ -301,6 +368,10 @@ pub enum ReformReply {
     Created {
         plan_id: String,
     },
+    /// The plan was not made; the reason says why.
+    NotCreated {
+        reason: String,
+    },
     Plan {
         plan: Option<ReformPlanView>,
     },
@@ -324,6 +395,7 @@ pub enum ReformReply {
 struct Plan {
     id: String,
     scope: ReformScope,
+    restore: Option<ReformRestoreView>,
     shards: Vec<ShardSurvey>,
 }
 
@@ -344,8 +416,20 @@ struct ShardSurvey {
 }
 
 impl ShardSurvey {
-    fn new(shard: &ShardAssignment, dead: &BTreeSet<String>, now: Instant) -> Self {
-        let record = shard.reform_record(dead);
+    fn new(
+        shard: &ShardAssignment,
+        dead: &BTreeSet<String>,
+        restore: Option<&(ReformRestore, u64)>,
+        now: Instant,
+    ) -> Self {
+        let record = shard.reform_record(dead).map_err(|err| err.to_string());
+        let record = match restore {
+            None => record,
+            Some((restore, gap)) => record.and_then(|mut record| {
+                record.restore = Some(restore_at(restore, *gap, shard)?);
+                Ok(record)
+            }),
+        };
         let asked_brokers = shard
             .placed
             .as_ref()
@@ -356,11 +440,7 @@ impl ShardSurvey {
                 let probes = first_probes(&record);
                 (Some(record), None, probes)
             }
-            Err(err) => (
-                None,
-                Some(SurveyStep::Blocked(err.to_string())),
-                BTreeSet::new(),
-            ),
+            Err(err) => (None, Some(SurveyStep::Blocked(err)), BTreeSet::new()),
         };
         Self {
             key: shard.key.clone(),
@@ -447,6 +527,32 @@ impl ShardSurvey {
     }
 }
 
+/// Where the point puts `shard`, refused unless it names the shard at its
+/// incarnation: restoring a shard the point does not hold would cut it to
+/// nothing.
+fn restore_at(
+    restore: &ReformRestore,
+    gap: u64,
+    shard: &ShardAssignment,
+) -> Result<RestoreAt, String> {
+    let Some(point) = restore.shards.iter().find(|p| p.key == shard.key) else {
+        return Err(format!(
+            "the backup point {} does not name this shard",
+            restore.point
+        ));
+    };
+    if point.incarnation != shard.incarnation {
+        return Err(format!(
+            "the backup point {} read this shard at incarnation {}; the shard is at {}",
+            restore.point, point.incarnation, shard.incarnation
+        ));
+    }
+    Ok(RestoreAt {
+        end: point.end,
+        gap,
+    })
+}
+
 /// Answer `request` from `plans`, reading shards and dead nodes from
 /// `store`. Nothing is written to `store`.
 pub(crate) async fn answer(
@@ -456,11 +562,14 @@ pub(crate) async fn answer(
 ) -> StoreResult<ReformReply> {
     let now = Instant::now();
     let reply = match request {
-        ReformRequest::Create { scope } => {
+        ReformRequest::Create { scope, restore } => {
+            if let Some(reason) = restore.as_ref().and_then(ReformRestore::refused) {
+                return Ok(ReformReply::NotCreated { reason });
+            }
             let shards = in_scope(store.list_shard_assignments().await?, &scope);
             let dead = store.dead_nodes().await?;
             ReformReply::Created {
-                plan_id: plans.create(scope, &shards, &dead, now),
+                plan_id: plans.create(scope, restore, &shards, &dead, now),
             }
         }
         ReformRequest::View { plan_id } => ReformReply::Plan {

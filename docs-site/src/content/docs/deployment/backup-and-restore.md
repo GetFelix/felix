@@ -133,6 +133,17 @@ Raft's [re-form rules](https://github.com/GetFelix/felix/blob/main/docs/per-shar
 explain why.
 :::
 
+:::note[Offsets past the point on Raft]
+The re-form a Raft restore runs, `felixctl raft reform plan --restore-point
+FILE`, starts each shard's next epoch at least an offset gap past the point:
+2^40 by default, `--offset-gap N` to choose another, and below 2^32 only with
+`--accept-short-gap`. Records acknowledged after the point are lost with the
+restore, but their offsets are not given out again unless more than the gap
+were acknowledged on one shard after the point. A reader that kept an offset
+past the point can tell from it that the record is gone, and new records
+never take it. The gap is a header in the next segment, not disk space.
+:::
+
 :::caution[Never touch one shard directory]
 Do not delete, empty, move or restore a single shard directory under a broker's
 data directory. To recover a broker's storage, stop the broker and replace or

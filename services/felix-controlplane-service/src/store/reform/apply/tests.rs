@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use super::super::tests::{LOG, answer, copy, shard};
-use super::super::{ReformPlans, ReformScope, SurveyKind};
+use super::super::{ReformPlans, ReformRestore, ReformScope, RestoreShard, SurveyKind};
 use super::*;
+use felix_storage::raft_copy::{DEFAULT_OFFSET_GAP, MIN_OFFSET_GAP};
 
 const NODES: [&str; 3] = ["a", "b", "c"];
 
@@ -40,7 +41,13 @@ fn planned(
     read: impl Fn(&str, &BTreeSet<u64>) -> felix_storage::raft_copy::WireCopy,
 ) -> (ReformPlans, String) {
     let plans = ReformPlans::default();
-    let id = plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     answer_all(&plans, now, SurveyKind::Survey, read);
     assert_eq!(plans.view(&id, now).unwrap().state, "done");
     (plans, id)
@@ -157,7 +164,13 @@ fn a_plan_that_may_lose_records_needs_the_shard_named() {
 fn a_plan_still_surveying_or_unknown_is_not_applied() {
     let now = Instant::now();
     let plans = ReformPlans::default();
-    let id = plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     assert!(plans.apply(&id, &[], now).is_err());
     assert!(plans.apply("nope", &[], now).is_err());
 }
@@ -223,4 +236,88 @@ fn a_start_survey_carries_each_brokers_part_of_the_plan() {
         asked += 1;
     }
     assert_eq!(asked, 3);
+}
+
+fn restore(end: u64, incarnation: u64, offset_gap: Option<u64>) -> ReformRestore {
+    ReformRestore {
+        point: "nightly".to_string(),
+        shards: vec![RestoreShard {
+            key: shard().key,
+            incarnation,
+            end,
+        }],
+        offset_gap,
+        accept_short_gap: false,
+    }
+}
+
+fn restore_plan(now: Instant, restore: ReformRestore) -> (ReformPlans, String) {
+    let plans = ReformPlans::default();
+    let id = plans.create(
+        ReformScope::Cluster,
+        Some(restore),
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
+    answer_all(&plans, now, SurveyKind::Survey, whole);
+    (plans, id)
+}
+
+/// The epoch a restore writes starts the point plus the gap past it, so
+/// the gap is in the store before any copy opens the epoch.
+#[test]
+fn a_restore_writes_its_epoch_past_the_point_plus_the_gap() {
+    let now = Instant::now();
+    for (gap, written) in [(None, DEFAULT_OFFSET_GAP), (Some(1 << 33), 1 << 33)] {
+        let (plans, id) = restore_plan(now, restore(5, 3, gap));
+        let view = plans.view(&id, now).unwrap();
+        assert_eq!(view.restore.as_ref().map(|r| r.offset_gap), Some(written));
+        let plan = view.shards[0].plan.clone().expect("planned");
+        assert_eq!(plan.first_index, 5 + written);
+        assert_eq!(plan.offset_gap, Some(written));
+
+        assert_eq!(plans.apply(&id, &[], now), Ok(1));
+        answer_all(&plans, now, SurveyKind::Stop, whole);
+        let due = plans.take_due();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].start.base.first_index, 5 + written);
+        assert_eq!(due[0].start.base.base_last.map(|l| l.index), Some(4));
+    }
+}
+
+/// A point that does not name the shard, names another incarnation of it,
+/// or ends where the copies' base does not, blocks the shard with a reason.
+#[test]
+fn a_restore_that_does_not_match_the_shard_is_blocked() {
+    let now = Instant::now();
+    let mut other = restore(5, 3, None);
+    other.shards[0].key.shard = 1;
+    for (restore, says) in [
+        (other, "does not name this shard"),
+        (restore(5, 2, None), "at incarnation 2; the shard is at 3"),
+        (restore(4, 3, None), "not at the backup point's 4"),
+    ] {
+        let (plans, id) = restore_plan(now, restore);
+        let view = plans.view(&id, now).unwrap();
+        let shard = &view.shards[0];
+        assert_eq!(shard.state, "blocked", "{shard:?}");
+        let reason = shard.reason.clone().unwrap_or_default();
+        assert!(reason.contains(says), "{reason}");
+        assert_eq!(plans.apply(&id, &[], now), Ok(0));
+    }
+}
+
+#[test]
+fn a_short_gap_is_refused_unless_accepted() {
+    let mut short = restore(5, 3, Some(MIN_OFFSET_GAP - 1));
+    assert!(
+        short
+            .refused()
+            .is_some_and(|why| why.contains("accept_short_gap"))
+    );
+    short.accept_short_gap = true;
+    assert_eq!(short.refused(), None);
+    assert_eq!(restore(5, 3, Some(MIN_OFFSET_GAP)).refused(), None);
+    assert_eq!(restore(5, 3, None).refused(), None);
 }

@@ -83,7 +83,9 @@ pub(crate) use rotated_by::RotatedBy;
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
 pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
-pub use vouch::{BrokerReport, GroupRecord, VoterId};
+pub use vouch::{
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RestoreAt, VoterId,
+};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::backup_point::{FORMAT_VERSION, Manifest};
 use crate::cli::{RaftCommand, ReformApplyArgs, ReformCommand, ReformPlanArgs};
 use crate::context::Settings;
 use crate::controlplane::{Api, segment};
@@ -194,7 +195,11 @@ pub(crate) fn render_apply(plan: &Value) -> String {
     out
 }
 
-/// The create request for `--scope`.
+/// The smallest `--offset-gap` taken without `--accept-short-gap`, the
+/// control plane's `MIN_OFFSET_GAP`.
+const MIN_OFFSET_GAP: u64 = 1 << 32;
+
+/// The create request for `--scope` and `--restore-point`.
 pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
     let scope = match args.scope.as_slice() {
         [scope] if scope == "cluster" => json!("cluster"),
@@ -203,7 +208,64 @@ pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
             return Err(fail(Exit::Usage, "--scope is `cluster` or `node <ID>`"));
         }
     };
-    Ok(json!({ "scope": scope }))
+    let Some(path) = &args.restore_point else {
+        return Ok(json!({ "scope": scope }));
+    };
+    if let Some(gap) = args.offset_gap
+        && gap < MIN_OFFSET_GAP
+        && !args.accept_short_gap
+    {
+        return Err(fail(
+            Exit::Usage,
+            format!(
+                "--offset-gap {gap} is below {MIN_OFFSET_GAP}: more offsets than the gap \
+                 acknowledged after the point would be given out again; add \
+                 --accept-short-gap to take it"
+            ),
+        ));
+    }
+    let text = std::fs::read_to_string(path).map_err(|err| {
+        fail(
+            Exit::Usage,
+            format!("read the backup point {}: {err}", path.display()),
+        )
+    })?;
+    let point: Manifest = serde_json::from_str(&text).map_err(|err| {
+        fail(
+            Exit::Usage,
+            format!("parse the backup point {}: {err}", path.display()),
+        )
+    })?;
+    if point.format_version != FORMAT_VERSION {
+        return Err(fail(
+            Exit::Usage,
+            format!(
+                "{} is format version {}; this felixctl reads version {FORMAT_VERSION}",
+                path.display(),
+                point.format_version
+            ),
+        ));
+    }
+    let shards: Vec<Value> = point
+        .shards
+        .iter()
+        .map(|shard| {
+            json!({
+                "key": {
+                    "tenant_id": shard.tenant_id, "namespace": shard.namespace,
+                    "stream": shard.name, "shard": shard.shard, "kind": shard.kind,
+                },
+                "incarnation": shard.incarnation,
+                "end": shard.logs.records,
+            })
+        })
+        .collect();
+    let mut restore = json!({ "point": point.name, "shards": shards });
+    if let Some(gap) = args.offset_gap {
+        restore["offset_gap"] = json!(gap);
+        restore["accept_short_gap"] = json!(args.accept_short_gap);
+    }
+    Ok(json!({ "scope": scope, "restore": restore }))
 }
 
 /// A summary line, one row per shard, then what each re-form would drop.
@@ -226,6 +288,14 @@ pub(crate) fn render_plan(plan: &Value) -> String {
         count("blocked"),
         count("left_alone"),
     );
+    let restore = &plan["restore"];
+    if restore.is_object() {
+        out.push_str(&format!(
+            "\nrestore from backup point {}: no offset below the point plus {} is given out",
+            cell(&restore["point"]),
+            cell(&restore["offset_gap"]),
+        ));
+    }
     if shards.is_empty() {
         out.push_str("\nno Raft shard in scope");
         return out;

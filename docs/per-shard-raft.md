@@ -908,27 +908,44 @@ mechanism:
   restored leader copy back to the point. The broker's next open of the
   shard rotates the copy and keeps the cut log in `.kept` as `restore`,
   where the plan reads it. A follower copy is removed, not restored.
-- On start the shards wait for a re-form. `plan` reads each restored leader
-  copy as the only copy holding the base and every other broker as empty,
-  so the plan re-forms from the restored copy. It is marked: the votes of
-  the rotated copies are unknown, so applying it needs `--accept-loss`, and
-  what it loses is exactly what was acknowledged after the point.
-- The new epoch's first index is above the base (the point), above the
-  offset floor the restored control plane holds, and above every
-  reservation the restored copy carries. Every offset at or below the
-  point stays as it was, and nothing at or below it is handed out again.
-- What this does not cover: offsets acknowledged after both the copy of
-  the leader directories and the control-plane export. Neither the
-  restored floor nor the restored reservations know of them, so a re-form
-  from a backup can hand them out again. The same holds for an offset
-  acknowledged before the copy if the copied copy stopped leading after
-  the point and fell behind its own reservation. `FelixRaftRestore.tla`
-  checks both, and that an offset gap past the point closes them while no
-  more offsets than the gap were acknowledged after it. Closing it needs
-  a floor that is not restored from the backup, or that gap; until then
-  the guide tells the operator
-  that readers who kept offsets past the point must treat them as
-  reassigned.
+- On start the shards wait for a re-form. `felixctl raft reform plan
+  --restore-point FILE` names the point, and `plan` reads each restored
+  leader copy as the only copy holding the base and every other broker as
+  empty, so the plan re-forms from the restored copy. It is marked: the
+  votes of the rotated copies are unknown, so applying it needs
+  `--accept-loss`, and what it loses is exactly what was acknowledged after
+  the point. A shard the point does not name, names at another incarnation,
+  or whose base does not end at the point's offset is blocked with the
+  reason: below the point the base would drop acknowledged records, above
+  it keep ones the point left out.
+- The new epoch's first index is
+
+  ```text
+  max(point + offset gap, restored floor + 1, restored reservation + 1)
+  ```
+
+  together with the other bounds every re-form takes. `point` is the
+  point's offset (one past its last record), and the offset gap defaults to
+  2^40 (`--offset-gap N`; below 2^32 it also needs `--accept-short-gap`).
+  The gap covers two cases the restored files cannot: offsets acknowledged
+  after both the directory copy and the control-plane export, which neither
+  the restored floor nor the restored reservations know of, and an offset
+  acknowledged before the copy when the copied leader stepped down after
+  the point and fell behind its own reservation while the others went on.
+  The first index is written in the epoch's base before any copy opens it,
+  so a crash mid-restore and every later re-form keep it.
+  `FelixRaftRestore.tla` checks the rule: with no gap both cases reuse an
+  offset (`FelixRaftRestoreAfterBackup`, `FelixRaftRestoreLeaderMoved`),
+  and a gap at least as large as the offsets acknowledged after the point
+  closes both (`FelixRaftRestoreGap`, `FelixRaftRestoreGapShort`).
+- What this does not cover: more offsets acknowledged after the point than
+  the gap. Those can be given out again, and readers who kept offsets that
+  far past the point must treat them as reassigned. At the default gap that
+  is 2^40 records on one shard between the point and the outage.
+- The gap costs no space. The first append past it starts a segment whose
+  header carries `FOLLOWS_GAP` and the low 32 bits of where the gap starts
+  (`docs/storage-format.md`), so neither the segments nor the sparse
+  indexes grow with it.
 
 **An RF 1 copy restored alone.** An RF 1 group re-forms like any other: its
 only copy is the source and the only voter, and the plan is unmarked when

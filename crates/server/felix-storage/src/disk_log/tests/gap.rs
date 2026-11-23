@@ -174,3 +174,32 @@ async fn a_gap_must_lie_past_the_tail() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(read_all(&log, 1).await, ["old-1", "new-0", "new-1"]);
 }
+
+/// A restore's default gap is 2^40 offsets. The gap is a segment header,
+/// not space: the directory, sparse indexes included, stays as small as the
+/// records on both sides, before and after a reopen.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_restores_gap_costs_no_disk() {
+    use std::os::unix::fs::MetadataExt;
+
+    let used = |dir: &TempDir| -> (u64, u64) {
+        std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").metadata().expect("metadata"))
+            .filter(|meta| meta.is_file())
+            .fold((0, 0), |(len, blocks), meta| {
+                (len + meta.len(), blocks + meta.blocks() * 512)
+            })
+    };
+    let dir = tempdir().expect("dir");
+    let log = gapped(&dir, 6).await;
+    log.append(&records(&["new-0"])).await.expect("append");
+    log.shutdown().await.expect("shutdown");
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(read_all(&log, 0).await.len(), 7);
+    assert_eq!(read_all(&log, FIRST - (1 << 40)).await, ["new-0"]);
+    let (len, blocks) = used(&dir);
+    assert!(len < 64 * 1024, "{len} bytes of files across a 2^40 gap");
+    assert!(blocks < 16 * 1024 * 1024, "{blocks} bytes allocated");
+}

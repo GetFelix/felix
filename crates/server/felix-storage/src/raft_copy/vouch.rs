@@ -50,6 +50,28 @@ pub struct GroupRecord<B> {
     /// before the leader was asked: the control plane's
     /// `ShardAssignment::ordered_voter_sets`. `None` when not recorded.
     pub ordered: Option<Vec<BTreeSet<VoterId<B>>>>,
+    /// Set when the operator re-forms the group from a backup point.
+    pub restore: Option<RestoreAt>,
+}
+
+/// The offset gap a restore leaves past its point when the operator names
+/// none. Offsets acknowledged after the point that neither the restored
+/// floor nor the restored reservations know of are reissued only if more
+/// than this many were acknowledged (`FelixRaftRestoreGap`).
+pub const DEFAULT_OFFSET_GAP: u64 = 1 << 40;
+
+/// The smallest gap the control plane takes without the operator accepting
+/// a short one by name.
+pub const MIN_OFFSET_GAP: u64 = 1 << 32;
+
+/// A re-form from a backup point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreAt {
+    /// The point's offset for the shard's log: every record below it was
+    /// acknowledged and is in the restored copy, and the base ends here.
+    pub end: u64,
+    /// How many offsets past `end` the new epoch leaves unused.
+    pub gap: u64,
 }
 
 /// One broker's answer.
@@ -121,8 +143,11 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) learners: Vec<B>,
     /// Above the base, the offset floor, every reservation read, every
     /// earlier epoch's first index, every record a copy of the incarnation
-    /// holds, and every floor a copy carries.
+    /// holds, and every floor a copy carries. For a restore, also at least
+    /// the point plus the gap.
     pub(crate) first_index: u64,
+    /// The restore's gap, when the plan is one.
+    pub(crate) offset_gap: Option<u64>,
     /// The highest key of any vote or entry read, and of the floor.
     pub(crate) top: Key,
     /// Set when the voters whose votes are unknown (dead, no vote of the
@@ -173,6 +198,8 @@ pub(crate) enum Refused<B> {
     /// The base ends at an index the source copy purged, so its term is
     /// not on that disk.
     Purged { broker: B, index: u64 },
+    /// A restore's base does not end at its backup point.
+    NotAtPoint { base_end: u64, point: u64 },
     /// Every index is reserved.
     NoIndexLeft,
     /// No copy was read.
@@ -393,6 +420,17 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         }
     };
 
+    // Below the point every record was acknowledged; a base that ends
+    // anywhere else either drops some of them or keeps records past it.
+    if let Some(restore) = record.restore
+        && base_end != restore.end
+    {
+        return Err(Refused::NotAtPoint {
+            base_end,
+            point: restore.end,
+        });
+    }
+
     let mut voters = Vec::new();
     let mut learners = Vec::new();
     for (broker, report) in &live {
@@ -460,6 +498,18 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max(earlier.unwrap_or(0))
         .max(held.unwrap_or(0))
         .max(carried.unwrap_or(0));
+    // A copied leader can lag past its own reservation after the point is
+    // read, and offsets acknowledged after the copy are in no restored
+    // file. The gap is what keeps either from being given out again.
+    let first_index = match record.restore {
+        Some(restore) => first_index.max(
+            restore
+                .end
+                .checked_add(restore.gap)
+                .ok_or(Refused::NoIndexLeft)?,
+        ),
+        None => first_index,
+    };
 
     Ok(ReformPlan {
         epoch: epoch + 1,
@@ -468,6 +518,7 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         voters,
         learners,
         first_index,
+        offset_gap: record.restore.map(|restore| restore.gap),
         top,
         marked,
         cut_by_vote,

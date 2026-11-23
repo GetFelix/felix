@@ -79,6 +79,7 @@ async fn a_stopped_copy_reads_and_plans_as_it_did_before_the_stop() {
             dead: BTreeSet::new(),
             seed: Some(BTreeSet::from([("a", copy), ("b", copy), ("c", copy)])),
             ordered: Some(Vec::new()),
+            restore: None,
         };
         plan_reform(&record, &reports)
     };

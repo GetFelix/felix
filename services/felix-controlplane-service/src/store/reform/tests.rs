@@ -147,7 +147,13 @@ pub(crate) const LOG: [u64; 5] = [1, 1, 2, 2, 2];
 fn every_broker_readable_plans_an_unmarked_reform() {
     let plans = ReformPlans::default();
     let now = Instant::now();
-    let id = plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     assert_eq!(plans.view(&id, now).unwrap().state, "surveying");
 
     let asked = survey(&plans, now, |_, probes| {
@@ -174,7 +180,13 @@ fn every_broker_readable_plans_an_unmarked_reform() {
 fn a_lost_majority_is_marked_and_names_what_may_be_lost() {
     let plans = ReformPlans::default();
     let now = Instant::now();
-    let id = plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     survey(&plans, now, |node, probes| match node {
         "a" => copy(&LOG, Some(1), Some(2), probes),
         _ => copy(&[], None, None, probes),
@@ -198,7 +210,13 @@ fn a_lost_majority_is_marked_and_names_what_may_be_lost() {
 fn an_answer_for_another_round_or_broker_is_ignored() {
     let plans = ReformPlans::default();
     let now = Instant::now();
-    let id = plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     let first = plans.surveys_for("a", now).remove(0);
     let full = |probes: &BTreeSet<u64>| copy(&LOG, Some(4), Some(2), probes);
     // The saved commit is below a's last entry, so the first round, asked
@@ -235,7 +253,13 @@ fn an_answer_for_another_round_or_broker_is_ignored() {
 fn a_broker_that_never_answers_blocks_its_shard() {
     let plans = ReformPlans::default();
     let now = Instant::now();
-    let id = plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     for node in ["a", "b"] {
         for survey in plans.surveys_for(node, now) {
             let answer = answer(&survey, copy(&LOG, Some(4), Some(2), &survey.probes));
@@ -258,7 +282,13 @@ fn a_broker_that_never_answers_blocks_its_shard() {
 fn a_report_of_another_version_is_ignored() {
     let plans = ReformPlans::default();
     let now = Instant::now();
-    plans.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    plans.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     let survey = plans.surveys_for("a", now).remove(0);
     let mut answer = answer(&survey, copy(&LOG, Some(4), Some(2), &survey.probes));
     answer.report.version += 1;
@@ -271,7 +301,13 @@ fn a_report_of_another_version_is_ignored() {
 fn another_member_has_no_plan() {
     let leader = ReformPlans::default();
     let now = Instant::now();
-    let id = leader.create(ReformScope::Cluster, &[shard()], &BTreeSet::new(), now);
+    let id = leader.create(
+        ReformScope::Cluster,
+        None,
+        &[shard()],
+        &BTreeSet::new(),
+        now,
+    );
     let next = ReformPlans::default();
     assert!(next.view(&id, now).is_none());
     assert!(next.surveys_for("a", now).is_empty());
@@ -298,7 +334,7 @@ fn a_raft_cache_shard_is_planned_like_a_stream_shard() {
 
     let plans = ReformPlans::default();
     let now = Instant::now();
-    let id = plans.create(ReformScope::Cluster, &picked, &BTreeSet::new(), now);
+    let id = plans.create(ReformScope::Cluster, None, &picked, &BTreeSet::new(), now);
     let asked = survey(&plans, now, |_, probes| {
         copy(&LOG, Some(4), Some(2), probes)
     });

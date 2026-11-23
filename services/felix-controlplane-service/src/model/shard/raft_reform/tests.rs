@@ -107,6 +107,7 @@ fn the_record_carries_what_the_shard_holds() {
                 voters(&[("a", 11), ("b", 12), ("c", 13)]),
                 voters(&[("a", 11), ("b", 12), ("d", 14)]),
             ]),
+            restore: None,
         }
     );
 }

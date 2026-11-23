@@ -163,6 +163,7 @@ impl ShardAssignment {
                     .collect()
             }),
             ordered: self.ordered_voter_sets(),
+            restore: None,
         })
     }
 
