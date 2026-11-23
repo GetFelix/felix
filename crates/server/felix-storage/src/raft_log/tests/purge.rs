@@ -394,11 +394,12 @@ async fn the_first_index_reader_follows_a_purge() {
 
 /// A re-formed voter keeps its base, gets a purged id at the gap's end, and
 /// its first append lands past the gap. Every record of the base stays
-/// readable below the gap, across a reopen. A log whose tail is not the
-/// latest base's end starts afresh at the append, as after any purge past
-/// its end: what lies between could be entries a snapshot folded. So does
-/// one whose tail is the base's end but whose append is not the epoch's
-/// first index: a snapshot installed past the gap came first.
+/// readable below the gap, across a reopen. The epoch's first append over a
+/// log whose tail is not the base's end is refused, the log untouched: no
+/// snapshot below the first index carries a stream's base. One whose tail is
+/// the base's end but whose append is past the epoch's first index starts
+/// afresh, as after any purge past its end: a snapshot installed past the
+/// gap came first.
 #[tokio::test]
 async fn a_re_formed_voters_base_stays_below_the_gap() {
     use crate::raft_copy::epoch_file::{self, EpochBase, EpochFile, EpochLogId};
@@ -406,9 +407,9 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
 
     let first = 12 + (1 << 40);
     for (base_end, first_index, keeps) in [
-        (12, first, true),
-        (11, first, false),
-        (12, 12 + (1 << 20), false),
+        (12, first, Some(true)),
+        (11, first, None),
+        (12, 12 + (1 << 20), Some(false)),
     ] {
         let dir = tempdir().expect("dir");
         let mut raft = open(&dir);
@@ -442,6 +443,16 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
 
         let mut raft = open(&dir);
         let next = normal(3, first, "next");
+        let Some(keeps) = keeps else {
+            let refused = super::writes::append(&mut raft, std::slice::from_ref(&next)).await;
+            assert!(refused.is_err(), "base end {base_end}: appended");
+            raft.disk_log().close().await.expect("close");
+            drop(raft);
+            let raft = open(&dir);
+            assert_eq!(raft.disk_log().base_offset(), 0);
+            assert_eq!(raft.disk_log().tail_offset().await.expect("tail"), 12);
+            continue;
+        };
         append_flushed(&mut raft, std::slice::from_ref(&next)).await;
         assert_eq!(all(&raft).await.expect("read"), std::slice::from_ref(&next));
         raft.disk_log().close().await.expect("close");

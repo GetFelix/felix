@@ -447,6 +447,22 @@ pub(super) async fn start_with(
                     "{label}: the log ends at {last:?}, the base at {want:?}"
                 )));
             }
+            // An earlier epoch's first append can open its gap and die before
+            // its record lands, leaving the tail past the base's end. This
+            // epoch's first append would not find its base there, so the
+            // empty gap goes. It holds no record: nothing is lost.
+            if tail_of(dir, &label, config).await? > base.base_end() {
+                let (commit, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
+                if commit > base.base_end() {
+                    let term = base.base_last.map_or(0, |last| last.term);
+                    let generation = crate::raft_log::generation_of(term)?;
+                    crate::disk_log::store_saved_commit(dir, base.base_end(), generation)
+                        .map_err(io::Error::other)?;
+                    step()?;
+                }
+                cut_to(dir, &label, config, base.base_end()).await?;
+                step()?;
+            }
         }
     }
     if let Some(floor) = &start.floor {
@@ -679,6 +695,14 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
 }
 
 /// Cut every record at or after `end` from `dir`'s log.
+/// One past the last offset the log in `dir` holds or has opened a gap to.
+async fn tail_of(dir: &Path, label: &str, config: &LogConfig) -> io::Result<u64> {
+    let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
+    let tail = log.tail_offset().await.map_err(io::Error::other);
+    let closed = log.close().await.map_err(io::Error::other);
+    closed.and(tail)
+}
+
 async fn cut_to(dir: &Path, label: &str, config: &LogConfig, end: u64) -> io::Result<()> {
     let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
     let cut = log.truncate(end).await.map_err(io::Error::other);

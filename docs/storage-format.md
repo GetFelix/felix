@@ -236,12 +236,15 @@ The sealed segment is synced before the gap segment is created, and the gap
 segment's header is synced before anything is appended to it. A crash before
 its header is on disk leaves the log as it was, and the next append makes
 the gap again. A crash after it leaves an empty segment past the gap, which
-recovery keeps.
+recovery keeps. A later re-form over the same base cuts that empty segment
+when it starts the copy, so the copy's tail is the base's end again.
 
 Only a log whose tail is the end of its latest re-form's base gets a gap.
-Any other Raft log asked to start past its tail, as after a purge past its
-end, drops its records and starts afresh, because the indexes between could
-be entries a snapshot covered.
+The epoch's first append over a log that holds records and ends anywhere
+else is refused, because no snapshot below the first index carries a
+stream's base. Any other Raft log asked to start past its tail, as after a
+purge past its end, drops its records and starts afresh, because the indexes
+between could be entries a snapshot covered.
 
 ### Record
 

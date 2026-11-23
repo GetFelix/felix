@@ -917,3 +917,55 @@ async fn a_voter_from_a_kept_copy_folds_from_its_snapshot() {
         .expect("a snapshot");
     assert_eq!(stored.data.as_ref(), b"folded");
 }
+
+/// A re-formed voter whose first append opened its gap and died before the
+/// record landed, then a second re-form over the same base: the empty gap
+/// goes at the start, and the second epoch's first append keeps every base
+/// record below its own gap.
+#[tokio::test]
+async fn a_second_re_form_after_a_crash_in_the_first_append_keeps_the_base() {
+    use crate::log::{AppendOnlyLog, ReadRange};
+
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 5).await;
+    let first = start(Role::Voter);
+    start_copy(dir.path(), &first, &config())
+        .await
+        .expect("first start");
+    // The first append's gap, and the crash before its record.
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    log.open_gap(8).await.expect("gap");
+    drop(log);
+
+    let mut second = first.clone();
+    second.epoch.incarnation = 2;
+    second.epoch.bases.push(EpochBase {
+        base_last: Some(EpochLogId {
+            index: 4,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 16,
+    });
+    start_copy(dir.path(), &second, &config())
+        .await
+        .expect("second start");
+
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let mut raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    append_flushed(&mut raft, &[normal(2, 16, "next")]).await;
+    let offsets: Vec<u64> = raft
+        .disk_log()
+        .read_range(ReadRange {
+            start: 0,
+            max_bytes: usize::MAX,
+        })
+        .await
+        .expect("read")
+        .records
+        .iter()
+        .map(|record| record.offset)
+        .collect();
+    assert_eq!(offsets, [0, 1, 2, 3, 4, 16]);
+    raft.disk_log().close().await.expect("close");
+}
