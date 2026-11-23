@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795443037757,
+  "lastUpdate": 1795446671224,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66820,6 +66820,58 @@ window.BENCHMARK_DATA = {
             "range": "11780.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798241.82\nmean: 793158.61\nstdev: 11780.11\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "13845fbd3a2e2f4aecae0475aa69eeb58fead2f9",
+          "message": "tla: bound and register the vouch-gate re-form configurations (#2729) (#3007)\n\n* tla: scope the six vouch-gate re-form configurations (#2729)\n\nReformScope (and JointReformScope for the two joint configurations that\ncheck BaseAgrees only) bounds them with an action constraint that keeps\neach scenario.\n\n* tla: register the bounded vouch-gate re-form configurations (#2729)\n\nRegisters VouchDeadFive, Gate, JointDead, JointDeadOneSet and JointCutDead\nwith ReformScope. GateOpen stays unregistered: at MaxCrashes = 0 it reaches\nthe same states as Gate, so the forced-open gate never decides.\n\n* tla: drop the two re-form configs this change registers from the unregistered list (#2729)\n\nSpec-Unaffected: list bookkeeping only; no spec or code change.\n\n* docs(formal): record the scoped runs of the six vouch-gate configurations (#2729)\n\n* Revert \"tla: drop the two re-form configs this change registers from the unregistered list (#2729)\"\n\nThis reverts commit 3b82d5a99ee7588e05316d98e45ac1c7b4c3bd9f.\n\n* Revert \"tla: register the bounded vouch-gate re-form configurations (#2729)\"\n\nThis reverts commit 33b05d439c8964954ea99ede4a7ca97961567c70.\n\n* tla: give the re-form gate configs a crash, pin VouchDeadFive's cut by a vote (#2729, #3023)\n\nGate and GateOpen had no crash, so the term-1 leader could only stop\nleading by taking term 2 and its tail was never vouched for. With\nMaxCrashes = 1 GateOpen violates BaseAgrees. VouchDeadFive violates\nNeverLosesCommitted (run 45097934400): a term-2 vote that wins nothing\ncuts the committed entry, the loss the planner reports as cut_by_vote.\n\n* tla: register the re-form gate configurations by what run 45176967426 showed (#2729)\n\nFelixRaftWrittenReformGate passes (11.9M distinct, 19 min 30 s) and\nFelixRaftWrittenReformGateOpen violates BaseAgrees (39 s). The joint\nconfigurations stay unregistered: none finished in six hours.\n\n* tla: pin FelixRaftWrittenReformVouchDeadFive as a violation of NeverLosesCommitted (#3023)\n\nRun 45176967426 reaches it in 44 min 24 s (3,967,898 distinct states):\na term-2 vote that wins nothing cuts a committed entry, the cut by a\nvote the planner reports and a start refuses without --accept-loss.\nIt leaves the nightly must-pass list.",
+          "timestamp": "2026-11-23T15:02:22Z",
+          "tree_id": "022744789eebc662d702715061f2bf8e334ec4f5",
+          "url": "https://github.com/GetFelix/felix/commit/13845fbd3a2e2f4aecae0475aa69eeb58fead2f9"
+        },
+        "date": 1795446670508,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 406197.93,
+            "range": "8849.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 406197.93\nmean: 403779.25\nstdev: 8849.79\ncv: 2.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 406197.93,
+            "range": "8849.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 406197.93\nmean: 403779.25\nstdev: 8849.79\ncv: 2.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97476.97,
+            "range": "1363.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97476.97\nmean: 97099.13\nstdev: 1363.14\ncv: 1.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 974769.74,
+            "range": "13631.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 974769.74\nmean: 970991.33\nstdev: 13631.40\ncv: 1.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
