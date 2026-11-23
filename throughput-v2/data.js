@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795400422353,
+  "lastUpdate": 1795404821262,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -65884,6 +65884,58 @@ window.BENCHMARK_DATA = {
             "range": "3865.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1225334.26\nmean: 1224875.19\nstdev: 3865.16\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4db79c66467b15a29230c527ab46d623141d18ec",
+          "message": "test(cluster): Raft cache TTL across failover (#2793) (#2980)\n\n* test(cluster): a Raft cache entry expires on time across a failover (#2793)\n\n* test(cluster): time the TTL expiry check from the put's ack\n\nA retried put that lands late stamps a later deadline than the start of\nthe test, so the 1 s margin could fail the read after expiry.",
+          "timestamp": "2026-11-22T19:23:42-08:00",
+          "tree_id": "db7154951e44539f40a37aabf10cdc300beb32ba",
+          "url": "https://github.com/GetFelix/felix/commit/4db79c66467b15a29230c527ab46d623141d18ec"
+        },
+        "date": 1795404820276,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358414.9,
+            "range": "18533.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358414.90\nmean: 347428.19\nstdev: 18533.53\ncv: 5.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358414.9,
+            "range": "18533.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358414.90\nmean: 347428.19\nstdev: 18533.53\ncv: 5.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79403.62,
+            "range": "1158.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79403.62\nmean: 79312.95\nstdev: 1158.22\ncv: 1.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794036.22,
+            "range": "11582.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794036.22\nmean: 793129.50\nstdev: 11582.23\ncv: 1.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
