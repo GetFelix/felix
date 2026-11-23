@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795417784537,
+  "lastUpdate": 1795419335146,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66092,6 +66092,58 @@ window.BENCHMARK_DATA = {
             "range": "7633.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807592.43\nmean: 810104.90\nstdev: 7633.06\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5f43556f3b9f9c31e197cd2cda9e3c34ac1d783e",
+          "message": "test(raft): Kafka reads and MQTT commit-mark delivery run on Raft shards beside hybrid (#2991) (#3014)\n\nKafka Fetch and ListOffsets through a leader change and the MQTT\nwithheld-until-committed subscription run on both engines from one body.\nA broker-level test pins the Raft commit bound a Kafka read uses.",
+          "timestamp": "2026-11-23T07:23:29Z",
+          "tree_id": "ce20d31ea25f3b86bdb815008de9bdf1ded01359",
+          "url": "https://github.com/GetFelix/felix/commit/5f43556f3b9f9c31e197cd2cda9e3c34ac1d783e"
+        },
+        "date": 1795419334413,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 514531.24,
+            "range": "22145.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514531.24\nmean: 526471.80\nstdev: 22145.96\ncv: 4.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 514531.24,
+            "range": "22145.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514531.24\nmean: 526471.80\nstdev: 22145.96\ncv: 4.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124116.26,
+            "range": "547.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124116.26\nmean: 123977.80\nstdev: 547.54\ncv: 0.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1241162.65,
+            "range": "5475.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1241162.65\nmean: 1239777.98\nstdev: 5475.37\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
