@@ -2024,7 +2024,8 @@ the broker's own registrations. The broker is its whole fleet, so every
 `raft_*` feature is finalized from the start. A commit waits for one fsync
 on the single voter. A standalone broker with no durable storage keeps every
 stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
-selects the hybrid, deprecated.
+selects the hybrid, deprecated. A standalone data directory the hybrid wrote is refused at startup
+with an error naming `FELIX_SHARD_ENGINE=hybrid`, which keeps serving it; 0.8 does not migrate it.
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:

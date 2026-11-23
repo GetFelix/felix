@@ -131,6 +131,14 @@ where
     };
     let shard_engine = raft_prerequisites.resolve(shard_engine_setting)?;
     let shard_raft = crate::config::shard_raft_settings()?;
+    // Before storage opens, so nothing is claimed on a root Raft cannot use.
+    #[cfg(feature = "raft")]
+    if let Some(durable) = &durable_config
+        && config.membership.is_none()
+        && shard_engine == crate::config::ShardEngine::Raft
+    {
+        startup::refuse_hybrid_data(&durable.root)?;
+    }
     log_shard_engine(
         shard_engine,
         shard_engine_setting,

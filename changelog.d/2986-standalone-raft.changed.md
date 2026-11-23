@@ -4,3 +4,5 @@
   feature is on from the start. `FELIX_SHARD_ENGINE=hybrid` still selects the hybrid
   (deprecated), and `FELIX_SHARD_ENGINE=raft` without durable storage is refused. Keyed
   cache watches are not served on Raft yet (#2792), so `compose.yaml` pins the hybrid.
+  A standalone data directory the hybrid engine wrote is refused at startup, naming
+  `FELIX_SHARD_ENGINE=hybrid` as the way to keep serving it; 0.8 does not migrate it.

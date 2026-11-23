@@ -54,7 +54,7 @@ pub use fresh_epoch::{FreshEpoch, write_fresh_epoch};
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
-    holds_log_without_copy, kept_copies, reached_before,
+    holds_log_without_copy, hybrid_log_under, kept_copies, reached_before,
 };
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{

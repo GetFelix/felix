@@ -43,6 +43,27 @@ pub(super) struct Stored {
     pub(super) rotated_ids: Vec<felix_storage::StorageId>,
 }
 
+/// Refuse a standalone start on Raft over a data root the hybrid engine
+/// wrote. A Raft member never opens such a shard directory, so the broker
+/// would come up with every shard refused. There is no hybrid-to-Raft
+/// upgrade in 0.8.
+#[cfg(feature = "raft")]
+pub(super) fn refuse_hybrid_data(root: &std::path::Path) -> Result<()> {
+    // Cache logs live under `caches/`; stream shards sit in the root itself.
+    for dir in [root.to_path_buf(), root.join("caches")] {
+        if let Some(found) = felix_storage::raft_copy::hybrid_log_under(&dir)? {
+            anyhow::bail!(
+                "{} holds data the hybrid engine wrote, and this standalone broker runs its \
+                 shards on Raft, which cannot open it and 0.8 does not migrate it. Start with \
+                 FELIX_SHARD_ENGINE=hybrid to keep serving this data, or point \
+                 FELIX_DURABLE_STORAGE_DIR at an empty directory",
+                found.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Open storage and the broker over it.
 pub(super) fn open_storage(
     config: &BrokerConfig,
