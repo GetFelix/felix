@@ -106,34 +106,58 @@ impl Cluster {
 
     /// The Raft counterpart of [`wait_for_replication`](Self::wait_for_replication).
     /// Publishes nothing, so a test counting records is unaffected.
+    ///
+    /// Waits for the broker that leads `stream`'s shard 0 itself, as its own
+    /// member reports it, and for a majority of the group to hold the log up
+    /// to the leader's last entry. A test that kills the leader next then
+    /// loses nothing a `Leader` write or a single replica had acknowledged.
     async fn wait_for_raft_leader(&self, stream: &str, timeout: Duration) -> Result<String> {
-        wait::until_some(
-            timeout,
-            &format!("a leader of {stream} shard 0"),
-            || async {
-                let owner = self.owner(stream).await.ok()?;
-                let mut leading = Vec::new();
-                for id in self.node_ids() {
-                    let led = self
-                        .metric(&id, "felix_broker_raft_shards_led")
-                        .await
-                        .ok()
-                        .flatten();
-                    if led.is_some_and(|led| led >= 1.0) {
-                        leading.push(id);
-                    }
-                }
-                // The leader is the owner unless placement and the group
-                // disagree; a lone leading broker is then the one a test means.
-                match leading.len() {
-                    0 => None,
-                    1 => leading.pop(),
-                    _ if leading.contains(&owner) => Some(owner),
-                    _ => None,
-                }
-            },
-        )
-        .await
+        let budget = wait::budget(timeout);
+        let deadline = Instant::now() + budget;
+        loop {
+            let why = match self.raft_members(stream).await {
+                Ok(members) => match raft_leader_caught_up(&members) {
+                    Ok(leader) => return Ok(leader),
+                    Err(short) => short,
+                },
+                Err(err) => format!("{err:#}"),
+            };
+            if Instant::now() >= deadline {
+                bail!(
+                    "{stream} shard 0 had no leader with a caught-up majority within {budget:?}; {why}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Every running broker's member of `stream`'s shard 0, by its own
+    /// report. A broker that cannot be asked is left out.
+    async fn raft_members(&self, stream: &str) -> Result<Vec<(String, felix_wire::InspectedRaft)>> {
+        let mut members = Vec::new();
+        for id in self.node_ids() {
+            let Some(node) = self.node(&id) else { continue };
+            let Ok(client) =
+                crate::client::connect(node.client_addr, &self.tenant_id, &self.inspector_token())
+                    .await
+            else {
+                continue;
+            };
+            let view = client
+                .inspect_shard(
+                    felix_client::ShardKind::Stream,
+                    &self.tenant_id,
+                    &self.namespace,
+                    stream,
+                    0,
+                )
+                .await;
+            drop(client);
+            if let Some(raft) = view.ok().and_then(|view| view.raft) {
+                members.push((id, raft));
+            }
+        }
+        Ok(members)
     }
 
     /// The owner of `stream`'s shard 0, and whether its last report names a
@@ -201,6 +225,44 @@ fn holds_tail(
         .find(|follower| report.offsets.get(*follower).is_some_and(|at| *at >= tail))
         .cloned()
         .ok_or_else(|| format!("no caught-up replica at the tail: {}", summary()))
+}
+
+/// The broker leading the group, once a majority of its voting members hold
+/// the log through the leader's last entry, or what is still short.
+///
+/// A leader is a member that is one and names itself as the leader it
+/// follows: after a cut a deposed leader keeps its role but hears no one.
+/// With two such members the later term leads. Learners are copying, not
+/// voting, so they count toward neither side of the majority.
+pub(crate) fn raft_leader_caught_up(
+    members: &[(String, felix_wire::InspectedRaft)],
+) -> Result<String, String> {
+    let Some((leader, led)) = members
+        .iter()
+        .filter(|(id, raft)| raft.role == "leader" && raft.leader.as_deref() == Some(id.as_str()))
+        .max_by_key(|(_, raft)| raft.term)
+    else {
+        return Err(format!("no member leads yet; members: {members:?}"));
+    };
+    let Some(tail) = led.last_index else {
+        return Err(format!("{leader} leads with an empty log"));
+    };
+    let voters: Vec<_> = members
+        .iter()
+        .filter(|(_, raft)| matches!(raft.role.as_str(), "leader" | "follower" | "candidate"))
+        .collect();
+    let holding = voters
+        .iter()
+        .filter(|(_, raft)| raft.last_index.is_some_and(|at| at >= tail))
+        .count();
+    if holding * 2 > voters.len() {
+        Ok(leader.clone())
+    } else {
+        Err(format!(
+            "{leader} leads at {tail}, held by {holding} of {} voting members: {members:?}",
+            voters.len()
+        ))
+    }
 }
 
 /// One entry of a broker's `/replication/halted`.

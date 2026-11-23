@@ -61,6 +61,27 @@ pub struct ShardInspection {
     /// The leader's view of every other replica. Empty from a follower.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replicas: Vec<InspectedReplica>,
+    /// This broker's member of the shard's Raft group. Absent when the shard
+    /// is not run by Raft here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft: Option<InspectedRaft>,
+}
+
+/// One broker's member of a Raft shard's group, as it last saw the group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectedRaft {
+    /// `leader`, `candidate`, `follower`, `learner` or `stopped`.
+    pub role: String,
+    pub term: u64,
+    /// The broker this member follows, itself included, while it hears one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<String>,
+    /// The index of the last entry in this member's log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_index: Option<u64>,
+    /// The commit index this member knows of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed: Option<u64>,
 }
 
 /// A shard's assignment: who leads it, who holds copies, and where a move is

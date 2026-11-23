@@ -1370,7 +1370,10 @@ each of them.
     "tail": <u64>, "committed": <u64>, "accepted_generation": <u64>,
     "replicas": [ { "node_id": "<node>", "role": "follower|learner",
                     "next_offset": <u64>, "lag": <u64>, "fence": <bool>,
-                    "state": "<state>", "halted": "<reason>" } ] } }
+                    "state": "<state>", "halted": "<reason>" } ],
+    "raft": { "role": "leader|candidate|follower|learner|stopped",
+              "term": <u64>, "leader": "<node>", "last_index": <u64>,
+              "committed": <u64> } } }
 ```
 
 Every field after `serving` is left out when it does not apply. The words are
@@ -1400,6 +1403,11 @@ older reader failing to decode the answer.
   `stalled`, `copying` (a move's destination), `rebuilding`, `halted` (with the
   reason, as `/replication/halted` names it) or `fencing`. A follower answers
   with none.
+- `raft` is this broker's member of the shard's Raft group, present only when
+  it holds one. `leader` is the broker the member follows while it hears
+  one, itself included; `last_index` is the last entry in its log and
+  `committed` the commit index it knows of. The cluster test harness reads it
+  to wait for a leader whose log a majority holds.
 
 The answer is bounded by the shard's replica set. A broker not in a cluster
 answers `role` `leader` and `phase` `active` for a stream or cache it holds,

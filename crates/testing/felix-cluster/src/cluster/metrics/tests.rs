@@ -85,3 +85,63 @@ fn a_report_from_another_generation_does_not() {
 fn no_report_does_not() {
     assert!(holds_tail(None, Some(2), 0).is_err());
 }
+
+fn member(
+    id: &str,
+    role: &str,
+    term: u64,
+    leader: Option<&str>,
+    last: Option<u64>,
+) -> (String, felix_wire::InspectedRaft) {
+    (
+        id.to_string(),
+        felix_wire::InspectedRaft {
+            role: role.to_string(),
+            term,
+            leader: leader.map(str::to_string),
+            last_index: last,
+            committed: last,
+        },
+    )
+}
+
+#[test]
+fn a_raft_wait_names_the_leader_once_a_majority_holds_its_tail() {
+    let members = [
+        member("a", "leader", 3, Some("a"), Some(10)),
+        member("b", "follower", 3, Some("a"), Some(10)),
+        member("c", "follower", 3, Some("a"), Some(7)),
+    ];
+    assert_eq!(raft_leader_caught_up(&members), Ok("a".to_string()));
+}
+
+#[test]
+fn a_raft_wait_holds_while_only_the_leader_has_the_tail() {
+    let members = [
+        member("a", "leader", 3, Some("a"), Some(10)),
+        member("b", "follower", 3, Some("a"), Some(7)),
+        member("c", "follower", 3, Some("a"), Some(7)),
+    ];
+    assert!(raft_leader_caught_up(&members).is_err());
+}
+
+#[test]
+fn a_raft_wait_ignores_a_deposed_leader_that_hears_no_one() {
+    let members = [
+        member("a", "leader", 2, None, Some(10)),
+        member("b", "leader", 3, Some("b"), Some(12)),
+        member("c", "follower", 3, Some("b"), Some(12)),
+    ];
+    assert_eq!(raft_leader_caught_up(&members), Ok("b".to_string()));
+}
+
+#[test]
+fn a_raft_wait_needs_a_leader_and_does_not_count_learners() {
+    assert!(raft_leader_caught_up(&[member("a", "follower", 1, None, Some(1))]).is_err());
+    let members = [
+        member("a", "leader", 3, Some("a"), Some(10)),
+        member("b", "follower", 3, Some("a"), Some(5)),
+        member("c", "learner", 3, Some("a"), Some(10)),
+    ];
+    assert!(raft_leader_caught_up(&members).is_err());
+}

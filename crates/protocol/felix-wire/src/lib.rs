@@ -53,9 +53,10 @@ pub use client::flags::{
 pub use client::frame::{CLIENT_ALPN, Frame, FrameHeader, MAGIC, VERSION};
 pub use client::message::{
     AckMode, BrokerEndpoint, CacheCondition, CursorErrorReason, GroupRecord, InspectedAssignment,
-    InspectedFence, InspectedLease, InspectedReplica, InspectedSubscription, LeaseToken, Message,
-    PublishRefusalReason, ShardInspection, ShardKind, ShardOwner, StartPosition, StateChange,
-    StreamRecord, SubscriptionCursor, SubscriptionFilter, UnknownRequest,
+    InspectedFence, InspectedLease, InspectedRaft, InspectedReplica, InspectedSubscription,
+    LeaseToken, Message, PublishRefusalReason, ShardInspection, ShardKind, ShardOwner,
+    StartPosition, StateChange, StreamRecord, SubscriptionCursor, SubscriptionFilter,
+    UnknownRequest,
 };
 pub use client::record_headers::{RESERVED_HEADER_PREFIX, RecordHeaders};
 pub use client::{binary, text};

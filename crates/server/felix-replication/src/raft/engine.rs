@@ -314,6 +314,11 @@ impl RaftEngine {
         }
     }
 
+    /// This broker's member of `shard`'s group as it last saw the group.
+    pub fn status(&self, shard: &ShardKey) -> Option<super::GroupStatus> {
+        self.runtime.status(shard)
+    }
+
     /// `shard`'s consumer groups as this broker's member has applied them.
     /// `None` without a member, or for a cache shard.
     pub fn groups(

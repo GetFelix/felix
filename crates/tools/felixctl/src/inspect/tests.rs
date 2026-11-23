@@ -38,6 +38,7 @@ fn view(node: &str, phase: &str) -> ShardInspection {
         committed: None,
         accepted_generation: Some(42),
         replicas: vec![],
+        raft: None,
     }
 }
 

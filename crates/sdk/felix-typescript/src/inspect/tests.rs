@@ -25,6 +25,7 @@ fn minimal() -> felix_client::ShardInspection {
         committed: None,
         accepted_generation: None,
         replicas: vec![],
+        raft: None,
     }
 }
 
