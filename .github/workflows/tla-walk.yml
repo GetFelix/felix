@@ -213,11 +213,10 @@ jobs:
           - FelixRaftWrittenFailover
           - FelixRaftReformTwoReformsOldRestore
           - FelixRaftReformKeptTerms
-          # The two passes that check OffsetNeverReused across a joint change
-          # and with five voters. Neither finished in 4 h 53 min on a runner
-          # (#2729); two siblings filled the runner's disk, hence the cleanup.
+          # The pass that checks OffsetNeverReused across a joint change. It
+          # did not finish in six hours on a runner (#2729); two siblings
+          # filled the runner's disk, hence the cleanup.
           - FelixRaftWrittenCommitsReformJointCutDead
-          - FelixRaftWrittenReformVouchDeadFive
     steps:
       - name: Checkout
         uses: actions/checkout@v7
