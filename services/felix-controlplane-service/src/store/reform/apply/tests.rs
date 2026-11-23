@@ -199,3 +199,28 @@ fn a_write_whose_request_was_dropped_is_taken_again() {
         "an answered write is not redone"
     );
 }
+
+/// A broker cannot plan alone, so its `start` survey carries its part of
+/// the plan; the other kinds leave the field out, as an older broker reads them.
+#[test]
+fn a_start_survey_carries_each_brokers_part_of_the_plan() {
+    let now = Instant::now();
+    let (plans, id) = planned(now, whole);
+    plans.apply(&id, &[], now).unwrap();
+    for survey in NODES.iter().flat_map(|node| plans.surveys_for(node, now)) {
+        assert_eq!(survey.start, None);
+        let json = serde_json::to_value(&survey).unwrap();
+        assert!(json.get("start").is_none(), "{json}");
+    }
+    answer_all(&plans, now, SurveyKind::Stop, whole);
+    plans.take_due().remove(0).answer(Ok(1));
+    let mut asked = 0;
+    for survey in NODES.iter().flat_map(|node| plans.surveys_for(node, now)) {
+        assert_eq!(survey.kind, SurveyKind::Start);
+        let start = survey.start.expect("a start carries the plan");
+        assert!(start.voter.is_some(), "every copy holds the base");
+        assert!(!start.needs_accept_loss);
+        asked += 1;
+    }
+    assert_eq!(asked, 3);
+}

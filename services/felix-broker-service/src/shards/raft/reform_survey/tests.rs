@@ -110,6 +110,7 @@ async fn a_cache_shards_copy_is_read_from_the_cache_root() {
         incarnation: INCARNATION,
         epoch: 0,
         probes: BTreeSet::new(),
+        start: None,
     };
     let read = shards.reform_reader();
     let report = tokio::task::spawn_blocking(move || read(&survey))
@@ -157,6 +158,7 @@ fn stop_survey(key: ShardKey) -> Survey {
         incarnation: crate::shards::raft::tests::INCARNATION,
         epoch: 0,
         probes: BTreeSet::new(),
+        start: None,
     }
 }
 

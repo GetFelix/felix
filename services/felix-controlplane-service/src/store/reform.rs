@@ -14,7 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use felix_storage::raft_copy::{
-    BrokerReport, GroupRecord, PlanView, SurveyStep, WireReport, first_probes, survey_step,
+    BrokerReport, GroupRecord, PlanView, SurveyStep, WireReport, WireStart, first_probes,
+    survey_step,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,7 @@ impl ReformPlans {
                         incarnation: shard.incarnation,
                         epoch: shard.epoch,
                         probes: shard.probes.clone(),
+                        start: None,
                     });
                 }
             }
@@ -249,6 +251,11 @@ pub struct ReformSurvey {
     pub epoch: u64,
     /// Indexes to read each copy's term at.
     pub probes: BTreeSet<u64>,
+    /// For a `start`, this broker's part of the plan. Left out of every
+    /// other kind, so those read as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub start: Option<WireStart>,
 }
 
 /// One broker's answer to one survey.

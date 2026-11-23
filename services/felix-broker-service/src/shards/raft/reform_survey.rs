@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_replication::reporter::Credential;
-use felix_storage::raft_copy::WireReport;
+use felix_storage::raft_copy::{WireReport, WireStart};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -56,6 +56,9 @@ pub(crate) struct Survey {
     pub(crate) incarnation: u64,
     pub(crate) epoch: u64,
     pub(crate) probes: BTreeSet<u64>,
+    /// For a `start`, this broker's part of the plan.
+    #[serde(default)]
+    pub(crate) start: Option<WireStart>,
 }
 
 #[derive(Debug, Deserialize)]

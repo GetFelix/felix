@@ -5,7 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use felix_storage::raft_copy::{BrokerReport, PlanView, SurveyStep, survey_step};
+use felix_storage::raft_copy::{
+    BrokerReport, PlanView, SurveyStep, WireStart, plan_starts, survey_step,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -32,6 +34,11 @@ pub struct ReformApplyView {
 pub(super) struct ShardApply {
     /// The plan the operator read, which the post-stop plan must equal.
     planned: PlanView,
+    /// Whether the operator named the shard with `--accept-loss`.
+    accepted: bool,
+    /// Each broker's part of the plan, sent with its `start` survey. Made
+    /// with the compare, from the same post-stop reads.
+    starts: BTreeMap<String, WireStart>,
     phase: Phase,
 }
 
@@ -72,12 +79,12 @@ impl ShardApply {
         if !shard.asked_brokers.contains(node) {
             return None;
         }
-        let (kind, epoch) = match &self.phase {
+        let (kind, epoch, start) = match &self.phase {
             Phase::Stopping { reports, .. } if !reports.contains_key(node) => {
-                (SurveyKind::Stop, shard.epoch)
+                (SurveyKind::Stop, shard.epoch, None)
             }
             Phase::Starting { epoch, started } if !started.contains(node) => {
-                (SurveyKind::Start, *epoch)
+                (SurveyKind::Start, *epoch, self.starts.get(node).cloned())
             }
             _ => return None,
         };
@@ -89,6 +96,7 @@ impl ShardApply {
             incarnation: shard.incarnation,
             epoch,
             probes: shard.probes.clone(),
+            start,
         })
     }
 
@@ -170,7 +178,8 @@ impl ReformPlans {
             if !again {
                 continue;
             }
-            let phase = if planned.needs_accept_loss && !accept_loss.contains(&shard.key) {
+            let accepted = accept_loss.contains(&shard.key);
+            let phase = if planned.needs_accept_loss && !accepted {
                 ended(
                     "skipped",
                     "the plan may lose acknowledged records; name the shard with --accept-loss",
@@ -185,6 +194,8 @@ impl ReformPlans {
             };
             shard.apply = Some(ShardApply {
                 planned: planned.clone(),
+                accepted,
+                starts: BTreeMap::new(),
                 phase,
             });
         }
@@ -324,6 +335,7 @@ pub(super) fn record(
 /// timed out.
 pub(super) fn settle(shard: &mut ShardSurvey, now: Instant) {
     let Some(apply) = &shard.apply else { return };
+    let mut starts = None;
     let next = match &apply.phase {
         Phase::Stopping { reports, started } => {
             let missing: Vec<&str> = shard
@@ -333,7 +345,13 @@ pub(super) fn settle(shard: &mut ShardSurvey, now: Instant) {
                 .map(String::as_str)
                 .collect();
             if missing.is_empty() {
-                Some(compare(shard, &apply.planned, reports))
+                let next = compare(shard, &apply.planned, reports);
+                if matches!(next, Phase::Due(_))
+                    && let Some(record) = &shard.record
+                {
+                    starts = plan_starts(record, reports, apply.accepted);
+                }
+                Some(next)
             } else if now.duration_since(*started) >= ROUND_TIMEOUT {
                 Some(ended(
                     "failed",
@@ -359,6 +377,9 @@ pub(super) fn settle(shard: &mut ShardSurvey, now: Instant) {
     };
     if let (Some(next), Some(apply)) = (next, &mut shard.apply) {
         apply.phase = next;
+        if let Some(starts) = starts {
+            apply.starts = starts;
+        }
     }
 }
 
