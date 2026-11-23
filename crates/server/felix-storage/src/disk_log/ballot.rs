@@ -7,10 +7,11 @@
 //!
 //! A file of its own beside `replica` rather than a field in it: a build that
 //! predates ballots ignores it, so rolling back still opens the shard. It is
-//! written before `replica` when a generation is raised, so after a crash
-//! between the two it may name a generation `replica` does not have yet, and
-//! the open takes the higher. One older than `replica` names no leader for the
-//! accepted generation.
+//! written before `replica` when a generation is raised, and a Raft vote
+//! writes only the ballot (the next commit write carries the generation into
+//! `replica`), so a ballot ahead of `replica` is normal and is the only record
+//! of an answered vote. The open takes the higher. One older than `replica`
+//! names no leader for the accepted generation.
 //!
 //! Like `replica` it cannot be rebuilt, so a file that does not decode fails
 //! the open.
@@ -508,9 +509,11 @@ fn adopts(accepted: &Accepted, generation: u64, leader: &str) -> bool {
 /// The generation, leader and committed mark a shard opens with, from its
 /// `replica` state and its ballot.
 pub(super) fn reconcile(dir: &Path, replica: &ReplicaState) -> Result<Accepted> {
-    // A ballot ahead of `replica` is a raise that crashed between the two
-    // writes; it was never answered, but taking it only refuses more. One
-    // behind it belongs to an older generation, and so does its mark.
+    // A ballot ahead of `replica` is a Raft vote that was answered (only the
+    // ballot is written at a new term) or a raise that crashed between the
+    // two writes. It must be taken: dropping it lets a restarted member vote
+    // again in the same term. One behind it belongs to an older generation,
+    // and so does its mark.
     Ok(match load(dir)? {
         Some(ballot) if ballot.generation >= replica.accepted_generation => Accepted {
             generation: ballot.generation,
