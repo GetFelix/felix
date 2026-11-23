@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use felix_controlplane_service::cluster::placement::{MovePolicy, ReconcileOutcome};
 
-use super::startup::MAX_SPAWN_ATTEMPTS;
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::spawn_broker;
 use crate::wait;
@@ -134,44 +133,23 @@ impl Cluster {
     /// started with. Returns the new node id.
     pub async fn add_node(&mut self) -> Result<String> {
         let index = self.nodes.len();
-        // New ports can lose the same race start-up retries. Only that exit is
-        // retried; the slot and node id stay put across attempts.
-        let mut attempts = 1;
-        loop {
-            let control_plane = self
-                .control_plane
-                .as_ref()
-                .ok_or_else(|| anyhow!("control plane is gone"))?;
-            let node = spawn_broker(
-                &self.binary,
-                &control_plane.base_url,
-                &self.credentials,
-                &self.config,
-                self._root.path(),
-                index,
-                self.links.as_ref(),
-                None,
-            )
-            .with_context(|| format!("start broker {index}"))?;
-            let node_id = node.node_id.clone();
-            if index < self.nodes.len() {
-                self.nodes[index] = node;
-            } else {
-                self.nodes.push(node);
-            }
-            match self.await_placeable(index).await {
-                Err(_)
-                    if attempts < MAX_SPAWN_ATTEMPTS
-                        && self.nodes[index].exited().is_some()
-                        && self.nodes[index].lost_port_race() =>
-                {
-                    attempts += 1;
-                    tracing::warn!(%node_id, "added broker lost a port; starting it again");
-                }
-                Err(error) => return Err(error),
-                Ok(()) => break,
-            }
-        }
+        let control_plane = self
+            .control_plane
+            .as_ref()
+            .ok_or_else(|| anyhow!("control plane is gone"))?;
+        let node = spawn_broker(
+            &self.binary,
+            &control_plane.base_url,
+            &self.credentials,
+            &self.config,
+            self._root.path(),
+            index,
+            self.links.as_ref(),
+            None,
+        )
+        .with_context(|| format!("start broker {index}"))?;
+        self.nodes.push(node);
+        self.await_placeable_retrying(index).await?;
         Ok(self.nodes[index].node_id.clone())
     }
 

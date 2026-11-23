@@ -166,6 +166,7 @@ pub(crate) fn spawn_broker(
         kafka_addr,
         data_dir,
         tcp_ports,
+        fixed_ports: same_ports.is_some(),
         process: Some(process),
     })
 }
