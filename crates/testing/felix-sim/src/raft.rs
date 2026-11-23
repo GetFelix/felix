@@ -83,6 +83,9 @@ pub struct RaftSimConfig {
     /// that the power modes must catch. From the start, a cut would also
     /// take the first segment's header and the member would refuse to open.
     pub ignored_flushes: bool,
+    /// Isolate a leader once early so every seed moves leadership. Off for
+    /// the pinned seeds, whose regressions depend on their original schedule.
+    pub leader_change: bool,
 }
 
 /// What happens to the members' disks while the faults run.
@@ -162,6 +165,7 @@ impl Default for RaftSimConfig {
             real_time_limit: Duration::from_secs(900),
             disks: Disks::Off,
             ignored_flushes: false,
+            leader_change: true,
         }
     }
 }
@@ -1324,10 +1328,19 @@ impl Sim {
     /// Faults until `length` has passed, each healed before the next. In
     /// the disk modes some of them stop a member and replace a directory,
     /// drawn from `disk`, so a seed's link faults stay the same without them.
-    async fn nemesis(&self, mut rng: Rng, mut disk: Rng, mut change: Rng, length: Duration) {
+    async fn nemesis(
+        &self,
+        mut rng: Rng,
+        mut disk: Rng,
+        mut change: Rng,
+        leader_change: bool,
+        length: Duration,
+    ) {
         let end = Instant::now() + length;
         let count = self.members.len();
-        self.change_leader(&mut change).await;
+        if leader_change {
+            self.change_leader(&mut change).await;
+        }
 
         if self.disks == Disks::WipeMajority {
             tokio::time::sleep(Duration::from_secs(5)).await;
@@ -2384,11 +2397,14 @@ async fn drive(
     // it did before.
     let (faults, flush, disk) = (rng.fork(), rng.fork(), rng.fork());
     let change = rng.fork();
-    tokio::join!(sim.nemesis(faults, disk, change, config.nemesis), async {
-        if config.failed_flush {
-            sim.fail_a_flush(flush, config.nemesis).await;
+    tokio::join!(
+        sim.nemesis(faults, disk, change, config.leader_change, config.nemesis),
+        async {
+            if config.failed_flush {
+                sim.fail_a_flush(flush, config.nemesis).await;
+            }
         }
-    });
+    );
     sim.links.heal();
     let clients = tasks.split_off(watchers);
     phase("waiting for each shard to acknowledge a write after the heal");

@@ -92,10 +92,11 @@ fn vacuous(outcome: &RaftOutcome, shards: u32, disks: Disks) -> Option<String> {
 }
 
 /// Run `seed` and say what failed, if anything did, with the whole outcome.
-fn failure(seed: u64, clocks: Clocks, disks: Disks) -> Option<String> {
+fn failure(seed: u64, clocks: Clocks, disks: Disks, leader_change: bool) -> Option<String> {
     let config = RaftSimConfig {
         clocks,
         disks,
+        leader_change,
         ..RaftSimConfig::default()
     };
     let shards = config.shards;
@@ -110,7 +111,7 @@ fn failure(seed: u64, clocks: Clocks, disks: Disks) -> Option<String> {
 }
 
 fn check(seed: u64, clocks: Clocks, disks: Disks) {
-    if let Some(failure) = failure(seed, clocks, disks) {
+    if let Some(failure) = failure(seed, clocks, disks, false) {
         panic!("{failure}");
     }
 }
@@ -186,6 +187,7 @@ fn a_majority_wipe_stalls_its_shard_and_loses_nothing() {
     let config = RaftSimConfig {
         disks: Disks::WipeMajority,
         nemesis: Duration::from_secs(20),
+        leader_change: false,
         ..RaftSimConfig::default()
     };
     let outcome = run_seed(1, config);
@@ -354,7 +356,7 @@ fn raft_seeds() {
     let count = env("FELIX_SIM_SEEDS", 4);
     // Every seed runs, so one batch says which seeds a change breaks.
     let failures: Vec<String> = (start..start + count)
-        .filter_map(|seed| failure(seed, clocks, disks))
+        .filter_map(|seed| failure(seed, clocks, disks, true))
         .collect();
     assert!(
         failures.is_empty(),
