@@ -418,43 +418,78 @@ async fn a_stopped_copy_starts_in_its_re_formed_epoch_and_opens() {
 async fn a_crash_between_the_start_and_the_open_resumes() {
     let group = stopped_group().await;
     assert!(group.read_start().await.is_none());
+    group.start_without_open().await;
+
+    group.feed().await;
+    group.opened_at_the_new_epoch().await;
+}
+
+/// **A start cut after it wrote the new epoch and stored the folded
+/// snapshot, before its marker went, is not answered, and the next start
+/// survey finishes it.** The control plane asks no more once a start is
+/// answered and a restart forgets the plan, so an answer here would leave
+/// the copy half built for good. The run again takes the fold's resume path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_cut_before_its_marker_goes_is_not_answered_and_finishes() {
+    let group = stopped_group().await;
+    assert!(group.read_start().await.is_none());
+    group.start_without_open().await;
     let dir = reform_dir(
         &group.broker,
         &group.key,
         crate::shards::raft::tests::INCARNATION,
     )
     .expect("dir");
-    let storage = group.broker.durable_storage().expect("durable storage");
-    let config = felix_storage::log::LogConfig {
-        raft_log: true,
-        fsync_mode: felix_storage::log::FsyncMode::OnCommit,
-        retention_bytes: None,
-        retention_age: None,
-        offload: None,
-        ..storage.config().clone()
-    };
-    let voters = [felix_replication::raft::MemberId::new(
-        "broker-a", group.copy,
-    )]
-    .into();
-    // The start a pass runs, then the crash: no member opens.
-    group
-        .shards
-        .root
-        .get()
-        .expect("the root")
-        .start_stopped(
-            &felix_replication::raft::mark_name(&group.key),
-            &dir,
-            crate::shards::raft::tests::INCARNATION,
-            group.next.epoch_bases().expect("bases"),
-            &group.wire,
-            &felix_replication::raft::GapSnapshot::new(ShardKind::Stream, voters),
-            &config,
-        )
-        .await
-        .expect("start");
+    // The cut: every step ran but the marker's removal.
+    std::fs::write(dir.join("reform-building"), b"").expect("marker");
+    // The restart: the plan was in memory.
+    group.shards.reform_starts.lock().clear();
 
+    assert!(
+        group.read_start().await.is_none(),
+        "a half-built copy answered its start"
+    );
     group.feed().await;
+    assert!(!dir.join("reform-building").exists());
     group.opened_at_the_new_epoch().await;
+}
+
+impl Stopped {
+    /// The start a feed pass runs, with no open after it: a crash there.
+    async fn start_without_open(&self) {
+        let dir = reform_dir(
+            &self.broker,
+            &self.key,
+            crate::shards::raft::tests::INCARNATION,
+        )
+        .expect("dir");
+        let storage = self.broker.durable_storage().expect("durable storage");
+        let config = felix_storage::log::LogConfig {
+            raft_log: true,
+            fsync_mode: felix_storage::log::FsyncMode::OnCommit,
+            retention_bytes: None,
+            retention_age: None,
+            offload: None,
+            ..storage.config().clone()
+        };
+        let voters = [felix_replication::raft::MemberId::new(
+            "broker-a", self.copy,
+        )]
+        .into();
+        self.shards
+            .root
+            .get()
+            .expect("the root")
+            .start_stopped(
+                &felix_replication::raft::mark_name(&self.key),
+                &dir,
+                crate::shards::raft::tests::INCARNATION,
+                self.next.epoch_bases().expect("bases"),
+                &self.wire,
+                &felix_replication::raft::GapSnapshot::new(ShardKind::Stream, voters),
+                &config,
+            )
+            .await
+            .expect("start");
+    }
 }

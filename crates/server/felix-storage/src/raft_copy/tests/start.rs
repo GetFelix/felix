@@ -170,6 +170,116 @@ fn no_temporaries(dir: &Path) -> bool {
     })
 }
 
+/// Save cuts naming `producer`'s batch `sequence` in the log in `dir`, as
+/// an install or a purge leaves them: in no record.
+async fn forget(dir: &Path, producer: u64, sequence: u64) {
+    let log = DiskLog::open(dir, "t/ns/raft/0", config()).expect("open");
+    let base = log.base_offset();
+    log.remember_forgotten_cuts(
+        base,
+        crate::disk_log::ForgottenCuts::of([(producer, sequence)]),
+    )
+    .await
+    .expect("remember");
+    log.close().await.expect("close");
+}
+
+/// A voter rebuilt from a kept copy refuses what the kept log forgot and
+/// nothing its own old log did: the fold's cuts and the new epoch's
+/// re-send answers come from these. The kept log's floor comes too.
+#[tokio::test]
+async fn a_voter_from_a_kept_copy_carries_its_forgotten_batches_and_floor() {
+    use crate::disk_log::carried_floor::{self, CarriedFloor};
+    use crate::disk_log::{ProducerSequence, UnfinishedBatch};
+
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    forget(kept.path(), 9, 0).await;
+    let floor = CarriedFloor {
+        offset: 2,
+        floor: 2,
+        headers: Bytes::from_static(b"kept"),
+    };
+    carried_floor::raise(kept.path(), floor.clone()).expect("floor");
+    let dir = tempfile::tempdir().expect("dir");
+    log_in_terms(dir.path(), &[3, 3]).await;
+    forget(dir.path(), 7, 5).await;
+    carried_floor::raise(
+        dir.path(),
+        CarriedFloor {
+            offset: 1,
+            floor: 1,
+            headers: Bytes::from_static(b"own"),
+        },
+    )
+    .expect("own floor");
+
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("start");
+
+    assert_eq!(carried_floor::load(dir.path()).expect("load"), Some(floor));
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let cuts = log.forgotten_cuts_from(8).await.expect("cuts");
+    assert_eq!(
+        cuts.sequence(9),
+        Some(0),
+        "the kept log's cut is not carried"
+    );
+    assert_eq!(cuts.sequence(7), None, "the voter's own cut is carried");
+    assert_eq!(
+        log.producer_unfinished(9, 0),
+        Some(UnfinishedBatch {
+            first: None,
+            held: 0,
+            len: 0,
+            digest: None,
+        }),
+        "a re-send of the kept log's cut batch is not refused"
+    );
+    assert_eq!(log.producer_sequence(7, 5), ProducerSequence::Unknown);
+    log.close().await.expect("close");
+}
+
+/// A kept copy that forgot nothing and kept no floor leaves the voter
+/// none: its own old log's are not the new log's.
+#[tokio::test]
+async fn a_voter_from_a_kept_copy_drops_its_own_forgotten_batches_and_floor() {
+    use crate::disk_log::carried_floor::{self, CarriedFloor};
+
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    let dir = tempfile::tempdir().expect("dir");
+    log_in_terms(dir.path(), &[3, 3]).await;
+    forget(dir.path(), 7, 5).await;
+    carried_floor::raise(
+        dir.path(),
+        CarriedFloor {
+            offset: 1,
+            floor: 1,
+            headers: Bytes::from_static(b"own"),
+        },
+    )
+    .expect("own floor");
+
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("start");
+
+    assert_eq!(carried_floor::load(dir.path()).expect("load"), None);
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let cuts = log.forgotten_cuts_from(8).await.expect("cuts");
+    assert!(
+        cuts.is_empty(),
+        "the voter's own cuts are carried: {cuts:?}"
+    );
+    log.close().await.expect("close");
+}
+
 /// A kept directory that does not end in the base's term at the base's
 /// last index is not the base, and the start refuses.
 #[tokio::test]
@@ -404,6 +514,11 @@ async fn a_start_cut_at_any_step_does_not_open_and_finishes_when_run_again() {
                 .open_copy("orders/0", &dir, "t/ns/orders/0", config())
                 .await;
             assert!(refused.is_err(), "{case:?} cut at {cut_at} opened");
+            // A survey answers a start from this, and is not asked again.
+            assert!(
+                !crate::raft_copy::started_in(&dir, 1).expect("started"),
+                "{case:?} cut at {cut_at} reads as started"
+            );
             read_copy(&dir, SPACING, &BTreeSet::new()).expect_err("a plan reads a half-built copy");
 
             start_copy(&dir, &started, &config())
@@ -412,6 +527,7 @@ async fn a_start_cut_at_any_step_does_not_open_and_finishes_when_run_again() {
             let mut got = read_copy(&dir, SPACING, &BTreeSet::from([0, 4])).expect("read");
             got.path = want.path.clone();
             assert_eq!(got, want, "{case:?} cut at {cut_at}");
+            assert!(crate::raft_copy::started_in(&dir, 1).expect("started"));
             assert!(no_temporaries(&dir), "{case:?} cut at {cut_at}");
             cut_at += 1;
         }

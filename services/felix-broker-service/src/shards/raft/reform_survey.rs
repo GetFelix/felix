@@ -193,10 +193,12 @@ impl RaftShards {
                 );
             }
             let dir = reform_dir(&broker, &survey.key, survey.incarnation)?;
-            // A start is answered once the copy holds the new epoch, which
-            // the start writes before the member opens.
+            // Answered only once the start finished: the control plane does
+            // not ask again after an answer, and the plan is held in memory
+            // only, so a start cut after it wrote the epoch is finished by
+            // the next survey's plan.
             if survey.kind == SurveyKind::Start
-                && felix_storage::raft_copy::group_epoch(&dir).ok().flatten() != Some(survey.epoch)
+                && !felix_storage::raft_copy::started_in(&dir, survey.epoch).unwrap_or(false)
             {
                 return None;
             }

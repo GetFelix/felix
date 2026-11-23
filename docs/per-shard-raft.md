@@ -1119,7 +1119,11 @@ and the plan refuses with a record in the gap.
 
 A voter whose base is in a kept directory, the records a rotation moved
 aside, rebuilds its log from there: each segment and the durable mark are
-copied in under a temporary name and synced, then renamed into place. The
+copied in under a temporary name and synced, then renamed into place. So
+are the kept log's forgotten batches (`producers.forgotten`) and carried
+floor (`raft-floor`), which no record holds; the voter's own are removed
+first, since they describe the log being replaced. Without that a re-send
+of a batch the kept log forgot would be taken as new. The
 kept directory is only read, and read whole before the voter's own log is
 touched, so a missing or damaged one fails the start with that log intact. A voter holding records past the base cuts
 them. When its saved commit covers any of them (for a copy rebuilt from a kept

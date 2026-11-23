@@ -79,6 +79,8 @@ mod sync;
 
 pub use carried_floor::CarriedFloor;
 pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
+#[cfg(feature = "raft")]
+pub(crate) use producers::{forgotten_file_name, snapshot_file_name as producers_file_name};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
 pub use set::{Member, Membership, ReplicaSet};
