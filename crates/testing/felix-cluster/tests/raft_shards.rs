@@ -1904,6 +1904,8 @@ async fn a_drained_brokers_follower_copy_is_replaced_so_the_broker_can_go() {
     let mut cluster = Cluster::start(four_broker_raft_cluster())
         .await
         .expect("start cluster");
+    // The new copy is read as a follower at the end.
+    allow_follower_reads(&cluster).await;
     let (leader, followers, _) = stored_set(&cluster).await;
     let mut members = followers.clone();
     members.push(leader.clone());
