@@ -295,3 +295,40 @@ async fn a_member_keeps_reporting_across_a_change_of_leader() {
     }
     cluster.stop().await;
 }
+
+/// A retained watch on a follower whose apply trails the leader still
+/// starts from every acknowledged put.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retained_point_on_a_lagging_follower_holds_every_acknowledged_put() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let leader = cluster.elected(N).await;
+    let follower = BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+    let runtime = cluster.runtime(follower);
+    let group = runtime.group(&shard(N)).expect("group");
+    let engine = RaftEngine::new(runtime);
+
+    let held = Arc::clone(&group.apply_hold).lock_owned().await;
+    // Acknowledged: the leader has applied it, the follower has not.
+    let landed = write(&cluster, 10, put("a", b"one", 1)).await;
+    let joining = tokio::spawn(async move {
+        engine
+            .cache_retained_point(&shard(N), &|_| true)
+            .await
+            .map(|point| point.map(|point| point.entries))
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(held);
+
+    let entries = joining
+        .await
+        .expect("task")
+        .expect("a retained point")
+        .expect("a cache group");
+    let offsets: Vec<_> = entries.iter().map(|entry| entry.offset).collect();
+    assert_eq!(offsets, vec![landed], "the retained state missed a put");
+    cluster.stop().await;
+}

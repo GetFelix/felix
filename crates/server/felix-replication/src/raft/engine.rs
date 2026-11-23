@@ -30,6 +30,17 @@ pub struct RaftEngine {
     anonymous: std::sync::Arc<cache::Anonymous>,
 }
 
+/// Why [`RaftEngine::propose_group`] has no write to show.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{error}")]
+pub struct GroupWriteError {
+    pub error: CommitError,
+    /// False only when the entry provably was not appended: refused before
+    /// it reached the proposer, or by openraft on a lapsed lease. Otherwise
+    /// it may commit, under this leader or the next.
+    pub may_commit: bool,
+}
+
 impl RaftEngine {
     pub fn new(runtime: GroupRuntime) -> Self {
         Self {
@@ -293,37 +304,43 @@ impl RaftEngine {
     /// Every member folds it into its group table once applied
     /// ([`Self::groups`]).
     ///
-    /// Refused unless this member leads `term`. An error means nothing was
-    /// appended in `term`, or that this member has closed `term` for good:
-    /// where an append may have happened, the term is closed and leadership
-    /// handed to another voter before the error returns, so only a later
-    /// term's read index can see the entry.
+    /// Refused unless this member leads `term`. An error says whether the
+    /// entry may commit ([`GroupWriteError::may_commit`]). Where it may,
+    /// the term is closed and leadership handed to another voter before the
+    /// error returns, so only a later term's read index can see the entry.
     pub fn propose_group(
         &self,
         shard: &ShardKey,
         term: u64,
         timestamp_micros: u64,
         entry: &felix_broker::GroupEntry,
-    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+    ) -> impl Future<Output = Result<Written, GroupWriteError>> + Send + use<> {
         let group = self.runtime.group(shard);
-        let proposed = group
-            .as_ref()
-            .map(|group| group.propose_group(entry.encode(), timestamp_micros, term))
-            .ok_or_else(|| propose::lost(NO_GROUP));
+        let sent = match &group {
+            Some(group) => group.propose_group(entry.encode(), timestamp_micros, term),
+            None => Err(propose::lost(NO_GROUP)),
+        };
         async move {
-            let unacked = match proposed?.await {
+            let acknowledged = sent.map_err(|error| GroupWriteError {
+                error,
+                may_commit: false,
+            })?;
+            let unacked = match acknowledged.await {
                 Ok(written) => return Ok(written),
                 Err(unacked) => unacked,
             };
+            // A lease refusal is openraft's, before it appended anything.
+            let may_commit = !unacked.refused_on_lease();
             // A no-op unless this member still leads `term`. Stepping down,
             // not only closing, so the shard is served again in a new term
             // instead of staying closed until something else moves it.
-            if !unacked.refused_on_lease()
-                && let Some(group) = group
-            {
+            if may_commit && let Some(group) = group {
                 group.step_down_in(term).await;
             }
-            Err(unacked.error)
+            Err(GroupWriteError {
+                error: unacked.error,
+                may_commit,
+            })
         }
     }
 
@@ -423,6 +440,23 @@ impl RaftEngine {
             .collect();
         entries.sort_by_key(|entry| entry.offset);
         Some(CacheWatchPoint { tail, entries })
+    }
+
+    /// [`Self::cache_watch_point`] for a watch that hands out the current
+    /// state, read once this member has applied everything committed when
+    /// the watch began. Followers serve watches, and a follower's applied
+    /// edge can trail a put its leader already acknowledged. `Ok(None)` when
+    /// no cache group of `shard` runs here; an error is retryable.
+    pub async fn cache_retained_point(
+        &self,
+        shard: &ShardKey,
+        keep: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Result<Option<CacheWatchPoint>, &'static str> {
+        if self.runtime.group(shard).is_none() {
+            return Ok(None);
+        }
+        self.runtime.read_barrier(shard).await?;
+        Ok(self.cache_watch_point(shard, keep))
     }
 
     /// End every cache watch `observer` holds on `shard` as lagged at this

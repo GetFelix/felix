@@ -116,6 +116,11 @@ Not free, and these are the reasons to revisit it:
 
 - **A subscribe for an unowned shard is answered `NotLeader`**, never served
   locally and never silently accepted.
+- **On a Raft shard** a follower that hears its leader serves the subscribe
+  from its own log. A broker with no member of the group answers `NotLeader`
+  naming the leader placement chose, with generation 0, or refuses it when the
+  cluster reports that broker down or in a region this one has no bridge to. A
+  member that hears no leader refuses retryably.
 - **Ownership changing under a live subscription** ends that subscription with
   `NotLeader` naming the new owner. The client reconnects there and resumes from
   its last offset, which durable streams already support; what it must not do is

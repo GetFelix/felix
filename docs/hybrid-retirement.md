@@ -209,11 +209,11 @@ writes the new pages.
 
 | Spec | Lines | Configs | Fate |
 | --- | --- | --- | --- |
-| `FelixShard.tla` | 5,559 | 355 | Deleted |
-| `FelixShardUnified.tla` | 575 | 40 | Deleted |
+| `FelixShard.tla` | 5,559 | 355 | Configurations deleted. The module stays until `FelixShardReads` and `FelixShardSessions`, which extend it, are deleted |
+| `FelixShardUnified.tla` | 575 | 40 | Deleted (done) |
 | `FelixShardMoveGiveUp.tla` | 445 | 13 | Deleted after its liveness check has a Raft twin (Gaps, 3) |
-| `FelixShardFigure8.tla` | 145 | 8 | Deleted. `FelixRaft` has the current-term commit rule |
-| `FelixShardWalkElectStaleSetReplay.tla`, `FelixShardWalkSparesSeatEarlyReplay.tla` | 966 | 2 | Deleted with `.github/workflows/tla-walk.yml` |
+| `FelixShardFigure8.tla` | 145 | 8 | Deleted (done). `FelixRaft` has the current-term commit rule |
+| `FelixShardWalkElectStaleSetReplay.tla`, `FelixShardWalkSparesSeatEarlyReplay.tla` | 966 | 2 | Deleted (done). `.github/workflows/tla-walk.yml` stays for the Raft walks and nightly checks and lost its hybrid jobs |
 | `FelixShardReads.tla`, `FelixShardSessions.tla` | 304 | 8 | Re-based on `FelixRaft` as `FelixRaftReads.tla` and `FelixRaftSessions.tla`; the old files are deleted (Gaps, 1) |
 | `FelixHeadTrim.tla`, `FelixPlacementPacing.tla` | 614 | 16 | Kept. Their fence and promotion steps are restated (Gaps, 3) |
 | `FelixGroups.tla`, `FelixAtomicCommit.tla` | 450 | 10 | Kept unchanged |

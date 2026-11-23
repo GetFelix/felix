@@ -59,7 +59,6 @@ class Tokenizer(unittest.TestCase):
 class Modelled(unittest.TestCase):
     def test_new_paths(self):
         for path in (
-            "crates/server/felix-common/src/fleet.rs",
             "crates/server/felix-broker/src/broker/commit.rs",
             "crates/server/felix-broker/src/broker/publish/completion.rs",
             "crates/server/felix-storage/src/cache/log_cache/index.rs",
@@ -69,6 +68,15 @@ class Modelled(unittest.TestCase):
     def test_tests_excluded(self):
         self.assertFalse(sp.modelled("crates/server/felix-broker/src/broker/publish/tests.rs"))
         self.assertFalse(sp.modelled("crates/server/felix-common/src/fleet_other.rs"))
+
+    def test_hybrid_only_paths_not_modelled(self):
+        # Their model, FelixShard, is deleted; hybrid is frozen.
+        for path in (
+            "crates/server/felix-replication/src/promotion.rs",
+            "crates/server/felix-storage/src/disk_log/ballot.rs",
+            "crates/server/felix-common/src/fleet.rs",
+        ):
+            self.assertFalse(sp.modelled(path), path)
 
 
 if __name__ == "__main__":
