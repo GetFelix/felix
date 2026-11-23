@@ -223,10 +223,10 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
         .owner(&control.quorum_stream)
         .await
         .map_err(failed)?;
+    // No probe publish here: the cut is in force once this returns, and a
+    // probe batch the leader accepted and never settled would make it refuse
+    // the caller's own publish before the log, as retryable, on Raft.
     tokio::task::block_in_place(|| control.cluster.partition_node(&leader)).map_err(failed)?;
-    until_refused(&control.cluster, &leader, &control.quorum_stream)
-        .await
-        .map_err(failed)?;
     Ok(Json(control.target(&leader)))
 }
 
