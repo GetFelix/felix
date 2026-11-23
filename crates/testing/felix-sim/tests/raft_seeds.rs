@@ -172,6 +172,24 @@ fn raft_seed_920_with_majority_cuts() {
     check(920, Clocks::Off, Disks::MajorityCut);
 }
 
+/// A simulation's brokers share this process, and so do the tests. A log
+/// poisoned in one run must not make a later run's power cuts rotate copies,
+/// as one process's poison does on every root it holds.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn a_failed_flush_leaves_a_later_runs_power_cuts_alone() {
+    let config = RaftSimConfig {
+        failed_flush: true,
+        ..RaftSimConfig::default()
+    };
+    let poisoned = run_seed(1, config);
+    assert!(poisoned.passed(), "{}", poisoned.first_failure());
+    check(1233, Clocks::Off, Disks::PowerLoss);
+}
+
 /// One shard's directory wiped on a majority at once leaves no copy that
 /// may vote under its old id, so the shard stalls until an operator
 /// re-forms it (#2350). Nothing acknowledged is reported lost, the other

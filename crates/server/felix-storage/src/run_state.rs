@@ -984,14 +984,29 @@ pub fn watch_poison(root: &Path) {
             watched.push(root.to_path_buf());
         }
     }
-    if crate::disk_log::any_log_poisoned() {
-        forget_watched();
+    if poisoned_in_process(root) {
+        forget_watched(root);
     }
 }
 
-/// [`forget_boot`] on every directory [`watch_poison`] was given.
-pub(crate) fn forget_watched() {
+/// [`forget_boot`] on every directory [`watch_poison`] was given, after a
+/// failure on `poisoned`, a path under one of them or anywhere else in the
+/// process.
+pub(crate) fn forget_watched(poisoned: &Path) {
+    #[cfg(feature = "sim")]
+    let broker = crate::fs::root_of(poisoned);
+    #[cfg(feature = "sim")]
+    if let Some(tree) = broker.as_deref().and_then(crate::fs::tree_at) {
+        tree.note_poisoned();
+    }
+    #[cfg(not(feature = "sim"))]
+    let _ = poisoned;
     for root in WATCHED.lock().iter() {
+        // A simulation runs many brokers in one process, one per root.
+        #[cfg(feature = "sim")]
+        if crate::fs::root_of(root) != broker {
+            continue;
+        }
         if let Err(err) = forget_boot(root) {
             tracing::error!(
                 root = %root.display(),
@@ -1001,6 +1016,19 @@ pub(crate) fn forget_watched() {
             );
         }
     }
+}
+
+/// Whether a log of the process `root`'s broker runs in was poisoned. Under a
+/// simulation that is the broker of `root`'s simulated root, since it last
+/// booted.
+fn poisoned_in_process(root: &Path) -> bool {
+    #[cfg(feature = "sim")]
+    if let Some(broker) = crate::fs::root_of(root) {
+        return crate::fs::tree_at(&broker).is_some_and(|tree| tree.poisoned());
+    }
+    #[cfg(not(feature = "sim"))]
+    let _ = root;
+    crate::disk_log::any_log_poisoned()
 }
 
 /// What the record under `root` says, judged against the id now there.
@@ -1158,7 +1186,7 @@ pub(crate) fn durable_change<T>(
         // What this broker vouched for may now be lost like a poisoned log's
         // acknowledged records, so it is treated as one.
         crate::disk_log::note_lost_durability();
-        forget_watched();
+        forget_watched(dir);
     }
     result
 }
