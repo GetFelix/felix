@@ -122,16 +122,11 @@ any log. See
 
 ## Restoring
 
-:::caution[Restoring a whole cluster from a backup point is not supported on Raft clusters yet]
-`felixctl data restore-point` gives each broker a new storage id, and every
-Raft shard directory then opens as a new member that has never voted. A group
-is never formed again on such copies, so every shard answers "not ready"
-after the restore. The only way out today is to delete and recreate the
-streams, which loses their records. Do not restore a Raft cluster this way
-until [#2983](https://github.com/GetFelix/felix/issues/2983) ships. Per-shard
-Raft's [re-form rules](https://github.com/GetFelix/felix/blob/main/docs/per-shard-raft.md#re-forming-a-group)
-explain why.
-:::
+On the default engine, stop the broker, put its copied shard directories under
+`FELIX_DURABLE_STORAGE_DIR`, run `felixctl data restore-point --point FILE
+--node <broker>` on it, and start it. Each log is cut back to the point and the
+directory gets a new storage id. A Raft cluster takes the steps under
+[Restoring a Raft cluster](#restoring-a-raft-cluster).
 
 :::note[Offsets past the point on Raft]
 The re-form a Raft restore runs, `felixctl raft reform plan --restore-point
@@ -143,6 +138,92 @@ were acknowledged on one shard after the point. A reader that kept an offset
 past the point can tell from it that the record is gone, and new records
 never take it. The gap is a header in the next segment, not disk space.
 :::
+
+### Restoring a Raft cluster
+
+A Raft shard has no leader to copy back into. The restore cuts the leader's
+copy at the point, wipes every other copy, and re-forms each group from the
+cut copy, with `felixctl raft reform` and the point. Anything acknowledged
+after the point is gone, and its offsets are not given out again (see the
+offset gap above). Run these in order.
+
+1. **Stop every broker, and restore the control plane's metadata** from the
+   backup taken at or after the point.
+
+2. **Put back only the leaders' copies.** On each broker, start from an empty
+   `FELIX_DURABLE_STORAGE_DIR`, and copy in the shard directories the
+   manifest names that broker as `leader` of, from the backup in step 2 of
+   [Taking a backup](#taking-a-backup). A broker that led nothing in the
+   point stays empty. These empty copies are the followers: they come back as
+   new members and catch up from the re-formed group.
+
+3. **Cut each leader's copy to the point**, on the broker that holds it, with
+   the broker stopped. `--node` takes the broker's own id from the manifest.
+
+   ```bash
+   felixctl data restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
+   ```
+
+   ```text
+   new storage id 7d1c0e5a...
+   t1/ns/orders/0 Stream (raft): -> 918233
+   restored 1 logs to point "nightly-2026-09-27"; start this broker, ...
+   ```
+
+   The line marked `(raft)` is a Raft copy cut at the point. The command
+   refuses, and writes nothing to that copy, when the copy holds a snapshot,
+   a purge or a floor at or past the point: a copy taken after the point
+   moved on cannot be cut back. Take a new point and copy again.
+
+4. **Start every broker.** The Raft shards stay "not ready" and wait for a
+   re-form; nothing is lost by waiting.
+
+5. **Plan the re-form from the point.** This reads each broker and changes
+   nothing.
+
+   ```bash
+   felixctl raft reform plan --restore-point nightly-2026-09-27.backup-point.json
+   ```
+
+   ```text
+   plan 3f2a9c
+   t1/ns/orders/0  reform  from broker-1  voters broker-1 broker-2 broker-3  may lose acknowledged records
+   ```
+
+   A shard is `blocked`, with the reason, if the point does not name it, names
+   another incarnation of it, or no restored copy ends at the point. Fix the
+   cause (usually a missing or uncut leader copy) and plan again.
+   `--offset-gap N` sets the gap; the default 2^40 is right unless more than
+   that many records were acknowledged on one shard after the point.
+
+6. **Apply it.** The plan says it may lose records, because the wiped copies'
+   votes are unknown, and what it loses is what was acknowledged after the
+   point. Name each shard to accept that.
+
+   ```bash
+   felixctl raft reform apply 3f2a9c --accept-loss t1/ns/orders/0
+   felixctl raft reform apply 3f2a9c --accept-loss cache:t1/ns/sessions/0
+   ```
+
+   It prints each shard as `started` once its group has formed.
+
+7. **Verify.**
+
+   ```bash
+   felixctl raft reform plan
+   ```
+
+   Every shard reads `left_alone`: each has a leader again. Then read a shard
+   back:
+
+   ```bash
+   felixctl sub orders --shard 0 --from earliest --format offsets --count 5
+   felixctl cache get sessions some-key
+   ```
+
+   A stream returns the records the point held, and the first record
+   published after the restore arrives at an offset at least the point plus
+   the gap. A cache returns its restored values.
 
 :::caution[Never touch one shard directory]
 Do not delete, empty, move or restore a single shard directory under a broker's
@@ -180,15 +261,14 @@ member. See "Group and member identity" in
 This costs one full copy of each shard the broker holds.
 
 It does not recover a shard that lost its majority, and it does not work if
-every copy of a shard is rebuilt this way: that is the fleet-wide case above.
+every copy of a shard is rebuilt this way: for that, restore from a backup point as described above.
 
 ## What to keep
 
 Keep taking backup points and copying the leaders' shard directories as
 described above, and keep the metadata backups. `felixctl backup-point` and the
-live copies change nothing on the cluster, and the whole-cluster restore in
-[#2983](https://github.com/GetFelix/felix/issues/2983) is being built to
-restore from them.
+live copies change nothing on the cluster, and the Raft restore above is the
+way back from them.
 
 ## See also
 

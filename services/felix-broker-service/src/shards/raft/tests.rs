@@ -2182,7 +2182,15 @@ impl Member {
     /// A broker on `net` holding `sessions`, a `Quorum` cache on three
     /// brokers.
     async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
-        let root = tempfile::tempdir().expect("tempdir");
+        Self::start_cache_on(net, name, tempfile::tempdir().expect("tempdir")).await
+    }
+
+    /// [`Self::start_cache`] on a data root an earlier member left.
+    async fn start_cache_on(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        root: tempfile::TempDir,
+    ) -> Self {
         let broker = cache_broker_of(root.path(), "sessions", 3).await;
         Self::assemble(net, name, root, broker, no_fleet())
     }
