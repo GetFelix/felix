@@ -554,3 +554,33 @@ async fn a_cancelled_produce_writes_its_records_whole_or_not_at_all() {
     drop(next);
     raft.stop().await;
 }
+
+/// **A fetch and a ListOffsets on a Raft shard are bounded by its commit
+/// index**, at every consistency level: the bound covers every acknowledged
+/// record and a produce moves it, so a consumer sees what it was acknowledged
+/// and a log-end query never points below it.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_shard_bounds_kafka_reads_by_its_commit_index() {
+    use felix_kafka::Cluster as _;
+
+    let raft = OnRaft::start().await;
+    let bound = |raft: &OnRaft| {
+        raft.cluster
+            .committed_until(&OnRaft::SHARD, &raft.handle)
+            .expect("a served shard")
+            .expect("a Raft shard is always bounded")
+    };
+    let first = raft.produce(&["a", "b"], Some((7, 0))).await;
+    let (_, last) = first.outcome.offsets.expect("written");
+    let after_first = bound(&raft);
+    assert!(
+        after_first > last,
+        "the bound {after_first} does not cover the acknowledged offset {last}"
+    );
+    let second = raft.produce(&["c"], Some((7, 2))).await;
+    let (_, last) = second.outcome.offsets.expect("written");
+    assert!(bound(&raft) > last);
+    assert!(bound(&raft) >= after_first, "the bound went backwards");
+    raft.stop().await;
+}
