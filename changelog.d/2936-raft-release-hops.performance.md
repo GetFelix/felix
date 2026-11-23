@@ -1,0 +1,1 @@
+A Raft publish wakes fewer tasks between its commit and its answer: a batch with nothing held ahead of it is fanned out on its publisher's task instead of a release task spawned for it, and a publish answered at its commit no longer also waits for its flush.

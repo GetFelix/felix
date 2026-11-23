@@ -24,12 +24,20 @@ pub struct QuicConnection {
     inner: Connection,
     // Stable id and peer metadata for tracing.
     info: ConnectionInfo,
-    // The I/O runtime this connection's quinn drivers run on, if isolated.
-    io_handle: Option<tokio::runtime::Handle>,
+    pumps: PumpRuntimes,
+}
+
+/// The runtimes a connection's pump tasks may run on.
+#[derive(Debug, Clone)]
+pub(crate) struct PumpRuntimes {
+    /// The dedicated runtime this connection's quinn drivers run on, if isolated.
+    pub(crate) io: Option<tokio::runtime::Handle>,
+    /// The runtime its endpoint was bound on.
+    pub(crate) app: Option<tokio::runtime::Handle>,
 }
 
 impl QuicConnection {
-    pub(crate) fn new(connection: Connection, io_handle: Option<tokio::runtime::Handle>) -> Self {
+    pub(crate) fn new(connection: Connection, pumps: PumpRuntimes) -> Self {
         // Not quinn's `stable_id`: that is an address, reused once a
         // connection is freed, and a consumer group tells a restarted member's
         // connection from its predecessor's by this id.
@@ -41,7 +49,7 @@ impl QuicConnection {
         Self {
             inner: connection,
             info,
-            io_handle,
+            pumps,
         }
     }
 
@@ -55,8 +63,9 @@ impl QuicConnection {
     /// For pump tasks woken by the transport per datagram or per write (stream
     /// readers, connection writers): same-thread wakeups are task switches
     /// instead of cross-core kernel round trips, and that latency is the
-    /// pipeline's clock under smooth arrival. Falls back to `tokio::spawn`
-    /// when driver isolation is disabled.
+    /// pipeline's clock under smooth arrival. Without driver isolation it runs
+    /// on the runtime the endpoint was bound on, never on the caller's: a
+    /// caller on a Raft group thread must not take the connection's I/O with it.
     pub fn spawn_pump<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -68,8 +77,9 @@ impl QuicConnection {
                 .map(|value| value != "0")
                 .unwrap_or(true)
         });
-        match (&self.io_handle, colocate) {
-            (Some(handle), true) => handle.spawn(future),
+        match (&self.pumps.io, &self.pumps.app, colocate) {
+            (Some(io), _, true) => io.spawn(future),
+            (_, Some(app), _) => app.spawn(future),
             _ => tokio::spawn(future),
         }
     }

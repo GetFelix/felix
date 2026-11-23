@@ -53,6 +53,52 @@ async fn a_restarted_peer_is_reconnected_to() {
     second.stop().await;
 }
 
+/// A connection first dialled from a Raft group thread must not be driven
+/// there. quinn spawns a connection's driver from the task that dials it, so
+/// the group thread would carry this peer's I/O for every group (#2936). The
+/// dialling thread stays blocked after its request, like a busy group thread;
+/// requests from the broker runtime must still be answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_dialled_from_a_group_thread_runs_on_the_broker_runtime() {
+    let listener = Listener::start(PEER, Arc::new(CountingHandler::default())).await;
+    let addr = listener.addr;
+    let pool = pool(config());
+
+    let (dialled_tx, dialled_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let dialler = Arc::clone(&pool);
+    let group = std::thread::Builder::new()
+        .name("felix-raft-group-test".into())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                let dialled = dialler.request(PEER, addr, forward()).await.map(|_| ());
+                let _ = dialled_tx.send(dialled);
+            });
+            // The runtime stays alive but is never polled again.
+            let _ = release_rx.recv();
+        })
+        .expect("spawn group thread");
+    dialled_rx
+        .await
+        .expect("dialler answered")
+        .expect("first request");
+
+    for _ in 0..5 {
+        pool.request(PEER, addr, forward())
+            .await
+            .expect("answered while the dialling thread is blocked");
+    }
+
+    release_tx.send(()).expect("release");
+    group.join().expect("group thread");
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
 /// A connection that drops with requests in flight must fail them at that
 /// moment. `docs/internal-protocol.md` requires no forwarded publish is left
 /// pending, and waiting out the request timeout is not the same thing.

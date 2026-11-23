@@ -185,8 +185,9 @@ cases:
   is relaxed when the broker's own `FELIX_DURABLE_FSYNC_MODE` is `periodic`
   or `none`, or when a copy in the root has ever vouched for a record
   before its fsync: told a leader it had written one, or, as leader,
-  counted its own unsynced write toward an acknowledgement. Before the
-  first of either, the copy syncs a marker in the data root
+  counted its own unsynced write toward an acknowledgement. (A copy on a
+  written-commit log answers at the write without a marker: its root's run
+  is relaxed already.) Before the first of either, the copy syncs a marker in the data root
   (`vouched-unsynced`), and the marker is never removed, since a leader
   may still count what the copy said. A copy under `on_commit` that
   never vouched was only ever counted for records it had synced, so it
@@ -1391,7 +1392,9 @@ What the acknowledgement promises, and what it does not
   saw, because subscribers are fed committed records only.
 - Raft closes that case the way 0.7 does (issue #2423). A copy syncs a
   marker in its data root before its first written report leaves, and
-  before it counts its own unsynced write as leader. A root with the
+  before it counts its own unsynced write as leader. A copy on a
+  written-commit log sends no report, because its answer is one: its root's
+  run is already relaxed, or the log would not open that way. A root with the
   marker records every run as relaxed, so after a power cut it comes
   back under a new storage identity, and its copies under new copy ids.
   The old identity no longer votes or counts, so the shard stays closed
@@ -2282,6 +2285,72 @@ request CI with the rest of the `raft` feature's tests. Run it by hand with
 `RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
 allocations of at least that size.
 
+openraft runs on tokio through `ShardRuntime`
+(`crates/server/felix-replication/src/raft/draws.rs`), which changes two
+things. Election timeouts come from a seedable random stream, so a
+simulation run repeats. And a sleep whose deadline is under a millisecond
+away yields instead of arming a timer (`raft/sleep.rs`). Tokio's timer
+fires on whole milliseconds, and openraft's IO completion forwarder sleeps
+1 us whenever a second write completes right after the first, so with
+tokio's sleep that write was answered up to a millisecond late. The sleep
+yields at most 32 times, then arms the timer, and it never ends before its
+deadline. Longer sleeps use the timer as before. Election and heartbeat
+deadlines are timeouts, not sleeps, and are unchanged.
+
+### Group threads
+
+A write wakes several tasks in turn: the publish task, openraft's core, its
+state machine worker, its IO forwarder and the replication streams. On the
+broker's multi-thread runtime each of those wakes can be a hop to another
+worker thread, which costs a scheduler pass and a kernel wake-up.
+
+So a broker runs every group's tasks on a few group threads instead
+(`raft/executor.rs`): one per four cores it may use, at most 8. Under four
+cores it runs none, because a group thread would take half the machine or
+more from the broker runtime. Operators have no setting for it. Each thread is a single-threaded tokio runtime, and a
+group is placed on the thread with the fewest groups when it opens. It
+stays there until it closes, since a task cannot move between runtimes.
+openraft spawns its tasks on the runtime it is started from, so starting a
+group's `Raft` on its thread puts all of them there without changing
+openraft. A wake between them is then a push onto that thread's queue, and
+one wake-up of the thread runs every ready task of every group on it.
+
+- On the group thread: openraft's tasks, the publish task, the membership
+  driver and the group's other tasks.
+- Elsewhere: publishers, subscribers, the peer transport, the ticker and
+  `follow_commits` stay on the broker runtime, and log IO on the log's own
+  thread. `follow_commits` is kept off because one pass can fan a page of
+  records out to many subscribers without yielding. A write
+  still crosses threads where it enters a group (publisher to publish task,
+  peer to core) and where it leaves (answers, fanout, network sends).
+- A group thread does not wait on disk in normal operation. Log work goes
+  to the log thread or a blocking task and is awaited. A caller of the log
+  thread on a group thread does not poll for its answer, since other
+  groups' tasks are waiting behind it. A flush capture that runs inline
+  only tries the segment lock: if an append is rolling a segment under it,
+  the capture goes to the log thread instead of waiting there.
+- A hot group shares its thread: the thread runs ready tasks in turn, and
+  tokio makes a task that keeps finding work on channels give the thread up
+  after a bounded number of steps. The state machine gives it up the same
+  way while it applies a long run of entries. A single step that takes long
+  (a large snapshot cut, say) still delays the thread's other groups.
+- The peer transport never runs on a group thread. A connection's quinn
+  driver and its stream pumps run on the dedicated QUIC I/O runtime when
+  there is one, and otherwise on the runtime the peer endpoint was bound on,
+  whatever thread dials. A group thread only hands frames to them.
+- A panic in a group task ends only that task, as on the broker runtime.
+  The thread and its other groups keep running.
+
+On the perf hosts (16 cores, so 4 group threads) this cut Raft's CPU per
+message by 12-33% in every cell, with throughput within a few points of
+running without them.
+
+The simulator never uses group threads: it runs every broker on one
+simulated runtime. `FELIX_TEST_RAFT_GROUP_THREADS=<n>` overrides the count
+for tests and A/B runs, on a broker or for the `raft::` unit tests. It is
+not supported in production. `0` runs
+the groups without group threads, which keeps that path tested.
+
 ## Heartbeat coalescing
 
 Without coalescing, each leader sends each follower one empty
@@ -2329,6 +2398,57 @@ numbers go on openraft#2304. If it breaks a gate cell before the release,
 the wrapper is carried in the tree as an exact copy of the upstream pull
 request and deleted when the release that has it is pinned. See Questions,
 3.
+
+## A commit goes on the next append
+
+Right after a leader commits, openraft sends each follower an AppendEntries
+with no entries whose only news is the new commit index. When writes come
+one at a time, that is one extra message and one extra answer per follower
+per write. And openraft
+sends one append at a time to a follower, so the next write's append waited
+for the answer to it.
+
+Felix's client to each follower (`raft/network/client.rs`) holds such an
+append for up to `RuntimeConfig::commit_hold`, 1 ms by default and always
+shorter than the heartbeat. If the leader's next append to that follower comes
+in that time, it goes instead, and the held one is never sent. Otherwise the
+held one goes as it was.
+
+```mermaid
+sequenceDiagram
+    participant L as Leader
+    participant F as Follower
+    L->>F: append entry 6, commit 5
+    F-->>L: ok through 6
+    Note over L: 6 commits. The commit-only append is held.
+    Note over L: The next write arrives within 1 ms.
+    L->>F: append entry 7, commit 6
+    F-->>L: ok through 7, which answers both
+```
+
+The next append replaces the held one only when the follower's answer to
+it is also its answer to the held one: the same vote, the same previous
+entry to check, and a commit index no lower. openraft needs no answer per
+request. An answer "ok through 7" acknowledges every request up to entry 7,
+the held one included, and the lease counts from the later request's send
+time, which openraft takes before the request leaves. A held append that goes
+out alone is credited from when openraft built it, which is earlier than it
+left, so the lease errs short.
+
+What waits on it. A follower learns a commit up to the hold later when no
+write follows it; tokio's timer fires on whole milliseconds, so the default
+hold lasts 1 to 2 ms. Applying on a follower, delivering to a follower's subscribers
+and serving a read on a follower wait for that. Under load the next append
+follows at once, and it no longer waits behind a commit-only append's round
+trip. A write that comes just after the hold ends does wait: the held append
+has gone out, and openraft sends one append at a time, so that write can
+take up to one follower round trip longer than without the hold. The leader's acknowledgement to a publisher, written reports, lease
+reads, elections and heartbeats do not wait on it, and heartbeats do not go
+through this path. No member applies or decides anything differently:
+followers apply what the leader committed, only later, and Raft's safety
+never rests on how soon they hear of it. The models agree: in
+`docs/formal/FelixRaft.tla` a follower learns the commit in a step of its
+own that may come at any time.
 
 ## Write fence, leases and read bound under Raft
 
@@ -2944,10 +3064,25 @@ sequenceDiagram
 stream's hand-over order and calls `propose` while it holds that place, so
 the order of hand-overs is the order openraft gives out indexes. The
 batch then waits for `await_commit`, which checks the term of the entry at
-its offset, and for the batch handed over before it. Only then does it
-join the stream's commit hold. The hold appends it to the replay ring and
-fans it out as one shared envelope, encoded once per frame shape, the same
-way a held `Quorum` batch is released on the hybrid.
+its offset, and for the batch handed over before it. If nothing is held
+ahead of it and the read bound covers it, the publisher's own task appends
+it to the replay ring and fans it out as one shared envelope, encoded once
+per frame shape, then answers the publisher. A stream whose subscribers
+`Block` skips this, so a full subscriber never holds up an answer.
+Otherwise the batch joins the stream's commit hold,
+whose release task does the same once the bound passes it, the way a held
+`Quorum` batch is released on the hybrid. Either way the batch keeps its
+place in the hand-over order until it is fanned out, so the next batch
+cannot overtake it.
+
+A publish answered at its commit waits for openraft's answer at the
+apply, not for the write or the leader's own flush first: the commit
+already puts the batch on a majority's disks, so either wait would only
+wake the publisher once more. The state machine answers a run of entries
+after it shows the run as applied, so the commit wait that follows is
+already met. If this broker stops leading, or its group stops, before the
+answer comes, the publisher is told what the write says, as it would have
+been had it waited for the write.
 
 - A batch that times out keeps its place. The publisher is answered with
   the timeout, but delivery keeps waiting for the commit, so the batches
@@ -6263,16 +6398,28 @@ Each follower answers an append by its own mode. Every leader asks for
 the written report (`await_quorum_ack`, `Request::Written`) once a
 `Quorum` write waits on it:
 
-- **A relaxed follower** answers at the write and sends the written
-  report right after a successful answer. The answer commits, but the
-  commit only acknowledges once the leader's state machine has applied
-  the entry. The report lets the leader acknowledge at the written
-  majority without that wait, as the hybrid does.
+- **A relaxed follower** answers at the write and sends no separate
+  report: its answer is the report. The answer commits, but the commit
+  only acknowledges once the leader's state machine has applied the
+  entry. So the leader also counts each successful answer to an append it
+  asked about as a written report for the answer's last log id
+  (`Reports::answered`). That lets it acknowledge at the written majority
+  without the apply wait, as the hybrid does, at no extra message or task
+  per append.
 - **A strict follower** answers after its fsync, and sends the written
-  report first, at the write.
+  report first, at the write. Its answer is counted too; it says more.
+  Only the report waits on the `vouched-unsynced` marker: the answer
+  names synced entries, so it needs none, and a follower whose marker
+  fails is still counted up to its fsync.
 - **Every leader asks** once a `Quorum` write has waited on reports, and
-  counts them the same way: the leader's own term only, voters only, a
-  majority of each set.
+  counts reports and answers the same way: the leader's own term only,
+  voters only, a majority of each set.
+
+openraft answers an append only once the log id it names is through the
+follower's log (`IOFlushed` above), so a counted answer never names an
+entry the follower has not written. In the model it is a `Report` of an
+entry the sender holds, named by that entry's own log id, which
+`FelixRaftWritten.tla` allows.
 
 A group can have members on both kinds of broker. The argument is meant
 to hold member by member: a strict copy answers after its fsync, and a
@@ -6479,11 +6626,12 @@ not a weaker flush.
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
 - The written report follows "What each signal means": every leader asks
-  with `Ask::Written` and every follower answers it. A follower on a
-  written-commit log sends its report after its answer, from a task of its
-  own, so the answer does not wait on the report's round trip. The ask
-  byte 2 that older builds send reads as `Ask::Written`. A lost report can
-  only make a `Quorum` write wait for the commit.
+  with `Ask::Written`. A strict follower reports at the write. A follower
+  on a written-commit log sends nothing extra, and the leader counts its
+  answer to the append instead. The ask byte 2 that older builds send
+  reads as `Ask::Written`. A lost report can only make a `Quorum` write
+  wait for the commit, and so can a leader from a build that does not
+  count answers, while its written-commit followers send no report.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`read_copies`, `kept_logs`): every reservation in the shard directory and
   its kept directories, from which the plan's first index is set
@@ -6556,7 +6704,7 @@ before `save_vote` returns in every mode.
 | Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
 | The reservation: a synced file per shard directory, raised before the write and at open, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
 | Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
-| The written report: every leader asks and every follower reports, after its marker sync; a strict follower reports at the write, a relaxed follower right after its answer at the write | Built: `Ask` in `felix-replication/src/raft/network.rs`, `Reports::ask` in `raft/written.rs`, `Group::answer` in `raft/group.rs` | `raft/tests/written.rs`: `a_relaxed_leader_acknowledges_on_relaxed_followers_reports`, `a_relaxed_leader_counts_only_reports_of_its_term`, `a_relaxed_leader_acknowledges_on_strict_followers_reports` |
+| The written report: every leader asks; a strict follower reports at the write, after its marker sync; a relaxed follower's answer at the write is its report, counted by the leader | Built: `Ask` and `Router::call` in `felix-replication/src/raft/network.rs`, `Reports::ask` and `Reports::answered` in `raft/written.rs`, `Group::answer` in `raft/group.rs` | `raft/tests/written.rs`: `a_relaxed_leader_acknowledges_on_relaxed_followers_reports`, `relaxed_followers_answer_with_their_written_position`, `a_relaxed_leader_counts_only_reports_of_its_term`, `a_relaxed_leader_acknowledges_on_strict_followers_reports` |
 | A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (item 6 above) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
 | A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (item 8 above) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |

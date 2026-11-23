@@ -726,12 +726,18 @@ pub(crate) fn parse_shard_raft_lease(value: Option<&str>) -> Result<Option<Durat
 pub(crate) struct RaftSettings {
     pub(crate) lease: Option<Duration>,
     pub(crate) elections_at_once: Option<usize>,
+    pub(crate) group_threads: Option<usize>,
 }
 
 pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
     Ok(RaftSettings {
         lease: shard_raft_lease()?,
         elections_at_once: shard_raft_elections_at_once()?,
+        group_threads: parse_raft_group_threads(
+            std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
+                .ok()
+                .as_deref(),
+        )?,
     })
 }
 
@@ -751,13 +757,23 @@ fn shard_raft_elections_at_once() -> Result<Option<usize>> {
 /// A value that does not parse is refused, never read as the default: an
 /// operator who meant `0` would keep the bound.
 pub(crate) fn parse_shard_raft_elections_at_once(value: Option<&str>) -> Result<Option<usize>> {
+    parse_count("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE", value)
+}
+
+/// `FELIX_TEST_RAFT_GROUP_THREADS`: how many threads run the Raft groups'
+/// tasks, for tests and A/B runs. Unset keeps the count derived from the
+/// machine, and `0` runs the groups on the broker runtime. An unsupported
+/// override, read in release builds so perf runs can compare.
+pub(crate) fn parse_raft_group_threads(value: Option<&str>) -> Result<Option<usize>> {
+    parse_count("FELIX_TEST_RAFT_GROUP_THREADS", value)
+}
+
+fn parse_count(name: &str, value: Option<&str>) -> Result<Option<usize>> {
     match value.map(str::trim) {
         None | Some("") => Ok(None),
         Some(count) => match count.parse() {
             Ok(count) => Ok(Some(count)),
-            Err(_) => anyhow::bail!(
-                "FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE must be a whole number, not {count:?}"
-            ),
+            Err(_) => anyhow::bail!("{name} must be a whole number, not {count:?}"),
         },
     }
 }
