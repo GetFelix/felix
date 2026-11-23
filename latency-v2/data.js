@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795417779367,
+  "lastUpdate": 1795419331289,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -83886,6 +83886,72 @@ window.BENCHMARK_DATA = {
             "range": "941.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 856.00\nmean: 1282.20\nstdev: 941.57\ncv: 73.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5f43556f3b9f9c31e197cd2cda9e3c34ac1d783e",
+          "message": "test(raft): Kafka reads and MQTT commit-mark delivery run on Raft shards beside hybrid (#2991) (#3014)\n\nKafka Fetch and ListOffsets through a leader change and the MQTT\nwithheld-until-committed subscription run on both engines from one body.\nA broker-level test pins the Raft commit bound a Kafka read uses.",
+          "timestamp": "2026-11-23T07:23:29Z",
+          "tree_id": "ce20d31ea25f3b86bdb815008de9bdf1ded01359",
+          "url": "https://github.com/GetFelix/felix/commit/5f43556f3b9f9c31e197cd2cda9e3c34ac1d783e"
+        },
+        "date": 1795419320766,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "4.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 66.60\nstdev: 4.83\ncv: 7.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 124,
+            "range": "11.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 128.40\nstdev: 11.10\ncv: 8.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 156,
+            "range": "386.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 156.00\nmean: 395.80\nstdev: 386.57\ncv: 97.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.40\nstdev: 0.55\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "23.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 197.20\nstdev: 23.40\ncv: 11.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 605,
+            "range": "965.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 605.00\nmean: 982.60\nstdev: 965.50\ncv: 98.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
