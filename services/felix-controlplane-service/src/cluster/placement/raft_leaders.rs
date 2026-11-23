@@ -75,6 +75,9 @@ pub(super) fn raft_step<'a>(
     if let Some(dropped) = drop_hybrid_move(existing, replication_factor) {
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
     }
+    if let Some(decision) = finish_single_move(existing, replication_factor, moves) {
+        return decision;
+    }
     let leader = existing.leader.as_str();
     // A leader that must leave is renamed first, below; it is swapped out
     // as a follower on a later pass.
@@ -148,6 +151,52 @@ pub(super) fn raft_step<'a>(
         },
         led_by(existing, to),
     )
+}
+
+/// Ends the move of an RF 1 shard, which placement grew to its leader and
+/// the destination ([`grown`]): once the group's leader reports the
+/// destination's copy voting, the set shrinks to it and it leads. Until
+/// then the shard waits, and nothing else changes its set or leader, so the
+/// one broker the move is for stays the replica.
+fn finish_single_move(
+    existing: &ShardAssignment,
+    replication_factor: u32,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let [to] = existing.replicas.as_slice() else {
+        return None;
+    };
+    if replication_factor.max(1) != 1 {
+        return None;
+    }
+    if let Err(blocked) = seat_open(existing) {
+        return Some(Decision::Waiting(blocked));
+    }
+    // The store refuses the shrink on the same check: a set of the
+    // destination alone, before its copy votes, would let that empty copy
+    // form a second group (#2905).
+    let next = BTreeSet::from([to.clone()]);
+    if existing.holds_formed_set(&next) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    if moves.paused() {
+        return Some(Decision::Waiting(Blocked::Paused));
+    }
+    if moves.raft_replacements >= RAFT_REPLACEMENTS_PER_PASS {
+        return Some(Decision::Waiting(Blocked::MoveLimit));
+    }
+    moves.raft_replacements += 1;
+    Some(Decision::Move(
+        MoveStep::RaftReplace {
+            from: existing.leader.clone(),
+            to: to.clone(),
+        },
+        ShardAssignment {
+            leader: to.clone(),
+            replicas: Vec::new(),
+            ..existing.renamed()
+        },
+    ))
 }
 
 /// Swaps a follower that must leave for a live node outside the set.
@@ -293,6 +342,19 @@ pub(super) fn seat_open(existing: &ShardAssignment) -> Result<(), Blocked> {
 pub(super) fn seat_moved(existing: &ShardAssignment, to: &str) -> ShardAssignment {
     ShardAssignment {
         leader: to.to_string(),
+        ..existing.renamed()
+    }
+}
+
+/// An RF 1 shard's set `existing` grown by `to`: the first half of moving
+/// it. Its leader stays, so the group adds `to` as a learner and then a
+/// voter while the old copy still holds every record, and
+/// [`finish_single_move`] drops the old copy once `to` votes. A direct
+/// write of `{to}` would be held by the store: `to`'s empty copy would be
+/// the whole group (#2905).
+pub(super) fn grown(existing: &ShardAssignment, to: &str) -> ShardAssignment {
+    ShardAssignment {
+        replicas: vec![to.to_string()],
         ..existing.renamed()
     }
 }

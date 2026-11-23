@@ -1234,8 +1234,10 @@ impl EngineShards for RaftShards {
                 };
                 taken.push((key.clone(), assignment.routing));
                 placed.insert(key.clone(), assignment.leader.clone());
+                // Over the count is an RF 1 shard mid-move: its group already
+                // formed, and the destination must report its copy to join.
                 let full = wanted
-                    .is_some_and(|wanted| brokers_of(&assignment).len() == wanted.max(1) as usize);
+                    .is_some_and(|wanted| brokers_of(&assignment).len() >= wanted.max(1) as usize);
                 if let Some(wanted) = wanted {
                     wanted_rf.insert(key.clone(), wanted);
                 }

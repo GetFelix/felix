@@ -1,0 +1,1 @@
+- An operator can move an RF 1 Raft shard to another broker; it used to be refused with `single_member`. The move grows the set to the leader and the destination, and once the group's leader reports the destination's copy voting, placement shrinks the set to the destination and names it leader (#3012). The old copy keeps its directory, as for other removed copies.

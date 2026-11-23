@@ -4774,8 +4774,11 @@ an older control plane added:
   then hands leadership to the new broker once it has caught up. It is
   refused while a member is not serving (`member_down`), while the target is
   not stored for the current set (`set_unsettled`), and while the
-  destination is still a learner (`not_a_member`), and for a one-member group
-  (`single_member`; moving one is not supported yet).
+  destination is still a learner (`not_a_member`).
+- An RF 1 shard keeps its leader and grows to the destination first, since
+  one voter has no voter to share with the next set. Placement shrinks the
+  set to the destination once the leader reports its copy voting, and the
+  store's formed-set hold refuses that write any earlier (#3012).
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 

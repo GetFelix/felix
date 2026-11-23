@@ -341,15 +341,44 @@ fn an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat() {
     assert_eq!(step.expected_generation, existing[0].generation);
 }
 
-/// **A one-member group cannot be moved by an operator yet.** The store holds
-/// a one-voter set in place, so the write would be accepted and then refused
-/// for good; it is refused up front with its own code.
-#[test]
-fn an_operator_move_of_a_one_member_raft_shard_is_refused() {
-    let streams = vec![replicated_stream("orders", 1, 1)];
+/// An RF 1 shard of `orders` on `broker-a` alone, formed, its one voter
+/// reported.
+fn single_on_a() -> ShardAssignment {
     let mut single = member_of(0, "broker-a");
     single.replicas.clear();
-    let existing = vec![single];
+    let members: BTreeMap<String, u64> = [("broker-a".to_string(), 7)].into();
+    single.raft_target.as_mut().unwrap().members = members.clone();
+    single.raft_voters.as_mut().unwrap().members = members.clone();
+    single.raft_copy_ids = members;
+    single
+}
+
+/// `single_on_a` grown by `broker-b` with its copy reported and the
+/// target stored, voters as `voters` names them.
+fn single_grown(voters: &[&str]) -> ShardAssignment {
+    let mut grown = single_on_a();
+    grown.replicas = vec!["broker-b".to_string()];
+    let members: BTreeMap<String, u64> =
+        [("broker-a".to_string(), 7), ("broker-b".to_string(), 9)].into();
+    grown.raft_target = Some(RaftTarget {
+        counter: 3,
+        members: members.clone(),
+    });
+    grown.raft_copy_ids = members.clone();
+    grown.raft_voters.as_mut().unwrap().members = members
+        .into_iter()
+        .filter(|(node, _)| voters.contains(&node.as_str()))
+        .collect();
+    grown
+}
+
+/// **An operator move of an RF 1 shard grows its set first (#3012).** A
+/// set of the destination alone would make its empty copy the whole group,
+/// so the leader stays and the destination joins beside it.
+#[test]
+fn an_operator_move_of_a_one_member_raft_shard_grows_its_set() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let existing = vec![single_on_a()];
     let nodes = live(&["broker-a", "broker-b"]);
     let catalog = Catalog {
         streams: &streams,
@@ -360,9 +389,57 @@ fn an_operator_move_of_a_one_member_raft_shard_is_refused() {
         policy: raft(),
     };
 
-    let refused = start_move(&catalog, &existing[0].key, "broker-b").unwrap_err();
-    assert_eq!(refused, Refused::SingleMember);
-    assert_eq!(refused.code(), "single_member");
+    let step = start_move(&catalog, &existing[0].key, "broker-b").expect("a move");
+    assert_eq!(
+        step.step,
+        MoveStep::RaftReplace {
+            from: "broker-a".to_string(),
+            to: "broker-b".to_string()
+        }
+    );
+    assert_eq!(step.assignment.leader, "broker-a");
+    assert_eq!(step.assignment.replicas, vec!["broker-b".to_string()]);
+    // A set over the factor is the move in progress: no second one.
+    let grown = vec![single_grown(&["broker-a"])];
+    let catalog = Catalog {
+        existing: &grown,
+        ..catalog
+    };
+    assert_eq!(
+        start_move(&catalog, &grown[0].key, "broker-b").unwrap_err(),
+        Refused::SetUnsettled
+    );
+}
+
+/// **The grown set shrinks to the destination only once its copy votes.**
+/// Before the leader reports it, the shard waits: a set of the destination
+/// alone would be its empty copy. After, placement writes the destination
+/// alone and names it leader.
+#[test]
+fn a_grown_one_member_raft_shard_shrinks_once_the_destination_votes() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let nodes = live(&["broker-a", "broker-b"]);
+
+    let learning = vec![single_grown(&["broker-a"])];
+    let plan = plan_with(&streams, &[], &nodes, &learning, &NothingCaughtUp, raft());
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    assert!(
+        matches!(plan.waiting().next(), Some((_, Blocked::Unapplied))),
+        "{plan:?}"
+    );
+
+    let voting = vec![single_grown(&["broker-a", "broker-b"])];
+    let plan = plan_with(&streams, &[], &nodes, &voting, &NothingCaughtUp, raft());
+    let (_, step, written) = plan.moves().next().expect("the shrink");
+    assert_eq!(
+        step,
+        &MoveStep::RaftReplace {
+            from: "broker-a".to_string(),
+            to: "broker-b".to_string()
+        }
+    );
+    assert_eq!(written.leader, "broker-b");
+    assert!(written.replicas.is_empty());
 }
 
 /// One set change at a time, and only with every member serving: the joint
