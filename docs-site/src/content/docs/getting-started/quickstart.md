@@ -43,11 +43,12 @@ durable stream and the `config` and `stats` caches can be watched, counted in
 and read back. The [use cases](/use-cases/overview/) each end with a short "Try
 it" that runs against this stack.
 
-This stack's broker has no node id, so it runs standalone, on the older hybrid
-shard engine, and logs a warning saying so. That is on purpose for now: the
-stack's cache watches are not served on Raft yet
-([#2792](https://github.com/GetFelix/felix/issues/2792)). A clustered broker
-runs Raft. `felix-cluster up` below also runs the hybrid engine, for the same
+This stack's broker has no node id, so it runs standalone. A standalone broker
+with durable storage runs each durable shard as a Raft group of one, with no
+peers. This stack pins the older hybrid shard engine
+(`FELIX_SHARD_ENGINE=hybrid`, in `compose.yaml`) for now, because the stack's
+keyed cache watches are not served on Raft yet
+([#2792](https://github.com/GetFelix/felix/issues/2792)). `felix-cluster up` below also runs the hybrid engine, for the same
 reason, unless you set `FELIX_SHARD_ENGINE=raft`
 ([#2985](https://github.com/GetFelix/felix/issues/2985)).
 

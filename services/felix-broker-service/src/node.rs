@@ -20,7 +20,7 @@
 //! submodule. Their order is load-bearing, and the comments at each step say
 //! why.
 
-mod cache_expiry;
+pub(crate) mod cache_expiry;
 mod cluster;
 mod from_view;
 mod handoff;

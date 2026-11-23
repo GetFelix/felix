@@ -15,7 +15,9 @@ use crate::shards::routing::{Dispatch, StreamEngine, dispatch};
 
 /// A standalone broker's shards and the engine its serving paths ask, fed
 /// by [`run`] until the returned token is cancelled.
-fn standalone(broker: &Arc<Broker>) -> (Arc<RaftShards>, Arc<StreamEngine>, CancellationToken) {
+pub(crate) fn standalone(
+    broker: &Arc<Broker>,
+) -> (Arc<RaftShards>, Arc<StreamEngine>, CancellationToken) {
     let runtime =
         GroupRuntime::start(LOCAL_MEMBER, Default::default(), Arc::new(NoPeers)).expect("runtime");
     let shards = RaftShards::new(
@@ -38,7 +40,11 @@ fn standalone(broker: &Arc<Broker>) -> (Arc<RaftShards>, Arc<StreamEngine>, Canc
 /// Publish `payloads` to `orders` shard 0 the way the publish path does:
 /// routed by `resolve_route` with no ingress router, then proposed to the
 /// group at the term routing answered.
-async fn publish(broker: &Broker, engine: &StreamEngine, payloads: &[&'static [u8]]) -> u64 {
+pub(super) async fn publish(
+    broker: &Broker,
+    engine: &StreamEngine,
+    payloads: &[&'static [u8]],
+) -> u64 {
     let route = resolve_route(
         broker,
         Authority {
@@ -83,7 +89,7 @@ async fn publish(broker: &Broker, engine: &StreamEngine, payloads: &[&'static [u
     offset.expect("an offset")
 }
 
-async fn led(shards: &Arc<RaftShards>) -> u64 {
+pub(super) async fn led(shards: &Arc<RaftShards>) -> u64 {
     let orders = key("orders", 0);
     until("the standalone group to be led", || {
         shards.leading(&orders).is_some()
@@ -186,3 +192,5 @@ fn a_fleet_of_one_has_every_raft_feature() {
     }
     assert!(gate.supports(fleet::RAFT_CONDITIONAL_BATCHES));
 }
+
+mod serving;

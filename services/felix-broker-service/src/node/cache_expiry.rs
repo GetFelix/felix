@@ -43,7 +43,7 @@ pub(super) async fn run(
 }
 
 /// One pass over the cache shards open here.
-pub(super) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>) {
+pub(crate) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>) {
     let cache = broker.cache();
     for (tenant_id, namespace, name, shard) in cache.open_shards() {
         let key = ShardKey {

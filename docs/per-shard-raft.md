@@ -2014,7 +2014,17 @@ behind the `raft` cargo feature of `felix-replication`, which the broker
 service turns on by default. A broker with a node id runs it unless
 `FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
 the internal listener or durable storage. A standalone broker, with no node
-id, does not run it.
+id, runs it too, when it has durable storage: each durable stream shard and
+each durable cache shard is a group of one voter, named `standalone`, with
+no peer (every send is refused as unreachable), no internal listener and no
+control-plane placement. `shards/raft/standalone.rs` gives the runtime the
+assignments a control plane would: this broker as leader, at the incarnation
+the stream or cache registered with, and it forms and leads each group off
+the broker's own registrations. The broker is its whole fleet, so every
+`raft_*` feature is finalized from the start. A commit waits for one fsync
+on the single voter. A standalone broker with no durable storage keeps every
+stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
+selects the hybrid, deprecated.
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:

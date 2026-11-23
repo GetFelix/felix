@@ -168,4 +168,4 @@ pub(crate) async fn run(shards: Arc<RaftShards>, broker: Arc<Broker>, stop: Canc
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
