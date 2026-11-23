@@ -5,13 +5,21 @@
 //! alone: itself as leader and only voter, at the incarnation the stream or
 //! cache was registered with, and the target its own copy ids make.
 
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_common::fleet::{self, FleetGate};
 use felix_common::random::HashMap;
-use felix_replication::raft::{RaftReply, RaftRequest, RaftTransport, Refused};
+use felix_replication::raft::{
+    GapSnapshot, GroupId, MemberId, RaftReply, RaftRequest, RaftTransport, Refused, mark_name,
+    reform_report,
+};
+use felix_storage::log::LogConfig;
+use felix_storage::raft_copy::{Alone, Aloned, CopyRoot, GapFold, LocalRecord, WireReport};
 use tokio_util::sync::CancellationToken;
 
 use super::RaftShards;
@@ -111,6 +119,54 @@ impl RaftShards {
         all
     }
 
+    /// Re-form the group of one in `dir` if a relaxed crash rotated its
+    /// copy. Under `Periodic` a machine crash rotates the storage id, which
+    /// turns every copy into a new, empty member; a group of one has no peer
+    /// to catch it up, so it starts a new epoch from its own kept copy. It
+    /// keeps every synced record and starts past every offset it gave out.
+    /// See `docs/per-shard-raft.md`, "A standalone broker re-forms itself".
+    pub(super) async fn reform_alone(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+        root: &CopyRoot,
+        dir: &Path,
+        config: &LogConfig,
+    ) -> anyhow::Result<()> {
+        let spacing = config.index_spacing_bytes;
+        let read = |probes: &BTreeSet<u64>, epoch: u64| {
+            reform_report(dir, spacing, probes, epoch, false)
+                .map(|report| WireReport::from(&report))
+        };
+        let kind = key.kind;
+        let local = self.local.as_str();
+        let fold = |copy: u64| {
+            Box::new(GapSnapshot::new(
+                kind,
+                BTreeSet::from([MemberId::new(local, copy)]),
+            )) as Box<dyn GapFold>
+        };
+        let member = |copy: u64| MemberId::new(local, copy).to_string();
+        let done = root
+            .reform_alone(Alone {
+                shard: &mark_name(key),
+                dir,
+                label: &GroupId::new(key.clone(), incarnation).to_string(),
+                incarnation,
+                broker: local,
+                config,
+                read: &read,
+                fold: &fold,
+                member: &member,
+                record: &LocalRecord,
+            })
+            .await?;
+        if let Aloned::Reformed { epoch } = done {
+            tracing::warn!(shard = ?key, epoch, "a relaxed crash rotated this shard's copy; re-formed it alone, keeping every synced record");
+        }
+        Ok(())
+    }
+
     /// Whether every shard in `fed` is led and served here.
     fn all_led(&self, fed: &[ShardKey]) -> bool {
         fed.iter().all(|key| self.leading(key).is_some())
@@ -147,6 +203,7 @@ fn alone(key: ShardKey, incarnation: u64, target: Option<RaftTarget>) -> ShardAs
 /// open, form and lead a group for each durable shard, and close one whose
 /// stream or cache went away.
 pub(crate) async fn run(shards: Arc<RaftShards>, broker: Arc<Broker>, stop: CancellationToken) {
+    shards.alone.store(true, Ordering::Release);
     let mut seen = None;
     let mut last = tokio::time::Instant::now();
     let mut settled = false;

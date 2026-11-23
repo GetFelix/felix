@@ -193,4 +193,5 @@ fn a_fleet_of_one_has_every_raft_feature() {
     assert!(gate.supports(fleet::RAFT_CONDITIONAL_BATCHES));
 }
 
+mod reform;
 mod serving;

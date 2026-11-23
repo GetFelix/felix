@@ -201,7 +201,7 @@ impl CopyRoot {
         &self,
         a: &Alone<'_>,
         plan: &AlonePlan,
-        step: &dyn Fn() -> io::Result<()>,
+        step: &(dyn Fn() -> io::Result<()> + Sync),
     ) -> io::Result<Aloned> {
         let bases: Vec<EpochBase> = plan.bases.iter().copied().map(EpochBase::from).collect();
         let epoch = bases.len() as u64;
