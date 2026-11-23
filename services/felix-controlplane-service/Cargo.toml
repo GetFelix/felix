@@ -47,7 +47,7 @@ dashmap = { workspace = true }
 base64 = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = "0.4"
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 reqwest = { workspace = true, features = ["stream"] }
 sha2 = "0.11"
 parking_lot = { workspace = true }
