@@ -228,17 +228,18 @@ impl DiskLog {
     /// refuses it before writing. A raise
     /// without it, or to another generation, clears the mark.
     ///
-    /// `adopt` lets a committed vote replace an uncommitted one for another
-    /// leader at the same generation; see [`adopts`].
+    /// `vote` is openraft's [`Self::save_vote`]. It lets a committed vote
+    /// replace an uncommitted one for another leader at the same generation
+    /// (see [`adopts`]), and leaves a raised generation to the ballot alone.
     async fn raise_ballot(
         &self,
         generation: u64,
         leader: Option<&str>,
         committed: bool,
         kept: Option<ReplicaSet>,
-        adopt: bool,
+        vote: bool,
     ) -> Result<Option<GenerationCheck>> {
-        let adopt = adopt && committed;
+        let adopt = vote && committed;
         let check = move |accepted: &Accepted, leader: Option<&str>| {
             if adopt && leader.is_some_and(|leader| adopts(accepted, generation, leader)) {
                 return None;
@@ -286,7 +287,11 @@ impl DiskLog {
                 )?;
             }
             let raised = generation > inner.accepted_generation.load(Ordering::Acquire);
-            if raised {
+            // The open takes the generation from a ballot ahead of `replica`,
+            // so a vote does not wait for `replica` too: that would double the
+            // fsyncs of every vote when many groups elect at once (#2317). The
+            // next commit write carries the generation.
+            if raised && !(vote && leader.is_some()) {
                 let state = replica_state::ReplicaState {
                     accepted_generation: generation,
                     ..inner.replica_state()
