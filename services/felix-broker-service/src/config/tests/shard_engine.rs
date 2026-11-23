@@ -39,29 +39,62 @@ fn a_broker_with_no_engine_setting_runs_raft() {
     assert_eq!(ALL.resolve(hybrid).expect("asked"), ShardEngine::Hybrid);
 }
 
-/// A broker that cannot run Raft falls back to the hybrid path when it was
-/// not asked for an engine, and is refused when it was asked for Raft.
+/// A standalone broker runs the hybrid path when it was not asked for an
+/// engine, and is refused when it was asked for Raft.
 #[test]
-fn a_broker_that_cannot_run_raft_runs_hybrid_unless_raft_was_asked_for() {
+fn a_standalone_broker_runs_hybrid_unless_raft_was_asked_for() {
     let standalone = RaftPrerequisites {
         membership: false,
         peer_transport: false,
+        durable_storage: false,
         ..ALL
     };
+    assert_eq!(
+        standalone.resolve(None).expect("resolve"),
+        ShardEngine::Hybrid
+    );
+    let err = standalone
+        .resolve(Some(ShardEngine::Raft))
+        .expect_err("refused");
+    assert!(
+        err.to_string()
+            .contains("FELIX_SHARD_ENGINE=raft is refused"),
+        "{err}"
+    );
+}
+
+/// A broker with a node id registers, and the control plane places shards
+/// on it beside Raft peers, so with no engine setting it runs Raft or does
+/// not start; the refusal names what Raft needs.
+#[test]
+fn a_registering_broker_that_cannot_run_raft_is_refused() {
     let in_memory = RaftPrerequisites {
         durable_storage: false,
         ..ALL
     };
-    for broker in [standalone, in_memory] {
-        assert_eq!(broker.resolve(None).expect("resolve"), ShardEngine::Hybrid);
+    let no_listener = RaftPrerequisites {
+        peer_transport: false,
+        ..ALL
+    };
+    let no_feature = RaftPrerequisites {
+        compiled: false,
+        ..ALL
+    };
+    for (broker, needs) in [
+        (in_memory, "FELIX_DURABLE_STORAGE_DIR"),
+        (no_listener, "FELIX_INTERNAL_BIND"),
+        (no_feature, "cargo feature `raft`"),
+    ] {
+        let err = broker.resolve(None).expect_err("refused");
+        let text = err.to_string();
+        assert!(
+            text.contains("FELIX_NODE_ID") && text.contains(needs),
+            "{text}"
+        );
         let err = broker
             .resolve(Some(ShardEngine::Raft))
             .expect_err("refused");
-        assert!(
-            err.to_string()
-                .contains("FELIX_SHARD_ENGINE=raft is refused"),
-            "{err}"
-        );
+        assert!(err.to_string().contains(needs), "{err}");
     }
 }
 

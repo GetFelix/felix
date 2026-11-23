@@ -36,6 +36,18 @@ impl FromStr for ShardEngine {
     }
 }
 
+/// Warn that the cluster's shards run the deprecated hybrid engine. Called
+/// with the engine in effect: the setting for an in-memory store, the
+/// recorded one for a Raft group, where the record wins over the setting.
+pub(crate) fn warn_if_hybrid(engine: &str) {
+    if engine == ShardEngine::Hybrid.as_str() {
+        tracing::warn!(
+            "this cluster's shards run the hybrid engine, which is deprecated, frozen and will \
+             be removed; new clusters run Raft (leave FELIX_SHARD_ENGINE unset)"
+        );
+    }
+}
+
 /// `FELIX_SHARD_ENGINE`, or the default when unset.
 pub(super) fn shard_engine_from_env() -> Result<ShardEngine> {
     match std::env::var("FELIX_SHARD_ENGINE") {

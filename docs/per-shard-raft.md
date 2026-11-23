@@ -1978,9 +1978,10 @@ flight.
 
 The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
 behind the `raft` cargo feature of `felix-replication`, which the broker
-service turns on by default. A broker runs it unless `FELIX_SHARD_ENGINE` is
-`hybrid` (deprecated) or the broker lacks a node id, the internal listener or
-durable storage.
+service turns on by default. A broker with a node id runs it unless
+`FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
+the internal listener or durable storage. A standalone broker, with no node
+id, does not run it.
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:

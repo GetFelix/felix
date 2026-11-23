@@ -281,7 +281,8 @@ fn another_shard_engine_is_refused_whatever_the_group() {
     let err = admit(dir.path(), &identity(Some("g-1"), "raft")).expect_err("refused");
     let text = err.to_string();
     assert!(text.contains("runs shard engine hybrid"), "{text}");
-    assert!(text.contains("FELIX_SHARD_ENGINE=raft"), "{text}");
+    assert!(text.contains("FELIX_DURABLE_STORAGE_DIR"), "{text}");
+    assert!(!text.contains("FELIX_SHARD_ENGINE=hybrid"), "{text}");
     assert_eq!(read(dir.path()).expect("read"), None, "nothing is recorded");
     assert!(admit(dir.path(), &identity(None, "raft")).is_err());
 }
@@ -293,7 +294,9 @@ fn a_raft_broker_is_admitted_by_a_raft_cluster_only() {
     let dir = tempfile::tempdir().expect("dir");
     admit_as(dir.path(), &identity(None, "raft"), "raft").expect("admitted");
     let err = admit_as(dir.path(), &identity(None, "hybrid"), "raft").expect_err("refused");
-    assert!(err.to_string().contains("runs shard engine raft"), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("runs shard engine raft"), "{text}");
+    assert!(!text.contains("FELIX_SHARD_ENGINE=hybrid"), "{text}");
 }
 
 /// A broker that does not register shares no shard, so a standalone broker

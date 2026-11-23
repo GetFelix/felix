@@ -285,6 +285,22 @@ where
                 return Ok(());
             }
         },
+        // No directory to judge, but a registering broker's engine still
+        // has to be the cluster's.
+        (None, Some(base_url), _) => {
+            if let Some(engine) = cluster_engine {
+                tokio::select! {
+                    checked = identity::check_engine(&membership_client, base_url, &credential, engine) => checked?,
+                    () = shutdown.as_mut() => {
+                        tracing::info!("stopped before the control plane answered; nothing was opened");
+                        sync_shutdown.cancel();
+                        peer_shutdown.cancel();
+                        return Ok(());
+                    }
+                }
+            }
+            None
+        }
         _ => None,
     };
     let group = sync::GroupCheck::for_start(
@@ -828,9 +844,12 @@ fn log_shard_engine(
             "FELIX_SHARD_ENGINE=hybrid is deprecated: the hybrid shard engine is frozen and \
              will be removed; new clusters run Raft (leave FELIX_SHARD_ENGINE unset)"
         ),
-        (ShardEngine::Hybrid, None) => tracing::info!(
+        // Only a standalone broker gets here: one with a node id that
+        // cannot run Raft is refused by `RaftPrerequisites::resolve`.
+        (ShardEngine::Hybrid, None) => tracing::warn!(
             why = raft_missing.unwrap_or_default(),
-            "durable stream shards run on the hybrid engine: this broker cannot run Raft"
+            "durable stream shards run on the deprecated hybrid engine, which will be removed; \
+             to run Raft, set FELIX_NODE_ID, FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR"
         ),
     }
 }

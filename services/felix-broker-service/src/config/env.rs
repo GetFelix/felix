@@ -792,10 +792,11 @@ impl RaftPrerequisites {
     }
 
     /// The engine this broker runs for `setting`. Unset is Raft wherever
-    /// Raft can run; a broker that cannot (one with no cluster identity,
-    /// listener or durable storage) shares no Raft shard, so it runs the
-    /// hybrid path. Asking for Raft where it cannot run is refused: coming
-    /// up as a hybrid broker would put two engines on one shard.
+    /// Raft can run. A broker with a cluster identity that cannot run Raft
+    /// is refused rather than run the hybrid engine: the control plane
+    /// would place shards on it beside Raft peers. A standalone broker
+    /// shares no shard, so it runs the hybrid path until the hybrid is
+    /// removed. Asking for Raft where it cannot run is refused too.
     pub(crate) fn resolve(&self, setting: Option<ShardEngine>) -> Result<ShardEngine> {
         match (setting, self.missing()) {
             (Some(ShardEngine::Raft), Some(missing)) => {
@@ -803,6 +804,10 @@ impl RaftPrerequisites {
             }
             (Some(engine), _) => Ok(engine),
             (None, None) => Ok(ShardEngine::Raft),
+            (None, Some(missing)) if self.membership => anyhow::bail!(
+                "this broker has a cluster identity (FELIX_NODE_ID), so its durable stream \
+                 shards run on Raft, but {missing}"
+            ),
             (None, Some(_)) => Ok(ShardEngine::Hybrid),
         }
     }

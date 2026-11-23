@@ -163,15 +163,30 @@ broker keeps retrying either way and starts once the control plane answers.
 ### This broker runs another shard engine
 
 ```
-ERROR this broker runs shard engine raft but the cluster was formed with hybrid; set FELIX_SHARD_ENGINE=hybrid on this broker (the control plane's record does not change)
+ERROR this broker runs shard engine hybrid but the cluster was formed with raft; leave FELIX_SHARD_ENGINE unset and give the broker what Raft needs: FELIX_NODE_ID, FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR
 ```
 
 The control plane records the cluster's shard engine when the cluster forms,
-and a broker whose engine differs refuses to start. Set `FELIX_SHARD_ENGINE` on
-the broker to the engine the message names. Raft is the default, so this
-usually means the cluster was formed with `FELIX_SHARD_ENGINE=hybrid`, which is
-deprecated. To move such a cluster to Raft, start it again on empty data
-directories with `FELIX_SHARD_ENGINE` unset everywhere.
+and a broker whose engine differs refuses to start. A new cluster is formed
+for Raft, so this usually means the broker has `FELIX_SHARD_ENGINE=hybrid` set:
+remove it, and give the broker the settings the message names.
+
+The other direction, a Raft broker and a cluster formed with
+`FELIX_SHARD_ENGINE=hybrid`, cannot be fixed on the broker: the hybrid engine
+is deprecated and no Raft broker joins such a cluster. Form a new cluster, on
+empty data directories, with `FELIX_SHARD_ENGINE` unset everywhere.
+
+### This broker cannot run Raft
+
+```
+ERROR this broker has a cluster identity (FELIX_NODE_ID), so its durable stream shards run on Raft, but it needs durable storage (FELIX_DURABLE_STORAGE_DIR)
+```
+
+A broker with a node id registers with the control plane, which places
+shards on it beside brokers that run Raft, so it runs Raft or does not start.
+Give it the setting the message names: durable storage, the internal listener
+(`FELIX_INTERNAL_BIND`), or a build with the `raft` cargo feature, which
+release builds have.
 
 ### A peer is refused
 

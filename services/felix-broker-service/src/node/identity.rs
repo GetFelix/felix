@@ -38,3 +38,19 @@ pub(super) async fn admit(
     let identity = group::await_identity(client, base_url, credential).await;
     group::admit(root, &identity, engine.map(ShardEngine::as_str))
 }
+
+/// Compare a registering broker that keeps no data directory with the
+/// cluster's engine: it has no directory to judge, but a shard placed on it
+/// still has to run the cluster's engine.
+pub(super) async fn check_engine(
+    client: &reqwest::Client,
+    base_url: &str,
+    credential: &Option<NodeCredential>,
+    engine: ShardEngine,
+) -> Result<()> {
+    let Some(credential) = credential else {
+        return Ok(());
+    };
+    let identity = group::await_identity(client, base_url, credential).await;
+    group::check_engine(&identity, engine.as_str())
+}
