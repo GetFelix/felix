@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795422583250,
+  "lastUpdate": 1795423186850,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -84150,6 +84150,72 @@ window.BENCHMARK_DATA = {
             "range": "249.39",
             "unit": "us",
             "extra": "trials: 5\nmedian: 548.00\nmean: 647.60\nstdev: 249.39\ncv: 38.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2005dd7b0aa2d9c0b5a387d398f535649c023530",
+          "message": "test(sim): Raft opens only what Raft elected, and the coverage hand-off status (#2258) (#2996)\n\n* feat(raft): Raft is the default shard engine (#2167)\n\nWith FELIX_SHARD_ENGINE unset, a control plane forms new clusters for\nRaft and a broker with a node id, internal listener and durable storage\nruns its durable stream shards on Raft. The broker service turns on the\nraft feature by default, so the release build has the engine. A broker\nthat cannot run Raft keeps the hybrid path and is not compared with the\ncontrol plane's engine unless it registers. FELIX_SHARD_ENGINE=hybrid is\ndeprecated and logs a warning. The cluster harness pins brokers to the\nhybrid so the hybrid tests keep running until deletion.\n\ndocs/hybrid-retirement.md is rewritten for a fresh 0.8: no bridge build,\nno shard_raft or hybrid_retired latch, deletion gated on the Raft gate's\nparity items, #2954 and perf against v0.7.0.\n\n* build(raft): the broker binary depends on openraft; gate test-only Raft items\n\nThe release build now has the raft feature, so the containment check no\nlonger lists felix-broker-service, and two items only tests use are\ncompiled only for tests, so the default build has no dead-code warnings.\n\n* chore: note the spec pairing for the Raft default\n\nSpec-Unaffected: the felix-replication change only compiles two test-only items under cfg(test/testing); the engine default changes configuration, not the protocol either engine runs.\n\n* fix(raft): a broker with a node id runs Raft or refuses to start\n\nA registering broker with FELIX_SHARD_ENGINE unset that could not run Raft\n(no durable storage, no internal listener, no raft feature) fell back to the\nhybrid engine and, without a data directory, skipped the comparison with the\ncontrol plane's engine. It now refuses to start and names the missing\nprerequisite, and every registering broker is compared with the recorded\nengine whether or not it keeps a data directory.\n\nA standalone broker still runs the hybrid path and warns, naming how to run\nRaft. The engine-mismatch refusal advises the prerequisite rather than the\ndeprecated hybrid setting, and the control plane's deprecation warning fires\nonly when the engine in effect is hybrid (for a Raft group, the recorded one).\n\ncompose.yaml and felix-cluster up stay on the hybrid path until keyed cache\nwatches work on Raft (#2792, #2985); the docs say so.\n\nSpec-Unaffected: startup configuration check and log lines; no replication or apply-path change\n\n* test(sim): a broker opens a Raft shard only in a term Raft elected it in (#2258)\n\nThe Raft groups simulation now records every open the engine reports to\nthe broker, through report_to, and checks it: at the instant of the open\na majority has flushed an entry of the term, no term has two openers, the\nwatch saw no other member lead it, and the final log holds an entry of\nit. This replaces the hybrid's adopted-matches-opened checker.\n\ndocs/hybrid-retirement.md: the coverage hand-off tables gain a status\ncolumn, row by row, saying which Raft check landed and which is missing.\n\nSpec-Unaffected: tests and docs only; no modelled code changes.",
+          "timestamp": "2026-11-23T08:35:11Z",
+          "tree_id": "8ffff823a588a4fc6880b0c041f63c296ab81d3d",
+          "url": "https://github.com/GetFelix/felix/commit/2005dd7b0aa2d9c0b5a387d398f535649c023530"
+        },
+        "date": 1795423169867,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 62.40\nstdev: 0.55\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 82,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 82.00\nmean: 82.20\nstdev: 1.10\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 110,
+            "range": "24.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 110.00\nmean: 119.20\nstdev: 24.97\ncv: 20.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 79,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 79.00\nmean: 79.40\nstdev: 0.55\ncv: 0.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 181,
+            "range": "44.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 194.40\nstdev: 44.15\ncv: 22.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 280,
+            "range": "99.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 280.00\nmean: 316.40\nstdev: 99.37\ncv: 31.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
