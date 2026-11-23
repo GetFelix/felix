@@ -40,7 +40,8 @@ pub struct ShardOwner {
     /// not been told where clients reach it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
-    /// The ownership epoch this describes. `0` from a broker not in a cluster.
+    /// The ownership epoch this describes: the leader's term on a Raft shard,
+    /// the assignment's generation otherwise. `0` from a broker not in a cluster.
     pub generation: u64,
     /// Why no broker can serve the shard right now, as the `reason` of a
     /// `shard_unavailable` error (`not_assigned`, `owner_unavailable`, ...).

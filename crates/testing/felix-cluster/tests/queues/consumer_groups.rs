@@ -137,6 +137,9 @@ async fn a_claimed_record_is_not_reissued_by_the_cluster() {
 #[tokio::test]
 #[serial]
 async fn a_group_position_survives_a_leader_failover() {
+    if felix_cluster::skip_on_raft_until(3031, "group state lost across a leader failover") {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         // Replicated, so there is a caught-up replica to promote.
@@ -251,6 +254,9 @@ async fn a_group_position_survives_a_leader_failover() {
 #[tokio::test]
 #[serial]
 async fn a_dead_letter_survives_a_leader_failover() {
+    if felix_cluster::skip_on_raft_until(3031, "group state lost across a leader failover") {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3)],

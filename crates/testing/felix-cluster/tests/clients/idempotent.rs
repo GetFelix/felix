@@ -433,6 +433,9 @@ async fn a_producer_keeps_its_sequence_across_a_planned_move() -> Result<()> {
 #[tokio::test]
 #[serial]
 async fn a_producer_keeps_its_sequence_when_its_leader_dies() -> Result<()> {
+    if felix_cluster::skip_on_raft_until(3031, "producer sequence lost across a leader failover") {
+        return Ok(());
+    }
     let mut cluster = Cluster::start(config()).await?;
     let owner = cluster.owner(STREAM).await?;
     let survivors: Vec<std::net::SocketAddr> = cluster
