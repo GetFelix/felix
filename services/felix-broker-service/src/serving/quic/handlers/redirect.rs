@@ -18,7 +18,8 @@ use crate::serving::quic::client_error::ClientError;
 ///
 /// A Raft shard is served on its leader once the term is open there, and on
 /// a follower that knows its leader, from the log up to what it committed.
-/// A member that knows no leader redirects or refuses, as for a write.
+/// A member that knows no leader refuses retryably. A broker with no member
+/// redirects to the leader placement names.
 ///
 /// This is checked before a reader registers, so it cannot see an ending that
 /// lands between it and the registration. [`stopped_serving`] is the check
@@ -73,9 +74,23 @@ pub(crate) fn redirect_for(
         // The engine's hint may name a dead leader. A reader needs the heard
         // one, so a member that has not heard it answers retryably instead.
         crate::shards::routing::Dispatch::Forward { .. }
-            if ingress.is_some_and(|ingress| ingress.engine_dispatch(&key).is_some()) =>
+            if ingress.is_some_and(|ingress| {
+                ingress.engine_holds(&key) && ingress.engine_dispatch(&key).is_some()
+            }) =>
         {
             crate::shards::routing::Dispatch::Unavailable(crate::shards::routing::Reason::NotReady)
+        }
+        // With no member here the redirect names the broker placement made
+        // leader, as the hybrid's does, and refuses one the cluster reports
+        // down rather than send the client to it.
+        crate::shards::routing::Dispatch::Forward { node_id, .. }
+            if ingress.is_some_and(|ingress| ingress.node_live(&node_id) == Some(false)) =>
+        {
+            crate::shards::routing::Dispatch::Unavailable(
+                crate::shards::routing::Reason::OwnerUnavailable(
+                    felix_router::Unavailable::LeaderNotLive { node_id }.to_string(),
+                ),
+            )
         }
         dispatched => dispatched,
     };
