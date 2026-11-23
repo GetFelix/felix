@@ -2336,7 +2336,9 @@ the broker's own registrations. The broker is its whole fleet, so every
 `raft_*` feature is finalized from the start. A commit waits for one fsync
 on the single voter. A standalone broker with no durable storage keeps every
 stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
-selects the hybrid, deprecated. A standalone data directory the hybrid wrote is refused at startup
+selects the hybrid, deprecated. After a machine crash under `Periodic` or
+`None` fsync each group re-forms itself from its own copy ("A standalone
+broker re-forms itself"). A standalone data directory the hybrid wrote is refused at startup
 with an error naming `FELIX_SHARD_ENGINE=hybrid`, which keeps serving it; 0.8 does not migrate it.
 The cluster
 test suites run on Raft by default too; the hybrid runs report only (see
@@ -5803,6 +5805,37 @@ change. This removes the last use of the control-plane lease. If its one
 copy rotates its id, the group has no voter. A copy that kept its records
 restarts as the single voter, and one that lost them waits for the
 operator command ("Re-forming a group"). See Questions, 1.
+
+### A standalone broker re-forms itself
+
+Under `Periodic` or `None` fsync a machine crash rotates the data
+directory's storage id, and every Raft copy on it reopens as a new, empty
+member. In a cluster the other voters catch it up. A standalone broker's
+groups have no other voter and no control plane, so each one re-forms
+itself, before its member opens (`shards/raft/standalone.rs`,
+`CopyRoot::reform_alone` in `raft_copy/alone.rs`):
+
+1. The start reads `relaxed-crash-id` (`docs/storage-format.md`). It acts
+   only when that file names the current storage id, and only on a copy
+   whose kept copies were all minted under an id a relaxed crash rotated
+   away. A clean stop, an `OnCommit` crash, a restore and an operator's
+   rotation leave no such evidence, and the copy stays as it is.
+2. It plans the next group epoch from its kept copy with the same rule
+   every re-form uses, with one difference: it keeps the copy's whole log,
+   not only what the saved commit covers. The commit is saved at most once
+   a second, so cutting there would drop records that were synced. The loss
+   is the unsynced tail `Periodic` already allows.
+3. The new epoch starts above every index the crashed run reserved, so no
+   offset it handed out is given out again.
+4. The plan is written to `raft-reform-alone` and synced before the copy is
+   stopped and started in the new epoch. A crash part way resumes that plan.
+   A plan made under an older storage id, left by a second crash during the
+   re-form, is dropped and the group is planned again.
+
+The planner refuses this mode unless the group's only placed broker is this
+one and every voter set it reads names only it. `FelixRaftReform` checks it
+with `Alone`: `FelixRaftReformAlone` holds `KeptLossBound`, and
+`FelixRaftReformAloneCutToCommit`, which cuts at the saved commit, breaks it.
 
 ## Cache and counters
 
