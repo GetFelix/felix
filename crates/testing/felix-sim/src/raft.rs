@@ -17,6 +17,7 @@
 //! [`RaftSimConfig::real_time_limit`] ends the process, naming the seed.
 
 mod net;
+mod opens;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -38,12 +39,14 @@ use felix_replication::raft::{
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
 use felix_storage::raft_copy::{ControlPlaneCopy, CopyRoot, Rotation};
+use felix_storage::raft_log::term_of_generation;
 use felix_storage::{DiskLog, EphemeralCache, StorageId, sim_fs, storage_identity};
 use parking_lot::{Mutex, RwLock};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use self::net::{Links, Wire};
+use self::opens::Opens;
 use crate::client::decode;
 use crate::run::Deadline;
 
@@ -133,6 +136,9 @@ pub struct RaftOutcome {
     /// How many terms had a leader, over every shard, as sampled each
     /// second. More than the shard count means leadership moved.
     pub terms_led: usize,
+    /// How many terms a broker opened a shard in, over every shard. Each
+    /// is checked against what Raft elected.
+    pub terms_opened: usize,
     pub history: History,
     /// What each member's live subscribers were handed, in delivery order.
     pub deliveries: Vec<Delivery>,
@@ -209,8 +215,9 @@ impl std::fmt::Display for RaftOutcome {
         writeln!(f, "{}", self.history.summary())?;
         writeln!(
             f,
-            "{} terms led, {} live deliveries, trace {:016x}",
+            "{} terms led, {} opened, {} live deliveries, trace {:016x}",
             self.terms_led,
+            self.terms_opened,
             self.deliveries.len(),
             self.trace_hash()
         )?;
@@ -356,6 +363,7 @@ struct Opening<'a> {
     control_plane: Option<ControlPlaneCopy>,
     /// Counts the storage ids minted, so a run repeats.
     minted: &'a AtomicU64,
+    opens: &'a Arc<Opens>,
 }
 
 /// Start a member's runtime and broker and open its logs. The streams are
@@ -370,9 +378,13 @@ async fn open_member(opening: Opening<'_>) -> anyhow::Result<(Member, Vec<Option
         copies,
         control_plane,
         minted,
+        opens,
     } = opening;
     let runtime = GroupRuntime::start(name(member), timers(rate), wire)
         .map_err(|err| anyhow::anyhow!("timers: {err:?}"))?;
+    // Before the first open: a group opened earlier reports to nobody.
+    let reporter = opens.reporter(member);
+    runtime.report_to(reporter.clone(), reporter);
     let engine = RaftEngine::new(runtime.clone());
     let broker = Broker::new(EphemeralCache::new().into());
     broker.set_read_bounds(Arc::new(RaftReads::new(engine.clone())));
@@ -522,6 +534,11 @@ struct Sim {
     findings: Mutex<Vec<String>>,
     deliveries: Mutex<Vec<Delivery>>,
     terms_led: AtomicUsize,
+    /// Per (shard, term): the member the watch saw lead it.
+    led: Mutex<BTreeMap<(u32, u64), usize>>,
+    opens: Arc<Opens>,
+    /// Per shard: the terms of the entries in its final read's log.
+    committed_terms: Mutex<BTreeMap<u32, BTreeSet<u64>>>,
     /// What the run is doing, for the finding of a run that never ends.
     phase: Mutex<&'static str>,
     next_value: AtomicU64,
@@ -671,6 +688,7 @@ impl Sim {
         let links = Arc::new(Links::default());
         let copies = config.disks != Disks::Off;
         let minted = AtomicU64::new(1);
+        let opens = Arc::new(Opens::default());
         let (mut members, mut dirs, mut rates) = (Vec::new(), Vec::new(), Vec::new());
         for member in 0..count {
             let rate = match config.clocks {
@@ -688,6 +706,7 @@ impl Sim {
                 copies,
                 control_plane: None,
                 minted: &minted,
+                opens: &opens,
             };
             let (opened, _) = open_member(opening).await?;
             members.push(opened);
@@ -723,7 +742,7 @@ impl Sim {
             };
             history.lists.insert(list(shard), spec);
         }
-        Ok(Arc::new(Self {
+        let sim = Arc::new(Self {
             members: members
                 .into_iter()
                 .map(|m| RwLock::new(Arc::new(m)))
@@ -738,6 +757,9 @@ impl Sim {
             findings: Mutex::new(Vec::new()),
             deliveries: Mutex::new(Vec::new()),
             terms_led: AtomicUsize::new(0),
+            led: Mutex::new(BTreeMap::new()),
+            opens,
+            committed_terms: Mutex::new(BTreeMap::new()),
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
             next_process: AtomicUsize::new(0),
@@ -747,7 +769,9 @@ impl Sim {
             credit: Mutex::new(BTreeMap::new()),
             flushed: Mutex::new(BTreeMap::new()),
             saves: Mutex::new(Vec::new()),
-        }))
+        });
+        sim.opens.watch(&sim);
+        Ok(sim)
     }
 
     /// The member running as `member` now.
@@ -1006,6 +1030,28 @@ impl Sim {
         }
     }
 
+    /// Every open was a term Raft elected its broker in, with the blank
+    /// entry committed ([`opens::judge`]). Returns how many terms opened.
+    fn check_opens(&self) -> usize {
+        let opens = self.opens.all();
+        let led = self.led.lock().clone();
+        let committed = self.committed_terms.lock().clone();
+        let seen = opens::Seen {
+            led: &led,
+            committed: &committed,
+        };
+        for finding in self
+            .opens
+            .early()
+            .into_iter()
+            .chain(opens::judge(&opens, &seen))
+        {
+            self.finding(finding);
+        }
+        let terms: BTreeSet<(u32, u64)> = opens.iter().map(|o| (o.shard, o.term)).collect();
+        terms.len()
+    }
+
     /// Every delivered record is in the final log at its offset. Offsets
     /// past the final read are left alone: a batch whose publisher timed out
     /// can commit, and be delivered, after the read was taken.
@@ -1240,7 +1286,6 @@ impl Sim {
 
     /// Checked every second of the run, faults or not.
     async fn watch(self: Arc<Self>, stop: CancellationToken) {
-        let mut leaders: BTreeMap<(u32, u64), usize> = BTreeMap::new();
         // Keyed by the member's start: a new copy's bound starts over.
         let mut bounds: BTreeMap<(u32, usize, u64), u64> = BTreeMap::new();
         let majority = self.majority();
@@ -1253,8 +1298,12 @@ impl Sim {
                         continue;
                     };
                     if status.role == Role::Leader {
-                        let first = *leaders.entry((shard, status.term)).or_insert(member);
-                        self.terms_led.store(leaders.len(), Ordering::Relaxed);
+                        let (first, led) = {
+                            let mut leaders = self.led.lock();
+                            let first = *leaders.entry((shard, status.term)).or_insert(member);
+                            (first, leaders.len())
+                        };
+                        self.terms_led.store(led, Ordering::Relaxed);
                         if first != member {
                             self.finding(format!(
                                 "{}: {} and {} both led term {}",
@@ -1547,6 +1596,7 @@ impl Sim {
             copies: true,
             control_plane,
             minted: &self.minted,
+            opens: &self.opens,
         };
         let (mut opened, rotations) = match open_member(opening).await {
             Ok(opened) => opened,
@@ -1751,8 +1801,21 @@ impl Sim {
                     Some(_) => {}
                 }
             }
+            let leader = self.leader(shard);
+            if let Some(leader) = leader
+                && reads[leader].is_some()
+            {
+                let at = self.at(leader);
+                let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
+                let terms = records_below(&at, shard, bound)
+                    .await
+                    .into_values()
+                    .filter_map(|held| held.generation.and_then(term_of_generation))
+                    .collect();
+                self.committed_terms.lock().insert(shard, terms);
+            }
             let mut history = self.history.lock();
-            match self.leader(shard).and_then(|leader| reads[leader].clone()) {
+            match leader.and_then(|leader| reads[leader].clone()) {
                 Some(read) => {
                     history.final_reads.insert(list(shard), read);
                 }
@@ -1790,6 +1853,7 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
                 report: checker::check(&History::default()),
                 findings: vec![format!("the groups did not start: {err:#}")],
                 terms_led: 0,
+                terms_opened: 0,
                 history: History::default(),
                 deliveries: Vec::new(),
             };
@@ -1816,6 +1880,7 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
         }
     }
     sim.check_deliveries();
+    let terms_opened = sim.check_opens();
     let history = sim.history.lock().clone();
     RaftOutcome {
         seed,
@@ -1823,6 +1888,7 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
         report: checker::check(&history),
         findings: sim.findings.lock().clone(),
         terms_led: sim.terms_led.load(Ordering::Relaxed),
+        terms_opened,
         history,
         deliveries: sim.deliveries.lock().clone(),
     }
