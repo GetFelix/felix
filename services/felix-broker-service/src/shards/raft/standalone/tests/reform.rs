@@ -210,3 +210,29 @@ async fn an_operator_rotation_does_not_re_form() {
     stop.cancel();
     EngineShards::shutdown(&*shards).await;
 }
+
+/// **A relaxed crash right after an operator's rotation does not re-form**:
+/// the crash's evidence is fresh, but the copy was minted under an id the
+/// operator rotated away, not one the crash did.
+#[tokio::test]
+async fn a_crash_after_an_operator_rotation_does_not_re_form() {
+    let root = tempfile::tempdir().expect("tempdir");
+    begin(root.path(), true, 1);
+    let w = write(root.path(), PERIODIC).await;
+    run_state::copy_trust::rotate_storage_id(root.path(), [0x77; 16]).expect("rotate");
+    assert!(begin(root.path(), true, 2), "a relaxed crash rotates");
+    assert!(
+        !run_state::relaxed_crash_sources(root.path())
+            .expect("sources")
+            .is_empty(),
+        "the crash left its evidence"
+    );
+
+    let broker = broker_in(root.path(), PERIODIC).await;
+    let (shards, _engine, stop) = standalone(&broker);
+    let orders = key("orders", 0);
+    until("the member opens", || shards.engine_for(&orders).is_some()).await;
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), None);
+    stop.cancel();
+    EngineShards::shutdown(&*shards).await;
+}
