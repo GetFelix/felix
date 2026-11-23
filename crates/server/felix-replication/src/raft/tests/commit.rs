@@ -1076,7 +1076,7 @@ mod skipped_counts {
     async fn machine(dir: &std::path::Path) -> Opened {
         let log = open_log(dir, "m", 0, log_config());
         let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-        Machine::open(snapshots, ShardKind::Stream, Some(&log))
+        Machine::open(snapshots, ShardKind::Stream, Some(&log), None)
             .await
             .expect("open")
     }
@@ -1188,7 +1188,7 @@ mod skipped_counts {
 async fn stream_machine(dir: &std::path::Path) -> super::super::machine::Opened {
     let log = open_log(dir, "m", 0, log_config());
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    super::super::machine::Machine::open(snapshots, ShardKind::Stream, Some(&log))
+    super::super::machine::Machine::open(snapshots, ShardKind::Stream, Some(&log), None)
         .await
         .expect("open")
 }

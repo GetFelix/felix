@@ -566,6 +566,8 @@ struct Inner {
     registry: Arc<Registry>,
     /// Who is told when a shard opens and closes here.
     host: OnceLock<Arc<dyn EngineHost>>,
+    /// See [`GroupRuntime::report_cache_changes`].
+    cache_changes: OnceLock<Arc<dyn felix_storage::CacheObserver>>,
     /// The clock cache shards opened from here on stamp by.
     clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
@@ -654,6 +656,7 @@ impl GroupRuntime {
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
                 host: OnceLock::new(),
+                cache_changes: OnceLock::new(),
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
                 mark_roots: parking_lot::Mutex::default(),
@@ -682,6 +685,13 @@ impl GroupRuntime {
         F: WriteFence + ?Sized + 'static,
     {
         self.set_host(Arc::new(Host::new(serving, fence)));
+    }
+
+    /// Tell `observer` of every change a cache shard's applied entries make
+    /// here, for cache watches. Call it before the first
+    /// [`Self::open_copy`], as [`Self::report_to`]. Only the first call counts.
+    pub fn report_cache_changes(&self, observer: Arc<dyn felix_storage::CacheObserver>) {
+        let _ = self.inner.cache_changes.set(observer);
     }
 
     #[cfg(test)]
@@ -933,6 +943,7 @@ impl GroupRuntime {
             placement: inner.placement.clone(),
             placed_budget: Arc::clone(&inner.placed_budget),
             acked: Arc::clone(&inner.acked),
+            cache_changes: inner.cache_changes.get().cloned(),
             thread: inner.threads.as_ref().map(GroupThreads::place),
         };
         let raft = match group.shard.kind {

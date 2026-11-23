@@ -30,7 +30,7 @@ use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, watch};
 
-use super::cache::{CacheCommand, CacheState, Cut};
+use super::cache::{CacheCommand, CacheState, CacheWatch, Cut};
 use super::codec::{ShardCodec, StoredMembership, invalid};
 use super::commit::{Commits, Holds, OpenBatch, Skips};
 use super::stream_snapshot::StreamSnapshot;
@@ -88,6 +88,8 @@ pub(crate) struct Machine {
     quiet: std::ops::Range<u64>,
     /// `None` in a stream shard's group.
     cache: Option<Cache>,
+    /// Where a cache shard's changes are reported, if the broker watches.
+    watch: Option<CacheWatch>,
     /// `None` in a cache shard's group.
     groups: Option<Groups>,
     /// A stream shard's log, `None` in a cache shard's group.
@@ -117,6 +119,7 @@ impl Machine {
         snapshots: SnapshotStore,
         kind: ShardKind,
         log: Option<&DiskLog>,
+        watch: Option<CacheWatch>,
     ) -> io::Result<Opened> {
         let stored = snapshots.current().await?;
         let state = match &stored {
@@ -133,7 +136,8 @@ impl Machine {
                 (None, Some(Arc::new(parking_lot::RwLock::new(groups))))
             }
             ShardKind::Cache => {
-                let restored = restore(data, state.last_applied.is_some()).await?;
+                let mut restored = restore(data, state.last_applied.is_some()).await?;
+                restored.restored_through(state.last_applied.map_or(0, |id| id.index));
                 (Some(Arc::new(parking_lot::RwLock::new(restored))), None)
             }
         };
@@ -154,6 +158,7 @@ impl Machine {
             skips: skips.clone(),
             quiet: 0..0,
             cache: cache.clone(),
+            watch: watch.filter(|_| matches!(kind, ShardKind::Cache)),
             groups: groups.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
             raft_log: log.cloned(),
@@ -814,9 +819,16 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 };
                 // Before the commit table moves, so a write that waits on
                 // its commit finds its answer.
-                cache
-                    .write()
-                    .apply(entry.log_id.index, command.0, &command.1);
+                let mut state = cache.write();
+                let before = self
+                    .watch
+                    .as_ref()
+                    .map(|watch| watch.before(&state, &command.1));
+                state.apply(entry.log_id.index, command.0, &command.1);
+                if let (Some(watch), Some(before)) = (&self.watch, before) {
+                    watch.applied(&state, entry.log_id.index, before);
+                }
+                drop(state);
                 written += 1;
             }
             if let (Some(groups), EntryPayload::Normal(command)) = (&self.groups, &entry.payload)
@@ -959,8 +971,14 @@ impl RaftStateMachine<ShardTypes> for Machine {
             _ => None,
         };
         store(&self.snapshots, meta, data).await?;
-        if let (Some(cache), Some(restored)) = (&self.cache, restored) {
-            *cache.write() = restored;
+        if let (Some(cache), Some(mut restored)) = (&self.cache, restored) {
+            restored.restored_through(meta.last_log_id.map_or(0, |id| id.index));
+            let mut state = cache.write();
+            // Under the lock, so no watch reads the new state as its own.
+            if let Some(watch) = &self.watch {
+                watch.reset(state.applied() + 1);
+            }
+            *state = restored;
         }
         // The table as of the snapshot's last entry, which openraft applies
         // above from here. Trackers go with the old table.

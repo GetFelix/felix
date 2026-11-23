@@ -491,7 +491,8 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
     use openraft::type_config::alias::{EntryOf, LogIdOf};
     let dir = tempdir().expect("dir");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
-    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
+    let opened =
+        super::super::machine::Machine::open(snapshots, ShardKind::Cache, None, None).await;
     let super::super::machine::Opened {
         mut machine, cache, ..
     } = opened.expect("open");
@@ -534,7 +535,8 @@ async fn cache_machine(
     dir: &std::path::Path,
 ) -> (super::super::machine::Machine, super::super::machine::Cache) {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
+    let opened =
+        super::super::machine::Machine::open(snapshots, ShardKind::Cache, None, None).await;
     let super::super::machine::Opened { machine, cache, .. } = opened.expect("open");
     (machine, cache.expect("a cache group"))
 }
@@ -1589,7 +1591,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
     assert_eq!(log.durable_offset(), 0, "nothing synced yet");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
     let opened =
-        super::super::machine::Machine::open(snapshots, ShardKind::Cache, Some(&log)).await;
+        super::super::machine::Machine::open(snapshots, ShardKind::Cache, Some(&log), None).await;
     let super::super::machine::Opened { mut machine, .. } = opened.expect("open");
     let command = Command {
         timestamp_micros: 10,
@@ -1844,3 +1846,5 @@ async fn each_cache_write_answers_by_its_condition_and_a_ttl_runs_on_the_stamps(
     assert_eq!(read.expect("read"), None);
     cluster.stop().await;
 }
+
+mod watch;
