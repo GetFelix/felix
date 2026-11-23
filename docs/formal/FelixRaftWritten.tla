@@ -648,9 +648,19 @@ ReformScope ==
 \* The joint configurations that check BaseAgrees only also commit on written
 \* reports alone: with WrittenCommits a report counts every entry an
 \* acknowledged match would, and the match feeds nothing else they check.
+\* Once a copy is cut or declared dead, only cuts, deaths and the re-form
+\* follow. A gone copy never acts or is acted on again, and a cut or death
+\* changes nothing another broker reads before the re-form, so moving every
+\* other step ahead of it reaches the same re-forms.
+GoneLast == gone # {} /\ ~reform'.on => gone' # gone
+
 JointReformScope ==
     /\ ReformScope
     /\ \A i, j \in Servers : match'[i][j] <= match[i][j] \/ match'[i][j] = 0
+    \* With the match frozen, synced only bounds what a power cut keeps, and
+    \* an unsynced copy lets the cut keep any prefix.
+    /\ \A s \in Servers : synced'[s] <= synced[s]
+    /\ GoneLast
 
 ----------------------------------------------------------------------------
 
