@@ -335,6 +335,7 @@ fn a_shard_switch_needs_level_34() {
         feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     };
     for command in [seal, report, give_up, finalize] {
         assert_eq!(command.version(), 34, "{command:?}");
@@ -377,6 +378,7 @@ fn joint_fence_waits_for_the_level_that_keeps_refusals() {
         feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     };
     assert_eq!(finalize.version(), 25);
 }
@@ -542,6 +544,7 @@ fn a_finalize_carries_the_hold_from_level_45() {
         feature: felix_common::fleet::MAJORITY_ACK.name().to_string(),
         hold_unformed: false,
         hold_formed: false,
+        keep_counter: false,
     });
     assert!(depends_on_level(&raw));
     assert_eq!(settle_for_level(&raw, 44), Ok(None));

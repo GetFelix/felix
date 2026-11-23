@@ -1788,11 +1788,28 @@ async fn stored_set(cluster: &Cluster) -> (String, Vec<String>, Vec<String>) {
 async fn voters_become(cluster: &Cluster, want: &[String], within: Duration) {
     let mut want = want.to_vec();
     want.sort();
-    felix_cluster::wait::until(within, "the group to report the new voters", || async {
-        stored_set(cluster).await.2 == want
-    })
-    .await
-    .unwrap_or_else(|err| panic!("voters never became {want:?}: {err:#}"));
+    let waited =
+        felix_cluster::wait::until(within, "the group to report the new voters", || async {
+            stored_set(cluster).await.2 == want
+        })
+        .await;
+    if let Err(err) = waited {
+        let shard = cluster
+            .control_plane
+            .as_ref()
+            .expect("control plane running")
+            .store
+            .list_shard_assignments()
+            .await
+            .expect("assignments")
+            .into_iter()
+            .find(|a| a.key.stream == STREAM && a.key.shard == 0)
+            .expect("shard 0 is placed");
+        panic!(
+            "voters never became {want:?}: {err:#}; stored raft_target {:?}, raft_voters {:?}",
+            shard.raft_target, shard.raft_voters
+        );
+    }
 }
 
 /// **An operator move outside a Raft shard's set swaps the leader's seat.**

@@ -308,6 +308,13 @@ pub struct ShardAssignment {
     /// metadata level 36.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_target: Option<RaftTarget>,
+    /// The highest target counter stored at the stream's `incarnation`,
+    /// kept when a set change drops the target, so the next target's version
+    /// is newer than any membership the group already made. Store-owned like
+    /// `generation`. 0 when no set change has dropped a target. Under Raft it
+    /// needs metadata level 50.
+    #[serde(default, skip_serializing_if = "is_zero_counter")]
+    pub raft_target_counter: u64,
     /// The highest committed log id the shard's Raft leaders reported at
     /// the stream's `incarnation`: see [`RaftFloor`]. Store-owned like
     /// `generation`: only a floor report raises it, a write at the same
@@ -493,6 +500,10 @@ pub struct PendingSet {
 }
 
 fn is_zero_incarnation(value: &u64) -> bool {
+    *value == 0
+}
+
+fn is_zero_counter(value: &u64) -> bool {
     *value == 0
 }
 

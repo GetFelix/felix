@@ -1526,7 +1526,7 @@ impl EngineShards for RaftShards {
             };
             if kept {
                 let version = target.as_ref().map(|target| target.version);
-                tracing::debug!(shard = ?key, ?version, term, "told the shard's Raft leader its target");
+                tracing::info!(shard = ?key, ?version, term, "told the shard's Raft leader its target");
                 #[cfg(test)]
                 self.told.lock().push((key, target, term));
             }

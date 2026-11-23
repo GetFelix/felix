@@ -503,6 +503,7 @@ async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
             assignment,
             start_placed: true,
             hold_unformed: false,
+            keep_counter: false,
         })
         .await
         .expect("assign");
@@ -611,6 +612,7 @@ async fn a_shard_first_assigned_after_an_import_starts_no_record() {
             assignment,
             start_placed: true,
             hold_unformed: false,
+            keep_counter: false,
         }
     };
     for (name, kind, started) in [
@@ -687,6 +689,7 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
                 assignment,
                 start_placed: false,
                 hold_unformed: false,
+                keep_counter: false,
             })
             .await
             .expect("assign");

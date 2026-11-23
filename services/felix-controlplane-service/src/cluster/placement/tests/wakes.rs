@@ -33,6 +33,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             placed: None,
             switch: None,
             raft_copy_ids: Default::default(),
+            raft_target_counter: 0,
             raft_target: None,
             raft_floor: None,
             raft_formed: None,

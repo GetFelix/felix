@@ -4943,7 +4943,12 @@ target counter (metadata level 36):
 
 - **The counter rises only when the target set changes.** A move, a drain,
   a removal, or a placed broker reporting a new copy id writes the next
-  counter value in the same CAS as the new set. A placement write that
+  counter value in the same CAS as the new set. A change of placed brokers
+  drops the target until every new broker reports its copy id, and keeps the
+  counter the dropped target reached (`raft_target_counter`, metadata level
+  50), so the next target is newer than the membership the group already
+  made. A leader takes only a newer version, so a count started again would
+  leave the group on its old voters. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and
@@ -5286,7 +5291,7 @@ plane keeps them all on the shard's record as `raft_ordered`: the stream
   write that stores it (`record_raft_copy_id`). Brokers read a target only from
   the stored record, so it is on the list before any leader is asked for it.
 - **Kept through the epoch.** A copy-id change, a counter bump and a set change
-  (which drops the target and restarts its counter) all leave the list as it
+  (which drops the target but keeps its counter) all leave the list as it
   is. Only a new epoch or a new incarnation replaces it.
 - **Bounded.** At most 64 distinct targets per epoch; a target ordered again is
   listed once. The 65th marks the list `lost`.
