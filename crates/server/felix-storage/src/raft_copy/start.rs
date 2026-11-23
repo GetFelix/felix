@@ -591,6 +591,8 @@ fn empty_log(dir: &Path) -> io::Result<()> {
             // A mark naming a segment that is gone would misread the next
             // log's segments as synced or as never synced.
             || name == durable_mark::mark_file_name()
+            // Derived from the records, so it goes with them.
+            || name == crate::disk_log::producers_file_name()
             || name.starts_with(crate::raft_log::purged::FILE_NAME)
             || name.starts_with(crate::raft_log::snapshot::FILE_NAME);
         if log_file {
@@ -600,7 +602,8 @@ fn empty_log(dir: &Path) -> io::Result<()> {
     crate::io::sync_dir(dir)
 }
 
-/// Rebuild `dir`'s log from `kept`'s segments, durable mark and snapshot. Each file is
+/// Rebuild `dir`'s log from `kept`'s segments, durable mark, forgotten
+/// batches, carried floor and snapshot. Each file is
 /// copied under a temporary name and synced, and only then are they renamed
 /// into place, so the directory never holds part of a file under a log
 /// file's name. A cut part way leaves the marker, and the start run again
@@ -616,6 +619,16 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
     }
     crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
     empty_log(dir)?;
+    // The forgotten batches and the floor are the kept log's, which no
+    // record holds: the voter's own would refuse batches the kept log
+    // holds and take re-sends of the ones it forgot as new.
+    let carried = [
+        crate::disk_log::forgotten_file_name(),
+        carried_floor::FILE_NAME,
+    ];
+    for name in carried {
+        state_file::remove(dir, name)?;
+    }
     step()?;
     let mut names = Vec::new();
     for entry in crate::fs::read_dir(kept)? {
@@ -623,7 +636,10 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
         let Some(name) = name.to_str() else {
             continue;
         };
-        if parse_segment_file_name(name).is_some() || name == durable_mark::mark_file_name() {
+        if parse_segment_file_name(name).is_some()
+            || name == durable_mark::mark_file_name()
+            || carried.contains(&name)
+        {
             names.push(name.to_owned());
         }
     }
