@@ -38,10 +38,12 @@ FelixRaftStreamPurgeTwoReforms  measuring in dispatch 44384289786
 FelixRaftStreamPurgeTwoReformsRefuse  measuring in dispatch 44384289786
 FelixRaftStreamPurgeTwoReformsWrite  measuring in dispatch 44384289786
 FelixRaftWrittenCommitsFailoverPowerCut  measuring in dispatch 44384289786
+FelixRaftWrittenCommitsReformJointDead  runs past a CI runner's six hours; re-form bounds in #2729
 FelixRaftWrittenCommitsReformTerms  runs past a CI runner's six hours; re-form bounds in #2729
 FelixRaftWrittenFailoverPowerCut  measuring in dispatch 44384289786
 FelixRaftWrittenJoint  measuring in dispatch 44384289786
 FelixRaftWrittenJointFailover  measuring in dispatch 44384289786
+FelixRaftWrittenReformGate  runs past a CI runner's six hours; re-form bounds in #2729
 FelixRaftWrittenReformReplaced  past a pull request's time, never run to the end; re-form bounds in #2729
 FelixRaftWrittenReformReplacedFull  past a pull request's time, never run to the end; re-form bounds in #2729
 FelixRaftWrittenTerms  measuring in dispatch 44384289786
