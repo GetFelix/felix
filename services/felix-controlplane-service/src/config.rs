@@ -16,6 +16,7 @@ pub use api_ui::{ApiUi, DEFAULT_API_UI_PATH};
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
 pub use shard_engine::ShardEngine;
+pub(crate) use shard_engine::warn_if_hybrid;
 pub use storage::{RaftBackendConfig, StorageBackend};
 
 use std::fs;

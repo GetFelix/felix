@@ -1996,9 +1996,11 @@ flight.
 ## Group runtime
 
 The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
-behind the `raft` cargo feature of `felix-replication`. No release enables
-the feature, and a broker built with it calls the runtime only under
-`FELIX_SHARD_ENGINE=raft`, so a shipping broker is unchanged.
+behind the `raft` cargo feature of `felix-replication`, which the broker
+service turns on by default. A broker with a node id runs it unless
+`FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
+the internal listener or durable storage. A standalone broker, with no node
+id, does not run it.
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:
@@ -6228,9 +6230,9 @@ already hold over 80,000 shards.
 
 ## Pull request split
 
-Each pull request is safe to merge on its own. Until the gate passes, the
-Raft engine is compiled only with a cargo feature that no release enables,
-and the hybrid is what ships.
+Each pull request is safe to merge on its own. Raft is now the default
+engine on main and the hybrid is frozen; `hybrid-retirement.md` orders its
+deletion.
 
 | # | Pull request | Depends on | Why it is safe alone |
 | --- | --- | --- | --- |

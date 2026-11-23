@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cluster::controlplane_group::{self, Guard};
 use crate::cluster::credential::NodeCredential;
-use crate::config::BrokerConfig;
+use crate::config::{BrokerConfig, ShardEngine};
 use crate::serving::auth::ControlPlaneKeyStore;
 
 /// How long the first sync may spend fetching every known tenant's JWKS
@@ -32,6 +32,7 @@ pub(super) enum GroupCheck {
     Deferred {
         client: reqwest::Client,
         root: PathBuf,
+        engine: Option<ShardEngine>,
         refused: CancellationToken,
     },
 }
@@ -45,6 +46,7 @@ impl GroupCheck {
         root: Option<&Path>,
         from_view: bool,
         stored: Option<String>,
+        engine: Option<ShardEngine>,
         client: &reqwest::Client,
         refused: &CancellationToken,
     ) -> Self {
@@ -52,6 +54,7 @@ impl GroupCheck {
             Some(root) if from_view => Self::Deferred {
                 client: client.clone(),
                 root: root.to_owned(),
+                engine,
                 refused: refused.clone(),
             },
             Some(root) => Self::Decided(controlplane_group::guard(root, stored, refused.clone())),
@@ -64,15 +67,16 @@ impl GroupCheck {
         base_url: &str,
         credential: &Option<NodeCredential>,
     ) -> anyhow::Result<Option<Guard>> {
-        let (client, root, refused) = match self {
+        let (client, root, engine, refused) = match self {
             Self::Decided(guard) => return Ok(guard),
             Self::Deferred {
                 client,
                 root,
+                engine,
                 refused,
-            } => (client, root, refused),
+            } => (client, root, engine, refused),
         };
-        match super::identity::admit(&client, base_url, credential, &root).await {
+        match super::identity::admit(&client, base_url, credential, &root, engine).await {
             Ok(stored) => Ok(controlplane_group::guard(&root, stored, refused)),
             Err(err) => {
                 tracing::error!(

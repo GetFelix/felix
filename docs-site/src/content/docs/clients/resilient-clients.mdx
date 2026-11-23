@@ -1939,7 +1939,7 @@ capacity. Four things go wrong, and each has a tool.
   `reclaim` after a restart, and the records that name still holds come back at
   once. Only the first poll on a connection reclaims, so leaving it set on
   every poll is harmless. On a Raft shard claims survive a failover and the
-  new leader gives them back; on the default engine they are the leader's
+  new leader gives them back; on the hybrid engine they are the leader's
   memory, so this holds while the shard's leader stays put.
 - **A settle comes too late.** An ack, nack or extend for a claim that no
   longer stands is refused with `stale_claim`. Nothing was applied, and the
