@@ -66,6 +66,9 @@ NOT_OPERATIONAL = {
     # `docs/cluster-harness.md`.
     "FELIX_TEST_SHARD_ENGINE",
     "FELIX_TEST_TIMEOUT_SCALE",
+    # Makes the io_uring storage tests fail instead of skip when no ring is
+    # available. Documented in docs-site architecture/testing.md.
+    "FELIX_TEST_REQUIRE_IO_URING",
 }
 
 # Not variables at all. The detector matches any quoted FELIX_* literal in Rust,
