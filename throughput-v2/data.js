@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795448099784,
+  "lastUpdate": 1795453632488,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66924,6 +66924,58 @@ window.BENCHMARK_DATA = {
             "range": "60519.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 931098.20\nmean: 904609.05\nstdev: 60519.18\ncv: 6.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "787e507f4838281d4a1393767f049be4b6f3c128",
+          "message": "test(raft): lease, term agreement and term-burn checks in the simulator; cut-off cache leader test (#2258) (#3033)\n\nThe Raft simulation now checks that no two members pass the leader lease\nat once, that copies agree on the term of every entry below their read\nbounds, and warns when a shard burns more terms than its faults explain.\nSeed 1233 pins torn-tail repair on Raft. A cluster test ports the cache\nhalf of the deposed-leader check. Hand-off rows updated.",
+          "timestamp": "2026-11-23T08:57:52-08:00",
+          "tree_id": "e02e4e8ea6eb748e14cdca33ae37c2cbe7d3fe07",
+          "url": "https://github.com/GetFelix/felix/commit/787e507f4838281d4a1393767f049be4b6f3c128"
+        },
+        "date": 1795453631459,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352134.96,
+            "range": "1757.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352134.96\nmean: 352299.81\nstdev: 1757.72\ncv: 0.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352134.96,
+            "range": "1757.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352134.96\nmean: 352299.81\nstdev: 1757.72\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79630.72,
+            "range": "550.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79630.72\nmean: 79957.30\nstdev: 550.81\ncv: 0.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796307.17,
+            "range": "5508.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796307.17\nmean: 799573.02\nstdev: 5508.09\ncv: 0.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
