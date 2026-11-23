@@ -170,8 +170,21 @@ pub(super) async fn start(
             "{} did not start epoch 1",
             member.name
         );
-        let asked = survey(key, SurveyKind::Start, 1, BTreeSet::new());
-        assert!(read(member, asked).await.is_some(), "{}", member.name);
+        // The control plane asks again until a copy answers: a read can
+        // land while the opened member is still creating its first segment.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let asked = survey(key, SurveyKind::Start, 1, BTreeSet::new());
+            if read(member, asked).await.is_some() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} never answered its start",
+                member.name
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
     let mut leader = None;
     until("a voter leads the new epoch", || {

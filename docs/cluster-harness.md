@@ -633,7 +633,9 @@ answer carries its member's role, leader and log index) and for a majority of
 the group to hold the log through the leader's last entry. A test that skips
 on Raft prints its reason to stderr without `--nocapture` and to the job
 summary when `GITHUB_STEP_SUMMARY` is set, so a green Raft run can be told
-from a skipped one. CI runs every suite on Raft, which gates a merge, and on
+from a skipped one. A test that fails on Raft for work not built yet skips
+with `skip_on_raft_until(issue, reason)`, naming the issue that tracks it.
+CI runs every suite on Raft, which gates a merge, and on
 the hybrid, which reports without failing the build.
 
 ```bash

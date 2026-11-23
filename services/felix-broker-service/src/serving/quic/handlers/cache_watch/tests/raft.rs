@@ -31,16 +31,31 @@ struct RaftCache {
 
 impl RaftCache {
     async fn start() -> Self {
+        let cache = Self::open(true).await;
+        let key = cache_key();
+        fixture::until("the term is served", || {
+            cache.shards.leading(&key).is_some()
+        })
+        .await;
+        cache
+    }
+
+    /// The shard opened here but never formed, so no leader is known and
+    /// the read barrier cannot complete.
+    async fn leaderless() -> Self {
+        Self::open(false).await
+    }
+
+    async fn open(formed: bool) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
         let broker = fixture::cache_broker(root.path(), ORDERS).await;
         let shards = fixture::shards(&broker);
-        let key = cache_key();
-        fixture::take_formed(
-            &shards,
-            fixture::assigned(key.clone(), fixture::INCARNATION),
-        )
-        .await;
-        fixture::until("the term is served", || shards.leading(&key).is_some()).await;
+        let assignment = fixture::assigned(cache_key(), fixture::INCARNATION);
+        if formed {
+            fixture::take_formed(&shards, assignment).await;
+        } else {
+            shards.take(&mut fixture::assignments([assignment])).await;
+        }
         let engine = Arc::new(fixture::engine(&shards));
         Self {
             _root: root,
@@ -301,6 +316,34 @@ async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
             }
         ),
         "{refused:?}"
+    );
+    Ok(())
+}
+
+/// **A resume that becomes a resnapshot passes the read barrier too**, as
+/// a retained join does: the snapshot is state handed out, and a follower's
+/// applied edge can trail a put its leader acknowledged. With the barrier
+/// unable to complete, the resume is a retryable refusal, not a stale
+/// snapshot. A live-only watch hands out no state and still starts.
+#[tokio::test]
+async fn a_raft_cache_resume_below_the_edge_needs_the_read_barrier() -> Result<()> {
+    let cache = RaftCache::leaderless().await;
+    let (refused, _) = cache.watch(false, Some(0)).await?;
+    assert!(
+        matches!(
+            refused,
+            Message::Error {
+                code: Some(felix_wire::ErrorCode::ShardUnavailable),
+                retry: Some(felix_wire::RetryClass::Retry),
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    let (started, _events) = cache.watch(false, None).await?;
+    assert!(
+        matches!(started, Message::CacheWatchStarted { .. }),
+        "{started:?}"
     );
     Ok(())
 }

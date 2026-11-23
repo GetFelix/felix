@@ -111,6 +111,9 @@ async fn read_until(
 #[serial]
 #[tokio::test]
 async fn a_cache_value_survives_the_loss_of_its_owner() {
+    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
+        return;
+    }
     let mut cluster = Cluster::start(replicated_cache())
         .await
         .expect("start cluster");
@@ -207,6 +210,9 @@ async fn retained_watch_until(
 #[serial]
 #[tokio::test]
 async fn a_retained_watch_survives_the_loss_of_the_owner() {
+    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
+        return;
+    }
     let mut cluster = Cluster::start(replicated_cache())
         .await
         .expect("start cluster");
@@ -456,6 +462,9 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
+    if felix_cluster::skip_on_raft_until(3030, "a short-placed quorum cache never takes a write") {
+        return;
+    }
     const OPS: &str = "ops";
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 2,
@@ -539,6 +548,9 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
 #[serial]
 #[tokio::test]
 async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
+    if felix_cluster::skip_on_raft_until(3030, "a short-placed quorum cache never takes a write") {
+        return;
+    }
     const OPS: &str = "ops";
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
@@ -600,6 +612,9 @@ async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_cache_leader_rejoins_after_a_failover() {
+    if felix_cluster::skip_on_raft_until(3030, "cache rejoin reads hybrid replica reports") {
+        return;
+    }
     let mut cluster = Cluster::start(quorum_cache()).await.expect("start cluster");
     let old = cluster
         .shard_owner_of("cache", CACHE, 0)

@@ -879,3 +879,48 @@ async fn a_reclaim_on_the_new_leader_takes_the_claims_back() {
         [(0, 1), (1, 1)]
     );
 }
+
+/// A write whose entry was proposed and then lost its term, or whose wait
+/// ran out, is unsettled: it may commit, so a retry could write it twice.
+/// One refused before it was proposed is not.
+#[tokio::test]
+async fn only_a_write_refused_before_its_proposal_is_not_unsettled() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+
+    fx.set(|s| s.new_term_before_propose = true);
+    let refused = fx.groups.ack(&key(G), 0, later()).await;
+    assert!(
+        matches!(refused, Err(BrokerError::StateNotReadable(_))),
+        "a write refused before its proposal answered {refused:?}"
+    );
+
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), Vec::<u64>::new());
+    fx.set(|s| s.new_term_after_propose = true);
+    let lost = fx.groups.ack(&key(G), 0, later()).await;
+    assert!(
+        matches!(
+            lost,
+            Err(BrokerError::WriteUnsettled {
+                timed_out: false,
+                ..
+            })
+        ),
+        "a write whose term ended after its proposal answered {lost:?}"
+    );
+
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), Vec::<u64>::new());
+    fx.set(|s| s.stalled = true);
+    let waited = fx.groups.ack(&key(G), 0, later()).await;
+    assert!(
+        matches!(
+            waited,
+            Err(BrokerError::WriteUnsettled {
+                timed_out: true,
+                ..
+            })
+        ),
+        "a write whose commit wait ran out answered {waited:?}"
+    );
+}

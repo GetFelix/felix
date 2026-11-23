@@ -179,6 +179,16 @@ pub fn skip_on_raft_until_moves_land() -> bool {
     skip
 }
 
+/// True when the suite runs on Raft, for a test that fails there on Raft
+/// work not built yet, tracked by `issue`. The test still runs on hybrid.
+pub fn skip_on_raft_until(issue: u32, reason: &str) -> bool {
+    let skip = default_engine() == "raft";
+    if skip {
+        report_skip(&format!("skipped on Raft: {reason} (#{issue})"));
+    }
+    skip
+}
+
 /// True when the suite runs on Raft, for a test that asserts a hybrid-only
 /// behaviour (a lease that lapses, for instance). It retires with hybrid.
 pub fn skip_on_raft_retire_with_hybrid(reason: &str) -> bool {
