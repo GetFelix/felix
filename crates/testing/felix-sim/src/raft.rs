@@ -83,6 +83,9 @@ pub struct RaftSimConfig {
     /// that the power modes must catch. From the start, a cut would also
     /// take the first segment's header and the member would refuse to open.
     pub ignored_flushes: bool,
+    /// Isolate a leader once early so every seed moves leadership. Off for
+    /// the pinned seeds, whose regressions depend on their original schedule.
+    pub leader_change: bool,
 }
 
 /// What happens to the members' disks while the faults run.
@@ -162,6 +165,7 @@ impl Default for RaftSimConfig {
             real_time_limit: Duration::from_secs(900),
             disks: Disks::Off,
             ignored_flushes: false,
+            leader_change: true,
         }
     }
 }
@@ -1328,9 +1332,20 @@ impl Sim {
     /// Faults until `length` has passed, each healed before the next. In
     /// the disk modes some of them stop a member and replace a directory,
     /// drawn from `disk`, so a seed's link faults stay the same without them.
-    async fn nemesis(&self, mut rng: Rng, mut disk: Rng, length: Duration) {
+    async fn nemesis(
+        &self,
+        mut rng: Rng,
+        mut disk: Rng,
+        mut change: Rng,
+        leader_change: bool,
+        length: Duration,
+    ) {
         let end = Instant::now() + length;
         let count = self.members.len();
+        if leader_change {
+            self.change_leader(&mut change).await;
+        }
+
         if self.disks == Disks::WipeMajority {
             tokio::time::sleep(Duration::from_secs(5)).await;
             let majority: Vec<usize> = (0..self.majority()).collect();
@@ -1360,6 +1375,34 @@ impl Sim {
             self.links.heal();
             self.fault("heal".into());
         }
+    }
+
+    /// Isolates a leader once, early, so every seed moves leadership and
+    /// the coverage guard keeps its meaning. Drawn from its own rng, so the
+    /// random faults after it stay what they were.
+    async fn change_leader(&self, rng: &mut Rng) {
+        tokio::time::sleep(rng.between(Duration::from_secs(1), Duration::from_secs(4))).await;
+        let shard = rng.below(u64::from(self.shards)) as u32;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let leader = loop {
+            if let Some(leader) = self.leader(shard) {
+                break leader;
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        self.links.isolate(leader, self.members.len());
+        self.fault(format!(
+            "isolate {}, leader of {}, for a new term",
+            name(leader),
+            list(shard)
+        ));
+        // Long enough for the rest to elect before the link heals.
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        self.links.heal();
+        self.fault("heal".into());
     }
 
     async fn link_fault(&self, rng: &mut Rng, pick: usize) {
@@ -2357,11 +2400,15 @@ async fn drive(
     // Forked after the nemesis, so a seed without the failed flush runs as
     // it did before.
     let (faults, flush, disk) = (rng.fork(), rng.fork(), rng.fork());
-    tokio::join!(sim.nemesis(faults, disk, config.nemesis), async {
-        if config.failed_flush {
-            sim.fail_a_flush(flush, config.nemesis).await;
+    let change = rng.fork();
+    tokio::join!(
+        sim.nemesis(faults, disk, change, config.leader_change, config.nemesis),
+        async {
+            if config.failed_flush {
+                sim.fail_a_flush(flush, config.nemesis).await;
+            }
         }
-    });
+    );
     sim.links.heal();
     let clients = tasks.split_off(watchers);
     phase("waiting for each shard to acknowledge a write after the heal");
