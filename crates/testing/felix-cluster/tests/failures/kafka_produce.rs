@@ -356,6 +356,12 @@ async fn reads_through_a_failover(engine: Engine) {
         "the next leader to serve every committed record",
         || async move {
             let got = producer_ref.lock().await.fetch_until_served(first_offset).await;
+            // Only a prefix of the committed records may be "not settled yet";
+            // any other answer is a wrong record served, and fails at once.
+            assert!(
+                expected_ref.starts_with(&got),
+                "the next leader served records that were not committed: {got:?}, expected {expected_ref:?}"
+            );
             let settled = got == *expected_ref;
             *last_ref.lock().await = got;
             settled
