@@ -72,6 +72,12 @@ fn relaxed_crash(root: &Root, n: u8) {
 
 /// A copy holding `count` records, all committed, closed.
 async fn written_copy(copies: &CopyRoot, dir: &Path, count: u64) -> u64 {
+    written_copy_saved(copies, dir, count, count).await
+}
+
+/// A copy holding `count` synced records whose saved commit covers only the
+/// first `saved`, as a commit saved at most once a second leaves it.
+async fn written_copy_saved(copies: &CopyRoot, dir: &Path, count: u64, saved: u64) -> u64 {
     let opened = copies
         .open_copy(SHARD, dir, LABEL, config())
         .await
@@ -90,7 +96,7 @@ async fn written_copy(copies: &CopyRoot, dir: &Path, count: u64) -> u64 {
     opened
         .log
         .save_committed(
-            count - 1,
+            saved - 1,
             crate::raft_log::generation_of(1).expect("generation"),
         )
         .await
@@ -128,10 +134,14 @@ async fn reform(copies: &CopyRoot, dir: &Path) -> io::Result<Aloned> {
 /// A root whose storage id a relaxed crash rotated after the shard wrote
 /// `count` records, and a gate that passes on it.
 async fn crashed(count: u64) -> (Root, PathBuf) {
+    crashed_saved(count, count).await
+}
+
+async fn crashed_saved(count: u64, saved: u64) -> (Root, PathBuf) {
     let root = Root::new();
     run_state::begin(root.path(), true, None, boot(1), || false, || [9; 16]).expect("begin");
     let dir = root.shard_dir();
-    written_copy(&root.open(), &dir, count).await;
+    written_copy_saved(&root.open(), &dir, count, saved).await;
     relaxed_crash(&root, 2);
     root.witness_current_id();
     (root, dir)
@@ -165,6 +175,20 @@ async fn a_relaxed_crash_re_forms_a_group_of_one_past_every_offset_it_gave_out()
         .expect("open");
     assert!(opened.rotation.is_none());
     opened.log.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn a_re_form_keeps_synced_records_past_the_saved_commit() {
+    let (root, dir) = crashed_saved(5, 2).await;
+    let copies = root.open();
+    let done = reform(&copies, &dir).await.expect("re-form");
+    assert_eq!(done, Aloned::Reformed { epoch: 1 });
+    let bases = crate::raft_copy::epoch_file::load(&dir)
+        .expect("epoch")
+        .expect("an epoch file")
+        .bases;
+    assert_eq!(bases[0].base_end(), 5, "every synced record survives");
+    assert!(bases[0].first_index >= 5);
 }
 
 #[tokio::test]

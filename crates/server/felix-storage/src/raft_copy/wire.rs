@@ -14,7 +14,7 @@ use super::epoch_file::{EpochBase, EpochFile, EpochLogId};
 use super::reform::{BrokerCopies, CopyRead};
 use super::rotated_by::RotatedBy;
 use super::vouch::{
-    BrokerReport, GroupRecord, Marked, ReformPlan, Refused, Source, VoterSource, plan_reform,
+    BrokerReport, GroupRecord, Marked, ReformPlan, Refused, Source, VoterSource, plan_reform_as,
     probes,
 };
 use crate::disk_log::CarriedFloor;
@@ -225,7 +225,26 @@ pub fn survey_step(
     reports: &BTreeMap<String, BrokerReport<String>>,
     asked: &BTreeSet<u64>,
 ) -> SurveyStep {
-    match plan_reform(record, reports) {
+    survey_step_as(record, reports, asked, false)
+}
+
+/// [`survey_step`] for a group of one that re-forms itself: every copy
+/// vouches for its whole log (`plan_reform_as`).
+pub(crate) fn survey_step_alone(
+    record: &GroupRecord<String>,
+    reports: &BTreeMap<String, BrokerReport<String>>,
+    asked: &BTreeSet<u64>,
+) -> SurveyStep {
+    survey_step_as(record, reports, asked, true)
+}
+
+fn survey_step_as(
+    record: &GroupRecord<String>,
+    reports: &BTreeMap<String, BrokerReport<String>>,
+    asked: &BTreeSet<u64>,
+    alone: bool,
+) -> SurveyStep {
+    match plan_reform_as(record, reports, alone) {
         Ok(plan) => SurveyStep::Planned(PlanView::of(&plan, reports)),
         Err(Refused::Leads(broker)) => SurveyStep::Leads(broker),
         Err(Refused::NotProbed { broker, index }) => {
@@ -273,6 +292,7 @@ fn refused_reason(refused: &Refused<String>) -> String {
         ),
         Refused::NothingRead => "no copy was read".into(),
         Refused::NoVoters => "no broker with a copy id holds the base".into(),
+        Refused::NotAlone => "another broker is or was in the group".into(),
     }
 }
 
@@ -396,7 +416,24 @@ pub fn plan_starts(
     reports: &BTreeMap<String, BrokerReport<String>>,
     accepted: bool,
 ) -> Option<BTreeMap<String, WireStart>> {
-    let plan = plan_reform(record, reports).ok()?;
+    plan_starts_as(record, reports, accepted, false)
+}
+
+/// [`plan_starts`] under [`survey_step_alone`]'s plan.
+pub(crate) fn plan_starts_alone(
+    record: &GroupRecord<String>,
+    reports: &BTreeMap<String, BrokerReport<String>>,
+) -> Option<BTreeMap<String, WireStart>> {
+    plan_starts_as(record, reports, true, true)
+}
+
+fn plan_starts_as(
+    record: &GroupRecord<String>,
+    reports: &BTreeMap<String, BrokerReport<String>>,
+    accepted: bool,
+    alone: bool,
+) -> Option<BTreeMap<String, WireStart>> {
+    let plan = plan_reform_as(record, reports, alone).ok()?;
     let floor = plan.floor.as_ref().map(WireFloor::from);
     let needs_accept_loss = plan.needs_accept_loss();
     let start = |voter: Option<u64>, kept: Option<String>| WireStart {

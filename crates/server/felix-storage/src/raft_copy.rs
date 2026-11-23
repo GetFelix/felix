@@ -87,6 +87,8 @@ pub(crate) use rotated_by::RotatedBy;
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
 pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
+#[cfg(test)]
+pub(crate) use vouch::plan_reform;
 pub use vouch::{
     BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RESTORE_OFFSETS_PER_MILLI,
     RestoreAt, VoterId,
@@ -95,9 +97,7 @@ pub use vouch::{
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
-pub(crate) use vouch::{
-    Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, plan_reform, probes,
-};
+pub(crate) use vouch::{Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, probes};
 pub use wire::{
     PlanView, REPORT_VERSION, SurveyStep, VersionMismatch, WireBase, WireCopy, WireFloor,
     WireReport, WireRotated, WireStart, first_probes, plan_starts, survey_step,

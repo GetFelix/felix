@@ -20,7 +20,8 @@ use super::judge::{CopyRoot, kept_copies, parent_of, reached_before};
 use super::start::{building, start_due, started_in};
 use super::vouch::{BrokerReport, GroupRecord};
 use super::wire::{
-    PlanView, SurveyStep, WireBase, WireReport, WireStart, first_probes, plan_starts, survey_step,
+    PlanView, SurveyStep, WireBase, WireReport, WireStart, first_probes, plan_starts_alone,
+    survey_step_alone,
 };
 use super::{GapFold, copy_file, stop_file};
 use crate::disk_log::crash_point;
@@ -257,11 +258,11 @@ fn plan(a: &Alone<'_>, minted: String) -> io::Result<AlonePlan> {
         let report = BrokerReport::<String>::try_from((a.read)(&asked, epoch)?)
             .map_err(|err| refuse(err.to_string()))?;
         let reports = BTreeMap::from([(me.clone(), report)]);
-        match survey_step(&record, &reports, &asked) {
+        match survey_step_alone(&record, &reports, &asked) {
             SurveyStep::Ask(more) => asked = more,
             SurveyStep::Planned(view) => {
-                // Accepted: the loss is what the relaxed crash took.
-                let start = plan_starts(&record, &reports, true)
+                // Accepted: the loss is the unsynced tail the crash took.
+                let start = plan_starts_alone(&record, &reports)
                     .and_then(|mut starts| starts.remove(&me))
                     .ok_or_else(|| refuse("no plan for this broker".into()))?;
                 let last = reports[&me].copies.current.last.map(|last| last.index);
