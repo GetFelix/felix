@@ -247,17 +247,27 @@ flowchart LR
 
 | Phase | What main has | What CI runs |
 | --- | --- | --- |
-| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, shares no shard and keeps its durable streams on the hybrid path, with a warning, until the hybrid is deleted. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` and `felix-cluster up` stay on the hybrid path until #2985 moves them | Raft jobs, and the existing hybrid tests, which pin the hybrid explicitly |
+| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, shares no shard and keeps its durable streams on the hybrid path, with a warning, until the hybrid is deleted. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` and `felix-cluster up` stay on the hybrid path until #2985 moves them | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
 | 2. Hybrid deleted | Raft only, one pull request at a time (see "Pull request split"). A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups or refuses durable streams, decided in #2986 | Raft only. Each pull request removes the hybrid tests for the code it removes |
 
-The deletion pull requests start only when all of these hold:
+The order, decided with Raft as the default:
 
-- The parity items on the Raft gate (#2243) are closed: every hybrid
-  feature works on Raft.
-- The Raft disk-fault simulator modes (#2954) are green.
-- Raft performance matches the v0.7.0 release binary on the gate's cells
-  (#2646). The comparison is against v0.7.0, not against the hybrid on
-  main, which is frozen.
+- Raft is the default now, for clustered brokers and for the cluster test
+  suites. The Raft cluster jobs gate a merge. The hybrid cluster jobs still
+  run and only report, until the code they test is deleted.
+- The hybrid TLA specs are deleted now, except the ones still waiting on a
+  Raft twin. Those go with the pull request that adds the twin.
+- The code deletion pull requests (#2259 to #2265) start when single-voter
+  Raft (#3000) merges, because a standalone broker keeps its durable streams
+  on the hybrid path until then.
+- The skipped Raft gaps (#2995, #3030, #3032, #3001, #3005) are fixed along
+  the way. A cluster test tracked by an issue skips on Raft and says so.
+- Raft performance still has to match the v0.7.0 release binary on the
+  gate's cells (#2646). The comparison is against v0.7.0, not against the
+  hybrid on main, which is frozen.
+- The long parity runs (#2243) and the bridge-build latch condition are
+  dropped. There is no 0.7 to 0.8 upgrade, so no cluster ever runs both
+  engines.
 - The Raft models for reads, sessions and idempotent publish pass (Gaps, 1
   and 2), so no client property loses its model when `FelixShard` goes.
 - Every row of the hand-off table has its Raft check merged, or is marked

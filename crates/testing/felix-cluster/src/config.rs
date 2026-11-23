@@ -136,14 +136,21 @@ impl ClusterConfig {
 }
 
 /// The shard engine brokers start with unless a test names one, from
-/// `FELIX_TEST_SHARD_ENGINE` (`raft` or `hybrid`). Hybrid when unset, so a
-/// suite moves to Raft by CI setting the variable, one suite at a time.
+/// `FELIX_TEST_SHARD_ENGINE` (`raft` or `hybrid`). Raft when unset; CI sets
+/// `hybrid` for the fallback runs that stay until the hybrid is deleted.
 pub(crate) fn default_engine() -> &'static str {
-    match std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() {
-        Ok("raft") => "raft",
-        _ => "hybrid",
+    engine_named(std::env::var("FELIX_TEST_SHARD_ENGINE").ok().as_deref())
+}
+
+fn engine_named(value: Option<&str>) -> &'static str {
+    match value {
+        Some("hybrid") => "hybrid",
+        _ => "raft",
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 /// Say a test skipped itself on Raft, where a green result would otherwise
 /// pass for a run. Written to the real stderr, which libtest does not capture,
