@@ -122,145 +122,61 @@ any log. See
 
 ## Restoring
 
+:::caution[Restoring a whole cluster from a backup point is not supported on Raft clusters yet]
+`felixctl data restore-point` gives each broker a new storage id, and every
+Raft shard directory then opens as a new member that has never voted. A group
+is never formed again on such copies, so every shard answers "not ready"
+after the restore. The only way out today is to delete and recreate the
+streams, which loses their records. Do not restore a Raft cluster this way
+until [#2983](https://github.com/GetFelix/felix/issues/2983) ships. Per-shard
+Raft's [re-form rules](https://github.com/GetFelix/felix/blob/main/docs/per-shard-raft.md#re-forming-a-group)
+explain why.
+:::
+
 :::caution[Never touch one shard directory]
 Do not delete, empty, move or restore a single shard directory under a broker's
 data directory. To recover a broker's storage, stop the broker and replace or
 wipe its whole data directory. The broker keeps its storage id, its copy trust
 and its kept ballots in the data directory root, so if only a shard directory
 changes, it still reports that shard's copy as kept and trusted, and a
-promotion can count an empty copy and lose an acknowledged write. A new
-whole data directory gets a new storage id, which the readmission rules handle.
-Version 0.8 removes the hazard ([#2376](https://github.com/GetFelix/felix/issues/2376)).
-Under the Raft engine a shard directory put back to an older state is detected
-and its copy replaced, except one put back to a state from the last second with no
-election since. That window is longer while the mark writer is backed up, up to
-about six seconds: past five, writes on that data directory wait until the marks
-are written again.
-A whole data directory put back in the same run to such a state is not detected
-either. Keep to whole data directories there too, and restore them only while
-the broker is stopped.
+promotion can count an empty copy and lose an acknowledged write
+([#2376](https://github.com/GetFelix/felix/issues/2376)). Raft detects a
+shard directory put back to an older state, except one put back to a state
+from the last second with no election since. That window is longer while the
+mark writer is backed up, up to about six seconds. A whole data directory put
+back in the same run to such a state is not detected either, so restore whole
+data directories only while the broker is stopped.
 :::
 
-1. **Stop every broker.**
-2. **Restore the control plane's metadata** from the backup taken at or after
-   the point, and start the control plane.
-3. **Put each leader's copies back** under that broker's
-   `FELIX_DURABLE_STORAGE_DIR`, at the same paths.
-4. **Cut them back to the point**, on each of those brokers, with its normal
-   configuration and the broker still stopped. `felixctl data restore-point`
-   runs the `felix-broker restore-point` installed on that host; on a host or
-   image without `felixctl`, `felix-broker restore-point` takes the same
-   arguments.
+## Rebuilding one broker's copy
 
-   ```bash
-   felixctl data restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
-   ```
+This works today, as long as every shard the broker holds has other healthy
+copies.
 
-   ```text
-   new storage id 6f1c0a9e2b7d4c3f8a5e1d0b9c2f4a7e
-   t1/ns/orders/0 Stream: 918790 -> 918233
-   t1/ns/orders/0 GroupCursors: 12 -> 12
-   restored 2 logs to point "nightly-2026-09-27"; start this broker, and start its followers without these shards' directories once restore-point has run on them too
-   ```
+1. Stop the broker.
+2. Replace its whole data directory (`FELIX_DURABLE_STORAGE_DIR`) with an empty
+   one, or with a copy from a backup. If you put a copy back, delete
+   `<FELIX_DURABLE_STORAGE_DIR>/storage-id` first, or run
+   `felix-broker rotate-storage-id --dir /var/lib/felix` with the broker
+   stopped, so the directory gets a new storage id.
+3. Start the broker.
 
-   It cuts each log the point names for that node back to its offset, lowering
-   the log's commit offset to match: a restore goes back in time on purpose,
-   which ordinary truncation refuses to do. A copy that ends before the point,
-   or begins after it, is refused rather than padded or emptied. Running it
-   twice is harmless. Without `--node` it restores every shard in the point
-   whose directory is present.
+Each shard's copy on that broker comes back with a new copy id. A member with
+a new id has never voted, so it joins its group as a learner and catches up
+from the leader, and the group's membership change then removes the old
+member. See "Group and member identity" in
+[per-shard Raft](https://github.com/GetFelix/felix/blob/main/docs/per-shard-raft.md#group-and-member-identity).
+This costs one full copy of each shard the broker holds.
 
-   Before cutting anything it gives the broker's data directory a new storage
-   id, so peers stop trusting what it acknowledged before the restore.
+It does not recover a shard that lost its majority, and it does not work if
+every copy of a shard is rebuilt this way: that is the fleet-wide case above.
 
-   It also sets each stream's incarnation on this broker back to the one the
-   point names, so the broker takes the restored catalog's streams even if it
-   had registered, or seen deleted, a later incarnation after the point. It
-   deletes nothing; directories of streams created after the point stay until
-   a later delete of the name covers them. Run it on every broker for that
-   reason, including those that lead nothing in the point.
-5. **Remove the followers' copies** of those shards from every other broker.
-   A follower that kept its own copy holds records past the point; one that
-   starts without the directory rebuilds it from the restored leader. Removing
-   the directories is enough only because step 4 gave every broker a new
-   storage id; a missing shard directory on its own is not detected. Empty the
-   whole `FELIX_DURABLE_STORAGE_DIR` of any broker step 4 did not run on.
-6. **Start the brokers.**
+## What to keep
 
-A data directory put back any other way, by rsync, from a volume snapshot, or
-copied from another broker, keeps its old storage id, and peers would go on
-trusting what it acknowledged before. A broker in a cluster gives such a
-directory a new id on its own when the node has registered with the control
-plane since the copy was taken: the copy recorded an older node incarnation
-than the control plane holds. A restart, or a re-registration after the
-control plane marked the broker down, between the copy and the restore is
-enough.
-
-Deleting `<FELIX_DURABLE_STORAGE_DIR>/storage-id` before starting that broker
-is still required in every other case:
-
-- The copy was taken during the broker's last run and nothing registered it
-  since. It recorded the incarnation the control plane still holds, so the
-  broker cannot tell it from the directory it replaces.
-- The broker runs without cluster membership, so there is no registration to
-  compare.
-- The control plane was restored too, so its incarnations went back.
-- The node was deleted from the control plane after the copy was taken. It
-  registers again from incarnation 0.
-
-Deleting the file is always safe. It costs one full copy of each shard the
-broker follows. When in doubt, delete it.
-
-`felix-broker rotate-storage-id` does the same with the broker stopped. It
-gives the directory a new storage id and starts its per-shard Raft marks
-over, so every copy on it, Raft members included, starts as a new one:
-
-```bash
-felix-broker rotate-storage-id --dir /var/lib/felix
-```
-
-```text
-/var/lib/felix: storage id 3f2a6c0e9b1d4e7a8c5f2b0d6e1ac901 -> 8b17d2e4a6c84f0b9e3d5a7c1f2b04de
-```
-
-Without `--dir` it uses `FELIX_DURABLE_STORAGE_DIR`. Deleting `storage-id`
-has the same effect. Per-shard Raft is not released yet; when it is, this is
-the supported way to restore a snapshot taken while the broker ran. The
-check on a Raft data root compares it with the last root sequence the
-control plane heard from the broker, and a snapshot newer than that value,
-as one taken while the control plane was down can be, passes that check. So
-does a snapshot put back in the same run from within the last second, or up to
-about six seconds while the mark writer is backed up, with no election since.
-
-With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
-control plane is down runs from the control-plane view in its data directory
-only if a file the last start on that machine left in `/dev/shm` names the
-directory as that start left it. A copy put back from before that start does
-not match, so a restored broker waits for the control plane and gets the
-check above. A copy taken during the broker's last run and put back before
-its next start does match, just as it passes the control plane's check, so
-delete `storage-id` or use `felix-broker restore-point` in every case. See [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down) for what a start
-from the view does.
-
-Stopping every broker is also what makes generations safe across a restore.
-The restored control plane hands out change sequence numbers, and so first
-generations of new incarnated streams, it had already used before the
-restore. A broker that kept running would still hold quorum marks and
-follower positions under those generations; one that restarts holds none.
-The restore also rewinds node incarnations and replica reports together, so
-an old report could let placement replace a broker that kept running while
-it still serves on its lease.
-
-Restoring the control plane's metadata raises its placement incarnation
-above both the one it replaces and the backup's, so restoring the same
-backup twice, or an older one, never brings back a placement decision made
-before. Brokers acknowledge the new incarnation through their heartbeats.
-
-If a broker kept running through a restore of a backup taken before that
-broker last started, restart it. The restore put back an older registration
-for it, so the control plane does not count that broker's acknowledgements,
-and no placement change that waits for every broker goes out until it
-registers again.
+Keep taking backup points and copying the leaders' shard directories as
+described above, and keep the metadata backups. `felixctl backup-point` and the
+live copies change nothing on the cluster, and the points and copies are what
+the whole-cluster restore will use once it ships.
 
 ## See also
 
