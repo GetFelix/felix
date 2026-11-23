@@ -1,0 +1,1 @@
+The simulator's Raft groups run four power-loss modes (`raft-power-loss`, `raft-relaxed-power-loss`, `raft-majority-cut`, `raft-majority-cut-relaxed`), the Raft twins of the hybrid's disk nemeses, and the nightly sweep runs them as the `raft-disks` group (#2954).

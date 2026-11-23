@@ -636,6 +636,14 @@ the run, since no member restarts. The run then also checks that:
 this way. The stopped copy coming back needs a restart, which the run does
 not have yet (issue #2300).
 
+A broker that sees a poisoned log rewrites the run record of every data root
+it holds, so a crash after it takes a new storage id. The brokers of a
+simulation, and the tests of one binary, share a process, so under the `sim`
+feature each simulated root keeps that state for its own broker until its next
+power cut. Without that, one run's failed flush made every later power cut in
+the process rotate copies. `a_failed_flush_leaves_a_later_runs_power_cuts_alone`
+runs the two in that order.
+
 **Disk faults.** `FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1` open every
 member the way a broker does: its data root through the restore gate
 (`open_root`), and each shard directory as a copy (`open_copy`), so the first
@@ -682,6 +690,56 @@ the shard has no leader for the rest of the run, and the test expects that
 stall and no lost record. Re-forming the group is an operator step the run
 does not have yet (#2350, which waits for the re-form command of #2250).
 
+**Power cuts.** Four modes cut members' power, with the variables of their
+hybrid twins ([Power loss](#power-loss)). They open members as the disk faults
+do, and each start also writes a run record as a broker does
+(`run_state::begin`), so a cut of a relaxed run comes back under a new
+storage id. The Raft log always fsyncs on commit (#2248). What changes is
+when a write is answered:
+
+| Mode | Environment | What happens |
+| --- | --- | --- |
+| `raft-power-loss` | `FELIX_SIM_POWER_LOSS=1` | Some rounds cut one member's power. The cut lands inside the member's next log append, or after two seconds with none in flight, so the append comes back torn as in [Power loss](#power-loss). Writes are answered at the commit. |
+| `raft-relaxed-power-loss` | `FELIX_SIM_POWER_LOSS=relaxed` | The same cuts on a relaxed run: streams are `Quorum` on `Periodic`, so a write is answered once a majority has written it, before any fsync. |
+| `raft-majority-cut` | `FELIX_SIM_MAJORITY_CUT=1` | The cuts of `raft-power-loss`, and once or twice a run two members or a majority lose power in the same instant. |
+| `raft-majority-cut-relaxed` | `FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1` | The cuts of `raft-relaxed-power-loss`, and one cut of two members or a majority in the last third of the faults. |
+
+A cut stops the member in the same instant: its peers hear nothing more from
+it, and an answer it would give after the cut counts as unknown. It starts
+again one to four seconds later on what the device kept. Like the other disk
+faults, a cut waits for every shard to heal first, and a cut member is
+credited with what it had flushed until its copy has it again. On top of the
+checks above, a seed fails when:
+
+- a member that kept its copy id has lost a record it had flushed before the
+  cut. This is what catches a log that answers before its fsync;
+- a cut of a run that answers only synced writes rotates a copy, or a cut of
+  a relaxed run keeps one (`docs/per-shard-raft.md`, "Group and member identity");
+- recovery opens the segment a cut tore and does not repair its tail;
+- a shard answers a write sent after a relaxed cut of a majority.
+
+The history checker is unchanged in every mode. A relaxed write answered on a
+written majority must survive any cut of a minority. The one loss
+`docs/per-shard-raft.md` allows a `Quorum` stream on `Periodic` is a majority
+of copies each losing their unsynced tail. Those copies come back under new
+ids and cannot vote, so the shards close instead, with no leader until a
+re-form (#2620). That is what a relaxed cut of a majority must do: the run
+reads no final log of a closed shard and expects no leader for it, and
+nothing else is excused. A write answered while only the cut members held it
+is then never read back, so the checker cannot tell whether it survived.
+
+In the relaxed modes the check made when a write is answered asks only what a
+written-majority answer promises: the answering member's log holds the
+write. It need not be committed or fsynced yet. Each seed prints a
+line of how many members were cut (together and alone), how many cuts left a
+torn tail, how many of those recovery repaired and how many copies rotated. A
+seed with no cut, or in a majority mode none of several members at once,
+checked too little.
+
+`ignored_flushes_are_caught_by_power_loss` runs `raft-power-loss` on members
+whose log segments ignore their flushes (`sim_fs::ignore_segment_flushes`), so
+the logs answer writes the device does not hold. The seed must fail.
+
 `FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,
 0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
 clock skew can do to it. Without the variable the timers agree.
@@ -701,7 +759,7 @@ RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
 ```
 
 The nightly sweep runs 250 Raft seeds a night in each of the `raft`,
-`raft-clocks`, `raft-wipe` and `raft-restore` modes ([The nightly sweep](#the-nightly-sweep)). One seed runs
+`raft-clocks`, `raft-wipe`, `raft-restore` and four power modes ([The nightly sweep](#the-nightly-sweep)). One seed runs
 the way the sweep runs it with:
 
 ```bash
@@ -772,6 +830,8 @@ mode, a window that moves 250 seeds a night, so eight nights cover seeds 1 to
 | `wipe` | Shard and data directories emptied. |
 | `raft`, `raft-clocks` | Raft groups ([Raft groups](#raft-groups)) in place of a whole cluster, the second with skewed timers. |
 | `raft-wipe`, `raft-restore` | Raft groups with members stopped and a shard directory or data root wiped, or put back from an older copy. |
+| `raft-power-loss`, `raft-relaxed-power-loss` | Raft groups with one member's power cut at a time, answered at the commit or on a written majority ([Raft groups](#raft-groups), "Power cuts"). |
+| `raft-majority-cut`, `raft-majority-cut-relaxed` | The same, and several members lose power at once. |
 
 A Raft seed runs through the same script, one process per seed, on the
 `raft_seeds` test binary built beside the `seeds` one.
@@ -804,7 +864,7 @@ For the release gate, start the workflow by hand (Actions, "Simulation sweep
 | `first` | The first seed. | 1 |
 | `seeds` | How many seeds per mode. | 2000 |
 | `shards` | Jobs per mode, lowered to `seeds` when larger. | 50 |
-| `modes` | Modes from the table above (comma separated), `all` (`off`, `clocks`, `placement`, `power-loss`) or `disks` (`relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed`, `wipe`). Neither includes the Raft modes; name them. | `off` |
+| `modes` | Modes from the table above (comma separated), `all` (`off`, `clocks`, `placement`, `power-loss`), `disks` (`relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed`, `wipe`) or `raft-disks` (`raft-power-loss`, `raft-relaxed-power-loss`, `raft-majority-cut`, `raft-majority-cut-relaxed`). Other Raft modes are named one by one. | `off` |
 | `parallel` | Jobs running at once, 1 to 20. | 4 |
 
 `modes` `all` with 2000 seeds is 200 jobs (the limit is 256), and a job takes at most 50 seeds. Repeated modes count once. Dispatched runs queue behind each other. The gate is no

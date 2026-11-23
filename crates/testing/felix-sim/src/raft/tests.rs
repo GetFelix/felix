@@ -185,3 +185,89 @@ fn a_follower_stopped_before_it_learns_a_commit_is_credited_with_it() {
         );
     });
 }
+
+/// A relaxed cut of a majority closes the shards, so it is the last cut of
+/// the run, and before it come single cuts. A strict run cuts together once
+/// or twice and goes on cutting.
+#[test]
+fn the_cuts_of_a_majority_run_come_as_drawn() {
+    let length = Duration::from_secs(60);
+    for count in [3, 5] {
+        for seed in 1..20 {
+            let mut rng = Rng::new(seed);
+            let end = Instant::now();
+            let mut cuts = Cuts::new(Disks::MajorityCutRelaxed, &mut rng, end, length);
+            let together = cuts.next(count, false, &mut rng).expect("a cut is due");
+            assert!(together.len() >= 2 && together.len() <= count / 2 + 1);
+            let distinct: BTreeSet<_> = together.iter().collect();
+            assert_eq!(distinct.len(), together.len(), "{together:?}");
+            let closes = together.len() > count / 2;
+            assert_eq!(cuts.next(count, true, &mut rng).is_none(), closes);
+
+            let mut cuts = Cuts::new(Disks::MajorityCut, &mut rng, end, length);
+            let mut together = 0;
+            for _ in 0..4 {
+                let cut = cuts.next(count, true, &mut rng).expect("due");
+                together += usize::from(cut.len() > 1);
+            }
+            assert!((1..=2).contains(&together), "{together} cuts together");
+            assert_eq!(cuts.next(count, true, &mut rng).map(|c| c.len()), Some(1));
+        }
+    }
+    let mut rng = Rng::new(1);
+    let mut off = Cuts::new(Disks::Wipe, &mut rng, Instant::now(), length);
+    assert!(off.next(3, true, &mut rng).is_none());
+}
+
+/// Each power mode cuts and checks what came back: a strict cut keeps every
+/// copy and recovery repairs each torn tail it reopens, a relaxed one
+/// rotates every copy of the member, and a majority mode cuts several
+/// members at once.
+#[test]
+fn every_power_mode_cuts_and_passes() {
+    for disks in [
+        Disks::PowerLoss,
+        Disks::RelaxedPowerLoss,
+        Disks::MajorityCut,
+        Disks::MajorityCutRelaxed,
+    ] {
+        let config = RaftSimConfig {
+            disks,
+            ..RaftSimConfig::default()
+        };
+        let shards = config.shards as usize;
+        let outcome = run_seed(1, config);
+        println!("{outcome}");
+        assert!(outcome.passed(), "{disks:?}: {}", outcome.first_failure());
+        let power = outcome.power;
+        assert!(power.cuts > 0, "{disks:?} cut nothing");
+        assert_eq!(power.together > 0, disks.together(), "{disks:?}: {power:?}");
+        if disks.relaxed() {
+            assert_eq!(power.rotated, power.cuts * shards, "{disks:?}: {power:?}");
+        } else {
+            assert_eq!(power.rotated, 0, "{disks:?}: {power:?}");
+            assert_eq!(power.repaired, power.torn, "{disks:?}: {power:?}");
+        }
+    }
+}
+
+/// Logs whose flushes keep nothing answer writes that a power cut takes.
+/// `raft-power-loss` must catch that: the cut member comes back without
+/// records it had flushed, or with a hole recovery refuses to read past.
+#[test]
+fn ignored_flushes_are_caught_by_power_loss() {
+    for seed in [1, 2, 3] {
+        let config = RaftSimConfig {
+            disks: Disks::PowerLoss,
+            ignored_flushes: true,
+            ..RaftSimConfig::default()
+        };
+        let outcome = run_seed(seed, config);
+        println!("{outcome}");
+        let caught = outcome.findings.iter().any(|f| {
+            f.contains("in a power cut, which it had flushed")
+                || (f.contains("did not start again") && f.contains("Corruption"))
+        });
+        assert!(caught, "seed {seed}: {}", outcome.first_failure());
+    }
+}

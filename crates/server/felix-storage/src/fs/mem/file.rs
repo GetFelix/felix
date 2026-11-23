@@ -175,6 +175,9 @@ impl MemFile {
     pub(crate) fn sync(&self) -> io::Result<()> {
         if let Some(tree) = self.tree.upgrade() {
             tree.before_flush()?;
+            if self.segment.is_some() && tree.ignores_segment_flushes() {
+                return Ok(());
+            }
         }
         self.node.data.lock().sync();
         Ok(())
