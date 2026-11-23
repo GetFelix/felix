@@ -320,7 +320,12 @@ async fn a_full_raft_cache_watch_ends_as_lagged() {
     let first = cache.write(RaftCache::put("k", b"one")).await;
     let missed = cache.write(RaftCache::put("k", b"two")).await;
     cache.write(RaftCache::put("k", b"three")).await;
-    assert_eq!(watch.recv().await.map(|event| event.offset), Some(first));
-    assert!(watch.recv().await.is_none(), "the queue held more than one");
+    let mut recv = async || {
+        tokio::time::timeout(Duration::from_secs(5), watch.recv())
+            .await
+            .expect("no change reached the watcher")
+    };
+    assert_eq!(recv().await.map(|event| event.offset), Some(first));
+    assert!(recv().await.is_none(), "the queue held more than one");
     assert_eq!(watch.lagged(), Some(missed));
 }
