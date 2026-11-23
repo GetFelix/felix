@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use felix_storage::raft_log::LogPoint;
 use felix_storage::waiters::Queue;
+use openraft::type_config::alias::LogIdOf;
 use openraft::{Raft, ServerState};
 use parking_lot::Mutex;
 use tokio::sync::watch;
@@ -106,6 +107,18 @@ impl Reports {
         if moved {
             self.advance();
         }
+    }
+
+    /// `from` answered an append with success through `last`. openraft
+    /// answers only once the log has taken the entries through `last`
+    /// (written on a written-commit log, fsynced on any other), so the
+    /// answer says what a report would, for that log id.
+    pub(crate) fn answered(&self, from: &MemberId, last: &LogIdOf<ShardTypes>) {
+        let at = LogPoint {
+            term: last.leader_id.term,
+            index: last.index,
+        };
+        self.heard(from.clone(), at);
     }
 
     /// Moves every rank to the reports now held. Each rank advances on

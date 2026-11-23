@@ -290,6 +290,18 @@ The client's *publisher* writer is deliberately not colocated: it spends its
 time blocked in `write_all` against a full send window, and parking it on
 the I/O thread starves the very drivers it waits on (measured 5× worse).
 
+## Raft group threads
+
+On a broker with Raft shards, each group's own tasks (openraft's core and
+state machine, its replication streams, the publish task) run on a group
+thread instead of the shared runtime. A write wakes those tasks one after
+another, and on one thread each wake is a queue push rather than a kernel
+wake-up of another worker. A broker runs one group thread per four cores,
+at most 8, a few groups to each, and none under four cores. Publishers,
+subscribers and the peer transport stay on the shared runtime. On the perf
+hosts this cut Raft's CPU per message by 12-33%. The details are in
+`docs/per-shard-raft.md`, "Group threads".
+
 ## Putting it together: what a "saturated" system looks like
 
 With defaults (checkpoints 4-6 shedding, not blocking): as publish rate

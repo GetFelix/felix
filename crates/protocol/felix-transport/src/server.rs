@@ -7,8 +7,9 @@ use anyhow::{Context, Result, anyhow};
 use quinn::{Endpoint, ServerConfig};
 
 use crate::config::TransportConfig;
+use crate::connection::PumpRuntimes;
 use crate::connection::QuicConnection;
-use crate::io_runtime::{EndpointRole, quinn_runtime};
+use crate::io_runtime::{EndpointRole, EndpointRuntime, quinn_runtime};
 use crate::socket::{effective_udp_buffer_bytes, warn_if_udp_buffers_were_clamped};
 
 /// QUIC server endpoint wrapper.
@@ -35,9 +36,8 @@ pub struct QuicServer {
     // Variant of the server config used for loopback peers; see
     // [`TransportConfig::loopback_initial_mtu`].
     loopback_config: Option<Arc<ServerConfig>>,
-    // I/O runtime for this endpoint's quinn drivers (None when isolation is
-    // disabled); handed to each connection for pump colocation.
-    io_handle: Option<tokio::runtime::Handle>,
+    // Where this endpoint's connections spawn their pump tasks.
+    pumps: PumpRuntimes,
 }
 
 impl QuicServer {
@@ -70,7 +70,11 @@ impl QuicServer {
                 Arc::new(config)
             });
         server_config.transport_config(Arc::new(quinn_transport));
-        let (runtime, io_handle) = quinn_runtime(EndpointRole::Server);
+        let EndpointRuntime {
+            quinn: runtime,
+            io,
+            app,
+        } = quinn_runtime(EndpointRole::Server);
         let endpoint = Endpoint::new(
             transport.quinn_endpoint_config(),
             Some(server_config),
@@ -82,7 +86,7 @@ impl QuicServer {
             endpoint,
             _transport: transport,
             loopback_config,
-            io_handle,
+            pumps: PumpRuntimes { io, app },
         })
     }
 
@@ -112,7 +116,7 @@ impl QuicServer {
         Some(IncomingConnection {
             incoming,
             loopback_config: self.loopback_config.clone(),
-            io_handle: self.io_handle.clone(),
+            pumps: self.pumps.clone(),
         })
     }
 
@@ -130,7 +134,7 @@ impl QuicServer {
 pub struct IncomingConnection {
     incoming: quinn::Incoming,
     loopback_config: Option<Arc<ServerConfig>>,
-    io_handle: Option<tokio::runtime::Handle>,
+    pumps: PumpRuntimes,
 }
 
 impl IncomingConnection {
@@ -156,6 +160,6 @@ impl IncomingConnection {
                 .context("accept QUIC connection")?,
             _ => self.incoming.await.context("accept QUIC connection")?,
         };
-        Ok(QuicConnection::new(connection, self.io_handle))
+        Ok(QuicConnection::new(connection, self.pumps))
     }
 }

@@ -21,6 +21,7 @@ use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
+use super::executor::GroupThreads;
 use super::group::driver::MembershipProgress;
 use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
@@ -115,6 +116,18 @@ pub struct RuntimeConfig {
     /// drains in a quarter of `election_min`. 0 takes the bound off.
     /// See `docs/per-shard-raft.md`, "Many groups electing at once".
     pub max_elections_at_once: usize,
+    /// How many group threads run the groups' openraft tasks, a few groups
+    /// to each, so wakes inside a group stay on one thread. `0` runs them
+    /// on the runtime each group is opened on. Defaults to
+    /// one per four cores, at most 8, and none under four cores. See
+    /// docs/per-shard-raft.md, "Group threads".
+    pub group_threads: usize,
+    /// How long a leader holds an append that carries only a new commit
+    /// index, for the next append to carry it instead. With no write after
+    /// a commit, followers learn it this much later. Shorter than
+    /// `heartbeat`. See docs/per-shard-raft.md, "A commit goes on the next
+    /// append".
+    pub commit_hold: Duration,
 }
 
 impl Default for RuntimeConfig {
@@ -139,6 +152,8 @@ impl Default for RuntimeConfig {
             append_entries: 1024,
             placement: Placement::default(),
             max_elections_at_once: 64,
+            group_threads: default_group_threads(),
+            commit_hold: Duration::from_millis(1),
         }
     }
 }
@@ -170,6 +185,32 @@ pub struct ElectionLoad {
 /// last piece's answer waits for the install as well.
 pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
 
+/// One group thread per four cores the process may use, at most 8.
+///
+/// Under four cores there are none: a group thread would take half the
+/// machine or more from the broker runtime, which already has only one or
+/// two workers for the wakes to cross.
+pub(crate) fn default_group_threads() -> usize {
+    group_threads_for(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+}
+
+pub(crate) fn group_threads_for(cores: usize) -> usize {
+    (cores / 4).min(8)
+}
+
+/// `count` group threads, or none. A broker that cannot start them runs its
+/// groups on its own runtime, which is slower but the same otherwise.
+fn start_group_threads(count: usize) -> Option<GroupThreads> {
+    if count == 0 {
+        return None;
+    }
+    GroupThreads::start(count)
+        .inspect_err(|err| {
+            tracing::warn!(error = %err, count, "could not start Raft group threads, so groups run on the broker runtime");
+        })
+        .ok()
+}
+
 fn wall_clock_micros() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     now.map_or(0, |now| now.as_micros() as u64)
@@ -179,6 +220,11 @@ impl RuntimeConfig {
     pub(crate) fn raft(&self, kind: ShardKind) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
+        }
+        if self.commit_hold >= self.heartbeat {
+            return Err(InvalidTimers(
+                "the commit hold is not shorter than the heartbeat".into(),
+            ));
         }
         if self.idle_heartbeat < self.heartbeat {
             return Err(InvalidTimers(
@@ -494,6 +540,10 @@ impl Registry {
             _ => None,
         }
     }
+
+    fn holds(&self, shard: &ShardKey) -> bool {
+        matches!(self.slots.read().by_shard.get(shard), Some(Slot::Open(_)))
+    }
 }
 
 /// This broker's member of every Raft group it holds.
@@ -533,6 +583,11 @@ struct Inner {
     admitted: parking_lot::Mutex<BTreeMap<ShardKey, Arc<Admission>>>,
     /// See [`GroupRuntime::admit_until`].
     admitted_until: parking_lot::Mutex<Option<tokio::time::Instant>>,
+    /// See [`RuntimeConfig::group_threads`].
+    threads: Option<GroupThreads>,
+    /// The runtime this one was started on: the broker's. Work that must
+    /// not hold up a group thread runs here, such as follower fanout.
+    home: Option<tokio::runtime::Handle>,
 }
 
 /// A copy an open found stopped, which rejoins once a leader is heard
@@ -581,6 +636,7 @@ impl GroupRuntime {
                     election_max: config.election_max.as_millis() as u64,
                     lease: config.lease.as_millis() as u64,
                     max_elections_at_once: config.max_elections_at_once,
+                    commit_hold: config.commit_hold,
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
@@ -607,6 +663,8 @@ impl GroupRuntime {
                 admitted: parking_lot::Mutex::default(),
                 admitted_until: parking_lot::Mutex::default(),
                 placement: config.placement,
+                threads: start_group_threads(config.group_threads),
+                home: tokio::runtime::Handle::try_current().ok(),
             }),
         })
     }
@@ -875,6 +933,7 @@ impl GroupRuntime {
             placement: inner.placement.clone(),
             placed_budget: Arc::clone(&inner.placed_budget),
             acked: Arc::clone(&inner.acked),
+            thread: inner.threads.as_ref().map(GroupThreads::place),
         };
         let raft = match group.shard.kind {
             ShardKind::Stream => &inner.raft,
@@ -1276,6 +1335,11 @@ impl GroupRuntime {
             }
             Err(_) => tracing::warn!("the last batched log marks timed out"),
         }
+        // Not left to Drop: a broker's leading host holds this runtime, so
+        // Inner may never drop.
+        if let Some(threads) = &inner.threads {
+            threads.stop();
+        }
     }
 
     /// Whether a leader was heard committing past the stopped copy's last
@@ -1334,6 +1398,19 @@ impl GroupRuntime {
     /// This broker's member of `shard`'s group, if it has one.
     pub fn status(&self, shard: &ShardKey) -> Option<GroupStatus> {
         self.inner.registry.get(shard).map(|group| group.status())
+    }
+
+    /// Whether this broker holds a member of `shard`: exactly when
+    /// [`Self::status`] is `Some`. Per-message paths ask this, since a
+    /// status clones the member's whole Raft metrics.
+    pub fn holds(&self, shard: &ShardKey) -> bool {
+        self.inner.registry.holds(shard)
+    }
+
+    /// [`GroupStatus::leader`]`.is_some()` for this broker's member of
+    /// `shard`, without building the status. `None` when it holds none.
+    pub fn hears_leader(&self, shard: &ShardKey) -> Option<bool> {
+        self.group(shard).map(|group| group.hears_leader())
     }
 
     /// Whether this broker holds a member of `shard` that does not lead it
@@ -1402,6 +1479,24 @@ impl GroupRuntime {
             .registry
             .get(shard)
             .map(|group| group.positions())
+    }
+
+    /// The broker runtime, or the current one if this was built outside a
+    /// runtime.
+    pub(crate) fn home(&self) -> tokio::runtime::Handle {
+        self.inner
+            .home
+            .clone()
+            .unwrap_or_else(tokio::runtime::Handle::current)
+    }
+
+    /// How many groups run on each group thread. Empty without them.
+    #[cfg(test)]
+    pub(crate) fn group_thread_loads(&self) -> Vec<usize> {
+        self.inner
+            .threads
+            .as_ref()
+            .map_or_else(Vec::new, GroupThreads::placed)
     }
 
     /// How many groups are open here.

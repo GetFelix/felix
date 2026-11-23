@@ -318,7 +318,7 @@ impl RaftShards {
 
     /// The Raft engine, when this broker holds a member of `shard`.
     pub(crate) fn engine_for(&self, shard: &ShardKey) -> Option<&RaftEngine> {
-        self.runtime.status(shard).map(|_| &self.engine)
+        self.runtime.holds(shard).then_some(&self.engine)
     }
 
     /// The committed log id of every group this broker leads, with the
@@ -1423,13 +1423,17 @@ impl EngineShards for RaftShards {
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch> {
-        let Some(status) = self.runtime.status(key) else {
+        if !self.runtime.holds(key) {
             return self.dispatch_without_member(key, nodes);
-        };
+        }
         // Led is not enough: the term is served once `Leading` opened it.
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
         }
+        // Only a forward needs the status, so a local publish never builds it.
+        let Some(status) = self.runtime.status(key) else {
+            return self.dispatch_without_member(key, nodes);
+        };
         // The hint, not the heard leader: a restarted follower forwards at
         // once, and a forward to a leader that is gone fails and is retried.
         let leader = status
@@ -1455,17 +1459,11 @@ impl EngineShards for RaftShards {
     /// knows no leader may be cut off, with a commit index that has stopped
     /// moving, so it serves none.
     fn serves_reads(&self, key: &ShardKey) -> bool {
-        self.runtime
-            .status(key)
-            .is_some_and(|status| status.leader.is_some())
+        self.runtime.hears_leader(key) == Some(true)
     }
 
     fn leads_unheard(&self, key: &ShardKey) -> bool {
-        self.leading(key).is_some()
-            && self
-                .runtime
-                .status(key)
-                .is_some_and(|status| status.leader.is_none())
+        self.leading(key).is_some() && self.runtime.hears_leader(key) == Some(false)
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
@@ -1598,7 +1596,7 @@ impl felix_broker::FollowerReads for RaftShards {
     {
         Box::pin(async move {
             let key = stream_key(tenant_id, namespace, stream, shard);
-            if self.runtime.status(&key).is_none() {
+            if !self.runtime.holds(&key) {
                 return Ok(None);
             }
             if self.runtime.follows(&key) {

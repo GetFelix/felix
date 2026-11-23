@@ -2,6 +2,8 @@
 //! [`RaftTransport`] to send, and the router that turns openraft's calls
 //! into them.
 
+mod client;
+
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -30,6 +32,7 @@ use super::reach::{Reach, Refusals, Waits};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
+use client::Client;
 
 /// One Raft message for one member of one group. What is in it is this
 /// module's business; a transport carries it to [`Self::to`]'s broker.
@@ -64,9 +67,10 @@ pub(crate) struct Beat {
 pub(crate) enum Ask {
     /// No report: not an append with entries, or no write waits on reports.
     Nothing,
-    /// Report once written. Every follower does, whatever its log's mode:
-    /// the report lets a `Quorum` write go without waiting for the commit
-    /// to reach the leader's state machine.
+    /// Report once written. The report lets a `Quorum` write go without
+    /// waiting for the commit to reach the leader's state machine. A
+    /// follower whose log answers at the write sends none: the leader
+    /// counts its answer instead.
     Written,
 }
 
@@ -334,6 +338,10 @@ impl Router {
             self.pace.asking_at(term_of(&vote.vote));
         }
         let deadline = super::wire::append_deadline(option.hard_ttl(), &body);
+        let report = match &body {
+            Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
+            _ => Ask::Nothing,
+        };
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -341,10 +349,7 @@ impl Router {
                 gap: sent.gap,
                 seq: sent.seq,
             }),
-            report: match &body {
-                Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
-                _ => Ask::Nothing,
-            },
+            report,
             deadline,
             body,
         };
@@ -355,6 +360,11 @@ impl Router {
                 Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, &sent),
                 _ => self.pace.unanswered(&to),
             }
+        }
+        if report == Ask::Written
+            && let Ok(Ok(RaftReply(Reply::Append(Ok(Some(last)))))) = &answer
+        {
+            self.reports.answered(&to, last);
         }
         // Before openraft sees the answer: it adopts the vote and may grant
         // that candidate at once.
@@ -429,6 +439,17 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
     }
 }
 
+/// A pre-vote answer as the candidate takes it: a refusal names its vote
+/// uncommitted, so only a really higher vote ends the round (#2889). See
+/// `docs/per-shard-raft.md`, "Idle groups".
+pub(crate) fn pre_vote_answer(mut answer: VoteResponse<ShardTypes>) -> VoteResponse<ShardTypes> {
+    use openraft::vote::RaftVote;
+    if !answer.vote_granted && answer.vote.is_committed() {
+        answer.vote = VoteOf::<ShardTypes>::from_leader_id(answer.vote.leader_id().clone(), false);
+    }
+    answer
+}
+
 fn wrong_reply() -> Unreachable<ShardTypes> {
     Unreachable::new(&WrongReply)
 }
@@ -479,7 +500,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             .call(target, group_id, Request::PreVote(rpc), &option)
             .await?
         {
-            Reply::Vote(response) => Ok(response),
+            Reply::Vote(response) => Ok(pre_vote_answer(response)),
             _ => Err(wrong_reply().into()),
         }
     }
@@ -562,13 +583,18 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
 pub(crate) struct Network {
     pub(crate) router: Router,
     pub(crate) group: GroupId,
+    /// [`super::RuntimeConfig::commit_hold`].
+    pub(crate) commit_hold: Duration,
 }
 
 impl RaftNetworkFactory<ShardTypes> for Network {
-    type Network = GroupNetworkAdapter<ShardTypes, GroupId, Router>;
+    type Network = Client;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
         let router = self.router.toward(&target, &self.group);
-        GroupNetworkAdapter::new(router, target, self.group.clone())
+        Client {
+            adapter: GroupNetworkAdapter::new(router, target, self.group.clone()),
+            hold: self.commit_hold,
+        }
     }
 }

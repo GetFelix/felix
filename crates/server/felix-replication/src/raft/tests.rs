@@ -48,8 +48,45 @@ const PATIENCE: Duration = Duration::from_secs(120);
 
 /// The shipped timers. Shorter ones churn on a loaded machine, where an
 /// fsync can outlast a short election timeout.
+///
+/// Group threads are the shipped count for this machine.
+/// `FELIX_TEST_RAFT_GROUP_THREADS=<n>` sets it, so `0` runs the suite with
+/// the groups on the test's runtime. A test that pauses tokio's clock and
+/// opens groups needs `group_threads: 0`: a group thread keeps real time.
 fn timers() -> RuntimeConfig {
-    RuntimeConfig::default()
+    RuntimeConfig {
+        group_threads: test_group_threads(),
+        ..RuntimeConfig::default()
+    }
+}
+
+fn test_group_threads() -> usize {
+    std::env::var("FELIX_TEST_RAFT_GROUP_THREADS")
+        .ok()
+        .and_then(|threads| threads.parse().ok())
+        .unwrap_or_else(runtime::default_group_threads)
+}
+
+/// Keeps `group`'s thread busy until the returned sender is dropped, so what
+/// the test queues meanwhile is found together. `None` when the group runs
+/// on the test's own runtime, which runs nothing else until the test waits.
+async fn hold_group_thread(group: &group::Group) -> Option<std::sync::mpsc::Sender<()>> {
+    let probe = group.runtime().spawn(async {
+        std::thread::current()
+            .name()
+            .is_some_and(|name| name.starts_with("felix-raft-group-"))
+    });
+    if !probe.await.expect("probe") {
+        return None;
+    }
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (started, holding) = tokio::sync::oneshot::channel();
+    drop(group.runtime().spawn(async move {
+        let _ = started.send(());
+        let _ = held.recv();
+    }));
+    holding.await.expect("held");
+    Some(release)
 }
 
 fn shard(n: u32) -> ShardKey {
@@ -111,6 +148,9 @@ struct Net {
     lose_entries_from: parking_lot::Mutex<Option<u64>>,
     /// While set, every vote request is lost. Pre-votes still go through.
     lose_votes: std::sync::atomic::AtomicBool,
+    /// While set, a granted pre-vote's answer comes back late, after every
+    /// refusal sent with it.
+    late_pre_vote_grants: std::sync::atomic::AtomicBool,
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
@@ -139,12 +179,16 @@ struct Net {
     flaky_rest: std::sync::atomic::AtomicU32,
     /// Appends carrying entries that were handed to a broker.
     appends: std::sync::atomic::AtomicU64,
+    /// Appends with no entries that were handed to a broker.
+    empty_appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
     /// Calls to a cut broker.
     cut_calls: std::sync::atomic::AtomicU64,
     /// Written reports handed to the transport, each with its sender.
     written_reports: parking_lot::Mutex<Vec<String>>,
+    /// Every message handed to the transport.
+    sent: std::sync::atomic::AtomicU64,
     /// A cut broker that comes back just after the next heartbeat to it is
     /// refused, and when it did.
     heal_after_beat: parking_lot::Mutex<Option<String>>,
@@ -185,6 +229,7 @@ fn sender(request: &Request) -> Option<&str> {
 impl RaftTransport for Net {
     async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
+        self.sent.fetch_add(1, Relaxed);
         if let Request::Written { from, .. } = &request.body {
             self.written_reports.lock().push(from.broker.to_string());
         }
@@ -280,21 +325,31 @@ impl RaftTransport for Net {
             false => self.brokers.lock().get(broker).cloned(),
         };
         if runtime.is_some()
-            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+            && let Request::Append(rpc) = &request.body
         {
-            self.appends.fetch_add(1, Relaxed);
+            match rpc.entries.is_empty() {
+                false => self.appends.fetch_add(1, Relaxed),
+                true => self.empty_appends.fetch_add(1, Relaxed),
+            };
         }
         let slow = match request.body {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,
         };
         let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
+        let late_grant =
+            matches!(request.body, Request::PreVote(_)) && self.late_pre_vote_grants.load(Relaxed);
         let answer = match runtime {
             Some(runtime) => runtime.handle_unchecked(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
         if unheard {
             return Err(Refused::Unreachable("the answer was lost".into()));
+        }
+        if late_grant
+            && matches!(&answer, Ok(RaftReply(super::network::Reply::Vote(vote))) if vote.vote_granted)
+        {
+            tokio::time::sleep(Duration::from_millis(300)).await;
         }
         if let Some(slow) = slow {
             tokio::time::sleep(slow).await;
@@ -997,6 +1052,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         election_max: millis(config.election_max),
         lease: millis(config.lease),
         max_elections_at_once: config.max_elections_at_once,
+        commit_hold: config.commit_hold,
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -1635,6 +1691,64 @@ async fn a_write_is_reported_written_and_flushed() {
     cluster.stop().await;
 }
 
+/// The threads `follow_commits` passes have run on, in any test.
+static FOLLOWED_ON: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+
+pub(super) fn followed_on(thread: Option<&str>) {
+    FOLLOWED_ON
+        .lock()
+        .push(thread.unwrap_or("unnamed").to_owned());
+}
+
+/// With group threads, each group's openraft core and the tasks it spawns
+/// run on the group's thread, and a write still commits everywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_groups_core_runs_on_its_group_thread() {
+    let threads = RuntimeConfig {
+        group_threads: 2,
+        ..timers()
+    };
+    let mut cluster = Cluster::with(threads, true);
+    for n in 0..3 {
+        cluster.form(n).await;
+    }
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    assert_eq!(runtime.group_thread_loads(), vec![2, 1]);
+    let group = runtime.group(&shard(0)).expect("group");
+    let core = group
+        .raft()
+        .with_raft_state(|_| std::thread::current().name().map(str::to_owned))
+        .await
+        .expect("core");
+    let task = group
+        .runtime()
+        .spawn(async { std::thread::current().name().map(str::to_owned) })
+        .await
+        .expect("task");
+    for on in [core, task] {
+        assert!(
+            on.as_deref()
+                .is_some_and(|name| name.starts_with("felix-raft-group-")),
+            "ran on {on:?}"
+        );
+    }
+    let thread = group.runtime().clone();
+    drop(group);
+    let index = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, index).await;
+    cluster.stop().await;
+    assert_eq!(runtime.group_thread_loads(), vec![0, 0]);
+    // Shutdown stops the threads, though `runtime` is still held.
+    eventually(|| {
+        let spawned = thread.spawn(async {});
+        futures::FutureExt::now_or_never(spawned)
+            .is_some_and(|ran| ran.is_err())
+            .then_some(())
+    })
+    .await;
+}
+
 /// A proposer's token comes back from the leader's own append with the
 /// record's index and term, while the record cannot commit: both followers
 /// are cut off, so `client_write` has nothing to answer with.
@@ -1739,9 +1853,21 @@ fn a_commands_token_is_not_serialized() {
 
 /// A group whose queue is full takes no timer check. Its checks are dropped
 /// and counted, and the other groups on the broker still get theirs.
+///
+/// The core is parked by blocking its thread, which with group threads
+/// would also stop the groups placed beside it. With at least as many
+/// threads as groups, the stuck one has its thread to itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stuck_group_does_not_hold_up_the_rest() {
-    let mut cluster = Cluster::new(false);
+    let threads = match test_group_threads() {
+        0 => 0,
+        _ => 4,
+    };
+    let config = RuntimeConfig {
+        group_threads: threads,
+        ..timers()
+    };
+    let mut cluster = Cluster::with(config, false);
     cluster.open(0).await;
     let stuck = cluster.runtime("a").group(&shard(0)).expect("group");
 
@@ -1860,6 +1986,44 @@ async fn closing_one_group_leaves_the_others() {
     cluster.stop().await;
 }
 
+/// `holds` and `hears_leader` answer as the status would, for a member that
+/// is missing, running, stopped in place, or closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn holds_and_hears_leader_agree_with_status() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    cluster.form(1).await;
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let agrees = |n| {
+        let status = runtime.status(&shard(n));
+        runtime.holds(&shard(n)) == status.is_some()
+            && runtime.hears_leader(&shard(n)) == status.map(|status| status.leader.is_some())
+    };
+
+    assert!(!runtime.holds(&shard(7)));
+    assert_eq!(runtime.hears_leader(&shard(7)), None);
+    assert!(runtime.holds(&shard(0)));
+    eventually(|| (runtime.hears_leader(&shard(0)) == Some(true)).then_some(())).await;
+    assert!(agrees(0));
+
+    // Stopped under the registry: still held, as the status still says.
+    let stopped = runtime.group(&shard(1)).expect("group");
+    stopped.raft().shutdown().await.expect("shutdown");
+    eventually(|| (stopped.status().role == Role::Stopped).then_some(())).await;
+    assert!(runtime.holds(&shard(1)));
+    // Whether it still hears a leader is time-based, so only its presence is checked.
+    assert!(runtime.status(&shard(1)).is_some());
+    assert!(runtime.hears_leader(&shard(1)).is_some());
+
+    assert!(runtime.close(&shard(0)).await);
+    assert!(!runtime.holds(&shard(0)));
+    assert_eq!(runtime.hears_leader(&shard(0)), None);
+    assert!(agrees(0));
+    drop(stopped);
+    cluster.stop().await;
+}
+
 /// A close holds the shard until its member has stopped. An open that
 /// races it is refused, so two members never run on one log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1887,6 +2051,7 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
         async move { runtime.close(&shard(0)).await }
     });
     eventually(|| runtime.status(&shard(0)).is_none().then_some(())).await;
+    assert!(!runtime.holds(&shard(0)), "a closing member is not held");
 
     let log = cluster.logs[&("a".to_string(), 0)].clone();
     for _ in 0..20 {
@@ -2624,6 +2789,79 @@ async fn a_leader_no_majority_answers_names_no_leader() {
     cluster.stop().await;
 }
 
+/// A leader whose appends are all lost still answers pre-votes, and refuses
+/// them for its longer log. Its refusal names its vote committed, while the
+/// followers hold that vote uncommitted, never having heard an append. Read
+/// as openraft compares it, that refusal ended a follower's round whenever
+/// it came before the other follower's grant, on every retry (#2889). Here
+/// every grant comes after the refusals, and a later term still elects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_that_loses_its_appends_does_not_stall_the_next_election() {
+    use std::sync::atomic::Ordering::Relaxed;
+    // a stands first, so b and c both vote for it and never commit that
+    // vote. One that stood itself would hold its own vote, which the
+    // leader's refusal does not match.
+    let slower = RuntimeConfig {
+        election_min: Duration::from_secs(3),
+        election_max: Duration::from_secs(4),
+        ..timers()
+    };
+    let own = HashMap::from([("b", slower.clone()), ("c", slower)]);
+    let mut cluster = Cluster::with_own(timers(), own, true);
+    cluster.open(0).await;
+    cluster.net.lose_appends.store(true, Relaxed);
+    cluster.net.late_pre_vote_grants.store(true, Relaxed);
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members())
+            .await
+            .expect("initialize");
+    }
+    let leads = |cluster: &Cluster, above: u64| {
+        let statuses = cluster.statuses(0).into_iter();
+        let mut leaders = statuses.filter(|status| status.role == Role::Leader);
+        leaders.find(|status| status.term > above)
+    };
+    let elected = eventually(|| leads(&cluster, 0)).await;
+    assert_eq!(&*elected.member.broker, "a", "{elected:?}");
+    // b and c stand within about 6 s of their last message, so a later
+    // term well inside this is the stall gone. With it every round failed.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let later = loop {
+        if let Some(later) = leads(&cluster, elected.term) {
+            break later;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no leader above term {} in 60 s: {:?}",
+            elected.term,
+            cluster.statuses(0)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(later.term > elected.term);
+    cluster.stop().await;
+}
+
+/// The candidate reads a refusal's vote uncommitted, and nothing else in
+/// the answer changes.
+#[test]
+fn a_pre_vote_refusal_names_its_vote_uncommitted() {
+    use openraft::raft::VoteResponse;
+    let leader = LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1));
+    let vote =
+        |committed| <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader.clone(), committed);
+    let answer = |committed, granted| VoteResponse::new(vote(committed), None, granted);
+    let read = super::network::pre_vote_answer(answer(true, false));
+    assert_eq!(read.vote, vote(false));
+    assert!(!read.vote_granted);
+    for (committed, granted) in [(true, true), (false, false), (false, true)] {
+        let read = super::network::pre_vote_answer(answer(committed, granted));
+        assert_eq!(read.vote, vote(committed), "{committed} {granted}");
+        assert_eq!(read.vote_granted, granted);
+    }
+}
+
 /// openraft refuses a pre-vote only inside its 2 s lease, which ends just
 /// before each idle heartbeat. A follower that heard its leader within its
 /// own wait, and a leader a majority answered within its followers' wait,
@@ -3067,6 +3305,19 @@ fn the_timers_must_make_sense() {
         ..RuntimeConfig::default()
     };
     assert!(heartbeat_past_election.raft(ShardKind::Stream).is_err());
+}
+
+#[test]
+fn group_threads_are_one_per_four_cores_and_none_under_four() {
+    assert_eq!(runtime::group_threads_for(1), 0);
+    assert_eq!(runtime::group_threads_for(3), 0);
+    assert_eq!(runtime::group_threads_for(4), 1);
+    assert_eq!(runtime::group_threads_for(16), 4);
+    assert_eq!(runtime::group_threads_for(64), 8);
+    assert_eq!(
+        RuntimeConfig::default().group_threads,
+        runtime::default_group_threads()
+    );
 }
 
 #[test]

@@ -742,3 +742,46 @@ async fn a_failed_flush_poisons_the_log_after_its_caller_gives_up() {
         .await
         .expect_err("a poisoned log refused the flush");
 }
+
+/// **A flush does not wait on its caller's thread for an append's roll.**
+/// The roll holds the segment lock across a seal's fsync, and the caller may
+/// be a group thread other groups' tasks queue behind; the flush goes to the
+/// log thread instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flush_hands_off_rather_than_wait_for_the_segment_lock() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    log.append(&records(&["a", "b"])).await.expect("append");
+
+    let (held, is_held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let inner = Arc::clone(&log.inner);
+    let holder = std::thread::spawn(move || {
+        let _rolling = inner.segments.write();
+        held.send(()).expect("held");
+        let _ = released.recv();
+    });
+    is_held.recv().expect("lock held");
+
+    let runtime = tokio::runtime::Handle::current();
+    let flusher = log.clone();
+    let (polled, was_polled) = std::sync::mpsc::channel();
+    let caller = std::thread::spawn(move || {
+        let _runtime = runtime.enter();
+        let mut sync = Box::pin(async move { flusher.sync().await });
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let _ = polled.send(sync.as_mut().poll(&mut cx).is_pending());
+        sync
+    });
+    let first_poll = was_polled.recv_timeout(Duration::from_secs(10));
+    release.send(()).expect("release");
+    holder.join().expect("holder");
+    let sync = caller.join().expect("caller");
+    assert_eq!(
+        first_poll,
+        Ok(true),
+        "the caller waited for the segment lock"
+    );
+    sync.await.expect("flush");
+    assert_eq!(log.durable_offset(), 2);
+}

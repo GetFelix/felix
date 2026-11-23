@@ -19,10 +19,10 @@ impl LogInner {
     /// then the lock is released before the flush: an `fsync` must never be held
     /// across the lock that appends need.
     ///
-    /// The capture runs on the append thread, behind the appends already
-    /// queued there, so one flush covers every append in flight. Taken
-    /// straight away it would miss the ones still queued, and each of those
-    /// would wait for a flush of its own.
+    /// The capture runs behind the appends already queued on the append
+    /// thread, so one flush covers every append in flight. Taken straight
+    /// away it would miss the ones still queued, and each of those would wait
+    /// for a flush of its own. With none queued a Raft log takes it here.
     pub(super) async fn flush(self: Arc<Self>) -> Result<Offset> {
         // After a failed fsync the kernel may have dropped the dirty pages and
         // cleared the error, so the next fsync "succeeds" having written
@@ -30,25 +30,36 @@ impl LogInner {
         // lost bytes.
         self.check_healthy()?;
         let capturer = Arc::clone(&self);
+        // Hybrid logs keep the hand-off: taking the capture inline moves the
+        // simulator's schedule, and hybrid is frozen until it is removed.
+        let inline = self.config.raft_log;
         let (handle, segment_id, synced_bytes, durable_upto, written) = self
             .appender
-            .run(move || {
-                let segments = capturer.segments.read();
+            .run_behind(inline, move |may_wait| {
+                // An append rolling inline holds the write lock across a
+                // seal's fsync.
+                let segments = if may_wait {
+                    capturer.segments.read()
+                } else {
+                    capturer.segments.try_read()?
+                };
                 let active = segments.active();
                 // The writer's own sync (a seal, a truncation) failed. Flushing
                 // through a cloned handle would not see that.
                 if active.is_poisoned() {
                     capturer.poison_after_writer_failure(&segments);
                     drop(segments);
-                    return Ok(Err(capturer.check_healthy().expect_err("just poisoned")));
+                    return Some(Ok(Err(capturer
+                        .check_healthy()
+                        .expect_err("just poisoned"))));
                 }
-                Ok(Ok((
+                Some(Ok(Ok((
                     active.sync_handle(),
                     active.id(),
                     active.size_bytes(),
                     segments.tail_offset(),
                     capturer.records_written.load(Ordering::Relaxed),
-                )))
+                ))))
             })
             .await
             .map_err(StorageError::Io)??;

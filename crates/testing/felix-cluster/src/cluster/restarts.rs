@@ -8,8 +8,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use super::kept_logs::set_aside_log;
 use super::startup::MAX_SPAWN_ATTEMPTS;
 use super::{Cluster, READY_TIMEOUT};
-use crate::node::spawn_broker;
 use crate::wait;
+
+/// How long a broker pinned to its old ports waits before trying them again.
+const PINNED_PORT_BACKOFF: Duration = Duration::from_millis(500);
 
 impl Cluster {
     /// Send a broker SIGTERM and return at once, leaving it to shut down.
@@ -109,39 +111,9 @@ impl Cluster {
         };
         // Kept beside the new one: the old run is usually what a failure is about.
         set_aside_log(&self.nodes[index].data_dir);
-        // New ports can lose the same race start-up retries. Only that exit is
-        // retried: a broker that cannot recover its storage must fail the test.
-        let mut attempts = 1;
-        loop {
-            let control_plane = self
-                .control_plane
-                .as_ref()
-                .ok_or_else(|| anyhow!("control plane is gone"))?;
-            let node = spawn_broker(
-                &self.binary,
-                &control_plane.base_url,
-                &self.credentials,
-                &self.config,
-                self._root.path(),
-                index,
-                self.links.as_ref(),
-                None,
-            )
+        self.respawn(index)
             .with_context(|| format!("restart {node_id}"))?;
-            self.nodes[index] = node;
-            match self.await_placeable(index).await {
-                Err(_)
-                    if attempts < MAX_SPAWN_ATTEMPTS
-                        && self.nodes[index].exited().is_some()
-                        && self.nodes[index].lost_port_race() =>
-                {
-                    attempts += 1;
-                    tracing::warn!(%node_id, "broker lost a port on restart; starting it again");
-                }
-                Err(error) => return Err(error),
-                Ok(()) => break,
-            }
-        }
+        self.await_placeable_retrying(index).await?;
         let Some(prior) = prior_incarnation else {
             return Ok(());
         };
@@ -204,7 +176,7 @@ impl Cluster {
             .iter()
             .position(|node| node.node_id == node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
-        self.await_placeable(index).await
+        self.await_placeable_retrying(index).await
     }
 
     /// The control plane's address, whether it is running or crashed.
@@ -213,6 +185,37 @@ impl Cluster {
             (Some(control_plane), _) => Ok(control_plane.base_url.clone()),
             (None, Some(stopped)) => Ok(stopped.base_url()),
             (None, None) => bail!("control plane is gone"),
+        }
+    }
+
+    /// [`Self::await_placeable`], starting the broker again if it exited
+    /// because it lost a port race.
+    ///
+    /// Ports are probed and released before the broker binds them, and
+    /// another process (a peer's outbound socket, a parallel test) can take one
+    /// in between. A broker on pinned ports waits first, since the holder is
+    /// usually transient. Any other exit, such as a broker that cannot recover
+    /// its storage, is returned: a real bind problem must still fail the test.
+    pub(super) async fn await_placeable_retrying(&mut self, index: usize) -> Result<()> {
+        let mut attempts = 1;
+        loop {
+            match self.await_placeable(index).await {
+                Err(_)
+                    if attempts < MAX_SPAWN_ATTEMPTS
+                        && self.nodes[index].exited().is_some()
+                        && self.nodes[index].lost_port_race() =>
+                {
+                    attempts += 1;
+                    let node_id = self.nodes[index].node_id.clone();
+                    tracing::warn!(%node_id, "broker lost a port; starting it again");
+                    let pinned = self.nodes[index].pinned_ports();
+                    if pinned.is_some() {
+                        tokio::time::sleep(PINNED_PORT_BACKOFF).await;
+                    }
+                    self.respawn_on(index, pinned)?;
+                }
+                result => return result,
+            }
         }
     }
 
