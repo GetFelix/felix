@@ -891,29 +891,12 @@ async fn power_cut_keeps(acked: Acked) {
         producer: None,
         publisher: None,
     };
-    // A wait on the written count makes the leader ask for reports.
-    let primed = engine
-        .propose(&shard(0), batch(b"primed"))
-        .await
-        .expect("written");
-    engine
-        .await_quorum_ack(&shard(0), primed, AckAt::Written, PATIENCE)
-        .await
-        .expect("acknowledged");
-    engine
-        .await_commit(&shard(0), primed, PATIENCE)
-        .await
-        .expect("committed");
-    cluster.committed_everywhere(0, primed.end - 1).await;
-
     let mut followers = BROKERS
         .iter()
         .copied()
         .filter(|broker| *broker != &*leader.broker);
     let failing = followers.next().expect("a follower");
     let other = followers.next().expect("another follower");
-    // A first report waits on its root's marker, and is dropped if the
-    // append's answer is ready before it. Later ones do not wait.
     let old = cluster
         .runtime(failing)
         .status(&shard(0))
@@ -923,26 +906,62 @@ async fn power_cut_keeps(acked: Acked) {
         .runtime(&leader.broker)
         .group(&shard(0))
         .expect("group");
-    let deadline = tokio::time::Instant::now() + PATIENCE;
-    while heard.reports().from(&old).is_none() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the follower never vouched"
-        );
+    let written_reports = || {
+        let reports = cluster.net.written_reports.lock();
+        reports.iter().filter(|from| *from == failing).count()
+    };
+    // Each pass is a write the leader counts on the written count, which is
+    // what makes it ask for reports; a commit already there never does.
+    let count_one = async || {
         let again = engine
             .propose(&shard(0), batch(b"primed"))
             .await
             .expect("written");
-        // The leader asks for reports only once a wait has had to count
-        // them, which a commit that is already there never does.
         engine
             .await_quorum_ack(&shard(0), again, AckAt::Written, PATIENCE)
             .await
             .expect("acknowledged");
+        engine
+            .await_commit(&shard(0), again, PATIENCE)
+            .await
+            .expect("committed");
         cluster.committed_everywhere(0, again.end - 1).await;
+    };
+
+    // While the follower's marker cannot sync, the leader still hears from
+    // it: an append this log fsynced before answering counts as a report,
+    // and needs no marker. Only a report ahead of the fsync does.
+    let stalled = roots[failing].mark_log().stall_vouch().await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while heard.reports().from(&old).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower's answers were never counted"
+        );
+        count_one().await;
     }
-    // The leader counts this copy from here on, so the marker has to be on
-    // the device already, not only in the page cache.
+    assert_eq!(
+        written_reports(),
+        0,
+        "a written report left before its marker"
+    );
+    assert!(
+        !sim_fs::entry_is_durable(&root_of(failing), run_state::VOUCHED_UNSYNCED_FILE_NAME)
+            .expect("simulated root"),
+        "the marker synced while it was held"
+    );
+
+    drop(stalled);
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while written_reports() == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never vouched"
+        );
+        count_one().await;
+    }
+    // The leader counts this copy ahead of its fsync from here on, so the
+    // marker has to be on the device already, not only in the page cache.
     assert!(
         sim_fs::entry_is_durable(&root_of(failing), run_state::VOUCHED_UNSYNCED_FILE_NAME)
             .expect("simulated root"),

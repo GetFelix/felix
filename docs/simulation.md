@@ -615,9 +615,17 @@ What a seed checks:
   that counts.
 - Within 30 seconds of the heal every shard has a leader that acknowledges a
   write, no member refuses a read, and every member serves the same records.
+- A member opens a shard for writes only in a term Raft elected it in, once
+  that term's blank entry is committed. Each member's broker records every
+  open the engine reports, so none is missed. At the instant of the open, a
+  majority must have flushed an entry of that term. After the final read, no term
+  may have two openers, the watch must not have seen another member lead an
+  opened term, and the final log must hold an entry of every opened term: a
+  leader writes its blank entry first, so a committed blank leaves its term
+  in the log for good (`felix-sim/src/raft/opens.rs`).
 
-A seed also fails when it checked too little: no leader change, or fewer
-than 500 live deliveries, 1000 acknowledged writes, 200 reads or 4 faults.
+A seed also fails when it checked too little: no leader change, no shard
+opened in a second term, or fewer than 500 live deliveries, 1000 acknowledged writes, 200 reads or 4 faults.
 
 **A failed flush.** A run can also fail one flush on one member
 (`RaftSimConfig::failed_flush`), half the time on a shard's leader. The log

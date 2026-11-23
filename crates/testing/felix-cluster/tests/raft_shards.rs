@@ -117,19 +117,58 @@ async fn allow_follower_reads(cluster: &Cluster) {
 
 /// Everything `node` replays from the start of the stream, read until every
 /// payload in `owed` has arrived.
+///
+/// A leadership transfer closes the shard on the member, which ends the
+/// subscription without ending the stream, so a replay that ends early
+/// resubscribes on the same node from the next offset.
 async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u8>> {
-    let (_client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+    let (client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+    let deadline =
+        tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
     let mut payloads = Vec::new();
+    let mut next_offset = 0u64;
+    let mut ended = Vec::new();
     while !owed.iter().all(|payload| payloads.contains(payload)) {
-        match tokio::time::timeout(Duration::from_secs(10), subscription.next_event()).await {
-            Ok(Ok(Some(event))) => payloads.push(event.payload.to_vec()),
-            other => panic!(
-                "{node} stopped at {} records with {} owed: {:?}",
-                payloads.len(),
-                owed.len(),
-                other.map(|event| event.map(|event| event.is_some()))
-            ),
+        let step = tokio::time::timeout(Duration::from_secs(10), subscription.next_event()).await;
+        match step {
+            Ok(Ok(Some(event))) => {
+                if let Some(offset) = event.offset {
+                    next_offset = offset + 1;
+                }
+                payloads.push(event.payload.to_vec());
+                continue;
+            }
+            Ok(Ok(None)) => ended.push("ended".to_string()),
+            Ok(Err(err)) => ended.push(format!("error: {err:#}")),
+            Err(_) => ended.push("no event for 10 s".to_string()),
         }
+        if tokio::time::Instant::now() < deadline {
+            if let Ok(resumed) = client
+                .subscribe_from(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    Some(felix_client::StartPosition::Offset(next_offset)),
+                )
+                .await
+            {
+                subscription = resumed;
+            } else {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            continue;
+        }
+        let text = |payload: &Vec<u8>| String::from_utf8_lossy(payload).into_owned();
+        let missing: Vec<String> = owed
+            .iter()
+            .filter(|payload| !payloads.contains(payload))
+            .map(text)
+            .collect();
+        panic!(
+            "{node} gave up after {ended:?}\n delivered: {:?}\n owed: {:?}\n missing: {missing:?}",
+            payloads.iter().map(text).collect::<Vec<_>>(),
+            owed.iter().map(text).collect::<Vec<_>>(),
+        );
     }
     payloads
 }
@@ -649,6 +688,7 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
     let mut owed = vec![b"before".to_vec()];
+    let mut unanswered = Vec::new();
     publish_acked(&cluster, &leader, &owed[0]).await;
 
     cluster.partition_node(&leader).expect("partition");
@@ -660,6 +700,8 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
         let answered = tokio::time::timeout(Duration::from_secs(3), publish).await;
         if matches!(answered, Ok(Ok(_))) {
             owed.push(payload);
+        } else {
+            unanswered.push(payload);
         }
     }
     let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
@@ -678,6 +720,15 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
     for payload in &owed {
         let text = String::from_utf8_lossy(payload);
         assert_eq!(copies(&held, payload), 1, "{elected} holds {text:?}");
+    }
+    // A cut-off publish the leader never answered may or may not survive,
+    // but nothing else is in the log.
+    for payload in &held {
+        let text = String::from_utf8_lossy(payload);
+        assert!(
+            owed.contains(payload) || unanswered.contains(payload) || payload == b"harness-probe",
+            "{elected} holds {text:?}, which nobody acknowledged"
+        );
     }
 }
 
