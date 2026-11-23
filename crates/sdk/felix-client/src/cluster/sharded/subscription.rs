@@ -381,20 +381,45 @@ async fn forward_shard(
                     feed.1.start_offset().or(feed.1.live_offset()),
                 ),
             });
-            if let Ok(next) = cluster
+            match cluster
                 .subscribe_shard_following_redirects(&tenant_id, &namespace, &stream, shard, at)
                 .await
             {
-                feed = next;
-                moved_resume_from = None;
-                lag_resume_from = None;
-                if tx.send(ShardEvent::ShardRecovered { shard }).await.is_err() {
-                    return;
+                Ok(next) => {
+                    feed = next;
+                    moved_resume_from = None;
+                    lag_resume_from = None;
+                    if tx.send(ShardEvent::ShardRecovered { shard }).await.is_err() {
+                        return;
+                    }
+                    break;
                 }
-                break;
+                // The records between the resume point and the oldest retained
+                // one are gone for good. Retrying the same offset would never
+                // succeed, so say so and resume at the oldest.
+                Err(err) => {
+                    if let Some(floor) = trimmed_past(&err) {
+                        lag_resume_from = Some(floor);
+                        let error =
+                            format!("{err:#}; resuming at {floor}, records before it are skipped");
+                        if tx
+                            .send(ShardEvent::ShardLost { shard, error })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+/// The oldest retained offset, when a subscribe was refused for asking below it.
+fn trimmed_past(err: &anyhow::Error) -> Option<u64> {
+    let cursor = err.downcast_ref::<crate::SubscribeCursorError>()?;
+    (cursor.reason == felix_wire::CursorErrorReason::TooOld).then_some(cursor.available)
 }
 
 /// Where a shard resumes after losing its feed.
