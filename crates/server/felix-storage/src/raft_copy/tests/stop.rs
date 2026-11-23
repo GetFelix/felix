@@ -220,3 +220,173 @@ fn a_marker_from_an_earlier_epoch_does_not_stop_the_copy() {
     std::fs::write(dir.join("raft-stopped"), b"stopped 1\n").expect("garble");
     assert!(stopped(&dir).is_err());
 }
+
+/// The new epoch's bases: the base ends at `last` in term 1, the epoch
+/// starts at 10.
+fn bases(last: u64) -> Vec<EpochBase> {
+    vec![EpochBase {
+        base_last: Some(EpochLogId {
+            index: last,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 10,
+    }]
+}
+
+fn learner() -> WireStart {
+    WireStart {
+        voter: None,
+        kept: None,
+        floor: None,
+        needs_accept_loss: false,
+        accepted: false,
+    }
+}
+
+async fn start_stopped(
+    copies: &CopyRoot,
+    dir: &Path,
+    bases: Vec<EpochBase>,
+    wire: &WireStart,
+) -> std::io::Result<()> {
+    copies
+        .start_stopped(
+            SHARD,
+            dir,
+            1,
+            bases,
+            wire,
+            bytes::Bytes::new(),
+            bytes::Bytes::new(),
+            &config(),
+        )
+        .await
+}
+
+/// An emptied learner's log is below its old mark. Without the mark
+/// lowered before the start, the open rotates it to a new copy id.
+#[tokio::test]
+async fn a_started_learner_opens_under_its_own_copy_id_in_the_new_epoch() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = stopped_copy(&copies, &dir).await;
+
+    start_stopped(&copies, &dir, bases(0), &learner())
+        .await
+        .expect("start");
+    let opened = root
+        .open()
+        .open_copy(SHARD, &dir, LABEL, config())
+        .await
+        .expect("open");
+    assert_eq!(opened.rotation.map(|rotation| rotation.reason), None);
+    assert_eq!(opened.copy, copy);
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(1));
+    assert_eq!(
+        crate::raft_log::last_point(&opened.log)
+            .await
+            .expect("last"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_started_voter_keeps_its_copy_id_and_its_base() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = stopped_copy(&copies, &dir).await;
+    let voter = WireStart {
+        voter: Some(copy),
+        ..learner()
+    };
+
+    start_stopped(&copies, &dir, bases(0), &voter)
+        .await
+        .expect("start");
+    let opened = root
+        .open()
+        .open_copy(SHARD, &dir, LABEL, config())
+        .await
+        .expect("open");
+    assert_eq!(opened.rotation.map(|rotation| rotation.reason), None);
+    assert_eq!(opened.copy, copy);
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(1));
+}
+
+/// Only a copy stopped in the epoch just before the new one starts, so a
+/// survey cannot start a served copy or skip an epoch.
+#[tokio::test]
+async fn only_a_copy_stopped_in_the_epoch_before_starts() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    voted_copy(&copies, &dir).await;
+    let err = start_stopped(&copies, &dir, bases(0), &learner())
+        .await
+        .expect_err("a served copy started");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+    stop(&dir, Some(1)).expect("stop");
+    let mut two = bases(0);
+    two.extend(bases(0));
+    let err = start_stopped(&copies, &dir, two, &learner())
+        .await
+        .expect_err("an epoch skipped");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(group_epoch(&dir).expect("epoch"), None);
+}
+
+#[tokio::test]
+async fn a_start_refuses_another_copy_a_stray_kept_dir_and_an_unaccepted_loss() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = stopped_copy(&copies, &dir).await;
+    let refused = [
+        WireStart {
+            voter: Some(copy ^ 1),
+            ..learner()
+        },
+        WireStart {
+            voter: Some(copy),
+            kept: Some(root.path().join("elsewhere").display().to_string()),
+            ..learner()
+        },
+        WireStart {
+            needs_accept_loss: true,
+            ..learner()
+        },
+    ];
+    for wire in &refused {
+        start_stopped(&copies, &dir, bases(0), wire)
+            .await
+            .expect_err("started");
+        assert!(stopped(&dir).expect("marker").is_some(), "{wire:?}");
+        assert!(!building(&dir).expect("marker"), "{wire:?}");
+    }
+    start_stopped(
+        &copies,
+        &dir,
+        bases(0),
+        &WireStart {
+            needs_accept_loss: true,
+            accepted: true,
+            ..learner()
+        },
+    )
+    .await
+    .expect("an accepted loss starts");
+}
+
+/// The `start` field is additive: a learner's part with no loss carries
+/// only the two flags.
+#[test]
+fn a_learners_start_is_two_flags_on_the_wire() {
+    assert_eq!(
+        serde_json::to_string(&learner()).expect("json"),
+        r#"{"needs_accept_loss":false,"accepted":false}"#
+    );
+}

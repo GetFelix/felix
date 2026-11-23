@@ -21,13 +21,15 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 
-use super::epoch_file::{self, EpochFile};
+use super::epoch_file::{self, EpochBase, EpochFile};
+use super::judge::CopyRoot;
 use super::vouch::ReformPlan;
+use super::wire::WireStart;
 use crate::disk_log::carried_floor::{self, CarriedFloor};
 use crate::disk_log::{crash_point, durable_mark};
 use crate::log::{AppendOnlyLog, LogConfig};
 use crate::raft_log::snapshot::{SnapshotId, StoredSnapshot};
-use crate::raft_log::{held, reserved, state_file};
+use crate::raft_log::{LogPoint, held, reserved, state_file};
 use crate::segment::parse_segment_file_name;
 
 /// Present while a start is under way.
@@ -141,6 +143,120 @@ impl AcceptLoss {
     fn accepts(self) -> bool {
         self.0
     }
+}
+
+impl CopyRoot {
+    /// Start `dir`, the copy of `shard` (its mark name) a re-form stopped,
+    /// in the epoch `bases` ends, as the `start` survey's `wire` says. The
+    /// bases come from the shard's `placed` record, never the survey. A
+    /// voter's snapshot at the gap's end is `meta` and `data`; a learner's
+    /// are unused. Run again over a start that crashed, it redoes every
+    /// step. See `docs/per-shard-raft.md`, "What a start needs".
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one fact the start needs"
+    )]
+    pub async fn start_stopped(
+        &self,
+        shard: &str,
+        dir: &Path,
+        incarnation: u64,
+        bases: Vec<EpochBase>,
+        wire: &WireStart,
+        meta: Bytes,
+        data: Bytes,
+        config: &LogConfig,
+    ) -> io::Result<()> {
+        let label = dir.display();
+        let epoch = EpochFile { incarnation, bases };
+        let new = epoch.epoch();
+        let Some(base) = epoch.bases.last().copied() else {
+            return Err(invalid(format!(
+                "{label}: a start needs the new epoch's base"
+            )));
+        };
+        // Only the stopped copy of the epoch before, or a start of this one
+        // that did not finish, so a survey never starts a served copy.
+        let resumable = if building(dir)? {
+            let at = super::group_epoch(dir)?.unwrap_or(0);
+            at + 1 == new || at == new
+        } else {
+            super::stop_file::stopped(dir)?.is_some_and(|stopped| stopped.epoch + 1 == new)
+        };
+        if !resumable {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{label}: not a copy stopped in the epoch before {new}"),
+            ));
+        }
+        let copy = super::copy_file::load(dir)?
+            .ok_or_else(|| invalid(format!("{label}: a stopped copy without a copy id")))?
+            .copy;
+        if let Some(voter) = wire.voter
+            && voter != copy
+        {
+            return Err(invalid(format!(
+                "{label}: the plan's voter is copy {voter:016x}, the directory holds {copy:016x}"
+            )));
+        }
+        let kept = wire
+            .kept
+            .as_ref()
+            .map(|kept| kept_beside(dir, Path::new(kept)))
+            .transpose()?;
+        if wire.needs_accept_loss && !wire.accepted {
+            return Err(invalid(format!(
+                "{label}: the plan may lose acknowledged records and the loss was not accepted"
+            )));
+        }
+        let role = if wire.voter.is_some() {
+            Role::Voter
+        } else {
+            Role::Learner
+        };
+        // Lowered first, as a truncation lowers it: the start can leave the
+        // log below the old mark, and an open would then rotate the copy
+        // away from the id the seed names.
+        let mark = match role {
+            Role::Voter => base.base_last.map(|last| LogPoint {
+                term: last.term,
+                index: last.index,
+            }),
+            Role::Learner => None,
+        };
+        self.mark_log()
+            .for_copy(std::sync::Arc::from(shard), copy)
+            .lower_log(mark)
+            .await?;
+        let start = Start {
+            epoch,
+            role,
+            // The reports cannot give exact term starts, so a learner
+            // holding records always empties.
+            base_terms: Vec::new(),
+            accept_loss: AcceptLoss(wire.needs_accept_loss),
+            kept,
+            floor: wire.floor.as_ref().map(CarriedFloor::from),
+            meta,
+            data,
+        };
+        start_copy(dir, &start, config).await
+    }
+}
+
+/// `kept` as a directory in `dir`'s `.kept`, the only place a start reads a
+/// base from.
+fn kept_beside(dir: &Path, kept: &Path) -> io::Result<PathBuf> {
+    let beside = super::judge::parent_of(dir)?.join(crate::disk_log::layout::KEPT_DIR);
+    if kept.parent() != Some(beside.as_path()) || kept.file_name().is_none() {
+        return Err(invalid(format!(
+            "{}: kept directory {} is not in {}",
+            dir.display(),
+            kept.display(),
+            beside.display()
+        )));
+    }
+    Ok(kept.to_path_buf())
 }
 
 /// Whether a start is under way in `dir`.

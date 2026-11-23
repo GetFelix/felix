@@ -92,7 +92,7 @@ pub(crate) use vouch::{
 };
 pub use wire::{
     PlanView, REPORT_VERSION, SurveyStep, VersionMismatch, WireBase, WireCopy, WireFloor,
-    WireReport, WireRotated, first_probes, survey_step,
+    WireReport, WireRotated, WireStart, first_probes, plan_starts, survey_step,
 };
 
 use std::path::Path;
