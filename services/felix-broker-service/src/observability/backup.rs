@@ -66,6 +66,7 @@ impl BackupOffsets {
                     generation: member.term,
                     incarnation: member.incarnation,
                     engine: Some("raft"),
+                    end_term: member.end_term,
                     logs: LogOffsets {
                         records: end,
                         group_cursors: None,
@@ -89,6 +90,7 @@ impl BackupOffsets {
                     generation,
                     incarnation,
                     engine: None,
+                    end_term: None,
                     logs,
                 }),
                 Err(reason) => response.skipped.push(SkippedShard {
@@ -217,6 +219,10 @@ struct ShardOffsets {
     /// acknowledged: its commit index, or a write answered before it.
     #[serde(skip_serializing_if = "Option::is_none")]
     engine: Option<&'static str>,
+    /// For a Raft shard, the term of the entry below `records`. A restore
+    /// refuses a copy whose entry there is of another term.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end_term: Option<u64>,
     logs: LogOffsets,
 }
 

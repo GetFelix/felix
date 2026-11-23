@@ -2659,13 +2659,14 @@ impl Group {
         Some((at, voters))
     }
 
-    /// One past the furthest entry this member acknowledged while it leads:
-    /// its commit index, or past it a write of its term answered on a
-    /// written majority or on its lease before the commit. A backup point
-    /// reads it, so a write answered before the read is below it. Both
-    /// marks are entries of this leader's log; one on a written majority is
-    /// in every later leader's log too.
-    pub(crate) fn led_acked_end(&self) -> Option<u64> {
+    /// The furthest entry this member acknowledged while it leads, with
+    /// the term it leads: its commit index or applied index, or past them a
+    /// write of its term answered on a written majority or on its lease
+    /// before the commit. A backup point reads it, so a write answered
+    /// before the read is at or below it. Every mark is an entry of this
+    /// leader's log; one on a written majority is in every later leader's
+    /// log too. `None` while it does not lead or has committed nothing.
+    pub(crate) fn led_acked(&self) -> Option<(u64, LogPoint)> {
         use openraft::async_runtime::watch::WatchReceiver;
         let (term, committed) = {
             let metrics = self.raft.metrics();
@@ -2673,17 +2674,26 @@ impl Group {
             if metrics.running_state.is_err() || metrics.state != ServerState::Leader {
                 return None;
             }
-            let committed = metrics.local_committed.as_ref()?.index + 1;
-            (metrics.vote.leader_id().term(), committed)
+            let committed = metrics.local_committed.as_ref()?;
+            let at = LogPoint {
+                term: **committed.committed_leader_id(),
+                index: committed.index,
+            };
+            (metrics.vote.leader_id().term(), at)
         };
-        // Read after the commit, so a mark set before it is seen.
-        let past = |mark: Option<LogPoint>| {
-            mark.filter(|at| at.term == term)
-                .map_or(0, |at| at.index + 1)
-        };
-        let answered = past(*self.answered.lock());
-        let leased = past(*self.acked_on_lease.lock());
-        Some(committed.max(answered).max(leased))
+        // Read after the commit, so a mark set before it is seen. A commit
+        // answers on the apply watch, which the metrics may trail.
+        let applied = self.commits.borrow().applied();
+        let ours = |mark: Option<LogPoint>| mark.filter(|at| at.term == term);
+        let furthest = [
+            applied,
+            ours(*self.answered.lock()),
+            ours(*self.acked_on_lease.lock()),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(committed, |a, b| if b.index > a.index { b } else { a });
+        Some((term, furthest))
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {

@@ -1450,8 +1450,9 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
 }
 
 /// **A backup point reads a Raft shard on its leader.** Only the member
-/// serving its term gives an end, one past its commit index, so every
-/// acknowledged offset is below it; the others give their term only (#2995).
+/// serving its term gives an end, one past the furthest entry it
+/// acknowledged, with that entry's term, so every acknowledged offset is
+/// below it; the others give their term only (#2995).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backup_point_reads_the_leaders_acknowledged_end() {
     use crate::shards::routing::EngineShards;
@@ -1488,6 +1489,7 @@ async fn a_backup_point_reads_the_leaders_acknowledged_end() {
             assert_eq!(read.term, term);
             let end = read.committed_end.expect("the leader gives an end");
             assert!(end > acknowledged, "{end} <= acknowledged {acknowledged}");
+            assert_eq!(read.end_term, Some(term), "the entry below the end");
         } else {
             assert_eq!(
                 read.committed_end, None,

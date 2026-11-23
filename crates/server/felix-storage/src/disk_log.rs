@@ -910,13 +910,30 @@ impl DiskLog {
     /// serving it.
     ///
     /// Unlike truncation this may cut below the commit offset. A restore goes
-    /// back in time on purpose, so the commit offset is lowered to `offset`
+    /// back in time on purpose, so the commit offset is set to `offset`
     /// and made durable first, and then the suffix goes through the same path
     /// truncation takes. Refused with [`StorageError::OutsideLog`] when the
     /// log ends before `offset` (the copy is incomplete) or begins after it
     /// (retention or compaction dropped records the point still had). Running
     /// it again is a no-op.
+    ///
+    /// A Raft log's commit offset is set to `offset` even when it was below:
+    /// the point is past every entry the leader acknowledged, which can be
+    /// past what this copy saved as committed.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
+        self.restore_at(offset, None).await
+    }
+
+    /// [`Self::restore_to`] on a Raft log, refused with nothing written
+    /// unless the entry below `offset` was written by `generation`. A copy
+    /// whose entry there differs holds another leader's entries at the
+    /// point's offsets, not the acknowledged ones.
+    #[cfg(feature = "raft")]
+    pub(crate) async fn restore_raft_to(&self, offset: Offset, generation: u64) -> Result<()> {
+        self.restore_at(offset, Some(generation)).await
+    }
+
+    async fn restore_at(&self, offset: Offset, expect: Option<u64>) -> Result<()> {
         let inner = Arc::clone(&self.inner);
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
@@ -934,23 +951,33 @@ impl DiskLog {
             if offset > tail || offset < base {
                 return Err(StorageError::OutsideLog { offset, base, tail });
             }
-            // Lowered on disk before anything is cut, so a restore interrupted
+            // The generation saved named the record below the old offset. A
+            // Raft log names the one below the new offset.
+            #[cfg(feature = "raft")]
+            let below = match offset.checked_sub(1) {
+                Some(last) if operation.config.raft_log && last >= base => segments
+                    .read_plan(last)
+                    .generation_at(last, &operation.label)?
+                    .flatten()
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            #[cfg(not(feature = "raft"))]
+            let below = 0;
+            if let Some(expect) = expect
+                && below != expect
+            {
+                return Err(StorageError::Io(std::io::Error::other(format!(
+                    "{}: the entry below {offset} is of generation {below}, but the point's \
+                     is {expect}; this copy holds another leader's entries there",
+                    operation.label
+                ))));
+            }
+            // Set on disk before anything is cut, so a restore interrupted
             // between the two can simply be run again.
-            if operation.commit_offset.load(Ordering::Acquire) > offset {
-                // The generation saved named the record below the old
-                // offset. A Raft log names the one below the new offset.
+            let commit = operation.commit_offset.load(Ordering::Acquire);
+            if commit > offset || (operation.config.raft_log && commit < offset) {
                 let mut committed = operation.committed_generation.lock();
-                #[cfg(feature = "raft")]
-                let below = match offset.checked_sub(1) {
-                    Some(last) if operation.config.raft_log && last >= base => segments
-                        .read_plan(last)
-                        .generation_at(last, &operation.label)?
-                        .flatten()
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-                #[cfg(not(feature = "raft"))]
-                let below = 0;
                 let state = replica_state::ReplicaState {
                     commit_offset: offset,
                     committed_generation: below,

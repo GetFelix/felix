@@ -163,6 +163,7 @@ fn the_manifest_round_trips_and_leaves_out_logs_a_shard_does_not_have() {
                 counters: Some(3),
             },
             incarnation: 0,
+            end_term: None,
         }],
     };
     let json = serde_json::to_value(&manifest).expect("json");
@@ -183,7 +184,7 @@ fn raft_answer(term: u64, leads: Option<u64>) -> BrokerOffsets {
         .map(|records| {
             serde_json::json!({ "tenant_id": "t", "namespace": "ns", "name": "orders", "shard": 0,
                 "kind": "stream", "generation": term, "incarnation": 4, "engine": "raft",
-                "logs": { "records": records } })
+                "end_term": term - 1, "logs": { "records": records } })
         })
         .into_iter()
         .collect();
@@ -211,6 +212,7 @@ fn a_raft_shard_is_read_on_its_elected_leader() {
     assert_eq!(shards[0].leader, "b");
     assert_eq!(shards[0].logs.records, 42);
     assert_eq!(shards[0].incarnation, 4);
+    assert_eq!(shards[0].end_term, Some(6), "the term below the point");
     assert_eq!(
         shards[0].generation, 3,
         "placement's generation, not the term"

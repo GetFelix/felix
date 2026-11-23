@@ -126,6 +126,10 @@ pub(crate) struct PointShard {
     /// answered. Left out when 0, a stream from before incarnations.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub(crate) incarnation: u64,
+    /// For a Raft shard, the term of the entry below the records offset.
+    /// A restore refuses a copy whose entry there is of another term.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) end_term: Option<u64>,
     pub(crate) logs: PointLogs,
 }
 
@@ -339,6 +343,9 @@ struct BrokerShard {
     /// leader's term.
     #[serde(default)]
     engine: Option<String>,
+    /// The term of the entry below `records`, from a Raft leader.
+    #[serde(default)]
+    end_term: Option<u64>,
     logs: PointLogs,
 }
 
@@ -455,6 +462,7 @@ fn match_raft(
                 leader: broker.clone(),
                 generation: assignment.generation,
                 incarnation: found.incarnation,
+                end_term: found.end_term,
                 logs: found.logs,
             }),
             None => missing.push(format!(
@@ -556,6 +564,7 @@ fn match_leader(
                     leader: leader.to_string(),
                     generation: assignment.generation,
                     incarnation: found.incarnation,
+                    end_term: None,
                     logs: found.logs,
                 });
             }

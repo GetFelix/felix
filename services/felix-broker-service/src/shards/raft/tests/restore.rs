@@ -25,7 +25,7 @@ async fn publish_under_a_point(
     key: &ShardKey,
     term: u64,
     count: usize,
-) -> (Vec<(u64, &'static [u8])>, u64) {
+) -> (Vec<(u64, &'static [u8])>, Point) {
     let (half_tx, half_rx) = tokio::sync::oneshot::channel();
     let load = async {
         let mut half_tx = Some(half_tx);
@@ -48,21 +48,33 @@ async fn publish_under_a_point(
             .backup_members()
             .into_iter()
             .find(|read| read.key == *key)
-            .and_then(|read| read.committed_end)
+            .and_then(point_of)
             .expect("the leader gives an end")
     };
     tokio::join!(load, point)
 }
 
+/// A backup point's end, and the term of the entry below it.
+type Point = (u64, Option<u64>);
+
+fn point_of(read: crate::shards::routing::BackupMember) -> Option<Point> {
+    Some((read.committed_end?, read.end_term))
+}
+
 /// What `felixctl backup-point` writes for `orders` led by `leader`.
-fn manifest(kind: &str, name: &str, leader: &str, point: u64) -> crate::restore::Manifest {
+fn manifest(
+    kind: &str,
+    name: &str,
+    leader: &str,
+    (point, end_term): Point,
+) -> crate::restore::Manifest {
     serde_json::from_value(serde_json::json!({
         "format_version": 1,
         "name": "nightly",
         "shards": [{
             "tenant_id": "t1", "namespace": "ns", "name": name, "shard": 0,
             "kind": kind, "leader": leader, "incarnation": INCARNATION,
-            "logs": { "records": point }
+            "end_term": end_term, "logs": { "records": point }
         }]
     }))
     .expect("manifest")
@@ -198,7 +210,8 @@ async fn a_group_restored_at_a_backup_point_re_forms_at_it() {
     let (net, mut members, leader) = trio().await;
     let orders = key("orders", 0);
     let term = members[leader].shards.leading(&orders).expect("term");
-    let (acked, point) = publish_under_a_point(&members[leader], &orders, term, 24).await;
+    let (acked, (point, end_term)) =
+        publish_under_a_point(&members[leader], &orders, term, 24).await;
     assert!(
         acked.iter().any(|(offset, _)| *offset >= point),
         "nothing landed past the point {point}"
@@ -217,7 +230,7 @@ async fn a_group_restored_at_a_backup_point_re_forms_at_it() {
         .await;
         let storage = broker.durable_storage().cloned();
         let cut = crate::restore::restore(
-            &manifest("stream", "orders", leader_name, point),
+            &manifest("stream", "orders", leader_name, (point, end_term)),
             Some(leader_name),
             root.path(),
             &broker,
@@ -350,12 +363,12 @@ async fn a_cache_group_restored_at_a_backup_point_re_forms_at_it() {
         let found = cache(&members[leader], name, CacheRequest::GetVersioned).await;
         versions.insert(name, found.outcome.expect("versioned").version);
     }
-    let point = members[leader]
+    let (point, end_term) = members[leader]
         .shards
         .backup_members()
         .into_iter()
         .find(|read| read.key == sessions)
-        .and_then(|read| read.committed_end)
+        .and_then(point_of)
         .expect("the leader gives an end");
     // After the point: a new key and an overwrite of a restored one.
     cache(&members[leader], "late", one(b"l1", None)).await;
@@ -368,7 +381,7 @@ async fn a_cache_group_restored_at_a_backup_point_re_forms_at_it() {
         let broker = cache_broker_of(root.path(), "sessions", 3).await;
         let storage = broker.durable_storage().cloned();
         let cut = crate::restore::restore(
-            &manifest("cache", "sessions", leader_name, point),
+            &manifest("cache", "sessions", leader_name, (point, end_term)),
             Some(leader_name),
             root.path(),
             &broker,

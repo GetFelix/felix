@@ -924,10 +924,15 @@ mechanism:
   below it, and everything below it is on the leader's log and so in the
   copied directory. A written-majority entry is in every later leader's
   log, so a leader change before the copy cannot cut it; a lease entry
-  can be, as the `Leader` level allows, and the restore then refuses that
-  shard because its copy does not reach the point.
+  can be, as the `Leader` level allows. The point records the term of the
+  entry below it, and the restore refuses that shard when the copy does not
+  reach the point or holds an entry of another term there, which is what a
+  later leader leaves after it overwrote the lost entry.
 - `felix-broker restore-point` rotates the storage id and cuts each
-  restored leader copy back to the point. The broker's next open of the
+  restored leader copy back to the point. The copy's saved commit is set to
+  the point, raised if it was below: the copy may have saved its commit
+  before the acknowledged entries committed, or a follower's flush held it
+  back, and the operator chose to restore that state. The broker's next open of the
   shard rotates the copy and keeps the cut log in `.kept` as `restore`,
   where the plan reads it. A follower copy is removed, not restored.
 - On start the shards wait for a re-form. `felixctl raft reform plan

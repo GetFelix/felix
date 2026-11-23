@@ -3,9 +3,10 @@
 //!
 //! The point is one past the furthest entry the leader acknowledged, which
 //! can be past its commit index while a write answered on a written
-//! majority or the lease waits for its commit. After the cut the copy
-//! ends there and its saved commit is not past it, so a re-form
-//! reads the point as the end the copy vouches for. See
+//! majority or the lease waits for its commit, and past what this copy
+//! saved as committed. After the cut the copy ends at the point and saves
+//! it as committed, since the operator chose to restore that state, so a
+//! re-form reads the point as the end the copy vouches for. See
 //! `docs/per-shard-raft.md`, "Restoring at a backup point".
 
 use std::io;
@@ -15,20 +16,30 @@ use super::{epoch_file, start};
 use crate::DiskLog;
 use crate::error::{Result, StorageError};
 use crate::log::{LogConfig, Offset};
-use crate::raft_log::snapshot;
+use crate::raft_log::{generation_of, snapshot};
 
 /// Cut the Raft copy in `dir` back to `point`: entries from `point` on go
-/// through the truncation path and the saved commit is lowered to the
-/// entry below it. Offline only, with no member open on `dir`.
+/// through the truncation path and the saved commit is set to the entry
+/// below it, raised or lowered. Offline only, with no member open on `dir`.
 ///
-/// Refused, with nothing written, when the copy holds state past the point
-/// that no cut can take back: a stored snapshot or purged id at or past it,
-/// a retention floor past it, a re-form that started at or past it, or a
-/// re-form start that did not finish. The saved vote is kept: it names a
-/// term, never an index, and the re-form after a restore starts a new
-/// epoch whatever it is. Running it again, after a crash part way or
+/// `term` is the term the point records for the entry below it. The cut is
+/// refused, with nothing written, when that entry is of another term: the
+/// copy's leader lost the entry and a later leader wrote over it.
+///
+/// Also refused, with nothing written, when the copy holds state past the
+/// point that no cut can take back: a stored snapshot or purged id at or
+/// past it, a retention floor past it, a re-form that started at or past
+/// it, or a re-form start that did not finish. The saved vote is kept: it
+/// names a term, never an index, and the re-form after a restore starts a
+/// new epoch whatever it is. Running it again, after a crash part way or
 /// once it finished, is a no-op.
-pub async fn restore_copy(dir: &Path, label: &str, point: Offset, config: LogConfig) -> Result<()> {
+pub async fn restore_copy(
+    dir: &Path,
+    label: &str,
+    point: Offset,
+    term: Option<u64>,
+    config: LogConfig,
+) -> Result<()> {
     if let Some(why) = past_the_point(dir, point)? {
         return Err(StorageError::Io(io::Error::other(format!(
             "{label}: cannot cut the Raft copy in {} back to {point}: {why}",
@@ -43,7 +54,13 @@ pub async fn restore_copy(dir: &Path, label: &str, point: Offset, config: LogCon
         ..config
     };
     let log = DiskLog::open(dir, label, config)?;
-    let cut = log.restore_to(point).await;
+    let cut = match term {
+        Some(term) => match generation_of(term) {
+            Ok(generation) => log.restore_raft_to(point, generation).await,
+            Err(err) => Err(StorageError::Io(err)),
+        },
+        None => log.restore_to(point).await,
+    };
     log.close().await?;
     cut
 }

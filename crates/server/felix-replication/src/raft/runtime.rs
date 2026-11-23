@@ -1489,15 +1489,11 @@ impl GroupRuntime {
             .collect()
     }
 
-    /// One past the furthest entry acknowledged, every group this broker
-    /// leads: [`Group::led_acked_end`]. What a backup point reads.
-    pub fn led_acked_ends(&self) -> Vec<(GroupId, u64)> {
-        self.inner
-            .registry
-            .ticked()
-            .iter()
-            .filter_map(|group| Some((group.id.clone(), group.led_acked_end()?)))
-            .collect()
+    /// The furthest entry `shard`'s member acknowledged while it leads,
+    /// with the term it leads: [`Group::led_acked`]. What a backup point
+    /// reads.
+    pub fn led_acked(&self, shard: &ShardKey) -> Option<(u64, LogPoint)> {
+        self.group(shard)?.led_acked()
     }
 
     /// What `shard`'s log holds, as it changes: written as soon as an

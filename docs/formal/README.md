@@ -922,11 +922,12 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReformReplacedDisk.cfg` | `Kept`, one rotation that can replace the disk with nothing kept but the reservation (#2671), one broker declared dead, two terms | pass the same as `...TrailingFloor.cfg`. Not registered, run by dispatch |
 | `FelixRaftReformReplacedDiskByBroker.cfg` | the same with a vote counted as read when any copy of its broker was read (`VoteByBroker`): A holds x at term 1, C commits f at the same index in term 2 with b, b's disk is replaced, C is declared dead | violate `OffsetNeverReused` (10.5M distinct states, depth 15, 5 min on 4 workers) |
 | `FelixRaftReformReplacedDiskLost.cfg` | the same with the disk lost outright, reservation included (`ReplacedReserve <- LostReserve`), and one term: A commits x with b, A's disk is lost, b is declared dead | violate `OffsetNeverReused`: the documented residual of a trailing floor |
-| `FelixRaftRestore.cfg` | `FelixRaftRestore.tla`: a restore from a backup point with no offset gap. Epoch 0 acknowledges up to four offsets, the point is read from the leader, its directory is copied while it still leads, the control plane is exported at any time, and epoch 1 starts above the point, the restored floor and the copied reservation (step 2), with no offset gap | pass `BackedUpNeverReused`, `BaseKept`, `ReserveCovers` (1,653 distinct states, under a second) |
+| `FelixRaftRestore.cfg` | `FelixRaftRestore.tla`: a restore from a backup point with no offset gap. Epoch 0 acknowledges up to four offsets, ahead of its commit and of the commit the copy saves, the point is read from the leader's acknowledged mark, its directory is copied while it still leads, the control plane is exported at any time, the cut saves the point as committed, and epoch 1 starts above the point, the restored floor and the copied reservation (step 2), with no offset gap | pass `BackedUpNeverReused`, `BaseKept`, `ReserveCovers`, `RestoresAtPoint` (25,737 distinct states, under a second) |
 | `FelixRaftRestoreNoReserve.cfg` | the same with the first index leaving out the copied reservation | violate `BackedUpNeverReused` |
+| `FelixRaftRestoreNoRaise.cfg` | the same where the cut only lowers the copy's saved commit | violate `RestoresAtPoint`: a copy that holds the point but saved its commit below it is refused at the point |
 | `FelixRaftRestoreLeaderMoved.cfg` | the same where the copied copy stops leading after the point and falls behind its reservation before the copy | violate `BackedUpNeverReused`: an offset acknowledged before the copy is given out again. Closed by the gap |
 | `FelixRaftRestoreAfterBackup.cfg` | `FelixRaftRestore.cfg` checked against every offset epoch 0 acknowledged | violate `OffsetNeverReused`: an offset acknowledged after both the copy and the export, the documented residual |
-| `FelixRaftRestoreGap.cfg` | the restore offset gap: epoch 1 starts at least `Gap` = 2 past the point, at most two offsets are acknowledged after it, and the copied copy may stop leading | pass `BackedUpNeverReused`, `OffsetNeverReused`, `BaseKept`, `ReserveCovers` (4,656 distinct states, under a second) |
+| `FelixRaftRestoreGap.cfg` | the restore offset gap: epoch 1 starts at least `Gap` = 2 past the point, at most two offsets are acknowledged after it, and the copied copy may stop leading | pass `BackedUpNeverReused`, `OffsetNeverReused`, `BaseKept`, `ReserveCovers`, `RestoresAtPoint` (72,328 distinct states, under a second) |
 | `FelixRaftRestoreGapShort.cfg` | the same with a gap of 1 | violate `OffsetNeverReused` |
 | `FelixRaftRestoreRepeated.cfg` | `FelixRaftRestoreRepeated.tla`: two backups and three restores, a backup may be taken from a restored epoch, each restore planned on a clock off true time by up to a tick; at most one offset per tick, the line rises two per tick, restores five ticks apart | pass `OffsetNeverReused` (5,650,196 distinct states, a few seconds) |
 | `FelixRaftRestoreRepeatedNoTime.cfg` | pins the old rule, flipping both `Line` (off) and `EndGap` (on): the first index at the backup's end plus the gap, no time line. `...EndGap.cfg` is the one-change twin | violate `OffsetNeverReused`: a second restore from one backup starts where the first did |
@@ -3686,7 +3687,11 @@ max(point + 1 + `Gap`, restored floor + 1, copied reservation + 1). Every
 copy raises its reservation before a write passes it. With no gap (`Gap` = 0),
 `FelixRaftRestore.cfg` shows that nothing acknowledged by the time of the
 copy is given out again (`BackedUpNeverReused`), and only through the
-reservation (`...NoReserve.cfg`). Two cases reuse an offset with no gap: one
+reservation (`...NoReserve.cfg`). The point is the leader's acknowledged
+mark, which can be past its commit and past the commit the copy saved, so
+the cut saves the point as committed; a cut that only lowers the saved
+commit leaves the plan refusing a copy that holds the point
+(`...NoRaise.cfg`, `RestoresAtPoint`). Two cases reuse an offset with no gap: one
 acknowledged after both the copy and the export (`...AfterBackup.cfg`, the
 documented residual), and one acknowledged before the copy when the copied
 copy stopped leading after the point and fell behind its own reservation

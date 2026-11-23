@@ -848,6 +848,9 @@ pub struct BackupMember {
     /// index, or a write answered before its commit), while it leads `term`
     /// and serves it. Every write acknowledged before the read is below it.
     pub committed_end: Option<u64>,
+    /// The term of the entry below `committed_end`, set with it. A restore
+    /// checks the copy's entry there against it.
+    pub end_term: Option<u64>,
 }
 
 /// Shards an engine other than the hybrid runs on this broker.

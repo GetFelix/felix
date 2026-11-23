@@ -191,7 +191,10 @@ offset gap above). Run these in order.
    The line marked `(raft)` is a Raft copy cut at the point. The command
    refuses, and writes nothing to that copy, when the copy holds a snapshot,
    a purge or a floor at or past the point: a copy taken after the point
-   moved on cannot be cut back. Take a new point and copy again.
+   moved on cannot be cut back. It also refuses when the record below the
+   point was written in another term than the point records: the leader
+   lost a `Leader` write and a newer leader wrote over it before the copy.
+   Take a new point and copy again.
 
 4. **Start every broker.** The Raft shards stay "not ready" and wait for a
    re-form; nothing is lost by waiting.

@@ -1571,26 +1571,25 @@ impl EngineShards for RaftShards {
     /// committing in its own term, so before that it may sit below a write
     /// the previous leader acknowledged. Not the commit index alone: a
     /// write answered on a written majority or the lease is acknowledged
-    /// before its commit.
+    /// before its commit. The marks are read after the served check and
+    /// kept only if they are of the served term, so a leader re-elected in
+    /// between never reports an older term's marks under the new one.
     fn backup_members(&self) -> Vec<super::routing::BackupMember> {
-        let commits: HashMap<ShardKey, u64> = self
-            .runtime
-            .led_acked_ends()
-            .into_iter()
-            .map(|(group, end)| ((*group.shard).clone(), end))
-            .collect();
         self.held_copies()
             .into_iter()
             .filter_map(|held| {
                 let status = self.runtime.status(&held.key)?;
-                let committed_end = (self.leading(&held.key) == Some(status.term))
-                    .then(|| commits.get(&held.key).copied())
-                    .flatten();
+                let acked = (self.leading(&held.key) == Some(status.term))
+                    .then(|| self.runtime.led_acked(&held.key))
+                    .flatten()
+                    .filter(|(term, _)| *term == status.term)
+                    .map(|(_, last)| last);
                 Some(super::routing::BackupMember {
                     key: held.key,
                     incarnation: held.incarnation,
                     term: status.term,
-                    committed_end,
+                    committed_end: acked.map(|last| last.index + 1),
+                    end_term: acked.map(|last| last.term),
                 })
             })
             .collect()
