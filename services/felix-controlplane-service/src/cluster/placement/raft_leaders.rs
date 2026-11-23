@@ -164,13 +164,14 @@ fn replace_leaving<'a>(
     load: &mut HashMap<&'a str, u32>,
     moves: &mut Moves,
 ) -> Option<Decision> {
-    // A lost member first: until it is replaced every other swap would wait
-    // on it below.
+    // A member that is not serving first, lost ones before the rest: until
+    // it is replaced every other swap waits on it below, so a draining or
+    // internal member picked ahead of it would block forever.
     let (from, why) = existing
         .replicas
         .iter()
         .filter_map(|node| leaving(node).map(|why| (node, why)))
-        .min_by_key(|(_, why)| *why != Leaving::Lost)?;
+        .min_by_key(|(node, why)| (is_serving(node), *why != Leaving::Lost))?;
     let to = match replacement(existing, from, is_serving, eligible, load) {
         Ok(to) => to,
         Err(Blocked::NoReplacement { node, .. }) => {

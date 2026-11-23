@@ -121,6 +121,9 @@ pub enum Refused {
     /// A Raft shard's set cannot change while this member is not serving:
     /// the joint change needs a majority of both sets.
     MemberDown(String),
+    /// A Raft shard with one member cannot give its seat away: the store
+    /// holds a one-voter set in place, so the change would never apply.
+    SingleMember,
 }
 
 impl Refused {
@@ -146,6 +149,7 @@ impl Refused {
             Self::NotAMember(_) => "not_a_member",
             Self::SetUnsettled => "set_unsettled",
             Self::MemberDown(_) => "member_down",
+            Self::SingleMember => "single_member",
         }
     }
 }
@@ -210,6 +214,10 @@ impl std::fmt::Display for Refused {
             Self::MemberDown(node) => write!(
                 f,
                 "member {node} of this Raft shard is not serving; its set changes once it is"
+            ),
+            Self::SingleMember => write!(
+                f,
+                "this Raft shard has one member, and moving a one-member group to another broker is not supported yet"
             ),
         }
     }
@@ -370,6 +378,9 @@ fn raft_seat_move(
     replication_factor: u32,
     home: Option<&String>,
 ) -> Result<OperatorStep, Refused> {
+    if existing.replicas.is_empty() {
+        return Err(Refused::SingleMember);
+    }
     let serving = |node: &str| lifecycle_of(catalog, node).is_some_and(|l| l.is_serving());
     if let Some(down) = existing.nodes().find(|node| !serving(node)) {
         return Err(Refused::MemberDown(down.clone()));

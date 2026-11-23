@@ -4447,7 +4447,8 @@ an older control plane added:
   then hands leadership to the new broker once it has caught up. It is
   refused while a member is not serving (`member_down`), while the target is
   not stored for the current set (`set_unsettled`), and while the
-  destination is still a learner (`not_a_member`).
+  destination is still a learner (`not_a_member`), and for a one-member group
+  (`single_member`; moving one is not supported yet).
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 

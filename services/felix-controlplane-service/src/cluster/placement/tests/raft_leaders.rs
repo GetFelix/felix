@@ -341,6 +341,30 @@ fn an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat() {
     assert_eq!(step.expected_generation, existing[0].generation);
 }
 
+/// **A one-member group cannot be moved by an operator yet.** The store holds
+/// a one-voter set in place, so the write would be accepted and then refused
+/// for good; it is refused up front with its own code.
+#[test]
+fn an_operator_move_of_a_one_member_raft_shard_is_refused() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let mut single = member_of(0, "broker-a");
+    single.replicas.clear();
+    let existing = vec![single];
+    let nodes = live(&["broker-a", "broker-b"]);
+    let catalog = Catalog {
+        streams: &streams,
+        caches: &[],
+        nodes: &nodes,
+        existing: &existing,
+        caught_up: &NothingCaughtUp,
+        policy: raft(),
+    };
+
+    let refused = start_move(&catalog, &existing[0].key, "broker-b").unwrap_err();
+    assert_eq!(refused, Refused::SingleMember);
+    assert_eq!(refused.code(), "single_member");
+}
+
 /// One set change at a time, and only with every member serving: the joint
 /// change needs a majority of both sets.
 #[test]
@@ -466,6 +490,112 @@ fn a_raft_follower_lost_past_the_delay_is_replaced() {
     );
     assert_eq!(written.leader, "broker-a");
     assert!(!set_of(written).contains("broker-c"));
+}
+
+/// Brokers `a` (leader), `b` and `core` hold a group; `b` is draining.
+fn drained_beside(core: Node) -> (Vec<Stream>, Vec<ShardAssignment>, Vec<Node>) {
+    let mut existing = member_of(0, "a");
+    existing.replicas = vec!["b".to_string(), "core".to_string()];
+    let members = ["a", "b", "core"]
+        .iter()
+        .map(|node| (node.to_string(), 7))
+        .collect::<BTreeMap<_, _>>();
+    existing.raft_target = Some(RaftTarget {
+        counter: 2,
+        members: members.clone(),
+    });
+    existing.raft_voters = Some(crate::model::RaftVoters {
+        incarnation: existing.incarnation,
+        epoch: 0,
+        index: 1,
+        members: members.clone(),
+    });
+    existing.raft_copy_ids = members;
+    let mut nodes = live(&["a", "b", "c", "d"]);
+    nodes[1].status.lifecycle = NodeLifecycle::Draining;
+    nodes.push(core);
+    (
+        vec![replicated_stream("orders", 1, 3)],
+        vec![existing],
+        nodes,
+    )
+}
+
+fn internal_down(silent_for: u64) -> Node {
+    use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+    let mut node = super::restore::gone("core", silent_for);
+    node.spec
+        .labels
+        .insert(NODE_ROLE_LABEL.to_string(), NODE_ROLE_INTERNAL.to_string());
+    node
+}
+
+/// **A member that is down is replaced before one that is only leaving.**
+/// Every other swap waits on it, so picking the draining member first would
+/// hold the shard on the down one, and the down one would never be picked.
+#[test]
+fn a_down_internal_member_is_replaced_before_a_draining_one() {
+    use super::restore::{MINUTE, Reports};
+    let (streams, existing, nodes) = drained_beside(internal_down(10 * MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &Reports::default(),
+        raft(),
+    );
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplace { from, .. } if from == "core"),
+        "{plan:?}"
+    );
+}
+
+/// Internal is not a reason to wait on the delay: the down member is taken
+/// first even before it counts as lost.
+#[test]
+fn a_down_internal_member_inside_the_delay_does_not_hold_a_draining_one() {
+    use super::restore::{MINUTE, Reports};
+    let (streams, existing, nodes) = drained_beside(internal_down(MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &Reports::default(),
+        raft(),
+    );
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplace { from, .. } if from == "core"),
+        "{plan:?}"
+    );
+}
+
+/// A lost member goes before a draining one that is still serving.
+#[test]
+fn a_lost_raft_member_is_replaced_before_a_draining_one() {
+    use super::restore::{MINUTE, Reports, gone};
+    let (streams, existing, mut nodes) = drained_beside(gone("core", 10 * MINUTE));
+    nodes.retain(|node| node.node_id != "core");
+    nodes.push(gone("core", 10 * MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &Reports::default(),
+        raft(),
+    );
+
+    let (_, step, _) = plan.moves().next().expect("a set change");
+    assert!(
+        matches!(step, MoveStep::RaftReplace { from, .. } if from == "core"),
+        "{plan:?}"
+    );
 }
 
 /// Through the store: the cluster's identity says Raft, and a drained

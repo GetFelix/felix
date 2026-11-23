@@ -1812,7 +1812,7 @@ async fn an_operator_move_outside_the_set_hands_the_leaders_seat_over() {
         .expect("start cluster");
     let (old_leader, followers, _) = stored_set(&cluster).await;
     let mut members: Vec<String> = followers.clone();
-    members.push(old_leader);
+    members.push(old_leader.clone());
     voters_become(&cluster, &members, converged_within).await;
     let outsider = cluster
         .node_ids()
@@ -1850,6 +1850,22 @@ async fn an_operator_move_outside_the_set_hands_the_leaders_seat_over() {
     })
     .await
     .expect("leadership follows placement onto the new member");
+    // The old leader left the set, so it must no longer lead, and with that
+    // no longer acknowledge writes for the shard.
+    felix_cluster::wait::until(
+        converged_within,
+        "the old leader to stop leading",
+        || async {
+            cluster
+                .metric(&old_leader, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|led| led < 1.0)
+        },
+    )
+    .await
+    .expect("the old leader stops leading once it is out of the set");
 
     let held = replay_holding(&cluster, &outsider, &acked).await;
     for payload in &acked {

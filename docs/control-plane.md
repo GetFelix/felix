@@ -1870,7 +1870,9 @@ a later pass.
 An operator move outside the set is refused with `set_unsettled` while the
 target is not stored for the current set or the group has not formed,
 `member_down` while a member is not serving, and `not_a_member` while the
-destination is still a learner from an earlier change. A removed copy keeps
+destination is still a learner from an earlier change. A one-member group is
+refused with `single_member`: moving it to another broker is not supported
+yet, and no issue tracks it. A removed copy keeps
 its directory: nothing deletes it yet.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
@@ -2473,8 +2475,9 @@ move slot: to a member it names that member leader (`raft_leader`), and
 outside the set it gives the destination the leader's seat
 (`raft_replace`). The second is refused while a member is not serving (409
 `member_down`), while the group's target is not stored for its current set
-(409 `set_unsettled`), and while the destination is still a learner (409
-`not_a_member`). Any other move is held to
+(409 `set_unsettled`), while the destination is still a learner (409
+`not_a_member`), and for a one-member group (409 `single_member`; not
+supported yet). Any other move is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 
