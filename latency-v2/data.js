@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795416086776,
+  "lastUpdate": 1795417779367,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -83820,6 +83820,72 @@ window.BENCHMARK_DATA = {
             "range": "26.74",
             "unit": "us",
             "extra": "trials: 5\nmedian: 324.00\nmean: 332.40\nstdev: 26.74\ncv: 8.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b84f3f06a5d4c029890cc80f49e5105d6ccd2e8e",
+          "message": "sim: Raft power-loss and majority-cut nemesis modes (#2954) (#2989)\n\n* sim: Raft power-loss and majority-cut nemesis modes (#2954)\n\nThe hybrid's disk nemeses had no Raft twins, so power cuts, torn Raft-log\ntails and crashes between write and fsync were never run against the\nengine 0.8 ships.\n\nraft-power-loss cuts one member's power inside its next log append (or\nafter two seconds with none in flight) and starts it on what the device\nkept; raft-relaxed-power-loss does the same with Quorum/Periodic streams\nanswered on a written majority; the majority modes add cuts of two\nmembers or a majority in one instant. Each start writes a run record as a\nbroker does, so a relaxed cut rotates the storage id.\n\nA seed fails when a copy that kept its id lost a record it had fsynced,\nwhen a strict cut rotates a copy or a relaxed one keeps it, when recovery\nreopens a torn segment without repairing it, or when a shard answers a\nwrite after a relaxed cut of a majority closed it. The history checker is\nunchanged. sim_fs gains ignore_segment_flushes for a broken-disk test\nthat the power mode must catch. The sweep script and nightly workflow\nrun the modes as the raft-disks group.\n\n* sim: final reads wait for an open leader; pin Raft seeds 1233 and 920 (#2954)\n\n* sim: keep a poisoned log's run-record rewrite inside its own broker (#2998)\n\nA poisoned log makes the broker rewrite the run record of every root it\nwatches, so the next crash rotates the storage id. That is right for one\nbroker per process, but a simulation runs five brokers, and every test of\na binary, in one process. In CI the raft_seeds binary ran\na_failed_flush_stops_one_copy_and_the_group_carries_on before the power\npins, so every later power cut rotated copies (StorageId) on a strict run.\nAlone, the pins pass on any OS; the macOS/Linux split was test order.\n\nUnder the sim feature each simulated root now keeps the poison for its own\nbroker until its next power cut, and forget_watched only rewrites roots of\nthe poisoned path's broker. Production is unchanged.\n\n* sim: record that the poison scoping leaves the model alone\n\nSpec-Unaffected: the run_state.rs change scopes the process-wide poison flag to one simulated broker's roots and is compiled only with the sim feature; production poisoning, the run record and the restore check are unchanged, so no protocol the TLA+ model describes changes.",
+          "timestamp": "2026-11-23T06:48:25Z",
+          "tree_id": "f9408a7321a46736880f9e1e9a150facf20ef769",
+          "url": "https://github.com/GetFelix/felix/commit/b84f3f06a5d4c029890cc80f49e5105d6ccd2e8e"
+        },
+        "date": 1795417764322,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.20\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "17.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 218.40\nstdev: 17.10\ncv: 7.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 785,
+            "range": "790.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 785.00\nmean: 993.00\nstdev: 790.11\ncv: 79.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "22.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 208.20\nstdev: 22.82\ncv: 10.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 404,
+            "range": "422.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 404.00\nmean: 585.80\nstdev: 422.86\ncv: 72.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 856,
+            "range": "941.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 856.00\nmean: 1282.20\nstdev: 941.57\ncv: 73.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
