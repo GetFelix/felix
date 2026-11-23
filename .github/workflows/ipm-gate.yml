@@ -86,6 +86,9 @@ jobs:
           # Callgrind runs the broker tens of times slower than native, and the
           # harness's start-up waits are sized for native speed.
           export FELIX_TEST_TIMEOUT_SCALE=10
+          # The measured broker keeps nothing on disk, which Raft refuses, so
+          # this stays on the hybrid until #3050 gives it a Raft baseline.
+          export FELIX_TEST_SHARD_ENGINE=hybrid
           FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
             FELIX_IPM_DIR="$RUNNER_TEMP/cg" \
             FELIX_IPM_COMMIT="${{ github.event.pull_request.head.sha || github.sha }}" \

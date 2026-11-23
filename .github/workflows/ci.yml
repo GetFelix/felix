@@ -881,6 +881,11 @@ jobs:
     name: Python client conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # The conformance fixtures still need a shard move on a Raft cluster
+    # (error.shard_unavailable_is_retryable), so they run on the hybrid
+    # until #3050 moves them.
+    env:
+      FELIX_TEST_SHARD_ENGINE: hybrid
     steps:
       - name: Checkout
         uses: actions/checkout@v7
