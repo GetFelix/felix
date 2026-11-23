@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795432665732,
+  "lastUpdate": 1795433295262,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66560,6 +66560,58 @@ window.BENCHMARK_DATA = {
             "range": "73358.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 792325.96\nmean: 745231.18\nstdev: 73358.21\ncv: 9.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f5ad4bd95abb7293dd02cb8b9c276c9d0c5a328",
+          "message": "test(cluster): run rest and routing on Raft beside hybrid (#2982) (#2994)\n\n* test(cluster): per-suite shard engine switch, rest and routing also run on Raft (#2982)\n\n* test(cluster): rest suite runs every binary after a failure\n\n* test(cluster): Raft suites finalize the raft fleet features, wait for a Raft leader, skip moves until #2235 (#2982)\n\n* test(cluster): skip Raft-gap and hybrid-only cluster tests with a reason, no replica reports on Raft (#2982)\n\n* docs: list FELIX_TEST_SHARD_ENGINE as a harness variable and document it (#2982)\n\n* env: register FELIX_TEST_SHARD_ENGINE in KNOWN_VARS (#2982)",
+          "timestamp": "2026-11-23T11:22:39Z",
+          "tree_id": "e50093c37b8121b16e0ae52a4d2bb67e2d4a5403",
+          "url": "https://github.com/GetFelix/felix/commit/3f5ad4bd95abb7293dd02cb8b9c276c9d0c5a328"
+        },
+        "date": 1795433294528,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 540369.75,
+            "range": "15359.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 540369.75\nmean: 542733.36\nstdev: 15359.69\ncv: 2.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 540369.75,
+            "range": "15359.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 540369.75\nmean: 542733.36\nstdev: 15359.69\ncv: 2.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 128143.72,
+            "range": "8200.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 128143.72\nmean: 124969.73\nstdev: 8200.01\ncv: 6.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1281437.18,
+            "range": "82000.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1281437.18\nmean: 1249697.25\nstdev: 82000.11\ncv: 6.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
