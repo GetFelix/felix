@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795433664531,
+  "lastUpdate": 1795437727519,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -66664,6 +66664,58 @@ window.BENCHMARK_DATA = {
             "range": "82968.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1241200.00\nmean: 1204912.93\nstdev: 82968.12\ncv: 6.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fca078016d4f089e57f22b360bf926d4c08ffe6d",
+          "message": "build(deps): bump jsonwebtoken from 11.1.0 to 12.0.0 (#3019)\n\n* build(deps): bump jsonwebtoken from 11.1.0 to 12.0.0\n\nBumps [jsonwebtoken](https://github.com/Keats/jsonwebtoken) from 11.1.0 to 12.0.0.\n- [Changelog](https://github.com/Keats/jsonwebtoken/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/Keats/jsonwebtoken/compare/v11.1.0...v12.0.0)\n\n---\nupdated-dependencies:\n- dependency-name: jsonwebtoken\n  dependency-version: 12.0.0\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* test(oidc): jsonwebtoken 12 returns a Result from EncodingKey::from_secret\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Gabriel Loewen <gabrielloewen@outlook.com>",
+          "timestamp": "2026-11-23T12:35:37Z",
+          "tree_id": "93f6904083c0ece5ec5bdc52e4ffcf4ba697b781",
+          "url": "https://github.com/GetFelix/felix/commit/fca078016d4f089e57f22b360bf926d4c08ffe6d"
+        },
+        "date": 1795437726743,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 602348.81,
+            "range": "52519.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 602348.81\nmean: 610564.29\nstdev: 52519.10\ncv: 8.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 602348.81,
+            "range": "52519.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 602348.81\nmean: 610564.29\nstdev: 52519.10\ncv: 8.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 154220.97,
+            "range": "4957.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 154220.97\nmean: 153918.84\nstdev: 4957.30\ncv: 3.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1542209.74,
+            "range": "49573.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1542209.74\nmean: 1539188.38\nstdev: 49573.05\ncv: 3.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
