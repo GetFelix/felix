@@ -3224,8 +3224,9 @@ The broker never appends to that log, and four rules follow from it.
   `propose_idempotent` ("Idempotent publishes", below), and a conditional
   one through `propose_publish_at` ("Conditional publishes", below), a
   head trim through `propose_trim_at` ("Head trims", below), and an atomic
-  commit through `propose_commit` ("Atomic commits", below). #2446
-  lists what is still refused.
+  commit through `propose_commit` ("Atomic commits", below). So none of
+  these refusals is reached from a served route on a Raft shard; each is a
+  backstop.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
   what a deposed leader held, drops nothing here.
@@ -3424,7 +3425,7 @@ never ends a subscriber of the new term.
 
 Consumer-group operations on a Raft shard go to the shard's own groups
 ("Consumer groups", below), and are refused by name until the fleet
-finalizes `raft_consumer_groups` (#2446). A head trim and an atomic commit
+finalizes `raft_consumer_groups`, as a new cluster does. A head trim and an atomic commit
 go to the shard's engine ("Head trims" and "Atomic commits", above).
 
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_groups.rs`,
