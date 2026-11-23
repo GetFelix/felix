@@ -1776,6 +1776,13 @@ async fn records_between_group_entries_in_one_apply_run_count_no_drop() {
             .await
             .expect("written");
     }
+    // Released with the tail still uncommitted, the applier takes the run
+    // in pieces as the commits land, and it never outgrows the history.
+    eventually(|| {
+        let status = led.cluster.runtime(&led.leader.broker).status(&shard(0))?;
+        (status.last_index.is_some() && status.committed == status.last_index).then_some(())
+    })
+    .await;
     drop(held);
 
     // The claim only matters if the run outgrows what a bounded history
