@@ -1,8 +1,10 @@
 //! Cutting a stopped Raft copy back to a backup point, for `felix-broker
 //! restore-point`.
 //!
-//! The point is the leader's commit index plus one. After the cut the copy
-//! ends there and its saved commit names the entry below, so a re-form
+//! The point is one past the furthest entry the leader acknowledged, which
+//! can be past its commit index while a write answered on a written
+//! majority or the lease waits for its commit. After the cut the copy
+//! ends there and its saved commit is not past it, so a re-form
 //! reads the point as the end the copy vouches for. See
 //! `docs/per-shard-raft.md`, "Restoring at a backup point".
 

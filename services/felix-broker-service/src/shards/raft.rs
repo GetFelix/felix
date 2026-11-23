@@ -1566,15 +1566,18 @@ impl EngineShards for RaftShards {
         self.runtime.hears_leader(key) == Some(true)
     }
 
-    /// The leader's commit index, read only once its term is served: a new
-    /// leader learns the commit index by committing in its own term, so
-    /// before that it may sit below a write the previous leader acknowledged.
+    /// One past the furthest entry the leader acknowledged, read only once
+    /// its term is served: a new leader learns the commit index by
+    /// committing in its own term, so before that it may sit below a write
+    /// the previous leader acknowledged. Not the commit index alone: a
+    /// write answered on a written majority or the lease is acknowledged
+    /// before its commit.
     fn backup_members(&self) -> Vec<super::routing::BackupMember> {
         let commits: HashMap<ShardKey, u64> = self
             .runtime
-            .led_commits()
+            .led_acked_ends()
             .into_iter()
-            .map(|(group, at)| ((*group.shard).clone(), at.index + 1))
+            .map(|(group, end)| ((*group.shard).clone(), end))
             .collect();
         self.held_copies()
             .into_iter()

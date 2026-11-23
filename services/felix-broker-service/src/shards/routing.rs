@@ -844,7 +844,8 @@ pub struct BackupMember {
     pub incarnation: u64,
     /// The member's current term.
     pub term: u64,
-    /// One past the group's committed index, while this member leads `term`
+    /// One past the furthest entry this member acknowledged (its commit
+    /// index, or a write answered before its commit), while it leads `term`
     /// and serves it. Every write acknowledged before the read is below it.
     pub committed_end: Option<u64>,
 }

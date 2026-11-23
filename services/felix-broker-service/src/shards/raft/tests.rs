@@ -1453,7 +1453,7 @@ async fn a_formed_group_is_led_by_the_placed_leader() {
 /// serving its term gives an end, one past its commit index, so every
 /// acknowledged offset is below it; the others give their term only (#2995).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_backup_point_reads_the_leaders_commit_index() {
+async fn a_backup_point_reads_the_leaders_acknowledged_end() {
     use crate::shards::routing::EngineShards;
     let net = Arc::new(Loopback::default());
     let orders = key("orders", 0);
@@ -1496,6 +1496,54 @@ async fn a_backup_point_reads_the_leaders_commit_index() {
             );
         }
     }
+    stop(&members).await;
+}
+
+/// The end the leader of `orders` gives a backup point.
+fn backup_end(member: &Member) -> u64 {
+    use crate::shards::routing::EngineShards;
+    let [read] = member.shards.backup_members().try_into().expect("one");
+    read.committed_end.expect("the leader gives an end")
+}
+
+/// **A backup point covers a `Quorum` write answered on a written majority
+/// before its commit.** With every follower's fsync held the commit cannot
+/// pass the write, so a point at the commit index would leave out a write
+/// the publisher saw acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_point_covers_a_write_answered_before_its_commit() {
+    let periodic = FsyncMode::Periodic {
+        interval: Duration::from_millis(250),
+    };
+    let (_net, members, leader) = trio_fsync(ConsistencyLevel::Quorum, periodic).await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"q0").await;
+
+    let logs = follower_logs(&members, leader).await;
+    let held = futures::future::join_all(logs.iter().map(|log| log.hold_flushes())).await;
+    let answered = members[leader].publish_within(term, b"q1", Duration::from_secs(10));
+    let offset = answered.await.expect("answered before its commit");
+    assert!(members[leader].bound() <= offset, "it committed");
+    let end = backup_end(&members[leader]);
+    assert!(end > offset, "{end} <= acknowledged {offset}");
+    drop(held);
+    stop(&members).await;
+}
+
+/// **A backup point covers a `Leader` write answered on the lease before
+/// any follower holds it**: the point is what the leader acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_backup_point_covers_a_write_answered_on_the_lease() {
+    let (net, members, _) = trio_at(ConsistencyLevel::Leader).await;
+    let (leader, _, offset, _) = answered_alone(&net, &members, "l1").await;
+    assert!(
+        members[leader].bound() <= offset,
+        "committed with nobody reachable"
+    );
+    let end = backup_end(&members[leader]);
+    assert!(end > offset, "{end} <= acknowledged {offset}");
+    net.cut.lock().clear();
     stop(&members).await;
 }
 

@@ -38,7 +38,8 @@ impl BackupOffsets {
         let Some(ingress) = &self.ingress else {
             return response;
         };
-        // A Raft shard's point is its leader's commit index, which is also
+        // A Raft shard's point is the end of what its leader acknowledged
+        // (the commit index, or a write answered before it), which is also
         // the index a restore cuts the copy to and a re-form plan reads as
         // the base's end. Every member is listed with its term, so the
         // collector can tell a deposed leader that has not heard yet from
@@ -212,7 +213,8 @@ struct ShardOffsets {
     #[serde(skip_serializing_if = "is_zero")]
     incarnation: u64,
     /// `raft` for a shard the Raft engine runs; `generation` is then the
-    /// leader's term, and `records` one past its commit index.
+    /// leader's term, and `records` one past the furthest entry it
+    /// acknowledged: its commit index, or a write answered before it.
     #[serde(skip_serializing_if = "Option::is_none")]
     engine: Option<&'static str>,
     logs: LogOffsets,

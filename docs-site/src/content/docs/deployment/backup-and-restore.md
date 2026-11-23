@@ -14,13 +14,17 @@ brokers keep running, are cut back to the point on restore.
 
 - **Nothing acknowledged before the barrier is missing.** The barrier instant
   is recorded first, and every offset is read after it. A record acknowledged
-  before the barrier was committed before the barrier, so it is below the
-  committed offset read for its shard.
+  before the barrier is below the offset read for its shard.
 - **Nothing uncommitted is included.** Each offset is the shard's committed
   offset on its leader: for a `Quorum` stream or cache, the quorum mark (and
   never past what the leader itself has made durable); for everything else,
   what the leader has acknowledged, which under
   `FELIX_DURABLE_FSYNC_MODE=on_commit` stops at the last synced record.
+  A Raft shard's offset is one past the last record its leader
+  acknowledged. That can be past its commit for a moment: a `Quorum` stream
+  under a periodic fsync answers once a majority has written a record, and
+  a `Leader` stream answers on the leader's lease. Such a record is in the
+  point, since leaving it out would lose an acknowledged write.
 - **Every shard is at its leader's copy, at one generation.** The assignments
   are read again after the offsets. If any leader or generation changed while
   offsets were being read, the whole collection starts over; after five tries

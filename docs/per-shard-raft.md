@@ -914,10 +914,18 @@ mechanism:
   leader, and the operator copies the leaders' shard directories while they
   run. Every broker is asked, since the elected leader need not be the one
   placement names. The point is read only from a member serving its term
-  at the newest term any member reports, as one past its commit index: a
-  leader at an older term may be deposed without knowing it, and a new one
-  knows the commit index only once it has committed in its own term. The point is the base: every record at or below it was acknowledged
-  and is in the copied directory.
+  at the newest term any member reports: a leader at an older term may be
+  deposed without knowing it, and a new one knows the commit index only
+  once it has committed in its own term. The point is one past the furthest
+  entry of that term the leader acknowledged, which is its commit index or
+  past it: a `Quorum` write on a `Periodic` stream is answered on a written
+  majority, and a `Leader` write on the lease, before the commit reaches
+  it. The point is the base: every write acknowledged before it was read is
+  below it, and everything below it is on the leader's log and so in the
+  copied directory. A written-majority entry is in every later leader's
+  log, so a leader change before the copy cannot cut it; a lease entry
+  can be, as the `Leader` level allows, and the restore then refuses that
+  shard because its copy does not reach the point.
 - `felix-broker restore-point` rotates the storage id and cuts each
   restored leader copy back to the point. The broker's next open of the
   shard rotates the copy and keeps the cut log in `.kept` as `restore`,

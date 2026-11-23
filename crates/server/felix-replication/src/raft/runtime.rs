@@ -1489,6 +1489,17 @@ impl GroupRuntime {
             .collect()
     }
 
+    /// One past the furthest entry acknowledged, every group this broker
+    /// leads: [`Group::led_acked_end`]. What a backup point reads.
+    pub fn led_acked_ends(&self) -> Vec<(GroupId, u64)> {
+        self.inner
+            .registry
+            .ticked()
+            .iter()
+            .filter_map(|group| Some((group.id.clone(), group.led_acked_end()?)))
+            .collect()
+    }
+
     /// What `shard`'s log holds, as it changes: written as soon as an
     /// append has handed its entries to the log, flushed once they are
     /// fsynced. A publisher's acknowledgement on a stream that does not

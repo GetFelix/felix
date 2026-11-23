@@ -105,6 +105,19 @@ impl RaftEngine {
             .admit_local_ack(generation)
     }
 
+    /// [`Self::admit_local_ack`] for `written`, noted as acknowledged once
+    /// admitted, so a backup point read after the answer covers it.
+    pub(crate) fn admit_local_ack_of(
+        &self,
+        shard: &ShardKey,
+        written: Written,
+    ) -> Result<(), CommitError> {
+        let group = self.runtime.group(shard);
+        group
+            .ok_or_else(|| propose::lost(NO_GROUP))?
+            .admit_local_ack_of(written)
+    }
+
     /// The acknowledgement of a `Leader` write that [`Self::propose`]
     /// returned as `written`: at once while the lease holds, and otherwise
     /// when the write is committed, as [`Self::await_commit`] says it.
@@ -116,7 +129,7 @@ impl RaftEngine {
         written: Written,
         timeout: Duration,
     ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
-        let admitted = self.admit_local_ack(shard, written.generation);
+        let admitted = self.admit_local_ack_of(shard, written);
         let committed = admitted
             .is_err()
             .then(|| self.await_commit(shard, written, timeout));
