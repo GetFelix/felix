@@ -22,7 +22,7 @@ impl LogInner {
     /// The capture runs behind the appends already queued on the append
     /// thread, so one flush covers every append in flight. Taken straight
     /// away it would miss the ones still queued, and each of those would wait
-    /// for a flush of its own. With none queued it is taken here.
+    /// for a flush of its own. With none queued a Raft log takes it here.
     pub(super) async fn flush(self: Arc<Self>) -> Result<Offset> {
         // After a failed fsync the kernel may have dropped the dirty pages and
         // cleared the error, so the next fsync "succeeds" having written
@@ -30,9 +30,12 @@ impl LogInner {
         // lost bytes.
         self.check_healthy()?;
         let capturer = Arc::clone(&self);
+        // Hybrid logs keep the hand-off: taking the capture inline moves the
+        // simulator's schedule, and hybrid is frozen until it is removed.
+        let inline = self.config.raft_log;
         let (handle, segment_id, synced_bytes, durable_upto, written) = self
             .appender
-            .run_behind(move |may_wait| {
+            .run_behind(inline, move |may_wait| {
                 // An append rolling inline holds the write lock across a
                 // seal's fsync.
                 let segments = if may_wait {

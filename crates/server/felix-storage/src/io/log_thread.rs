@@ -92,12 +92,15 @@ impl LogThread {
     ///
     /// On the calling thread `work` is told it may not wait, and gives `None`
     /// where it would: the caller may be a group thread other groups' tasks
-    /// queue behind. It then runs on the thread, told it may.
+    /// queue behind. It then runs on the thread, told it may. With `inline`
+    /// false it always runs on the thread.
     pub(crate) async fn run_behind<T: Send + 'static>(
         &self,
+        inline: bool,
         work: impl Fn(bool) -> Option<io::Result<T>> + Send + 'static,
     ) -> io::Result<T> {
-        if self.pending.load(Ordering::Acquire) == 0
+        if inline
+            && self.pending.load(Ordering::Acquire) == 0
             && let Some(done) = work(false)
         {
             return done;
