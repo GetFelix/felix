@@ -1411,6 +1411,9 @@ Questions, 10.
 **After a re-form the group may have one voter.** If only one report holds
 the base, that copy is the only voter and the rest are learners. The leader
 promotes each learner by a membership change as soon as it has caught up.
+A cache learner catches up from the leader's snapshot. A stream learner
+cannot yet: the snapshot at the gap's end carries no records, so the learner
+refuses it and stays a learner (#3005).
 Until the voters are again a majority of the placed set, the control plane
 shows the shard as under-replicated and does not count it as RF 3, and a
 `Quorum` acknowledgement rests on as many copies as there are voters,

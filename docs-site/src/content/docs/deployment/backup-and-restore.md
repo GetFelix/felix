@@ -154,8 +154,12 @@ offset gap above). Run these in order.
    `FELIX_DURABLE_STORAGE_DIR`, and copy in the shard directories the
    manifest names that broker as `leader` of, from the backup in step 2 of
    [Taking a backup](#taking-a-backup). A broker that led nothing in the
-   point stays empty. These empty copies are the followers: they come back as
-   new members and catch up from the re-formed group.
+   point stays empty. These empty copies come back as learners of the
+   re-formed group. A cache shard's learner catches up from the leader's
+   snapshot and becomes a voter again. A stream shard's learner cannot catch
+   up yet, so a restored stream shard runs on its one cut copy until
+   [#3005](https://github.com/GetFelix/felix/issues/3005) lands: it serves and
+   takes writes, but with no second copy.
 
 3. **Cut each leader's copy to the point**, on the broker that holds it, with
    the broker stopped. `--node` takes the broker's own id from the manifest.
@@ -163,6 +167,9 @@ offset gap above). Run these in order.
    ```bash
    felixctl data restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
    ```
+
+   The output looks like this (illustrative, not captured from a run; the
+   numbers are made up):
 
    ```text
    new storage id 7d1c0e5a...
@@ -185,10 +192,18 @@ offset gap above). Run these in order.
    felixctl raft reform plan --restore-point nightly-2026-09-27.backup-point.json
    ```
 
+   Illustrative output, not captured from a run:
+
    ```text
-   plan 3f2a9c
-   t1/ns/orders/0  reform  from broker-1  voters broker-1 broker-2 broker-3  may lose acknowledged records
+   plan 3f2a9c (all): done; 1 to re-form, 0 blocked, 0 left alone
+   restore from backup point nightly-2026-09-27: no offset below the point plus 1099511627776 is given out
+   SHARD           EPOCH  STATE   SOURCE    VOTERS    NOTE
+   t1/ns/orders/0  0      reform  broker-1  broker-1  MAY LOSE ACKNOWLEDGED RECORDS: ...
+   1 of these could lose acknowledged records; applying them will need --accept-loss
    ```
+
+   The cut copy is the only voter: the wiped copies hold nothing the plan can
+   vouch for, so they start as learners.
 
    A shard is `blocked`, with the reason, if the point does not name it, names
    another incarnation of it, or no restored copy ends at the point. Fix the

@@ -11,7 +11,9 @@ use felix_storage::raft_copy::{
 
 use super::*;
 use crate::shards::raft::reform_survey::{Survey, SurveyKind};
-use crate::shards::watch::{PlacedEpoch, RaftBases, RaftEpochBase, RaftLogId, RaftVoters};
+use crate::shards::watch::{
+    PlacedEpoch, RaftBases, RaftEpochBase, RaftLogId, RaftTarget, RaftTargetVersion, RaftVoters,
+};
 
 pub(super) fn survey(
     key: &ShardKey,
@@ -181,6 +183,63 @@ pub(super) async fn start(
     leader.expect("a leader")
 }
 
+/// Each copy's id, as the control plane's target names it before the stop.
+pub(super) fn copies(members: &[Member], key: &ShardKey) -> BTreeMap<String, u64> {
+    members
+        .iter()
+        .map(|member| {
+            let status = member.shards.runtime.status(key).expect("an open member");
+            (member.name.to_string(), status.member.copy)
+        })
+        .collect()
+}
+
+/// The target the control plane stored before the stop, which the epoch
+/// write carries: every placed copy, the learner too, which kept its id.
+/// Fed to every member and told to the leader, as a heartbeat answer does,
+/// so the leader adds the learner and, with `joins`, waits for it to be
+/// promoted once it has caught up.
+pub(super) async fn rejoin(
+    members: &[Member],
+    key: &ShardKey,
+    next: &ShardAssignment,
+    leader: usize,
+    target: BTreeMap<String, u64>,
+    joins: bool,
+) {
+    assert_eq!(copies(members, key), target, "a copy changed its id");
+    let mut fed = next.clone();
+    fed.target = Some(RaftTarget {
+        version: RaftTargetVersion {
+            incarnation: 1,
+            counter: 1,
+        },
+        members: target,
+    });
+    for member in members {
+        let lease = Arc::new(LeaseState::on_tokio_clock(Duration::from_secs(10)));
+        member.shards.follow_lease(Arc::clone(&lease));
+        lease.record_head(tokio::time::Instant::now(), 10);
+        member.shards.take(&mut assignments([fed.clone()])).await;
+    }
+    let shards = &members[leader].shards;
+    shards.answered(Some(tokio::time::Instant::now()), Some(10));
+    if !joins {
+        return;
+    }
+    until("the learner joins the voters", || {
+        shards
+            .runtime
+            .voters(key)
+            .is_some_and(|voters| voters.len() == members.len())
+            && shards
+                .runtime
+                .status(key)
+                .is_some_and(|status| status.membership == MembershipProgress::Settled)
+    })
+    .await;
+}
+
 /// **A three-copy group whose leader is gone re-forms through the stop,
 /// the plan and the broker's start, and serves again with nothing acked
 /// lost and no offset given out twice.** `broker-c` missed the last
@@ -198,6 +257,7 @@ async fn a_three_copy_stream_group_re_forms_and_serves() {
         members[leader].publish(term, b"a1").await,
         members[leader].publish(term, b"a2").await,
     ];
+    let target = copies(&members, &orders);
     isolate(&net, "broker-c");
     acked.push(members[leader].publish(term, b"a3").await);
     let last = *acked.last().expect("acked");
@@ -236,6 +296,30 @@ async fn a_three_copy_stream_group_re_forms_and_serves() {
         other.engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(after + 1)
     })
     .await;
+
+    // The learner is added but never promoted: the leader's snapshot at the
+    // gap's end carries no records, so the learner refuses it rather than
+    // serve a log missing the base (#3005). It leads nothing and votes in
+    // nothing, so it cannot lose an acknowledged record.
+    let c = members
+        .iter()
+        .position(|member| member.name == "broker-c")
+        .expect("c");
+    rejoin(&members, &orders, &next, now, target, false).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let voters = members[now].shards.runtime.voters(&orders).expect("voters");
+    assert!(
+        voters
+            .iter()
+            .all(|voter| voter.broker.as_ref() != "broker-c"),
+        "a learner without the base's records became a voter: {voters:?}"
+    );
+    assert!(members[c].shards.leading(&orders).is_none());
+    assert_ne!(
+        members[c].engine.committed_bound(&orders),
+        felix_broker::ReadBound::Committed(after + 1),
+        "the learner claims records it was never sent"
+    );
     stop(&members).await;
 }
 
@@ -296,6 +380,7 @@ async fn a_three_copy_cache_group_re_forms_and_serves() {
     };
     let put = |value: &'static [u8]| put_request(bytes::Bytes::from_static(value), None);
     cache(&members[leader], "k1", put(b"one")).await;
+    let target = copies(&members, &sessions);
     isolate(&net, "broker-c");
     cache(&members[leader], "k2", put(b"two")).await;
 
@@ -317,5 +402,37 @@ async fn a_three_copy_cache_group_re_forms_and_serves() {
         status.committed >= Some(view.first_index),
         "{status:?} committed nothing in the new epoch"
     );
+
+    // The learner rejoins from the leader's snapshot and becomes a voter.
+    let c = members
+        .iter()
+        .position(|member| member.name == "broker-c")
+        .expect("c");
+    rejoin(&members, &sessions, &next, now, target, true).await;
+    let committed = members[now]
+        .shards
+        .runtime
+        .status(&sessions)
+        .expect("open")
+        .committed;
+    until("the learner applies what the leader committed", || {
+        members[c]
+            .shards
+            .runtime
+            .status(&sessions)
+            .is_some_and(|status| status.committed >= committed)
+    })
+    .await;
+    // Then the leadership moves to it, and it serves every acknowledged value.
+    members[now].shards.runtime.prefer(&sessions, "broker-c");
+    until("the learner leads", || {
+        members[c].shards.leading(&sessions).is_some()
+    })
+    .await;
+    for (name, value) in [("k1", &b"one"[..]), ("k2", b"two"), ("k3", b"three")] {
+        let found = cache(&members[c], name, CacheRequest::Get).await;
+        assert_eq!(found.value.as_deref(), Some(value), "{name} on broker-c");
+    }
+    cache(&members[c], "k4", put(b"four")).await;
     stop(&members).await;
 }

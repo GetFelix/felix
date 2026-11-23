@@ -267,6 +267,12 @@ fn a_re_form_writes_the_next_epochs_record() {
         Some(set(&["a", "b", "d"]))
     );
     assert_eq!(a.raft_seed, Some(seed(3, 1, &[("a", 11), ("b", 12)])));
+    // The target stays: it is what tells the new leader to add the learner
+    // `d` and promote it once it has caught up.
+    assert_eq!(
+        a.raft_target,
+        Some(target(2, &[("a", 11), ("b", 12), ("d", 14)]))
+    );
     let ordered = a.raft_ordered.as_ref().expect("ordered");
     assert_eq!((ordered.epoch, ordered.targets.len()), (1, 0));
 
