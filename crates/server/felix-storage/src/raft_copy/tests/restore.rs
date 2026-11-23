@@ -209,3 +209,55 @@ async fn a_copy_with_another_term_below_the_point_refuses_the_cut() {
     let kept = read_kept(dir.path(), SPACING).expect("read");
     assert_eq!((kept.last, kept.committed), (Some(5), Some(5)));
 }
+
+/// A copy of an idle shard that snapshotted at index 5 and started its log
+/// after it: nothing below the point but the snapshot's own id.
+async fn snapshotted_idle_copy(term: u64) -> TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let mut raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    let entries: Vec<_> = (0..6).map(|index| normal(1, index, "e")).collect();
+    append_flushed(&mut raft, &entries).await;
+    let snapshots = crate::raft_log::SnapshotStore::open(dir.path()).expect("snapshots");
+    let stored = StoredSnapshot {
+        last: Some(SnapshotId { term, index: 5 }),
+        meta: bytes::Bytes::new(),
+        data: bytes::Bytes::new(),
+    };
+    snapshots.install(stored).await.expect("install");
+    raft.start_after_snapshot(&snapshots).await.expect("start");
+    raft.disk_log().close().await.expect("close");
+    dir
+}
+
+/// **A copy whose log starts at the point restores there** on the term the
+/// snapshot or purged id at the point's last index names, and is refused,
+/// with nothing written, when that id is of another term.
+#[tokio::test]
+async fn a_copy_starting_at_the_point_is_checked_against_its_snapshot_id() {
+    let dir = snapshotted_idle_copy(1).await;
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, Some(2), broker_config())
+        .await
+        .expect_err("refused");
+    assert!(
+        err.to_string().contains("another leader's entries"),
+        "{err}"
+    );
+    restore_copy(dir.path(), "t/ns/raft/0", 6, Some(1), broker_config())
+        .await
+        .expect("the snapshot's own term");
+}
+
+/// A log that starts at the point with no id naming the entry below it
+/// cannot show its term, so a restore that names one is refused.
+#[tokio::test]
+async fn a_copy_starting_at_the_point_with_no_id_is_refused() {
+    let dir = snapshotted_idle_copy(1).await;
+    for name in [snapshot::FILE_NAME, crate::raft_log::purged::FILE_NAME] {
+        std::fs::remove_file(dir.path().join(name)).ok();
+    }
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, Some(1), broker_config())
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("no record of its term"), "{err}");
+}

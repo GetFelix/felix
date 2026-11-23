@@ -56,13 +56,33 @@ pub async fn restore_copy(
     let log = DiskLog::open(dir, label, config)?;
     let cut = match term {
         Some(term) => match generation_of(term) {
-            Ok(generation) => log.restore_raft_to(point, generation).await,
+            Ok(generation) => {
+                let purged = id_below(dir, point)?;
+                log.restore_raft_to(point, generation, purged).await
+            }
             Err(err) => Err(StorageError::Io(err)),
         },
         None => log.restore_to(point).await,
     };
     log.close().await?;
     cut
+}
+
+/// The generation of the purged or snapshot id at `point - 1`, if `dir`
+/// stores one there. A log that starts at the point has no record to read.
+fn id_below(dir: &Path, point: Offset) -> io::Result<Option<u64>> {
+    let Some(last) = point.checked_sub(1) else {
+        return Ok(None);
+    };
+    if let Some(purged) = crate::raft_log::purged_point(dir)?
+        && purged.index == last
+    {
+        return generation_of(purged.term).map(Some);
+    }
+    match snapshot::read(dir)?.and_then(|stored| stored.last) {
+        Some(id) if id.index == last => generation_of(id.term).map(Some),
+        _ => Ok(None),
+    }
 }
 
 /// Why `dir` cannot be cut back to `point`, if it cannot.

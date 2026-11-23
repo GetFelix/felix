@@ -921,19 +921,34 @@ impl DiskLog {
     /// the point is past every entry the leader acknowledged, which can be
     /// past what this copy saved as committed.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
-        self.restore_at(offset, None).await
+        self.restore_at(offset, None, None).await
     }
 
     /// [`Self::restore_to`] on a Raft log, refused with nothing written
     /// unless the entry below `offset` was written by `generation`. A copy
     /// whose entry there differs holds another leader's entries at the
     /// point's offsets, not the acknowledged ones.
+    ///
+    /// `purged` is the generation of the purged or snapshotted id at
+    /// `offset - 1`, if one is stored: the log may start exactly at `offset`,
+    /// leaving no record of that entry to read. With neither, the term
+    /// cannot be shown and the restore is refused.
     #[cfg(feature = "raft")]
-    pub(crate) async fn restore_raft_to(&self, offset: Offset, generation: u64) -> Result<()> {
-        self.restore_at(offset, Some(generation)).await
+    pub(crate) async fn restore_raft_to(
+        &self,
+        offset: Offset,
+        generation: u64,
+        purged: Option<u64>,
+    ) -> Result<()> {
+        self.restore_at(offset, Some(generation), purged).await
     }
 
-    async fn restore_at(&self, offset: Offset, expect: Option<u64>) -> Result<()> {
+    async fn restore_at(
+        &self,
+        offset: Offset,
+        expect: Option<u64>,
+        purged: Option<u64>,
+    ) -> Result<()> {
         let inner = Arc::clone(&self.inner);
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
@@ -960,16 +975,26 @@ impl DiskLog {
                     .generation_at(last, &operation.label)?
                     .flatten()
                     .unwrap_or(0),
+                // The log starts at the point: only the purged or snapshot
+                // id remembers the entry below it.
+                Some(_) if operation.config.raft_log => purged.unwrap_or(0),
                 _ => 0,
             };
             #[cfg(not(feature = "raft"))]
-            let below = 0;
+            let below = {
+                let _ = purged;
+                0
+            };
             if let Some(expect) = expect
                 && below != expect
             {
+                let why = if below == 0 {
+                    "no record of its term, so this copy cannot show it holds the point".to_string()
+                } else {
+                    format!("the entry below {offset} is of generation {below}, but the point's is {expect}; this copy holds another leader's entries there")
+                };
                 return Err(StorageError::Io(std::io::Error::other(format!(
-                    "{}: the entry below {offset} is of generation {below}, but the point's \
-                     is {expect}; this copy holds another leader's entries there",
+                    "{}: {why}",
                     operation.label
                 ))));
             }

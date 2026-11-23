@@ -3703,6 +3703,8 @@ the epoch at max(point's offset + gap, ...) for a single restore, where the
 point's offset is the model's point + 1. The code's first index is at least
 that: it takes the larger of the point's end and the time line
 `2^14 * plan time + gap`, and refuses a plan whose line is below the end.
+The cut's check that the entry below the point is of the point's term is not
+modelled: no copy in the model holds another leader's entries.
 
 `FelixRaftRestoreRepeated.tla` checks restores that repeat. Every restored
 epoch starts on one line, `TimeRate * clock + Gap`, read from the planning
