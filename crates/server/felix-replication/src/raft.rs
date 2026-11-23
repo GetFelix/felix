@@ -77,8 +77,7 @@ pub use runtime::{
 #[cfg(any(test, feature = "testing"))]
 pub use testing::UncheckedRecord;
 
-/// The name `shard`'s marks go by at its data root. For tests.
-#[cfg(any(test, feature = "testing"))]
+/// The name `shard`'s marks go by at its data root.
 pub fn mark_name(shard: &crate::ShardKey) -> String {
     runtime::mark_name(shard)
 }
