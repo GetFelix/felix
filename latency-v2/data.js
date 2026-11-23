@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795428748391,
+  "lastUpdate": 1795432660425,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -84414,6 +84414,72 @@ window.BENCHMARK_DATA = {
             "range": "685.15",
             "unit": "us",
             "extra": "trials: 5\nmedian: 487.00\nmean: 806.40\nstdev: 685.15\ncv: 84.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b575a170c64599c45fde5b9a656b36845f6ae7c4",
+          "message": "feat(raft): placement swaps Raft shard members on drain, loss and moves outside the set (#2235) (#3010)\n\n* feat(raft): placement swaps Raft shard members on drain, loss and moves outside the set (#2235)\n\nA Raft shard's set now changes one member at a time when a copy has to\nmove. A follower on a draining, internal or lost broker is swapped for a\nlive broker outside the set, and an operator move outside the set gives\nthe destination the leader's seat instead of refusing with not_a_member.\nThe group's leader carries each swap out through the existing membership\ndriver: learner, catch-up, joint change, and a leadership transfer first\nwhen its own seat moves.\n\nSpec-Unaffected: placement only writes the one-member swaps the\nmembership driver and FelixRaftPlacement already cover; the cfg edit\nrenames a cited test.\n\n* fix(raft): replace a down member before a leaving one; refuse RF 1 seat moves up front (#2235)\n\nA down internal member was labelled Internal, never Lost, so a draining sibling was picked every pass and blocked on it forever. Non-serving members now go first. An operator move of a one-member group is refused with single_member instead of failing at the store.\n\n* ci: keep the Raft cluster tests' broker logs when they fail\n\n* fix(raft): a set change keeps the shard's Raft target counter (#2235)\n\nA placement write that changes a Raft shard's brokers dropped the stored\ntarget and its counter, so the target written once the new set reported\nits copy ids started again at counter 1. The group's membership already\ncarried version 0.1 from the first target, and a leader takes only a\nnewer target (`RaftGroup::retarget`, `next_step`'s StaleTarget), so the\nleader was never told the new voters and the drain and seat-move cluster\ntests waited 540 s for a change nobody started.\n\nThe record now keeps the counter the dropped target reached\n(`raft_target_counter`) and the next target takes the one after it.\nGated at metadata level 50: assignment writes and finalizes carry\n`keep_counter`, and the apply keeps the counter once the join floor is\nat 50, so every member decides the same.\n\nAlso: the membership driver logs each change of what a look came to, the\n\"told the shard's Raft leader its target\" line is at info, and the\ncluster tests' voters_become prints the stored target and voters when it\ntimes out.\n\n* test(raft): the drain test reads its new follower copy with follower reads finalized",
+          "timestamp": "2026-11-23T11:10:53Z",
+          "tree_id": "a14d05da411a2928db694fc67de7efaf92ba1107",
+          "url": "https://github.com/GetFelix/felix/commit/b575a170c64599c45fde5b9a656b36845f6ae7c4"
+        },
+        "date": 1795432630655,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.40\nstdev: 0.89\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "10.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 212.00\nstdev: 10.42\ncv: 4.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 268,
+            "range": "1371.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 871.20\nstdev: 1371.20\ncv: 157.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 201.00\nstdev: 1.00\ncv: 0.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "4.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 392.00\nstdev: 4.85\ncv: 1.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 555,
+            "range": "46.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 555.00\nmean: 559.20\nstdev: 46.00\ncv: 8.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
