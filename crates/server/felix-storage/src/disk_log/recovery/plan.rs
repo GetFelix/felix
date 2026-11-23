@@ -15,7 +15,7 @@ use super::discover_segment_ids;
 use crate::disk_log::durable_mark::{self, DurableMark};
 use crate::disk_log::offload::Manifest;
 use crate::log::{LogConfig, Offset, SegmentDescriptor, SegmentId};
-use crate::segment::format::{IndexEntry, SEGMENT_HEADER_LEN};
+use crate::segment::format::{IndexEntry, SEGMENT_HEADER_LEN, SegmentHeader};
 use crate::segment::known::KnownGenerations;
 use crate::segment::scan::scan_segment_upto;
 use crate::segment::{
@@ -211,6 +211,7 @@ struct OpenedSealed {
     /// records, and its successor must then start at its base.
     next_offset: Offset,
     rebuilt_index: bool,
+    header: SegmentHeader,
 }
 
 struct UnsealedRetired {
@@ -321,10 +322,9 @@ impl<'a> View<'a> {
             let previous_end = self
                 .scan(previous, ScanStart::Full, self.tail_repair(previous))
                 .map(|outcome| outcome.next_offset);
-            let following_base = read_segment_header(&self.path(following), following, self.label)
-                .map(|header| header.base_offset);
-            match (previous_end, following_base) {
-                (Ok(end), Ok(base)) if end == base => {}
+            let following = read_segment_header(&self.path(following), following, self.label);
+            match (previous_end, following) {
+                (Ok(end), Ok(header)) if header.may_follow(end) => {}
                 // Not provably harmless: leave it for the chain checks to report.
                 (
                     Ok(_) | Err(StorageError::Corruption(_)),
@@ -372,7 +372,8 @@ impl<'a> View<'a> {
     ///   a replacement that had already been built.
     ///
     /// An empty newest segment whose base offset *does* match the tail is the
-    /// ordinary state right after a successful roll, and is kept.
+    /// ordinary state right after a successful roll, and is kept, as is one
+    /// whose header names a gap from the tail.
     fn discard_abandoned_preparations(&mut self, ids: &mut Vec<SegmentId>) -> Result<usize> {
         let mut discarded = 0;
         // More than one can accumulate: each crash during a roll can leave its own.
@@ -396,7 +397,8 @@ impl<'a> View<'a> {
                 let previous_end = self
                     .scan(previous, ScanStart::Full, self.tail_repair(previous))?
                     .next_offset;
-                if outcome.header.base_offset == previous_end {
+                // A segment past a gap that ends the log there is kept too.
+                if outcome.header.may_follow(previous_end) {
                     break;
                 }
                 Removal::EmptyPreparation {
@@ -541,10 +543,11 @@ impl<'a> View<'a> {
                 sealed_index_rebuilds += 1;
             }
             let base_offset = opened.sealed.descriptor.base_offset;
-            // Offsets must be contiguous across segment boundaries. A gap means
-            // a segment file was deleted or replaced out from under us.
+            // Offsets must be contiguous across segment boundaries, but for a
+            // gap the segment's header names. Any other gap means a segment
+            // file was deleted or replaced out from under us.
             if let Some(expected) = expected_base
-                && expected != base_offset
+                && !opened.header.may_follow(expected)
                 && !self.drop_offloaded_below(offloaded, &mut sealed, expected, base_offset)
             {
                 return Err(gap_error(self.label, *id, expected, base_offset));
@@ -574,7 +577,7 @@ impl<'a> View<'a> {
             active.last_generation,
         )?;
         if let Some(expected) = expected_base
-            && expected != active.header.base_offset
+            && !active.header.may_follow(expected)
             && !self.drop_offloaded_below(
                 offloaded,
                 &mut sealed,
@@ -757,6 +760,7 @@ impl<'a> View<'a> {
             },
             next_offset: outcome.next_offset,
             rebuilt_index,
+            header,
         })
     }
 }

@@ -104,6 +104,19 @@ async fn satisfies_the_raft_native_target_contract() {
     crate::store::contract::raft_targets::run_raft_native_target_contract(store).await;
 }
 
+/// The engine is read from the recorded identity, never the config.
+#[tokio::test]
+async fn satisfies_the_reform_epoch_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    store
+        .local()
+        .expect("caught up")
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("raft"))
+        .await;
+    crate::store::contract::reform_epochs::run_reform_epoch_contract(store).await;
+}
+
 #[tokio::test]
 async fn satisfies_the_raft_floor_contract() {
     let dir = tempfile::tempdir().expect("tempdir");

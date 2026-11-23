@@ -1576,7 +1576,7 @@ felixctl raft reform plan --json
 
 ### `felixctl raft reform`
 
-Re-form Raft groups that lost their majority. `plan` shows what a re-form would do and changes nothing.
+Re-form Raft groups that lost their majority. `plan` shows what a re-form would do and changes nothing; `apply` carries out a plan you have read.
 
 ```text
 felixctl raft reform [OPTIONS] <COMMAND>
@@ -1587,11 +1587,12 @@ Examples:
 ```bash
 felixctl raft reform plan
 felixctl raft reform plan --scope node broker-2
+felixctl raft reform apply 3f2a9c
 ```
 
 #### `felixctl raft reform plan`
 
-Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again. A survey still running after 5 minutes prints what it has and exits with an error.
+Ask the control plane for a re-form plan and wait while it surveys the brokers placed on each Raft shard in scope. Prints one line per shard: `reform` with the copy it would start from and the new voters, `blocked` with the reason, or `left_alone` when the group still has a leader. A plan that could lose acknowledged records says so and names them. The plan changes nothing on any broker or in the control plane. It is kept by the control-plane leader only, so after a leader change, plan again. A survey still running after 5 minutes prints what it has and exits with an error. With --restore-point, each shard re-forms from the backup point after `felix-broker restore-point`: a shard whose base does not end at the point is blocked, and the next epoch gives out no offset below the point plus --offset-gap.
 
 ```text
 felixctl raft reform plan [OPTIONS]
@@ -1600,6 +1601,9 @@ felixctl raft reform plan [OPTIONS]
 | Option | Value | Default | Description |
 | --- | --- | --- | --- |
 | `--scope` | `<SCOPE>` | `cluster` | `cluster` for every Raft shard, or `node ID` for the shards placed on one broker |
+| `--restore-point` | `<FILE>` | - | Re-form from the backup point in FILE, written by `felixctl backup-point` |
+| `--offset-gap` | `<N>` | - | Offsets past the time line (2^14 per millisecond of the control plane's clock at plan time) the next epoch starts at [default: 2^40] |
+| `--accept-short-gap` | - | - | Take an --offset-gap below 2^32, or a control-plane clock behind the point's end |
 
 Examples:
 
@@ -1607,6 +1611,31 @@ Examples:
 felixctl raft reform plan
 felixctl raft reform plan --scope cluster
 felixctl raft reform plan --scope node broker-2 --json
+felixctl raft reform plan --restore-point nightly.backup-point.json
+```
+
+#### `felixctl raft reform apply`
+
+Apply a plan made with `raft reform plan`. For each shard the plan marked `reform`, the brokers stop their copies, the control plane plans again from the stopped copies and skips any shard whose plan changed (`changed`), then writes the shard's next epoch and the brokers start it. A shard whose plan may lose acknowledged records is skipped unless named with --accept-loss. Waits up to 5 minutes and prints each shard's state: `started`, `skipped`, `changed`, `left_alone` or `failed`, or the round it is still in. Applying the same plan again retries the shards that ended without a write.
+
+```text
+felixctl raft reform apply [OPTIONS] <PLAN_ID>
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `PLAN_ID` | yes | The plan id `raft reform plan` printed |
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--accept-loss` | `<SHARD>` | - | A shard, as TENANT/NAMESPACE/STREAM/SHARD (`cache:` in front for a cache shard), to re-form even though its plan may lose acknowledged records. Repeat for more shards |
+
+Examples:
+
+```bash
+felixctl raft reform apply 3f2a9c
+felixctl raft reform apply 3f2a9c --accept-loss t1/payments/orders/2
+felixctl raft reform apply 3f2a9c --accept-loss cache:t1/payments/sessions/0 --json
 ```
 
 ## `felixctl features`

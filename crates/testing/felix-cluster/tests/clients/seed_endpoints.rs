@@ -66,16 +66,10 @@ async fn a_seed_list_survives_losing_the_leader() {
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
         .expect("publish");
-    felix_cluster::wait::until(Duration::from_secs(20), "the leader to report", || async {
-        matches!(
-            cluster
-                .metric(&leader, "felix_broker_replication_shipped_total")
-                .await,
-            Ok(Some(n)) if n > 0.0
-        )
-    })
-    .await
-    .expect("the leader should ship and report");
+    let leader = cluster
+        .wait_for_replication(STREAM, Duration::from_secs(20))
+        .await
+        .expect("a replica should hold the leader's tail");
 
     cluster.kill_node(&leader).expect("kill the leader");
     felix_cluster::wait::until(Duration::from_secs(30), "a new leader", || async {

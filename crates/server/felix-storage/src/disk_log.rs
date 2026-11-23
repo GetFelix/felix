@@ -79,6 +79,8 @@ mod sync;
 
 pub use carried_floor::CarriedFloor;
 pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
+#[cfg(feature = "raft")]
+pub(crate) use producers::{forgotten_file_name, snapshot_file_name as producers_file_name};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
 pub use set::{Member, Membership, ReplicaSet};
@@ -865,18 +867,88 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Keep every record and go on at `first`, past the tail: the offsets
+    /// between are a gap no record takes. Reads step over it as over any
+    /// offset that holds no record.
+    ///
+    /// For a re-formed voter, whose epoch starts at `first` above the base it
+    /// keeps. The old segment is sealed and a new one starts at `first`, with
+    /// a header that tells recovery where the gap begins; see
+    /// `docs/storage-format.md`, "Gap segments". Refused with
+    /// [`StorageError::OutsideLog`] when `first` is not past the tail.
+    #[cfg(feature = "raft")]
+    pub(crate) async fn open_gap(&self, first: Offset) -> Result<()> {
+        let inner = Arc::clone(&self.inner);
+        let fence = inner.fence_rolls().await?;
+        let _flush_guard = inner.durability.lock_flushes().await;
+        let operation = Arc::clone(&inner);
+        felix_common::blocking::spawn(move || {
+            let _fence = fence;
+            let _appends = operation.append_lock.lock();
+            let mut segments = operation.segments.write();
+            segments.check_open()?;
+            operation.sync_pending_seal()?;
+            if let Err(err) = segments.roll_past_gap(first) {
+                operation.poison_after_writer_failure(&segments);
+                return operation.poison_on_sync_failure("a segment rollover", Err(err));
+            }
+            operation.note_sealed_before(segments.active().id());
+            // Everything below `first` is synced: the seal took the records
+            // and the gap holds none.
+            operation.durability.note_durable(first);
+            let snapshot = operation.snapshot(&segments);
+            drop(segments);
+            operation.store_snapshot(snapshot);
+            Ok(())
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
     /// Cut the log back to `offset` to put a copy of it back as it stood at
     /// a backup point. Offline only: run against a copy, with no broker
     /// serving it.
     ///
     /// Unlike truncation this may cut below the commit offset. A restore goes
-    /// back in time on purpose, so the commit offset is lowered to `offset`
+    /// back in time on purpose, so the commit offset is set to `offset`
     /// and made durable first, and then the suffix goes through the same path
     /// truncation takes. Refused with [`StorageError::OutsideLog`] when the
     /// log ends before `offset` (the copy is incomplete) or begins after it
     /// (retention or compaction dropped records the point still had). Running
     /// it again is a no-op.
+    ///
+    /// A Raft log's commit offset is set to `offset` even when it was below:
+    /// the point is past every entry the leader acknowledged, which can be
+    /// past what this copy saved as committed.
     pub async fn restore_to(&self, offset: Offset) -> Result<()> {
+        self.restore_at(offset, None, None).await
+    }
+
+    /// [`Self::restore_to`] on a Raft log, refused with nothing written
+    /// unless the entry below `offset` was written by `generation`. A copy
+    /// whose entry there differs holds another leader's entries at the
+    /// point's offsets, not the acknowledged ones.
+    ///
+    /// `purged` is the generation of the purged or snapshotted id at
+    /// `offset - 1`, if one is stored: the log may start exactly at `offset`,
+    /// leaving no record of that entry to read. With neither, the term
+    /// cannot be shown and the restore is refused.
+    #[cfg(feature = "raft")]
+    pub(crate) async fn restore_raft_to(
+        &self,
+        offset: Offset,
+        generation: u64,
+        purged: Option<u64>,
+    ) -> Result<()> {
+        self.restore_at(offset, Some(generation), purged).await
+    }
+
+    async fn restore_at(
+        &self,
+        offset: Offset,
+        expect: Option<u64>,
+        purged: Option<u64>,
+    ) -> Result<()> {
         let inner = Arc::clone(&self.inner);
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
@@ -894,23 +966,43 @@ impl DiskLog {
             if offset > tail || offset < base {
                 return Err(StorageError::OutsideLog { offset, base, tail });
             }
-            // Lowered on disk before anything is cut, so a restore interrupted
-            // between the two can simply be run again.
-            if operation.commit_offset.load(Ordering::Acquire) > offset {
-                // The generation saved named the record below the old
-                // offset. A Raft log names the one below the new offset.
-                let mut committed = operation.committed_generation.lock();
-                #[cfg(feature = "raft")]
-                let below = match offset.checked_sub(1) {
-                    Some(last) if operation.config.raft_log && last >= base => segments
-                        .read_plan(last)
-                        .generation_at(last, &operation.label)?
-                        .flatten()
-                        .unwrap_or(0),
-                    _ => 0,
+            // The generation saved named the record below the old offset. A
+            // Raft log names the one below the new offset.
+            #[cfg(feature = "raft")]
+            let below = match offset.checked_sub(1) {
+                Some(last) if operation.config.raft_log && last >= base => segments
+                    .read_plan(last)
+                    .generation_at(last, &operation.label)?
+                    .flatten()
+                    .unwrap_or(0),
+                // The log starts at the point: only the purged or snapshot
+                // id remembers the entry below it.
+                Some(_) if operation.config.raft_log => purged.unwrap_or(0),
+                _ => 0,
+            };
+            #[cfg(not(feature = "raft"))]
+            let below = {
+                let _ = purged;
+                0
+            };
+            if let Some(expect) = expect
+                && below != expect
+            {
+                let why = if below == 0 {
+                    "no record of its term, so this copy cannot show it holds the point".to_string()
+                } else {
+                    format!("the entry below {offset} is of generation {below}, but the point's is {expect}; this copy holds another leader's entries there")
                 };
-                #[cfg(not(feature = "raft"))]
-                let below = 0;
+                return Err(StorageError::Io(std::io::Error::other(format!(
+                    "{}: {why}",
+                    operation.label
+                ))));
+            }
+            // Set on disk before anything is cut, so a restore interrupted
+            // between the two can simply be run again.
+            let commit = operation.commit_offset.load(Ordering::Acquire);
+            if commit > offset || (operation.config.raft_log && commit < offset) {
+                let mut committed = operation.committed_generation.lock();
                 let state = replica_state::ReplicaState {
                     commit_offset: offset,
                     committed_generation: below,
@@ -1533,6 +1625,8 @@ impl DiskLog {
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             hold_next_append: Mutex::new(None),
+            #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+            head_trims: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             append_held: std::sync::atomic::AtomicBool::new(false),
             roll_task: Mutex::new(None),
@@ -1757,6 +1851,13 @@ impl DiskLog {
     pub async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.durability.lock_flushes().await
     }
+
+    /// Hold every head trim of this log, a purge's included, until the
+    /// guard is dropped.
+    #[doc(hidden)]
+    pub async fn hold_head_trims(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.head_trims.lock().await
+    }
 }
 
 /// Hooks for tests outside this module.
@@ -1813,6 +1914,25 @@ pub(crate) fn store_saved_commit(
     replica.commit_offset = offset;
     replica.committed_generation = generation;
     replica_state::store(dir, &replica)
+}
+
+/// Raise the vote `dir` saved to `generation`, for `leader`, when it is
+/// below it, without opening the log. A vote for the member itself at a
+/// term no candidate stands at grants nobody anything; it only puts the
+/// member's first election above that term.
+#[cfg(feature = "raft")]
+pub(crate) fn raise_saved_vote(dir: &std::path::Path, generation: u64, leader: &str) -> Result<()> {
+    if saved_vote_generation(dir)? >= generation {
+        return Ok(());
+    }
+    ballot::store(
+        dir,
+        &ballot::Ballot {
+            generation,
+            leader: leader.to_string(),
+            committed: false,
+        },
+    )
 }
 
 /// The generation of the vote `dir` saved, as an open reads it from its
@@ -2405,6 +2525,9 @@ struct LogInner {
     /// Holds the next append at a point, until the sender is used or dropped.
     #[cfg(test)]
     hold_next_append: Mutex<Option<(append::HoldAt, std::sync::mpsc::Receiver<()>)>>,
+    /// Held by a test to stall head trims, as a slow device would.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    head_trims: tokio::sync::Mutex<()>,
     /// Set while an append is held there.
     #[cfg(test)]
     append_held: std::sync::atomic::AtomicBool,

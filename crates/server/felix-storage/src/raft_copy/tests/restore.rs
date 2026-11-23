@@ -1,0 +1,263 @@
+//! Cutting a Raft copy back to a backup point.
+
+use openraft::storage::RaftLogStorage;
+use tempfile::TempDir;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+
+use super::*;
+use crate::DiskLog;
+use crate::raft_log::RaftLog;
+use crate::raft_log::snapshot::{self, SnapshotId, StoredSnapshot};
+use crate::raft_log::tests::writes::append_flushed;
+use crate::raft_log::tests::{Codec, Types, log_id, normal};
+
+const SPACING: u64 = 4096;
+
+/// The broker's own config, which is not a Raft log's: the cut must make it
+/// one, or the saved commit names no term and a re-form vouches for nothing.
+fn broker_config() -> LogConfig {
+    LogConfig {
+        raft_log: false,
+        ..config()
+    }
+}
+
+/// A copy holding entries 0..=9 of term 1, all committed.
+async fn committed_copy() -> TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let mut raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    let entries: Vec<_> = (0..10).map(|index| normal(1, index, "e")).collect();
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(Some(log_id(1, 9))).await.expect("save");
+    raft.disk_log().close().await.expect("close");
+    dir
+}
+
+/// **A copy cut to a point ends there and vouches for exactly the entries
+/// below it**, which is what a re-form at that point reads; a second run
+/// changes nothing.
+#[tokio::test]
+async fn a_cut_copy_vouches_for_exactly_the_entries_below_the_point() {
+    let dir = committed_copy().await;
+    for _ in 0..2 {
+        restore_copy(dir.path(), "t/ns/raft/0", 6, None, broker_config())
+            .await
+            .expect("restore");
+        let kept = read_kept(dir.path(), SPACING).expect("read");
+        assert_eq!((kept.last, kept.committed), (Some(5), Some(5)));
+    }
+}
+
+/// **A snapshot past the point refuses the cut, and nothing is written**:
+/// the state as of the point is not in the copy any more.
+#[tokio::test]
+async fn a_snapshot_past_the_point_refuses_the_cut() {
+    let dir = committed_copy().await;
+    let stored = StoredSnapshot {
+        last: Some(SnapshotId { term: 1, index: 7 }),
+        meta: bytes::Bytes::new(),
+        data: bytes::Bytes::new(),
+    };
+    snapshot::store_in(dir.path(), &stored).expect("store");
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, None, broker_config())
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("snapshot covers index 7"), "{err}");
+    let kept = read_kept(dir.path(), SPACING).expect("read");
+    assert_eq!((kept.last, kept.committed), (Some(9), Some(9)));
+
+    // One at or below the point's last entry is fine.
+    let below = StoredSnapshot {
+        last: Some(SnapshotId { term: 1, index: 5 }),
+        ..stored
+    };
+    snapshot::store_in(dir.path(), &below).expect("store");
+    restore_copy(dir.path(), "t/ns/raft/0", 6, None, broker_config())
+        .await
+        .expect("restore");
+}
+
+/// **A copy that re-formed after the point refuses the cut.**
+#[tokio::test]
+async fn a_copy_re_formed_past_the_point_refuses_the_cut() {
+    let dir = committed_copy().await;
+    let file = epoch_file::EpochFile {
+        incarnation: 0,
+        bases: vec![EpochBase {
+            base_last: None,
+            first_index: 6,
+        }],
+    };
+    epoch_file::store(dir.path(), &file).expect("store");
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, None, broker_config())
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("re-formed at index 6"), "{err}");
+}
+
+/// A copy holding entries 0..=9 of term 1, saved as committed only through
+/// index 3: a follower's view, or a leader whose commit save is behind.
+async fn lagging_copy() -> TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let mut raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    let entries: Vec<_> = (0..10).map(|index| normal(1, index, "e")).collect();
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(Some(log_id(1, 3))).await.expect("save");
+    raft.disk_log().close().await.expect("close");
+    dir
+}
+
+/// **A point above the copy's saved commit is planned at the point**: the
+/// leader acknowledged entries 4..=7 before its commit was saved, the cut
+/// saves them as committed, and a re-form vouches for exactly them.
+#[tokio::test]
+async fn a_point_above_the_saved_commit_plans_at_the_point() {
+    let dir = lagging_copy().await;
+    restore_copy(dir.path(), "t/ns/raft/0", 8, Some(1), broker_config())
+        .await
+        .expect("restore");
+    let kept = read_kept(dir.path(), SPACING).expect("read");
+    assert_eq!((kept.last, kept.committed), (Some(7), Some(7)));
+
+    let rec = GroupRecord {
+        incarnation: 0,
+        bases: Vec::new(),
+        floor: None,
+        offset_floor: None,
+        placed: Some(["a", "b", "c"].into_iter().collect()),
+        dead: BTreeSet::new(),
+        seed: Some(["a", "b", "c"].into_iter().map(|b| (b, 1)).collect()),
+        ordered: Some(Vec::new()),
+        restore: Some(RestoreAt {
+            end: 8,
+            gap: DEFAULT_OFFSET_GAP,
+            planned_at_millis: 0,
+        }),
+    };
+    let empty = |name: &str| CopyRead {
+        path: PathBuf::from(name),
+        copy: Some(1),
+        ..read_copy(&dir.path().join("none"), SPACING, &BTreeSet::new()).expect("read")
+    };
+    let report = |copies: BrokerCopies| BrokerReport {
+        leads: false,
+        names: BTreeSet::new(),
+        memberships: Some(Vec::new()),
+        copies,
+    };
+    let reports = |cut: CopyRead| -> BTreeMap<_, _> {
+        [
+            (
+                "a",
+                report(BrokerCopies {
+                    current: empty("a"),
+                    kept: vec![cut],
+                }),
+            ),
+            (
+                "b",
+                report(BrokerCopies {
+                    current: empty("b"),
+                    kept: Vec::new(),
+                }),
+            ),
+            (
+                "c",
+                report(BrokerCopies {
+                    current: empty("c"),
+                    kept: Vec::new(),
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    };
+    let probe_reports = reports(empty("a"));
+    let probes = probes(&rec, &probe_reports);
+    let mut cut = read_copy(dir.path(), SPACING, &probes).expect("read");
+    cut.copy = Some(1);
+    cut.rotated_by = Some(RotatedBy::Restore);
+    // The leader's own vote, which the copy keeps.
+    cut.vote = Some(1);
+    let plan = plan_reform(&rec, &reports(cut)).expect("a plan at the point");
+    assert_eq!(plan.base_last.map(|last| last.index), Some(7));
+}
+
+/// **A copy whose entry below the point is of another term refuses the
+/// cut, and nothing is written**: its leader lost the entry the point
+/// counted, and a later leader wrote over it.
+#[tokio::test]
+async fn a_copy_with_another_term_below_the_point_refuses_the_cut() {
+    let dir = committed_copy().await;
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, Some(2), broker_config())
+        .await
+        .expect_err("refused");
+    assert!(
+        err.to_string().contains("another leader's entries"),
+        "{err}"
+    );
+    let kept = read_kept(dir.path(), SPACING).expect("read");
+    assert_eq!((kept.last, kept.committed), (Some(9), Some(9)));
+
+    restore_copy(dir.path(), "t/ns/raft/0", 6, Some(1), broker_config())
+        .await
+        .expect("the point's own term");
+    let kept = read_kept(dir.path(), SPACING).expect("read");
+    assert_eq!((kept.last, kept.committed), (Some(5), Some(5)));
+}
+
+/// A copy of an idle shard that snapshotted at index 5 and started its log
+/// after it: nothing below the point but the snapshot's own id.
+async fn snapshotted_idle_copy(term: u64) -> TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let mut raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    let entries: Vec<_> = (0..6).map(|index| normal(1, index, "e")).collect();
+    append_flushed(&mut raft, &entries).await;
+    let snapshots = crate::raft_log::SnapshotStore::open(dir.path()).expect("snapshots");
+    let stored = StoredSnapshot {
+        last: Some(SnapshotId { term, index: 5 }),
+        meta: bytes::Bytes::new(),
+        data: bytes::Bytes::new(),
+    };
+    snapshots.install(stored).await.expect("install");
+    raft.start_after_snapshot(&snapshots).await.expect("start");
+    raft.disk_log().close().await.expect("close");
+    dir
+}
+
+/// **A copy whose log starts at the point restores there** on the term the
+/// snapshot or purged id at the point's last index names, and is refused,
+/// with nothing written, when that id is of another term.
+#[tokio::test]
+async fn a_copy_starting_at_the_point_is_checked_against_its_snapshot_id() {
+    let dir = snapshotted_idle_copy(1).await;
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, Some(2), broker_config())
+        .await
+        .expect_err("refused");
+    assert!(
+        err.to_string().contains("another leader's entries"),
+        "{err}"
+    );
+    restore_copy(dir.path(), "t/ns/raft/0", 6, Some(1), broker_config())
+        .await
+        .expect("the snapshot's own term");
+}
+
+/// A log that starts at the point with no id naming the entry below it
+/// cannot show its term, so a restore that names one is refused.
+#[tokio::test]
+async fn a_copy_starting_at_the_point_with_no_id_is_refused() {
+    let dir = snapshotted_idle_copy(1).await;
+    for name in [snapshot::FILE_NAME, crate::raft_log::purged::FILE_NAME] {
+        std::fs::remove_file(dir.path().join(name)).ok();
+    }
+    let err = restore_copy(dir.path(), "t/ns/raft/0", 6, Some(1), broker_config())
+        .await
+        .expect_err("refused");
+    assert!(err.to_string().contains("no record of its term"), "{err}");
+}

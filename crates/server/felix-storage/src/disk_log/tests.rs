@@ -10,6 +10,8 @@ mod dir_lock;
 mod durability;
 #[cfg(feature = "sim")]
 mod flush_failures;
+#[cfg(feature = "raft")]
+mod gap;
 mod generation_start;
 mod head_floor;
 mod headers;

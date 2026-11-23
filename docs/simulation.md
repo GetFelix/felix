@@ -623,9 +623,24 @@ What a seed checks:
   opened term, and the final log must hold an entry of every opened term: a
   leader writes its blank entry first, so a committed blank leaves its term
   in the log for good (`felix-sim/src/raft/opens.rs`).
+- At most one member passes the leader lease check for a shard at one
+  instant. A member that passes it may acknowledge a write on its own log and
+  serve a read with no round. Every member is read in one step, before every
+  write and once a second. A run whose skewed timers are further apart than
+  the lease is sized for (the lease on the slowest clock outlasting
+  `election_max` on the fastest) does not judge the lease.
+- After the final read, every member's log agrees on the term of every entry
+  below its read bound, blank and membership entries included. An entry put
+  back below a copy's base carries no term and is not compared.
+- A shard that went through more terms than the run's faults explain (two per
+  fault, plus two) is printed as a warning, never a failure. It points at an
+  election storm, which no other check catches
+  (`felix-sim/src/raft/terms.rs`).
 
 A seed also fails when it checked too little: no leader change, no shard
-opened in a second term, or fewer than 500 live deliveries, 1000 acknowledged writes, 200 reads or 4 faults.
+opened in a second term, no member ever passing the lease check on a run that
+judges it, or fewer than 500 live deliveries, 1000 acknowledged writes, 200
+reads or 4 faults.
 
 **A failed flush.** A run can also fail one flush on one member
 (`RaftSimConfig::failed_flush`), half the time on a shard's leader. The log

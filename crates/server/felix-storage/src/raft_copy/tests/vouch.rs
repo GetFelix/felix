@@ -96,6 +96,7 @@ fn record(
         // id [`copy`] gives.
         seed: Some(set(placed)),
         ordered: Some(Vec::new()),
+        restore: None,
     }
 }
 
@@ -933,4 +934,245 @@ fn a_recorded_seed_with_every_broker_read_is_unmarked() {
     let reports: BTreeMap<_, _> = reports().into_iter().collect();
     let unseeded = plan_reform(&rec, &reports).expect("a plan");
     assert_eq!(unseeded.marked, Some(Marked::Unknown(VoterSource::Seed)));
+}
+
+/// A whole-cluster restore as `FelixRaftRestore.tla` has it: `a` was the
+/// leader, its directory was copied and cut back to the point at 6, `b` and
+/// `c` lost their copies. The restored floor names index 3 and the copy
+/// reserved up to 7.
+fn restored_trio(
+    restore: RestoreAt,
+) -> (
+    GroupRecord<&'static str>,
+    Vec<(&'static str, BrokerReport<&'static str>)>,
+) {
+    let mut rec = record(&["a", "b", "c"], &[], &[], floor(3, 0, 1));
+    rec.restore = Some(restore);
+    let cut = kept(
+        reserved(copy("a", &[1; 6], Some(5), Some(1)), 7),
+        RotatedBy::Restore,
+    );
+    let reports = vec![
+        ("a", report(blank(), vec![cut])),
+        ("b", report(blank(), vec![])),
+        ("c", report(blank(), vec![])),
+    ];
+    (rec, reports)
+}
+
+/// A restore at `end` with `gap`, planned at the Unix epoch, so the time
+/// line adds nothing past the gap.
+fn restore_from(end: u64, gap: u64) -> RestoreAt {
+    RestoreAt {
+        end,
+        gap,
+        planned_at_millis: 0,
+    }
+}
+
+const R: u64 = RESTORE_OFFSETS_PER_MILLI;
+
+/// The fastest a shard is taken to give out offsets: half the time line's
+/// slope.
+const RATE: u64 = R / 2;
+
+/// The first index `restored_trio` plans for `restore`.
+fn restored_first(restore: RestoreAt) -> u64 {
+    let (rec, reports) = restored_trio(restore);
+    plan(&rec, reports).first_index
+}
+
+/// The last offset an epoch starting at `first` at `start` gives out by
+/// `now`, at the fastest rate allowed.
+fn last_given(first: u64, start: u64, now: u64) -> u64 {
+    first + RATE * (now - start)
+}
+
+#[test]
+fn a_restore_starts_its_epoch_past_the_point_plus_the_gap() {
+    let (rec, reports) = restored_trio(restore_from(6, DEFAULT_OFFSET_GAP));
+    let plan = plan(&rec, reports);
+    assert_eq!(plan.base_end(), 6);
+    assert_eq!(plan.first_index, DEFAULT_OFFSET_GAP);
+    assert_eq!(plan.offset_gap, Some(DEFAULT_OFFSET_GAP));
+    assert!(
+        plan.needs_accept_loss(),
+        "the rotated copies' votes are unknown"
+    );
+
+    let at = RestoreAt {
+        planned_at_millis: 1_000,
+        ..restore_from(6, DEFAULT_OFFSET_GAP)
+    };
+    assert_eq!(restored_first(at), R * 1_000 + DEFAULT_OFFSET_GAP);
+}
+
+/// `FelixRaftRestoreLeaderMoved`: `a` stopped leading after the point and
+/// fell behind, `b` and `c` acknowledged 6..=9, and `a`'s directory was
+/// copied with its reservation still at 7. Neither restored file knows of
+/// 8 or 9, so a restore planned with no time line gives out 8 again. The
+/// lost cluster gave those out before the plan, below the line.
+#[test]
+fn a_leader_that_moved_after_the_point_is_below_the_time_line() {
+    let acked_after = 6..=9;
+    let first = restored_first(restore_from(6, 0));
+    assert_eq!(first, 8);
+    assert!(acked_after.contains(&first));
+
+    let at = RestoreAt {
+        planned_at_millis: 1,
+        ..restore_from(6, 0)
+    };
+    assert!(restored_first(at) > *acked_after.end());
+}
+
+/// Fable's first case: restore backup B, take backup A 17 hours later
+/// from the restored epoch (so A ends past B's end plus 2^40), restore A,
+/// then restore B again an hour after that. B's second epoch starts on the
+/// time line, past everything A's epoch gave out.
+#[test]
+fn an_older_backup_restored_after_a_newer_one_starts_past_it() {
+    let t0 = 1_800_000_000_000;
+    let hour = 3_600_000;
+    let b = RestoreAt {
+        end: 6,
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: t0,
+    };
+    let b_first = restored_first(b);
+    let a_taken = t0 + 17 * hour;
+    let a_end = last_given(b_first, t0, a_taken);
+    assert!(a_end >= b.end + DEFAULT_OFFSET_GAP);
+
+    let t1 = a_taken + 60_000;
+    let a_first = RestoreAt {
+        end: a_end,
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: t1,
+    }
+    .first_index()
+    .unwrap()
+    .max(a_end + 1);
+    let t2 = t1 + hour;
+    let again = restored_first(RestoreAt {
+        planned_at_millis: t2,
+        ..b
+    });
+    let given = last_given(a_first, t1, t2);
+    assert!(again > given, "{again} <= {given}");
+}
+
+/// Fable's second case: two drills of one backup. The point's time comes
+/// from the operator's host, which may run ahead of the control plane;
+/// the first index never reads it, so the drills differ by their plan
+/// times alone.
+#[test]
+fn two_drills_of_one_backup_never_share_an_offset() {
+    let backup = restore_from(6, DEFAULT_OFFSET_GAP);
+    let t1 = 1_800_000_000_000;
+    let first = restored_first(RestoreAt {
+        planned_at_millis: t1,
+        ..backup
+    });
+    let t2 = t1 + 60_000;
+    let second = restored_first(RestoreAt {
+        planned_at_millis: t2,
+        ..backup
+    });
+    let given = last_given(first, t1, t2);
+    assert!(second > given, "{second} <= {given}");
+}
+
+/// The control-plane leader that plans the second restore runs a slower
+/// clock. A skew of `s` on each plan costs `4 s` of true time between the
+/// restores at half the line's slope; a second restore 20 minutes later
+/// with clocks 5 minutes off either way still starts past the first epoch.
+#[test]
+fn a_slower_leader_clock_within_the_bound_starts_past_the_first() {
+    let t1 = 1_800_000_000_000;
+    let skew = 5 * 60_000;
+    let between = 4 * skew + 1;
+    let first = restored_first(RestoreAt {
+        planned_at_millis: t1 + skew,
+        ..restore_from(6, DEFAULT_OFFSET_GAP)
+    });
+    let t2 = t1 + between;
+    let second = restored_first(RestoreAt {
+        planned_at_millis: t2 - skew,
+        ..restore_from(6, DEFAULT_OFFSET_GAP)
+    });
+    let given = last_given(first, t1, t2);
+    assert!(second > given, "{second} <= {given}");
+}
+
+#[test]
+fn a_plan_time_past_the_last_index_refuses() {
+    let late = RestoreAt {
+        planned_at_millis: u64::MAX / R + 1,
+        ..restore_from(6, 0)
+    };
+    let (rec, reports) = restored_trio(late);
+    let reports: BTreeMap<_, _> = reports.into_iter().collect();
+    assert_eq!(
+        plan_reform(&rec, &reports),
+        Err(Refused::RestoreTooLate {
+            planned_at_millis: late.planned_at_millis
+        })
+    );
+}
+
+/// A copy cut anywhere but the point is refused rather than re-formed: below
+/// it drops acknowledged records, above it keeps ones the point left out.
+#[test]
+fn a_restore_whose_base_misses_the_point_refuses() {
+    for point in [5, 7] {
+        let (rec, reports) = restored_trio(restore_from(point, DEFAULT_OFFSET_GAP));
+        let reports: BTreeMap<_, _> = reports.into_iter().collect();
+        assert_eq!(
+            plan_reform(&rec, &reports),
+            Err(Refused::NotAtPoint { base_end: 6, point })
+        );
+    }
+}
+
+#[test]
+fn a_gap_past_the_last_index_refuses() {
+    let (rec, reports) = restored_trio(RestoreAt {
+        planned_at_millis: 1,
+        ..restore_from(6, u64::MAX - 5)
+    });
+    let reports: BTreeMap<_, _> = reports.into_iter().collect();
+    assert!(matches!(
+        plan_reform(&rec, &reports),
+        Err(Refused::RestoreTooLate { .. })
+    ));
+}
+
+/// The control plane wrote the restore's epoch and went down before every
+/// copy opened it, so the operator plans again without naming the point.
+/// The written base carries the gap, and the next epoch starts past it.
+#[test]
+fn the_gap_outlives_a_crash_mid_restore() {
+    let first = 6 + DEFAULT_OFFSET_GAP;
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 5,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: first,
+    }];
+    let rec = record(&["a", "b", "c"], &[], &bases, None);
+    let a = at_epoch(copy("a", &[1; 6], Some(5), Some(1)), &bases);
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", report(a, vec![])),
+            ("b", report(blank(), vec![])),
+            ("c", report(blank(), vec![])),
+        ],
+    );
+    assert_eq!(plan.base_end(), 6);
+    assert_eq!(plan.first_index, first);
+    assert_eq!(plan.offset_gap, None);
 }

@@ -197,9 +197,35 @@ impl IngressRouter {
 
     /// Where another engine sends `key`, when one runs it here. A local
     /// answer has no place in the hybrid's fence and needs no broker lease.
+    ///
+    /// A forward into a region this broker has no bridge to is refused, as
+    /// the hybrid's routes refuse it: region policy does not depend on which
+    /// engine runs the shard.
     pub(crate) fn engine_dispatch(&self, key: &ShardKey) -> Option<Dispatch> {
         let nodes = |broker: &str| self.router.node_addr(broker);
-        self.engine_shards.get()?.dispatch(key, &nodes)
+        let dispatch = self.engine_shards.get()?.dispatch(key, &nodes)?;
+        if let Dispatch::Forward { node_id, .. } = &dispatch
+            && let Some(node) = self.router.node(node_id)
+            && !self.router.routes_to_region(&node.region)
+        {
+            return Some(Dispatch::Unavailable(Reason::RegionNotRoutable {
+                region: node.region,
+            }));
+        }
+        Some(dispatch)
+    }
+
+    /// Whether another engine holds a member of `key` on this broker.
+    pub(crate) fn engine_holds(&self, key: &ShardKey) -> bool {
+        self.engine_shards
+            .get()
+            .is_some_and(|engine| engine.holds(key))
+    }
+
+    /// Whether the cluster last reported `node_id` able to serve. `None` for
+    /// a node the catalog does not name.
+    pub(crate) fn node_live(&self, node_id: &str) -> Option<bool> {
+        self.router.node(node_id).map(|node| node.live)
     }
 
     /// Whether another engine serves `key`'s readers here without leading it.
@@ -214,6 +240,14 @@ impl IngressRouter {
         self.engine_shards
             .get()
             .is_some_and(|engine| engine.leads_unheard(key))
+    }
+
+    /// [`EngineShards::backup_members`] of the engine that runs shards here.
+    pub(crate) fn engine_backup_members(&self) -> Vec<BackupMember> {
+        self.engine_shards
+            .get()
+            .map(|engine| engine.backup_members())
+            .unwrap_or_default()
     }
 
     /// Hold writes to a moving shard under `hold` rather than refusing them.
@@ -828,6 +862,23 @@ fn newly_named<'a>(
 /// The shards an engine took in one pass, each with its stream's key mapping.
 pub type Taken = Vec<(ShardKey, felix_wire::routing::ShardRouting)>;
 
+/// One member another engine runs on this broker, as a backup point reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupMember {
+    pub key: ShardKey,
+    /// The stream or cache incarnation the group runs.
+    pub incarnation: u64,
+    /// The member's current term.
+    pub term: u64,
+    /// One past the furthest entry this member acknowledged (its commit
+    /// index, or a write answered before its commit), while it leads `term`
+    /// and serves it. Every write acknowledged before the read is below it.
+    pub committed_end: Option<u64>,
+    /// The term of the entry below `committed_end`, set with it. A restore
+    /// checks the copy's entry there against it.
+    pub end_term: Option<u64>,
+}
+
 /// Shards an engine other than the hybrid runs on this broker.
 pub trait EngineShards: Send + Sync {
     /// Take this engine's shards out of `assignments` and bring its members
@@ -863,10 +914,22 @@ pub trait EngineShards: Send + Sync {
         false
     }
 
+    /// Whether this broker holds a member of `key`'s group. A broker with
+    /// none routes by placement alone.
+    fn holds(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
     /// Whether this broker leads `key` but no majority answered it lately.
     /// Its commit index has stopped, so it serves no reader.
     fn leads_unheard(&self, _key: &ShardKey) -> bool {
         false
+    }
+
+    /// Every member this engine runs here, for a backup point: its term, and
+    /// its committed end while it leads and serves that term.
+    fn backup_members(&self) -> Vec<BackupMember> {
+        Vec::new()
     }
 
     /// Hands over the feed's wake, for an engine that learns something

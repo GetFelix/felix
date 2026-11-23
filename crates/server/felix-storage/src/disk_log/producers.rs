@@ -119,6 +119,15 @@ pub struct ForgottenCuts {
 }
 
 impl ForgottenCuts {
+    /// Cuts naming each `(producer, sequence)`, with no tombstones.
+    #[cfg(test)]
+    pub(crate) fn of(cuts: impl IntoIterator<Item = (u64, u64)>) -> Self {
+        Self {
+            cuts: cuts.into_iter().collect(),
+            tombstones: HashMap::default(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.cuts.is_empty() && self.tombstones.is_empty()
     }
@@ -944,7 +953,7 @@ const SNAPSHOT_MAGIC: u32 = 0x464C_5053;
 const SNAPSHOT_VERSION: u16 = 5;
 pub(super) const SNAPSHOT_HEADER_LEN: usize = 24;
 
-pub(super) fn snapshot_file_name() -> &'static str {
+pub(crate) fn snapshot_file_name() -> &'static str {
     "producers"
 }
 
@@ -1369,7 +1378,7 @@ pub(super) fn discard(dir: &Path) -> std::io::Result<()> {
 
 const FORGOTTEN_MAGIC: u32 = 0x464C_5046;
 
-pub(super) fn forgotten_file_name() -> &'static str {
+pub(crate) fn forgotten_file_name() -> &'static str {
     "producers.forgotten"
 }
 

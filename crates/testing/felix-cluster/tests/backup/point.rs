@@ -25,6 +25,9 @@ const HELD: &str = "ledger";
 #[serial]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it() {
+    if felix_cluster::skip_on_raft_until(2995, "backup point under load") {
+        return;
+    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![

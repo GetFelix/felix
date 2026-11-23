@@ -84,6 +84,10 @@ pub(crate) struct Group {
     /// The furthest entry acknowledged on `reports` before its commit,
     /// which a confirmed read must wait to have applied.
     answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
+    /// The furthest entry acknowledged on the leader lease before its
+    /// commit. Only a backup point reads it: a lease write may not be on
+    /// a majority, so reads never wait for it.
+    acked_on_lease: parking_lot::Mutex<Option<LogPoint>>,
     /// The data root's mark log, when the member has one. Its
     /// vouched-unsynced marker is synced before a strict log's unsynced write
     /// is told to a leader or counted here, so a power cut rotates the copy.
@@ -882,6 +886,7 @@ impl Group {
             transport,
             reports,
             answered: Arc::default(),
+            acked_on_lease: parking_lot::Mutex::default(),
             root,
             refusals,
             stepped_down: AtomicU64::new(0),
@@ -1754,26 +1759,35 @@ impl Group {
     /// Queue one consumer-group write, `entry` being its encoded
     /// [`felix_broker::GroupEntry`], written only while this member leads
     /// `term`. A cache shard has no groups and refuses it.
+    ///
+    /// An `Err` here means the write never reached the proposer, so nothing
+    /// was appended; the future's errors come after it may have been.
     pub(crate) fn propose_group(
         &self,
         entry: Bytes,
         timestamp_micros: u64,
         term: u64,
-    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+    ) -> Result<impl Future<Output = Result<Written, Unacknowledged>> + Send + use<>, CommitError>
+    {
         let split = match self.cache {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split_group(entry, timestamp_micros, term),
         };
+        // The gate answers as a write whose append is not known, without
+        // sending it.
         #[cfg(test)]
-        let split = match self
+        let gated = self
             .gate
             .unknown_groups
             .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            true => Err(propose::unknown()),
-            false => split,
+            .then(propose::unknown);
+        #[cfg(not(test))]
+        let gated: Option<CommitError> = None;
+        let acknowledged = match gated {
+            Some(unknown) => Err(unknown),
+            None => Ok(self.acknowledge(self.send(split)?)),
         };
-        self.queue(split)
+        Ok(async move { acknowledged?.await })
     }
 
     /// A stream shard's consumer groups, as this member has applied them.
@@ -1785,19 +1799,33 @@ impl Group {
         &self,
         split: Result<(Proposal, Waiting), CommitError>,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
-        let waiting = if self.stop.is_cancelled() {
-            Err(propose::stopped())
-        } else {
-            split.and_then(|(proposal, waiting)| {
-                let queued = self.proposer().send(proposal);
-                queued.map(|()| waiting).map_err(|_| propose::stopped())
-            })
-        };
+        let acknowledged = self.send(split).map(|waiting| self.acknowledge(waiting));
+        async move { acknowledged?.await }
+    }
+
+    /// Hand a split write to the proposer.
+    fn send(
+        &self,
+        split: Result<(Proposal, Waiting), CommitError>,
+    ) -> Result<Waiting, CommitError> {
+        if self.stop.is_cancelled() {
+            return Err(propose::stopped());
+        }
+        let (proposal, waiting) = split?;
+        let queued = self.proposer().send(proposal);
+        queued.map(|()| waiting).map_err(|_| propose::stopped())
+    }
+
+    /// The answer to a write [`Self::send`] queued.
+    fn acknowledge(
+        &self,
+        waiting: Waiting,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let positions = self.positions.clone();
         let flushed = self.flushed_waiters.clone();
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
-        async move { propose::acknowledged(waiting?, positions, flushed, leading, stop).await }
+        propose::acknowledged(waiting, positions, flushed, leading, stop)
     }
 
     /// The member's copy, for deciding whether a kept copy of an earlier
@@ -2231,6 +2259,24 @@ impl Group {
         self.lease.admit(term, view).map_err(propose::lost)
     }
 
+    /// [`Self::admit_local_ack`] for `written`, which once admitted is
+    /// noted before the caller answers on it, as `await_quorum` notes a
+    /// written majority.
+    pub(crate) fn admit_local_ack_of(&self, written: Written) -> Result<(), CommitError> {
+        self.admit_local_ack(written.generation)?;
+        if let Some(index) = written.end.checked_sub(1) {
+            let at = LogPoint {
+                term: written.generation,
+                index,
+            };
+            let mut acked = self.acked_on_lease.lock();
+            if acked.is_none_or(|was| (was.term, was.index) < (at.term, at.index)) {
+                *acked = Some(at);
+            }
+        }
+        Ok(())
+    }
+
     /// The term this member has the shard open in.
     pub(crate) fn open_term(&self) -> Option<u64> {
         let lead = self.leadership.lead();
@@ -2634,6 +2680,43 @@ impl Group {
                 .is_none_or(|id| id.index <= committed.index))
         .then(|| stored.membership().voter_ids().collect());
         Some((at, voters))
+    }
+
+    /// The furthest entry this member acknowledged while it leads, with
+    /// the term it leads: its commit index or applied index, or past them a
+    /// write of its term answered on a written majority or on its lease
+    /// before the commit. A backup point reads it, so a write answered
+    /// before the read is at or below it. Every mark is an entry of this
+    /// leader's log; one on a written majority is in every later leader's
+    /// log too. `None` while it does not lead or has committed nothing.
+    pub(crate) fn led_acked(&self) -> Option<(u64, LogPoint)> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let (term, committed) = {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            if metrics.running_state.is_err() || metrics.state != ServerState::Leader {
+                return None;
+            }
+            let committed = metrics.local_committed.as_ref()?;
+            let at = LogPoint {
+                term: **committed.committed_leader_id(),
+                index: committed.index,
+            };
+            (metrics.vote.leader_id().term(), at)
+        };
+        // Read after the commit, so a mark set before it is seen. A commit
+        // answers on the apply watch, which the metrics may trail.
+        let applied = self.commits.borrow().applied();
+        let ours = |mark: Option<LogPoint>| mark.filter(|at| at.term == term);
+        let furthest = [
+            applied,
+            ours(*self.answered.lock()),
+            ours(*self.acked_on_lease.lock()),
+        ]
+        .into_iter()
+        .flatten()
+        .fold(committed, |a, b| if b.index > a.index { b } else { a });
+        Some((term, furthest))
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {

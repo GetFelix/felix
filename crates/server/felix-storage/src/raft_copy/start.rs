@@ -21,13 +21,15 @@ use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 
-use super::epoch_file::{self, EpochFile};
+use super::epoch_file::{self, EpochBase, EpochFile};
+use super::judge::CopyRoot;
 use super::vouch::ReformPlan;
+use super::wire::WireStart;
 use crate::disk_log::carried_floor::{self, CarriedFloor};
 use crate::disk_log::{crash_point, durable_mark};
 use crate::log::{AppendOnlyLog, LogConfig};
 use crate::raft_log::snapshot::{SnapshotId, StoredSnapshot};
-use crate::raft_log::{held, reserved, state_file};
+use crate::raft_log::{LogPoint, held, reserved, state_file};
 use crate::segment::parse_segment_file_name;
 
 /// Present while a start is under way.
@@ -67,6 +69,25 @@ pub(crate) struct Start {
     /// The meta and data of a voter's snapshot at the end of the gap.
     pub(crate) meta: Bytes,
     pub(crate) data: Bytes,
+}
+
+/// Folds a voter's snapshot at the gap's end, which the start stores at
+/// `first_index - 1`: the copy's stored snapshot with every entry after it
+/// through the base applied, and the new voters as the membership. The
+/// state machine is not this crate's, so the caller supplies it. Run on the
+/// voter's own directory once its log ends at the base, so the fold reads
+/// the base and nothing a start cut. See `docs/per-shard-raft.md`, "A
+/// voter's snapshot at the gap's end is a fold".
+pub trait GapFold: Send + Sync {
+    /// The snapshot at `gap_end` for the copy in `dir`, whose log ends at
+    /// `base` (`None`: it holds no entry).
+    fn fold<'a>(
+        &'a self,
+        dir: &'a Path,
+        config: &'a LogConfig,
+        base: Option<LogPoint>,
+        gap_end: LogPoint,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<StoredSnapshot>> + Send + 'a>>;
 }
 
 /// What a copy's start takes from the re-form driver rather than the plan.
@@ -143,6 +164,131 @@ impl AcceptLoss {
     }
 }
 
+impl CopyRoot {
+    /// Start `dir`, the copy of `shard` (its mark name) a re-form stopped,
+    /// in the epoch `bases` ends, as the `start` survey's `wire` says. The
+    /// bases come from the shard's `placed` record, never the survey. A
+    /// voter's snapshot at the gap's end is what `fold` builds; a learner
+    /// does not call it. `member` is this copy's member id as its log
+    /// stores a vote for it. Run again over a start that crashed, it redoes every
+    /// step. See `docs/per-shard-raft.md`, "What a start needs".
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one fact the start needs"
+    )]
+    pub async fn start_stopped(
+        &self,
+        shard: &str,
+        dir: &Path,
+        incarnation: u64,
+        bases: Vec<EpochBase>,
+        wire: &WireStart,
+        fold: &dyn GapFold,
+        member: &str,
+        config: &LogConfig,
+    ) -> io::Result<()> {
+        let label = dir.display();
+        let epoch = EpochFile { incarnation, bases };
+        let new = epoch.epoch();
+        let Some(base) = epoch.bases.last().copied() else {
+            return Err(invalid(format!(
+                "{label}: a start needs the new epoch's base"
+            )));
+        };
+        if !start_due(dir, new)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{label}: not a copy stopped in the epoch before {new}"),
+            ));
+        }
+        let copy = super::copy_file::load(dir)?
+            .ok_or_else(|| invalid(format!("{label}: a stopped copy without a copy id")))?
+            .copy;
+        if let Some(voter) = wire.voter
+            && voter != copy
+        {
+            return Err(invalid(format!(
+                "{label}: the plan's voter is copy {voter:016x}, the directory holds {copy:016x}"
+            )));
+        }
+        let kept = wire
+            .kept
+            .as_ref()
+            .map(|kept| kept_beside(dir, Path::new(kept)))
+            .transpose()?;
+        if wire.needs_accept_loss && !wire.accepted {
+            return Err(invalid(format!(
+                "{label}: the plan may lose acknowledged records and the loss was not accepted"
+            )));
+        }
+        let role = if wire.voter.is_some() {
+            Role::Voter
+        } else {
+            Role::Learner
+        };
+        // Lowered first, as a truncation lowers it: the start can leave the
+        // log below the old mark, and an open would then rotate the copy
+        // away from the id the seed names.
+        let mark = match role {
+            Role::Voter => base.base_last.map(|last| LogPoint {
+                term: last.term,
+                index: last.index,
+            }),
+            Role::Learner => None,
+        };
+        self.mark_log()
+            .for_copy(std::sync::Arc::from(shard), copy)
+            .lower_log(mark)
+            .await?;
+        let start = Start {
+            epoch,
+            role,
+            // The reports cannot give exact term starts, so a learner
+            // holding records always empties.
+            base_terms: Vec::new(),
+            accept_loss: AcceptLoss(wire.needs_accept_loss),
+            kept,
+            floor: wire.floor.as_ref().map(CarriedFloor::from),
+            meta: Bytes::new(),
+            data: Bytes::new(),
+        };
+        start_with(dir, &start, config, Some(fold), Some(member)).await
+    }
+}
+
+/// Whether the copy in `dir` is one a start of epoch `epoch` may run on:
+/// stopped in the epoch before, or mid-start of this one or of the epoch
+/// before's. A served copy, or one already started, is not.
+pub fn start_due(dir: &Path, epoch: u64) -> io::Result<bool> {
+    if building(dir)? {
+        let at = super::group_epoch(dir)?.unwrap_or(0);
+        return Ok(at + 1 == epoch || at == epoch);
+    }
+    Ok(super::stop_file::stopped(dir)?.is_some_and(|stopped| stopped.epoch + 1 == epoch))
+}
+
+/// Whether the copy in `dir` is started in `epoch`: it names the epoch and
+/// no start is under way. A start writes `raft-epoch` before its last
+/// steps, so the epoch alone does not say the start finished.
+pub fn started_in(dir: &Path, epoch: u64) -> io::Result<bool> {
+    Ok(super::group_epoch(dir)? == Some(epoch) && !building(dir)?)
+}
+
+/// `kept` as a directory in `dir`'s `.kept`, the only place a start reads a
+/// base from.
+fn kept_beside(dir: &Path, kept: &Path) -> io::Result<PathBuf> {
+    let beside = super::judge::parent_of(dir)?.join(crate::disk_log::layout::KEPT_DIR);
+    if kept.parent() != Some(beside.as_path()) || kept.file_name().is_none() {
+        return Err(invalid(format!(
+            "{}: kept directory {} is not in {}",
+            dir.display(),
+            kept.display(),
+            beside.display()
+        )));
+    }
+    Ok(kept.to_path_buf())
+}
+
 /// Whether a start is under way in `dir`.
 pub(crate) fn building(dir: &Path) -> io::Result<bool> {
     Ok(state_file::load(dir, BUILDING)?.is_some())
@@ -152,6 +298,19 @@ pub(crate) fn building(dir: &Path) -> io::Result<bool> {
 /// or the one copied from [`Start::kept`], is cut back to the base's last
 /// log id, and must then end there in the base's term.
 pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) -> io::Result<()> {
+    start_with(dir, start, config, None, None).await
+}
+
+/// [`start_copy`], with a voter's snapshot at the gap's end from `fold`
+/// in place of [`Start::meta`] and [`Start::data`], and a voter's vote
+/// raised to the base's term for `vote_for`.
+pub(super) async fn start_with(
+    dir: &Path,
+    start: &Start,
+    config: &LogConfig,
+    fold: Option<&dyn GapFold>,
+    vote_for: Option<&str>,
+) -> io::Result<()> {
     let index_spacing_bytes = config.index_spacing_bytes;
     let base = *start
         .epoch
@@ -288,12 +447,49 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
                     "{label}: the log ends at {last:?}, the base at {want:?}"
                 )));
             }
+            // An earlier epoch's first append can open its gap and die before
+            // its record lands, leaving the tail past the base's end. This
+            // epoch's first append would not find its base there, so the
+            // empty gap goes. It holds no record: nothing is lost.
+            if tail_of(dir, &label, config).await? > base.base_end() {
+                let (commit, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
+                if commit > base.base_end() {
+                    let term = base.base_last.map_or(0, |last| last.term);
+                    let generation = crate::raft_log::generation_of(term)?;
+                    crate::disk_log::store_saved_commit(dir, base.base_end(), generation)
+                        .map_err(io::Error::other)?;
+                    step()?;
+                }
+                cut_to(dir, &label, config, base.base_end()).await?;
+                step()?;
+            }
         }
     }
     if let Some(floor) = &start.floor {
         carried_floor::raise(dir, floor.clone())?;
         step()?;
     }
+    // After the floor is raised, so a stream snapshot carries it to a
+    // learner that installs from this voter.
+    let folded = match (start.role, gap_end, fold) {
+        (Role::Voter, Some(index), Some(fold)) => {
+            let term = base.base_last.map_or(0, |last| last.term);
+            let at = LogPoint { term, index };
+            let base_last = base.base_last.map(|last| LogPoint {
+                term: last.term,
+                index: last.index,
+            });
+            let folded = fold.fold(dir, config, base_last, at).await?;
+            if folded.last != Some(SnapshotId { term, index }) {
+                return Err(invalid(format!(
+                    "{label}: the snapshot folded for the gap's end {index} is at {:?}",
+                    folded.last
+                )));
+            }
+            Some(folded)
+        }
+        _ => None,
+    };
     // Before the purged id: a purged id at the gap's end reads as the base
     // only under the epoch that made the gap.
     epoch_file::store(dir, &start.epoch)?;
@@ -305,11 +501,11 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
         let generation = crate::raft_log::generation_of(term)?;
         crate::raft_log::snapshot::store_in(
             dir,
-            &StoredSnapshot {
+            &folded.unwrap_or_else(|| StoredSnapshot {
                 last: Some(SnapshotId { term, index }),
                 meta: start.meta.clone(),
                 data: start.data.clone(),
-            },
+            }),
         )?;
         step()?;
         crate::raft_log::store_purged(dir, index, generation)?;
@@ -317,6 +513,13 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
         crate::disk_log::store_saved_commit(dir, base.first_index, generation)
             .map_err(io::Error::other)?;
         step()?;
+        // A voter that never voted (a restored or wiped copy) would
+        // campaign at term 1, at or below the base's last term, and openraft
+        // refuses to lead under a vote not above its last log id.
+        if let Some(member) = vote_for {
+            crate::disk_log::raise_saved_vote(dir, generation, member).map_err(io::Error::other)?;
+            step()?;
+        }
     }
     check_started(dir, start)?;
     state_file::remove(dir, BUILDING)
@@ -401,9 +604,15 @@ fn prefix_matches(
     Ok(true)
 }
 
-/// Remove every segment, index, purged id and snapshot in `dir`. The copy
-/// file, votes, reservation and markers stay.
+/// Remove every segment, index, purged id and snapshot in `dir`, and the
+/// forgotten batches and carried floor. The copy file, votes, reservation
+/// and markers stay.
 fn empty_log(dir: &Path) -> io::Result<()> {
+    // No record holds these, so they would outlive the log they describe:
+    // the next log would refuse re-sends of batches its voters never forgot.
+    // A snapshot install merges into them rather than replacing them.
+    state_file::remove(dir, crate::disk_log::forgotten_file_name())?;
+    state_file::remove(dir, carried_floor::FILE_NAME)?;
     for entry in crate::fs::read_dir(dir)? {
         let path = entry?.path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
@@ -415,6 +624,8 @@ fn empty_log(dir: &Path) -> io::Result<()> {
             // A mark naming a segment that is gone would misread the next
             // log's segments as synced or as never synced.
             || name == durable_mark::mark_file_name()
+            // Derived from the records, so it goes with them.
+            || name == crate::disk_log::producers_file_name()
             || name.starts_with(crate::raft_log::purged::FILE_NAME)
             || name.starts_with(crate::raft_log::snapshot::FILE_NAME);
         if log_file {
@@ -424,7 +635,8 @@ fn empty_log(dir: &Path) -> io::Result<()> {
     crate::io::sync_dir(dir)
 }
 
-/// Rebuild `dir`'s log from `kept`'s segments and durable mark. Each file is
+/// Rebuild `dir`'s log from `kept`'s segments, durable mark, forgotten
+/// batches, carried floor and snapshot. Each file is
 /// copied under a temporary name and synced, and only then are they renamed
 /// into place, so the directory never holds part of a file under a log
 /// file's name. A cut part way leaves the marker, and the start run again
@@ -441,13 +653,21 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
     crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
     empty_log(dir)?;
     step()?;
+    // The kept log's forgotten batches and floor come with its records.
+    let carried = [
+        crate::disk_log::forgotten_file_name(),
+        carried_floor::FILE_NAME,
+    ];
     let mut names = Vec::new();
     for entry in crate::fs::read_dir(kept)? {
         let name = entry?.file_name();
         let Some(name) = name.to_str() else {
             continue;
         };
-        if parse_segment_file_name(name).is_some() || name == durable_mark::mark_file_name() {
+        if parse_segment_file_name(name).is_some()
+            || name == durable_mark::mark_file_name()
+            || carried.contains(&name)
+        {
             names.push(name.to_owned());
         }
     }
@@ -464,10 +684,25 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
         crate::fs::rename(dir.join(format!("{name}{COPYING}")), dir.join(name))?;
     }
     crate::io::sync_dir(dir)?;
-    step()
+    step()?;
+    // The fold at the gap's end starts from the kept copy's snapshot: its
+    // log may be purged below it.
+    if let Some(snapshot) = crate::raft_log::snapshot::read(kept)? {
+        crate::raft_log::snapshot::store_in(dir, &snapshot)?;
+        step()?;
+    }
+    Ok(())
 }
 
 /// Cut every record at or after `end` from `dir`'s log.
+/// One past the last offset the log in `dir` holds or has opened a gap to.
+async fn tail_of(dir: &Path, label: &str, config: &LogConfig) -> io::Result<u64> {
+    let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
+    let tail = log.tail_offset().await.map_err(io::Error::other);
+    let closed = log.close().await.map_err(io::Error::other);
+    closed.and(tail)
+}
+
 async fn cut_to(dir: &Path, label: &str, config: &LogConfig, end: u64) -> io::Result<()> {
     let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
     let cut = log.truncate(end).await.map_err(io::Error::other);

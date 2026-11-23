@@ -251,6 +251,10 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
         })
     }
 
+    fn holds(&self, key: &ShardKey) -> bool {
+        self.inner.as_ref().is_some_and(|inner| inner.holds(key))
+    }
+
     fn leads_unheard(&self, key: &ShardKey) -> bool {
         self.inner
             .as_ref()

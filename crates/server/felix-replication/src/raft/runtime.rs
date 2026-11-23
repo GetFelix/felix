@@ -1489,6 +1489,13 @@ impl GroupRuntime {
             .collect()
     }
 
+    /// The furthest entry `shard`'s member acknowledged while it leads,
+    /// with the term it leads: [`Group::led_acked`]. What a backup point
+    /// reads.
+    pub fn led_acked(&self, shard: &ShardKey) -> Option<(u64, LogPoint)> {
+        self.group(shard)?.led_acked()
+    }
+
     /// What `shard`'s log holds, as it changes: written as soon as an
     /// append has handed its entries to the log, flushed once they are
     /// fsynced. A publisher's acknowledgement on a stream that does not

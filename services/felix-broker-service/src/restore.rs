@@ -5,7 +5,10 @@
 //! each shard's committed offsets from its leader. A copy of the leader's
 //! shard directories taken while it ran holds at least those records and
 //! usually more; this cuts each log back to the point, below its commit
-//! offset where it has to (see `DiskLog::restore_to`). Run with the broker
+//! offset where it has to (see `DiskLog::restore_to`). A Raft copy is cut
+//! the same way to one past the furthest entry its leader acknowledged
+//! (`restore_copy`), which then counts as committed, and the group is
+//! re-formed from it at the point. Run with the broker
 //! stopped, over the data directory its normal configuration names.
 //!
 //! The runbook is `docs-site/src/content/docs/deployment/backup-and-restore.md`.
@@ -14,7 +17,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use felix_broker::LogKind;
+use felix_storage::disk_log::engine_marker;
 use felix_storage::disk_log::layout::incarnation_dir;
+use felix_storage::raft_copy::restore_copy;
 use serde::Deserialize;
 
 use crate::config::{BrokerConfig, DurableStorageConfig};
@@ -66,7 +71,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
 
 /// Cut the logs under `root` back to `manifest` and give the directory a new
 /// storage id. Returns how many logs were cut.
-async fn restore(
+pub(crate) async fn restore(
     manifest: &Manifest,
     node: Option<&str>,
     root: &Path,
@@ -94,6 +99,26 @@ async fn restore(
             PointKind::Cache => {
                 broker.set_cache_incarnation(tenant_id, namespace, name, Some(shard.incarnation));
             }
+        }
+        // A Raft member's directory is never opened as a plain log; it is
+        // cut where it lies, so a re-form at the point reads it as the base.
+        let dir = log_dir(root, cut.kind, shard);
+        if engine_marker::claimed_for_raft(&dir, &shard.label())? {
+            let config = storage
+                .as_ref()
+                .context("a Raft copy needs durable storage")?
+                .config()
+                .clone();
+            // Only the records log has a Raft point; a point taken before
+            // terms were recorded checks none.
+            let term = matches!(cut.kind, LogKind::Stream | LogKind::Cache)
+                .then_some(shard.end_term)
+                .flatten();
+            restore_copy(&dir, &shard.label(), cut.offset, term, config)
+                .await
+                .with_context(|| format!("restore the Raft copy of {}", shard.label()))?;
+            println!("{} {:?} (raft): -> {}", shard.label(), cut.kind, cut.offset);
+            continue;
         }
         let log = broker
             .shard_log(
@@ -236,6 +261,9 @@ pub(crate) struct PointShard {
     /// Absent from a point taken before incarnations, which is 0.
     #[serde(default)]
     incarnation: u64,
+    /// For a Raft shard, the term of the entry below the records offset.
+    #[serde(default)]
+    end_term: Option<u64>,
     logs: PointLogs,
 }
 

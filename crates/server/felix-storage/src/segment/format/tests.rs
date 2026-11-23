@@ -8,6 +8,23 @@ fn segment_header_round_trip() {
 }
 
 #[test]
+fn a_header_past_a_gap_names_where_the_gap_starts() {
+    let gap_from = (1u64 << 40) + 3;
+    let header = SegmentHeader::new(gap_from + (1 << 40), 2).past_gap(gap_from);
+    let bytes = header.encode();
+    assert_eq!(bytes[6..8], FOLLOWS_GAP.to_be_bytes());
+    assert_eq!(bytes[28..32], 3u32.to_be_bytes());
+    let decoded = SegmentHeader::decode(&bytes).expect("decode");
+    assert_eq!(decoded, header);
+    assert!(decoded.may_follow(gap_from));
+    // Anything else before it is a missing segment, not this gap.
+    assert!(!decoded.may_follow(gap_from - 1));
+    assert!(!decoded.may_follow(gap_from + 1));
+    assert!(!SegmentHeader::new(10, 2).may_follow(5));
+    assert!(SegmentHeader::new(10, 2).may_follow(10));
+}
+
+#[test]
 fn segment_header_is_a_stable_golden_vector() {
     // Pinned bytes: a change here is a format change and must bump the
     // version and update docs/storage-format.md.
@@ -21,7 +38,7 @@ fn segment_header_is_a_stable_golden_vector() {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // base_offset
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, // created_at_micros
             0xAD, 0xEB, 0x65, 0xE9, // header crc32
-            0x00, 0x00, 0x00, 0x00, // reserved
+            0x00, 0x00, 0x00, 0x00, // gap_from
         ]
     );
     // A segment that holds a generation-start record.
@@ -230,10 +247,10 @@ fn segment_header_rejects_bad_magic_version_and_flags() {
     ));
 
     let mut bad = good;
-    bad[6..8].copy_from_slice(&1u16.to_be_bytes());
+    bad[6..8].copy_from_slice(&2u16.to_be_bytes());
     assert!(matches!(
         SegmentHeader::decode(&bad).expect_err("flags").kind,
-        CorruptionKind::SegmentFlags { found: 1 }
+        CorruptionKind::SegmentFlags { found: 2 }
     ));
 
     let mut bad = good;

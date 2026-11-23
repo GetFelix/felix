@@ -336,6 +336,8 @@ impl LogInner {
         self: Arc<Self>,
         before: crate::log::Offset,
     ) -> Result<Vec<crate::log::SegmentDescriptor>> {
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+        let _held = self.head_trims.lock().await;
         let inner = Arc::clone(&self);
         felix_common::blocking::spawn(move || {
             let manifest = inner.manifest.lock();
