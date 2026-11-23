@@ -434,7 +434,9 @@ async fn a_producer_keeps_its_sequence_across_a_planned_move() -> Result<()> {
 #[serial]
 async fn a_producer_keeps_its_sequence_when_its_leader_dies() -> Result<()> {
     let mut cluster = Cluster::start(config()).await?;
-    let owner = cluster.owner(STREAM).await?;
+    let owner = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await?;
     let survivors: Vec<std::net::SocketAddr> = cluster
         .nodes
         .iter()
@@ -449,15 +451,8 @@ async fn a_producer_keeps_its_sequence_when_its_leader_dies() -> Result<()> {
     publish_records(&cluster, &producer, 0..5).await?;
 
     cluster.kill_node(&owner)?;
-    let new_owner =
-        felix_cluster::wait::until_some(Duration::from_secs(30), "a new leader", || async {
-            cluster.place_shards().await;
-            cluster
-                .owner(STREAM)
-                .await
-                .ok()
-                .filter(|leader| leader != &owner)
-        })
+    let new_owner = cluster
+        .promoted_leader(STREAM, &owner, Duration::from_secs(30))
         .await?;
 
     // The promoted broker learns of its promotion through its watch, so the
