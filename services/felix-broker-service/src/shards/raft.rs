@@ -1333,6 +1333,9 @@ impl EngineShards for RaftShards {
                 .collect();
             let mut off_placement = 0_u32;
             let mut short: Vec<ShortShard> = Vec::new();
+            // One probe per pass: every shard shares the root, and each heal
+            // costs a write, an fsync and a directory sync.
+            let mut healed: Option<Result<(), String>> = None;
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
                 let held = || ShortShard {
@@ -1371,7 +1374,14 @@ impl EngineShards for RaftShards {
                     // A failed mark log stops every member on the root, and
                     // a fresh one cannot open on it either.
                     if (self.restarts.lock().restarting(key) || root.mark_log().failure().is_some())
-                        && let Err(err) = root.heal().await
+                        && let Err(err) = match &healed {
+                            Some(done) => done.clone(),
+                            None => {
+                                let done = root.heal().await.map_err(|err| err.to_string());
+                                healed = Some(done.clone());
+                                done
+                            }
+                        }
                     {
                         if self.held_warn.lock().due(key) {
                             tracing::warn!(shard = ?key, error = %err, "a Raft member waits for its disk to take writes again before it opens");

@@ -2898,7 +2898,10 @@ it again once the disk takes writes:
    against its marks and its log recovered from disk. A log poisoned by a
    failed fsync rotates to a new copy id that never voted, so nothing the
    failed fsync touched is trusted. Any other log keeps its copy id, with its
-   torn tail repaired, and catches up from the leader.
+   torn tail repaired, and catches up from the leader. A rotated copy has no
+   group of its own: with other copies alive it catches up from them. With
+   one copy, or when every copy rotated, the shard is held and serves
+   nothing until an operator re-forms it ("Re-forming a group").
 
 The reopened member is a restarted one: it votes and acknowledges only from
 what is on disk, as after a crash. The first stop reopens on the next pass. A
@@ -2906,7 +2909,8 @@ member that stops again within a minute of its reopen waits longer each time,
 from a second up to 30, since every open scans its log.
 
 > `crates/server/felix-replication/src/raft/tests/identity.rs`,
-> `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`;
+> `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`,
+> `a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`;
 > `crates/server/felix-storage/src/raft_copy/tests/marks.rs`,

@@ -774,7 +774,11 @@ Four properties:
    its directory the way a start does: the segments are scanned and a torn
    tail repaired. A log a failed write left is the same copy again and catches
    up from its leader. A poisoned log is never reopened as itself: it comes
-   back as a new copy, so nothing a failed fsync touched is read again. See
+   back as a new copy id (the old directory is kept as `.kept`), so nothing
+   a failed fsync touched is read again. With other copies alive it catches
+   up from the group. With one copy, or when every copy rotated, the shard is
+   held until an operator re-forms it (`felixctl raft reform`) and serves
+   nothing meanwhile. See
    `docs/per-shard-raft.md`, "A member that stops on a storage error".
 
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
