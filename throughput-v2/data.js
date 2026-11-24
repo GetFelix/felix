@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795480661538,
+  "lastUpdate": 1795481327865,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67340,6 +67340,58 @@ window.BENCHMARK_DATA = {
             "range": "85956.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1217694.05\nmean: 1179860.71\nstdev: 85956.35\ncv: 7.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "60523b20d692a121ac30635f4175fe16d32ce4af",
+          "message": "test(history): campaign liveness and elections read Raft leadership from the members (#3058)\n\n* test(history): campaign liveness and elections read Raft leadership from the members\n\nOn Raft brokers the post-heal liveness check, the election wait, the fault\nview and the final reads used placement's generation and replica reports,\nwhich a Raft group never produces, so every history campaign failed after\nits first heal. They now ask each broker's member: a shard serves when a\nmember leads by its own report, a majority holds the log through its commit\nindex, and the leader takes the probe. The hybrid path is unchanged and the\nchecker is untouched; elected Raft leaders feed rule 21 at their term.\n\n* test(history): rule 21 reads Raft opens from the broker logs\n\nA Raft member now logs the hybrid driver's \"a majority took the fence;\nopening the shard for writes\" line when its term opens, with the term as\ngeneration, so rule 21 groups broker-logged opens on Raft as on hybrid.\nThe Raft election wait no longer inserts its own samples into the opens:\nit reads the broker logs and requires the probed leader to have logged its\nopen. The isolate fault on Raft waits for each group to elect a member\nother than the isolated node rather than for placement to move.\n\nSpec-Unaffected: adds one info log line when a Raft term opens; no state, message or ordering changes.",
+          "timestamp": "2026-11-23T16:28:22-08:00",
+          "tree_id": "2cf0d991c949211ff07f440e7b146b2f177c3b91",
+          "url": "https://github.com/GetFelix/felix/commit/60523b20d692a121ac30635f4175fe16d32ce4af"
+        },
+        "date": 1795481326875,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 378936.9,
+            "range": "11147.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 378936.90\nmean: 376803.45\nstdev: 11147.58\ncv: 2.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 378936.9,
+            "range": "11147.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 378936.90\nmean: 376803.45\nstdev: 11147.58\ncv: 2.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80365.93,
+            "range": "3832.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80365.93\nmean: 80256.60\nstdev: 3832.37\ncv: 4.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803659.28,
+            "range": "38323.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803659.28\nmean: 802566.03\nstdev: 38323.72\ncv: 4.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
