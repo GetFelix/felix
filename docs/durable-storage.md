@@ -1656,7 +1656,10 @@ records a relaxed crash's rotation in `relaxed-crash-id`, and each Raft group
 of one then re-forms itself from its own kept copy: it keeps every record
 that reached the disk, including ones past the saved commit, and starts its
 next offsets above everything the crashed run reserved. What it loses is the
-unsynced tail `Periodic` allows. See `docs/per-shard-raft.md`, "A standalone
+unsynced tail `Periodic` allows. A data directory restored from a snapshot or
+backup is not detected: it starts from the reservation the snapshot holds and
+can give out offsets handed out after that point again
+([#3048](https://github.com/GetFelix/felix/issues/3048)). See `docs/per-shard-raft.md`, "A standalone
 broker re-forms itself".
 
 Losing the directory does reset them. So a copy with no promise on disk, on

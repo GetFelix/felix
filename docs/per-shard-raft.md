@@ -2344,8 +2344,11 @@ control-plane placement. `shards/raft/standalone.rs` gives the runtime the
 assignments a control plane would: this broker as leader, at the incarnation
 the stream or cache registered with, and it forms and leads each group off
 the broker's own registrations. The broker is its whole fleet, so every
-`raft_*` feature is finalized from the start. A commit waits for one fsync
-on the single voter. A standalone broker with no durable storage keeps every
+`raft_*` feature is finalized from the start. Under `OnCommit` fsync a
+commit waits for one fsync on the single voter. Under `Periodic` or `None`,
+with `raft_written_commit` finalized, a commit waits only for the write and
+a synced offset reservation, and the log fsyncs on the broker's schedule
+("Proposal: commit on a written majority on relaxed brokers"). A standalone broker with no durable storage keeps every
 stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
 selects the hybrid, deprecated. After a machine crash under `Periodic` or
 `None` fsync each group re-forms itself from its own copy ("A standalone
@@ -5880,7 +5883,12 @@ itself, before its member opens (`shards/raft/standalone.rs`,
    a second, so cutting there would drop records that were synced. The loss
    is the unsynced tail `Periodic` already allows.
 3. The new epoch starts above every index the crashed run reserved, so no
-   offset it handed out is given out again.
+   offset it handed out is given out again. That holds only for the data
+   directory the crashed run used. A directory restored from a snapshot or
+   backup starts from the reservation the snapshot holds and can give out
+   offsets handed out after that point again
+   ([#3048](https://github.com/GetFelix/felix/issues/3048)), as a
+   standalone broker on the hybrid engine can.
 4. The plan is written to `raft-reform-alone` and synced before the copy is
    stopped and started in the new epoch. A crash part way resumes that plan.
    A plan made under an older storage id, left by a second crash during the
