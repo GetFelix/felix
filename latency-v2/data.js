@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795529639575,
+  "lastUpdate": 1795531631032,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86064,6 +86064,72 @@ window.BENCHMARK_DATA = {
             "range": "637.36",
             "unit": "us",
             "extra": "trials: 5\nmedian: 445.00\nmean: 876.20\nstdev: 637.36\ncv: 72.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a85ff9ae212d0a249132021ed027439bd2da781",
+          "message": "fix(replication): only a shard with a log is served off the lease (#3069) (#3070)\n\n* fix(replication): only a shard with a log is served off the lease (#3069)\n\nThe driver let any Quorum shard in a fleet that finalized follower acks\nserve writes, readers and group sessions without the lease, including an\nin-memory stream. Such a stream keeps nothing on its followers, so an\nowner cut off from the control plane kept acknowledging after its lease\nlapsed and the shard was placed elsewhere: two owners.\n\nserves_on_followers_word adds \"keeps a log\" (durable stream, or a cache\non a log cache) to acknowledges_at_quorum, and gates serve_without_lease,\nsessions_without_lease and an elected leader's eligibility. Retention\nholds keep using acknowledges_at_quorum. Durable shards are unchanged.\n\nSpec-Unaffected: the TLA models (FelixShard, FelixShardSessions) model only replicated shards with a log; in-memory shards were never in them, and the modelled lease-free behaviour for logged shards is unchanged.\n\n* test(cluster): the in-memory lease test waits for each finalized feature\n\nThe setup summed every enabled fleet feature, and a Raft cluster turns its\nown features on as it forms, so the total never matched. Check each of the\ntest's features by name, as the other failures-suite setups do.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-24T14:40:09Z",
+          "tree_id": "1c9701f40d8a41f0cc33163669fa89b94c596c6d",
+          "url": "https://github.com/GetFelix/felix/commit/6a85ff9ae212d0a249132021ed027439bd2da781"
+        },
+        "date": 1795531621025,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 67.80\nstdev: 0.84\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 94,
+            "range": "34.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 108.00\nstdev: 34.70\ncv: 32.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 141,
+            "range": "40.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 151.80\nstdev: 40.69\ncv: 26.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 86.80\nstdev: 1.10\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 202,
+            "range": "26.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 214.00\nstdev: 26.62\ncv: 12.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 358,
+            "range": "1070.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 358.00\nmean: 1041.40\nstdev: 1070.43\ncv: 102.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
