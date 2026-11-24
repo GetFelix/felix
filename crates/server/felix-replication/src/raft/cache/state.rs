@@ -195,16 +195,19 @@ impl CacheState {
         command: &CacheCommand,
         report: Option<&dyn Fn(&Change) -> bool>,
     ) -> Option<Answer> {
+        // Exhaustive on purpose: a new command that changes a key must be
+        // recorded, or a resume would be replayed with a gap.
         let key = match command {
             CacheCommand::Put { key, .. }
             | CacheCommand::Delete { key, .. }
-            | CacheCommand::Expire { key, .. }
-                if report.is_some() || self.recent.is_some() =>
-            {
-                key
+            | CacheCommand::Expire { key, .. } => key,
+            CacheCommand::Add { .. } | CacheCommand::Retire { .. } => {
+                return self.fold_in(index, stamp, command);
             }
-            _ => return self.fold_in(index, stamp, command),
         };
+        if report.is_none() && self.recent.is_none() {
+            return self.fold_in(index, stamp, command);
+        }
         let was = self.entry(key).is_some();
         let answer = self.fold_in(index, stamp, command);
         // A refused write, a retry and an expiry of a key written since
