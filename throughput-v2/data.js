@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795491790177,
+  "lastUpdate": 1795496368543,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67600,6 +67600,58 @@ window.BENCHMARK_DATA = {
             "range": "87239.73",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1210315.38\nmean: 1176666.24\nstdev: 87239.73\ncv: 7.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2eebea6cadfba83e5f01b2b9daf1c8dff51f5ffa",
+          "message": "fix: make main green on Raft (group latest, felixctl cluster tests, RF 1 moves) (#3095)\n\n* feat(raft): move an RF 1 shard by growing its set, then shrinking it (#3012)\n\nAn operator move of a one-member Raft shard was refused with\nsingle_member: a set of the destination alone keeps no voter of the\ngroup, so the store's formed-set hold (#2905) never let it apply.\n\nThe move now takes two writes. The operator move grows the set to the\nleader and the destination, and the group adds the destination as a\nlearner and then a voter. Once the leader reports the destination's copy\nvoting, placement writes the destination alone as set and leader, and\nthe group hands it leadership and drops the old copy. A broker treats a\nset over the replica count as full, so the destination reports its copy.\n\nSpec-Unaffected: the two writes are ordinary target changes the control plane makes one at a time; FelixRaftPlacement already models any target sequence, and the formed-set hold they pass is unchanged.\n\n* fix(raft): undo an RF 1 move whose destination cannot vote (#3012)\n\nA move of an RF 1 shard waited on its destination for good: if that\nbroker died or drained while still a learner, the shard stayed at\n\"unapplied\" and every operator move, including one back, was refused.\n\nPlacement now writes the old broker alone again when the destination\nstops being live before the group reports it voting, or while it still\nserves; an operator move back to the old broker does the same\n(raft_move_undone). The store takes the write because the old broker is\na reported voter. A voting destination that is down cannot be removed\nwithout its vote, so placement reports the shard stranded and the docs\npoint at a re-form.\n\nTests: placement undo and stranded cases, the operator move back, a\nbroker test that a set over the replica count counts full, and two\ncluster tests (a move under writes, a move to a killed broker).\n\nSpec-Unaffected: the undo is one more target change the control plane makes one at a time ({a, b} to {a}); FelixRaftPlacement already models any target sequence, and the formed-set hold is unchanged.\n\n* fix(raft): a group sought to latest stands at the records' end\n\nDescribe reports the records' end as the tail and clamps the cursor to it\n(#3090), but a seek to latest still used the log's end, past the group's\nown trailing entries. So a group created at latest described a lower\ncommitted offset than the seek returned (Node conformance: 574 vs 579).\nLatest now stops at the records' end too.\n\nSpec-Unaffected: group seek position only; no model covers group seek\n\n* fix(raft): inspect shard lists a Raft leader's followers; felixctl cluster tests on Raft\n\nThe felixctl cluster tests broke when the harness moved to Raft (#3043).\n\n- inspect: a Raft leader gave no account of its followers, since the\n  hybrid's replication board is empty on Raft. The leader now reports each\n  other member from openraft's replication metrics: shipping once it has\n  answered lately with a matched entry, else stalled; learners as learner.\n- data_plane: on Raft the log opens with generation-start records that are\n  never delivered, so `--from earliest` starts at the first event, not at\n  offset 0. The test now checks earliest delivers what a read from offset 0\n  delivers.\n\nSpec-Unaffected: inspection reads metrics only; no protocol or apply-path change",
+          "timestamp": "2026-11-23T20:49:39-08:00",
+          "tree_id": "6002247e6221c628783fa195d6962377bbf094de",
+          "url": "https://github.com/GetFelix/felix/commit/2eebea6cadfba83e5f01b2b9daf1c8dff51f5ffa"
+        },
+        "date": 1795496367796,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345113.36,
+            "range": "3907.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345113.36\nmean: 343925.17\nstdev: 3907.80\ncv: 1.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345113.36,
+            "range": "3907.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345113.36\nmean: 343925.17\nstdev: 3907.80\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79569.16,
+            "range": "1504.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79569.16\nmean: 79488.44\nstdev: 1504.27\ncv: 1.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 795691.56,
+            "range": "15042.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 795691.56\nmean: 794884.40\nstdev: 15042.70\ncv: 1.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
