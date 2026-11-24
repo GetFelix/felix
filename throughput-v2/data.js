@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795529644564,
+  "lastUpdate": 1795531634360,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67808,6 +67808,58 @@ window.BENCHMARK_DATA = {
             "range": "62369.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 935900.26\nmean: 908125.39\nstdev: 62369.50\ncv: 6.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a85ff9ae212d0a249132021ed027439bd2da781",
+          "message": "fix(replication): only a shard with a log is served off the lease (#3069) (#3070)\n\n* fix(replication): only a shard with a log is served off the lease (#3069)\n\nThe driver let any Quorum shard in a fleet that finalized follower acks\nserve writes, readers and group sessions without the lease, including an\nin-memory stream. Such a stream keeps nothing on its followers, so an\nowner cut off from the control plane kept acknowledging after its lease\nlapsed and the shard was placed elsewhere: two owners.\n\nserves_on_followers_word adds \"keeps a log\" (durable stream, or a cache\non a log cache) to acknowledges_at_quorum, and gates serve_without_lease,\nsessions_without_lease and an elected leader's eligibility. Retention\nholds keep using acknowledges_at_quorum. Durable shards are unchanged.\n\nSpec-Unaffected: the TLA models (FelixShard, FelixShardSessions) model only replicated shards with a log; in-memory shards were never in them, and the modelled lease-free behaviour for logged shards is unchanged.\n\n* test(cluster): the in-memory lease test waits for each finalized feature\n\nThe setup summed every enabled fleet feature, and a Raft cluster turns its\nown features on as it forms, so the total never matched. Check each of the\ntest's features by name, as the other failures-suite setups do.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-24T14:40:09Z",
+          "tree_id": "1c9701f40d8a41f0cc33163669fa89b94c596c6d",
+          "url": "https://github.com/GetFelix/felix/commit/6a85ff9ae212d0a249132021ed027439bd2da781"
+        },
+        "date": 1795531633603,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 646503.63,
+            "range": "62683.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 646503.63\nmean: 667266.33\nstdev: 62683.44\ncv: 9.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 646503.63,
+            "range": "62683.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 646503.63\nmean: 667266.33\nstdev: 62683.44\ncv: 9.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 153823.41,
+            "range": "3896.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 153823.41\nmean: 152538.54\nstdev: 3896.18\ncv: 2.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1538234.1,
+            "range": "38961.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1538234.10\nmean: 1525385.43\nstdev: 38961.82\ncv: 2.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
