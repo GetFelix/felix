@@ -2182,6 +2182,17 @@ leader. A forward to a leader that is gone fails, and the client retries.
 > `a_leader_that_loses_its_appends_does_not_stall_the_next_election` and
 > `a_pre_vote_refusal_names_its_vote_uncommitted`.
 
+A member whose placement no longer names its broker routes by placement
+instead, once it hears no leader: its group may have removed it without
+telling it. A refusal there would keep a client that enters on that broker
+retrying on it, so the member redirects readers and forwards writes to the
+leader placement names, as a broker with no member does.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_leaderless_member_placement_moved_off_routes_by_placement`;
+> `services/felix-broker-service/src/shards/routing/tests.rs`,
+> `a_subscribe_to_a_member_placed_elsewhere_is_redirected`.
+
 ### Many groups electing at once
 
 A vote is a small file per shard, the ballot, written whole and renamed
@@ -5942,9 +5953,26 @@ on the hybrid.
   watch is handed. That edge is the member's own, so a follower that is
   behind can hand a retained watch a value older than one the client just
   read from the leader. The newer value is committed and arrives as a
-  change once the follower applies it; nothing is lost. The group keeps no
-  change history to replay, so a resume from below the edge is answered
-  with `resnapshot` and each key's current value. A resume from past the
+  change once the follower applies it; nothing is lost. A member keeps
+  its latest applied changes in memory while it serves a watch of the
+  shard and for five minutes after (in the log's time), long enough for a
+  client to reconnect after a dropped connection or a broker failover. It
+  starts at the first change a watch of the shard took, or at the live
+  edge when one ends, and keeps up to 4096 changes or 1 MiB per shard,
+  counting each change's key, value and slot (`raft/cache/recent.rs`). A
+  member that has not served a watch of the shard in that window keeps
+  nothing and pays nothing extra per write; its tick frees what an idle
+  shard kept. A client that resumes on a member that kept nothing for the
+  shard, such as one it never watched on, is resnapshotted. A resume
+  whose offset is still kept is replayed `[from_offset, edge)` from them,
+  deletes included, exactly as the hybrid replays its log, then joins live
+  delivery. One from below the oldest kept change is answered with
+  `resnapshot` and each key's current value, read after the member has
+  applied every put acknowledged before the watch began. A snapshot
+  install starts the kept changes empty, past the snapshot's entry, and a
+  restart keeps none, so a resume from before either resnapshots. A value
+  bigger than the byte bound still reaches live watches, and moves the
+  oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
   apply that far, up to the publish quorum timeout, and is then refused as
   retryable. A snapshot install, and a member left with no leader, end the

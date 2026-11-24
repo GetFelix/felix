@@ -150,10 +150,13 @@ impl Cluster {
         let budget = wait::budget(timeout);
         let deadline = Instant::now() + budget;
         loop {
-            let members = self
+            let first = self
                 .raft_members(felix_client::ShardKind::Stream, stream)
                 .await;
-            let why = match raft_leader_caught_up(&members) {
+            let then = self
+                .raft_members(felix_client::ShardKind::Stream, stream)
+                .await;
+            let why = match raft_leader_caught_up(&first, &then) {
                 Ok(leader) => return Ok(leader),
                 Err(short) => short,
             };
@@ -185,7 +188,9 @@ impl Cluster {
         } else {
             felix_client::ShardKind::Stream
         };
-        raft_leader_committed(&self.raft_members(kind, name).await)
+        let first = self.raft_members(kind, name).await;
+        let then = self.raft_members(kind, name).await;
+        raft_leader_committed(&first, &then)
     }
 
     /// Every running broker's member of shard 0 of `name`, by its own
@@ -287,12 +292,15 @@ fn holds_tail(
 ///
 /// A leader is a member that is one and names itself as the leader it
 /// follows: after a cut a deposed leader keeps its role but hears no one.
-/// With two such members the later term leads. Learners are copying, not
-/// voting, so they count toward neither side of the majority.
+/// With two such members the later term leads. The leader is taken from
+/// `first` and the members' logs from `then`, a later look: brokers are
+/// asked one at a time, and under a workload a follower asked before the
+/// leader is always short of it.
 pub(crate) fn raft_leader_caught_up(
-    members: &[(String, felix_wire::InspectedRaft)],
+    first: &[(String, felix_wire::InspectedRaft)],
+    then: &[(String, felix_wire::InspectedRaft)],
 ) -> Result<String, String> {
-    raft_leader_holding(members, |led| led.last_index).map(|(leader, _)| leader)
+    raft_leader_holding(first, then, |led| led.last_index).map(|(leader, _)| leader)
 }
 
 /// [`raft_leader_caught_up`] measured against the leader's commit index
@@ -300,38 +308,51 @@ pub(crate) fn raft_leader_caught_up(
 /// steady workload the leader's last entry keeps moving ahead of its
 /// followers; what it has committed a majority already holds.
 pub(crate) fn raft_leader_committed(
-    members: &[(String, felix_wire::InspectedRaft)],
+    first: &[(String, felix_wire::InspectedRaft)],
+    then: &[(String, felix_wire::InspectedRaft)],
 ) -> Result<(String, u64), String> {
-    raft_leader_holding(members, |led| led.committed)
+    raft_leader_holding(first, then, |led| led.committed)
 }
 
+/// The voters are the leader's: a member removed from the group never hears
+/// of it and goes on calling itself a follower, and a voter that could not be
+/// asked still counts against the majority. Only a leader from a broker that
+/// sends no voter list falls back to the members that call themselves voters.
 fn raft_leader_holding(
-    members: &[(String, felix_wire::InspectedRaft)],
+    first: &[(String, felix_wire::InspectedRaft)],
+    then: &[(String, felix_wire::InspectedRaft)],
     through: impl Fn(&felix_wire::InspectedRaft) -> Option<u64>,
 ) -> Result<(String, u64), String> {
-    let Some((leader, led)) = members
+    let Some((leader, led)) = first
         .iter()
         .filter(|(id, raft)| raft.role == "leader" && raft.leader.as_deref() == Some(id.as_str()))
         .max_by_key(|(_, raft)| raft.term)
     else {
-        return Err(format!("no member leads yet; members: {members:?}"));
+        return Err(format!("no member leads yet; members: {first:?}"));
     };
     let Some(tail) = through(led) else {
         return Err(format!("{leader} leads with an empty log"));
     };
-    let voters: Vec<_> = members
-        .iter()
-        .filter(|(_, raft)| matches!(raft.role.as_str(), "leader" | "follower" | "candidate"))
-        .collect();
+    let voters: Vec<&str> = if led.voters.is_empty() {
+        then.iter()
+            .filter(|(_, raft)| matches!(raft.role.as_str(), "leader" | "follower" | "candidate"))
+            .map(|(id, _)| id.as_str())
+            .collect()
+    } else {
+        led.voters.iter().map(String::as_str).collect()
+    };
     let holding = voters
         .iter()
-        .filter(|(_, raft)| raft.last_index.is_some_and(|at| at >= tail))
+        .filter(|voter| {
+            then.iter()
+                .any(|(id, raft)| id == *voter && raft.last_index.is_some_and(|at| at >= tail))
+        })
         .count();
     if holding * 2 > voters.len() {
         Ok((leader.clone(), led.term))
     } else {
         Err(format!(
-            "{leader} leads at {tail}, held by {holding} of {} voting members: {members:?}",
+            "{leader} leads at {tail}, held by {holding} of {} voting members {voters:?}: {then:?}",
             voters.len()
         ))
     }
