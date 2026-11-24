@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795557880674,
+  "lastUpdate": 1795564197257,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68172,6 +68172,58 @@ window.BENCHMARK_DATA = {
             "range": "78708.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814620.70\nmean: 782444.93\nstdev: 78708.66\ncv: 10.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9077b18c4d258b2882a489feb1128ac76e16466d",
+          "message": "test(cluster): wait for every cache to serve before a cluster is ready (#3128)\n\n* test(cluster): wait for every cache to serve before a cluster is ready\n\nA cache shard placed but not yet open on its owner refuses each\noperation as still opening (#3125), and the harness only proved a\nstream publish, so cache_routing raced startup and failed its first put.\nStartup now reads 64 probe keys of each cache through every broker\nuntil all are served.\n\nSpec-Unaffected: test harness readiness only.\n\n* test(cluster): probe 16 keys per cache shard\n\nSpec-Unaffected: test harness readiness only.",
+          "timestamp": "2026-11-24T23:41:21Z",
+          "tree_id": "7840e87a84dcbfa90a86e78e42dbd642ec6a0ab8",
+          "url": "https://github.com/GetFelix/felix/commit/9077b18c4d258b2882a489feb1128ac76e16466d"
+        },
+        "date": 1795564196536,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359570.31,
+            "range": "18102.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359570.31\nmean: 355092.80\nstdev: 18102.66\ncv: 5.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359570.31,
+            "range": "18102.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359570.31\nmean: 355092.80\nstdev: 18102.66\ncv: 5.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82499.04,
+            "range": "218.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82499.04\nmean: 82553.98\nstdev: 218.46\ncv: 0.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824990.37,
+            "range": "2184.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824990.37\nmean: 825539.80\nstdev: 2184.63\ncv: 0.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
