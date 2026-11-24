@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795485555608,
+  "lastUpdate": 1795486494256,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -85668,6 +85668,72 @@ window.BENCHMARK_DATA = {
             "range": "1053.80",
             "unit": "us",
             "extra": "trials: 5\nmedian: 373.00\nmean: 816.60\nstdev: 1053.80\ncv: 129.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "26b2ad628e9cf70acc654daa9f11e5f50eb72ba2",
+          "message": "fix(raft): group describe tail and prompt refusal of unanswered reads (#3077)\n\n* fix(raft): group describe keeps tail >= committed; unanswered reads refuse after the lease\n\nPart of #3050\n\n- Describe on a Raft shard: a poll settles the group entries trailing the\n  last record, so the cursor can pass the records' end the tail was cut\n  to. The tail is now never below the cursor.\n- A read-index round no majority answers is dropped after the lease\n  instead of the election timeout, so a group call to a cut-off leader is\n  refused fast and retryably rather than held for election_max.\n\nSpec-Unaffected: describe reporting and how long an unanswered read round waits; refusing sooner writes nothing and no model covers either\n\n* fix(raft): inspector reports a Raft shard's tail; a read asks again after a late majority\n\nPart of #3050\n\n- shard_inspect looked the log up by the unversioned path, which never\n  finds a Raft shard's log (opened at its incarnation), so the leader\n  reported no tail. It now falls back to the log of the shard it serves.\n- read_index: a round that gave up is followed by another round's wait\n  for any majority answer; a late answer asks again, silence refuses.\n  The timeout error names the wait, not election_max.\n\nSpec-Unaffected: inspector reporting and read-round retry timing; refusing or retrying a read writes nothing\n\n* revert(raft): drop the read_index ask-again retry\n\nPart of #3050\n\nIts test passed without it, and it doubled a cut-off leader's refusal.\nThe round_limit give-up and the accurate TimedOut wait stay.\n\nSpec-Unaffected: removes a read retry; refusing a read writes nothing",
+          "timestamp": "2026-11-23T18:05:15-08:00",
+          "tree_id": "71514ee8e1f3877bb9a6d82ed858a14070b993f4",
+          "url": "https://github.com/GetFelix/felix/commit/26b2ad628e9cf70acc654daa9f11e5f50eb72ba2"
+        },
+        "date": 1795486480109,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.60\nstdev: 1.14\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 201,
+            "range": "3.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 203.00\nstdev: 3.67\ncv: 1.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 248,
+            "range": "78.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 282.60\nstdev: 78.11\ncv: 27.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "27.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 210.40\nstdev: 27.75\ncv: 13.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 387,
+            "range": "331.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 387.00\nmean: 535.60\nstdev: 331.24\ncv: 61.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 594,
+            "range": "589.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 594.00\nmean: 874.20\nstdev: 589.96\ncv: 67.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
