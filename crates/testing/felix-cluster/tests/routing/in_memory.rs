@@ -82,12 +82,14 @@ async fn an_in_memory_stream_is_served_by_its_owner_through_any_broker() {
         assert_eq!(next_payload(&mut subscription).await, Some(payload));
     }
 
-    for node in cluster.node_ids() {
+    // A hybrid broker runs no groups and exports no gauge to check.
+    let on_raft = std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() != Ok("hybrid");
+    for node in cluster.node_ids().into_iter().filter(|_| on_raft) {
         let led = cluster
             .metric(&node, "felix_broker_raft_shards_led")
             .await
             .expect("metrics")
-            .unwrap_or(0.0);
+            .expect("a Raft broker exports felix_broker_raft_shards_led");
         assert_eq!(
             led, 0.0,
             "{node} leads a Raft group for an in-memory stream"
@@ -97,30 +99,24 @@ async fn an_in_memory_stream_is_served_by_its_owner_through_any_broker() {
 }
 
 /// **When the owner dies the shard is placed again at once, at a new
-/// generation, and the new owner starts empty.** Its subscribers are ended
-/// rather than left waiting on a silent restart, and the old owner comes
-/// back empty too.
+/// generation, and the new owner starts empty.** A subscriber on the dead
+/// owner is ended, not carried over: nothing could tell it about the new
+/// generation's records otherwise.
 #[serial]
 #[tokio::test]
 async fn an_in_memory_shard_whose_owner_dies_restarts_empty_at_a_new_generation() {
     let mut cluster = Cluster::start(config(false)).await.expect("start cluster");
     let before = assignment(&cluster).await;
     let owner = before.leader.clone();
-    let survivor = cluster
-        .node_ids()
-        .into_iter()
-        .find(|node| *node != owner)
-        .expect("a second broker");
     cluster
         .publish_via(&owner, STREAM, b"before".to_vec())
         .await
         .expect("publish before the kill");
-
-    // A subscriber on a broker that outlives the owner.
+    // Subscribes redirect to the owner, so a reader of this shard is on it.
     let (_client, mut subscription) = cluster
-        .subscribe_on(&survivor, STREAM)
+        .subscribe_on(&owner, STREAM)
         .await
-        .expect("subscribe on a surviving broker");
+        .expect("subscribe on the owner");
 
     cluster.kill_node(&owner).expect("kill the owner");
     let after =
@@ -139,6 +135,9 @@ async fn an_in_memory_shard_whose_owner_dies_restarts_empty_at_a_new_generation(
         after.generation,
         before.generation,
     );
+    // A dead broker sends no last frame, so the end is the closed
+    // connection; what must not happen is a subscription that stays open.
+    assert_ends(&mut subscription).await;
 
     publish_eventually(&cluster, &after.leader, b"after").await;
     let (_replay_client, mut replay) = cluster
@@ -162,54 +161,39 @@ async fn an_in_memory_shard_whose_owner_dies_restarts_empty_at_a_new_generation(
             break;
         }
     }
-
-    // The survivor's subscriber either followed the shard and sees only
-    // records from the new generation, or was ended. Never "before".
-    while let Some(payload) = next_payload(&mut subscription).await {
-        assert_ne!(payload, b"before".to_vec(), "a record crossed generations");
-        if payload == b"after".to_vec() || payload == b"probe".to_vec() {
-            break;
-        }
-    }
-
-    cluster
-        .restart_node(&owner)
-        .await
-        .expect("restart the old owner");
-    let (_old_client, mut old) = cluster
-        .replay_on(&owner, STREAM)
-        .await
-        .expect("replay through the restarted broker");
-    cluster
-        .publish_via(&owner, STREAM, b"restarted".to_vec())
-        .await
-        .expect("publish through the restarted broker");
-    while let Some(payload) = next_payload(&mut old).await {
-        assert_ne!(
-            payload,
-            b"before".to_vec(),
-            "the restarted broker kept a record"
-        );
-        if payload == b"restarted".to_vec() {
-            break;
-        }
-    }
     cluster.shutdown().await;
 }
 
+/// Wait for `subscription` to end, failing if it is still open after 30 s.
+async fn assert_ends(subscription: &mut felix_client::Subscription) {
+    let ended = tokio::time::timeout(Duration::from_secs(30), async {
+        while let Ok(Some(_)) = subscription.next_event().await {}
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "the subscription stayed open across an owner change"
+    );
+}
+
 /// **An owner cut off from the control plane stops acknowledging once its
-/// lease lapses**, though it keeps running and nothing else serves the shard
-/// from its view. Without this two brokers could both acknowledge writes for
+/// lease lapses, and ends its readers saying so**, though it keeps running
+/// and nothing else serves the shard from its view. Without this two brokers could both acknowledge writes for
 /// one in-memory shard after it is placed again.
 #[serial]
 #[tokio::test]
 async fn an_in_memory_owner_cut_off_from_the_control_plane_refuses_after_its_lease() {
     let cluster = Cluster::start(config(true)).await.expect("start cluster");
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    let before = assignment(&cluster).await;
+    let owner = before.leader.clone();
     cluster
         .publish_via(&owner, STREAM, b"before".to_vec())
         .await
         .expect("publish while whole");
+    let (_client, mut subscription) = cluster
+        .subscribe_on(&owner, STREAM)
+        .await
+        .expect("subscribe on the owner");
 
     for fault in Fault::partition(Endpoint::node(&owner), Endpoint::ControlPlane) {
         cluster.inject(&fault).await.expect("inject");
@@ -225,6 +209,23 @@ async fn an_in_memory_owner_cut_off_from_the_control_plane_refuses_after_its_lea
     assert!(
         cluster.node(&owner).expect("owner").is_running(),
         "the owner should still be running: only its control-plane link was cut",
+    );
+    // The live owner says why its reader ended: the shard has no owner it
+    // can name, as of the generation it served. A cut-off broker knows no
+    // newer one.
+    assert_ends(&mut subscription).await;
+    let moved = subscription
+        .shard_moved()
+        .expect("the reader is told the shard left its owner");
+    assert_eq!(
+        moved.resume_from, None,
+        "an in-memory stream has no offsets"
+    );
+    assert!(
+        moved.generation >= before.generation,
+        "ended at generation {} below the served {}",
+        moved.generation,
+        before.generation,
     );
 
     cluster.heal_all().await.expect("heal");
