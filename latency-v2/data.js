@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795555206558,
+  "lastUpdate": 1795557876564,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86460,6 +86460,72 @@ window.BENCHMARK_DATA = {
             "range": "1054.50",
             "unit": "us",
             "extra": "trials: 5\nmedian: 319.00\nmean: 871.40\nstdev: 1054.50\ncv: 121.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d8f429664f949071dbac769d29b27c11bf38aba",
+          "message": "fix(placement): balance a Raft leader onto a broker outside the set (#3113) (#3114)\n\n* fix(raft): route past a placed leader the group has not added yet (#3011)\n\nDuring a move outside the set, placement names the destination leader\nbefore its learner joins, so brokers with no member forwarded there and\ngot not_ready. Forward to a voter the group's leader reported instead,\nand do the same from a non-voter member that knows no leader.\n\n* fix(raft): a member elected here answers not ready instead of forwarding past an old voter report\n\n* test(raft): seat-move voters carry the starts field main added\n\n* fix(placement): balance a Raft leader onto a broker outside the set (#3113)\n\nA drain swaps a broker's follower copies out of every Raft set. Raft\nbalance only renamed leaders within a set, so a broker drained out of\nevery set, e.g. by a shutdown hand-off, never led again after a restart.\n\nWhen a shard's leader leads two or more over a live broker outside the\nset and no member qualifies, balance now swaps the busiest follower for\nthat broker and names it leader in one write, under the follower\nreplacement checks (settled target, every member serving, formed-set\nhold). The group's leader keeps its seat and hands over once the new\ncopy votes.\n\nSpec-Unaffected: placement choice only; the membership steps the group\ntakes are the existing one-member swap.\n\n* fix(placement): keep zones and the shared budget when balancing outside a Raft set\n\nA swap that gives a broker outside the set a follower's seat now never\nleaves a zone-spread set short of a zone, and prefers the follower in the\nnew broker's zone. If every follower is refused, the next candidate is\ntried. The totals rule's stream filter applies per candidate.\n\nAdds tests for every gate: recovering, member not serving, paused, the\nshared per-pass replacement budget, the formed-set hold, max_shards, and\nthe follower choice at RF 3. The next-pass check settles the written\ntarget first. Docs name the zone rule, the shared budget and the RF 1\ngap (#3118).\n\nSpec-Unaffected: placement choice only; the membership steps the group\ntakes are the existing one-member swap.",
+          "timestamp": "2026-11-24T21:55:50Z",
+          "tree_id": "8960b4ae314b394616dd26c94ae7877953a1b6a8",
+          "url": "https://github.com/GetFelix/felix/commit/9d8f429664f949071dbac769d29b27c11bf38aba"
+        },
+        "date": 1795557862267,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.00\nstdev: 1.00\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "3.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 204.40\nstdev: 3.36\ncv: 1.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 251,
+            "range": "124.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 251.00\nmean: 308.40\nstdev: 124.68\ncv: 40.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "11.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 204.40\nstdev: 11.55\ncv: 5.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "171.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 471.20\nstdev: 171.01\ncv: 36.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 601,
+            "range": "1045.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 601.00\nmean: 1244.20\nstdev: 1045.65\ncv: 84.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
