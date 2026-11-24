@@ -222,10 +222,30 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
         24,
         "every publish was answered"
     );
+    // A refusal made during the outage can be answered only now: answers
+    // keep the order the batches took, so it waits behind a held record
+    // that commits once a follower is back. It still wrote nothing.
     for answer in answers {
         let (i, answer) = answer.expect("publish task");
-        answer.unwrap_or_else(|err| panic!("publish {i} was not acknowledged: {err:#}"));
+        match answer {
+            Err(err) if raft && format!("{err:#}").contains("nothing was written") => {}
+            answer => {
+                answer.unwrap_or_else(|err| panic!("publish {i} was not acknowledged: {err:#}"));
+            }
+        }
     }
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a publish acknowledged with the followers back",
+        || async {
+            cluster
+                .publish_via(&leader, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the leader takes publishes once its followers are back");
 }
 
 /// The leader's log still starts at or below `early`, read by a replay.

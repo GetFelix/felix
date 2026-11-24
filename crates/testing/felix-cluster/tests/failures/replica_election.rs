@@ -918,7 +918,7 @@ async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
 /// On Raft: five brokers, RF 5. The leader dies and the two lowest-id
 /// followers stand, unable to reach each other, so neither hears the
 /// other's term; the other two cannot ask for votes, and the candidates'
-/// requests reach them late. Both are seen as candidates at the same term,
+/// requests reach them late over connections both opened beforehand. Both are seen as candidates at the same term,
 /// and no term has two leaders. Nothing acknowledged is lost.
 async fn raft_two_candidates_at_one_term() {
     // Election timeouts of 1 to 1.05 s instead of 1 to 2 s, so the two
@@ -951,6 +951,45 @@ async fn raft_two_candidates_at_one_term() {
         .collect();
     followers.sort();
     let (candidates, voters) = followers.split_at(2);
+
+    // A follower dials the voters only when it campaigns, and a fresh dial
+    // over the late links below outlasts a vote call, so a candidate that
+    // never led would never reach them while one that did would, and win
+    // alone. Both dial now: cut off from the leader's heartbeats they ask
+    // for pre-votes, which the voters, still hearing the leader, refuse.
+    let unheard = Fault::Refuse {
+        node: old.clone(),
+        peers: candidates.to_vec(),
+    };
+    cluster
+        .inject(&unheard)
+        .await
+        .expect("keep the leader's beats from the candidates");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    cluster
+        .heal(&unheard)
+        .await
+        .expect("heal the leader's beats");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the candidates to follow the leader again",
+        || async {
+            for candidate in candidates {
+                let follows = cluster
+                    .raft_member(candidate, STREAM)
+                    .await
+                    .is_some_and(|raft| {
+                        raft.role == "follower" && raft.leader.as_ref() == Some(&old)
+                    });
+                if !follows {
+                    return false;
+                }
+            }
+            true
+        },
+    )
+    .await
+    .expect("the candidates follow the leader");
 
     for fault in Fault::partition(
         Endpoint::node(candidates[0].clone()),

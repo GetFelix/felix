@@ -121,7 +121,7 @@ async fn put_set(cluster: &Cluster, leader: &str, replicas: &[String]) -> anyhow
 /// followers at once and the swap is made as two single-member steps. With
 /// both old followers down, the first step needs a majority of the voters it
 /// leaves, so nothing is acknowledged and the voters stay the old set. Once
-/// one old follower is back it commits, the second step completes the swap,
+/// the follower the step keeps is back it commits, the second step completes the swap,
 /// and the new set acknowledges with both old followers gone.
 async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster) {
     let leader = cluster
@@ -154,7 +154,8 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
         .filter(|id| !old_set.contains(id))
         .collect();
     assert_eq!(spares.len(), 2, "two spares: {spares:?}");
-    let (dropped, kept) = (&old_followers[0], &old_followers[1]);
+    // old_followers[0] is the one the first step drops.
+    let kept = &old_followers[1];
 
     for follower in &old_followers {
         cluster.kill_node(follower).expect("kill an old follower");
@@ -167,7 +168,7 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
         "the control plane took a swap of both followers at once"
     );
 
-    // One step: the dropped follower for the first spare.
+    // One step: the first old follower for the first spare.
     let step = vec![spares[0].clone(), kept.clone()];
     put_set(&cluster, &leader, &step)
         .await
@@ -175,20 +176,6 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
     let mut step_set = step.clone();
     step_set.push(leader.clone());
     let step_set = sorted(step_set);
-    felix_cluster::wait::until(
-        Duration::from_secs(60),
-        "a target naming the first step",
-        || async {
-            cluster
-                .raft_target(STREAM, 0)
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|target| sorted(target.into_keys().collect()) == step_set)
-        },
-    )
-    .await
-    .expect("the step is asked for");
 
     // Long enough for the leader to try the change several times over.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
@@ -218,11 +205,28 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    // The dropped follower back makes an old majority with the leader.
+    // The kept follower back makes an old majority with the leader. It is
+    // the one that must return: a target names every member's copy as that
+    // broker reported it for this set, so no target for the step exists
+    // while a member of it is down.
     cluster
-        .restart_node(dropped)
+        .restart_node(kept)
         .await
         .expect("restart one old follower");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "a target naming the first step",
+        || async {
+            cluster
+                .raft_target(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|target| sorted(target.into_keys().collect()) == step_set)
+        },
+    )
+    .await
+    .expect("the step is asked for");
     felix_cluster::wait::until(
         Duration::from_secs(120),
         "the first step's voters",
@@ -231,10 +235,10 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
     .await
     .expect("the step commits once an old majority is back");
     cluster
-        .kill_node(dropped)
+        .kill_node(kept)
         .expect("kill the restarted old follower");
 
-    // Second step: the kept follower, still down, for the second spare. The
+    // Second step: the kept follower, down again, for the second spare. The
     // reported voters keep the leader and the first spare, a majority of the
     // new set; the control plane may refuse until that report lands.
     felix_cluster::wait::until(Duration::from_secs(60), "the second step taken", || async {

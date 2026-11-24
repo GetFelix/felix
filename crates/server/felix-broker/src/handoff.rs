@@ -33,6 +33,10 @@ pub struct ShardMoved {
 pub(crate) enum Ending {
     /// The shard went elsewhere.
     Moved(ShardHandoff),
+    /// This broker stopped leading the shard and does not know who leads it
+    /// now. Readers are told it moved with no `resume_from`: its log past
+    /// what they were offered may be cut by the next leader.
+    Deposed,
     /// The stream was deleted.
     Deleted,
 }

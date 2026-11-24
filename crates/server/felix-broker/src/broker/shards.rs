@@ -158,6 +158,27 @@ impl Broker {
             })
     }
 
+    /// End every subscription this broker serves on one stream shard it
+    /// has stopped leading, telling each reader the shard moved so it
+    /// subscribes again wherever the shard is led now. Unlike a move, no
+    /// resume offset is given: the reader resumes after the last record it
+    /// saw. Returns how many ended.
+    pub async fn end_deposed_subscriptions(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> usize {
+        self.topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .map_or(0, |state| {
+                state.end_subscribers(Some(crate::handoff::Ending::Deposed))
+            })
+    }
+
     /// Drop the batches one stream shard holds back from readers, and its
     /// replay ring. For a shard this broker has stopped leading: what it
     /// held was never committed under its leadership. Returns how many

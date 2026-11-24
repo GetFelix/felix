@@ -206,9 +206,14 @@ impl ClusterSubscription {
                 }
                 return Ok(Some(event));
             }
-            let Some(moved) = self.subscription.shard_moved().cloned() else {
+            let Some(mut moved) = self.subscription.shard_moved().cloned() else {
                 return Ok(None);
             };
+            // A move with no `resume_from` (a deposed leader's) resumes after
+            // the last event; with none delivered, where this one started.
+            if self.last_offset.is_none() && moved.resume_from.is_none() {
+                moved.resume_from = self.subscription.start_offset();
+            }
             let cluster = Arc::clone(&self.cluster);
             let last_offset = self.last_offset;
             let (tenant_id, namespace, stream, shard) = self.shard_key();
