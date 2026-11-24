@@ -21,6 +21,16 @@ thread_local! {
     pub(super) static SYNC_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Make `forget_boot`'s in-place cut fail.
     pub(super) static CUT_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The point in `begin`'s rotation where an injected crash stops it.
+    static CRASH_AT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Stop `begin` as a crash at `point` would.
+pub(super) fn crash_point(point: u8) -> Result<()> {
+    if CRASH_AT.with(std::cell::Cell::get) == point {
+        return Err(StorageError::Io(std::io::Error::other("injected crash")));
+    }
+    Ok(())
 }
 
 fn syncs() -> u32 {
@@ -1197,4 +1207,26 @@ fn a_clean_restart_keeps_the_evidence() {
         relaxed_crash_sources(dir.path()).expect("read"),
         vec![first.id]
     );
+}
+
+/// A crash on either side of a relaxed crash's rotation leaves the evidence
+/// whole, so the next start still names every id the crashes rotated away.
+#[test]
+fn a_crash_during_the_rotation_keeps_the_evidence() {
+    for point in [1, 2] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fresh = counter(0);
+        let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+        let second = begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+        CRASH_AT.with(|at| at.set(point));
+        let cut = begin(dir.path(), PERIODIC, None, BOOT, no_repair, &mut fresh);
+        CRASH_AT.with(|at| at.set(0));
+        assert!(cut.is_err(), "point {point}");
+        let again = Some(BootId::from_bytes([3; 16]));
+        let third = begin_in(dir.path(), PERIODIC, again, &mut fresh);
+        assert!(third.rotated, "point {point}");
+        let sources = relaxed_crash_sources(dir.path()).expect("read");
+        assert!(sources.contains(&second.id), "point {point}: {sources:?}");
+        assert!(sources.contains(&first.id), "point {point}: {sources:?}");
+    }
 }

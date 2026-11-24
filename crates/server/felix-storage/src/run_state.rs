@@ -265,9 +265,21 @@ pub fn begin(
         };
     let rotate = restored || crashed;
     let id = if rotate {
+        let next = fresh();
+        // Before the new id: a crash after the rotation but before the
+        // evidence would keep every standalone shard held, with no operator
+        // way out. Evidence naming an id never installed is void, and the
+        // retry's record keeps its chain.
+        if matches!(last_run, LastRun::Crashed { relaxed: true, .. }) {
+            record_relaxed_crash(root, loaded, StorageId::from_bytes(next))?;
+        }
+        #[cfg(test)]
+        tests::crash_point(1)?;
         // Before the new id: a crash in between must not leave a rotated
         // directory whose copies a later clean start still trusts.
-        let id = copy_trust::rotate_storage_id(root, fresh())?;
+        let id = copy_trust::rotate_storage_id(root, next)?;
+        #[cfg(test)]
+        tests::crash_point(2)?;
         if restored {
             tracing::warn!(
                 previous = %loaded,
@@ -285,11 +297,6 @@ pub fn begin(
                 "the last run on this data directory did not stop cleanly and may have lost \
                  records it acknowledged; gave it a new storage id, so peers copy it again"
             );
-        }
-        // After the new id: a crash in between leaves no evidence, which
-        // only keeps a standalone shard held.
-        if matches!(last_run, LastRun::Crashed { relaxed: true, .. }) {
-            record_relaxed_crash(root, loaded, id)?;
         }
         id
     } else {
@@ -575,6 +582,11 @@ const RELAXED_CRASHES_KEPT: usize = 8;
 fn record_relaxed_crash(root: &Path, from: StorageId, to: StorageId) -> Result<()> {
     let mut sources = match read_relaxed_crash(root)? {
         Some((head, sources)) if head == from => sources,
+        // A record for a rotation from `from` that a crash cut short.
+        Some((_, mut sources)) if sources.first() == Some(&from) => {
+            sources.remove(0);
+            sources
+        }
         _ => Vec::new(),
     };
     sources.insert(0, from);
