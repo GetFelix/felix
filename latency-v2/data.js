@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795549143222,
+  "lastUpdate": 1795555206558,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86394,6 +86394,72 @@ window.BENCHMARK_DATA = {
             "range": "278.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 448.00\nmean: 554.00\nstdev: 278.28\ncv: 50.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fe02aef8cc047be8eb5caffc639516577d361a02",
+          "message": "fix(raft): a cache op before its member opens is refused, not written to the hybrid store (#3121) (#3125)\n\n* fix(raft): a cache op before its member opens is refused, not written to the hybrid store (#3121)\n\nOn a Raft broker a cache or counter operation for a shard with no member open fell through to the hybrid stores. The acked write was never served, and its directory kept the shard from opening on Raft. It is now refused as not ready, and the hybrid cache and counter stores open no log by themselves on a Raft broker.\n\n* chore: mark the cache fall-through fix as outside the modelled Raft core\n\nSpec-Unaffected: the refusal sits in request routing and store opening, before any Raft step; the modelled log, commit and election rules are unchanged.",
+          "timestamp": "2026-11-24T21:13:42Z",
+          "tree_id": "b6fe50a5462815eba0a1ec34e4871d48e2182df8",
+          "url": "https://github.com/GetFelix/felix/commit/fe02aef8cc047be8eb5caffc639516577d361a02"
+        },
+        "date": 1795555187664,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 64.60\nstdev: 1.67\ncv: 2.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 87,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 86.60\nstdev: 1.67\ncv: 1.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 115,
+            "range": "8.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 117.20\nstdev: 8.93\ncv: 7.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "6.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 86.00\nstdev: 6.82\ncv: 7.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "725.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 505.80\nstdev: 725.76\ncv: 143.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 319,
+            "range": "1054.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 319.00\nmean: 871.40\nstdev: 1054.50\ncv: 121.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
