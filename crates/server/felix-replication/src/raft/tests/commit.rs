@@ -945,13 +945,47 @@ async fn an_unanswered_read_on_a_lapsed_lease_is_refused_promptly() {
         matches!(unconfirmed, Err(CommitError::TimedOut { what: "read", .. })),
         "{unconfirmed:?}"
     );
+    // One round, then one more round's wait for any answer.
     let lease = timers().lease;
     assert!(
-        took < lease + Duration::from_secs(1),
+        took < 2 * lease + Duration::from_secs(1),
         "the read waited {took:?} for a majority that was not there"
+    );
+    assert!(
+        matches!(unconfirmed, Err(CommitError::TimedOut { timeout, .. }) if timeout < election_max),
+        "the error names the election timeout, not the wait: {unconfirmed:?}"
     );
 
     led.heal();
+    led.cluster.stop().await;
+}
+
+/// A majority that answers only after a round gave up is asked again, so a
+/// slow but present majority still serves the read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_majority_answering_after_the_round_gave_up_serves_the_read() {
+    let election_max = Duration::from_secs(10);
+    let mut led = led_with(RuntimeConfig {
+        election_min: Duration::from_secs(8),
+        election_max,
+        ..timers()
+    })
+    .await;
+    // Past openraft's lease, so the read needs a round.
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(election_max + Duration::from_millis(100)).await;
+    led.cluster.net.cut.lock().clear();
+    // The first round's answers land after it gave up; later ones are quick.
+    *led.cluster.net.answer_after.lock() = Some(timers().lease + Duration::from_millis(300));
+    let reading = {
+        let engine = led.engine.clone();
+        let term = led.term;
+        tokio::spawn(async move { engine.confirm_read(&shard(0), term).await })
+    };
+    tokio::time::sleep(timers().lease / 2).await;
+    *led.cluster.net.answer_after.lock() = None;
+    let read = reading.await.expect("read task");
+    assert_eq!(read, Ok(()));
     led.cluster.stop().await;
 }
 

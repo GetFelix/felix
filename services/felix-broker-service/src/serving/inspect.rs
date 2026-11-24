@@ -99,12 +99,23 @@ pub(crate) async fn inspect(
         observed.committed = marks.offset(key, route.generation);
     }
     observed.raft = publish_ctx.engine.raft_view(key);
-    // Only a log this broker has open: opening one would create it.
-    if key.kind == ShardKind::Stream
-        && let Some(log) = broker.durable_storage().and_then(|storage| {
+    // Only a log this broker has open: opening one would create it. A Raft
+    // shard's log is opened at its incarnation, so it is found through the
+    // shard this broker serves rather than by the unversioned path.
+    let opened = match key.kind {
+        ShardKind::Stream => match broker.durable_storage().and_then(|storage| {
             storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-        })
-    {
+        }) {
+            Some(log) => Some(log),
+            None => {
+                broker
+                    .served_stream_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await
+            }
+        },
+        ShardKind::Cache => None,
+    };
+    if let Some(log) = opened {
         observed.tail = log.tail_offset().await.ok();
         observed.accepted_generation = Some(log.accepted_generation());
     }
