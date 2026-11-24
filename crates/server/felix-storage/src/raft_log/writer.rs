@@ -296,7 +296,7 @@ where
         let cuts = log.cuts();
         let mut pending = None;
         for mut batch in earlier.into_iter().chain([batch]) {
-            let (appended, records) = write_until_taken(log, &mut batch)
+            let (appended, records) = write_until_taken(log, &shared.stopping, &mut batch)
                 .await?
                 .ok_or_else(|| {
                     invalid(format!(
@@ -636,8 +636,8 @@ async fn reform_gap(dir: &std::path::Path, tail: Offset, first: Offset) -> io::R
 /// past it, a stopped member is easier to see than one that hangs.
 const REFUSED_WRITE_RETRY: Duration = Duration::from_secs(60);
 
-/// Write `batch`, trying again while the disk refuses it and the log is
-/// still sound.
+/// Write `batch`, trying again while the disk refuses it, the log is still
+/// sound and the member is not stopping.
 ///
 /// openraft stops a member for good on any append error, and a refused
 /// write is not worth that: the log cut the half-written batch off again,
@@ -646,13 +646,16 @@ const REFUSED_WRITE_RETRY: Duration = Duration::from_secs(60);
 /// error goes to openraft and the member stops. A refused entry is never
 /// reported written while this waits, and the member answers nobody, so it
 /// counts toward no majority. Once the disk takes it, it is an entry like
-/// any other.
+/// any other. A member being stopped gets the disk's error at once, since
+/// its stop waits for this append.
 async fn write_until_taken(
     log: &DiskLog,
+    stopping: &tokio::sync::watch::Sender<bool>,
     batch: &mut Batch,
 ) -> io::Result<Option<(PendingAppend, Vec<AppendRecord>)>> {
     let give_up = tokio::time::Instant::now() + REFUSED_WRITE_RETRY;
     let mut backoff = Duration::from_millis(10);
+    let mut stop = stopping.subscribe();
     loop {
         let refused = match log
             .append_pending_at_keeping(
@@ -667,6 +670,7 @@ async fn write_until_taken(
         };
         let retry = matches!(refused.error, StorageError::Io(_) | StorageError::Full(_))
             && !log.is_poisoned()
+            && !*stop.borrow()
             && tokio::time::Instant::now() < give_up;
         match refused.records {
             Some(records) if retry => batch.records = records,
@@ -678,7 +682,10 @@ async fn write_until_taken(
             error = %refused.error,
             "a Raft log write was refused; retrying"
         );
-        tokio::time::sleep(backoff).await;
+        tokio::select! {
+            () = tokio::time::sleep(backoff) => {}
+            _ = stop.wait_for(|stopping| *stopping) => return Err(io_error(refused.error)),
+        }
         backoff = (backoff * 2).min(Duration::from_secs(1));
     }
 }

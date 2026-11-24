@@ -428,7 +428,16 @@ impl LogInner {
         // past it, and a flush may already have covered it.
         let mut segments = self.segments.write();
         let segment = segments.active().id();
-        let ((first_offset, last_offset), index) = segments.active_mut().finish(staged, wrote)?;
+        let ((first_offset, last_offset), index) = match segments.active_mut().finish(staged, wrote)
+        {
+            Ok(finished) => finished,
+            Err(err) => {
+                // A failed rewind poisons the writer; the log must say so, or
+                // a caller retrying a refused write would build on it.
+                self.poison_after_writer_failure(&segments);
+                return Err(err);
+            }
+        };
         self.observe_marks(first_offset, records, digests);
         self.records_written
             .fetch_add(records.len() as u64, Ordering::Relaxed);
@@ -821,10 +830,10 @@ impl LogInner {
     }
 
     /// Poison the log if the active writer has poisoned itself, which it does
-    /// when one of its own syncs fails.
+    /// when one of its own syncs, or the rewind after a failed write, fails.
     pub(super) fn poison_after_writer_failure(&self, segments: &SegmentSet) {
         if segments.active().is_poisoned() {
-            self.poison("a sync of the active segment failed".to_string());
+            self.poison("a sync or rewind of the active segment failed".to_string());
         }
     }
 
