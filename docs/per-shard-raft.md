@@ -4774,10 +4774,9 @@ later by no report a Raft shard sends:
 
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
-alone and only names the member it wants leading. It never adds or removes a
-member of a shard it has placed, except that it swaps out a follower on an
-internal node and drops the copy a move from
-an older control plane added:
+alone and names the member it wants leading. It changes a placed shard's
+set only by the one-member swaps below, and drops the copy a move from an
+older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
@@ -4794,6 +4793,15 @@ an older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
+- A balance pass gives a seat to a live broker outside the set when it
+  leads two fewer than the shard's leader and no member does (#3113). A
+  broker a drain swapped out of every set, then restarted, is that broker:
+  renaming within sets would never give it a shard again. One write swaps
+  the busiest follower for it and names it leader, under the same checks as
+  a follower replacement. The group's leader keeps its seat, adds the new
+  copy as a learner, swaps the voters, and hands leadership over once the
+  copy votes and has caught up. A copy the broker kept from before its drain
+  rejoins under its old copy id with its log intact.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement

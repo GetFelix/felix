@@ -624,6 +624,107 @@ fn a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set() {
     );
 }
 
+/// Shard `shard` of `orders` on `leader` and `follower` alone, with its
+/// target stored for that set and the group formed on it.
+fn pair_of(shard: u32, leader: &str, follower: &str) -> ShardAssignment {
+    let mut assignment = member_of(shard, leader);
+    assignment.replicas = vec![follower.to_string()];
+    let members: BTreeMap<String, u64> = [(leader.to_string(), 7), (follower.to_string(), 7)]
+        .into_iter()
+        .collect();
+    assignment.raft_target.as_mut().unwrap().members = members.clone();
+    assignment.raft_voters.as_mut().unwrap().members = members.clone();
+    assignment.raft_copy_ids = members;
+    assignment
+}
+
+/// **A broker back from a drain leads again (#3113).** The drain swapped it
+/// out of every set, so no member can take a leader off a broker that leads
+/// two more than it. Balance gives it a follower's seat and names it leader
+/// in one write; the group's leader stays a voter and hands over once the
+/// new copy votes.
+#[test]
+fn a_raft_leader_balances_onto_a_broker_that_holds_no_seat() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let existing = vec![
+        pair_of(0, "broker-c", "broker-b"),
+        pair_of(1, "broker-b", "broker-c"),
+        pair_of(2, "broker-b", "broker-c"),
+    ];
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    let moves: Vec<_> = plan.moves().collect();
+    assert_eq!(moves.len(), 1, "{plan:?}");
+    let (key, step, written) = moves[0];
+    let before = existing.iter().find(|a| &a.key == key).unwrap();
+    assert_eq!(before.leader, "broker-b");
+    assert_eq!(
+        step,
+        &MoveStep::RaftReplace {
+            from: "broker-c".to_string(),
+            to: "broker-a".to_string()
+        }
+    );
+    assert_eq!(written.leader, "broker-a");
+    assert_eq!(written.replicas, vec!["broker-b".to_string()]);
+    assert_eq!(written.raft_target, before.raft_target);
+
+    // Balanced once the write lands: the next pass moves nothing.
+    let after: Vec<ShardAssignment> = existing
+        .iter()
+        .map(|a| {
+            if &a.key == key {
+                written.clone()
+            } else {
+                a.clone()
+            }
+        })
+        .collect();
+    let again = plan_with(&streams, &[], &live(&ABC), &after, &NothingCaughtUp, raft());
+    assert_eq!(again.moves().count(), 0, "{again:?}");
+}
+
+/// The seat moves only on a settled set: one change at a time.
+#[test]
+fn a_raft_leader_balances_outside_its_set_only_once_the_set_settles() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let mut existing = vec![
+        pair_of(0, "broker-c", "broker-b"),
+        pair_of(1, "broker-b", "broker-c"),
+        pair_of(2, "broker-b", "broker-c"),
+    ];
+    for assignment in &mut existing {
+        assignment.raft_target = None;
+    }
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    let waiting: Vec<_> = plan.waiting().collect();
+    assert!(
+        !waiting.is_empty()
+            && waiting
+                .iter()
+                .all(|(_, why)| matches!(why, Blocked::TargetUnsettled)),
+        "{plan:?}"
+    );
+}
+
 /// With no broker outside the set, a drained follower stays, and the shard
 /// says why.
 #[test]

@@ -284,6 +284,16 @@ impl Cluster {
     /// role and term. `None` when the broker cannot be asked or runs no
     /// Raft member for it.
     pub async fn raft_member(&self, node: &str, name: &str) -> Option<felix_wire::InspectedRaft> {
+        self.raft_member_of(node, name, 0).await
+    }
+
+    /// [`Self::raft_member`] for shard `shard`.
+    pub async fn raft_member_of(
+        &self,
+        node: &str,
+        name: &str,
+        shard: u32,
+    ) -> Option<felix_wire::InspectedRaft> {
         let addr = self.node(node)?.client_addr;
         let client = crate::client::connect(addr, &self.tenant_id, &self.inspector_token())
             .await
@@ -294,7 +304,7 @@ impl Cluster {
                 &self.tenant_id,
                 &self.namespace,
                 name,
-                0,
+                shard,
             )
             .await;
         drop(client);

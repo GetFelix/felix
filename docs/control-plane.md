@@ -1841,6 +1841,7 @@ copy has to move:
 | --- | --- | --- |
 | Balance, drain or operator move to a member | Stage, fence, cut over | One write that changes only `leader`, to another member |
 | Operator move outside the set | Copied in first | One write that gives the destination the leader's seat and names it leader |
+| Balance with no member to take a leader | As any balance move | One write that swaps a follower for a live broker outside the set, two or more leaders under the leader, and names it leader (#3113) |
 | Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
 | Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
 | Follower on an internal node | Replaced | Replaced, the same way |
@@ -1887,6 +1888,13 @@ placement reports, until it is back or the group is re-formed without it;
 `docs/per-shard-raft.md` has the steps. A removed copy keeps
 its directory: nothing deletes it yet.
 
+When the leader leads two or more shards over a live broker outside the
+set and no member qualifies, balance swaps the busiest follower for that
+broker and names it leader in one write, under the same checks as a
+follower replacement. The group's leader keeps its seat and hands
+leadership over once the new copy votes. This is how a broker a drain
+swapped out of every set, and then restarted, gets shards back (#3113).
+
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
 leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
@@ -1906,8 +1914,12 @@ shard".
 > `an_operator_moves_a_raft_leader_to_a_member_in_one_write`,
 > `an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat`,
 > `a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set`,
-> `a_raft_follower_lost_past_the_delay_is_replaced` and
-> `a_drain_on_a_raft_cluster_finishes_through_the_store`.
+> `a_raft_follower_lost_past_the_delay_is_replaced`,
+> `a_drain_on_a_raft_cluster_finishes_through_the_store`,
+> `a_raft_leader_balances_onto_a_broker_that_holds_no_seat` and
+> `a_raft_leader_balances_outside_its_set_only_once_the_set_settles`;
+> `crates/testing/felix-cluster/tests/routing/shutdown_handoff.rs`,
+> `a_broker_drained_out_of_every_set_leads_again_after_a_restart`.
 
 #### Adopting an elected leader
 

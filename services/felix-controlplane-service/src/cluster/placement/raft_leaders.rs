@@ -123,7 +123,12 @@ pub(super) fn raft_step<'a>(
                 .filter(|to| leaders.of(key, to) < leaders.of(key, leader))
         });
         match to {
-            None => return Decision::Kept,
+            None => {
+                return balanced_outside(
+                    existing, is_serving, counted, leaders, moves, eligible, load,
+                )
+                .unwrap_or(Decision::Kept);
+            }
             Some(_) if moves.recovering => return Decision::Waiting(Blocked::Recovering),
             Some(to) => to,
         }
@@ -153,6 +158,93 @@ pub(super) fn raft_step<'a>(
         },
         led_by(existing, to),
     )
+}
+
+/// Balance onto a live broker outside the set, when it leads two fewer than
+/// the leader and no member does: one write gives it a follower's seat and
+/// names it leader. A broker a drain swapped out of every set holds no
+/// member anywhere, so renaming within sets alone would never give it a
+/// shard again (#3113). The group's leader keeps its seat: it adds the new
+/// copy, swaps the follower out, and hands over once the copy votes.
+/// `None` when no such broker exists, or the shard has no follower to give.
+fn balanced_outside<'a>(
+    existing: &'a ShardAssignment,
+    is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    moves: &mut Moves,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+) -> Option<Decision> {
+    let key = &existing.key;
+    let leader = existing.leader.as_str();
+    let roles = |id: &str| load.get(id).copied().unwrap_or(0);
+    let outside: Vec<&'a str> = eligible
+        .iter()
+        .filter(|node| {
+            node.spec
+                .capacity
+                .max_shards
+                .is_none_or(|max| roles(&node.node_id) < max)
+        })
+        .map(|node| node.node_id.as_str())
+        .filter(|id| !existing.nodes().any(|member| member == id))
+        .collect();
+    let under = |count: &dyn Fn(&str) -> u32| {
+        outside
+            .iter()
+            .copied()
+            .min_by_key(|node| (count(node), u64::MAX - score(key, node), *node))
+            .filter(|to| count(to).saturating_add(2) <= count(leader))
+    };
+    let for_stream = under(&|node| leaders.of(key, node));
+    moves.stream_wanted |= for_stream.is_some();
+    let to = for_stream.or_else(|| {
+        moves
+            .cluster_moves
+            .then(|| under(&|node| leaders.total(node)))
+            .flatten()
+            .filter(|to| leaders.of(key, to) < leaders.of(key, leader))
+    })?;
+    // The busiest follower gives its seat up.
+    let from = existing
+        .replicas
+        .iter()
+        .filter(|node| !existing.learners.contains(*node))
+        .min_by_key(|node| (u32::MAX - roles(node), score(key, node), node.as_str()))?;
+    if moves.recovering || existing.nodes().any(|node| !is_serving(node)) {
+        return Some(Decision::Waiting(Blocked::Recovering));
+    }
+    if let Err(blocked) = seat_open(existing) {
+        return Some(Decision::Waiting(blocked));
+    }
+    let next = ShardAssignment {
+        leader: to.to_string(),
+        replicas: existing
+            .replicas
+            .iter()
+            .map(|node| if node == from { leader } else { node })
+            .map(str::to_string)
+            .collect(),
+        ..existing.renamed()
+    };
+    // The store refuses the write on the same check (#2905).
+    if existing.holds_formed_set(&next.nodes().cloned().collect()) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    let step = MoveStep::RaftReplace {
+        from: from.clone(),
+        to: to.to_string(),
+    };
+    let decision = spend_replacement(moves, step, next);
+    if matches!(decision, Decision::Move(..)) {
+        *load.entry(to).or_default() += 1;
+        if counted(leader) {
+            leaders.remove(Owner::of(key), leader);
+        }
+        leaders.add(Owner::of(key), to);
+    }
+    Some(decision)
 }
 
 /// Ends the move of an RF 1 shard, which placement grew to its leader and
