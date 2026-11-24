@@ -77,6 +77,7 @@ tasks:
       - |
         suite="{{.SUITE}}"
         if [ "$suite" != rest ]; then
+          if [ "$suite" = failures ]; then cargo test -p felix-cluster --test "$suite" -- --nocapture; exit; fi
           cargo test -p felix-cluster --test "$suite"
           exit
         fi
