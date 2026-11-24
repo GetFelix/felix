@@ -5,7 +5,8 @@
 //! report shows it holding that generation's start.
 //!
 //! Run with `cargo test -p felix-cluster --test failures learners::`.
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use felix_controlplane_service::model::ShardAssignment;
@@ -52,18 +53,203 @@ async fn acknowledged(cluster: &Cluster, node: &str, payload: &str) -> bool {
         .is_ok()
 }
 
+/// The copy id each voter of the group runs under, as its leader last
+/// reported to the control plane.
+async fn raft_voters(cluster: &Cluster) -> BTreeMap<String, u64> {
+    assignment(cluster)
+        .await
+        .raft_voters
+        .map(|voters| voters.members)
+        .unwrap_or_default()
+}
+
+/// Every `record-` payload `node` replays from the start, retried while it
+/// opens, once it holds all [`RECORDS`].
+async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let mut payloads = Vec::new();
+        if let Ok((_client, mut subscription)) = cluster.replay_on(node, STREAM).await {
+            while let Ok(Ok(Some(event))) =
+                tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
+            {
+                let payload = String::from_utf8_lossy(&event.payload).into_owned();
+                if payload.starts_with("record-") {
+                    payloads.push(payload);
+                }
+                if payloads.len() == RECORDS {
+                    return payloads;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{node} never served every acknowledged record: {payloads:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// The Raft form. A wiped follower the leader cannot reach comes back under
+/// a new copy id and the leader dies: the follower that kept its log and the
+/// wiped one are two of three brokers, but the group counts only the old
+/// copy id, so nothing leads and nothing is acknowledged. Once the old leader
+/// is back the group swaps the new copy id in, and from then on the wiped
+/// copy counts: with the other voter down it and the leader are a majority.
+async fn raft_wiped_copy_counts_once_swapped_in(mut cluster: Cluster) {
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("a serving leader");
+    for i in 0..RECORDS {
+        cluster
+            .publish_via(&leader, STREAM, format!("record-{i}").into_bytes())
+            .await
+            .expect("publish");
+    }
+    let leader = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds the records");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != leader)
+        .collect();
+    let (stays, wiped) = (followers[0].clone(), followers[1].clone());
+    let old_copy = felix_cluster::wait::until_some(
+        Duration::from_secs(30),
+        "the leader to report all three voters",
+        || async {
+            let voters = raft_voters(&cluster).await;
+            (voters.len() == 3 && voters.contains_key(&leader) && voters.contains_key(&stays))
+                .then(|| voters.get(&wiped).copied())
+                .flatten()
+        },
+    )
+    .await
+    .expect("three voters");
+
+    // The leader must not reach the wiped copy, or it would swap the new
+    // copy id in before the failover this test is about.
+    let refused = Fault::Refuse {
+        node: leader.clone(),
+        peers: vec![wiped.clone()],
+    };
+    cluster.inject(&refused).await.expect("inject");
+    cluster.stop_node(&wiped).await.expect("kill the follower");
+    let storage = cluster.node(&wiped).expect("wiped").storage_dir();
+    std::fs::remove_dir_all(&storage).expect("wipe its storage");
+    cluster.restart_node(&wiped).await.expect("restart it");
+    cluster.run_placement(Duration::from_millis(200));
+    cluster.stop_node(&leader).await.expect("kill the leader");
+
+    // The hazard: both survivors run members, and `stays` counts all three
+    // brokers as voters, so if the wiped copy voted under its old seat
+    // `stays` would be elected on it.
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "both survivors to run members, the wiped one among the voters by name",
+        || async {
+            let Some(at_stays) = cluster.raft_member(&stays, STREAM).await else {
+                return false;
+            };
+            cluster.raft_member(&wiped, STREAM).await.is_some()
+                && [&leader, &stays, &wiped]
+                    .iter()
+                    .all(|node| at_stays.voters.iter().any(|voter| voter == *node))
+        },
+    )
+    .await
+    .expect("the hazard is set up");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    while tokio::time::Instant::now() < deadline {
+        for node in [&stays, &wiped] {
+            let role = cluster
+                .raft_member(node, STREAM)
+                .await
+                .map(|raft| raft.role);
+            assert_ne!(
+                role.as_deref(),
+                Some("leader"),
+                "{node} led with the wiped copy counted"
+            );
+            assert!(
+                !acknowledged(&cluster, node, "no-majority").await,
+                "{node} acknowledged with one voter of three"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    cluster
+        .restart_node(&leader)
+        .await
+        .expect("restart the old leader");
+    cluster.heal(&refused).await.expect("heal");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "a leader to serve once the old one is back",
+        || async {
+            let Ok(serving) = cluster.serving_leader(STREAM, Duration::from_secs(5)).await else {
+                return false;
+            };
+            acknowledged(&cluster, &serving, "after-restart").await
+        },
+    )
+    .await
+    .expect("serving with two voters");
+    let new_copy = felix_cluster::wait::until_some(
+        Duration::from_secs(90),
+        "the group to count the wiped broker under its new copy id",
+        || async {
+            raft_voters(&cluster)
+                .await
+                .get(&wiped)
+                .copied()
+                .filter(|copy| *copy != old_copy)
+        },
+    )
+    .await
+    .expect("the wiped copy is swapped in");
+    assert_ne!(new_copy, old_copy);
+
+    // Now it counts: with the other old voter down, the serving leader and
+    // the swapped-in copy are a majority.
+    let serving = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("a serving leader");
+    let down = if serving == stays { &leader } else { &stays };
+    cluster.stop_node(down).await.expect("kill the other voter");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "an acknowledgement counting the swapped-in copy",
+        || async {
+            let Ok(serving) = cluster.serving_leader(STREAM, Duration::from_secs(5)).await else {
+                return false;
+            };
+            acknowledged(&cluster, &serving, "counted").await
+        },
+    )
+    .await
+    .expect("the swapped-in copy counts");
+    let all: Vec<String> = (0..RECORDS).map(|i| format!("record-{i}")).collect();
+    assert_eq!(replay(&cluster, &wiped).await, all);
+    cluster.shutdown().await;
+}
+
 /// Wipe a follower the leader cannot reach, fail the leader over, and follow
 /// the wiped copy from learner to voter. Before it is re-admitted the new
 /// leader cannot serve with the old leader down; after, it can.
 #[serial]
 #[tokio::test]
 async fn a_wiped_follower_counts_only_once_it_holds_the_start() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "hybrid learners and the start record; a Raft member that lost its log is caught up by the leader before it votes in a majority",
-    ) {
+    let mut cluster = start().await;
+    if felix_cluster::suite_runs_on_raft() {
+        raft_wiped_copy_counts_once_swapped_in(cluster).await;
         return;
     }
-    let mut cluster = start().await;
     let leader = cluster.owner(STREAM).await.expect("owner");
     for i in 0..RECORDS {
         cluster
