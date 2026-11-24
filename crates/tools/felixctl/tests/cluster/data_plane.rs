@@ -79,17 +79,26 @@ async fn publish_subscribe_cache_and_topology_against_a_cluster() {
         .ok();
     assert_eq!(run.stdout, "one\n");
 
-    // `earliest` starts at offset 0, whichever record that is.
-    let run = env
-        .felixctl(
-            &cluster,
-            &[
-                "sub", "orders", "--from", "earliest", "--count", "1", "--json",
-            ],
-        )
-        .await
-        .ok();
-    assert_eq!(run.json()["offset"], 0, "{}", run.stdout);
+    // `earliest` starts where the untrimmed log starts, whichever record that
+    // is. On Raft the log opens with generation-start records that are never
+    // delivered, so the first event is the one a read from offset 0 gets.
+    let read_first = |from: &'static str| {
+        let env = &env;
+        let cluster = &cluster;
+        async move {
+            env.felixctl(
+                cluster,
+                &["sub", "orders", "--from", from, "--count", "1", "--json"],
+            )
+            .await
+            .ok()
+            .json()
+        }
+    };
+    let earliest = read_first("earliest").await;
+    assert_eq!(earliest, read_first("0").await);
+    assert_eq!(earliest["payload"], "harness-probe", "{earliest}");
+    assert!(earliest["offset"].as_u64().unwrap() < first, "{earliest}");
 
     let run = env
         .felixctl(

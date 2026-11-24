@@ -376,6 +376,35 @@ fn a_raft_member_reports_the_role_its_group_gave_it() {
     }
 }
 
+/// **A Raft leader lists the members its group replicates to**, which no
+/// replication board holds, and a follower lists none.
+#[test]
+fn a_raft_leader_reports_its_groups_members() {
+    let member = |node: &str, state: &str| felix_wire::InspectedReplica {
+        node_id: node.to_string(),
+        role: "follower".to_string(),
+        next_offset: None,
+        lag: None,
+        fence: None,
+        state: state.to_string(),
+        halted: None,
+    };
+    let members = vec![
+        member("broker-b", "shipping"),
+        member("broker-c", "stalled"),
+    ];
+    let observed = |role: &str| Observed {
+        node_id: Some(ME.to_string()),
+        shards: 1,
+        route: Some(route(ME, 0)),
+        raft: Some(raft_member(role, ME)),
+        raft_replicas: (role == "leader").then(|| members.clone()),
+        ..Observed::default()
+    };
+    assert_eq!(build(observed("leader")).replicas, members);
+    assert!(build(observed("follower")).replicas.is_empty());
+}
+
 /// **A Raft shard's leader reports its log's tail.** The log is opened at the
 /// shard's incarnation, which the unversioned lookup does not find.
 #[cfg(feature = "raft")]

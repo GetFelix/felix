@@ -1373,6 +1373,32 @@ async fn a_raft_group_past_its_own_entries_is_not_above_the_tail() {
         .expect("described");
     let committed = snapshot.committed.expect("a cursor");
     assert!(committed <= tail, "committed {committed} above tail {tail}");
+
+    // A group placed at latest now stands where describe says it does.
+    let late = "late-group";
+    let placed = seek(
+        &broker,
+        &publish_ctx,
+        None,
+        "t1",
+        "ns",
+        "orders",
+        0,
+        late,
+        StartPosition::Latest,
+        false,
+    )
+    .await
+    .expect("sought");
+    let (snapshot, tail) = describe(&broker, &publish_ctx, "t1", "ns", "orders", 0, late)
+        .await
+        .expect("described");
+    assert_eq!(
+        snapshot.committed,
+        Some(placed.offset),
+        "latest vs describe"
+    );
+    assert_eq!(placed.offset, tail, "latest is the records' end");
     EngineShards::shutdown(&*shards).await;
 }
 

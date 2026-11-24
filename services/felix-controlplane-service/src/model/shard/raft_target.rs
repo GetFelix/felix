@@ -257,6 +257,14 @@ impl ShardAssignment {
         matches!(self.formed_voters(), Some(Some(voters)) if !keeps_majority(voters, copies, &set))
     }
 
+    /// Whether the voters a leader of this record's formed group last
+    /// reported, at its incarnation and epoch, include `node` under the copy
+    /// id it reported. No report is no evidence, so it is `false`.
+    pub(crate) fn reports_voting(&self, node: &str) -> bool {
+        matches!(self.formed_voters(), Some(Some(voters))
+            if self.raft_copy_ids.get(node).is_some_and(|copy| voters.members.get(node) == Some(copy)))
+    }
+
     /// `None` when this record's group has not formed; otherwise the voters
     /// its leader reported at this incarnation and epoch, if any.
     fn formed_voters(&self) -> Option<Option<&RaftVoters>> {

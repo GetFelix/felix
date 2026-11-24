@@ -114,7 +114,8 @@ impl MoveClock {
             | MoveStep::FenceTimedOut { .. }
             | MoveStep::LeaderGaveUp { .. }
             | MoveStep::Discard { .. }
-            | MoveStep::RaftMoveDropped => {
+            | MoveStep::RaftMoveDropped
+            | MoveStep::RaftMoveUndone { .. } => {
                 self.moves.remove(key);
                 None
             }
