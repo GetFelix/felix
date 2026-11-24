@@ -1190,12 +1190,11 @@ impl EngineShards for RaftShards {
                     .is_some_and(|status| status.leader.is_none());
                 if leaderless && key.kind == ShardKind::Stream {
                     self.broker
-                        .end_subscriptions(
+                        .end_deposed_subscriptions(
                             &key.tenant_id,
                             &key.namespace,
                             &key.stream,
                             key.shard,
-                            None,
                         )
                         .await;
                 }
@@ -1239,8 +1238,10 @@ impl EngineShards for RaftShards {
                 };
                 taken.push((key.clone(), assignment.routing));
                 placed.insert(key.clone(), assignment.leader.clone());
+                // Over the count is an RF 1 shard mid-move: its group already
+                // formed, and the destination must report its copy to join.
                 let full = wanted
-                    .is_some_and(|wanted| brokers_of(&assignment).len() == wanted.max(1) as usize);
+                    .is_some_and(|wanted| brokers_of(&assignment).len() >= wanted.max(1) as usize);
                 if let Some(wanted) = wanted {
                     wanted_rf.insert(key.clone(), wanted);
                 }
@@ -2052,8 +2053,10 @@ impl WriteFence for Leading {
             broker
                 .follow_engine_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await;
+            // Told the shard moved, so a client follows it to the next
+            // leader instead of reading a clean end.
             broker
-                .end_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
+                .end_deposed_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await;
             let mut ending = ending.lock();
             if let Some(left) = ending.get_mut(&key) {

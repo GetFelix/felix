@@ -2827,6 +2827,12 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
         ended.expect("ended in time").is_none(),
         "a record reached a deposed leader's subscriber"
     );
+    // Told the shard moved, so a client follows it; no resume offset, since
+    // the next leader may cut this log past what the reader was offered.
+    let moved = receiver
+        .moved()
+        .expect("the subscriber was told the shard moved");
+    assert_eq!(moved.resume_from, None);
     // The member still follows a leader, so a reader registering now is
     // served from the log.
     assert!(

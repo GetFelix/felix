@@ -1,0 +1,1 @@
+- On a Raft cache shard, two concurrent writes through the same broker could hand the later one a floor past the earlier one, so the earlier write was answered "the shard holds no answer for a write it was sent once" without being applied. A write now takes its sequence and its place among the waiting writes under one lock.

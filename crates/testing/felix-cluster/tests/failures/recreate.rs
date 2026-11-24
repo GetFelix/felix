@@ -80,6 +80,15 @@ async fn publish(cluster: &Cluster, values: &[&str]) {
 
 /// Every follower holds the leader's tail, and none halted.
 async fn every_copy_level(cluster: &Cluster) {
+    if felix_cluster::suite_runs_on_raft() {
+        // A Raft group reports nothing to the control plane; a leader with a
+        // caught-up majority is the same state.
+        cluster
+            .wait_for_replication(STREAM, Duration::from_secs(30))
+            .await
+            .unwrap_or_else(|err| panic!("{err:#}"));
+        return;
+    }
     felix_cluster::wait::until(Duration::from_secs(30), "every copy level", || async {
         cluster.place_shards().await;
         cluster
@@ -146,6 +155,36 @@ async fn a_recreated_quorum_stream_replicates_on_a_new_cluster() {
     publish(&cluster, &["new-a", "new-b"]).await;
     every_copy_level(&cluster).await;
 
+    if felix_cluster::suite_runs_on_raft() {
+        // The leader holds the new stream's two records and none of the
+        // deleted stream's four.
+        let leader = cluster
+            .serving_leader(STREAM, Duration::from_secs(30))
+            .await
+            .expect("leader");
+        let held = felix_cluster::wait::until_some(
+            Duration::from_secs(30),
+            "the new records to replay",
+            || async {
+                let (_client, mut replay) = cluster.replay_on(&leader, STREAM).await.ok()?;
+                let mut held = Vec::new();
+                while let Ok(Ok(Some(event))) =
+                    tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
+                {
+                    held.push(String::from_utf8_lossy(&event.payload).to_string());
+                }
+                held.contains(&"new-b".to_string()).then_some(held)
+            },
+        )
+        .await
+        .expect("replay the new stream");
+        assert!(
+            held.contains(&"new-a".to_string()) && !held.iter().any(|v| v.starts_with("old-")),
+            "the new stream holds the deleted one's records: {held:?}"
+        );
+        cluster.shutdown().await;
+        return;
+    }
     let report = cluster
         .replica_report(STREAM, 0)
         .await

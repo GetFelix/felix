@@ -83,7 +83,10 @@ async fn writer_trim(
     // retry from. Bounded, since the owner may not have opened the shard yet.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let owner = cluster.owner(STREAM).await.expect("owner");
+        let owner = cluster
+            .serving_leader(STREAM, Duration::from_secs(30))
+            .await
+            .expect("owner");
         let addr = cluster.node(&owner).expect("owner node").client_addr;
         let attempt = async {
             let writer = felix_cluster::client::connect_cluster(
@@ -113,29 +116,6 @@ async fn writer_trim(
     }
 }
 
-async fn replicated_to_all(cluster: &Cluster, leader: &str, shipped_before: f64) {
-    felix_cluster::wait::until(
-        Duration::from_secs(30),
-        "the records to be shipped and acknowledged",
-        || async {
-            let shipped = cluster
-                .metric(leader, "felix_broker_replication_shipped_total")
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or(0.0);
-            let lag = cluster
-                .metric(leader, "felix_broker_replication_lag_records")
-                .await
-                .ok()
-                .flatten();
-            shipped > shipped_before && lag == Some(0.0)
-        },
-    )
-    .await
-    .expect("replication should reach the followers");
-}
-
 /// **A committed trim outlives its leader.** Ten records are published and the
 /// first six trimmed. After the leader is killed, the promoted broker still
 /// refuses a read below the floor, names the trim that set it, serves every
@@ -155,7 +135,10 @@ async fn a_trim_holds_on_the_leader_promoted_after_it() {
         .finalize_fleet_features(&["head_trim"], Duration::from_secs(30))
         .await
         .expect("finalize head_trim");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("owner");
     // The harness may have written a probe of its own, so offsets are
     // relative to where the first publish landed.
     let mut base = None;
@@ -198,12 +181,6 @@ async fn a_trim_holds_on_the_leader_promoted_after_it() {
         }
     );
 
-    let shipped_before = cluster
-        .metric(&leader, "felix_broker_replication_shipped_total")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0.0);
     for i in 0..2 {
         let offset = cluster
             .publish_via_at(&leader, STREAM, format!("after-{i}").into_bytes())
@@ -215,19 +192,18 @@ async fn a_trim_holds_on_the_leader_promoted_after_it() {
             "the trim record took an offset"
         );
     }
-    replicated_to_all(&cluster, &leader, shipped_before).await;
+    // Settled on a majority, so the leader killed next loses nothing a client
+    // was told is durable.
+    cluster
+        .wait_for_replication(STREAM, Duration::from_secs(30))
+        .await
+        .expect("replication should reach the followers");
 
     cluster.kill_node(&leader).expect("kill the leader");
-    felix_cluster::wait::until(Duration::from_secs(30), "a new leader", || async {
-        cluster.place_shards().await;
-        cluster
-            .owner(STREAM)
-            .await
-            .is_ok_and(|owner| owner != leader)
-    })
-    .await
-    .expect("a replica should have been promoted");
-    let promoted = cluster.owner(STREAM).await.expect("owner");
+    let promoted = cluster
+        .promoted_leader(STREAM, &leader, Duration::from_secs(30))
+        .await
+        .expect("a replica should have been promoted");
 
     let floor = floor_on(&cluster, &promoted, base + 2).await;
     assert_eq!(floor.available, floor_at, "the floor survives the failover");
@@ -241,14 +217,31 @@ async fn a_trim_holds_on_the_leader_promoted_after_it() {
         .collect();
     assert_eq!(held, expected, "every record above the floor is intact");
 
-    // The old trim is refused by the new leader, and a new one lands.
+    // The old trim is refused by the new leader with its tail. On hybrid
+    // that is the offset after the last record. On Raft each leader's blank
+    // entry takes an offset too, so the tail is past it, and nothing a reader
+    // is sent lies between.
     let stale = writer_trim(&cluster, floor_at, trim_at, Some(HOLDER)).await;
-    assert_eq!(stale, ConditionalTrim::Refused { tail: trim_at + 3 });
-    let next = writer_trim(&cluster, floor_at + 2, trim_at + 3, Some(b"holder-2")).await;
+    let ConditionalTrim::Refused { tail } = stale else {
+        panic!("a stale trim is refused, got {stale:?}");
+    };
+    if felix_cluster::suite_runs_on_raft() {
+        assert!(
+            tail > trim_at + 3,
+            "the promoted leader's blank took an offset: {tail}"
+        );
+        let between = read_until_served(&cluster, &promoted, trim_at + 3)
+            .await
+            .expect("read past the last record");
+        assert_eq!(between, Vec::new(), "only blanks follow the last record");
+    } else {
+        assert_eq!(tail, trim_at + 3);
+    }
+    let next = writer_trim(&cluster, floor_at + 2, tail, Some(b"holder-2")).await;
     assert_eq!(
         next,
         ConditionalTrim::Trimmed {
-            offset: Some(trim_at + 3),
+            offset: Some(tail),
             oldest: floor_at + 2
         }
     );

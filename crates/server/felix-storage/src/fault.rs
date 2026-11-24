@@ -25,6 +25,8 @@
 //! - `write=enospc` or `write=eio` fails every segment write with that error
 //!   until the file changes, and `enospc` fails every preallocation too; `write=eio_once` fails the next one only. A new
 //!   `write_generation=<n>` arms `eio_once` again.
+//! - `rewind=fail` fails the rewind that cuts a failed segment write back
+//!   off, until the file changes.
 //! - `write_delay_ms=<u64>` delays every segment write, the way a write blocks
 //!   once the kernel throttles a process that dirties pages faster than the
 //!   device takes them.
@@ -62,6 +64,8 @@ static WRITE_DELAY_MICROS: AtomicU64 = AtomicU64::new(0);
 static FSYNC_FAILURE: AtomicU8 = AtomicU8::new(FsyncFailure::None as u8);
 /// A [`WriteFailure`], as its discriminant.
 static WRITE_FAILURE: AtomicU8 = AtomicU8::new(WriteFailure::None as u8);
+/// The rewind after a failed segment write fails.
+static REWIND_FAILURE: AtomicBool = AtomicBool::new(false);
 
 static FROM_ENV: Once = Once::new();
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
@@ -231,6 +235,7 @@ pub(crate) fn refresh() {
     if rearms_write(follower.applied.as_ref(), &setting) {
         set_write_failure(setting.write);
     }
+    REWIND_FAILURE.store(setting.rewind_fails, Ordering::Release);
     follower.applied = Some(setting);
 }
 
@@ -269,6 +274,11 @@ pub(crate) fn injected_write_failure() -> Option<std::io::Error> {
             .then(eio),
         _ => None,
     }
+}
+
+/// The error the rewind after a failed segment write should report, if any.
+pub(crate) fn injected_rewind_failure() -> Option<std::io::Error> {
+    REWIND_FAILURE.load(Ordering::Acquire).then(eio)
 }
 
 /// `ENOSPC` while a full disk is injected, for a reservation of blocks.
@@ -331,6 +341,7 @@ pub(crate) struct FileSetting {
     pub(crate) write: WriteFailure,
     pub(crate) write_generation: u64,
     pub(crate) write_delay: Duration,
+    pub(crate) rewind_fails: bool,
 }
 
 impl Default for FileSetting {
@@ -342,6 +353,7 @@ impl Default for FileSetting {
             write: WriteFailure::None,
             write_generation: 0,
             write_delay: Duration::ZERO,
+            rewind_fails: false,
         }
     }
 }
@@ -378,6 +390,7 @@ impl FileSetting {
                         _ => WriteFailure::None,
                     }
                 }
+                "rewind" => setting.rewind_fails = value == "fail",
                 "write_generation" => setting.write_generation = value.parse().unwrap_or(0),
                 "write_delay_ms" => {
                     if let Ok(ms) = value.parse() {

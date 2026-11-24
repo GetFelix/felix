@@ -3728,8 +3728,11 @@ broker's lease and the hybrid's fence are not asked.
   until it hears its leader, up to one idle heartbeat.
 - A leader that is deposed ends the subscribers of its term, because
   records it had not seen committed may be replaced, and a gap would read
-  as a drop. They can subscribe again to the same broker, which now serves
-  them from its log. A subscribe that registers after the deposal is kept.
+  as a drop. Each is told `shard_moved` with no `resume_from` and no
+  owner named, so a cluster client subscribes again after the last record
+  it saw, through any broker; the same one now serves it from its log. A
+  member that knows no leader ends its subscribers the same way. A
+  subscribe that registers after the deposal is kept.
 - A resume offset past the end of a follower's log is answered with a
   redirect to the leader, with the leader's client address, since the
   leader may hold records the follower has not received yet. An offset
@@ -4804,8 +4807,25 @@ an older control plane added:
   then hands leadership to the new broker once it has caught up. It is
   refused while a member is not serving (`member_down`), while the target is
   not stored for the current set (`set_unsettled`), and while the
-  destination is still a learner (`not_a_member`), and for a one-member group
-  (`single_member`; moving one is not supported yet).
+  destination is still a learner (`not_a_member`).
+- An RF 1 shard keeps its leader and grows to the destination first, since
+  one voter has no voter to share with the next set. Placement shrinks the
+  set to the destination once the leader reports its copy voting, and the
+  store's formed-set hold refuses that write any earlier (#3012).
+- An RF 1 move is undone, back to the old broker alone, when the destination
+  stops being live before it votes (down, draining or gone), or when an
+  operator moves the shard back to the old broker (step `raft_move_undone`).
+  The store takes that write because the old broker is a reported voter.
+  This is also how a drain of the old broker gets past a move that cannot
+  finish. A draining destination that already votes is undone the same way,
+  since it still serves and can vote for its own removal.
+- Once the destination votes, the group has two voters and either set of one
+  needs both. If the destination is then down, placement waits and says why
+  ("votes in this group of two and is not serving"), and an operator move
+  back is refused with `member_down`.
+  The shard serves again when the broker comes back, or after a re-form
+  without it ([Re-forming a group](#re-forming-a-group)): `felixctl raft
+  reform plan --scope node <destination>`, then `felixctl raft reform apply`.
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 
