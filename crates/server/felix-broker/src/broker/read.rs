@@ -27,8 +27,9 @@ impl Broker {
     /// acknowledged before the read is readable. A page that reaches what is
     /// committed comes back short, or empty, with `next_offset` where to ask
     /// again. Only records that will stay are returned: on a `Quorum` shard
-    /// nothing at or past the committed mark, and under `FsyncMode::OnCommit`
-    /// nothing not yet synced.
+    /// nothing at or past the committed mark, on an engine's log nothing past
+    /// its commit, and otherwise under `FsyncMode::OnCommit` nothing not yet
+    /// synced.
     ///
     /// [`BrokerError::CursorTooOld`] when `from` is below what retention kept,
     /// [`BrokerError::CursorInFuture`] when it is past the log's tail,
@@ -73,12 +74,15 @@ impl Broker {
                 tail,
             });
         }
-        let readable = log.readable_end(committed_tail(
-            handle.state.read_bound(),
-            tail,
-            stream,
-            shard,
-        )?);
+        let committed = committed_tail(handle.state.read_bound(), tail, stream, shard)?;
+        // An engine's bound is its commit, which a majority synced first. This
+        // member's own copy may still be unsynced, and cutting the page there
+        // hides a record whose publish was already answered (#3115).
+        let readable = if handle.state.engine_log {
+            committed
+        } else {
+            log.readable_end(committed)
+        };
         let stop = end.map_or(readable, |end| end.min(readable));
         if from >= stop || max_records == 0 {
             return Ok(ReadPage {

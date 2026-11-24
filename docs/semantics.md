@@ -456,11 +456,15 @@ throughput rather than correctness.
   with no added latency. If a failed flush poisons a `Leader` stream's log,
   its readers stop at the last durable offset from then on: the batch whose
   flush failed was refused, and no reader sees it.
+  On Raft every level reads to the commit, and a `stream_read` sent after a
+  publish was acknowledged includes that record, on a member that has not
+  synced its own copy yet too: the commit already needed a majority to hold it.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
-  > `a_promoted_leader_with_no_majority_yet_refuses_reads`.
+  > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
+  > `a_read_shows_a_committed_record_the_member_has_not_synced`.
 - **Replayed history is never dropped.** The overflow policy governs live
   records only. History below the join's `live_offset` is read off disk for
   that subscriber alone, so there is no publisher to protect: it waits for room

@@ -3075,6 +3075,47 @@ async fn a_periodic_quorum_stream_is_answered_on_a_written_majority() {
     stop(&members).await;
 }
 
+/// **A member that applied a committed record serves it to a read even
+/// before its own copy is synced (#3115), leader or follower.** The commit
+/// already needed a majority to sync it, so a page cut at this member's sync
+/// would answer an acknowledged publish with an empty page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_shows_a_committed_record_the_member_has_not_synced() {
+    for lagging_leader in [false, true] {
+        let (_net, members, leader) = trio_at(ConsistencyLevel::Quorum).await;
+        let term = members[leader].shards.leading(&key("orders", 0));
+        let term = term.expect("term");
+        members[leader].publish(term, b"s0").await;
+
+        let lagging = if lagging_leader {
+            leader
+        } else {
+            (leader + 1) % members.len()
+        };
+        let log = members[lagging].shards.log_of(&key("orders", 0)).await;
+        let log = log.expect("open");
+        let held = log.hold_flushes().await;
+        let offset = members[leader].publish(term, b"s1").await;
+        until("the unsynced member applies the publish", || {
+            members[lagging].bound() > offset
+        })
+        .await;
+        let page = members[lagging]
+            .broker
+            .read_range("t1", "ns", "orders", 0, offset, None, 10, 1 << 20)
+            .await
+            .expect("read");
+        let first = page.records.first().map(|record| record.offset);
+        assert_eq!(
+            first,
+            Some(offset),
+            "an acknowledged record was not read (leader unsynced: {lagging_leader})"
+        );
+        drop(held);
+        stop(&members).await;
+    }
+}
+
 /// **A relaxed broker's shard commits before any follower fsyncs once the
 /// fleet finalized `raft_written_commit`.** Its Raft logs open with the
 /// broker's own mode, so a written majority is a commit.
