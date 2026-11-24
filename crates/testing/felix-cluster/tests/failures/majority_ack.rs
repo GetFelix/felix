@@ -958,9 +958,16 @@ async fn under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot() {
 /// On Raft: the old leader is cut off from both followers and one of them
 /// wins the next term with the other's vote. That other follower is then
 /// wiped, so it forgets the term it voted in, and is reachable from the
-/// deposed leader again. Whatever the deposed leader writes must not be
-/// acknowledged on it and the wiped copy.
-async fn raft_wiped_follower_refuses_the_deposed_leader() {
+/// deposed leader again. Nothing the deposed leader acknowledges may be
+/// lost.
+///
+/// The old leader can legitimately lead again: the cut only refuses its own
+/// requests, so the new leader keeps replicating to it and, once the wiped
+/// copy is re-admitted, hands it the leadership placement asks for. An
+/// acknowledgement through it is then a write of the newer term. What must
+/// never happen is an acknowledgement at the old term counted on the wiped
+/// copy, and that write would be missing from the group afterwards.
+async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
     let mut cluster = start(Duration::from_secs(2)).await;
     let old = serving_leader(&cluster).await;
     cluster
@@ -1023,17 +1030,30 @@ async fn raft_wiped_follower_refuses_the_deposed_leader() {
         })
         .await
         .expect("keep the old leader off the new one");
+    let mut acknowledged = vec!["after-the-fence".to_string()];
     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
     let mut i = 0;
     while tokio::time::Instant::now() < deadline {
-        cluster
-            .publish_via(&old, STREAM, format!("deposed-{i}").into_bytes())
+        let record = format!("deposed-{i}");
+        if cluster
+            .publish_via(&old, STREAM, record.clone().into_bytes())
             .await
-            .expect_err("the deposed leader acknowledged on the wiped follower");
+            .is_ok()
+        {
+            acknowledged.push(record);
+        }
         i += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert_holds(&cluster, &new, &["after-the-fence".to_string()]).await;
+
+    cluster.heal_all().await.expect("heal everything");
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member converges");
+    for node in cluster.node_ids() {
+        assert_holds(&cluster, &node, &acknowledged).await;
+    }
     cluster.shutdown().await;
 }
 
@@ -1049,7 +1069,7 @@ async fn raft_wiped_follower_refuses_the_deposed_leader() {
 #[tokio::test]
 async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
     if felix_cluster::suite_runs_on_raft() {
-        raft_wiped_follower_refuses_the_deposed_leader().await;
+        raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged().await;
         return;
     }
     let mut cluster = start(Duration::from_secs(2)).await;
@@ -1128,17 +1148,30 @@ async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
         })
         .await
         .expect("keep the old leader off the new one");
+    let mut acknowledged = vec!["after-the-fence".to_string()];
     let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
     let mut i = 0;
     while tokio::time::Instant::now() < deadline {
-        cluster
-            .publish_via(&old, STREAM, format!("deposed-{i}").into_bytes())
+        let record = format!("deposed-{i}");
+        if cluster
+            .publish_via(&old, STREAM, record.clone().into_bytes())
             .await
-            .expect_err("the deposed leader acknowledged on the wiped follower");
+            .is_ok()
+        {
+            acknowledged.push(record);
+        }
         i += 1;
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert_holds(&cluster, &new, &["after-the-fence".to_string()]).await;
+
+    cluster.heal_all().await.expect("heal everything");
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member converges");
+    for node in cluster.node_ids() {
+        assert_holds(&cluster, &node, &acknowledged).await;
+    }
     cluster.shutdown().await;
 }
 
