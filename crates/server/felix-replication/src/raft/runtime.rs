@@ -1237,6 +1237,15 @@ impl GroupRuntime {
         }
     }
 
+    /// Why `shard`'s member here stopped, if its core stopped on a storage
+    /// error. Such a member answers nothing until it is closed and opened
+    /// again: openraft never restarts a core. The open recovers the copy from
+    /// disk as after a crash, so it rejoins with only what its disk holds.
+    /// See `docs/per-shard-raft.md`, "A member that stops on a storage error".
+    pub fn storage_failure(&self, shard: &ShardKey) -> Option<String> {
+        self.inner.registry.get(shard)?.storage_failure()
+    }
+
     /// The brokers that vote in `shard`'s group, as this member's log has
     /// them. Empty until the member has heard from a group.
     pub fn voters(&self, shard: &ShardKey) -> Option<BTreeSet<MemberId>> {
