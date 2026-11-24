@@ -43,6 +43,7 @@ pub(crate) mod copy_id;
 pub(crate) mod floor;
 mod groups;
 pub(crate) mod reform_survey;
+mod restart;
 pub(crate) use groups::Groups as RaftGroups;
 
 /// How long a leader that could not move its stream to the committed tail
@@ -116,6 +117,8 @@ pub(crate) struct RaftShards {
     carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Limits the warning for a shard whose open waits on the open-file limit.
     held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
+    /// Members closed after their core stopped on a storage error.
+    restarts: parking_lot::Mutex<restart::Restarts>,
     /// This broker's part of each applied re-form plan, from the latest
     /// `start` survey, keyed by shard with the incarnation and the epoch it
     /// starts. The feed pass starts a stopped copy from it.
@@ -294,6 +297,7 @@ impl RaftShards {
             carried_over: parking_lot::Mutex::default(),
             short_warned: parking_lot::Mutex::default(),
             held_warn: parking_lot::Mutex::default(),
+            restarts: parking_lot::Mutex::default(),
             reform_starts: Arc::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
@@ -958,6 +962,22 @@ impl RaftShards {
         }
     }
 
+    /// [`Self::close_member`], and for a stream shard its stream too, which
+    /// ends its readers; a later open starts from the log again.
+    async fn close_with_stream(&self, key: &ShardKey, member: Member) {
+        self.close_member(key, member).await;
+        if key.kind == ShardKind::Cache {
+            return;
+        }
+        if let Err(err) = self
+            .broker
+            .close_stream_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
+            .await
+        {
+            tracing::warn!(shard = ?key, error = %err, "could not close a Raft shard's stream");
+        }
+    }
+
     /// The route for a Raft shard with no member open here, or with one
     /// that knows no leader and is not a reported voter (a learner joining).
     /// `None` for a shard the feed has not placed on Raft.
@@ -1333,25 +1353,25 @@ impl EngineShards for RaftShards {
                 let Some(member) = open.remove(&key) else {
                     continue;
                 };
-                self.close_member(&key, member).await;
-                if key.kind == ShardKind::Cache {
-                    continue;
-                }
-                // Ends the readers; a later open starts from the log again.
-                if let Err(err) = self
-                    .broker
-                    .close_stream_shard(
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        None,
-                    )
-                    .await
-                {
-                    tracing::warn!(shard = ?key, error = %err, "could not close a Raft shard's stream");
-                }
+                self.close_with_stream(&key, member).await;
             }
+            // openraft never restarts a core that stopped on a storage
+            // error, and the member answers nothing until it is opened
+            // again. It is closed here and opened below, from disk as after
+            // a crash, once the disk takes writes.
+            let failed: Vec<(ShardKey, String)> = open
+                .keys()
+                .filter_map(|key| Some((key.clone(), self.runtime.storage_failure(key)?)))
+                .collect();
+            for (key, why) in failed {
+                let Some(member) = open.remove(&key) else {
+                    continue;
+                };
+                tracing::warn!(shard = ?key, error = %why, "a Raft member stopped on a storage error; it opens again from disk once the disk takes writes");
+                self.restarts.lock().stopped(&key);
+                self.close_with_stream(&key, member).await;
+            }
+            self.restarts.lock().retain(|key| fed.contains_key(key));
             self.runtime.retain_admitted(|key| fed.contains_key(key));
             *self.unplaced.lock() = fed
                 .iter()
@@ -1362,6 +1382,9 @@ impl EngineShards for RaftShards {
                 .collect();
             let mut off_placement = 0_u32;
             let mut short: Vec<ShortShard> = Vec::new();
+            // One probe per pass: every shard shares the root, and each heal
+            // costs a write, an fsync and a directory sync.
+            let mut healed: Option<Result<(), String>> = None;
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
                 let held = || ShortShard {
@@ -1391,10 +1414,37 @@ impl EngineShards for RaftShards {
                         }
                         continue;
                     }
+                    if !self.restarts.lock().due(key) {
+                        if keep {
+                            short.push(held());
+                        }
+                        continue;
+                    }
+                    // A failed mark log stops every member on the root, and
+                    // a fresh one cannot open on it either.
+                    if (self.restarts.lock().restarting(key) || root.mark_log().failure().is_some())
+                        && let Err(err) = match &healed {
+                            Some(done) => done.clone(),
+                            None => {
+                                let done = root.heal().await.map_err(|err| err.to_string());
+                                healed = Some(done.clone());
+                                done
+                            }
+                        }
+                    {
+                        if self.held_warn.lock().due(key) {
+                            tracing::warn!(shard = ?key, error = %err, "a Raft member waits for its disk to take writes again before it opens");
+                        }
+                        if keep {
+                            short.push(held());
+                        }
+                        continue;
+                    }
                     match self.open_member(key, assignment, root).await {
                         Ok(member) => {
                             self.carried_over.lock().remove(key);
                             self.held_warn.lock().clear(key);
+                            self.restarts.lock().reopened(key);
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.

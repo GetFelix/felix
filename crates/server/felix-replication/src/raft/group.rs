@@ -1835,6 +1835,15 @@ impl Group {
         &self.copy
     }
 
+    /// Why the member's core stopped, if it stopped on a storage error.
+    pub(crate) fn storage_failure(&self) -> Option<String> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        match &self.raft.metrics().borrow_watched().running_state {
+            Err(openraft::error::Fatal::StorageError(err)) => Some(err.to_string()),
+            _ => None,
+        }
+    }
+
     /// Cancelled when the member is shut down.
     pub(crate) fn stopped(&self) -> CancellationToken {
         self.stop.clone()

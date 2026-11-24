@@ -45,7 +45,12 @@ read back or delivered on replay. Only a refusal before anything is written
 (an authorization, validation or idempotent-sequence error) means the record
 does not exist. A failed fsync also stops that shard's log: every later write
 to it fails until the broker restarts and recovery reads back what actually
-reached the disk.
+reached the disk. A per-shard Raft member does not wait for the restart: once
+the disk takes writes it reopens as a new copy (the old directory is kept
+as `.kept`). With other copies alive it catches up from its group. With one
+copy, or when every copy rotated, the shard is held until an operator
+re-forms it (`docs/per-shard-raft.md`, "Re-forming a group"); it never
+serves an empty log.
 
 > Held by `crates/server/felix-storage/src/disk_log/` recovery tests, including
 > `a_crash_before_the_header_is_written_leaves_the_log_openable`,

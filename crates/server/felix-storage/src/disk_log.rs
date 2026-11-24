@@ -1607,6 +1607,11 @@ impl DiskLog {
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             extensions_done: AtomicU64::new(0),
+            ring_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            fake_ring: Mutex::new(None),
+            #[cfg(test)]
+            flush_thread_only: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "fault-injection"))]
@@ -2497,6 +2502,16 @@ struct LogInner {
     /// Reservation extensions that have finished, whether or not they reserved.
     #[cfg(test)]
     extensions_done: AtomicU64,
+    /// Held from submitting a ring fsync until the ring answers it, so this
+    /// log never has two in the ring at once (see `flush::ring_fsync`).
+    ring_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Replaces the io_uring flusher for tests on every platform.
+    #[cfg(test)]
+    fake_ring: Mutex<Option<flush::FakeRing>>,
+    /// Keeps this log's flushes on the flush thread even while another test
+    /// forces the ring for the whole process.
+    #[cfg(test)]
+    flush_thread_only: std::sync::atomic::AtomicBool,
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
