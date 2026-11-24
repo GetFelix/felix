@@ -312,7 +312,7 @@ async fn a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap() {
     };
     let lost = elsewhere.publish(1, &[b"b"]).await;
     assert!(
-        matches!(lost, Err(CommitError::LeadershipLost { .. })),
+        matches!(lost, Err(CommitError::NotAppended { .. })),
         "{lost:?}"
     );
     let next = producer.propose(2, &[b"d"], SequenceReuse::Refuse).await;

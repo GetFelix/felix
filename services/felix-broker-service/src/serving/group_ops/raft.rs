@@ -116,10 +116,24 @@ impl OnRaft {
             .map_err(|_| crate::shards::lifecycle::fence::Fenced::NotServing.into())
     }
 
+    /// The tail, held to what this member has applied. Call it after a read
+    /// index ([`Self::confirmed_end`] or a group read), or a publish
+    /// acknowledged before the call can be above it.
     async fn read_end(&self, publish_ctx: &PublishContext) -> Result<u64, ClientError> {
         let committed = self.committed(publish_ctx)?;
         let tail = self.log.tail_offset().await.map_err(storage)?;
         Ok(tail.min(committed))
+    }
+
+    /// [`Self::read_end`] after a read index, so it covers every publish
+    /// acknowledged before the call. Fails, retryably, when no majority
+    /// confirms this leader in time.
+    async fn confirmed_end(&self, publish_ctx: &PublishContext) -> Result<u64, ClientError> {
+        self.groups
+            .confirm(&self.key, self.deadline())
+            .await
+            .map_err(broker)?;
+        self.read_end(publish_ctx).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -287,7 +301,7 @@ impl OnRaft {
         if_new: bool,
     ) -> Result<felix_broker::Seek, ClientError> {
         let earliest = self.log.readable_base();
-        let latest = self.read_end(publish_ctx).await?;
+        let latest = self.confirmed_end(publish_ctx).await?;
         let offset = super::seek_offset(start, earliest, latest, self.key.shard)?;
         self.groups
             .seek(&self.key, offset, if_new, self.deadline())
@@ -299,16 +313,23 @@ impl OnRaft {
         &self,
         publish_ctx: &PublishContext,
     ) -> Result<(felix_broker::GroupSnapshot, u64), ClientError> {
-        let snapshot = self
+        let mut snapshot = self
             .groups
             .describe(&self.key, self.deadline())
             .await
             .map_err(broker)?;
         // Group writes are entries of the shard's log but hold no record, so
-        // the tail stops before the trailing ones: a group that has settled
-        // everything shows no lag, as on the hybrid.
+        // the tail stops before the trailing ones, as on the hybrid. A poll
+        // settles the trailing ones too, so the cursor can pass that point;
+        // it then reports the records' end, which is still true of it. The
+        // describe ran a read index, so the end covers every acknowledged
+        // publish.
         let end = self.read_end(publish_ctx).await?;
-        Ok((snapshot, publish_ctx.engine.records_end(&self.shard, end)))
+        let records_end = publish_ctx.engine.records_end(&self.shard, end);
+        if let Some(committed) = snapshot.committed.as_mut() {
+            *committed = (*committed).min(records_end);
+        }
+        Ok((snapshot, records_end))
     }
 
     pub(super) async fn delete(&self) -> Result<bool, ClientError> {

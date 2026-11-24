@@ -340,7 +340,9 @@ have to make yourself:
 - **Losing one shard's owner does not tear down the others.** That shard is
   re-established on its own, resuming after the last offset it delivered, and
   you are told with `ShardLost` and `ShardRecovered` rather than left to infer
-  it from a gap.
+  it from a gap. When the broker lost is the entry broker, which can be serving
+  every shard's feed, the client first moves to another broker it knows and
+  each shard is re-established from there, following redirects to its owner.
 
 It needs a broker advertising `FEATURE_STREAM_SHARDS`, because the shard count
 comes from asking one. A broker that has never heard of the stream reports zero

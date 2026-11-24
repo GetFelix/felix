@@ -4987,7 +4987,8 @@ static void faults(const struct fixture *f, const char *run) {
     SCENARIO_END("error.shard_unavailable_is_retryable");
   }
 
-  /* The leader wrote it and cannot say whether it will survive. */
+  /* The leader cannot say whether the write will survive. FELIX_STATUS_OUTCOME_UNKNOWN
+     covers both quorum_timeout and leadership_lost. */
   code = control_post(f, "/partition", body, sizeof body);
   if (code < 200 || code > 299) {
     char reason[2200];

@@ -6,13 +6,18 @@
 //! states and hold it there:
 //!
 //! - `/fence` stops the movable stream's shard halfway through a move, with
-//!   its owner fenced, and answers once that owner refuses publishes.
-//! - `/partition` cuts the quorum stream's leader off from its followers, and
-//!   answers once a publish through it fails.
+//!   its owner fenced, and answers once that owner refuses publishes. On Raft
+//!   no move happens: every broker is cut off from the others, and it answers
+//!   once the owner refuses proposals as unwritten.
+//! - `/partition` cuts the quorum stream's leader off from its followers and
+//!   answers at once. The first publish through it is proposed, and times out
+//!   without a majority.
 //! - `/link` breaks the connections through the link interposer, with a body
 //!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
 //!   once; a drop or a stall heals itself after `hold_ms`.
-//! - `/heal` undoes all of them.
+//! - `/heal` undoes all of them. After a Raft `/fence` it also waits for the
+//!   movable stream to take a write, so no probe left with an unknown outcome
+//!   lands in it afterwards.
 //! - `POST /tokens` mints a token for the fixture tenant with the same grants
 //!   as `token`, with a body of `{"ttl_secs": N, "forged": false}`, and
 //!   answers `{"token", "ttl_secs"}`. A suite uses a short life to make a
@@ -63,6 +68,9 @@ pub(crate) struct Control {
     movable_stream: String,
     quorum_stream: String,
     drained: Mutex<Option<String>>,
+    /// Set once `/fence` on Raft has sent probes whose outcome may have been
+    /// unknown, for `/heal` to settle.
+    probed: AtomicBool,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +124,7 @@ impl Control {
             movable_stream: movable_stream.to_string(),
             quorum_stream: quorum_stream.to_string(),
             drained: Mutex::new(None),
+            probed: AtomicBool::new(false),
         }
     }
 
@@ -190,6 +199,9 @@ async fn fence(State(control): State<Arc<Control>>) -> Answer {
         let _pass = control.placement.lock().await;
         control.hold.store(true, Ordering::SeqCst);
     }
+    if felix_cluster::suite_runs_on_raft() {
+        return fence_raft(&control).await;
+    }
     let owner = control
         .cluster
         .fence_shard(&control.movable_stream)
@@ -202,6 +214,52 @@ async fn fence(State(control): State<Arc<Control>>) -> Answer {
         .await
         .map_err(failed)?;
     Ok(Json(control.target(&owner)))
+}
+
+/// A Raft shard has no fenced state to hold open: its leader moves by an
+/// election. What a client sees while nobody serves it is a group with no
+/// majority anywhere, so every broker is cut off from the others. The old
+/// owner stops taking proposals once one has waited past the quorum timeout,
+/// and nothing it refuses then is written. Cutting off the owner alone would
+/// let the other two elect a leader within seconds and end the fence.
+async fn fence_raft(control: &Control) -> Answer {
+    let owner = control
+        .cluster
+        .owner(&control.movable_stream)
+        .await
+        .map_err(failed)?;
+    for node in &control.cluster.nodes {
+        tokio::task::block_in_place(|| control.cluster.partition_node(&node.node_id))
+            .map_err(failed)?;
+    }
+    control.probed.store(true, Ordering::SeqCst);
+    // The first probe may be proposed before the owner notices it has no
+    // majority, and then times out with its outcome unknown. Only the
+    // broker's own retryable answer says nothing was written: two of those
+    // in a row mean it stopped taking writes.
+    let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
+    let mut refused_in_a_row = 0;
+    loop {
+        let probe = control
+            .cluster
+            .publish_via(&owner, &control.movable_stream, b"fixture-probe".to_vec())
+            .await;
+        refused_in_a_row = if probe.as_ref().is_err_and(refused_unwritten) {
+            refused_in_a_row + 1
+        } else {
+            0
+        };
+        if refused_in_a_row == 2 {
+            return Ok(Json(control.target(&owner)));
+        }
+        if Instant::now() >= deadline {
+            return Err(failed(anyhow::anyhow!(
+                "{owner} kept taking publishes to {}",
+                control.movable_stream
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn partition(State(control): State<Arc<Control>>) -> Answer {
@@ -223,10 +281,10 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
         .owner(&control.quorum_stream)
         .await
         .map_err(failed)?;
+    // No probe publish here: the cut is in force once this returns, and a
+    // probe batch the leader accepted and never settled would make it refuse
+    // the caller's own publish before the log, as retryable, on Raft.
     tokio::task::block_in_place(|| control.cluster.partition_node(&leader)).map_err(failed)?;
-    until_refused(&control.cluster, &leader, &control.quorum_stream)
-        .await
-        .map_err(failed)?;
     Ok(Json(control.target(&leader)))
 }
 
@@ -251,6 +309,11 @@ async fn heal(State(control): State<Arc<Control>>) -> Answer {
             .await
             .map_err(failed)?;
     }
+    if control.probed.swap(false, Ordering::SeqCst) {
+        settle_probes(&control.cluster, &control.movable_stream)
+            .await
+            .map_err(failed)?;
+    }
     // Undraining invites a rebalance back onto the broker. Finish it now so the
     // timer does not start one a later request would freeze.
     {
@@ -261,6 +324,30 @@ async fn heal(State(control): State<Arc<Control>>) -> Answer {
         settled.map_err(failed)?;
     }
     Ok(Json(control.target(drained.as_deref().unwrap_or_default())))
+}
+
+/// Wait until the group accepts a write again. A probe `/fence` sent on Raft
+/// may have been proposed with its outcome unknown, and commits or is
+/// dropped once the group has a majority. The group decides every entry
+/// ahead of a new one first, so this one's ack means no stray probe is left
+/// to land in a later scenario's stream.
+async fn settle_probes(cluster: &Cluster, stream: &str) -> Result<()> {
+    let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
+    loop {
+        for node in &cluster.nodes {
+            if cluster
+                .publish_via(&node.node_id, stream, b"fixture-settle".to_vec())
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("{stream} took no write after the partition healed");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// Step placement until no shard is mid-move. The caller holds the placement
@@ -298,6 +385,20 @@ async fn until_refused(cluster: &Cluster, node_id: &str, stream: &str) -> Result
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Whether a failed publish definitely wrote nothing, by the broker's own
+/// retry class. A timeout or an outcome-unknown answer may still commit.
+fn refused_unwritten(err: &anyhow::Error) -> bool {
+    use felix_client::{BrokerError, RetryClass};
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<BrokerError>())
+        .any(|broker| {
+            matches!(
+                broker.retry,
+                RetryClass::Retry | RetryClass::RetryAfter | RetryClass::Redirect
+            )
+        })
 }
 
 fn refused(why: &str) -> (StatusCode, String) {
