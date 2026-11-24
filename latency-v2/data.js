@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795480657637,
+  "lastUpdate": 1795481322707,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -85470,6 +85470,72 @@ window.BENCHMARK_DATA = {
             "range": "28.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 359.00\nmean: 355.20\nstdev: 28.12\ncv: 7.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "60523b20d692a121ac30635f4175fe16d32ce4af",
+          "message": "test(history): campaign liveness and elections read Raft leadership from the members (#3058)\n\n* test(history): campaign liveness and elections read Raft leadership from the members\n\nOn Raft brokers the post-heal liveness check, the election wait, the fault\nview and the final reads used placement's generation and replica reports,\nwhich a Raft group never produces, so every history campaign failed after\nits first heal. They now ask each broker's member: a shard serves when a\nmember leads by its own report, a majority holds the log through its commit\nindex, and the leader takes the probe. The hybrid path is unchanged and the\nchecker is untouched; elected Raft leaders feed rule 21 at their term.\n\n* test(history): rule 21 reads Raft opens from the broker logs\n\nA Raft member now logs the hybrid driver's \"a majority took the fence;\nopening the shard for writes\" line when its term opens, with the term as\ngeneration, so rule 21 groups broker-logged opens on Raft as on hybrid.\nThe Raft election wait no longer inserts its own samples into the opens:\nit reads the broker logs and requires the probed leader to have logged its\nopen. The isolate fault on Raft waits for each group to elect a member\nother than the isolated node rather than for placement to move.\n\nSpec-Unaffected: adds one info log line when a Raft term opens; no state, message or ordering changes.",
+          "timestamp": "2026-11-23T16:28:22-08:00",
+          "tree_id": "2cf0d991c949211ff07f440e7b146b2f177c3b91",
+          "url": "https://github.com/GetFelix/felix/commit/60523b20d692a121ac30635f4175fe16d32ce4af"
+        },
+        "date": 1795481305498,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 128,
+            "range": "5.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 129.40\nstdev: 5.27\ncv: 4.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 240,
+            "range": "70.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 240.00\nmean: 248.20\nstdev: 70.77\ncv: 28.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 678,
+            "range": "296.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 678.00\nmean: 707.40\nstdev: 296.42\ncv: 41.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 159,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 159.00\nmean: 158.40\nstdev: 1.52\ncv: 0.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 338,
+            "range": "9.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 338.00\nmean: 341.40\nstdev: 9.56\ncv: 2.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 781,
+            "range": "487.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 781.00\nmean: 999.00\nstdev: 487.40\ncv: 48.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
