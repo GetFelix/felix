@@ -500,3 +500,24 @@ async fn opens_only_the_registered_incarnation() {
         vec![(0, 3)]
     );
 }
+
+/// **A store left to engines opens no counter log**: an add is refused and
+/// no directory is made.
+#[tokio::test]
+async fn a_store_left_to_engines_opens_no_counter_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.leave_to_engines();
+    store
+        .add(T, NS, C, 0, "k", 1)
+        .await
+        .expect_err("opened a log");
+    assert!(
+        store
+            .dirs_on_disk(T, NS, C)
+            .await
+            .expect("listed")
+            .is_empty(),
+        "made a directory"
+    );
+}
