@@ -481,8 +481,10 @@ rotates and a restored root fails the gate. A member that opens marks what
 it recovered at once (`RaftLog::mark_recovered`), so an idle copy after a
 restart does not keep an old mark. A batch write that fails stops the
 root's mark log: from then on every shard on the root fails its appends and
-votes until the broker restarts, rather than let the log run ahead of a
-mark that no longer moves. A write that hangs is not a failure. Once the
+votes until the disk takes writes again, rather than let the log run ahead
+of a mark that no longer moves. Then the mark log is rewritten from its
+synced marks and the stopped members open again ("A member that stops on a
+storage error"). A write that hangs is not a failure. Once the
 marks are five intervals old, appends on the root's batched shards wait
 until a batch is written, then go on; nothing fails and nothing restarts.
 The age is checked once an interval, so no acknowledged entry is more than
@@ -2877,6 +2879,44 @@ asynchronous, so the fence can close a moment late. That is safe. A write
 proposed in the gap is refused by openraft, or appended as an uncommitted
 entry of the old term whose waiter gets leadership lost. Nothing reaches
 the log except through openraft ("Writing through openraft").
+
+### A member that stops on a storage error
+
+openraft stops a member's core on any log-store error and never starts it
+again. Without help such a member would answer nothing until the broker
+restarted. Instead, the broker's feed pass sees the core stopped
+(`GroupRuntime::storage_failure`), closes the member and its log, and opens
+it again once the disk takes writes:
+
+1. A probe file at the data root is written, fsynced and removed
+   (`CopyRoot::heal`). While that fails, nothing opens.
+2. A failed mark log is rewritten from the marks as last synced
+   (`MarkLog::reopen`). Marks only ever lower-bound a copy, so going back to
+   the synced ones can rotate a copy but never lets one vote below what it
+   promised.
+3. The member opens through `open_copy`, as at a start. The copy is judged
+   against its marks and its log recovered from disk. A log poisoned by a
+   failed fsync rotates to a new copy id that never voted, so nothing the
+   failed fsync touched is trusted. Any other log keeps its copy id, with its
+   torn tail repaired, and catches up from the leader. A rotated copy has no
+   group of its own: with other copies alive it catches up from them. With
+   one copy, or when every copy rotated, the shard is held and serves
+   nothing until an operator re-forms it ("Re-forming a group").
+
+The reopened member is a restarted one: it votes and acknowledges only from
+what is on disk, as after a crash. The first stop reopens on the next pass. A
+member that stops again within a minute of its reopen waits longer each time,
+from a second up to 30, since every open scans its log.
+
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`,
+> `a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing`;
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`;
+> `crates/server/felix-storage/src/raft_copy/tests/marks.rs`,
+> `a_reopen_after_the_disk_heals_starts_from_the_synced_marks`,
+> `a_failed_fsync_is_not_retried_by_the_reopen` and
+> `a_reopen_restarts_the_batched_marks`.
 
 ### Acknowledging a write
 
