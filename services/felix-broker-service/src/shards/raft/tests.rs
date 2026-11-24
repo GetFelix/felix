@@ -3076,13 +3076,17 @@ async fn a_periodic_quorum_stream_is_answered_on_a_written_majority() {
 }
 
 /// **A member that applied a committed record serves it to a read even
-/// before its own copy is synced (#3115), leader or follower.** The commit
-/// already needed a majority to sync it, so a page cut at this member's sync
-/// would answer an acknowledged publish with an empty page.
+/// before its own copy is synced (#3115), leader or follower, at every
+/// level.** A majority already holds a committed record, so a page cut at
+/// this member's sync would answer an acknowledged publish with an empty
+/// page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_shows_a_committed_record_the_member_has_not_synced() {
-    for lagging_leader in [false, true] {
-        let (_net, members, leader) = trio_at(ConsistencyLevel::Quorum).await;
+    let cases = [ConsistencyLevel::Quorum, ConsistencyLevel::Leader]
+        .into_iter()
+        .flat_map(|level| [(level, false), (level, true)]);
+    for (level, lagging_leader) in cases {
+        let (_net, members, leader) = trio_at(level).await;
         let term = members[leader].shards.leading(&key("orders", 0));
         let term = term.expect("term");
         members[leader].publish(term, b"s0").await;
@@ -3109,7 +3113,7 @@ async fn a_read_shows_a_committed_record_the_member_has_not_synced() {
         assert_eq!(
             first,
             Some(offset),
-            "an acknowledged record was not read (leader unsynced: {lagging_leader})"
+            "an acknowledged record was not read ({level:?}, leader unsynced: {lagging_leader})"
         );
         drop(held);
         stop(&members).await;

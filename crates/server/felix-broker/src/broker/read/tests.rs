@@ -27,7 +27,7 @@ impl ReadBounds for Bound {
 #[derive(Debug)]
 struct Barrier {
     bound: Arc<Bound>,
-    applies: Option<u64>,
+    applies: Option<ReadBound>,
 }
 
 impl FollowerReads for Barrier {
@@ -41,7 +41,7 @@ impl FollowerReads for Barrier {
     ) -> Pin<Box<dyn Future<Output = Result<Option<u64>, NotReadable>> + Send + 'a>> {
         Box::pin(async move {
             let applies = self.applies.ok_or(NotReadable::Settling)?;
-            *self.bound.0.lock() = ReadBound::Committed(applies);
+            *self.bound.0.lock() = applies;
             Ok(None)
         })
     }
@@ -60,7 +60,7 @@ impl FollowerReads for Barrier {
 
 /// A stream on an engine's log holding three records, none of them under
 /// the read bound until the barrier runs.
-async fn engine_log_stream(dir: &std::path::Path, applies: Option<u64>) -> Broker {
+async fn engine_log_stream(dir: &std::path::Path, applies: Option<ReadBound>) -> Broker {
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
@@ -107,7 +107,7 @@ async fn engine_log_stream(dir: &std::path::Path, applies: Option<u64>) -> Broke
 #[tokio::test]
 async fn reads_pass_the_barrier_before_they_take_the_bound() {
     let dir = tempfile::tempdir().expect("dir");
-    let broker = engine_log_stream(dir.path(), Some(3)).await;
+    let broker = engine_log_stream(dir.path(), Some(ReadBound::Committed(3))).await;
     let page = broker
         .read_range("t1", "ns", "s", 0, 0, Some(3), 100, 1 << 20)
         .await
@@ -146,4 +146,27 @@ async fn a_lookup_refused_by_the_barrier_fails_instead_of_answering_nothing() {
         .await
         .expect_err("refused");
     assert!(matches!(err, BrokerError::NotReadable { .. }), "{err:?}");
+}
+
+/// A shard whose engine member is closing, or not open yet, can report no
+/// commit at all (`Unbounded`). The read is refused: on a follower the raw
+/// tail can hold entries a later leader cuts.
+#[tokio::test]
+async fn an_engine_log_without_a_commit_bound_refuses_the_read() {
+    let dir = tempfile::tempdir().expect("dir");
+    let broker = engine_log_stream(dir.path(), Some(ReadBound::Unbounded)).await;
+    let err = broker
+        .read_range("t1", "ns", "s", 0, 0, Some(3), 100, 1 << 20)
+        .await
+        .expect_err("refused");
+    assert!(
+        matches!(
+            err,
+            BrokerError::NotReadable {
+                reason: NotReadable::Refused,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }

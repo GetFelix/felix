@@ -3,8 +3,9 @@
 use felix_storage::log::LogRecord;
 
 use super::Broker;
-use super::subscribe::committed_tail;
-use crate::error::{BrokerError, Result};
+use super::subscribe::{committed_tail, not_readable};
+use crate::error::{BrokerError, NotReadable, Result};
+use crate::stream::ReadBound;
 
 /// One page of [`Broker::read_range`].
 #[derive(Debug, Clone)]
@@ -74,10 +75,16 @@ impl Broker {
                 tail,
             });
         }
+        // On an engine's log only the engine says what is committed. While a
+        // shard closes or opens again its bound can fall back to `Unbounded`,
+        // and the raw tail of a follower holds entries that may yet be cut.
+        if handle.state.engine_log && handle.state.held.bound() == ReadBound::Unbounded {
+            return Err(not_readable(stream, shard, NotReadable::Refused));
+        }
         let committed = committed_tail(handle.state.read_bound(), tail, stream, shard)?;
-        // An engine's bound is its commit, which a majority synced first. This
-        // member's own copy may still be unsynced, and cutting the page there
-        // hides a record whose publish was already answered (#3115).
+        // An engine's bound is its commit, which a majority already holds.
+        // This member's own copy may still be unsynced, and cutting the page
+        // there hides a record whose publish was already answered (#3115).
         let readable = if handle.state.engine_log {
             committed
         } else {
