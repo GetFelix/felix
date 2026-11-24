@@ -713,9 +713,9 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
 #[tokio::test]
 #[serial]
 async fn a_crashed_leader_no_follower_is_ahead_of_is_reclaimed() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "a Leader stream acknowledges on the leader alone, so there is a copy to reclaim; on Raft \
-         every write waits for a majority and no Raft test covers leader-only acks",
+    if felix_cluster::skip_on_raft_until(
+        3103,
+        "a Raft Leader stream's followers elect without the crashed leader, so its leader-only tail is lost",
     ) {
         return;
     }

@@ -210,13 +210,10 @@ async fn acknowledgements_continue_while_the_control_plane_is_partitioned() {
 #[serial]
 #[tokio::test]
 async fn a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "a Raft group has no lease: every write, whatever the stream's mode, waits for a majority; \
-         no Raft test covers lease refusal because there is none",
-    ) {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_leader_stream_refuses_on_a_lapsed_lease().await;
         return;
     }
-    const LEADER_STREAM: &str = "audit";
     let cluster = start_with(
         3,
         vec![
@@ -257,6 +254,74 @@ async fn a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize() {
     let why = format!("{refused:#}");
     assert!(
         why.contains("lease"),
+        "refused, but not for the lease: {why}"
+    );
+    cluster.shutdown().await;
+}
+
+const LEADER_STREAM: &str = "audit";
+
+/// On Raft the lease rests on the followers' answers, not the control plane.
+/// With the control plane gone, both streams still acknowledge. Then the
+/// `Leader` stream's leader is cut off from its followers both ways and its
+/// lease runs out while it still leads its old term: the next write there is
+/// refused for the lease, not acknowledged on the leader alone.
+async fn raft_leader_stream_refuses_on_a_lapsed_lease() {
+    let cluster = start_with(
+        3,
+        vec![
+            StreamSpec::quorum(STREAM, 1, 3),
+            StreamSpec::replicated(LEADER_STREAM, 1, 3),
+        ],
+        Duration::from_secs(10),
+    )
+    .await;
+    let quorum_leader = serving_leader(&cluster).await;
+    let leader = cluster
+        .serving_leader(LEADER_STREAM, Duration::from_secs(30))
+        .await
+        .expect("a serving leader");
+    partition_control_plane(&cluster, &leader).await;
+    cluster
+        .publish_via(&quorum_leader, STREAM, b"quorum".to_vec())
+        .await
+        .expect("the Quorum stream acknowledges with the control plane gone");
+    cluster
+        .publish_via(&leader, LEADER_STREAM, b"before".to_vec())
+        .await
+        .expect("the Leader stream acknowledges on its lease with the control plane gone");
+    let term = cluster
+        .raft_member(&leader, LEADER_STREAM)
+        .await
+        .expect("the leader reports its member")
+        .term;
+
+    for follower in cluster.node_ids().into_iter().filter(|id| *id != leader) {
+        for fault in Fault::partition(Endpoint::node(&leader), Endpoint::node(&follower)) {
+            cluster.inject(&fault).await.expect("cut the leader off");
+        }
+    }
+    // Longer than the lease (1.5 s) and the longest election timeout (2 s).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let raft = cluster
+        .raft_member(&leader, LEADER_STREAM)
+        .await
+        .expect("the cut-off leader reports its member");
+    assert!(
+        raft.role == "leader" && raft.term == term,
+        "the cut-off broker no longer leads its old term, so its lease is not what is tested: {raft:?}"
+    );
+    let refused = tokio::time::timeout(
+        Duration::from_secs(15),
+        cluster.publish_via(&leader, LEADER_STREAM, b"leader".to_vec()),
+    )
+    .await
+    .expect("a write on a lapsed lease is answered")
+    .expect_err("a Leader stream acknowledged a write on a lapsed lease");
+    // Openraft's lease check and the group's own name the lease differently.
+    let why = format!("{refused:#}");
+    assert!(
+        why.contains("lease") || why.contains("no majority has answered this leader"),
         "refused, but not for the lease: {why}"
     );
     cluster.shutdown().await;
