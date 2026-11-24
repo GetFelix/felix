@@ -10,6 +10,10 @@ use crate::node::{FAILURE_LOG_LINES, broker_binary, spawn_broker};
 use crate::proxy::Links;
 use crate::{ClusterConfig, ControlPlane, wait};
 
+/// Keys read per broker for each shard of a probed cache. Hashed over the
+/// shards, each one goes unprobed with odds near e^-16, about 1 in 10^7.
+const CACHE_PROBE_KEYS_PER_SHARD: u32 = 16;
+
 /// How many times a broker may be started before the cluster gives up on it.
 ///
 /// More than one because port selection is inherently racy: a port is probed,
@@ -323,6 +327,27 @@ impl Cluster {
             .await?;
         }
 
+        // A cache shard that is placed but not yet open on its owner refuses
+        // every operation as still opening, so a stream publish says nothing
+        // about caches. Read enough keys through every broker to reach each
+        // shard; a read of an absent key changes nothing.
+        for spec in &config.caches {
+            let cache = spec.name.clone();
+            let shards = spec.shards;
+            wait::until(
+                READY_TIMEOUT,
+                &format!("every broker to serve cache {cache}"),
+                || {
+                    let cache = cache.clone();
+                    async move {
+                        self.control_plane().place_shards().await;
+                        self.probe_cache(&cache, shards).await.is_ok()
+                    }
+                },
+            )
+            .await?;
+        }
+
         // The probe above is unkeyed, so it lands on shard 0 the instant shard 0
         // opens and says nothing about whether a broker knows how *wide* a
         // stream is. That matters because a keyed publish resolves its shard
@@ -404,6 +429,18 @@ impl Cluster {
             .ok_or_else(|| anyhow!("no running broker"))?;
         self.publish_via(&node.node_id, stream, b"harness-probe".to_vec())
             .await
+    }
+
+    /// Read [`CACHE_PROBE_KEYS_PER_SHARD`] keys per shard of `cache` through
+    /// every running broker: hashed over the shards, that reaches each one.
+    async fn probe_cache(&self, cache: &str, shards: u32) -> Result<()> {
+        for node in self.nodes.iter().filter(|node| node.is_running()) {
+            for key in 0..shards.max(1) * CACHE_PROBE_KEYS_PER_SHARD {
+                self.cache_get_via(&node.node_id, cache, &format!("harness-probe-{key}"))
+                    .await?;
+            }
+        }
+        Ok(())
     }
 }
 
