@@ -22,7 +22,9 @@ impl Broker {
     /// `from` and stopping before `end`, about `max_bytes` of payload at most
     /// (a single larger record is still returned, alone).
     ///
-    /// Registers no subscriber and never waits: a page that reaches what is
+    /// Registers no subscriber and never waits for new records. On an
+    /// engine's log it first passes the engine's read barrier, so a publish
+    /// acknowledged before the read is readable. A page that reaches what is
     /// committed comes back short, or empty, with `next_offset` where to ask
     /// again. Only records that will stay are returned: on a `Quorum` shard
     /// nothing at or past the committed mark, and under `FsyncMode::OnCommit`
@@ -102,3 +104,6 @@ impl Broker {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -954,6 +954,39 @@ async fn a_leader_inside_its_lease_passes_the_read_barrier_with_no_round() {
     led.cluster.stop().await;
 }
 
+/// A write answered on the leader's lease is not committed yet. A read that
+/// starts after that answer waits for it: here the answered entry is never
+/// written, so the barrier runs out instead of letting the read through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_after_a_lease_answer_waits_for_that_entry() {
+    let mut led = led().await;
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let group = runtime.group(&shard(0)).expect("group");
+    let mut leased = false;
+    for _ in 0..50 {
+        if led.engine.admit_local_ack(&shard(0), led.term).is_ok() {
+            leased = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(leased, "the leader never held its lease");
+    assert_eq!(runtime.read_barrier(&shard(0)).await, Ok(()));
+    let past = group.read_bound() + 5;
+    group
+        .admit_local_ack_of(Written {
+            end: past,
+            generation: led.term,
+        })
+        .expect("answered on the lease");
+    assert!(runtime.read_barrier(&shard(0)).await.is_err());
+    assert!(
+        led.engine.confirm_read(&shard(0), led.term).await.is_err(),
+        "a confirmed read must wait for the answered entry too"
+    );
+    led.cluster.stop().await;
+}
+
 /// A reader takes the open term, then its value. The broker is deposed,
 /// another leader commits a record the value does not have, and the broker
 /// is elected and opens again. The read must not be confirmed.

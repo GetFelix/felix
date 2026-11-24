@@ -459,6 +459,11 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
+        // The barrier, so a publish acknowledged before the lookup is
+        // under the bound; a lookup that cannot pass it fails retryably
+        // rather than answer "nothing yet".
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&handle.state, at, false).await?;
         let until = committed_tail(
             handle.state.read_bound(),
             log.settled_tail_offset().await?,

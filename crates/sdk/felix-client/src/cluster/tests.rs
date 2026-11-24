@@ -20,6 +20,7 @@ mod record_headers;
 mod reresolve;
 mod sharded_deleted;
 mod sharded_lag;
+mod sharded_resume;
 mod stale_width;
 mod stub_broker;
 mod timeouts;
