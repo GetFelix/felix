@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::layers::{Delta, Layers, Tables};
+use super::recent::{Change, Recent, WINDOW_MICROS};
 use super::{CacheCommand, Condition, Request};
 
 /// A key's value. Its version is the index of the put that wrote it.
@@ -116,6 +117,11 @@ pub(crate) struct CacheState {
     /// Set while a snapshot cut holds the maps. Each op checks it once and
     /// takes an out-of-line path, so steady state runs the plain map code.
     layered: Option<Box<Layered>>,
+    /// The latest changes, for a watch resuming from one, kept only while
+    /// the shard is watched here and for a window after. Not in a snapshot.
+    recent: Option<Box<Recent>>,
+    /// Until when, in the log's time, `recent` keeps recording.
+    watched_until: u64,
 }
 
 /// A snapshot cut holds `base`, so apply writes to `delta` until the delta
@@ -175,6 +181,63 @@ impl CacheState {
         stamp: u64,
         command: &CacheCommand,
     ) -> Option<Answer> {
+        self.apply_reporting(index, stamp, command, None)
+    }
+
+    /// [`Self::apply`], handing the change the entry made to `report` and
+    /// keeping it while the shard is watched. `report` is given only while
+    /// some watch could take the change, and says whether one of this shard
+    /// did. With neither a report nor recording, apply pays nothing extra.
+    pub(crate) fn apply_reporting(
+        &mut self,
+        index: u64,
+        stamp: u64,
+        command: &CacheCommand,
+        report: Option<&dyn Fn(&Change) -> bool>,
+    ) -> Option<Answer> {
+        // Exhaustive on purpose: a new command that changes a key must be
+        // recorded, or a resume would be replayed with a gap.
+        let key = match command {
+            CacheCommand::Put { key, .. }
+            | CacheCommand::Delete { key, .. }
+            | CacheCommand::Expire { key, .. } => key,
+            CacheCommand::Add { .. } | CacheCommand::Retire { .. } => {
+                return self.fold_in(index, stamp, command);
+            }
+        };
+        if report.is_none() && self.recent.is_none() {
+            return self.fold_in(index, stamp, command);
+        }
+        let was = self.entry(key).is_some();
+        let answer = self.fold_in(index, stamp, command);
+        // A refused write, a retry and an expiry of a key written since
+        // change nothing.
+        let (value, expires_at) = match self.entry(key) {
+            Some(entry) if entry.version == index => (Some(entry.value.clone()), entry.expires_at),
+            None if was => (None, 0),
+            _ => return answer,
+        };
+        let change = Change {
+            offset: index,
+            key: key.clone(),
+            value,
+            expires_at,
+        };
+        if report.is_some_and(|report| report(&change)) {
+            self.watched_until = stamp.saturating_add(WINDOW_MICROS);
+            if self.recent.is_none() {
+                self.recent = Some(Box::new(Recent::starting_at(index)));
+            }
+        } else if stamp > self.watched_until {
+            self.recent = None;
+        }
+        if let Some(recent) = &mut self.recent {
+            recent.push(change);
+        }
+        answer
+    }
+
+    fn fold_in(&mut self, index: u64, stamp: u64, command: &CacheCommand) -> Option<Answer> {
         self.time = stamp;
         self.applied = index;
         let request = match command {
@@ -372,6 +435,8 @@ impl CacheState {
             next_expiry: tables.expiring.first().map(|(at, _)| *at),
             tables,
             layered: None,
+            recent: None,
+            watched_until: 0,
         }
     }
 
@@ -470,12 +535,41 @@ impl CacheState {
     /// The state restored from a snapshot whose last entry is `index`.
     pub(crate) fn restored_through(&mut self, index: u64) {
         self.applied = index;
+        if let Some(recent) = &mut self.recent {
+            recent.restart(index);
+        }
     }
 
-    /// What a cache watch sees of `key`: its value, version and expiry,
-    /// whether or not the log's time has passed the expiry yet.
-    pub(crate) fn watched(&self, key: &str) -> Option<Watched> {
-        self.entry(key).map(Watched::of)
+    /// Every kept change at or past `from` that `keep` takes, or `None` when
+    /// some from `from` on were not kept.
+    pub(crate) fn recent_since(
+        &self,
+        from: u64,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<Vec<Change>> {
+        self.recent.as_ref()?.since(from, keep)
+    }
+
+    /// A watch of this shard here ended at `now`: record from the live edge
+    /// on, for a window, so its resume can be replayed.
+    pub(crate) fn watch_ended(&mut self, now: u64) {
+        self.watched_until = self.watched_until.max(now.saturating_add(WINDOW_MICROS));
+        if self.recent.is_none() {
+            self.recent = Some(Box::new(Recent::starting_at(self.applied + 1)));
+        }
+    }
+
+    /// Whether this state records changes no watch has wanted since `now`
+    /// minus the window.
+    pub(crate) fn recording_lapsed(&self, now: u64) -> bool {
+        self.recent.is_some() && now > self.watched_until
+    }
+
+    /// Stop recording and free what was kept, if [`Self::recording_lapsed`].
+    pub(crate) fn stop_lapsed_recording(&mut self, now: u64) {
+        if self.recording_lapsed(now) {
+            self.recent = None;
+        }
     }
 
     /// Every key `keep` takes with a value unexpired at the log's time, for

@@ -17,7 +17,10 @@ use crate::quorum::Unreadable;
 
 mod cache;
 
-pub use cache::{CacheCondition, CacheOp, CacheReply, CacheWatchPoint, ProducerRequest};
+pub use cache::{
+    CacheCondition, CacheOp, CacheReplay, CacheReplayed, CacheReply, CacheWatchPoint,
+    ProducerRequest,
+};
 
 const NO_GROUP: &str = "this broker holds no group for the shard";
 
@@ -446,6 +449,41 @@ impl RaftEngine {
             .collect();
         entries.sort_by_key(|entry| entry.offset);
         Some(CacheWatchPoint { tail, entries })
+    }
+
+    /// Where a watch resuming from `from` joins `shard` on this member, and
+    /// the changes it missed, if this member still keeps them all. Register
+    /// the watch before calling this. `None` when no cache group of `shard`
+    /// runs here.
+    pub fn cache_replay(
+        &self,
+        shard: &ShardKey,
+        from: u64,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<CacheReplay> {
+        let group = self.runtime.group(shard)?;
+        let (tail, changes) = group.cache_replay(from, keep)?;
+        let changes = changes.map(|changes| {
+            changes
+                .into_iter()
+                .map(|change| CacheReplayed {
+                    key: change.key,
+                    value: change.value,
+                    offset: change.offset,
+                    expires_at_millis: change.expires_at.div_ceil(1000),
+                })
+                .collect()
+        });
+        Some(CacheReplay { tail, changes })
+    }
+
+    /// A cache watch of `shard` on this member ended. The member keeps
+    /// recording the shard's changes for a while, so a resume can be
+    /// replayed rather than resnapshotted.
+    pub fn cache_watch_ended(&self, shard: &ShardKey) {
+        if let Some(group) = self.runtime.group(shard) {
+            group.cache_watch_ended();
+        }
     }
 
     /// [`Self::cache_watch_point`] for a watch that hands out the current
