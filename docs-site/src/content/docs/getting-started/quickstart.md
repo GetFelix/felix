@@ -45,10 +45,9 @@ it" that runs against this stack.
 
 This stack's broker has no node id, so it runs standalone. A standalone broker
 with durable storage runs each durable shard as a Raft group of one, with no
-peers. This stack still pins the older hybrid shard engine
-(`FELIX_SHARD_ENGINE=hybrid`, in `compose.yaml`), and `felix-cluster up` below
-also runs the hybrid engine unless you set `FELIX_SHARD_ENGINE=raft`. Both move
-to Raft in [#2985](https://github.com/GetFelix/felix/issues/2985).
+peers. `felix-cluster up` below still runs the older hybrid engine unless you
+set `FELIX_SHARD_ENGINE=raft`; it moves to Raft in
+[#2985](https://github.com/GetFelix/felix/issues/2985).
 
 The credentials are for your machine only, and the printed settings show how
 to use an installed `felixctl` instead. See

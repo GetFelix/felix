@@ -138,9 +138,6 @@ services:
       FELIX_TLS_CERT_EXPORT: /var/lib/felix/broker-cert.pem
       # Durable streams, consumer groups and cache watches need a log on disk.
       FELIX_DURABLE_STORAGE_DIR: /var/lib/felix/data
-      # A standalone broker runs Raft by default; keyed cache watches are not
-      # served on Raft yet (#2792), and this stack watches caches.
-      FELIX_SHARD_ENGINE: hybrid
       RUST_LOG: info
     ports:
       - "127.0.0.1:5000-5003:5000-5003/udp"  # client QUIC, one port per listener
