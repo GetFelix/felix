@@ -144,10 +144,10 @@ fn store(cluster: &Cluster) -> &dyn ControlPlaneStore {
 /// Whether `node_id` has enabled the probe feature, by its own metrics.
 async fn probe_enabled(cluster: &Cluster, node_id: &str) -> bool {
     cluster
-        .metric(node_id, "felix_broker_fleet_feature_enabled")
+        .fleet_features_enabled(node_id)
         .await
         .expect("read metrics")
-        == Some(1.0)
+        .contains(PROBE)
 }
 
 /// Replace `node_id` with a build reporting `features`, as an upgrade or a

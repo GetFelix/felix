@@ -54,6 +54,11 @@ async fn start() -> Cluster {
             .await
             .unwrap_or_else(|err| panic!("finalize {feature}: {err}"));
     }
+    // Summed, the gauge also counts the features a Raft cluster finalizes
+    // as it forms, so with nothing finalized here there is nothing to count.
+    if features.is_empty() {
+        return cluster;
+    }
     for id in cluster.node_ids() {
         felix_cluster::wait::until(Duration::from_secs(20), "the features to turn on", || {
             let id = id.clone();

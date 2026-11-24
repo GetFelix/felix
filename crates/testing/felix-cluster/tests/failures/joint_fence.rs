@@ -4,8 +4,9 @@
 //! not the one before is named again a generation up, and one that learns a
 //! new shard from a snapshot opens on the snapshot's first-assignment mark.
 //!
-//! On Raft the same swap is a joint-consensus membership change, which
-//! commits only with a majority of the voters it leaves.
+//! On Raft the control plane refuses the swap in one step and it is made as
+//! two single-member steps, each a joint-consensus change that commits only
+//! with a majority of the voters it leaves.
 //!
 //! Run with `cargo test -p felix-cluster --test failures joint_fence::`.
 use std::time::Duration;
@@ -96,13 +97,32 @@ fn sorted(mut nodes: Vec<String>) -> Vec<String> {
     nodes
 }
 
-/// The Raft form. The leader keeps the shard while both followers are swapped
-/// for the two spares at once, with both old followers down. The control
-/// plane stores a target of the leader and the spares, which with the leader
-/// would be a majority of running brokers, but the change needs a majority of
-/// the voters it leaves too, so nothing is acknowledged and the voters stay
-/// the old set. Once one old follower is back the change commits, and the
-/// new set acknowledges on its own.
+/// Asks the control plane for `leader` and `replicas` as the stream's set.
+async fn put_set(cluster: &Cluster, leader: &str, replicas: &[String]) -> anyhow::Result<()> {
+    let store = &cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store;
+    let mut next = store
+        .list_shard_assignments()
+        .await?
+        .into_iter()
+        .find(|assignment| assignment.key.stream == STREAM)
+        .expect("the stream's assignment");
+    next.leader = leader.to_string();
+    next.replicas = replicas.to_vec();
+    store.put_shard_assignment(next).await?;
+    Ok(())
+}
+
+/// The Raft form. A formed group's set moves only by steps its reported
+/// voters keep a majority of, so the control plane refuses to swap both
+/// followers at once and the swap is made as two single-member steps. With
+/// both old followers down, the first step needs a majority of the voters it
+/// leaves, so nothing is acknowledged and the voters stay the old set. Once
+/// one old follower is back it commits, the second step completes the swap,
+/// and the new set acknowledges with both old followers gone.
 async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster) {
     let leader = cluster
         .wait_for_every_member_level(STREAM, Duration::from_secs(60))
@@ -134,48 +154,41 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
         .filter(|id| !old_set.contains(id))
         .collect();
     assert_eq!(spares.len(), 2, "two spares: {spares:?}");
+    let (dropped, kept) = (&old_followers[0], &old_followers[1]);
 
     for follower in &old_followers {
         cluster.kill_node(follower).expect("kill an old follower");
     }
-    let store = &cluster
-        .control_plane
-        .as_ref()
-        .expect("control plane running")
-        .store;
-    let mut swapped = store
-        .list_shard_assignments()
-        .await
-        .expect("assignments")
-        .into_iter()
-        .find(|assignment| assignment.key.stream == STREAM)
-        .expect("the stream's assignment");
-    swapped.leader = leader.clone();
-    swapped.replicas = spares.clone();
-    store
-        .put_shard_assignment(swapped)
-        .await
-        .expect("swap both followers");
-    let mut new_set = spares.clone();
-    new_set.push(leader.clone());
-    let new_set = sorted(new_set);
+    // The hazard: the leader and both spares are running, a majority of the
+    // set they would make.
+    let refused = put_set(&cluster, &leader, &spares).await;
+    assert!(
+        refused.is_err(),
+        "the control plane took a swap of both followers at once"
+    );
 
-    // The hazard: the control plane asks for the new set, whose brokers are
-    // all running.
+    // One step: the dropped follower for the first spare.
+    let step = vec![spares[0].clone(), kept.clone()];
+    put_set(&cluster, &leader, &step)
+        .await
+        .expect("a one-member step is taken");
+    let mut step_set = step.clone();
+    step_set.push(leader.clone());
+    let step_set = sorted(step_set);
     felix_cluster::wait::until(
         Duration::from_secs(60),
-        "a target naming the leader and both spares",
+        "a target naming the first step",
         || async {
             cluster
                 .raft_target(STREAM, 0)
                 .await
                 .ok()
                 .flatten()
-                .is_some_and(|target| sorted(target.into_keys().collect()) == new_set)
+                .is_some_and(|target| sorted(target.into_keys().collect()) == step_set)
         },
     )
     .await
-    .expect("the swap is asked for");
+    .expect("the step is asked for");
 
     // Long enough for the leader to try the change several times over.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
@@ -197,7 +210,7 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
             assert_ne!(
                 role.as_deref(),
                 Some("leader"),
-                "{spare} led the new set alone"
+                "{spare} led without the old set"
             );
         }
         let voters = raft_voters(&cluster).await;
@@ -205,19 +218,38 @@ async fn raft_a_two_member_swap_waits_for_the_old_majority(mut cluster: Cluster)
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
+    // The dropped follower back makes an old majority with the leader.
     cluster
-        .restart_node(&old_followers[0])
+        .restart_node(dropped)
         .await
         .expect("restart one old follower");
+    felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "the first step's voters",
+        || async { raft_voters(&cluster).await == step_set },
+    )
+    .await
+    .expect("the step commits once an old majority is back");
+    cluster
+        .kill_node(dropped)
+        .expect("kill the restarted old follower");
+
+    // Second step: the kept follower, still down, for the second spare. The
+    // reported voters keep the leader and the first spare, a majority of the
+    // new set; the control plane may refuse until that report lands.
+    felix_cluster::wait::until(Duration::from_secs(60), "the second step taken", || async {
+        put_set(&cluster, &leader, &spares).await.is_ok()
+    })
+    .await
+    .expect("the second step is taken");
+    let mut new_set = spares.clone();
+    new_set.push(leader.clone());
+    let new_set = sorted(new_set);
     felix_cluster::wait::until(Duration::from_secs(120), "the new voters", || async {
         raft_voters(&cluster).await == new_set
     })
     .await
-    .expect("the swap commits once an old majority is back");
-    // The old follower is out of the set; the new one acknowledges without it.
-    cluster
-        .kill_node(&old_followers[0])
-        .expect("kill the restarted old follower");
+    .expect("the second step commits");
     felix_cluster::wait::until(
         Duration::from_secs(60),
         "the new set to acknowledge",

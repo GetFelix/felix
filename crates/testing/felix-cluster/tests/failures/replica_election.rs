@@ -921,7 +921,23 @@ async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
 /// requests reach them late. Both are seen as candidates at the same term,
 /// and no term has two leaders. Nothing acknowledged is lost.
 async fn raft_two_candidates_at_one_term() {
-    let mut cluster = raft_start_with(5, 5, true, Vec::new()).await;
+    // Election timeouts of 1 to 1.05 s instead of 1 to 2 s, so the two
+    // followers, which last heard the leader at the same beat, stand within
+    // a tick of each other rather than up to a second apart, when the first
+    // has already won. The lease is cut to fit under the shorter timeout.
+    let mut cluster = raft_start_with(
+        5,
+        5,
+        true,
+        vec![
+            (
+                "FELIX_TEST_RAFT_ELECTION_MAX_MS".to_string(),
+                "1050".to_string(),
+            ),
+            ("FELIX_SHARD_RAFT_LEASE_MS".to_string(), "800".to_string()),
+        ],
+    )
+    .await;
     let old = raft_serving(&cluster).await;
     let mut acked = publish_acked(&cluster, &old, "before", 10).await;
     cluster

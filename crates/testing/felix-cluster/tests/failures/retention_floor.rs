@@ -191,22 +191,22 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
         }
     }
 
-    let first = {
-        let (_client, mut subscription) = cluster.replay_on(&leader, STREAM).await.expect("replay");
-        tokio::time::timeout(Duration::from_secs(5), subscription.next_event())
-            .await
-            .expect("a replayed record")
-            .expect("replay")
-            .expect("a record")
-    };
-    let start = first
-        .offset
-        .expect("a durable stream's events carry offsets");
-    assert!(
-        start <= early,
-        "retention deleted records above the commit offset: the leader's log now \
-         starts at {start}, past early-0 at {early}",
-    );
+    if raft {
+        // A Raft leader trims only by a committed entry, so with no majority
+        // retention cannot move its floor. Nor can it confirm that floor: a
+        // read from the start needs a read-index round, which no majority
+        // answers, so the replay is refused rather than served.
+        let refused = cluster.replay_on(&leader, STREAM).await;
+        let err = refused
+            .err()
+            .expect("a leader with no majority served a replay");
+        assert!(
+            format!("{err:#}").contains("cannot be subscribed to right now"),
+            "the replay was refused for another reason: {err:#}"
+        );
+    } else {
+        assert_floor_held(&cluster, &leader, early).await;
+    }
 
     for follower in &followers {
         cluster
@@ -226,4 +226,24 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
         let (i, answer) = answer.expect("publish task");
         answer.unwrap_or_else(|err| panic!("publish {i} was not acknowledged: {err:#}"));
     }
+}
+
+/// The leader's log still starts at or below `early`, read by a replay.
+async fn assert_floor_held(cluster: &Cluster, leader: &str, early: u64) {
+    let first = {
+        let (_client, mut subscription) = cluster.replay_on(leader, STREAM).await.expect("replay");
+        tokio::time::timeout(Duration::from_secs(5), subscription.next_event())
+            .await
+            .expect("a replayed record")
+            .expect("replay")
+            .expect("a record")
+    };
+    let start = first
+        .offset
+        .expect("a durable stream's events carry offsets");
+    assert!(
+        start <= early,
+        "retention deleted records above the commit offset: the leader's log now \
+         starts at {start}, past early-0 at {early}",
+    );
 }
