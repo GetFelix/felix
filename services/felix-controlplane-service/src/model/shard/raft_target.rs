@@ -142,7 +142,7 @@ impl ShardAssignment {
     /// reported, the group exists and moves to a new set by changing its
     /// membership. A re-form starts a new group, so an earlier epoch's mark
     /// releases nothing.
-    pub(crate) fn holds_unformed_set(&self) -> bool {
+    pub fn holds_unformed_set(&self) -> bool {
         self.raft_target.is_some() && self.raft_formed != Some(self.formed_key())
     }
 
@@ -255,6 +255,14 @@ impl ShardAssignment {
     pub(crate) fn holds_formed_target(&self, copies: &BTreeMap<String, u64>) -> bool {
         let set = copies.keys().cloned().collect();
         matches!(self.formed_voters(), Some(Some(voters)) if !keeps_majority(voters, copies, &set))
+    }
+
+    /// Whether the voters a leader of this record's formed group last
+    /// reported, at its incarnation and epoch, include `node` under the copy
+    /// id it reported. No report is no evidence, so it is `false`.
+    pub(crate) fn reports_voting(&self, node: &str) -> bool {
+        matches!(self.formed_voters(), Some(Some(voters))
+            if self.raft_copy_ids.get(node).is_some_and(|copy| voters.members.get(node) == Some(copy)))
     }
 
     /// `None` when this record's group has not formed; otherwise the voters

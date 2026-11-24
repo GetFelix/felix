@@ -1870,9 +1870,21 @@ a later pass.
 An operator move outside the set is refused with `set_unsettled` while the
 target is not stored for the current set or the group has not formed,
 `member_down` while a member is not serving, and `not_a_member` while the
-destination is still a learner from an earlier change. A one-member group is
-refused with `single_member`: moving it to another broker is not supported
-yet, and no issue tracks it. A removed copy keeps
+destination is still a learner from an earlier change.
+
+An RF 1 shard has no voter both sets keep, so its move takes two writes
+(#3012). The operator move grows the set to the leader and the destination,
+and the group adds the destination as a learner and then a voter. Once the
+leader reports the destination's copy voting, placement writes the
+destination alone as the set and its leader, and the group hands it
+leadership and drops the old copy. A set of the destination alone any
+earlier would make its empty copy the whole group, so the store holds it
+until then. A second move is refused with `set_unsettled` while the set is
+over the factor. A move back to the old broker, or a destination that stops
+being live before it votes, undoes the move (`raft_move_undone`). A
+destination that votes and then goes down strands the shard, which
+placement reports, until it is back or the group is re-formed without it;
+`docs/per-shard-raft.md` has the steps. A removed copy keeps
 its directory: nothing deletes it yet.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
@@ -2479,8 +2491,8 @@ outside the set it gives the destination the leader's seat
 (`raft_replace`). The second is refused while a member is not serving (409
 `member_down`), while the group's target is not stored for its current set
 (409 `set_unsettled`), while the destination is still a learner (409
-`not_a_member`), and for a one-member group (409 `single_member`; not
-supported yet). Any other move is held to
+`not_a_member`). A one-member group grows to the destination first and
+shrinks once its copy votes. Any other move is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 

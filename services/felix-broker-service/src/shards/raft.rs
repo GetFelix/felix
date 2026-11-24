@@ -106,6 +106,9 @@ pub(crate) struct RaftShards {
     /// Shards already reported as off their placement, so each is logged
     /// once per time it happens.
     off_placement: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards with a member open here whose placement names only other
+    /// brokers. See [`EngineShards::placed_elsewhere`].
+    unplaced: parking_lot::Mutex<HashSet<ShardKey>>,
     /// The placement generation each held-back short shard was last warned
     /// for, so a placement version warns once.
     short_warned: parking_lot::Mutex<HashMap<ShardKey, u64>>,
@@ -279,6 +282,7 @@ impl RaftShards {
             unclaimed: parking_lot::Mutex::default(),
             claims: AtomicU64::new(0),
             off_placement: parking_lot::Mutex::default(),
+            unplaced: parking_lot::Mutex::default(),
             #[cfg(test)]
             stall_reads: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
@@ -927,6 +931,7 @@ impl RaftShards {
     /// until it has stopped.
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
+        self.unplaced.lock().remove(key);
         // The hub keys watches by shard, not incarnation: a watch left here
         // would go quiet, or, once the cache is made again, drop the new
         // group's low indexes as duplicates. Ended after the member stopped,
@@ -1234,12 +1239,11 @@ impl EngineShards for RaftShards {
                     .is_some_and(|status| status.leader.is_none());
                 if leaderless && key.kind == ShardKind::Stream {
                     self.broker
-                        .end_subscriptions(
+                        .end_deposed_subscriptions(
                             &key.tenant_id,
                             &key.namespace,
                             &key.stream,
                             key.shard,
-                            None,
                         )
                         .await;
                 }
@@ -1283,8 +1287,10 @@ impl EngineShards for RaftShards {
                 };
                 taken.push((key.clone(), assignment.routing));
                 placed.insert(key.clone(), Placed::of(&assignment));
+                // Over the count is an RF 1 shard mid-move: its group already
+                // formed, and the destination must report its copy to join.
                 let full = wanted
-                    .is_some_and(|wanted| brokers_of(&assignment).len() == wanted.max(1) as usize);
+                    .is_some_and(|wanted| brokers_of(&assignment).len() >= wanted.max(1) as usize);
                 if let Some(wanted) = wanted {
                     wanted_rf.insert(key.clone(), wanted);
                 }
@@ -1347,6 +1353,13 @@ impl EngineShards for RaftShards {
                 }
             }
             self.runtime.retain_admitted(|key| fed.contains_key(key));
+            *self.unplaced.lock() = fed
+                .iter()
+                .filter(|(key, (assignment, _))| {
+                    open.contains_key(*key) && !brokers_of(assignment).contains(self.local.as_str())
+                })
+                .map(|(key, _)| key.clone())
+                .collect();
             let mut off_placement = 0_u32;
             let mut short: Vec<ShortShard> = Vec::new();
             for (key, (assignment, full)) in &fed {
@@ -1583,6 +1596,9 @@ impl EngineShards for RaftShards {
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
         }
+        if self.placed_elsewhere(key) {
+            return self.dispatch_without_member(key, nodes);
+        }
         // Only a forward needs the status, so a local publish never builds it.
         let Some(status) = self.runtime.status(key) else {
             return self.dispatch_without_member(key, nodes);
@@ -1629,6 +1645,13 @@ impl EngineShards for RaftShards {
 
     fn holds(&self, key: &ShardKey) -> bool {
         self.runtime.holds(key)
+    }
+
+    /// A member removed from its group is not told, and stays open here
+    /// hearing no leader. Answering "not ready" for it would keep a client
+    /// that enters here retrying here for good.
+    fn placed_elsewhere(&self, key: &ShardKey) -> bool {
+        self.unplaced.lock().contains(key) && self.runtime.hears_leader(key) == Some(false)
     }
 
     /// One past the furthest entry the leader acknowledged, read only once
@@ -2091,8 +2114,10 @@ impl WriteFence for Leading {
             broker
                 .follow_engine_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await;
+            // Told the shard moved, so a client follows it to the next
+            // leader instead of reading a clean end.
             broker
-                .end_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
+                .end_deposed_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await;
             let mut ending = ending.lock();
             if let Some(left) = ending.get_mut(&key) {

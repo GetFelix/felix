@@ -1004,9 +1004,9 @@ pub(crate) enum QuorumWait {
     NotLeading,
 }
 
-/// Why a `Quorum` write could not be acknowledged. Either way the leader has
-/// already written it, so the client is told the outcome is unknown rather than
-/// that the write failed.
+/// Why a `Quorum` write could not be acknowledged. Unless the variant says
+/// otherwise the leader may have written it, so the client is told the
+/// outcome is unknown rather than that the write failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QuorumError {
     /// No majority within the budget.
@@ -1018,6 +1018,14 @@ pub enum QuorumError {
     /// This broker stopped leading the shard before a majority held the write.
     #[error("{detail} before the {what} could reach a quorum")]
     LeadershipLost {
+        what: &'static str,
+        detail: &'static str,
+    },
+    /// The Raft engine refused the write before it appended any of it: its
+    /// lease had lapsed, or it no longer led the term the write was admitted
+    /// at. Nothing was written, so the write can be sent again.
+    #[error("the {what} was refused: {detail}")]
+    NotAppended {
         what: &'static str,
         detail: &'static str,
     },

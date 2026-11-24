@@ -644,8 +644,9 @@ pub enum Message {
         /// queue, and none at or above it was. Resuming at
         /// `max(last delivered + 1, resume_from)` neither repeats nor skips a
         /// record. Absent for an in-memory stream, whose offsets mean nothing
-        /// on another broker, and for a watch whose shard was still taking
-        /// writes when it ended; resume after the last offset seen then.
+        /// on another broker, for a watch whose shard was still taking writes
+        /// when it ended, and for a subscription ended by a Raft leader that
+        /// was deposed; resume after the last offset seen then.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resume_from: Option<u64>,
         /// The broker taking the shard, when this one knows. A hint: the shard

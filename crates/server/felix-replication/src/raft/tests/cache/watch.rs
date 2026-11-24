@@ -35,10 +35,11 @@ impl Recorder {
 }
 
 impl CacheObserver for Recorder {
-    fn cache_changed(&self, change: CacheChange) {
+    fn cache_changed(&self, change: CacheChange) -> bool {
         self.changes
             .lock()
             .push((change.key, change.value, change.offset));
+        true
     }
 
     fn watching(&self) -> bool {
@@ -270,7 +271,13 @@ async fn a_member_keeps_reporting_across_a_change_of_leader() {
             .report_cache_changes(Arc::clone(&recorders[broker]) as Arc<dyn CacheObserver>);
     }
     cluster.form(N).await;
-    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    // Stamped as a leader stamps, on the members' clock: a member stops
+    // recording once its clock passes the window after the last change.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_micros() as u64;
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
     cluster.committed_everywhere(N, first).await;
     let old = cluster.elected(N).await;
     cut_off(&cluster, &old.broker);
@@ -330,5 +337,230 @@ async fn a_retained_point_on_a_lagging_follower_holds_every_acknowledged_put() {
         .expect("a cache group");
     let offsets: Vec<_> = entries.iter().map(|entry| entry.offset).collect();
     assert_eq!(offsets, vec![landed], "the retained state missed a put");
+    cluster.stop().await;
+}
+
+use super::super::super::cache::{CacheState, Change};
+
+fn offsets_of(changes: &[Change]) -> Vec<u64> {
+    changes.iter().map(|change| change.offset).collect()
+}
+
+/// **An unwatched member keeps nothing**, and a watched one keeps every
+/// change from the first a watch of the shard took, so a resume from there
+/// is replayed and one from before it resnapshots.
+#[tokio::test]
+async fn a_member_keeps_changes_only_once_its_shard_is_watched() {
+    use openraft::storage::RaftStateMachine;
+    let dir = tempdir().expect("dir");
+    let recorder = Recorder::new();
+    recorder.watching.store(false, Ordering::Release);
+    let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+    let commands = [
+        put("a", b"one", 1),
+        add("n", 5, 2),
+        delete("a", None, 3),
+        put("a", b"two", 4),
+        add("n", 1, 5),
+        delete("a", None, 6),
+    ];
+    machine
+        .apply(entries(1, 3, |index| commands[index as usize - 1].clone()))
+        .await
+        .expect("apply");
+    assert!(cache.read().recent_since(0, &|_| true).is_none());
+
+    recorder.watching.store(true, Ordering::Release);
+    machine
+        .apply(entries(4, 6, |index| commands[index as usize - 1].clone()))
+        .await
+        .expect("apply");
+    let state = cache.read();
+    assert!(
+        state.recent_since(3, &|_| true).is_none(),
+        "kept before a watch"
+    );
+    let kept = state
+        .recent_since(4, &|_| true)
+        .expect("from the first watched");
+    assert_eq!(offsets_of(&kept), vec![4, 6]);
+    assert_eq!(kept[1].value, None, "a delete is kept as a removal");
+}
+
+fn changed(report: bool) -> impl Fn(&Change) -> bool {
+    move |_| report
+}
+
+/// **Recording lasts a window past the last watched change, then stops**,
+/// on apply or on the group's tick, and a watch that ends starts it again
+/// at the live edge. A resume from below where recording restarted is
+/// resnapshotted, never replayed with a gap.
+#[test]
+fn recording_stops_a_window_after_the_last_watch() {
+    let window = super::super::super::cache::WINDOW_MICROS;
+    let mut state = CacheState::default();
+    let seen = changed(true);
+    let unseen = changed(false);
+    state.apply_reporting(1, 100, &put("k", b"one", 1), Some(&seen));
+    state.apply_reporting(2, 100 + window, &put("k", b"two", 2), Some(&unseen));
+    state.apply_reporting(3, 100 + window, &put("k", b"three", 3), None);
+    assert_eq!(
+        offsets_of(&state.recent_since(1, &|_| true).expect("in the window")),
+        vec![1, 2, 3]
+    );
+    state.apply_reporting(4, 101 + window, &put("k", b"four", 4), Some(&unseen));
+    assert!(
+        state.recent_since(1, &|_| true).is_none(),
+        "past the window"
+    );
+    assert!(state.recent_since(5, &|_| true).is_none());
+
+    state.watch_ended(200 + window);
+    assert!(state.recent_since(4, &|_| true).is_none());
+    state.apply_reporting(5, 300 + window, &put("k", b"five", 5), None);
+    assert_eq!(
+        offsets_of(&state.recent_since(5, &|_| true).expect("since it ended")),
+        vec![5]
+    );
+    assert!(!state.recording_lapsed(200 + 2 * window));
+    assert!(state.recording_lapsed(201 + 2 * window));
+    state.stop_lapsed_recording(201 + 2 * window);
+    assert!(
+        state.recent_since(6, &|_| true).is_none(),
+        "an idle shard frees it"
+    );
+}
+
+/// **A live watch is told of a value too big to keep**: the live report
+/// comes from the change itself, and the floor moves past it, so a resume
+/// from it resnapshots.
+#[tokio::test]
+async fn a_live_watch_sees_a_value_too_big_to_keep() {
+    use openraft::storage::RaftStateMachine;
+    let dir = tempdir().expect("dir");
+    let recorder = Recorder::new();
+    let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+    let big: &'static [u8] = Box::leak(vec![7u8; 2 << 20].into_boxed_slice());
+    machine
+        .apply(entries(1, 2, |index| match index {
+            1 => put("k", b"small", 1),
+            _ => put("k", big, 2),
+        }))
+        .await
+        .expect("apply");
+    let told = recorder.changes();
+    assert_eq!(told.len(), 2, "the big value reached no watch");
+    assert_eq!(told[1].1.as_deref().map(<[u8]>::len), Some(big.len()));
+    assert_eq!(told[1].2, 2);
+    assert!(cache.read().recent_since(2, &|_| true).is_none());
+    assert_eq!(cache.read().recent_since(3, &|_| true), Some(vec![]));
+}
+
+/// **A snapshot install and a restart start the kept changes past the
+/// snapshot's entry**: the state was replaced, so a resume from at or below
+/// it is resnapshotted, never replayed with the folded writes missing. A
+/// restart keeps nothing until a watch takes a change again.
+#[tokio::test]
+async fn an_install_and_a_restart_forget_the_kept_changes() {
+    use openraft::storage::RaftStateMachine;
+    let dir = tempdir().expect("dir");
+    let recorder = Recorder::new();
+    {
+        let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+        machine
+            .apply(entries(1, 3, |index| keyed(index, 2)))
+            .await
+            .expect("apply");
+        let mut sent = CacheState::default();
+        sent.apply(9, 90, &put("k", b"sent", 9));
+        install(&mut machine, 9, &sent).await;
+        assert!(cache.read().recent_since(3, &|_| true).is_none());
+        assert!(cache.read().recent_since(9, &|_| true).is_none());
+        machine
+            .apply(entries(10, 10, |_| put("k", b"after", 10)))
+            .await
+            .expect("apply");
+        let kept = cache.read().recent_since(10, &|_| true).expect("past it");
+        assert_eq!(offsets_of(&kept), vec![10]);
+    }
+    let (_machine, cache) = watched_machine(dir.path(), &recorder).await;
+    assert_eq!(cache.read().applied(), 9);
+    assert!(cache.read().recent_since(9, &|_| true).is_none());
+    assert!(cache.read().recent_since(10, &|_| true).is_none());
+}
+
+/// **A resume is replayed from its offset on a new leader, then joins live
+/// delivery with no gap or duplicate.** The first change replayed is the
+/// one at the resume offset, which the new leader applied as a follower.
+/// Writes land while the replay is read: what the replay returns is below
+/// its edge, and the live half is what arrives at or past it, as the
+/// handler keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_replays_from_its_offset_and_joins_live_with_no_gap_or_duplicate() {
+    let mut cluster = Cluster::new(true);
+    let recorders: HashMap<&str, Arc<Recorder>> = BROKERS
+        .iter()
+        .map(|broker| (*broker, Recorder::new()))
+        .collect();
+    for broker in BROKERS {
+        cluster
+            .runtime(broker)
+            .report_cache_changes(Arc::clone(&recorders[broker]) as Arc<dyn CacheObserver>);
+    }
+    cluster.form(N).await;
+    // Stamped as a leader stamps, on the members' clock: a member stops
+    // recording once its clock passes the window after the last change.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_micros() as u64;
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let old = cluster.elected(N).await;
+    cut_off(&cluster, &old.broker);
+    let (engine, second) = leading(&cluster).await;
+    assert_ne!(second.member, old);
+    joined(&cluster, &old.broker);
+    let recorder = &recorders[&*second.member.broker];
+
+    let writes = async {
+        let mut written = Vec::new();
+        for n in 0..20 {
+            written.push(write(&cluster, now + 1 + n, put("k", b"more", 2 + n)).await);
+        }
+        written
+    };
+    let replay = async {
+        eventually(|| (recorder.changes().len() >= 5).then_some(())).await;
+        engine
+            .cache_replay(&shard(N), first, &|_| true)
+            .expect("a cache group")
+    };
+    let (written, replay) = tokio::join!(writes, replay);
+    let last = *written.last().expect("writes");
+    eventually(|| recorder.offsets().contains(&last).then_some(())).await;
+
+    let replayed: Vec<_> = replay
+        .changes
+        .expect("the resume offset is still kept")
+        .iter()
+        .map(|change| change.offset)
+        .collect();
+    assert_eq!(
+        replayed.first(),
+        Some(&first),
+        "the replay starts at the offset"
+    );
+    assert!(replayed.iter().all(|at| *at < replay.tail));
+    let mut delivered = replayed;
+    delivered.extend(
+        recorder
+            .offsets()
+            .into_iter()
+            .filter(|at| *at >= replay.tail),
+    );
+    let mut wanted = vec![first];
+    wanted.extend(written);
+    assert_eq!(delivered, wanted, "a gap or a duplicate at the join");
     cluster.stop().await;
 }
