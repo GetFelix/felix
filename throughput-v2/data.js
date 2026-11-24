@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795534673846,
+  "lastUpdate": 1795535067720,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67912,6 +67912,58 @@ window.BENCHMARK_DATA = {
             "range": "9070.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805106.40\nmean: 806403.17\nstdev: 9070.11\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a8dc08e16eba4bea77ee5411bb14aebf1d006d66",
+          "message": "test(cluster): run the #3031 failover tests on Raft again (#3057)\n\n#3042 made them ask the elected leader, and they pass on Raft (run\n45213900211), so the skips #3040 added are no longer needed.\n\nSpec-Unaffected: test skips only",
+          "timestamp": "2026-11-24T15:32:10Z",
+          "tree_id": "38d4c7950041715f49f1537596c0ebb066b96e49",
+          "url": "https://github.com/GetFelix/felix/commit/a8dc08e16eba4bea77ee5411bb14aebf1d006d66"
+        },
+        "date": 1795535066994,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 416895.32,
+            "range": "18103.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 416895.32\nmean: 415306.71\nstdev: 18103.90\ncv: 4.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 416895.32,
+            "range": "18103.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 416895.32\nmean: 415306.71\nstdev: 18103.90\ncv: 4.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93970.19,
+            "range": "6473.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93970.19\nmean: 91309.24\nstdev: 6473.16\ncv: 7.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 939701.93,
+            "range": "64731.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 939701.93\nmean: 913092.40\nstdev: 64731.64\ncv: 7.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
