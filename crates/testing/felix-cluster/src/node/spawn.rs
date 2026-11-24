@@ -191,25 +191,34 @@ fn broker_command(binary: &PathBuf) -> Command {
 }
 
 /// Locate the `felix-broker` binary built alongside this harness.
-///
-/// Taken from this executable's own directory rather than by running cargo: the
-/// harness is often already inside a cargo invocation, and a nested one would
-/// deadlock on the build lock.
 pub fn broker_binary() -> Result<PathBuf> {
-    let mut dir = std::env::current_exe().context("locate the running executable")?;
-    dir.pop();
-    // Integration test binaries live in `target/<profile>/deps`.
-    if dir.ends_with("deps") {
-        dir.pop();
+    built_binary("felix-broker").map_err(|err| {
+        anyhow!(
+            "{err}; build it first with `cargo build -p felix-broker-service --bin felix-broker`"
+        )
+    })
+}
+
+/// Locate a workspace binary in the same cargo profile directory as the
+/// running test.
+///
+/// Taken from this executable's own path rather than by running cargo: the
+/// harness is often already inside a cargo invocation, and a nested one would
+/// deadlock on the build lock. The test binary may sit any number of levels
+/// below the profile directory depending on cargo's build-dir layout, so this
+/// walks up and stops at the target root (`CACHEDIR.TAG`).
+pub fn built_binary(name: &str) -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("locate the running executable")?;
+    for dir in exe.ancestors().skip(1) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        if dir.join("CACHEDIR.TAG").exists() {
+            break;
+        }
     }
-    let candidate = dir.join("felix-broker");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-    Err(anyhow!(
-        "felix-broker not found at {}; build it first with `cargo build -p felix-broker-service --bin felix-broker`",
-        candidate.display()
-    ))
+    Err(anyhow!("{name} not found above {}", exe.display()))
 }
 
 /// What a broker of this build reports, plus `joint_fence` and the

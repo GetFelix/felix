@@ -58,4 +58,4 @@ pub use config::{
 pub use controlplane::ControlPlane;
 pub use credentials::Credentials;
 pub use fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
-pub use node::{BrokerNode, broker_binary, joint_fence_broker_env};
+pub use node::{BrokerNode, broker_binary, built_binary, joint_fence_broker_env};

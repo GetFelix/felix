@@ -96,12 +96,18 @@ fn shared_library() -> PathBuf {
         "libfelix.so"
     };
     let exe = std::env::current_exe().expect("test binary path");
-    let deps = exe.parent().expect("the test binary has a directory");
-    std::iter::successors(Some(deps), |dir| dir.parent())
-        .take(2)
-        .map(|dir| dir.join(name))
-        .find(|path| path.exists())
-        .unwrap_or_else(|| panic!("{name} was not built next to {}", exe.display()))
+    // The profile directory is some way above the test binary, depending on
+    // cargo's build-dir layout; stop at the target root.
+    for dir in exe.ancestors().skip(1) {
+        let path = dir.join(name);
+        if path.exists() {
+            return path;
+        }
+        if dir.join("CACHEDIR.TAG").exists() {
+            break;
+        }
+    }
+    panic!("{name} was not built above {}", exe.display())
 }
 
 #[test]
