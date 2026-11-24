@@ -433,12 +433,14 @@ id = "error.quorum_timeout_is_outcome_unknown"
 required = true
 title = "A write no majority confirmed is reported as outcome unknown"
 detail = """
-A leader that wrote a batch and could not get a majority to confirm it in time
-does not know whether the write will survive. The error must say that
-(`quorum_timeout`, retry class `outcome_unknown`) and must not look like a
-refusal: an application that resends a non-idempotent publish after it may
-write the record twice. The fixture's control endpoint cuts a quorum stream's
-leader off from its followers with `POST /partition`.
+A leader cut off from its followers cannot say whether a write it took will
+survive. The publish must fail with an outcome-unknown error, retry class
+`outcome_unknown`: `quorum_timeout` when it gave up waiting for a majority, or
+`leadership_lost` when it lost leadership first (a Raft leader cut off past its
+lease). It must not look like a refusal: an application that resends a
+non-idempotent publish after it may write the record twice. The fixture's
+control endpoint cuts a quorum stream's leader off from its followers with
+`POST /partition`. The scenario id keeps its original name.
 """
 
 # ---------------------------------------------------------------------------

@@ -1034,6 +1034,15 @@ pub enum QuorumError {
     TooLarge { bytes: usize, max: usize },
 }
 
+impl QuorumError {
+    /// Whether the engine refused the write before appending any of it, so a
+    /// retry cannot duplicate it. The Raft engine says so in the detail it
+    /// gives a refusal (a lapsed lease, a term that moved).
+    pub fn refused_unwritten(&self) -> bool {
+        matches!(self, Self::LeadershipLost { detail, .. } if detail.ends_with("so nothing was written"))
+    }
+}
+
 /// What the quorum waits need to know about this broker's hold on a shard.
 ///
 /// The broker's ingress router answers it; it lives behind a trait so this

@@ -144,7 +144,8 @@ def test_a_write_no_majority_confirmed_is_outcome_unknown(disposable_fixture):
         f"a write no majority confirmed surfaced as {type(error).__name__} "
         f"({error.code}/{error.retry}): {error}"
     )
-    assert error.code == "quorum_timeout"
+    # A Raft leader cut off past its lease reports leadership_lost.
+    assert error.code in ("quorum_timeout", "leadership_lost")
     assert error.retry == "outcome_unknown"
 
 

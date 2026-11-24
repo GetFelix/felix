@@ -6,9 +6,13 @@
 //! states and hold it there:
 //!
 //! - `/fence` stops the movable stream's shard halfway through a move, with
-//!   its owner fenced, and answers once that owner refuses publishes.
-//! - `/partition` cuts the quorum stream's leader off from its followers, and
-//!   answers once a publish through it fails.
+//!   its owner fenced, and answers once that owner refuses publishes. On Raft
+//!   the owner is cut off from its group instead, since an election has no
+//!   state to hold open, and it answers once the owner has stopped taking
+//!   proposals.
+//! - `/partition` cuts the quorum stream's leader off from its followers and
+//!   answers at once. The first publish through it is proposed, and times out
+//!   without a majority.
 //! - `/link` breaks the connections through the link interposer, with a body
 //!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
 //!   once; a drop or a stall heals itself after `hold_ms`.
@@ -190,6 +194,9 @@ async fn fence(State(control): State<Arc<Control>>) -> Answer {
         let _pass = control.placement.lock().await;
         control.hold.store(true, Ordering::SeqCst);
     }
+    if felix_cluster::suite_runs_on_raft() {
+        return fence_raft(&control).await;
+    }
     let owner = control
         .cluster
         .fence_shard(&control.movable_stream)
@@ -202,6 +209,49 @@ async fn fence(State(control): State<Arc<Control>>) -> Answer {
         .await
         .map_err(failed)?;
     Ok(Json(control.target(&owner)))
+}
+
+/// A Raft shard has no fenced state to hold open: its leader moves by an
+/// election. What a client sees while nobody serves it is a group with no
+/// majority anywhere, so every broker is cut off from the others. The old
+/// owner stops taking proposals once one has waited past the quorum timeout,
+/// and nothing it refuses then is written. Cutting off the owner alone would
+/// let the other two elect a leader within seconds and end the fence.
+async fn fence_raft(control: &Control) -> Answer {
+    let owner = control
+        .cluster
+        .owner(&control.movable_stream)
+        .await
+        .map_err(failed)?;
+    for node in &control.cluster.nodes {
+        tokio::task::block_in_place(|| control.cluster.partition_node(&node.node_id))
+            .map_err(failed)?;
+    }
+    // The first probe may be proposed before the owner notices it has no
+    // majority. Two refusals in a row mean it stopped taking writes.
+    let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
+    let mut refused_in_a_row = 0;
+    loop {
+        let probe = control
+            .cluster
+            .publish_via(&owner, &control.movable_stream, b"fixture-probe".to_vec())
+            .await;
+        refused_in_a_row = if probe.is_err() {
+            refused_in_a_row + 1
+        } else {
+            0
+        };
+        if refused_in_a_row == 2 {
+            return Ok(Json(control.target(&owner)));
+        }
+        if Instant::now() >= deadline {
+            return Err(failed(anyhow::anyhow!(
+                "{owner} kept taking publishes to {}",
+                control.movable_stream
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn partition(State(control): State<Arc<Control>>) -> Answer {
@@ -223,10 +273,10 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
         .owner(&control.quorum_stream)
         .await
         .map_err(failed)?;
+    // No probe publish here: the cut is in force once this returns, and a
+    // probe batch the leader accepted and never settled would make it refuse
+    // the caller's own publish before the log, as retryable, on Raft.
     tokio::task::block_in_place(|| control.cluster.partition_node(&leader)).map_err(failed)?;
-    until_refused(&control.cluster, &leader, &control.quorum_stream)
-        .await
-        .map_err(failed)?;
     Ok(Json(control.target(&leader)))
 }
 

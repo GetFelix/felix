@@ -3,7 +3,7 @@
 use felix_storage::log::LogRecord;
 
 use super::Broker;
-use super::subscribe::committed_tail;
+use super::subscribe::{committed_tail, read_bound_covering};
 use crate::error::{BrokerError, Result};
 
 /// One page of [`Broker::read_range`].
@@ -22,7 +22,9 @@ impl Broker {
     /// `from` and stopping before `end`, about `max_bytes` of payload at most
     /// (a single larger record is still returned, alone).
     ///
-    /// Registers no subscriber and never waits: a page that reaches what is
+    /// Registers no subscriber. A range reaching records this broker holds
+    /// that are not committed yet waits a moment for them (see
+    /// `read_bound_covering`); past that, a page that reaches what is
     /// committed comes back short, or empty, with `next_offset` where to ask
     /// again. Only records that will stay are returned: on a `Quorum` shard
     /// nothing at or past the committed mark, and under `FsyncMode::OnCommit`
@@ -71,8 +73,9 @@ impl Broker {
                 tail,
             });
         }
+        let wanted = end.map_or(tail, |end| end.min(tail));
         let readable = log.readable_end(committed_tail(
-            handle.state.read_bound(),
+            read_bound_covering(&handle.state, wanted).await,
             tail,
             stream,
             shard,
@@ -102,3 +105,6 @@ impl Broker {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

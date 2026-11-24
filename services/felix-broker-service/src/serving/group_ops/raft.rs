@@ -21,6 +21,9 @@ use crate::shards::raft::RaftGroups;
 use crate::shards::routing::{Dispatch, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
+/// How long a group read waits for records this member holds to be applied.
+const COMMIT_CATCH_UP_WAIT: Duration = Duration::from_millis(1500);
+
 /// A group operation on a shard a Raft group runs here.
 pub(super) struct OnRaft {
     groups: Arc<RaftGroups>,
@@ -116,10 +119,20 @@ impl OnRaft {
             .map_err(|_| crate::shards::lifecycle::fence::Fenced::NotServing.into())
     }
 
+    /// The tail, held to the commit index. A publish is acknowledged at a
+    /// majority's write, before this member applies it, so the end waits a
+    /// moment for the tail it sees to be committed: a client that was just
+    /// acknowledged would otherwise read a group that does not show it.
     async fn read_end(&self, publish_ctx: &PublishContext) -> Result<u64, ClientError> {
-        let committed = self.committed(publish_ctx)?;
         let tail = self.log.tail_offset().await.map_err(storage)?;
-        Ok(tail.min(committed))
+        let deadline = Instant::now() + COMMIT_CATCH_UP_WAIT;
+        loop {
+            let committed = self.committed(publish_ctx)?;
+            if committed >= tail || Instant::now() >= deadline {
+                return Ok(tail.min(committed));
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -193,6 +193,11 @@ impl ClientError {
                 return Self::classify_broker(broker, message);
             }
             if let Some(quorum) = cause.downcast_ref::<felix_replication::quorum::QuorumError>() {
+                // Refused before anything was appended: not an unknown outcome.
+                if quorum.refused_unwritten() {
+                    return Self::new(ErrorCode::ShardUnavailable, message)
+                        .with_reason(felix_wire::shard_unavailable_reason::NOT_READY);
+                }
                 let code = match quorum {
                     felix_replication::quorum::QuorumError::TimedOut { .. } => {
                         ErrorCode::QuorumTimeout

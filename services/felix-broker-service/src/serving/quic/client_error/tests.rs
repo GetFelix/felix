@@ -44,6 +44,18 @@ fn a_quorum_timeout_is_outcome_unknown_not_a_refusal() {
 }
 
 #[test]
+fn a_write_refused_before_it_was_appended_is_retryable_not_unknown() {
+    let refused = QuorumError::LeadershipLost {
+        what: "write",
+        detail: "no majority has answered this leader lately, so nothing was written",
+    };
+    assert_eq!(
+        code_of(refused.into()),
+        (ErrorCode::ShardUnavailable, RetryClass::RetryAfter)
+    );
+}
+
+#[test]
 fn broker_errors_map_to_codes() {
     let missing = felix_broker::BrokerError::StreamNotFound {
         tenant_id: "t".into(),
