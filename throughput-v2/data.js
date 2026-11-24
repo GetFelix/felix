@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795531634360,
+  "lastUpdate": 1795534673846,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67860,6 +67860,58 @@ window.BENCHMARK_DATA = {
             "range": "38961.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1538234.10\nmean: 1525385.43\nstdev: 38961.82\ncv: 2.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a73a290b0254ae710ec443bc3f2ce2a873af3d6",
+          "message": "fix(storage): a dropped io_uring flush still poisons on a failed fsync (#2492) (#3045)\n\n* fix(storage): a dropped io_uring flush still poisons on a failed fsync (#2492)\n\nThe ring's service thread now runs a failure hook when it reaps a failed\ncompletion, before it replies, so a flush future dropped mid-fsync cannot\nlose the failure. roll_now runs its roll in its own task, so a caller that\ngives up cannot leave the roll slot taken or a pre-seal failure unrecorded.\n\n* fix(storage): a log never has two fsyncs in the io_uring ring at once (#2492)\n\nA dropped flush released the flush lock while its fsync was still in the\nring, so the next flush could submit a second fdatasync of the same file.\nThe ring runs them concurrently and Linux reports a writeback error once\nper open file, so the later one could succeed, be reaped first and\nacknowledge records the earlier failure lost. Each log now takes a ring\ngate before submitting and hands it to the failure hook, which the ring\ndrops only once it has answered; the next fsync rechecks for a poison.\n\nTests use a stand-in ring on every platform; the Linux ring tests go\nthrough the flush lock and panic instead of skipping under\nFELIX_TEST_REQUIRE_IO_URING=1, which a new CI step sets.\n\ntask lint was still running at commit time (fmt check passes).\n\n* test(storage): register FELIX_TEST_REQUIRE_IO_URING\n\nSpec-Unaffected: env registry and docs only\n\n* test(storage): tests that hold the flush thread pin their log to it\n\nA test forcing io_uring holds a process-wide switch, so a durability test\nrunning alongside flushed through the ring instead of queueing behind the\nflush thread it held, and saw its injected failure immediately. A per-log\npin keeps those tests on the flush thread.\n\nSpec-Unaffected: test isolation only; no change to the flush path outside tests.",
+          "timestamp": "2026-11-24T15:28:55Z",
+          "tree_id": "57074c765d409916a9c5388a1a49605d8ec0a9c7",
+          "url": "https://github.com/GetFelix/felix/commit/4a73a290b0254ae710ec443bc3f2ce2a873af3d6"
+        },
+        "date": 1795534673221,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351181.11,
+            "range": "8115.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351181.11\nmean: 347250.38\nstdev: 8115.69\ncv: 2.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351181.11,
+            "range": "8115.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351181.11\nmean: 347250.38\nstdev: 8115.69\ncv: 2.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80510.64,
+            "range": "907.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80510.64\nmean: 80640.32\nstdev: 907.01\ncv: 1.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805106.4,
+            "range": "9070.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805106.40\nmean: 806403.17\nstdev: 9070.11\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
