@@ -50,6 +50,23 @@ impl NotServed {
     }
 }
 
+/// The answer for a cache or counter operation routed here on a broker
+/// whose durable caches all live on Raft groups, when no member of `shard`
+/// is open yet: at startup, or before placement reaches this broker. The
+/// hybrid stores must not take it, since nothing would ever serve what they
+/// wrote. Retryable: the member opens on a later feed pass.
+pub(crate) fn not_open(shard: &ShardKey) -> anyhow::Error {
+    use crate::serving::quic::client_error::ClientError;
+    ClientError::unavailable(
+        &crate::shards::routing::Reason::NotReady,
+        format!(
+            "the Raft group of {}/{}/{} shard {} is not open on this broker yet; retry",
+            shard.tenant_id, shard.namespace, shard.stream, shard.shard
+        ),
+    )
+    .into()
+}
+
 /// Apply `request` for `key` to `shard`'s Raft group, at the `term` routing
 /// answered. `None` when the hybrid runs the shard.
 pub(crate) async fn apply(

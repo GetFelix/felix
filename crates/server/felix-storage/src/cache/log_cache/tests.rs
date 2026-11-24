@@ -85,3 +85,17 @@ async fn assert_reads(cache: &LogCache, expected: &[(String, Bytes)], when: &str
         );
     }
 }
+
+/// **A store left to engines opens no shard**: a put is refused and no
+/// directory is made, so a Raft group can still claim the shard.
+#[tokio::test]
+async fn a_store_left_to_engines_opens_no_shard() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    cache.leave_to_engines();
+    cache
+        .put_checked(T, NS, C, 0, "k", Bytes::from_static(b"v"), None)
+        .await
+        .expect_err("opened a shard");
+    assert!(!cache.on_disk(T, NS, C, 0), "made the shard's directory");
+}

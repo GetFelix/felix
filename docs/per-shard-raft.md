@@ -5942,6 +5942,8 @@ on the hybrid.
   have been routed at the term the broker serves now, or it is refused as
   not ready and the client retries; a forwarded one is proposed at the term
   led now, as a forwarded publish is.
+  An operation for a shard whose member is not open here yet is refused as not
+  ready too; the hybrid stores open no cache or counter log on a Raft broker.
 - **Answers match the hybrid's.** A refused conditional write names the
   key's version; an applied conditional delete names none. A plain delete
   answers the value it removed: the group's delete answers only a version, so
