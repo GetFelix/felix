@@ -301,7 +301,10 @@ impl OnRaft {
         if_new: bool,
     ) -> Result<felix_broker::Seek, ClientError> {
         let earliest = self.log.readable_base();
-        let latest = self.confirmed_end(publish_ctx).await?;
+        // The tail a client sees is the records' end (see `describe`); the
+        // group entries past it hold no record, so latest stops there too.
+        let end = self.confirmed_end(publish_ctx).await?;
+        let latest = publish_ctx.engine.records_end(&self.shard, end);
         let offset = super::seek_offset(start, earliest, latest, self.key.shard)?;
         self.groups
             .seek(&self.key, offset, if_new, self.deadline())
