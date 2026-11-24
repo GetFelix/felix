@@ -550,7 +550,7 @@ expectations=(
   "FelixRaftFormedSetEven pass"
   "FelixRaftFormedSetKeepOne violates OneGroup"
   "FelixRaftReform pass"
-  "FelixRaftReformLeaseTail pass"
+  "FelixRaftReformLeaseTail violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailHappens violates NeverReformsKeptTail"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"
