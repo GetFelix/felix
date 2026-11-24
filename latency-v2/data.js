@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795481322707,
+  "lastUpdate": 1795483535876,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -85536,6 +85536,72 @@ window.BENCHMARK_DATA = {
             "range": "487.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 781.00\nmean: 999.00\nstdev: 487.40\ncv: 48.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "818584c59e5a015578a90a36f569f382450445b8",
+          "message": "fix: client conformance suites pass on Raft with durable storage (#3072)\n\n* fix: client conformance on Raft reads, refused writes and fixture faults\n\nPart of #3050\n\nSpec-Unaffected: no model covers the read bound wait or the error mapping\n\n* fix: Raft reads use the read barrier, refusals are typed\n\n- Reads after an ack: drop the 1.5 s polling wait. The read barrier now\n  covers writes answered on the leader's lease, offset_for_time and a\n  group seek pass it, and a read that cannot pass it fails as retryable\n  (NotReadable::Settling) instead of answering from the old bound.\n- QuorumError::NotAppended replaces the text-suffix check. Only an\n  openraft refusal with nothing known written (lapsed lease, other term)\n  becomes it; shape refusals and written batches stay outcome unknown.\n- fence_raft counts only refusals the broker typed as retryable.\n- Scenario and client test wording matches what Raft does.\n\nSpec-Unaffected: Raft read barrier and client error classification; no TLA model covers either\n\n* fix: raft inspector role, deterministic lost-quorum scenario, settled fence probes\n\nThe inspector takes a Raft shard's role from its group, not placement's\nroute. The conformance fixture gives brokers a long election timeout so a\ncut-off leader still takes the scenario's write, and /heal waits for the\nmovable stream to take a write after a Raft /fence. Comment fixes in\ngroup.rs and FelixRaftReads.tla.\n\nSpec-Unaffected: the .tla change is a comment-only header update; a higher read bound only delays reads, NoStaleRead is unchanged",
+          "timestamp": "2026-11-23T17:19:27-08:00",
+          "tree_id": "0bbe5fa9df673e36efe2f559be53d45589c55598",
+          "url": "https://github.com/GetFelix/felix/commit/818584c59e5a015578a90a36f569f382450445b8"
+        },
+        "date": 1795483524992,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 74.20\nstdev: 0.45\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 133.40\nstdev: 4.98\ncv: 3.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 236,
+            "range": "649.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 236.00\nmean: 582.00\nstdev: 649.27\ncv: 111.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 91,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 90.60\nstdev: 0.55\ncv: 0.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 191,
+            "range": "12.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 191.00\nmean: 196.80\nstdev: 12.15\ncv: 6.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "238.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 431.00\nstdev: 238.94\ncv: 55.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
