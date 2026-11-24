@@ -626,6 +626,12 @@ impl<C: GroupConsensus> RaftGroups<C> {
         written.map(|()| existed)
     }
 
+    /// Once this returns, this member has applied every entry of the shard
+    /// answered before it was called: a read index and the apply up to it.
+    pub async fn confirm(&self, key: &GroupKey, deadline: Instant) -> Result<()> {
+        self.consensus.fresh(key, deadline).await.map(drop)
+    }
+
     /// Where the group stands. The cursor and dead letters are the table's;
     /// in flight and owed are this leader's memory.
     pub async fn describe(&self, key: &GroupKey, deadline: Instant) -> Result<GroupSnapshot> {
