@@ -22,6 +22,9 @@
 //!
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
+// Wired into appends, votes and lease answers next (#3103).
+#[cfg_attr(not(test), expect(dead_code))]
+mod allowance;
 mod beats;
 mod cache;
 mod codec;
