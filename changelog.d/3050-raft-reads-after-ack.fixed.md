@@ -1,8 +1,10 @@
 - On a Raft stream, a range read, an offset-for-time lookup and a consumer
   group describe or seek made right after a publish was acknowledged could
-  answer as if the publish had not happened, because the acknowledgement comes
-  before the member applies the entry. They now wait briefly for the records
-  the member holds to pass the read bound (#3050).
-- A Raft write refused before anything was appended, such as one sent while no
-  majority has answered the leader, is answered as an unavailable shard that
-  can be retried, not as an unknown outcome (#3050).
+  answer as if the publish had not happened. The read barrier now covers
+  writes answered on the leader's lease too, and the offset-for-time lookup
+  and a group seek pass it; a read that cannot pass it fails as retryable
+  instead of answering "nothing yet" (#3050).
+- A Raft write openraft refused before appending anything, because the
+  leader's lease lapsed or the batch was admitted at another term, is answered
+  as an unavailable shard that can be retried, not as an unknown outcome
+  (#3050).

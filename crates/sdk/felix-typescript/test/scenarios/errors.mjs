@@ -161,7 +161,8 @@ export default function register(ctx) {
           `a write no majority confirmed surfaced as ${caught?.constructor?.name} ` +
             `(${caught?.code}/${caught?.retry}): ${caught?.message}`,
         );
-        // A Raft leader cut off past its lease reports leadership_lost.
+        // A Raft leader that steps down while the appended batch waits reports
+        // leadership_lost.
         assert.ok(
           ["quorum_timeout", "leadership_lost"].includes(caught.code),
           `unexpected outcome-unknown code ${caught.code}`,

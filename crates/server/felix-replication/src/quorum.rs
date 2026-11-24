@@ -1004,9 +1004,9 @@ pub(crate) enum QuorumWait {
     NotLeading,
 }
 
-/// Why a `Quorum` write could not be acknowledged. Either way the leader has
-/// already written it, so the client is told the outcome is unknown rather than
-/// that the write failed.
+/// Why a `Quorum` write could not be acknowledged. Unless the variant says
+/// otherwise the leader may have written it, so the client is told the
+/// outcome is unknown rather than that the write failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QuorumError {
     /// No majority within the budget.
@@ -1021,6 +1021,14 @@ pub enum QuorumError {
         what: &'static str,
         detail: &'static str,
     },
+    /// The Raft engine refused the write before it appended any of it: its
+    /// lease had lapsed, or it no longer led the term the write was admitted
+    /// at. Nothing was written, so the write can be sent again.
+    #[error("the {what} was refused: {detail}")]
+    NotAppended {
+        what: &'static str,
+        detail: &'static str,
+    },
     /// A conditional publish on a Raft shard did not land at its expected
     /// offset. Unlike the others this outcome is known: the committed entry
     /// there is a blank, and `tail` is the shard's next offset after it.
@@ -1032,15 +1040,6 @@ pub enum QuorumError {
         "a record of {bytes} bytes is larger than a Raft shard takes ({max}); nothing was written"
     )]
     TooLarge { bytes: usize, max: usize },
-}
-
-impl QuorumError {
-    /// Whether the engine refused the write before appending any of it, so a
-    /// retry cannot duplicate it. The Raft engine says so in the detail it
-    /// gives a refusal (a lapsed lease, a term that moved).
-    pub fn refused_unwritten(&self) -> bool {
-        matches!(self, Self::LeadershipLost { detail, .. } if detail.ends_with("so nothing was written"))
-    }
 }
 
 /// What the quorum waits need to know about this broker's hold on a shard.

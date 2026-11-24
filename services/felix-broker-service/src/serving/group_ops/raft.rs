@@ -21,9 +21,6 @@ use crate::shards::raft::RaftGroups;
 use crate::shards::routing::{Dispatch, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
-/// How long a group read waits for records this member holds to be applied.
-const COMMIT_CATCH_UP_WAIT: Duration = Duration::from_millis(1500);
-
 /// A group operation on a shard a Raft group runs here.
 pub(super) struct OnRaft {
     groups: Arc<RaftGroups>,
@@ -119,20 +116,24 @@ impl OnRaft {
             .map_err(|_| crate::shards::lifecycle::fence::Fenced::NotServing.into())
     }
 
-    /// The tail, held to the commit index. A publish is acknowledged at a
-    /// majority's write, before this member applies it, so the end waits a
-    /// moment for the tail it sees to be committed: a client that was just
-    /// acknowledged would otherwise read a group that does not show it.
+    /// The tail, held to what this member has applied. Call it after a read
+    /// index ([`Self::confirmed_end`] or a group read), or a publish
+    /// acknowledged before the call can be above it.
     async fn read_end(&self, publish_ctx: &PublishContext) -> Result<u64, ClientError> {
+        let committed = self.committed(publish_ctx)?;
         let tail = self.log.tail_offset().await.map_err(storage)?;
-        let deadline = Instant::now() + COMMIT_CATCH_UP_WAIT;
-        loop {
-            let committed = self.committed(publish_ctx)?;
-            if committed >= tail || Instant::now() >= deadline {
-                return Ok(tail.min(committed));
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        Ok(tail.min(committed))
+    }
+
+    /// [`Self::read_end`] after a read index, so it covers every publish
+    /// acknowledged before the call. Fails, retryably, when no majority
+    /// confirms this leader in time.
+    async fn confirmed_end(&self, publish_ctx: &PublishContext) -> Result<u64, ClientError> {
+        self.groups
+            .confirm(&self.key, self.deadline())
+            .await
+            .map_err(broker)?;
+        self.read_end(publish_ctx).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -300,7 +301,7 @@ impl OnRaft {
         if_new: bool,
     ) -> Result<felix_broker::Seek, ClientError> {
         let earliest = self.log.readable_base();
-        let latest = self.read_end(publish_ctx).await?;
+        let latest = self.confirmed_end(publish_ctx).await?;
         let offset = super::seek_offset(start, earliest, latest, self.key.shard)?;
         self.groups
             .seek(&self.key, offset, if_new, self.deadline())
@@ -319,7 +320,8 @@ impl OnRaft {
             .map_err(broker)?;
         // Group writes are entries of the shard's log but hold no record, so
         // the tail stops before the trailing ones: a group that has settled
-        // everything shows no lag, as on the hybrid.
+        // everything shows no lag, as on the hybrid. The describe ran a
+        // read index, so the end covers every acknowledged publish.
         let end = self.read_end(publish_ctx).await?;
         Ok((snapshot, publish_ctx.engine.records_end(&self.shard, end)))
     }

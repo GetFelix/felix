@@ -2056,10 +2056,7 @@ impl Group {
             let metrics = metrics.borrow_watched();
             metrics.local_committed.map_or(0, |id| id.index + 1)
         };
-        let answered = *self.answered.lock();
-        let answered = answered
-            .filter(|at| at.term == term)
-            .map_or(0, |at| at.index + 1);
+        let answered = self.answered_end(term);
         #[cfg(test)]
         self.lease_reads.fetch_add(1, Ordering::Relaxed);
         Some(committed.max(answered))
@@ -2085,16 +2082,24 @@ impl Group {
     }
 
     /// One past the index a reader of `term` must have applied: the read
-    /// index, or past it a write answered on a written majority. That write
-    /// is of this term and on a majority, so it commits unless this member
-    /// stops leading. Shared by this leader's reads and its followers'.
+    /// index, or past it a write of `term` already answered
+    /// ([`Group::answered_end`]). Shared by this leader's reads and its
+    /// followers'.
     async fn confirmed_index(&self, term: u64) -> Result<u64, CommitError> {
         let bound = self.read_index(term).await?;
-        let answered = *self.answered.lock();
-        let answered = answered
-            .filter(|at| at.term == term)
-            .map_or(0, |at| at.index + 1);
-        Ok(bound.max(answered))
+        Ok(bound.max(self.answered_end(term)))
+    }
+
+    /// One past the last write of `term` a publisher was told was taken,
+    /// on a written majority or on this leader's lease, before its commit.
+    /// A read that starts after that answer waits for the entry: it commits
+    /// unless this member stops leading `term`, and then the read fails.
+    fn answered_end(&self, term: u64) -> u64 {
+        let ours = |mark: Option<LogPoint>| {
+            mark.filter(|at| at.term == term)
+                .map_or(0, |at| at.index + 1)
+        };
+        ours(*self.answered.lock()).max(ours(*self.acked_on_lease.lock()))
     }
 
     /// One past the index a reader must have applied before it reads: the

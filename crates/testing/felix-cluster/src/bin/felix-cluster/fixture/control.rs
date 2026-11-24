@@ -7,9 +7,8 @@
 //!
 //! - `/fence` stops the movable stream's shard halfway through a move, with
 //!   its owner fenced, and answers once that owner refuses publishes. On Raft
-//!   the owner is cut off from its group instead, since an election has no
-//!   state to hold open, and it answers once the owner has stopped taking
-//!   proposals.
+//!   no move happens: every broker is cut off from the others, and it answers
+//!   once the owner refuses proposals as unwritten.
 //! - `/partition` cuts the quorum stream's leader off from its followers and
 //!   answers at once. The first publish through it is proposed, and times out
 //!   without a majority.
@@ -228,7 +227,9 @@ async fn fence_raft(control: &Control) -> Answer {
             .map_err(failed)?;
     }
     // The first probe may be proposed before the owner notices it has no
-    // majority. Two refusals in a row mean it stopped taking writes.
+    // majority, and then times out with its outcome unknown. Only the
+    // broker's own retryable answer says nothing was written: two of those
+    // in a row mean it stopped taking writes.
     let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
     let mut refused_in_a_row = 0;
     loop {
@@ -236,7 +237,7 @@ async fn fence_raft(control: &Control) -> Answer {
             .cluster
             .publish_via(&owner, &control.movable_stream, b"fixture-probe".to_vec())
             .await;
-        refused_in_a_row = if probe.is_err() {
+        refused_in_a_row = if probe.as_ref().is_err_and(refused_unwritten) {
             refused_in_a_row + 1
         } else {
             0
@@ -348,6 +349,20 @@ async fn until_refused(cluster: &Cluster, node_id: &str, stream: &str) -> Result
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// Whether a failed publish definitely wrote nothing, by the broker's own
+/// retry class. A timeout or an outcome-unknown answer may still commit.
+fn refused_unwritten(err: &anyhow::Error) -> bool {
+    use felix_client::{BrokerError, RetryClass};
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<BrokerError>())
+        .any(|broker| {
+            matches!(
+                broker.retry,
+                RetryClass::Retry | RetryClass::RetryAfter | RetryClass::Redirect
+            )
+        })
 }
 
 fn refused(why: &str) -> (StatusCode, String) {

@@ -459,10 +459,14 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
-        let tail = log.settled_tail_offset().await?;
+        // The barrier, so a publish acknowledged before the lookup is
+        // under the bound; a lookup that cannot pass it fails retryably
+        // rather than answer "nothing yet".
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&handle.state, at, false).await?;
         let until = committed_tail(
-            read_bound_covering(&handle.state, tail).await,
-            tail,
+            handle.state.read_bound(),
+            log.settled_tail_offset().await?,
             stream,
             shard,
         )?;
@@ -664,31 +668,6 @@ pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u
         ReadBound::Settling => Err(not_readable(stream, shard, NotReadable::Settling)),
         ReadBound::Refused => Err(not_readable(stream, shard, NotReadable::Refused)),
     }
-}
-
-/// How long a history read waits for records this broker already holds to
-/// pass the read bound.
-const COMMIT_CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
-
-/// The read bound once it covers `target`, or as it stands after a short wait.
-///
-/// A publish on a `Quorum` stream is acknowledged when a majority has written
-/// it, which can be before this member applies it and moves the bound. A
-/// reader that was just told its offset would otherwise find nothing there.
-/// Records that never commit (a deposed leader's) just run the wait out.
-pub(super) async fn read_bound_covering(
-    state: &crate::stream::StreamState,
-    target: u64,
-) -> ReadBound {
-    let mut bound = state.read_bound();
-    let deadline = tokio::time::Instant::now() + COMMIT_CATCH_UP_WAIT;
-    while matches!(bound, ReadBound::Committed(mark) if mark < target)
-        && tokio::time::Instant::now() < deadline
-    {
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        bound = state.read_bound();
-    }
-    bound
 }
 
 /// Wait until a Raft member has seen committed every trim its log holds

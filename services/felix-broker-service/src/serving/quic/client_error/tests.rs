@@ -45,13 +45,28 @@ fn a_quorum_timeout_is_outcome_unknown_not_a_refusal() {
 
 #[test]
 fn a_write_refused_before_it_was_appended_is_retryable_not_unknown() {
-    let refused = QuorumError::LeadershipLost {
+    let refused = QuorumError::NotAppended {
         what: "write",
         detail: "no majority has answered this leader lately, so nothing was written",
     };
     assert_eq!(
         code_of(refused.into()),
-        (ErrorCode::ShardUnavailable, RetryClass::RetryAfter)
+        (ErrorCode::ShardUnavailable, RetryClass::Retry)
+    );
+}
+
+/// Only the typed refusal is retryable. A lost leadership whose text says
+/// nothing was written is still answered as it always was: the text is not
+/// what decides.
+#[test]
+fn a_lost_leadership_saying_nothing_was_written_stays_outcome_unknown() {
+    let shaped = QuorumError::LeadershipLost {
+        what: "write",
+        detail: "the records are not the rest of the producer's batch, so nothing was written",
+    };
+    assert_eq!(
+        code_of(shaped.into()),
+        (ErrorCode::LeadershipLost, RetryClass::OutcomeUnknown)
     );
 }
 

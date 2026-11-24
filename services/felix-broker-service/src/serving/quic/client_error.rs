@@ -193,17 +193,18 @@ impl ClientError {
                 return Self::classify_broker(broker, message);
             }
             if let Some(quorum) = cause.downcast_ref::<felix_replication::quorum::QuorumError>() {
-                // Refused before anything was appended: not an unknown outcome.
-                if quorum.refused_unwritten() {
-                    return Self::new(ErrorCode::ShardUnavailable, message)
-                        .with_reason(felix_wire::shard_unavailable_reason::NOT_READY);
-                }
                 let code = match quorum {
                     felix_replication::quorum::QuorumError::TimedOut { .. } => {
                         ErrorCode::QuorumTimeout
                     }
                     felix_replication::quorum::QuorumError::LeadershipLost { .. } => {
                         ErrorCode::LeadershipLost
+                    }
+                    // Refused before anything was appended: sent again, it
+                    // cannot be written twice.
+                    felix_replication::quorum::QuorumError::NotAppended { .. } => {
+                        return Self::new(ErrorCode::ShardUnavailable, message)
+                            .with_reason(felix_wire::shard_unavailable_reason::NOT_READY);
                     }
                     // A known refusal, as the hybrid's is.
                     felix_replication::quorum::QuorumError::OffsetMismatch { .. }

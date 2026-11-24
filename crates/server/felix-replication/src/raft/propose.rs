@@ -206,6 +206,22 @@ impl Unacknowledged {
             && matches!(&self.error, CommitError::LeadershipLost { detail, .. } if *detail == LEASE_LAPSED)
     }
 
+    /// The error a publisher is told. A refusal openraft made before it
+    /// appended any of the batch, with no record of it known written,
+    /// becomes [`CommitError::NotAppended`]: a lapsed lease, or a term the
+    /// batch was not admitted at. Anything else may have been appended.
+    pub(crate) fn told(self) -> CommitError {
+        match self.error {
+            CommitError::LeadershipLost { what, detail }
+                if self.written_end.is_none()
+                    && (detail == LEASE_LAPSED || detail == OTHER_TERM) =>
+            {
+                CommitError::NotAppended { what, detail }
+            }
+            error => error,
+        }
+    }
+
     /// The batch is known to be written up to `end`, whatever else was said.
     fn reaching(mut self, end: u64) -> Self {
         self.written_end = Some(self.written_end.map_or(end, |known| known.max(end)));
