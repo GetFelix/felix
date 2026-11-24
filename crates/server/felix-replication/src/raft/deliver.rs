@@ -813,7 +813,7 @@ pub(super) async fn settled(
     // that are in it.
     let written = written.await.map_err(|unacked| match unacked.written_end {
         Some(end) => ProposalFailed::written(unacked.error, end),
-        None => ProposalFailed::unwritten(unacked.error),
+        None => ProposalFailed::unwritten(unacked.told()),
     })?;
     // openraft refuses the write at another term. Should one land all the
     // same, it is not delivered.

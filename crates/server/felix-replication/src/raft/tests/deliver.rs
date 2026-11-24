@@ -346,7 +346,7 @@ async fn a_batch_admitted_at_another_term_is_not_written() {
 
     let outcome = at(term - 1, b"stale").await.expect("joined");
     assert!(
-        matches!(outcome, Err(CommitError::LeadershipLost { .. })),
+        matches!(outcome, Err(CommitError::NotAppended { .. })),
         "{outcome:?}"
     );
     nothing(&mut receiver).await;

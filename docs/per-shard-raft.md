@@ -2681,6 +2681,12 @@ for tests and A/B runs, on a broker or for the `raft::` unit tests. It is
 not supported in production. `0` runs
 the groups without group threads, which keeps that path tested.
 
+`FELIX_TEST_RAFT_ELECTION_MAX_MS=<ms>` sets the longest election timeout, which
+is also how long a leader with no answer from a majority keeps accepting
+writes. The client conformance fixture sets it so a leader it cuts off from its
+followers still takes the one write the scenario sends and cannot say whether
+it survived. It is not supported in production.
+
 ## Heartbeats sent together
 
 Without coalescing, each leader sends each follower one empty

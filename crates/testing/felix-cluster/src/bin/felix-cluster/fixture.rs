@@ -106,10 +106,20 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
             CacheSpec::replicated(SINGLE_SHARD_CACHE, 1, node_count as u32),
             CacheSpec::replicated(LEASE_CACHE, 1, node_count as u32),
         ],
-        broker_env: vec![(
-            "FELIX_LEASE_TOKEN_KEY_FILE".to_string(),
-            lease_key_file.clone(),
-        )],
+        broker_env: vec![
+            (
+                "FELIX_LEASE_TOKEN_KEY_FILE".to_string(),
+                lease_key_file.clone(),
+            ),
+            // A cut-off Raft leader refuses writes once no majority has
+            // answered it for this long. The lost-quorum scenario needs it to
+            // still take the client's write, which a client on a slow runner
+            // sends a few seconds after the cut. Ignored by the hybrid engine.
+            (
+                "FELIX_TEST_RAFT_ELECTION_MAX_MS".to_string(),
+                "12000".to_string(),
+            ),
+        ],
         inherit_output: std::env::var("FELIX_CLUSTER_VERBOSE").is_ok(),
         ..Default::default()
     })

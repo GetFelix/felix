@@ -332,3 +332,45 @@ fn a_fence_refused_by_a_replica_says_why() {
         )
     );
 }
+
+fn raft_member(role: &str, leader: &str) -> felix_wire::InspectedRaft {
+    felix_wire::InspectedRaft {
+        role: role.to_string(),
+        term: 3,
+        leader: Some(leader.to_string()),
+        last_index: Some(9),
+        committed: Some(9),
+    }
+}
+
+/// A Raft shard's group elects its leader, so the route placement last
+/// published can name another broker, or none yet.
+#[test]
+fn a_raft_member_reports_the_role_its_group_gave_it() {
+    let elected = |role, route| {
+        build(Observed {
+            node_id: Some(ME.to_string()),
+            shards: 4,
+            route,
+            raft: Some(raft_member(
+                role,
+                if role == "leader" { ME } else { "broker-b" },
+            )),
+            ..Observed::default()
+        })
+    };
+    for route in [None, Some(route("broker-b", 7))] {
+        let leader = elected("leader", route.clone());
+        assert_eq!(
+            (leader.role.as_str(), leader.phase.as_str(), why(&leader)),
+            ("leader", "active", (true, None))
+        );
+        let follower = elected("follower", route);
+        assert_eq!(follower.role, "follower");
+        assert_eq!(why(&follower), (false, Some("not_assigned_here")));
+        assert_eq!(
+            follower.detail.as_deref(),
+            Some("broker-b leads it at term 3")
+        );
+    }
+}
