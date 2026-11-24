@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795548698483,
+  "lastUpdate": 1795549143222,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86328,6 +86328,72 @@ window.BENCHMARK_DATA = {
             "range": "225.40",
             "unit": "us",
             "extra": "trials: 5\nmedian: 317.00\nmean: 443.60\nstdev: 225.40\ncv: 50.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "992678e2a3ca349d9175e585fa1abf9cc7ef3b69",
+          "message": "fix(raft): a member stopped by a failed disk write reopens once the disk heals (#3108)\n\n* fix(raft): a member stopped by a failed disk write reopens once the disk heals\n\nA failed write also failed the broker-wide raft-marks write, which\npoisoned the mark log for good and stopped every Raft member on the broker\nuntil a restart. Now the broker closes a member stopped on a storage\nerror, checks the disk with a probe write and fsync, rewrites raft-marks\nfrom the last synced marks, and reopens the member through the normal\nopen path, as after a crash. A failed fsync is still never retried: a\npoisoned log rotates to a new copy id on reopen, and a single-copy shard\nwhose only copy rotated is held until an operator re-forms it.\n\nTurns the three writes:: failure tests back on.\n\nFixes #3104\n\nSpec-Unaffected: the reopen is the crash-and-restart open the models already cover\n\n* test(cluster): the full-disk test retries the first publish after the heal\n\nOn Raft a write the full disk refused is held and retried with a backoff,\nso the first publish after the heal may be answered \"retry\" while the held\nwrite lands. Retry it as a client would; the replay checks are unchanged.\n\nSpec-Unaffected: test only\n\n* test(raft): the poisoned single-copy test runs in its own process\n\nA poisoned log is counted for the whole process and never forgotten, so\nthe hybrid replica tests in the same binary attested no trusted copy once\nthis test poisoned one. Run it through ran_in_poisoning_process like the\nother poisoning tests.\n\nSpec-Unaffected: test isolation only; copy-trust behaviour is unchanged.",
+          "timestamp": "2026-11-24T19:32:23Z",
+          "tree_id": "97f02d5b7fb2c4f7534ebcaa93b723d075c45a46",
+          "url": "https://github.com/GetFelix/felix/commit/992678e2a3ca349d9175e585fa1abf9cc7ef3b69"
+        },
+        "date": 1795549127870,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "7.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 112.40\nstdev: 7.92\ncv: 7.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 161,
+            "range": "13.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 161.00\nmean: 167.20\nstdev: 13.01\ncv: 7.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 229,
+            "range": "76.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 229.00\nmean: 262.60\nstdev: 76.85\ncv: 29.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.80\nstdev: 1.30\ncv: 0.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 277,
+            "range": "11.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 277.00\nmean: 279.00\nstdev: 11.02\ncv: 3.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 448,
+            "range": "278.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 448.00\nmean: 554.00\nstdev: 278.28\ncv: 50.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
