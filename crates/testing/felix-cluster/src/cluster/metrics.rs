@@ -239,6 +239,27 @@ impl Cluster {
         raft_leader_committed(&first, &then)
     }
 
+    /// `node`'s member of shard 0 of stream `name`, by its own report: its
+    /// role and term. `None` when the broker cannot be asked or runs no
+    /// Raft member for it.
+    pub async fn raft_member(&self, node: &str, name: &str) -> Option<felix_wire::InspectedRaft> {
+        let addr = self.node(node)?.client_addr;
+        let client = crate::client::connect(addr, &self.tenant_id, &self.inspector_token())
+            .await
+            .ok()?;
+        let view = client
+            .inspect_shard(
+                felix_client::ShardKind::Stream,
+                &self.tenant_id,
+                &self.namespace,
+                name,
+                0,
+            )
+            .await;
+        drop(client);
+        view.ok().and_then(|view| view.raft)
+    }
+
     /// Every running broker's member of shard 0 of `name`, by its own
     /// report. A broker that cannot be asked is left out.
     async fn raft_members(

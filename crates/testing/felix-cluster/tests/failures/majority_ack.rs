@@ -955,18 +955,14 @@ async fn under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot() {
     cluster.shutdown().await;
 }
 
-/// On Raft: the old leader is cut off from both followers and one of them
-/// wins the next term with the other's vote. That other follower is then
-/// wiped, so it forgets the term it voted in, and is reachable from the
-/// deposed leader again. Nothing the deposed leader acknowledges may be
-/// lost.
-///
-/// The old leader can legitimately lead again: the cut only refuses its own
-/// requests, so the new leader keeps replicating to it and, once the wiped
-/// copy is re-admitted, hands it the leadership placement asks for. An
-/// acknowledgement through it is then a write of the newer term. What must
-/// never happen is an acknowledgement at the old term counted on the wiped
-/// copy, and that write would be missing from the group afterwards.
+/// On Raft: the old leader is cut off from both followers, both ways, and
+/// one of them wins the next term with the other's vote. That other follower
+/// is then wiped, so it forgets the term it voted in, and is reconnected to
+/// the old leader alone. The old leader still leads at its old term and now
+/// reaches a copy that no longer remembers the newer one. It must
+/// acknowledge nothing at that term: the wiped broker holds a new copy id,
+/// so it is not the member the old leader's group counts, and a majority
+/// counted on it would let the newer term overwrite an acknowledged write.
 async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
     let mut cluster = start(Duration::from_secs(2)).await;
     let old = serving_leader(&cluster).await;
@@ -983,20 +979,30 @@ async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
         .into_iter()
         .filter(|id| *id != old)
         .collect();
-    let isolated = Fault::Refuse {
+    let old_term = term_of(&cluster, &old).await;
+
+    // Refuse is one-way, so each side refuses the other: the old leader must
+    // not hear the new term through replication or a leadership transfer.
+    let mut cut = vec![Fault::Refuse {
         node: old.clone(),
         peers: followers.clone(),
-    };
-    cluster
-        .inject(&isolated)
-        .await
-        .expect("cut the old leader off from its followers");
+    }];
+    for follower in &followers {
+        cut.push(Fault::Refuse {
+            node: follower.clone(),
+            peers: vec![old.clone()],
+        });
+    }
+    for fault in &cut {
+        cluster.inject(fault).await.expect("cut the old leader off");
+    }
     let new = super::raft::leader_among(&cluster, &followers).await;
     let other = followers
         .iter()
         .find(|id| **id != new)
         .expect("the other follower")
         .clone();
+    let mut acknowledged = vec!["before".to_string()];
     felix_cluster::wait::until(
         Duration::from_secs(30),
         "the new leader to serve",
@@ -1009,7 +1015,27 @@ async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
     )
     .await
     .expect("the new leader serves with the other follower's vote");
+    acknowledged.push("after-the-fence".to_string());
+    assert!(
+        term_of(&cluster, &new).await > old_term,
+        "the new leader leads a newer term"
+    );
 
+    // The wiped broker meets the old leader before the new one can tell it
+    // of the newer term.
+    let apart = [
+        Fault::Refuse {
+            node: other.clone(),
+            peers: vec![new.clone()],
+        },
+        Fault::Refuse {
+            node: new.clone(),
+            peers: vec![other.clone()],
+        },
+    ];
+    for fault in &apart {
+        cluster.inject(fault).await.expect("keep other off new");
+    }
     cluster
         .stop_node(&other)
         .await
@@ -1020,18 +1046,26 @@ async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
         .restart_node(&other)
         .await
         .expect("restart it empty");
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    cluster.heal(&isolated).await.expect("heal");
-    cluster
-        .inject(&Fault::Refuse {
-            node: old.clone(),
-            peers: vec![new.clone()],
-        })
+    // Healing names `other` only, so old and new stay apart both ways.
+    for (node, peer) in [(&old, &other), (&other, &old)] {
+        cluster
+            .heal(&Fault::Refuse {
+                node: node.clone(),
+                peers: vec![peer.clone()],
+            })
+            .await
+            .expect("reconnect old and other");
+    }
+    let raft = cluster
+        .raft_member(&old, STREAM)
         .await
-        .expect("keep the old leader off the new one");
-    let mut acknowledged = vec!["after-the-fence".to_string()];
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        .expect("the old leader reports its member");
+    assert_eq!(
+        raft.term, old_term,
+        "the old leader is still at its old term when it reaches the wiped copy ({raft:?})"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
     let mut i = 0;
     while tokio::time::Instant::now() < deadline {
         let record = format!("deposed-{i}");
@@ -1040,6 +1074,14 @@ async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
             .await
             .is_ok()
         {
+            // Terms only grow, so a term still at `old_term` after the ack
+            // means the ack was at it.
+            let term = term_of(&cluster, &old).await;
+            assert!(
+                term > old_term,
+                "ACKED LOSS: the old leader acknowledged {record} at its old term {old_term} \
+                 with only the wiped copy reachable"
+            );
             acknowledged.push(record);
         }
         i += 1;
@@ -1048,13 +1090,22 @@ async fn raft_wiped_follower_loses_nothing_the_deposed_leader_acknowledged() {
 
     cluster.heal_all().await.expect("heal everything");
     cluster
-        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .wait_for_every_member_level(STREAM, Duration::from_secs(60))
         .await
         .expect("every member converges");
     for node in cluster.node_ids() {
         assert_holds(&cluster, &node, &acknowledged).await;
     }
     cluster.shutdown().await;
+}
+
+/// `node`'s Raft term for the stream's shard.
+async fn term_of(cluster: &Cluster, node: &str) -> u64 {
+    cluster
+        .raft_member(node, STREAM)
+        .await
+        .unwrap_or_else(|| panic!("{node} reports its Raft member"))
+        .term
 }
 
 /// **A wiped follower's promise still refuses the deposed leader (#1267).**
