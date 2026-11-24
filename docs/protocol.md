@@ -1143,8 +1143,9 @@ page, each one from the last answer's `next_offset`.
   payload at 4 MiB. A single record larger than the byte budget still comes
   back, alone.
 - The page holds only records that will stay: on a `Quorum` stream nothing at
-  or past the committed mark, and under `FsyncMode::OnCommit` nothing not yet
-  synced. It never waits for more. A page that reaches that point comes back
+  or past the committed mark, on a Raft shard nothing past its commit, and
+  otherwise under `FsyncMode::OnCommit` nothing not yet synced. It never waits
+  for more. A page that reaches that point comes back
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
 - A `Quorum` leader that has not committed anything at its generation yet,
