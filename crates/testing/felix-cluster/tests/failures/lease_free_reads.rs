@@ -95,6 +95,11 @@ async fn wait_for_lapse(cluster: &Cluster, leader: &str) {
 #[serial]
 #[tokio::test]
 async fn a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writes() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the lease_free_reads fleet feature and the lease metric are hybrid mechanisms; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers the cut-off leader",
+    ) {
+        return;
+    }
     let cluster = start(ALL).await;
     let old = owner(&cluster).await;
     cluster
@@ -168,6 +173,11 @@ async fn a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writ
 #[serial]
 #[tokio::test]
 async fn quorum_reads_continue_while_the_control_plane_is_partitioned() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the lease_free_reads fleet feature and the lease metric are hybrid mechanisms; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers the cut-off leader",
+    ) {
+        return;
+    }
     let cluster = start(ALL).await;
     let leader = owner(&cluster).await;
     cluster
@@ -193,6 +203,11 @@ async fn quorum_reads_continue_while_the_control_plane_is_partitioned() {
 #[serial]
 #[tokio::test]
 async fn without_the_fleet_feature_a_quorum_read_follows_the_lease() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the hybrid lease gates reads before lease_free_reads is finalized; a Raft group has no lease to follow",
+    ) {
+        return;
+    }
     let cluster = start(&["generation_start", "majority_ack"]).await;
     let leader = owner(&cluster).await;
     cluster

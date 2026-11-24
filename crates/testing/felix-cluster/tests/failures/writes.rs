@@ -112,7 +112,10 @@ async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
     let mut cluster = Cluster::start(on_commit(vec![StreamSpec::new(STREAM, 1)]))
         .await
         .expect("start");
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    let owner = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&owner, STREAM, b"before".to_vec())
         .await
@@ -166,7 +169,10 @@ async fn a_single_failed_write_does_not_stop_the_log() {
     let cluster = Cluster::start(on_commit(vec![StreamSpec::new(STREAM, 1)]))
         .await
         .expect("start");
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    let owner = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&owner, STREAM, b"before".to_vec())
         .await
@@ -204,7 +210,10 @@ async fn a_quorum_leader_whose_write_fails_does_not_ack() {
     let cluster = Cluster::start(on_commit(vec![StreamSpec::quorum(STREAM, 1, 3)]))
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
@@ -240,7 +249,10 @@ async fn a_follower_whose_write_fails_does_not_count_toward_the_majority() {
     let cluster = Cluster::start(on_commit(vec![StreamSpec::quorum(STREAM, 1, 3)]))
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     let followers: Vec<String> = cluster
         .node_ids()
         .into_iter()

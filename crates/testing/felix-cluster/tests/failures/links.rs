@@ -89,7 +89,10 @@ async fn a_one_way_partition_from_the_leader_stops_quorum_acks_until_healed() {
     let cluster = Cluster::start(proxied_quorum_cluster())
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
@@ -142,7 +145,10 @@ async fn a_delayed_link_slows_quorum_acks_by_the_delay() {
     let cluster = Cluster::start(proxied_quorum_cluster())
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     let baseline = publish_latency(&cluster, &leader).await;
 
     for follower in cluster.node_ids().into_iter().filter(|id| *id != leader) {

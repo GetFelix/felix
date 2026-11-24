@@ -55,7 +55,10 @@ async fn an_idempotent_kafka_producer_lands_each_record_once_through_failover_an
     .expect("start cluster");
     let topic = format!("{}.{STREAM}", cluster.namespace);
 
-    let first = cluster.owner(STREAM).await.expect("owner");
+    let first = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     let mut producer = Producer::connect(&cluster, &first, &topic).await;
     let mut offsets = Vec::new();
     for sequence in 0..5 {
@@ -80,6 +83,19 @@ async fn an_idempotent_kafka_producer_lands_each_record_once_through_failover_an
         offsets.push(producer.send_ok(sequence).await);
     }
 
+    // A Raft shard's leader moves only within its voting set, and placement
+    // does not manage that yet (#2235), so the move half runs on hybrid only.
+    if felix_cluster::suite_runs_on_raft() {
+        let read = read_back(&cluster, &second).await;
+        let expected: Vec<(u64, String)> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, offset)| (*offset as u64, format!("r{i}")))
+            .collect();
+        assert_eq!(read, expected, "every record once, in order");
+        cluster.shutdown().await;
+        return;
+    }
     let third = cluster
         .node_ids()
         .into_iter()
@@ -257,7 +273,10 @@ impl Engine {
     /// The broker leading the shard among `among`.
     async fn leader(self, cluster: &Cluster, among: &[String]) -> String {
         match self {
-            Engine::Hybrid => cluster.owner(STREAM).await.expect("owner"),
+            Engine::Hybrid => cluster
+                .serving_leader(STREAM, Duration::from_secs(30))
+                .await
+                .expect("serving leader"),
             Engine::Raft => super::raft::leader_among(cluster, among).await,
         }
     }
@@ -671,35 +690,19 @@ impl Producer {
     }
 }
 
-async fn wait_until_replicated(cluster: &Cluster, leader: &str) {
-    wait::until(Duration::from_secs(30), "every replica level", || async {
-        matches!(
-            cluster
-                .metric(leader, "felix_broker_replication_lag_records")
-                .await
-                .ok()
-                .flatten(),
-            Some(lag) if lag == 0.0
-        )
-    })
-    .await
-    .expect("replication should reach the followers of a healthy shard");
+async fn wait_until_replicated(cluster: &Cluster, _leader: &str) {
+    cluster
+        .wait_for_replication(STREAM, Duration::from_secs(30))
+        .await
+        .expect("replication should reach the followers of a healthy shard");
 }
 
 /// Step placement until the shard's owner is none of `gone`.
 async fn new_owner(cluster: &Cluster, gone: &[&str]) -> String {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        // The harness's control plane does not re-plan on a timer.
-        cluster.place_shards().await;
-        if let Ok(owner) = cluster.owner(STREAM).await
-            && !gone.contains(&owner.as_str())
-        {
-            return owner;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "no new leader");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    cluster
+        .promoted_leader(STREAM, gone[0], Duration::from_secs(60))
+        .await
+        .expect("a new leader")
 }
 
 async fn move_shard(cluster: &Cluster, destination: &str) {

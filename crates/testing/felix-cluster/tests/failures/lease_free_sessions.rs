@@ -122,6 +122,11 @@ async fn depose(cluster: &Cluster, old: &str) -> String {
 #[serial]
 #[tokio::test]
 async fn readers_and_groups_survive_a_control_plane_partition() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "lease-free sessions are the hybrid lease_free_reads feature; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers a deposed leader",
+    ) {
+        return;
+    }
     let cluster = start().await;
     let leader = stream_owner(&cluster).await;
     publish_settled(&cluster, &leader, b"before").await;
@@ -197,6 +202,11 @@ async fn readers_and_groups_survive_a_control_plane_partition() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_coordinator_refuses_a_group_ack() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "lease-free sessions are the hybrid lease_free_reads feature; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers a deposed leader",
+    ) {
+        return;
+    }
     let cluster = start().await;
     let old = stream_owner(&cluster).await;
     publish_settled(&cluster, &old, b"before").await;
@@ -226,6 +236,11 @@ async fn a_deposed_coordinator_refuses_a_group_ack() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_leader_ends_its_subscriptions_and_readers_follow() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "lease-free sessions are the hybrid lease_free_reads feature; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers a deposed leader",
+    ) {
+        return;
+    }
     let cluster = start().await;
     let old = stream_owner(&cluster).await;
     publish_settled(&cluster, &old, b"before").await;
