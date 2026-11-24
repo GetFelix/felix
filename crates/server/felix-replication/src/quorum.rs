@@ -1849,6 +1849,29 @@ pub(crate) async fn acknowledges_at_quorum(
     consistency == Some(felix_broker::ConsistencyLevel::Quorum)
 }
 
+/// Whether the shard may be served on its followers' word, off the lease:
+/// acknowledged at quorum, and kept in a log its followers copy. An in-memory
+/// stream, or a cache with no log, has nothing on its followers, so its lease
+/// is all that stops an owner cut off from the control plane from serving
+/// beside the one placed after it.
+pub(crate) async fn serves_on_followers_word(
+    broker: &felix_broker::Broker,
+    key: &felix_router::ShardKey,
+) -> bool {
+    if !acknowledges_at_quorum(broker, key).await {
+        return false;
+    }
+    match key.kind {
+        felix_router::ShardKind::Cache => {
+            felix_storage::cache::StorageApi::as_log_cache(broker.cache()).is_some()
+        }
+        felix_router::ShardKind::Stream => broker
+            .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
+            .await
+            .is_some_and(|metadata| metadata.durable),
+    }
+}
+
 /// The highest offset a majority has answered that it holds at this leader's
 /// generation: `HeldAtGen` in `docs/formal/FelixShard.tla`, before
 /// [`counted_offset`] clamps it to the leader's own records.

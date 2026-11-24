@@ -1263,7 +1263,7 @@ async fn followers_decide<R>(ctx: &Ctx<R>, key: &ShardKey) -> bool {
         }
         ShardKind::Cache => ctx.marks.caches_ack_by_followers(),
     };
-    by_followers && crate::quorum::acknowledges_at_quorum(&ctx.broker, key).await
+    by_followers && crate::quorum::serves_on_followers_word(&ctx.broker, key).await
 }
 
 async fn shard_log(broker: &Broker, key: &ShardKey) -> Option<StreamLog> {
