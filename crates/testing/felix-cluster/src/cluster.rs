@@ -178,6 +178,27 @@ impl Cluster {
         Ok(record.raft_target.map(|target| target.members))
     }
 
+    /// Whether `stream`'s shard `shard` can change its Raft set: the control
+    /// plane stores a target for the current set and a leader of that group
+    /// has reported it formed. A move or replacement is refused until then.
+    pub async fn raft_set_settled(&self, stream: &str, shard: u32) -> anyhow::Result<bool> {
+        let key = felix_controlplane_service::model::ShardKey {
+            tenant_id: self.tenant_id.clone(),
+            namespace: self.namespace.clone(),
+            stream: stream.to_string(),
+            shard,
+            kind: felix_controlplane_service::model::ShardKind::Stream,
+        };
+        let record = self.control_plane().shard_record(&key).await?;
+        let targeted = record.raft_target.as_ref().is_some_and(|target| {
+            target
+                .members
+                .keys()
+                .eq(record.nodes().collect::<std::collections::BTreeSet<_>>())
+        });
+        Ok(targeted && !record.holds_unformed_set())
+    }
+
     fn control_plane(&self) -> &ControlPlane {
         self.control_plane
             .as_ref()

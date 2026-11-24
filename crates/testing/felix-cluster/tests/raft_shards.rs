@@ -2065,3 +2065,164 @@ async fn a_drained_brokers_follower_copy_is_replaced_so_the_broker_can_go() {
     }
     cluster.shutdown().await;
 }
+
+/// Two brokers and one single-copy shard: an RF 1 move has one broker to go
+/// to.
+fn single_copy_raft_cluster() -> ClusterConfig {
+    ClusterConfig {
+        nodes: 2,
+        ..raft_cluster_with(StreamSpec::quorum(STREAM, 1, 1))
+    }
+}
+
+/// Steps placement until the stored set is `leader` alone.
+async fn set_becomes_only(cluster: &Cluster, leader: &str, within: Duration) {
+    let waited = felix_cluster::wait::until(within, "the set to be one broker", || async {
+        cluster.place_shards().await;
+        let (now, replicas, _) = stored_set(cluster).await;
+        now == leader && replicas.is_empty()
+    })
+    .await;
+    if let Err(err) = waited {
+        panic!(
+            "the set never became {leader} alone: {err:#}; stored {:?}",
+            stored_set(cluster).await
+        );
+    }
+}
+
+/// **An RF 1 Raft shard moves to another broker under writes (#3012).** The
+/// set grows to both brokers, the destination joins as a learner and then
+/// votes, and placement shrinks the set to it. Every acknowledged record,
+/// before, during and after the move, is on the destination once.
+#[tokio::test]
+#[serial]
+async fn a_single_copy_raft_shard_moves_with_every_acknowledged_record() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let cluster = Cluster::start(single_copy_raft_cluster())
+        .await
+        .expect("start cluster");
+    let (old, _, _) = stored_set(&cluster).await;
+    voters_become(&cluster, std::slice::from_ref(&old), converged_within).await;
+    let destination = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| *node != old)
+        .expect("a second broker");
+
+    let mut acked = Vec::new();
+    for n in 0..5 {
+        let payload = format!("before-{n}").into_bytes();
+        publish_acked(&cluster, &old, &payload).await;
+        acked.push(payload);
+    }
+    let step = cluster
+        .start_move(STREAM, 0, &destination)
+        .await
+        .expect("an RF 1 move is taken");
+    assert_eq!(step, "raft_replace");
+    // Writes keep landing while the destination catches up and while
+    // placement shrinks the set.
+    let deadline = tokio::time::Instant::now() + felix_cluster::wait::budget(converged_within);
+    for n in 0.. {
+        let payload = format!("during-{n}").into_bytes();
+        publish_acked(&cluster, &old, &payload).await;
+        acked.push(payload);
+        cluster.place_shards().await;
+        let (leader, replicas, _) = stored_set(&cluster).await;
+        if leader == destination && replicas.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "placement never shrank the set to {destination}: stored {:?}",
+            stored_set(&cluster).await
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    voters_become(
+        &cluster,
+        std::slice::from_ref(&destination),
+        converged_within,
+    )
+    .await;
+    felix_cluster::wait::until(converged_within, "the destination to lead", || async {
+        cluster
+            .metric(&destination, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|led| led >= 1.0)
+    })
+    .await
+    .expect("the destination leads");
+    let payload = b"after-the-move".to_vec();
+    publish_acked(&cluster, &destination, &payload).await;
+    acked.push(payload);
+
+    let held = replay_holding(&cluster, &destination, &acked).await;
+    for payload in &acked {
+        assert_eq!(
+            copies(&held, payload),
+            1,
+            "{payload:?} once on {destination}"
+        );
+    }
+    cluster.shutdown().await;
+}
+
+/// **An RF 1 move whose destination dies before it votes is undone.** The
+/// destination is killed as the move starts, so it never joins; once the
+/// control plane sees it down, placement writes the old broker alone again
+/// and the shard keeps serving every acknowledged record from it.
+#[tokio::test]
+#[serial]
+async fn a_single_copy_raft_move_to_a_dead_broker_returns_to_the_old_one() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(single_copy_raft_cluster())
+        .await
+        .expect("start cluster");
+    let (old, _, _) = stored_set(&cluster).await;
+    voters_become(&cluster, std::slice::from_ref(&old), converged_within).await;
+    let destination = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| *node != old)
+        .expect("a second broker");
+
+    let mut acked = Vec::new();
+    for n in 0..5 {
+        let payload = format!("before-{n}").into_bytes();
+        publish_acked(&cluster, &old, &payload).await;
+        acked.push(payload);
+    }
+    // Killed first so it cannot vote before it dies; the control plane
+    // still counts it live until its heartbeats lapse, so the move is taken.
+    cluster
+        .kill_node(&destination)
+        .expect("kill the destination");
+    let step = cluster
+        .start_move(STREAM, 0, &destination)
+        .await
+        .expect("the move is taken before the destination is seen down");
+    assert_eq!(step, "raft_replace");
+
+    set_becomes_only(&cluster, &old, converged_within).await;
+    voters_become(&cluster, std::slice::from_ref(&old), converged_within).await;
+    for n in 0..5 {
+        let payload = format!("after-{n}").into_bytes();
+        publish_acked(&cluster, &old, &payload).await;
+        acked.push(payload);
+    }
+    let held = replay_holding(&cluster, &old, &acked).await;
+    for payload in &acked {
+        assert_eq!(copies(&held, payload), 1, "{payload:?} once on {old}");
+    }
+    cluster.shutdown().await;
+}

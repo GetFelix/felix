@@ -9,7 +9,6 @@
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
-use felix_controlplane_service::model::ShardKind;
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -23,56 +22,43 @@ fn quorum_config() -> ClusterConfig {
     }
 }
 
-/// Wait until the leader has actually replicated and reported.
+/// Wait until the record just published is on a copy failover would keep,
+/// and return the broker that leads the shard now.
 ///
-/// A cluster that has only just started has a leader that has shipped nothing
-/// and told the control plane nothing, so killing it there tests startup rather
-/// than failover. The scenario is a *healthy* replicated shard losing its
-/// leader, and this is what makes it one: zero lag means every follower holds
-/// what the leader does, and the leader has said so.
-async fn shipped_so_far(cluster: &Cluster, leader: &str) -> f64 {
+/// A cluster that has only just started has a leader that has replicated
+/// nothing, so killing it there tests startup rather than failover. On hybrid
+/// this is a follower the control plane heard is caught up; on Raft, a
+/// majority holding the elected leader's log. The leader is read again here
+/// because a Raft group may hand leadership on while the group settles.
+async fn replication_settled(cluster: &Cluster) -> String {
     cluster
-        .metric(leader, "felix_broker_replication_shipped_total")
+        .wait_for_replication(STREAM, Duration::from_secs(30))
         .await
-        .ok()
-        .flatten()
-        .unwrap_or(0.0)
+        .expect("replication should reach the followers of a healthy shard")
 }
 
-/// Wait until the record published since `shipped_before` is on every follower.
-///
-/// The lag gauge is written once per replication pass, so reading zero can mean
-/// "every follower is level" or "every follower was level one pass ago, before
-/// the record this test just published". Requiring the shipped counter to have
-/// risen past a baseline is what makes the zero be about this record.
-///
-/// **`shipped_before` has to be sampled before the publish, not after.** The
-/// counter only moves on a real exchange -- an idle pass returns up-to-date
-/// without touching it -- and a publish to a `Quorum` stream does not return
-/// until a majority holds the record, so the ship has already been counted by
-/// the time the publish does. A baseline taken afterwards already includes the
-/// ship it is waiting to see, and on a quiet stream nothing will ever move the
-/// counter again.
-async fn replication_settled(cluster: &Cluster, leader: &str, shipped_before: f64) {
-    felix_cluster::wait::until(
-        Duration::from_secs(30),
-        "the published record to be shipped and acknowledged",
-        || async {
-            let shipped = shipped_so_far(cluster, leader).await;
-            let lag = cluster
-                .metric(leader, "felix_broker_replication_lag_records")
-                .await
-                .ok()
-                .flatten();
-            shipped > shipped_before && matches!(lag, Some(lag) if lag == 0.0)
-        },
-    )
-    .await
-    .expect("replication should reach the followers of a healthy shard");
+/// The broker serving the shard: placement's owner on hybrid, the elected
+/// member on Raft.
+async fn serving_leader(cluster: &Cluster) -> String {
     cluster
-        .wait_for_replica_report(ShardKind::Stream, STREAM, 0)
+        .serving_leader(STREAM, Duration::from_secs(30))
         .await
-        .expect("the control plane should hear that the followers are caught up");
+        .expect("a serving leader")
+}
+
+/// The brokers holding a copy of the shard other than `gone`, as placement
+/// records them.
+async fn other_copies(cluster: &Cluster, gone: &str) -> Vec<String> {
+    let assignments = cluster.shard_assignments().await.expect("assignments");
+    let (_, shard) = assignments
+        .iter()
+        .find(|(key, _)| key.ends_with(&format!("/{STREAM}/0")))
+        .expect("the shard is placed");
+    std::iter::once(&shard.leader)
+        .chain(&shard.replicas)
+        .filter(|node| *node != gone)
+        .cloned()
+        .collect()
 }
 
 /// Everything `node_id` will replay from the start of the stream.
@@ -122,21 +108,18 @@ async fn replay_until(cluster: &Cluster, node_id: &str, budget: Duration) -> Vec
     }
 }
 
-/// Wait until the control plane has named a leader other than `gone`.
-async fn failover_from(cluster: &Cluster, gone: &str, budget: Duration) -> Option<Duration> {
+/// Wait until a broker other than `gone` serves the shard, and say which and
+/// how long it took. On hybrid placement promotes it; on Raft the group
+/// elects it. Placement is stepped meanwhile, because the harness's control
+/// plane does not run the reconciler on a timer.
+async fn failover_from(
+    cluster: &Cluster,
+    gone: &str,
+    budget: Duration,
+) -> Option<(String, Duration)> {
     let started = std::time::Instant::now();
-    let ok = felix_cluster::wait::until(budget, "a new leader", || async {
-        // The harness's control plane does not run the reconciler on a timer,
-        // so a failure test has to step placement itself. Without this nothing
-        // re-plans after the kill and the wait is measuring nothing.
-        cluster.place_shards().await;
-        match cluster.owner(STREAM).await {
-            Ok(owner) => owner != gone,
-            Err(_) => false,
-        }
-    })
-    .await;
-    ok.ok().map(|_| started.elapsed())
+    let promoted = cluster.promoted_leader(STREAM, gone, budget).await.ok()?;
+    Some((promoted, started.elapsed()))
 }
 
 /// **The milestone signal.** A record acknowledged under `Quorum` is readable
@@ -163,8 +146,7 @@ async fn a_quorum_acknowledged_record_survives_its_leader() {
     let mut cluster = Cluster::start(quorum_config())
         .await
         .expect("start cluster");
-    let leader = cluster.owner(STREAM).await.expect("owner");
-    let shipped_before = shipped_so_far(&cluster, &leader).await;
+    let leader = serving_leader(&cluster).await;
 
     // Acknowledged by a majority before this returns.
     cluster
@@ -172,15 +154,13 @@ async fn a_quorum_acknowledged_record_survives_its_leader() {
         .await
         .expect("publish under quorum");
 
-    replication_settled(&cluster, &leader, shipped_before).await;
+    let leader = replication_settled(&cluster).await;
     cluster.kill_node(&leader).expect("kill the leader");
 
-    let elapsed = failover_from(&cluster, &leader, Duration::from_secs(30))
+    let (new_leader, elapsed) = failover_from(&cluster, &leader, Duration::from_secs(30))
         .await
         .expect("a replica should have been promoted");
     println!("failover took {elapsed:?}");
-
-    let new_leader = cluster.owner(STREAM).await.expect("owner");
     assert_ne!(new_leader, leader);
 
     // Replayed from the start, not subscribed live: the record was published
@@ -255,8 +235,7 @@ async fn acknowledged_offsets_hold_across_a_failover() {
     let mut cluster = Cluster::start(quorum_config())
         .await
         .expect("start cluster");
-    let leader = cluster.owner(STREAM).await.expect("owner");
-    let shipped_before = shipped_so_far(&cluster, &leader).await;
+    let leader = serving_leader(&cluster).await;
 
     let mut acked = Vec::new();
     for i in 0..10 {
@@ -276,12 +255,11 @@ async fn acknowledged_offsets_hold_across_a_failover() {
         "one publisher's acks on one shard land one after another"
     );
 
-    replication_settled(&cluster, &leader, shipped_before).await;
+    let leader = replication_settled(&cluster).await;
     cluster.kill_node(&leader).expect("kill the leader");
-    failover_from(&cluster, &leader, Duration::from_secs(30))
+    let (new_leader, _) = failover_from(&cluster, &leader, Duration::from_secs(30))
         .await
         .expect("a replica should have been promoted");
-    let new_leader = cluster.owner(STREAM).await.expect("owner");
     assert_ne!(new_leader, leader);
 
     for i in 0..2 {
@@ -314,26 +292,17 @@ async fn the_promoted_leader_is_one_of_the_replicas() {
     let mut cluster = Cluster::start(quorum_config())
         .await
         .expect("start cluster");
-    let leader = cluster.owner(STREAM).await.expect("owner");
-    let shipped_before = shipped_so_far(&cluster, &leader).await;
-    let replicas: Vec<String> = cluster
-        .nodes
-        .iter()
-        .map(|node| node.node_id.clone())
-        .filter(|node| node != &leader)
-        .collect();
-
+    let leader = serving_leader(&cluster).await;
     cluster
         .publish_via(&leader, STREAM, b"held".to_vec())
         .await
         .expect("publish");
-    replication_settled(&cluster, &leader, shipped_before).await;
+    let leader = replication_settled(&cluster).await;
+    let replicas = other_copies(&cluster, &leader).await;
     cluster.kill_node(&leader).expect("kill the leader");
-    failover_from(&cluster, &leader, Duration::from_secs(30))
+    let (promoted, _) = failover_from(&cluster, &leader, Duration::from_secs(30))
         .await
         .expect("a replica should have been promoted");
-
-    let promoted = cluster.owner(STREAM).await.expect("owner");
     assert!(
         replicas.contains(&promoted),
         "{promoted} was promoted but was not a replica of the shard",
@@ -350,16 +319,15 @@ async fn failover_completes_within_the_configured_bound() {
     let mut cluster = Cluster::start(quorum_config())
         .await
         .expect("start cluster");
-    let leader = cluster.owner(STREAM).await.expect("owner");
-    let shipped_before = shipped_so_far(&cluster, &leader).await;
+    let leader = serving_leader(&cluster).await;
     cluster
         .publish_via(&leader, STREAM, b"timed".to_vec())
         .await
         .expect("publish");
 
-    replication_settled(&cluster, &leader, shipped_before).await;
+    let leader = replication_settled(&cluster).await;
     cluster.kill_node(&leader).expect("kill the leader");
-    let elapsed = failover_from(&cluster, &leader, Duration::from_secs(30))
+    let (_, elapsed) = failover_from(&cluster, &leader, Duration::from_secs(30))
         .await
         .expect("a replica should have been promoted");
 
@@ -385,13 +353,12 @@ async fn a_deregistered_leader_is_replaced_only_after_its_lease() {
     let cluster = Cluster::start(quorum_config())
         .await
         .expect("start cluster");
-    let leader = cluster.owner(STREAM).await.expect("owner");
-    let shipped_before = shipped_so_far(&cluster, &leader).await;
+    let leader = serving_leader(&cluster).await;
     cluster
         .publish_via(&leader, STREAM, b"before leaving".to_vec())
         .await
         .expect("publish");
-    replication_settled(&cluster, &leader, shipped_before).await;
+    let leader = replication_settled(&cluster).await;
     // A broker still running would hand the shard over through a move as
     // soon as it is fenced, which is safe and not what this is about. With
     // moves paused only the lease can end the wait.
@@ -405,6 +372,20 @@ async fn a_deregistered_leader_is_replaced_only_after_its_lease() {
     // Stepped at once, as a pass woken by the change would be. A caught-up
     // replica is on hand, so only the fence keeps it from being promoted.
     cluster.place_shards().await;
+    if felix_cluster::suite_runs_on_raft() {
+        // A Raft group elects its own leader and placement cannot depose it:
+        // the deregistered broker leads until an election or a member swap,
+        // and a paused placement makes neither. What must hold is that it
+        // stays the one leader, past where a hybrid lease would have run out.
+        one_leader_throughout(&cluster, &leader, Duration::from_secs(5)).await;
+        let payloads = replay_until(&cluster, &leader, Duration::from_secs(30)).await;
+        assert!(
+            payloads.iter().any(|payload| payload == b"before leaving"),
+            "the deregistered leader replayed {payloads:?}",
+        );
+        cluster.shutdown().await;
+        return;
+    }
     assert_eq!(
         cluster.owner(STREAM).await.expect("owner"),
         leader,
@@ -430,6 +411,33 @@ async fn a_deregistered_leader_is_replaced_only_after_its_lease() {
     cluster.shutdown().await;
 }
 
+/// Step placement for `period` and check, every step, that `leader` is the
+/// only broker leading the shard's Raft group.
+async fn one_leader_throughout(cluster: &Cluster, leader: &str, period: Duration) {
+    let until = std::time::Instant::now() + period;
+    while std::time::Instant::now() < until {
+        cluster.place_shards().await;
+        let mut leading = Vec::new();
+        for node in cluster.node_ids() {
+            let led = cluster
+                .metric(&node, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten();
+            if led.is_some_and(|led| led >= 1.0) {
+                leading.push(node);
+            }
+        }
+        assert!(leading.len() <= 1, "two serving leaders: {leading:?}");
+        assert_eq!(
+            serving_leader(cluster).await,
+            leader,
+            "the group changed leader with no election or member swap asked for",
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// **A shard with no replica to promote stays unavailable rather than being
 /// served empty.** The counterpart to the tests above: when there is nothing
 /// holding the log, the cluster declines to invent a leader.
@@ -445,32 +453,19 @@ async fn a_shard_with_no_caught_up_replica_does_not_fail_over_to_an_empty_broker
     })
     .await
     .expect("start cluster");
-    let leader = cluster.owner(STREAM).await.expect("owner");
-    let shipped_before = shipped_so_far(&cluster, &leader).await;
-    // The record this test is about. Without it nothing is ever shipped, so the
-    // wait below -- which is for the shipped counter to rise -- could only ever
-    // be satisfied by whatever the harness still had in flight from startup.
+    let leader = serving_leader(&cluster).await;
+    // The record this test is about, so the wait below is for a copy of it.
     cluster
         .publish_via(&leader, STREAM, b"leader-acknowledged".to_vec())
         .await
         .expect("publish");
-    let replicas: Vec<String> = cluster
-        .nodes
-        .iter()
-        .map(|node| node.node_id.clone())
-        .filter(|node| node != &leader)
-        .collect();
-
-    replication_settled(&cluster, &leader, shipped_before).await;
+    let leader = replication_settled(&cluster).await;
+    let replicas = other_copies(&cluster, &leader).await;
     cluster.kill_node(&leader).expect("kill the leader");
 
     // Whatever happens, the shard must not land on a broker outside the replica
     // set: that broker holds none of the log.
-    if failover_from(&cluster, &leader, Duration::from_secs(20))
-        .await
-        .is_some()
-    {
-        let promoted = cluster.owner(STREAM).await.expect("owner");
+    if let Some((promoted, _)) = failover_from(&cluster, &leader, Duration::from_secs(20)).await {
         assert!(
             replicas.contains(&promoted),
             "{promoted} was made leader but holds none of the shard",
@@ -512,7 +507,20 @@ async fn written_to_owner(cluster: &Cluster, owner: &str, payload: &[u8]) {
 /// Step placement until it holds the shard unplaced: the owner is marked
 /// down, which is when placement used to hand the shard to the survivor. A
 /// stopped broker stops being placeable a little before that.
+///
+/// On Raft placement keeps the owner named rather than holding the shard
+/// unplaced, so this steps it past the point the owner is marked down and
+/// checks it is never placed elsewhere.
 async fn stranded(cluster: &Cluster) {
+    if felix_cluster::suite_runs_on_raft() {
+        let until = std::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(5));
+        while std::time::Instant::now() < until {
+            let outcome = cluster.place_shards().await;
+            assert_eq!(outcome.placed, 0, "the shard was placed away from its log");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        return;
+    }
     felix_cluster::wait::until(
         Duration::from_secs(30),
         "placement to hold the shard for its owner",
@@ -567,6 +575,12 @@ async fn an_unreplicated_durable_shard_waits_for_its_owner() {
 #[serial]
 #[tokio::test]
 async fn an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone() {
+    if felix_cluster::skip_on_raft_until(
+        3096,
+        "no Raft command opens an RF 1 shard empty on a survivor when its only copy is gone",
+    ) {
+        return;
+    }
     let mut cluster = Cluster::start(unreplicated_config())
         .await
         .expect("start cluster");

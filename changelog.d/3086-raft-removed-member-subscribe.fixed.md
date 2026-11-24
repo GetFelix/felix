@@ -1,0 +1,1 @@
+- Raft: a subscriber no longer stalls when the shard's group has removed the member on the broker it asked. A member that placement moved off and that hears no leader now sends the subscribe to the placed leader instead of answering not ready until the client gives up.

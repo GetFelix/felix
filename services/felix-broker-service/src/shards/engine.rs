@@ -61,7 +61,9 @@ impl StreamEngine {
         #[cfg(feature = "raft")]
         {
             use felix_replication::raft::Role;
-            let status = self.raft(shard)?.status(shard)?;
+            let engine = self.raft(shard)?;
+            let status = engine.status(shard)?;
+            let voters = engine.voters(shard).unwrap_or_default();
             Some(felix_wire::InspectedRaft {
                 role: match status.role {
                     Role::Leader => "leader",
@@ -75,7 +77,56 @@ impl StreamEngine {
                 leader: status.leader.map(|member| member.broker.to_string()),
                 last_index: status.last_index,
                 committed: status.committed,
+                voters: voters
+                    .into_iter()
+                    .map(|member| member.broker.to_string())
+                    .collect(),
             })
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = shard;
+            None
+        }
+    }
+
+    /// The leader's account of each other member of `shard`'s Raft group,
+    /// for `shard_inspect`. `None` unless this broker's member leads it.
+    pub(crate) fn raft_replicas(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<Vec<felix_wire::InspectedReplica>> {
+        #[cfg(feature = "raft")]
+        {
+            let followers = self.raft(shard)?.followers(shard)?;
+            Some(
+                followers
+                    .into_iter()
+                    .map(|follower| felix_wire::InspectedReplica {
+                        node_id: follower.member.broker.to_string(),
+                        role: if follower.voter {
+                            "follower"
+                        } else {
+                            "learner"
+                        }
+                        .to_string(),
+                        // Raft tracks entries, not stream offsets, so neither
+                        // is reported here; the member's own view has its tail.
+                        next_offset: None,
+                        lag: None,
+                        fence: None,
+                        // A member that has not answered this leader yet
+                        // is stalled, as on the hybrid.
+                        state: if follower.live && follower.matched.is_some() {
+                            "shipping"
+                        } else {
+                            "stalled"
+                        }
+                        .to_string(),
+                        halted: None,
+                    })
+                    .collect(),
+            )
         }
         #[cfg(not(feature = "raft"))]
         {

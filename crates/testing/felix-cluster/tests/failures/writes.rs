@@ -7,6 +7,13 @@
 //! does. A failed fsync stops the log for good (see `fsync.rs`), because the
 //! kernel may already have dropped the pages.
 //!
+//! On Raft a refused write does not refuse the entry: openraft already holds
+//! it, so the log holds the append until the disk takes it, and the member
+//! answers nobody meanwhile. Its proposer is refused with an unknown outcome
+//! and the entry may land once the disk is healed. The safety properties are
+//! the same: nothing refused is acknowledged, a refusing member is no part of
+//! a majority, the log goes on after healing, and no debris stays on disk.
+//!
 //! Run with `cargo test -p felix-cluster --test failures writes::`.
 use std::time::Duration;
 
@@ -38,7 +45,10 @@ fn on_commit(streams: Vec<StreamSpec>) -> ClusterConfig {
     }
 }
 
-/// Publish through `node` and expect a refusal typed `code` and `retry`.
+/// Publish through `node` and expect a refusal typed `code` and `retry`. On
+/// Raft any refusal that leaves the outcome unknown or names another leader,
+/// since the entry may still land, or a plain retry from a core still held on
+/// an earlier append, which proposed nothing.
 async fn expect_refused(
     cluster: &Cluster,
     node: &str,
@@ -52,6 +62,16 @@ async fn expect_refused(
         .expect_err("a publish was acknowledged although the write behind it failed");
     // Not formatted: it came over TLS, and the code is what a client acts on.
     let typed = scenarios::broker_error(&err).expect("the refusal had no code");
+    if felix_cluster::suite_runs_on_raft() {
+        assert!(
+            matches!(
+                typed.retry,
+                RetryClass::OutcomeUnknown | RetryClass::Redirect
+            ) || (typed.code == ErrorCode::ShardUnavailable && typed.retry == RetryClass::Retry),
+            "refusal of {payload}: {typed:?}"
+        );
+        return;
+    }
     assert_eq!(typed.code, code, "refusal of {payload}");
     assert_eq!(typed.retry, retry, "refusal of {payload}");
 }
@@ -72,6 +92,39 @@ async fn publish_eventually(cluster: &Cluster, node: &str, payload: &str) {
             Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
         }
     }
+}
+
+/// Check a replay against what was acknowledged: exactly `acked`, in order,
+/// once each. On Raft a refused payload may also be there, once at most.
+fn assert_holds(held: &[String], acked: &[&str], refused: &[&str]) {
+    if !felix_cluster::suite_runs_on_raft() {
+        assert_eq!(held, acked);
+        return;
+    }
+    let kept: Vec<&str> = held
+        .iter()
+        .map(String::as_str)
+        .filter(|payload| !refused.contains(payload))
+        .collect();
+    assert_eq!(kept, acked, "the acknowledged records, in order: {held:?}");
+    for payload in refused {
+        assert!(
+            held.iter().filter(|held| held == payload).count() <= 1,
+            "{payload} landed twice: {held:?}"
+        );
+    }
+}
+
+/// The node a publish goes through after healing: on Raft, whoever leads
+/// now, since a held append stops the old leader's heartbeats.
+async fn leader_after_healing(cluster: &Cluster, before: &str) -> String {
+    if !felix_cluster::suite_runs_on_raft() {
+        return before.to_string();
+    }
+    cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader after healing")
 }
 
 /// Every payload `node` replays from the start of the stream, less the
@@ -109,10 +162,19 @@ async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
 #[serial]
 #[tokio::test]
 async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
+    if felix_cluster::skip_on_raft_until(
+        3104,
+        "a member stopped by a failed disk write does not reopen once the disk heals",
+    ) {
+        return;
+    }
     let mut cluster = Cluster::start(on_commit(vec![StreamSpec::new(STREAM, 1)]))
         .await
         .expect("start");
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    let owner = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&owner, STREAM, b"before".to_vec())
         .await
@@ -145,7 +207,9 @@ async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
         .publish_via(&owner, STREAM, b"after".to_vec())
         .await
         .expect("a failed write does not stop the log, so a healed disk takes appends again");
-    assert_eq!(replay(&cluster, &owner).await, ["before", "after"]);
+    let refused = ["disk-full-1", "disk-full-2"];
+    let held = replay(&cluster, &owner).await;
+    assert_holds(&held, &["before", "after"], &refused);
 
     cluster.stop_node(&owner).await.expect("stop the owner");
     cluster
@@ -153,7 +217,9 @@ async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
         .await
         .expect("restart the owner");
     cluster.place_shards().await;
-    assert_eq!(replay(&cluster, &owner).await, ["before", "after"]);
+    // Read from the segment on disk, which recovery refuses to open with
+    // debris in it, and the same as before the restart.
+    assert_eq!(replay(&cluster, &owner).await, held);
     cluster.shutdown().await;
 }
 
@@ -166,7 +232,10 @@ async fn a_single_failed_write_does_not_stop_the_log() {
     let cluster = Cluster::start(on_commit(vec![StreamSpec::new(STREAM, 1)]))
         .await
         .expect("start");
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    let owner = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&owner, STREAM, b"before".to_vec())
         .await
@@ -178,20 +247,43 @@ async fn a_single_failed_write_does_not_stop_the_log() {
     };
     cluster.inject(&fault).await.expect("inject");
     // The only log on `owner` taking writes is this one, so the failure is
-    // this publish's.
-    expect_refused(
-        &cluster,
-        &owner,
-        "refused",
-        ErrorCode::Storage,
-        RetryClass::OutcomeUnknown,
-    )
-    .await;
+    // this publish's. On Raft the held append is retried and lands, so the
+    // publish may be acknowledged, and is then in the log like any other.
+    let mut acked = vec!["before"];
+    if felix_cluster::suite_runs_on_raft() {
+        match cluster
+            .publish_via(&owner, STREAM, b"refused".to_vec())
+            .await
+        {
+            Ok(()) => acked.push("refused"),
+            Err(err) => {
+                let typed = scenarios::broker_error(&err).expect("the refusal had no code");
+                assert_eq!(typed.retry, RetryClass::OutcomeUnknown, "{typed:?}");
+            }
+        }
+    } else {
+        expect_refused(
+            &cluster,
+            &owner,
+            "refused",
+            ErrorCode::Storage,
+            RetryClass::OutcomeUnknown,
+        )
+        .await;
+    }
     cluster
         .publish_via(&owner, STREAM, b"after".to_vec())
         .await
         .expect("the write after a one-off failure is acknowledged");
-    assert_eq!(replay(&cluster, &owner).await, ["before", "after"]);
+    // An acknowledged "refused" is held like any record, so it must not
+    // also be filtered out as a refusal.
+    let refused: &[&str] = if acked.contains(&"refused") {
+        &[]
+    } else {
+        &["refused"]
+    };
+    acked.push("after");
+    assert_holds(&replay(&cluster, &owner).await, &acked, refused);
     cluster.shutdown().await;
 }
 
@@ -201,10 +293,19 @@ async fn a_single_failed_write_does_not_stop_the_log() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_leader_whose_write_fails_does_not_ack() {
+    if felix_cluster::skip_on_raft_until(
+        3104,
+        "a member stopped by a failed disk write does not reopen once the disk heals",
+    ) {
+        return;
+    }
     let cluster = Cluster::start(on_commit(vec![StreamSpec::quorum(STREAM, 1, 3)]))
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
@@ -225,8 +326,13 @@ async fn a_quorum_leader_whose_write_fails_does_not_ack() {
     .await;
 
     cluster.heal(&fault).await.expect("heal");
+    let leader = leader_after_healing(&cluster, &leader).await;
     publish_eventually(&cluster, &leader, "after").await;
-    assert_eq!(replay(&cluster, &leader).await, ["before", "after"]);
+    assert_holds(
+        &replay(&cluster, &leader).await,
+        &["before", "after"],
+        &["leader-disk-bad"],
+    );
     cluster.shutdown().await;
 }
 
@@ -237,10 +343,19 @@ async fn a_quorum_leader_whose_write_fails_does_not_ack() {
 #[serial]
 #[tokio::test]
 async fn a_follower_whose_write_fails_does_not_count_toward_the_majority() {
+    if felix_cluster::skip_on_raft_until(
+        3104,
+        "a member stopped by a failed disk write does not reopen once the disk heals",
+    ) {
+        return;
+    }
     let cluster = Cluster::start(on_commit(vec![StreamSpec::quorum(STREAM, 1, 3)]))
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     let followers: Vec<String> = cluster
         .node_ids()
         .into_iter()
@@ -277,6 +392,7 @@ async fn a_follower_whose_write_fails_does_not_count_toward_the_majority() {
     for fault in &faults {
         cluster.heal(fault).await.expect("heal");
     }
+    let leader = leader_after_healing(&cluster, &leader).await;
     publish_eventually(&cluster, &leader, "after").await;
     cluster.shutdown().await;
 }

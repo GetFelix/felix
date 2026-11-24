@@ -1,0 +1,1 @@
+- Raft: a consumer group created or sought at `latest` now stands at the end of the shard's records, the same tail `describe` reports, instead of past the group's own trailing entries.

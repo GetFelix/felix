@@ -9,8 +9,9 @@
 //!   its owner fenced, and answers once that owner refuses publishes. On Raft
 //!   no move happens: every broker is cut off from the others, and it answers
 //!   once the owner refuses proposals as unwritten.
-//! - `/partition` cuts the quorum stream's leader off from its followers and
-//!   answers at once. The first publish through it is proposed, and times out
+//! - `/partition` waits until the quorum stream's leader serves it (a write
+//!   through it is acked), then cuts that leader off from its followers and
+//!   answers. The first publish through it is proposed, and times out
 //!   without a majority.
 //! - `/link` breaks the connections through the link interposer, with a body
 //!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
@@ -276,14 +277,12 @@ async fn partition(State(control): State<Arc<Control>>) -> Answer {
         }
         control.hold.store(true, Ordering::SeqCst);
     }
-    let leader = control
-        .cluster
-        .owner(&control.quorum_stream)
+    let leader = serving_leader(&control.cluster, &control.quorum_stream)
         .await
         .map_err(failed)?;
-    // No probe publish here: the cut is in force once this returns, and a
-    // probe batch the leader accepted and never settled would make it refuse
-    // the caller's own publish before the log, as retryable, on Raft.
+    // No probe publish after the cut: a probe batch the leader accepted and
+    // never settled would make it refuse the caller's own publish before the
+    // log, as retryable, on Raft.
     tokio::task::block_in_place(|| control.cluster.partition_node(&leader)).map_err(failed)?;
     Ok(Json(control.target(&leader)))
 }
@@ -348,6 +347,47 @@ async fn settle_probes(cluster: &Cluster, stream: &str) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+/// The broker leading `stream`'s shard with its term open, once a write
+/// through it is acked. A leader cut off before that never opens its term,
+/// so the caller's publish would be refused as not ready instead of being
+/// proposed. An acked probe leaves no entry undecided behind it, and with no
+/// shard led off its placement the group's leader is the owner placement
+/// names, so the publish is not forwarded elsewhere.
+async fn serving_leader(cluster: &Cluster, stream: &str) -> Result<String> {
+    let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
+    loop {
+        if let Ok(owner) = cluster.owner(stream).await
+            && cluster
+                .publish_via(&owner, stream, b"fixture-probe".to_vec())
+                .await
+                .is_ok()
+            && led_on_placement(cluster).await
+            && cluster.owner(stream).await.is_ok_and(|now| now == owner)
+        {
+            return Ok(owner);
+        }
+        if Instant::now() >= deadline {
+            bail!("no broker led {stream} with its term open");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Whether every Raft shard is led by the broker placement names for it.
+async fn led_on_placement(cluster: &Cluster) -> bool {
+    for node in &cluster.nodes {
+        match cluster
+            .metric(&node.node_id, "felix_broker_raft_shards_led_off_placement")
+            .await
+        {
+            Ok(Some(off)) if off > 0.0 => return false,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Step placement until no shard is mid-move. The caller holds the placement

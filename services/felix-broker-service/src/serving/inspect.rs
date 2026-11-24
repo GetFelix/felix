@@ -39,6 +39,8 @@ pub(crate) struct Observed {
     /// How long until the next fence attempt, read off the board's deadline.
     pub(crate) fence_retry_in: Option<Duration>,
     pub(crate) raft: Option<InspectedRaft>,
+    /// A Raft leader's account of the other members, from its group.
+    pub(crate) raft_replicas: Option<Vec<InspectedReplica>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -99,12 +101,24 @@ pub(crate) async fn inspect(
         observed.committed = marks.offset(key, route.generation);
     }
     observed.raft = publish_ctx.engine.raft_view(key);
-    // Only a log this broker has open: opening one would create it.
-    if key.kind == ShardKind::Stream
-        && let Some(log) = broker.durable_storage().and_then(|storage| {
+    observed.raft_replicas = publish_ctx.engine.raft_replicas(key);
+    // Only a log this broker has open: opening one would create it. A Raft
+    // shard's log is opened at its incarnation, so it is found through the
+    // shard this broker serves rather than by the unversioned path.
+    let opened = match key.kind {
+        ShardKind::Stream => match broker.durable_storage().and_then(|storage| {
             storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-        })
-    {
+        }) {
+            Some(log) => Some(log),
+            None => {
+                broker
+                    .served_stream_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await
+            }
+        },
+        ShardKind::Cache => None,
+    };
+    if let Some(log) = opened {
         observed.tail = log.tail_offset().await.ok();
         observed.accepted_generation = Some(log.accepted_generation());
     }
@@ -126,6 +140,7 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         accepted_generation,
         fence_retry_in,
         raft,
+        raft_replicas,
     } = observed;
     let tail = tail.or(status.as_ref().and_then(|status| status.tail));
     let lease_view = lease.map(|lease| InspectedLease {
@@ -247,6 +262,9 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
                 halted: None,
             })
             .collect()
+    } else if raft.is_some() {
+        // A Raft group has no replication board; its leader's metrics say.
+        raft_replicas.unwrap_or_default()
     } else {
         status
             .as_ref()
