@@ -724,6 +724,89 @@ async fn a_report_says_by_round_only_off_the_lease() {
     shutdown.cancel();
 }
 
+/// A fence that records which shards the driver let off the lease.
+#[derive(Default)]
+struct LeaseFree {
+    writes: std::sync::Mutex<Vec<u64>>,
+    sessions: std::sync::Mutex<Vec<u64>>,
+}
+
+impl WriteFence for LeaseFree {
+    fn quiesced(&self, _key: &crate::ShardKey) -> bool {
+        true
+    }
+
+    fn serve_without_lease(&self, _key: &crate::ShardKey, generation: u64) {
+        self.writes.lock().expect("lock").push(generation);
+    }
+
+    fn sessions_without_lease(&self, _key: &crate::ShardKey, generation: u64) {
+        self.sessions.lock().expect("lock").push(generation);
+    }
+}
+
+/// **Only a shard with a log is served off the lease** (#3069). An in-memory
+/// `Quorum` stream has nothing on its followers, so in a fleet that finalized
+/// follower acks and lease-free reads its lease still decides: without it, an
+/// owner cut off from the control plane keeps serving beside the one placed
+/// after its lease lapsed.
+#[tokio::test]
+async fn an_in_memory_quorum_stream_keeps_the_lease() {
+    use felix_common::fleet::{GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    for durable in [true, false] {
+        let (broker, _dir) = leader_led_from(3, 4, 0).await;
+        broker.register_tenant(TENANT).await.expect("tenant");
+        broker
+            .register_namespace(TENANT, NAMESPACE)
+            .await
+            .expect("namespace");
+        broker
+            .register_stream(
+                TENANT,
+                NAMESPACE,
+                STREAM,
+                felix_broker::StreamMetadata {
+                    durable,
+                    shards: 1,
+                    consistency: felix_broker::ConsistencyLevel::Quorum,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("stream");
+        let marks = marks_reading(&[GENERATION_START, MAJORITY_ACK, LEASE_FREE_READS], false);
+        let fence = LeaseFree::default();
+        replicate_once_with(
+            &OnlyB,
+            &broker,
+            &router,
+            &fence,
+            &crate::promotion::NoGate,
+            &marks,
+            None,
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &Rebuilds::disabled(),
+            &MoveThrottle::unlimited(),
+        )
+        .await;
+        let expected: &[u64] = if durable { &[4] } else { &[] };
+        assert_eq!(
+            *fence.writes.lock().expect("lock"),
+            expected,
+            "durable={durable}"
+        );
+        assert_eq!(
+            *fence.sessions.lock().expect("lock"),
+            expected,
+            "durable={durable}"
+        );
+    }
+}
+
 /// Stores every cache and counter batch on `broker-b`; `broker-c` is
 /// unreachable.
 struct CacheOnlyB;
