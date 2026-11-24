@@ -2119,19 +2119,27 @@ impl Group {
         }
         let timers = self.pace.timers;
         let patience = Duration::from_millis(timers.election_max);
-        let unanswered = CommitError::TimedOut {
+        let started = tokio::time::Instant::now();
+        // The error names how long the read waited, which is less than
+        // `patience` when no majority answered within a round.
+        let unanswered = || CommitError::TimedOut {
             what: "read",
-            timeout: patience,
+            timeout: started.elapsed().min(patience),
         };
-        let deadline = tokio::time::Instant::now() + patience;
+        let deadline = started + patience;
+        // A majority answers a round within a lease or is not there. Held to
+        // the election timeout instead, a leader cut off from every peer
+        // keeps each group call waiting that long before it can refuse.
+        let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
         loop {
             let raft = self.raft.clone();
             let stop = self.stop.clone();
-            let entered =
-                self.reads
-                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
-                        read_round(raft.clone(), stop.clone())
-                    });
+            let entered = self.reads.enter(
+                &self.runtime,
+                round_limit,
+                Round::QuorumNotEnough,
+                move || read_round(raft.clone(), stop.clone()),
+            );
             // A read that arrives during a round waits for the next one too,
             // so the bound is on the wait, not on one round.
             let round = tokio::select! {
@@ -2145,7 +2153,7 @@ impl Group {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                         continue;
                     }
-                    Err(_) => return Err(unanswered),
+                    Err(_) => return Err(unanswered()),
                 },
             };
             match round {
@@ -2157,13 +2165,13 @@ impl Group {
                 }
                 Round::LeaseExpired => {}
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
-                Round::QuorumNotEnough => return Err(unanswered),
+                Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
             // a majority to answer it, and ask again.
             if tokio::time::Instant::now() >= deadline {
-                return Err(unanswered);
+                return Err(unanswered());
             }
             let _ = self.raft.trigger().heartbeat().await;
             let answered = lead::quorum_answered(&self.raft);

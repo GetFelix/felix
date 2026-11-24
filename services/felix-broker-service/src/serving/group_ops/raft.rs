@@ -320,10 +320,14 @@ impl OnRaft {
             .map_err(broker)?;
         // Group writes are entries of the shard's log but hold no record, so
         // the tail stops before the trailing ones: a group that has settled
-        // everything shows no lag, as on the hybrid. The describe ran a
-        // read index, so the end covers every acknowledged publish.
+        // everything shows no lag, as on the hybrid. A poll settles the
+        // trailing ones too, so the cursor can pass that point; it is the
+        // tail then. The describe ran a read index, so the end covers every
+        // acknowledged publish.
         let end = self.read_end(publish_ctx).await?;
-        Ok((snapshot, publish_ctx.engine.records_end(&self.shard, end)))
+        let records_end = publish_ctx.engine.records_end(&self.shard, end);
+        let cursor = snapshot.committed.unwrap_or(0).min(end);
+        Ok((snapshot, records_end.max(cursor)))
     }
 
     pub(super) async fn delete(&self) -> Result<bool, ClientError> {

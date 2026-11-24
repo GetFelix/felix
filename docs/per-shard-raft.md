@@ -2842,7 +2842,10 @@ then no transfer is asked for.
 
 Nothing else calls `deposed`. A write openraft refuses because its lease
 lapsed, a refused `admit_local_ack` and a read-index round no majority
-answers all leave the shard open.
+answers all leave the shard open. A round no majority answers within the
+lease (1.5 s by default) is refused as retryable then, not held to the
+election timeout, so a group call to a leader cut off from its peers
+fails fast and the client's retry deadline decides when to stop.
 
 A publisher's wait and a commit wait end when the watcher says the term is
 lost. The watcher hears of an election a moment after openraft does, so

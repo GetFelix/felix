@@ -117,6 +117,22 @@ impl Broker {
         Ok(StreamHandle { state })
     }
 
+    /// The log of a stream shard this broker already serves, whatever
+    /// incarnation it was opened at. `None` without opening anything.
+    pub async fn served_stream_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Option<StreamLog> {
+        self.topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .and_then(|state| state.durable.clone())
+    }
+
     /// End every subscription this broker serves on one stream shard.
     ///
     /// Each subscriber still receives what was already queued for it; its feed
