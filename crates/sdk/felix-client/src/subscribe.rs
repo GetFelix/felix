@@ -269,8 +269,9 @@ pub struct Event {
 pub struct ShardMoved {
     /// The first offset the old owner did not hand to this subscription.
     /// Resuming at the larger of this and the last delivered offset plus one
-    /// neither repeats nor skips a record. `None` for an in-memory stream, and
-    /// for a cache watch whose shard was still taking writes when it ended.
+    /// neither repeats nor skips a record. `None` for an in-memory stream, for
+    /// a cache watch whose shard was still taking writes when it ended, and
+    /// for a subscription whose Raft leader was deposed.
     pub resume_from: Option<u64>,
     /// The broker taking the shard, when the old owner knew. A hint only: the
     /// shard may have moved again, and that broker then redirects.

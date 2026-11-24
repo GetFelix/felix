@@ -1004,9 +1004,9 @@ pub(crate) enum QuorumWait {
     NotLeading,
 }
 
-/// Why a `Quorum` write could not be acknowledged. Either way the leader has
-/// already written it, so the client is told the outcome is unknown rather than
-/// that the write failed.
+/// Why a `Quorum` write could not be acknowledged. Unless the variant says
+/// otherwise the leader may have written it, so the client is told the
+/// outcome is unknown rather than that the write failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QuorumError {
     /// No majority within the budget.
@@ -1018,6 +1018,14 @@ pub enum QuorumError {
     /// This broker stopped leading the shard before a majority held the write.
     #[error("{detail} before the {what} could reach a quorum")]
     LeadershipLost {
+        what: &'static str,
+        detail: &'static str,
+    },
+    /// The Raft engine refused the write before it appended any of it: its
+    /// lease had lapsed, or it no longer led the term the write was admitted
+    /// at. Nothing was written, so the write can be sent again.
+    #[error("the {what} was refused: {detail}")]
+    NotAppended {
         what: &'static str,
         detail: &'static str,
     },
@@ -1847,6 +1855,29 @@ pub(crate) async fn acknowledges_at_quorum(
         }
     };
     consistency == Some(felix_broker::ConsistencyLevel::Quorum)
+}
+
+/// Whether the shard may be served on its followers' word, off the lease:
+/// acknowledged at quorum, and kept in a log its followers copy. An in-memory
+/// stream, or a cache with no log, has nothing on its followers, so its lease
+/// is all that stops an owner cut off from the control plane from serving
+/// beside the one placed after it.
+pub(crate) async fn serves_on_followers_word(
+    broker: &felix_broker::Broker,
+    key: &felix_router::ShardKey,
+) -> bool {
+    if !acknowledges_at_quorum(broker, key).await {
+        return false;
+    }
+    match key.kind {
+        felix_router::ShardKind::Cache => {
+            felix_storage::cache::StorageApi::as_log_cache(broker.cache()).is_some()
+        }
+        felix_router::ShardKind::Stream => broker
+            .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
+            .await
+            .is_some_and(|metadata| metadata.durable),
+    }
 }
 
 /// The highest offset a majority has answered that it holds at this leader's

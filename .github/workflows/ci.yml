@@ -87,11 +87,12 @@ jobs:
 
       # The C# SDK binds the C ABI, which wraps the Rust client: the paths are felix-capi
       # and its workspace dependencies (from `cargo metadata`), plus what pins the build.
+      # Its fixture tests run against a real broker, so broker and fixture code count too.
       - id: dotnet
         uses: ./.github/actions/code-changed
         with:
           ignore: '.*'
-          keep: '^sdks/dotnet/|^docs-site/src/content/docs/(clients/(csharp\.md|resilient-clients\.mdx)|tutorials/)|^scripts/check_csharp_bindings\.py$|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire)/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
+          keep: '^sdks/dotnet/|^docs-site/src/content/docs/(clients/(csharp\.md|resilient-clients\.mdx)|tutorials/)|^scripts/check_csharp_bindings\.py$|^crates/(sdk/felix-capi|sdk/felix-client|protocol/felix-transport|protocol/felix-wire|server|testing/felix-cluster|testing/felix-conformance)/|^services/|^Cargo\.(toml|lock)$|^rust-toolchain(\.toml)?$|^\.github/workflows/ci\.yml$'
 
       # The docs checks need only Python, so a docs-only change runs them too.
       - id: docs
@@ -418,6 +419,14 @@ jobs:
           # Same two commands as test:residual, on the affected crates.
           cargo test $PACKAGES --doc
           if [ -n "$LIB_PACKAGES" ]; then cargo test $LIB_PACKAGES --lib; fi
+
+      # The io_uring tests skip where there is no ring; here there is one, and
+      # a skip would hide the flusher going untested.
+      - name: Storage flushes through io_uring
+        if: needs.changes.outputs.test_packages == '' || contains(needs.changes.outputs.test_packages, 'felix-storage')
+        env:
+          FELIX_TEST_REQUIRE_IO_URING: "1"
+        run: cargo test -p felix-storage --lib -- uring
 
       - name: Raft groups without group threads
         if: needs.changes.outputs.test_packages == '' || contains(needs.changes.outputs.test_packages, 'felix-replication')

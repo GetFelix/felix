@@ -242,6 +242,13 @@ impl IngressRouter {
             .is_some_and(|engine| engine.leads_unheard(key))
     }
 
+    /// [`EngineShards::placed_elsewhere`] of the engine that runs `key` here.
+    pub(crate) fn engine_placed_elsewhere(&self, key: &ShardKey) -> bool {
+        self.engine_shards
+            .get()
+            .is_some_and(|engine| engine.placed_elsewhere(key))
+    }
+
     /// [`EngineShards::backup_members`] of the engine that runs shards here.
     pub(crate) fn engine_backup_members(&self) -> Vec<BackupMember> {
         self.engine_shards
@@ -930,6 +937,13 @@ pub trait EngineShards: Send + Sync {
     /// Whether this broker leads `key` but no majority answered it lately.
     /// Its commit index has stopped, so it serves no reader.
     fn leads_unheard(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    /// Whether this broker holds a member of `key` that hears no leader while
+    /// placement names only other brokers. Requests for it are routed by
+    /// placement, as on a broker that holds no member.
+    fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
         false
     }
 

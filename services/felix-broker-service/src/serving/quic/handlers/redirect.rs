@@ -19,7 +19,8 @@ use crate::serving::quic::client_error::ClientError;
 /// A Raft shard is served on its leader once the term is open there, and on
 /// a follower that knows its leader, from the log up to what it committed.
 /// A member that knows no leader refuses retryably. A broker with no member
-/// redirects to the leader placement names.
+/// redirects to the leader placement names, and so does one whose leaderless
+/// member placement has moved off it.
 ///
 /// This is checked before a reader registers, so it cannot see an ending that
 /// lands between it and the registration. [`stopped_serving`] is the check
@@ -73,10 +74,14 @@ pub(crate) fn redirect_for(
             crate::shards::routing::Dispatch::Unavailable(crate::shards::routing::Reason::NotReady)
         }
         // The engine's hint may name a dead leader. A reader needs the heard
-        // one, so a member that has not heard it answers retryably instead.
+        // one, so a member that has not heard it answers retryably instead,
+        // unless placement has moved the shard off this broker: then the
+        // forward names the placed leader, as with no member here.
         crate::shards::routing::Dispatch::Forward { .. }
             if ingress.is_some_and(|ingress| {
-                ingress.engine_holds(&key) && ingress.engine_dispatch(&key).is_some()
+                ingress.engine_holds(&key)
+                    && !ingress.engine_placed_elsewhere(&key)
+                    && ingress.engine_dispatch(&key).is_some()
             }) =>
         {
             crate::shards::routing::Dispatch::Unavailable(crate::shards::routing::Reason::NotReady)

@@ -729,6 +729,7 @@ pub(crate) struct RaftSettings {
     pub(crate) lease: Option<Duration>,
     pub(crate) elections_at_once: Option<usize>,
     pub(crate) group_threads: Option<usize>,
+    pub(crate) election_max: Option<Duration>,
 }
 
 pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
@@ -740,6 +741,13 @@ pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
                 .ok()
                 .as_deref(),
         )?,
+        election_max: parse_count(
+            "FELIX_TEST_RAFT_ELECTION_MAX_MS",
+            std::env::var("FELIX_TEST_RAFT_ELECTION_MAX_MS")
+                .ok()
+                .as_deref(),
+        )?
+        .map(|millis| Duration::from_millis(millis as u64)),
     })
 }
 

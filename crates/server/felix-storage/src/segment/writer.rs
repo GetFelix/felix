@@ -690,6 +690,11 @@ impl SegmentWriter {
             .file
             .set_len(valid)
             .and_then(|()| self.file.seek(SeekFrom::Start(valid)).map(|_| ()));
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+        let restore = restore.and_then(|()| {
+            crate::fault::refresh();
+            crate::fault::injected_rewind_failure().map_or(Ok(()), Err)
+        });
         match restore {
             Ok(()) => Ok(()),
             Err(err) => {

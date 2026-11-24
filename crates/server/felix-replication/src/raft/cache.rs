@@ -9,6 +9,7 @@
 //! `docs/per-shard-raft.md`, "Cache and counters", the design.
 
 mod layers;
+mod recent;
 mod record;
 mod snapshot;
 mod state;
@@ -20,6 +21,9 @@ use std::io;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+pub(crate) use recent::Change;
+#[cfg(test)]
+pub(crate) use recent::WINDOW_MICROS;
 pub(crate) use record::{CacheCommand, Request};
 #[cfg(test)]
 pub(crate) use snapshot::{ENCODED, restores_of};

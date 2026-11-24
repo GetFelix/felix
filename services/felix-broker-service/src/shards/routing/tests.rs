@@ -1550,7 +1550,11 @@ impl EngineShards for PlacedOn {
 
 /// An ingress router on `broker-a` (us-west-2) whose shard 0 another engine
 /// runs as `engine` says, with `broker-b` in `b_region` and `b_live`.
-fn engine_ingress(engine: PlacedOn, b_region: &str, b_live: bool) -> IngressRouter {
+fn engine_ingress(
+    engine: impl EngineShards + 'static,
+    b_region: &str,
+    b_live: bool,
+) -> IngressRouter {
     let mut nodes = catalog();
     let b = nodes.get_mut("broker-b").expect("broker-b");
     b.region = b_region.to_string();
@@ -1653,6 +1657,54 @@ fn a_subscribe_without_a_member_is_redirected_to_the_placed_leader() {
     let answer = subscribe_answer(&down);
     assert!(
         matches!(&answer, Some(felix_wire::Message::Error { message, .. }) if message.contains("not live")),
+        "{answer:?}"
+    );
+}
+
+/// A member left open on a broker placement moved `key(0)` off, hearing no
+/// leader: what a member removed from its group sees. Routes to the placed
+/// leader, `broker-b`, as the Raft engine does.
+struct RemovedMember;
+
+impl EngineShards for RemovedMember {
+    fn take<'a>(
+        &'a self,
+        _assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
+        Box::pin(async { Taken::new() })
+    }
+
+    fn dispatch(
+        &self,
+        _key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch> {
+        Some(Dispatch::Forward {
+            node_id: "broker-b".to_string(),
+            advertise_addr: nodes("broker-b")?,
+            generation: 0,
+            incarnation: 0,
+        })
+    }
+
+    fn holds(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
+        true
+    }
+}
+
+/// **A subscribe to a broker whose member placement moved off is redirected
+/// to the placed leader.** The member hears no leader and may never again:
+/// answering "not ready" would keep a client that enters here retrying here.
+#[test]
+fn a_subscribe_to_a_member_placed_elsewhere_is_redirected() {
+    let ingress = engine_ingress(RemovedMember, "us-west-2", true);
+    let answer = subscribe_answer(&ingress);
+    assert!(
+        matches!(&answer, Some(felix_wire::Message::NotLeader { node_id, .. }) if node_id == "broker-b"),
         "{answer:?}"
     );
 }

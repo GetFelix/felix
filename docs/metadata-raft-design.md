@@ -1219,7 +1219,7 @@ A release that adds a variant or a field gives it the next level and raises
 `METADATA_VERSION`. `store/raft/command/fields/tests.rs` builds every
 replicated type from full struct literals and compares the paths they
 serialize with `fields.txt`, so a new field does not compile until it has a
-sample value, and the test fails until it has a level. If `felix_meta_raft_unsupported_commands_total` still
+sample value, and the test fails until it has a level. The same file fails when two `*_LEVEL` constants hold one level or this table lists a level from 11 on twice, so two branches that each take the next level fail once both are on main. If `felix_meta_raft_unsupported_commands_total` still
 moves on a member (something proposed through the raw peer `propose`
 route, or a member on an older build that joined before any finalize),
 upgrade it, then wipe its volume and let it rejoin: it rebuilds from the

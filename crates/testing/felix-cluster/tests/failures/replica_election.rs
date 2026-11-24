@@ -58,17 +58,7 @@ async fn start_with(
     proxy_links: bool,
     env: Vec<(String, String)>,
 ) -> Cluster {
-    let reported = fleet::IMPLEMENTED
-        .iter()
-        .chain(&[
-            fleet::JOINT_FENCE,
-            fleet::START_HOLDERS,
-            fleet::PEER_ELECTION,
-            fleet::REPLICA_ELECTION,
-        ])
-        .map(|feature| feature.name())
-        .collect::<Vec<_>>()
-        .join(",");
+    let reported = reported_features();
     let cluster = Cluster::start(ClusterConfig {
         nodes,
         streams: vec![StreamSpec::quorum(STREAM, 1, rf)],
@@ -93,19 +83,7 @@ async fn start_with(
     })
     .await
     .expect("start cluster");
-    cluster
-        .finalize_fleet_features(
-            &[
-                fleet::GENERATION_START.name(),
-                fleet::MAJORITY_ACK.name(),
-                fleet::LEASE_FREE_READS.name(),
-                fleet::JOINT_FENCE.name(),
-                fleet::REPLICA_ELECTION.name(),
-            ],
-            Duration::from_secs(20),
-        )
-        .await
-        .expect("every broker enables replica_election");
+    finalize_election_features(&cluster).await;
 
     let placed = assignment(&cluster).await;
     let same = stored_assignment(&cluster).await;
@@ -431,6 +409,328 @@ async fn adopted(cluster: &Cluster, leader: &str, generation: u64) {
     );
 }
 
+/// On Raft: three brokers and an RF 3 `Quorum` stream. None of the hybrid
+/// election features apply, and the control plane is not on the path of an
+/// election.
+async fn raft_start() -> Cluster {
+    raft_start_with(3, 3, false, Vec::new()).await
+}
+
+/// [`raft_start`] with `nodes` brokers, the stream at `rf`, and more broker
+/// environment.
+async fn raft_start_with(
+    nodes: usize,
+    rf: u32,
+    proxy_links: bool,
+    env: Vec<(String, String)>,
+) -> Cluster {
+    Cluster::start(ClusterConfig {
+        nodes,
+        streams: vec![StreamSpec::quorum(STREAM, 1, rf)],
+        broker_env: [(
+            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+            "2000".to_string(),
+        )]
+        .into_iter()
+        .chain(env)
+        .collect(),
+        proxy_links,
+        inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster")
+}
+
+/// Broker environment for a start from the control-plane view: the switch,
+/// a short startup wait, and the features the view's fleet must name.
+fn start_from_view_env() -> Vec<(String, String)> {
+    vec![
+        ("FELIX_TEST_FLEET_FEATURES".to_string(), reported_features()),
+        (
+            "FELIX_START_WITHOUT_CONTROLPLANE".to_string(),
+            "true".to_string(),
+        ),
+        (
+            "FELIX_CONTROLPLANE_STARTUP_WAIT_MS".to_string(),
+            "1000".to_string(),
+        ),
+    ]
+}
+
+/// Every feature [`start_with`] has brokers report.
+fn reported_features() -> String {
+    fleet::IMPLEMENTED
+        .iter()
+        .chain(&[
+            fleet::JOINT_FENCE,
+            fleet::START_HOLDERS,
+            fleet::PEER_ELECTION,
+            fleet::REPLICA_ELECTION,
+        ])
+        .map(|feature| feature.name())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Finalize what [`start_with`] finalizes. A view whose fleet lacks
+/// `replica_election` is refused, so without it no start from the view is
+/// even tried.
+async fn finalize_election_features(cluster: &Cluster) {
+    cluster
+        .finalize_fleet_features(
+            &[
+                fleet::GENERATION_START.name(),
+                fleet::MAJORITY_ACK.name(),
+                fleet::LEASE_FREE_READS.name(),
+                fleet::JOINT_FENCE.name(),
+                fleet::REPLICA_ELECTION.name(),
+            ],
+            Duration::from_secs(20),
+        )
+        .await
+        .expect("every broker enables replica_election");
+}
+
+/// On Raft: the broker serving the shard within the election bound.
+async fn raft_serving(cluster: &Cluster) -> String {
+    cluster
+        .serving_leader(STREAM, ELECTED_WITHIN)
+        .await
+        .expect("a serving leader")
+}
+
+/// How the control plane is unavailable.
+#[derive(Clone, Copy)]
+enum Outage {
+    Crashed,
+    Paused,
+}
+
+/// On Raft, with the control plane down or paused, killing the leader
+/// elects a follower that holds every acknowledged record and takes new
+/// writes. The control plane's return changes nothing, and does not mark a
+/// live broker down for a pause.
+async fn raft_elected_without_the_control_plane(outage: Outage) {
+    let mut cluster = raft_start().await;
+    let first = raft_serving(&cluster).await;
+    let mut acked = publish_acked(&cluster, &first, "before", 20).await;
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds the records");
+    let others: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != old)
+        .collect();
+    let registered = incarnations(&cluster, &others).await;
+
+    match outage {
+        Outage::Crashed => cluster
+            .crash_control_plane()
+            .await
+            .expect("crash the control plane"),
+        Outage::Paused => cluster
+            .pause_control_plane()
+            .expect("pause the control plane"),
+    }
+    cluster.kill_node(&old).expect("kill the leader");
+    let elected = raft_serving(&cluster).await;
+    assert!(others.contains(&elected), "{elected} is not a follower");
+    acked.extend(publish_acked(&cluster, &elected, "elected", 20).await);
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lost acknowledged records: {missing:?}"
+    );
+
+    match outage {
+        Outage::Crashed => cluster
+            .recover_control_plane()
+            .await
+            .expect("recover the control plane"),
+        Outage::Paused => cluster.resume_control_plane(),
+    }
+    acked.extend(publish_acked(&cluster, &elected, "after", 5).await);
+    assert_eq!(
+        cluster
+            .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+            .await
+            .expect("the survivors are level"),
+        elected,
+        "the control plane's return moved the leader"
+    );
+    if matches!(outage, Outage::Paused) {
+        assert_eq!(
+            incarnations(&cluster, &others).await,
+            registered,
+            "the control plane marked a live broker down for its own pause"
+        );
+    }
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(missing.is_empty(), "{elected} lost {missing:?}");
+    cluster.shutdown().await;
+}
+
+/// On Raft: a writer publishing throughout, the control plane crashed and
+/// the leader killed. A follower leads and takes the writer's records; the
+/// old leader restarts and catches up, and every acknowledged record reads
+/// back from whoever leads.
+async fn raft_leader_kill_under_load() {
+    let mut cluster = raft_start().await;
+    let old = raft_serving(&cluster).await;
+    let writer = Writer::start(&cluster);
+    felix_cluster::wait::until(Duration::from_secs(10), "the writer to get going", || {
+        let acked = writer.acked();
+        async move { acked >= 20 }
+    })
+    .await
+    .expect("the writer's records are acknowledged");
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    writer.skip(&cluster, &old);
+    cluster.kill_node(&old).expect("kill the leader");
+    let elected = raft_serving(&cluster).await;
+    let at_election = writer.acked();
+    felix_cluster::wait::until(
+        Duration::from_secs(10),
+        "the elected leader to take the writer's records",
+        || {
+            let acked = writer.acked();
+            async move { acked >= at_election + 20 }
+        },
+    )
+    .await
+    .unwrap_or_else(|err| {
+        panic!(
+            "the writer's records are acknowledged after the election: {err:#}; \
+             {elected} was elected; per broker (acked, failed, last failure): {:?}",
+            writer.tally()
+        )
+    });
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    // A broker starts only once the control plane answers.
+    cluster
+        .restart_node(&old)
+        .await
+        .expect("restart the old leader");
+    writer.resume();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let acked = writer.stop().await;
+
+    let leader = raft_serving(&cluster).await;
+    let missing = missing_on(&cluster, &leader, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{leader} lacks {} of {} acknowledged records, first {:?}",
+        missing.len(),
+        acked.len(),
+        missing.first()
+    );
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every broker is caught up with the leader");
+    cluster.shutdown().await;
+}
+
+/// On Raft a broker starts only once the control plane answers, so a
+/// follower restarted during the outage is not a member yet. With the
+/// leader also dead one member of three is up: nothing is elected or
+/// acknowledged until the control plane returns, and then nothing
+/// acknowledged is lost.
+///
+/// With `from_view`, the restarted follower has
+/// `FELIX_START_WITHOUT_CONTROLPLANE` on and starts from its control-plane
+/// view, and still opens no Raft member before the control plane answers:
+/// its restore check has not run, so its log may be a restored copy.
+async fn raft_restarted_member_waits_for_the_control_plane(from_view: bool) {
+    let env = if from_view {
+        start_from_view_env()
+    } else {
+        Vec::new()
+    };
+    let mut cluster = raft_start_with(3, 3, false, env).await;
+    if from_view {
+        finalize_election_features(&cluster).await;
+    }
+    let first = raft_serving(&cluster).await;
+    let mut acked = publish_acked(&cluster, &first, "before", 20).await;
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds the records");
+    let mut others = cluster.node_ids().into_iter().filter(|id| *id != old);
+    let restarted = others.next().expect("a follower");
+    let alone = others.next().expect("a second follower");
+    if from_view {
+        let generation = stored_assignment(&cluster).await.generation;
+        view_written(&cluster, &restarted, generation).await;
+    }
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    cluster.kill_node(&restarted).expect("kill a follower");
+    cluster
+        .start_node_unready_in_place(&restarted)
+        .expect("start the follower again without waiting for it");
+    if from_view {
+        felix_cluster::wait::until(
+            Duration::from_secs(30),
+            "the restarted follower to start from its view",
+            || async { node_logged(&cluster, &restarted, FROM_VIEW) },
+        )
+        .await
+        .expect("the restarted follower starts from its control-plane view");
+    }
+    cluster.kill_node(&old).expect("kill the leader");
+
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN;
+    while tokio::time::Instant::now() < deadline {
+        cluster
+            .publish_via(&alone, STREAM, b"too-early".to_vec())
+            .await
+            .expect_err("one member of three acknowledged a write");
+        assert!(
+            cluster
+                .metric(&alone, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten()
+                .is_none_or(|led| led < 1.0),
+            "a lone member led its group"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    cluster
+        .await_node_ready(&restarted)
+        .await
+        .expect("the restarted follower comes up once the control plane answers");
+    let leader = raft_serving(&cluster).await;
+    acked.extend(publish_acked(&cluster, &leader, "after", 5).await);
+    let missing = missing_on(&cluster, &leader, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{leader} lost acknowledged records: {missing:?}"
+    );
+    cluster.shutdown().await;
+}
+
 /// **A follower is elected while the control plane is down.** Three brokers,
 /// RF 3. With the control plane stopped, the leader is killed: a follower
 /// opens within the bound, every acknowledged record reads back from it, it
@@ -438,6 +738,10 @@ async fn adopted(cluster: &Cluster, leader: &str, generation: u64) {
 #[serial]
 #[tokio::test]
 async fn a_follower_is_elected_while_the_control_plane_is_down() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_elected_without_the_control_plane(Outage::Crashed).await;
+        return;
+    }
     let mut cluster = start(3, 3, false).await;
     let before = assignment(&cluster).await;
     let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
@@ -499,6 +803,10 @@ async fn incarnations(cluster: &Cluster, nodes: &[String]) -> BTreeMap<String, u
 #[serial]
 #[tokio::test]
 async fn a_follower_is_elected_while_the_control_plane_is_paused() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_elected_without_the_control_plane(Outage::Paused).await;
+        return;
+    }
     let mut cluster = start(3, 3, false).await;
     let before = assignment(&cluster).await;
     let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
@@ -557,6 +865,11 @@ async fn a_follower_is_elected_while_the_control_plane_is_paused() {
 #[serial]
 #[tokio::test]
 async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "a Raft follower elects on its own timeout whether or not the old leader restarts, and a_follower_is_elected_while_the_control_plane_is_paused covers the election",
+    ) {
+        return;
+    }
     let mut cluster = start_with(
         3,
         3,
@@ -602,6 +915,165 @@ async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
     cluster.shutdown().await;
 }
 
+/// On Raft: five brokers, RF 5. The leader dies and the two lowest-id
+/// followers stand, unable to reach each other, so neither hears the
+/// other's term; the other two cannot ask for votes, and the candidates'
+/// requests reach them late over connections both opened beforehand. Both are seen as candidates at the same term,
+/// and no term has two leaders. Nothing acknowledged is lost.
+async fn raft_two_candidates_at_one_term() {
+    // Election timeouts of 1 to 1.05 s instead of 1 to 2 s, so the two
+    // followers, which last heard the leader at the same beat, stand within
+    // a tick of each other rather than up to a second apart, when the first
+    // has already won. The lease is cut to fit under the shorter timeout.
+    let mut cluster = raft_start_with(
+        5,
+        5,
+        true,
+        vec![
+            (
+                "FELIX_TEST_RAFT_ELECTION_MAX_MS".to_string(),
+                "1050".to_string(),
+            ),
+            ("FELIX_SHARD_RAFT_LEASE_MS".to_string(), "800".to_string()),
+        ],
+    )
+    .await;
+    let old = raft_serving(&cluster).await;
+    let mut acked = publish_acked(&cluster, &old, "before", 10).await;
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds the records");
+    let mut followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != old)
+        .collect();
+    followers.sort();
+    let (candidates, voters) = followers.split_at(2);
+
+    // A follower dials the voters only when it campaigns, and a fresh dial
+    // over the late links below outlasts a vote call, so a candidate that
+    // never led would never reach them while one that did would, and win
+    // alone. Both dial now: cut off from the leader's heartbeats they ask
+    // for pre-votes, which the voters, still hearing the leader, refuse.
+    let unheard = Fault::Refuse {
+        node: old.clone(),
+        peers: candidates.to_vec(),
+    };
+    cluster
+        .inject(&unheard)
+        .await
+        .expect("keep the leader's beats from the candidates");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    cluster
+        .heal(&unheard)
+        .await
+        .expect("heal the leader's beats");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the candidates to follow the leader again",
+        || async {
+            for candidate in candidates {
+                let follows = cluster
+                    .raft_member(candidate, STREAM)
+                    .await
+                    .is_some_and(|raft| {
+                        raft.role == "follower" && raft.leader.as_ref() == Some(&old)
+                    });
+                if !follows {
+                    return false;
+                }
+            }
+            true
+        },
+    )
+    .await
+    .expect("the candidates follow the leader");
+
+    for fault in Fault::partition(
+        Endpoint::node(candidates[0].clone()),
+        Endpoint::node(candidates[1].clone()),
+    ) {
+        cluster
+            .inject(&fault)
+            .await
+            .expect("cut the candidates apart");
+    }
+    for voter in voters {
+        cluster
+            .inject(&Fault::Refuse {
+                node: voter.clone(),
+                peers: cluster.node_ids(),
+            })
+            .await
+            .expect("keep a voter from standing");
+    }
+    // Slow enough that both candidacies overlap, under the vote timeout.
+    for candidate in candidates {
+        for voter in voters {
+            cluster
+                .inject(&Fault::Delay {
+                    from: Endpoint::node(candidate.clone()),
+                    to: Endpoint::node(voter.clone()),
+                    by: Duration::from_millis(700),
+                })
+                .await
+                .expect("delay a candidate's requests");
+        }
+    }
+    let old_term = cluster
+        .raft_member(&old, STREAM)
+        .await
+        .expect("the leader reports its member")
+        .term;
+    cluster.kill_node(&old).expect("kill the leader");
+
+    // Term -> who was seen standing at it, and who was seen leading it.
+    let mut stood: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    let mut led: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + ELECTED_WITHIN * 2;
+    let contested = |stood: &BTreeMap<u64, BTreeSet<String>>| {
+        // Above the old term: a pre-vote does not take a new one.
+        stood
+            .range(old_term + 1..)
+            .any(|(_, brokers)| brokers.len() > 1)
+    };
+    while tokio::time::Instant::now() < deadline && !(contested(&stood) && !led.is_empty()) {
+        for node in &followers {
+            if let Some(raft) = cluster.raft_member(node, STREAM).await {
+                let seen = match raft.role.as_str() {
+                    "candidate" => &mut stood,
+                    "leader" => &mut led,
+                    _ => continue,
+                };
+                seen.entry(raft.term).or_default().insert(node.clone());
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        contested(&stood),
+        "the candidates were never seen standing at the same term, so nothing was tested: {stood:?}"
+    );
+    for (term, leaders) in &led {
+        assert!(
+            leaders.len() <= 1,
+            "term {term} had two leaders: {leaders:?}"
+        );
+    }
+
+    cluster.heal_all().await.expect("heal");
+    let elected = raft_serving(&cluster).await;
+    acked.extend(publish_acked(&cluster, &elected, "elected", 10).await);
+    let missing = missing_on(&cluster, &elected, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{elected} lost acknowledged records: {missing:?}"
+    );
+    cluster.shutdown().await;
+}
+
 /// **Two followers stand at once and exactly one opens.** Five brokers,
 /// RF 5. The two lowest-id followers cannot reach each other, so neither
 /// counts the other ahead of it, and the other two cannot ask for votes at
@@ -614,6 +1086,10 @@ async fn a_leader_restarted_while_the_control_plane_is_paused_is_replaced() {
 #[serial]
 #[tokio::test]
 async fn two_followers_stand_at_once_and_one_opens() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_two_candidates_at_one_term().await;
+        return;
+    }
     let gate_dir = tempfile::tempdir().expect("a directory for the gate");
     let gate = gate_dir.path().join("pre-vote-gate");
     let mut cluster = start_with(
@@ -727,6 +1203,11 @@ async fn two_followers_stand_at_once_and_one_opens() {
 #[serial]
 #[tokio::test]
 async fn the_control_plane_returning_mid_election_leaves_one_leader() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the control plane cannot promote a Raft leader, so there is nothing to race; failover::a_deregistered_leader_is_replaced_only_after_its_lease checks placement cannot depose one",
+    ) {
+        return;
+    }
     let mut cluster = start(3, 3, false).await;
     let before = assignment(&cluster).await;
     let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
@@ -946,6 +1427,10 @@ impl Writer {
 #[serial]
 #[tokio::test]
 async fn the_control_plane_stays_down_across_a_leader_kill_under_load() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_leader_kill_under_load().await;
+        return;
+    }
     let mut cluster = start(3, 3, false).await;
     let before = assignment(&cluster).await;
     let writer = Writer::start(&cluster);
@@ -1061,6 +1546,10 @@ async fn served_again(cluster: &Cluster, before: &felix_cluster::Assignment) -> 
 #[serial]
 #[tokio::test]
 async fn a_broker_restarted_while_the_control_plane_is_down_does_not_vote() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_restarted_member_waits_for_the_control_plane(false).await;
+        return;
+    }
     let mut cluster = start(3, 3, false).await;
     let before = assignment(&cluster).await;
     let mut acked = publish_acked(&cluster, &before.leader, "before", 20).await;
@@ -1161,6 +1650,12 @@ async fn view_written(cluster: &Cluster, node: &str, generation: u64) {
 #[serial]
 #[tokio::test]
 async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
+    if felix_cluster::skip_on_raft_until(
+        3102,
+        "a Raft member started from the control-plane view opens no group until the control plane answers",
+    ) {
+        return;
+    }
     let mut cluster = start_with(
         3,
         3,
@@ -1275,6 +1770,10 @@ async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
 #[serial]
 #[tokio::test]
 async fn a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_restarted_member_waits_for_the_control_plane(true).await;
+        return;
+    }
     let mut cluster = start_with(
         3,
         3,

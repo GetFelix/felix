@@ -509,6 +509,15 @@ impl Campaign {
                 })
                 .collect();
             found.sort_by_key(|view| view.shard);
+            // Placement names a Raft shard's leader but cannot make the group
+            // elect it, so faults aimed at a leader follow the elected one.
+            if cluster.raft()
+                && let Ok((leader, _)) = cluster.raft_serving(kind, name).await
+            {
+                for view in found.iter_mut().filter(|view| view.shard == 0) {
+                    view.leader.clone_from(&leader);
+                }
+            }
             shards.extend(found);
         }
         let mut leaders = Vec::new();
@@ -549,7 +558,15 @@ async fn settled_read(
             let last = &last;
             async move {
                 let attempt = async {
-                    let owner = cluster.shard_owner_of("stream", list, 0).await?;
+                    let owner = if cluster.raft() {
+                        cluster
+                            .raft_serving("stream", list)
+                            .await
+                            .map_err(|why| anyhow!(why))?
+                            .0
+                    } else {
+                        cluster.shard_owner_of("stream", list, 0).await?
+                    };
                     let node = cluster
                         .node(&owner)
                         .ok_or_else(|| anyhow!("unknown leader {owner}"))?;

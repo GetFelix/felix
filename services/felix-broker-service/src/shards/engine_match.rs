@@ -261,6 +261,12 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
             .is_some_and(|inner| inner.leads_unheard(key))
     }
 
+    fn placed_elsewhere(&self, key: &ShardKey) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.placed_elsewhere(key))
+    }
+
     fn serves_reads(&self, key: &ShardKey) -> bool {
         !(self.any_refused.load(Ordering::Acquire) && self.refused.lock().contains_key(key))
             && self

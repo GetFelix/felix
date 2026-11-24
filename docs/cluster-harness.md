@@ -430,6 +430,7 @@ makes, whether the broker leads the log or follows it:
 write=enospc         # every segment write fails with ENOSPC; or eio
 write=eio_once       # the next segment write fails with EIO, later ones succeed
 write_generation=1   # a new value arms eio_once again
+rewind=fail          # the rewind after a failed write fails too, poisoning the log
 write_delay_ms=200   # each segment write waits first, like a throttled write()
 ```
 
@@ -834,7 +835,9 @@ calls `recover_control_plane` and waits for the broker. The campaign also
 reads every broker's log for the shards each one opened, so the checker can
 fail a run where two brokers opened one shard at the same generation. The
 whole sequence is in "Elections without the control plane" in the history
-checker doc.
+checker doc. On Raft brokers the campaign reads leadership from each
+member's own report rather than placement and broker logs; "Liveness" in the
+history checker doc says how.
 
 ## The conformance suite
 

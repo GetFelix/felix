@@ -101,10 +101,21 @@ async fn headers_published_through_a_forward_survive_the_leader() {
     .await
     .expect("start cluster");
     cluster
-        .finalize_fleet_features(&["record_headers"], Duration::from_secs(30))
+        .finalize_fleet_features(
+            // A Raft group gates headers on its own feature as well.
+            if felix_cluster::suite_runs_on_raft() {
+                &["record_headers", "raft_record_headers"][..]
+            } else {
+                &["record_headers"][..]
+            },
+            Duration::from_secs(30),
+        )
         .await
         .expect("finalize record_headers");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     let ingress = cluster
         .node_ids()
         .into_iter()
@@ -136,32 +147,16 @@ async fn headers_published_through_a_forward_survive_the_leader() {
     let on_leader = replay_headers(&cluster, &leader, published.len()).await;
     assert_eq!(on_leader, published, "the leader delivers what was sent");
 
-    felix_cluster::wait::until(
-        Duration::from_secs(30),
-        "the records to reach the followers",
-        || async {
-            cluster
-                .metric(&leader, "felix_broker_replication_lag_records")
-                .await
-                .ok()
-                .flatten()
-                == Some(0.0)
-        },
-    )
-    .await
-    .expect("replication should reach the followers");
+    cluster
+        .wait_for_replication(STREAM, Duration::from_secs(30))
+        .await
+        .expect("replication should reach the followers");
 
     cluster.kill_node(&leader).expect("kill the leader");
-    felix_cluster::wait::until(Duration::from_secs(30), "a new leader", || async {
-        cluster.place_shards().await;
-        cluster
-            .owner(STREAM)
-            .await
-            .is_ok_and(|owner| owner != leader)
-    })
-    .await
-    .expect("a replica should have been promoted");
-    let promoted = cluster.owner(STREAM).await.expect("owner");
+    let promoted = cluster
+        .promoted_leader(STREAM, &leader, Duration::from_secs(30))
+        .await
+        .expect("a replica should have been promoted");
 
     let on_promoted = replay_headers(&cluster, &promoted, published.len()).await;
     assert_eq!(

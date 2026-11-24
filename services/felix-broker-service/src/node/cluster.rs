@@ -272,6 +272,9 @@ fn timers(settings: crate::config::RaftSettings) -> replication::raft::RuntimeCo
     if let Some(elections) = settings.elections_at_once {
         timers.max_elections_at_once = elections;
     }
+    if let Some(longest) = settings.election_max {
+        timers.election_max = longest;
+    }
     if let Some(threads) = settings.group_threads {
         timers.group_threads = threads;
     }

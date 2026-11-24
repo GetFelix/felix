@@ -46,8 +46,9 @@ struct RecordingObserver {
 }
 
 impl CacheObserver for RecordingObserver {
-    fn cache_changed(&self, change: CacheChange) {
+    fn cache_changed(&self, change: CacheChange) -> bool {
         self.changes.lock().push(change);
+        true
     }
 }
 
