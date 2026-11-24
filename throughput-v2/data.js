@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795535067720,
+  "lastUpdate": 1795548702350,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67964,6 +67964,58 @@ window.BENCHMARK_DATA = {
             "range": "64731.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 939701.93\nmean: 913092.40\nstdev: 64731.64\ncv: 7.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dbf1e632f4c209d0ae65a89fe73cda08777c29ad",
+          "message": "test(ipm): one broker per cell and a durable Raft baseline (#3050) (#3075)\n\n* test(ipm): measure each cell on a broker of its own (#3050)\n\nOn aarch64 under callgrind a broker slows down the longer it runs, on\nthe hybrid as well as Raft, while its work per message stays flat. The\nb64 cell ran on the broker b1 had aged, so it picked up more of the\ncost that scales with wall time and its acks queued past the client's\ntimeout.\n\nSpec-Unaffected: measurement harness only\n\n* perf(ipm): baseline for the durable Raft broker (#3050)\n\nThe old baseline measured an in-memory hybrid broker. These counts\nare a durable Raft broker with periodic fsync: the extra instructions\nbuy a replicated, persisted log per shard (Raft log append, apply and\nthe 48 groups' commit and heartbeat timers) in place of an in-memory\nstream. The Raft CPU gap against a durable hybrid is tracked in #2936.\n\nSpec-Unaffected: perf baseline only",
+          "timestamp": "2026-11-24T19:24:29Z",
+          "tree_id": "45269975a70aa771fee9936d0983d9998be78aad",
+          "url": "https://github.com/GetFelix/felix/commit/dbf1e632f4c209d0ae65a89fe73cda08777c29ad"
+        },
+        "date": 1795548701263,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 651397.01,
+            "range": "75747.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 651397.01\nmean: 629968.15\nstdev: 75747.07\ncv: 12.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 651397.01,
+            "range": "75747.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 651397.01\nmean: 629968.15\nstdev: 75747.07\ncv: 12.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158052.81,
+            "range": "2493.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158052.81\nmean: 156695.35\nstdev: 2493.92\ncv: 1.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1580528.08,
+            "range": "24939.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1580528.08\nmean: 1566953.55\nstdev: 24939.22\ncv: 1.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
