@@ -167,6 +167,11 @@ fn report_skip(reason: &str) {
     }
 }
 
+/// Whether brokers start on Raft unless a test names an engine.
+pub fn suite_runs_on_raft() -> bool {
+    default_engine() == "raft"
+}
+
 /// True when the suite runs on Raft, for a test that moves a shard between
 /// brokers. A Raft shard's leader moves only within its voting set, and
 /// placement does not yet manage that set (#2235), so such a test runs on

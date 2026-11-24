@@ -66,6 +66,42 @@ fn one_broker_opening_several_generations_is_not() {
     assert!(out.is_empty(), "{out:?}");
 }
 
+/// A Raft member's open, as `felix_replication::raft::lead` logs it, with the
+/// term as the generation.
+const RAFT_OPENED: &str = "\u{1b}[2m2026-11-23T10:00:00.000Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m \
+    \u{1b}[2mfelix_replication::raft::lead\u{1b}[0m\u{1b}[2m:\u{1b}[0m a majority took the fence; \
+    opening the shard for writes \u{1b}[3mstream\u{1b}[0m\u{1b}[2m=\u{1b}[0mhistory-1 \
+    \u{1b}[3mshard\u{1b}[0m\u{1b}[2m=\u{1b}[0m0 \u{1b}[3mgeneration\u{1b}[0m\u{1b}[2m=\u{1b}[0m9";
+
+#[test]
+fn a_raft_open_is_read_from_its_log_line() {
+    assert_eq!(
+        parse(RAFT_OPENED, "broker-1"),
+        Some(opened("history-1", 9, "broker-1"))
+    );
+}
+
+#[test]
+fn two_raft_members_logging_an_open_in_one_term_is_a_violation() {
+    let one = tempfile::tempdir().unwrap();
+    let two = tempfile::tempdir().unwrap();
+    std::fs::write(one.path().join("broker.log"), RAFT_OPENED).unwrap();
+    std::fs::write(two.path().join("broker.log.earlier"), RAFT_OPENED).unwrap();
+    let mut opens = BTreeSet::new();
+    scan_dir(one.path(), "broker-1", &EVERY_RUN, parse, &mut opens);
+    scan_dir(two.path(), "broker-2", &EVERY_RUN, parse, &mut opens);
+    let mut out = Vec::new();
+    check(&opens, &mut out);
+    assert_eq!(out.len(), 1, "{out:?}");
+    assert_eq!(out[0].rule, Rule::OneLeaderPerGeneration);
+    assert!(
+        out[0]
+            .explanation
+            .contains("generation 9 by broker-1 and broker-2"),
+        "{out:?}"
+    );
+}
+
 const STOOD_LINE: &str = "INFO felix_replication::election::candidate: standing for election: the \
     leader is unreachable or stuck and a majority agreed stream=history-1 shard=0 generation=8 \
     leader=broker-0 broker_suspected=true";

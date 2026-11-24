@@ -161,7 +161,12 @@ export default function register(ctx) {
           `a write no majority confirmed surfaced as ${caught?.constructor?.name} ` +
             `(${caught?.code}/${caught?.retry}): ${caught?.message}`,
         );
-        assert.equal(caught.code, "quorum_timeout");
+        // A Raft leader that steps down while the appended batch waits reports
+        // leadership_lost.
+        assert.ok(
+          ["quorum_timeout", "leadership_lost"].includes(caught.code),
+          `unexpected outcome-unknown code ${caught.code}`,
+        );
         assert.equal(caught.retry, "outcome_unknown");
         assert.equal(caught.retryable, false);
       } finally {

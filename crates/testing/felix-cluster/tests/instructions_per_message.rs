@@ -17,8 +17,9 @@
 //! ```
 //!
 //! Only the broker process is counted, so a load generator
-//! change cannot hide or fake a broker regression. The stream is in-memory, so
-//! the disk's cost stays out of the number.
+//! change cannot hide or fake a broker regression. The stream is durable on the
+//! suite's default engine (Raft), with periodic fsync so the disk's wait stays
+//! out of the number.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -220,14 +221,18 @@ async fn measure_cells(
     env: Vec<(String, String)>,
     cells: &'static [(&'static str, usize, usize)],
 ) -> serde_json::Map<String, serde_json::Value> {
-    let mut broker_env = vec![
-        // A blank directory is how the broker is told to keep nothing on disk.
-        ("FELIX_DURABLE_STORAGE_DIR".to_string(), " ".to_string()),
-    ];
+    // The broker keeps its logs under the node's data directory, as Raft
+    // requires. Periodic fsync writes every append but leaves the flush to a
+    // timer, so the count is the broker's CPU and not time spent waiting on
+    // the disk; the timer's idle cost comes off like any other background work.
+    let mut broker_env = vec![(
+        "FELIX_DURABLE_FSYNC_MODE".to_string(),
+        "periodic".to_string(),
+    )];
     broker_env.extend(env);
     let cluster = Cluster::start(ClusterConfig {
         nodes: 1,
-        streams: vec![StreamSpec::new(STREAM, SHARDS).in_memory()],
+        streams: vec![StreamSpec::new(STREAM, SHARDS)],
         broker_env,
         // The broker polls the control plane on this timer. Under callgrind
         // the work it does scales with wall time, not messages, so a slow

@@ -1424,3 +1424,40 @@ async fn a_batch_cut_in_the_middle_is_told_how_far_it_was_written() {
     let _ = answer.send(Err(in_part(6)));
     assert_eq!(signals.reached(), Some(Err(in_part(6))));
 }
+
+/// Only a refusal openraft made before appending, with nothing of the batch
+/// known written, is told as not appended. A shape refusal stays what it
+/// was, and so does a refusal once part of the batch is known written.
+#[test]
+fn only_an_unappended_refusal_is_told_as_not_appended() {
+    use super::super::propose::{Unacknowledged, lost};
+
+    let told = |detail: &'static str, written_end: Option<u64>| {
+        Unacknowledged {
+            error: lost(detail),
+            written_end,
+        }
+        .told()
+    };
+    let lease = "no majority has answered this leader lately, so nothing was written";
+    let term =
+        "this broker does not lead the term the batch was admitted at, so nothing was written";
+    for detail in [lease, term] {
+        assert_eq!(
+            told(detail, None),
+            CommitError::NotAppended {
+                what: "write",
+                detail
+            }
+        );
+        assert_eq!(told(detail, Some(4)), lost(detail));
+    }
+    for detail in [
+        "the records are not the rest of the producer's batch, so nothing was written",
+        "a conditional publish or a trim cannot carry a producer, and a trim or a commit is one record, so nothing was written",
+        "the batch was written at a later term than it was admitted at",
+        "this broker does not lead the shard",
+    ] {
+        assert_eq!(told(detail, None), lost(detail));
+    }
+}

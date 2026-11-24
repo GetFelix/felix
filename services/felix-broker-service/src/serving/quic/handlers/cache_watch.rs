@@ -665,7 +665,10 @@ impl CommitGate {
             match self.wait(end).await {
                 Ok(()) => return true,
                 Err(felix_replication::quorum::QuorumError::TimedOut { .. }) => continue,
-                Err(felix_replication::quorum::QuorumError::LeadershipLost { .. }) => {
+                Err(
+                    felix_replication::quorum::QuorumError::LeadershipLost { .. }
+                    | felix_replication::quorum::QuorumError::NotAppended { .. },
+                ) => {
                     return false;
                 }
                 // Only a conditional stream publish or a proposal is

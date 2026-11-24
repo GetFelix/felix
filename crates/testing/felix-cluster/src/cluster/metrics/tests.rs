@@ -145,3 +145,17 @@ fn a_raft_wait_needs_a_leader_and_does_not_count_learners() {
     ];
     assert!(raft_leader_caught_up(&members).is_err());
 }
+
+#[test]
+fn a_raft_liveness_check_measures_the_commit_index_not_the_tail() {
+    let mut members = vec![
+        member("a", "leader", 4, Some("a"), Some(12)),
+        member("b", "follower", 4, Some("a"), Some(10)),
+        member("c", "follower", 4, Some("a"), Some(8)),
+    ];
+    members[0].1.committed = Some(10);
+    assert!(raft_leader_caught_up(&members).is_err());
+    assert_eq!(raft_leader_committed(&members), Ok(("a".to_string(), 4)));
+    members[1].1.last_index = Some(9);
+    assert!(raft_leader_committed(&members).is_err());
+}
