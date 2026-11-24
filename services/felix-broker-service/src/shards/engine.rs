@@ -61,7 +61,9 @@ impl StreamEngine {
         #[cfg(feature = "raft")]
         {
             use felix_replication::raft::Role;
-            let status = self.raft(shard)?.status(shard)?;
+            let engine = self.raft(shard)?;
+            let status = engine.status(shard)?;
+            let voters = engine.voters(shard).unwrap_or_default();
             Some(felix_wire::InspectedRaft {
                 role: match status.role {
                     Role::Leader => "leader",
@@ -75,6 +77,10 @@ impl StreamEngine {
                 leader: status.leader.map(|member| member.broker.to_string()),
                 last_index: status.last_index,
                 committed: status.committed,
+                voters: voters
+                    .into_iter()
+                    .map(|member| member.broker.to_string())
+                    .collect(),
             })
         }
         #[cfg(not(feature = "raft"))]

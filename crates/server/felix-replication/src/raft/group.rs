@@ -1041,6 +1041,7 @@ impl Group {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
+        self.stop_lapsed_recording();
         // A member that takes no vote does not ask for one, unless it
         // promised nobody. One handed the leadership meanwhile is ticked
         // too: its first tick as leader comes once `Pace::wrote` or
@@ -2119,19 +2120,27 @@ impl Group {
         }
         let timers = self.pace.timers;
         let patience = Duration::from_millis(timers.election_max);
-        let unanswered = CommitError::TimedOut {
+        let started = tokio::time::Instant::now();
+        // The error names how long the read waited, which is less than
+        // `patience` when no majority answered within a round.
+        let unanswered = || CommitError::TimedOut {
             what: "read",
-            timeout: patience,
+            timeout: started.elapsed().min(patience),
         };
-        let deadline = tokio::time::Instant::now() + patience;
+        let deadline = started + patience;
+        // A majority answers a round within a lease or is not there. Held to
+        // the election timeout instead, a leader cut off from every peer
+        // keeps each group call waiting that long before it can refuse.
+        let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
         loop {
             let raft = self.raft.clone();
             let stop = self.stop.clone();
-            let entered =
-                self.reads
-                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
-                        read_round(raft.clone(), stop.clone())
-                    });
+            let entered = self.reads.enter(
+                &self.runtime,
+                round_limit,
+                Round::QuorumNotEnough,
+                move || read_round(raft.clone(), stop.clone()),
+            );
             // A read that arrives during a round waits for the next one too,
             // so the bound is on the wait, not on one round.
             let round = tokio::select! {
@@ -2145,7 +2154,7 @@ impl Group {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                         continue;
                     }
-                    Err(_) => return Err(unanswered),
+                    Err(_) => return Err(unanswered()),
                 },
             };
             match round {
@@ -2157,13 +2166,13 @@ impl Group {
                 }
                 Round::LeaseExpired => {}
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
-                Round::QuorumNotEnough => return Err(unanswered),
+                Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
             // a majority to answer it, and ask again.
             if tokio::time::Instant::now() >= deadline {
-                return Err(unanswered);
+                return Err(unanswered());
             }
             let _ = self.raft.trigger().heartbeat().await;
             let answered = lead::quorum_answered(&self.raft);
@@ -2424,6 +2433,44 @@ impl Group {
         let cache = self.cache.as_ref()?;
         let state = cache.read();
         Some((state.applied() + 1, state.watched_entries(keep)))
+    }
+
+    /// A resuming cache watch's live edge on this member and every kept
+    /// change in `[from, edge)` that `keep` takes, read under one hold of
+    /// the state's lock. The changes are `None` when some from `from` on are
+    /// no longer kept. `None` in a stream shard's group.
+    pub(crate) fn cache_replay(
+        &self,
+        from: u64,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Option<Vec<super::cache::Change>>)> {
+        let cache = self.cache.as_ref()?;
+        let state = cache.read();
+        Some((state.applied() + 1, state.recent_since(from, keep)))
+    }
+
+    /// A cache watch of this group's shard ended here: keep recording for a
+    /// window, so the client's resume can be replayed.
+    pub(crate) fn cache_watch_ended(&self) {
+        if let Some(cache) = &self.cache {
+            cache.write().watch_ended((self.clock)());
+        }
+    }
+
+    /// Free the changes a cache group kept for watches once its window has
+    /// passed with no watch. Never waits on apply.
+    fn stop_lapsed_recording(&self) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let now = (self.clock)();
+        if cache
+            .try_read()
+            .is_some_and(|state| state.recording_lapsed(now))
+            && let Some(mut state) = cache.try_write()
+        {
+            state.stop_lapsed_recording(now);
+        }
     }
 
     /// End `observer`'s watches of this cache group as lagged at the live

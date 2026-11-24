@@ -340,6 +340,7 @@ fn raft_member(role: &str, leader: &str) -> felix_wire::InspectedRaft {
         leader: Some(leader.to_string()),
         last_index: Some(9),
         committed: Some(9),
+        voters: Vec::new(),
     }
 }
 
@@ -373,4 +374,39 @@ fn a_raft_member_reports_the_role_its_group_gave_it() {
             Some("broker-b leads it at term 3")
         );
     }
+}
+
+/// **A Raft shard's leader reports its log's tail.** The log is opened at the
+/// shard's incarnation, which the unversioned lookup does not find.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_leader_reports_its_tail() {
+    use std::sync::Arc;
+
+    use crate::config::BrokerConfig;
+    use crate::serving::quic::ClusterContext;
+    use crate::serving::quic::handlers::publish::build_publish_context;
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    fixture::take_formed(&shards, assigned).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let at = fixture::write_batch(&shards, &orders, 1, 0, 0, 1, &[b"one"]).await;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::new(fixture::engine(&shards)),
+            ..ClusterContext::default()
+        },
+    );
+
+    let view = inspect(&broker, &publish_ctx, &orders).await;
+    assert!(view.tail.is_some_and(|tail| tail > at), "{:?}", view.tail);
+    EngineShards::shutdown(&*shards).await;
 }

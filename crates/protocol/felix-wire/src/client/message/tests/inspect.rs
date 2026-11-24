@@ -269,6 +269,7 @@ fn a_raft_members_view_round_trips() {
         leader: Some("broker-a".to_string()),
         last_index: Some(12),
         committed: Some(11),
+        voters: vec!["broker-a".to_string(), "broker-b".to_string()],
     });
     let frame = Message::ShardInspectInfo {
         view: Box::new(view.clone()),
@@ -281,4 +282,16 @@ fn a_raft_members_view_round_trips() {
         panic!("wrong message");
     };
     assert_eq!(*back, view);
+}
+
+/// A member's view from a broker that sends no voter list decodes with none,
+/// and an empty list is left out, so the two exchange the same JSON.
+#[test]
+fn a_raft_view_without_voters_is_the_older_shape() {
+    let older = serde_json::json!({
+        "role": "follower", "term": 2, "leader": "broker-a", "last_index": 4, "committed": 4
+    });
+    let raft: crate::InspectedRaft = serde_json::from_value(older.clone()).expect("decode");
+    assert!(raft.voters.is_empty());
+    assert_eq!(serde_json::to_value(&raft).expect("encode"), older);
 }
