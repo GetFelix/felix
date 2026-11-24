@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795549147774,
+  "lastUpdate": 1795555210547,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68068,6 +68068,58 @@ window.BENCHMARK_DATA = {
             "range": "14750.38",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 944599.94\nmean: 937636.51\nstdev: 14750.38\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fe02aef8cc047be8eb5caffc639516577d361a02",
+          "message": "fix(raft): a cache op before its member opens is refused, not written to the hybrid store (#3121) (#3125)\n\n* fix(raft): a cache op before its member opens is refused, not written to the hybrid store (#3121)\n\nOn a Raft broker a cache or counter operation for a shard with no member open fell through to the hybrid stores. The acked write was never served, and its directory kept the shard from opening on Raft. It is now refused as not ready, and the hybrid cache and counter stores open no log by themselves on a Raft broker.\n\n* chore: mark the cache fall-through fix as outside the modelled Raft core\n\nSpec-Unaffected: the refusal sits in request routing and store opening, before any Raft step; the modelled log, commit and election rules are unchanged.",
+          "timestamp": "2026-11-24T21:13:42Z",
+          "tree_id": "b6fe50a5462815eba0a1ec34e4871d48e2182df8",
+          "url": "https://github.com/GetFelix/felix/commit/fe02aef8cc047be8eb5caffc639516577d361a02"
+        },
+        "date": 1795555209653,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 657118.51,
+            "range": "53750.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 657118.51\nmean: 667715.32\nstdev: 53750.56\ncv: 8.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 657118.51,
+            "range": "53750.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 657118.51\nmean: 667715.32\nstdev: 53750.56\ncv: 8.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158268.78,
+            "range": "2655.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158268.78\nmean: 157488.94\nstdev: 2655.60\ncv: 1.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1582687.83,
+            "range": "26556.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1582687.83\nmean: 1574889.36\nstdev: 26556.03\ncv: 1.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
