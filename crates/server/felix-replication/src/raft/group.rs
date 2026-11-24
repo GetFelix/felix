@@ -2165,21 +2165,7 @@ impl Group {
                 }
                 Round::LeaseExpired => {}
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
-                Round::QuorumNotEnough => {
-                    // A slow majority may answer just after the round gave
-                    // up. Ask again only if one does within another round's
-                    // time: a cut-off leader hears nothing and is refused.
-                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    let wait = round_limit.min(left);
-                    if wait.is_zero()
-                        || tokio::time::timeout(wait, lead::quorum_answered(&self.raft))
-                            .await
-                            .is_err()
-                    {
-                        return Err(unanswered());
-                    }
-                    continue;
-                }
+                Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
