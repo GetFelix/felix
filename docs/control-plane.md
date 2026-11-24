@@ -1900,7 +1900,9 @@ at most 64 new Raft leaders, since brokers follow placement: each one is a
 leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
 waits while a broker is down, as for the hybrid. A down leader is renamed even
 while paused, as the hybrid still replaces a failed leader: a broker with no
-member forwards requests to the leader placement names. The set changes only
+member forwards requests to the leader placement names, or, while that
+broker holds no voter yet (a move outside the set), to a voter the group's
+leader reported. The set changes only
 through the group's membership target
 ([#2235](https://github.com/GetFelix/felix/issues/2235)). A shard switched
 from the hybrid is not placed here at all. See

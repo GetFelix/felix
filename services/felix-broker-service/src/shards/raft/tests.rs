@@ -2598,10 +2598,13 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .placed
-        .lock()
-        .insert(orders.clone(), "broker-a".to_string());
+    shards.placed.lock().insert(
+        orders.clone(),
+        Placed {
+            leader: "broker-a".to_string(),
+            voters: Default::default(),
+        },
+    );
 
     assert_eq!(
         route(&shards, &orders),
@@ -2621,10 +2624,13 @@ async fn an_mqtt_reader_of_a_leaderless_raft_member_waits() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .placed
-        .lock()
-        .insert(orders.clone(), "broker-a".to_string());
+    shards.placed.lock().insert(
+        orders.clone(),
+        Placed {
+            leader: "broker-a".to_string(),
+            voters: Default::default(),
+        },
+    );
     let reads = crate::serving::mqtt::BrokerReads::new(Arc::clone(&broker), Some(ingress(&shards)));
 
     assert_eq!(
@@ -3261,6 +3267,7 @@ mod reform;
 mod restore;
 mod retarget;
 mod retention;
+mod seat_move;
 mod short_placement;
 mod trim;
 
