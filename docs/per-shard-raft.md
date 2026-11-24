@@ -3731,6 +3731,18 @@ shard's placement names as leader. That broker holds a member, and answers
 with the group's leader when it is not the leader itself. A member placed
 here that is not open yet is answered `not_ready`.
 
+During a move outside the set, placement names the destination leader
+before the group has added it. Until its learner hears from the leader, the
+destination knows no leader to forward to. So while placement's leader is
+not among the voters the group's leader last reported for the shard, a
+broker with no member, or with a member that knows no leader and is not a
+reported voter, forwards to a reported voter instead (#3011). That voter
+knows the leader. Before any report, placement's leader is used as before.
+
+> `services/felix-broker-service/src/shards/raft/tests/seat_move.rs`,
+> `a_destination_with_no_member_forwards_to_a_reported_voter`,
+> `routes_skip_a_placed_leader_that_is_not_a_voter`.
+
 When the broker stops, every member is stopped and its log closed before
 storage is flushed.
 
@@ -4814,10 +4826,9 @@ later by no report a Raft shard sends:
 
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
-alone and only names the member it wants leading. It never adds or removes a
-member of a shard it has placed, except that it swaps out a follower on an
-internal node and drops the copy a move from
-an older control plane added:
+alone and names the member it wants leading. It changes a placed shard's
+set only by the one-member swaps below, and drops the copy a move from an
+older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
@@ -4834,6 +4845,20 @@ an older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
+- A balance pass gives a seat to a live broker outside the set when it
+  leads two fewer than the shard's leader and no member does (#3113). A
+  broker a drain swapped out of every set, then restarted, is that broker:
+  renaming within sets would never give it a shard again. One write swaps
+  a follower for it and names it leader, under the same checks as a
+  follower replacement, sharing its budget of 16 set changes a pass. The
+  follower given up is one in the new broker's zone first, then the
+  busiest, and never one whose swap would leave a set spread across zones
+  short of a zone. An RF 1 shard has no follower to give, so this does not
+  reach it yet ([#3118](https://github.com/GetFelix/felix/issues/3118)).
+  The group's leader keeps its seat, adds the new copy as a learner, swaps
+  the voters, and hands leadership over once the copy votes and has caught
+  up. A copy the broker kept from before its drain rejoins under its old
+  copy id with its log intact.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement
