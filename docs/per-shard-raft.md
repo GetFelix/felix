@@ -3298,6 +3298,93 @@ member of a group being formed.
 > `a_group_restarted_whole_with_its_leader_first_has_a_leader_within_its_holds` and
 > `a_held_member_handed_the_leadership_stands_and_is_ticked`.
 
+### A `Leader` leader's own tail (design, not built)
+
+Issue #3103. A `Leader` write is answered on the leader's log while its
+lease holds, so for up to one lease the leader can hold answered records no
+follower has. Today the followers elect one of themselves once the leader is
+silent, and the new term truncates that tail when the old leader rejoins.
+Decided: Raft must not do this. When a crashed leader may still hold answered
+entries no follower has, the group does not move past them without it. The
+`Leader` guarantee in the table above does not change: what a power cut or a
+lost disk takes from the leader's unsynced tail is still lost.
+
+**Why followers cannot work it out alone.** Cut off from its followers, a
+leader keeps answering on its lease, and nothing it answers after the last
+message they took reaches them. Silence looks the same whether the leader
+answered nothing or a thousand batches. The hybrid had the control plane: the
+leader kept reporting there and placement read the report. Raft groups elect
+without the control plane, so the bound has to travel with the group's own
+messages.
+
+**The allowance.** A leader of a `Leader` stream answers an entry on its lease
+only below an allowance a majority has taken:
+
+- The leader names an allowance `(term, seq, end)` on its appends and
+  heartbeats: "in this term I may answer on my lease entries below `end`".
+  While writes flow it asks for its log end plus a budget (the 256 batches
+  `ANSWERED_AHEAD` already allows); when nothing waits for a commit it names
+  its own log end, so an idle group owes nothing.
+- A follower stores the allowance with the highest `seq` of the newest term it
+  follows, durable before it says so (synced beside its vote mark, except on a
+  relaxed run, where a power cut rotates the copy anyway), and echoes it in its
+  `Written` report.
+- The leader counts a majority of echoes, as it counts a written majority, and
+  `admit_local_ack` also needs the entry to be below the granted end. Past it,
+  the write is answered as a `Quorum` write is, as for a lapsed lease.
+
+**The vote rule.** A voter holding allowance `(T, end)` from leader `L` grants
+a vote or pre-vote, and stands itself, only for a candidate whose last log id
+is at or past `(T, end - 1)`, or for `L` itself under the same member id. That
+is Raft's election restriction with the voter's last log id raised to the
+allowance. A later leader that won under the rule holds term `T`'s answered
+entries, so the rule only needs the newest term. Quorum intersection does the
+rest: a granted allowance was taken by a majority, so every electing majority
+holds a voter that knows it. Two leaders stay impossible for the reasons they
+are today; the rule only refuses more votes.
+
+**When the shard waits, and how it stops waiting.**
+
+- The leader's process crashed and its copy kept its id: it comes back with
+  its whole log, the followers let it through, and it leads the next term with
+  its tail. Nothing is lost and nobody acts.
+- The leader's copy rotated (a power cut on a relaxed run, as in the cluster
+  test) or its disk is gone: the member the allowance names never returns. The
+  rotated broker tells the group's voters, under its node credential, that the
+  copy is gone and where its kept log in `.kept` ends (nothing, after a lost
+  data root). A voter then lowers that allowance to the kept log's end: what
+  the leader held past it was lost with its unsynced tail, which `Leader`
+  allows. If a follower is at or past it, the followers elect as usual. If the
+  kept log is ahead of every follower, only that copy holds the answered tail,
+  and the group re-forms from it (below).
+- The leader's broker never comes back: the shard waits until an operator
+  gives the tail up. That is the abandon command of #3096, which for this case
+  clears the allowance on the surviving voters and lets them elect, losing
+  what only the old leader held.
+- An idle group owes nothing, so a leader that crashes with no write waiting
+  for its commit fails over as today.
+
+**Re-forming from the kept leader.** Reclaiming a rotated leader's kept log is
+a re-form from that copy. `felixctl raft reform plan` already reads kept
+copies and starts from the furthest, marked as losing records because the
+rotated copy's votes are unknown. Doing it without the operator, as the hybrid
+did, contradicts the decision on #2167 (no automatic re-form) and needs that
+decision revisited for this one case: every voter answered, each holds the
+allowance naming the rotated copy, and each is behind the kept log.
+
+**What it costs.** A `Leader` stream that is writing when its leader dies
+waits for that leader or an operator instead of failing over, which is the
+point. The first write after an idle spell waits one round for an allowance,
+like a `Quorum` write. A follower writes its allowance about once per budget,
+not per batch.
+
+**The model.** `FelixRaftLease.tla` checks `AckedSurvive` only for writes
+answered at the commit. It needs an allowance per leader, the vote rule, an
+invariant that a write answered on the lease is in the log of every later
+leader, a configuration without the vote rule that finds a lease-answered
+write lost, and a reach configuration where an idle group's followers elect
+after the leader dies. The kept-log re-form belongs in `FelixRaftReform.tla`.
+
 ### Reads
 
 `read_bound` is the commit index plus one, for every stream and every
