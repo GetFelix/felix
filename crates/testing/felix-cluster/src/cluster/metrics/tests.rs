@@ -232,3 +232,28 @@ fn a_raft_liveness_check_reads_the_followers_after_the_leader() {
     );
     assert_eq!(raft_leader_caught_up(&first, &then), Ok("c".to_string()));
 }
+
+#[test]
+fn a_raft_leader_placement_named_serves_at_once() {
+    let mut settle = LeaderSettle::default();
+    assert!(settle.settled("b2", Some("b2"), Instant::now(), Duration::from_secs(2)));
+}
+
+#[test]
+fn a_raft_leader_placement_did_not_name_serves_only_once_it_keeps_leading() {
+    let settles = Duration::from_secs(2);
+    let start = Instant::now();
+    let mut settle = LeaderSettle::default();
+    // The broker that formed the group, before the group-start transfer.
+    assert!(!settle.settled("b0", Some("b2"), start, settles));
+    assert!(!settle.settled("b0", Some("b2"), start + Duration::from_secs(1), settles));
+    // A different leader starts the wait again.
+    assert!(!settle.settled(
+        "b1",
+        Some("b2"),
+        start + Duration::from_millis(1500),
+        settles
+    ));
+    assert!(!settle.settled("b1", None, start + Duration::from_secs(3), settles));
+    assert!(settle.settled("b1", None, start + Duration::from_millis(3500), settles));
+}

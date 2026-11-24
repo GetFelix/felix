@@ -270,22 +270,28 @@ impl Engine {
         }
     }
 
+    /// Whether the brokers run Raft groups: a hybrid test runs on Raft when
+    /// the suite does.
+    fn raft(self) -> bool {
+        self == Engine::Raft || felix_cluster::suite_runs_on_raft()
+    }
+
     /// The broker leading the shard among `among`.
     async fn leader(self, cluster: &Cluster, among: &[String]) -> String {
-        match self {
-            Engine::Hybrid => cluster
+        match self.raft() {
+            false => cluster
                 .serving_leader(STREAM, Duration::from_secs(30))
                 .await
                 .expect("serving leader"),
-            Engine::Raft => super::raft::leader_among(cluster, among).await,
+            true => super::raft::leader_among(cluster, among).await,
         }
     }
 
     /// The leader once none of `gone` is.
     async fn next_leader(self, cluster: &Cluster, gone: &str, live: &[String]) -> String {
-        match self {
-            Engine::Hybrid => new_owner(cluster, &[gone]).await,
-            Engine::Raft => super::raft::leader_among(cluster, live).await,
+        match self.raft() {
+            false => new_owner(cluster, &[gone]).await,
+            true => super::raft::leader_among(cluster, live).await,
         }
     }
 }

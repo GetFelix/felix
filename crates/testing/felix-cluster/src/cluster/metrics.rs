@@ -109,11 +109,30 @@ impl Cluster {
     /// leader but cannot make the group elect it. After a failover the group
     /// keeps its elected leader while a voter is down, so the two can differ
     /// until the dead broker is back, and only the elected one serves.
+    ///
+    /// The broker that forms a Raft group leads it only until the group-start
+    /// transfer hands leadership to placement's leader, so an elected leader
+    /// that is not placement's is taken only once it has kept leading for a
+    /// moment. Past the timeout the elected leader is returned as it stands.
     pub async fn serving_leader(&self, stream: &str, timeout: Duration) -> Result<String> {
-        if self.config.raft_brokers() {
-            return self.wait_for_raft_leader(stream, timeout).await;
+        if !self.config.raft_brokers() {
+            return self.owner(stream).await;
         }
-        self.owner(stream).await
+        let deadline = Instant::now() + wait::budget(timeout);
+        let settles = RAFT_LEADER_SETTLES.min(timeout / 2);
+        let mut settle = LeaderSettle::default();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let leader = self
+                .wait_for_raft_leader(stream, left.max(Duration::from_millis(100)))
+                .await?;
+            let owner = self.owner(stream).await.ok();
+            let now = Instant::now();
+            if settle.settled(&leader, owner.as_deref(), now, settles) || now >= deadline {
+                return Ok(leader);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// [`Self::serving_leader`] for shard 0 of `cache`: placement's owner,
@@ -439,6 +458,39 @@ fn raft_leader_holding(
             "{leader} leads at {tail}, held by {holding} of {} voting members {voters:?}: {then:?}",
             voters.len()
         ))
+    }
+}
+
+/// How long a Raft leader placement did not name must keep leading before
+/// [`Cluster::serving_leader`] takes it.
+const RAFT_LEADER_SETTLES: Duration = Duration::from_secs(2);
+
+/// Whether an elected Raft leader is the one that will go on serving: it is
+/// placement's leader, or it has led without a break for `settles`.
+#[derive(Debug, Default)]
+struct LeaderSettle {
+    since: Option<(String, Instant)>,
+}
+
+impl LeaderSettle {
+    fn settled(
+        &mut self,
+        leader: &str,
+        owner: Option<&str>,
+        now: Instant,
+        settles: Duration,
+    ) -> bool {
+        if owner == Some(leader) {
+            return true;
+        }
+        let since = match &self.since {
+            Some((held, at)) if held == leader => *at,
+            _ => {
+                self.since = Some((leader.to_string(), now));
+                now
+            }
+        };
+        now.duration_since(since) >= settles
     }
 }
 
