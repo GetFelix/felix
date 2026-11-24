@@ -46,8 +46,9 @@ fn on_commit(streams: Vec<StreamSpec>) -> ClusterConfig {
 }
 
 /// Publish through `node` and expect a refusal typed `code` and `retry`. On
-/// Raft any refusal that leaves the outcome unknown or names another leader:
-/// the entry may still land, so no code may promise it did not.
+/// Raft any refusal that leaves the outcome unknown or names another leader,
+/// since the entry may still land, or a plain retry from a core still held on
+/// an earlier append, which proposed nothing.
 async fn expect_refused(
     cluster: &Cluster,
     node: &str,
@@ -66,7 +67,7 @@ async fn expect_refused(
             matches!(
                 typed.retry,
                 RetryClass::OutcomeUnknown | RetryClass::Redirect
-            ),
+            ) || (typed.code == ErrorCode::ShardUnavailable && typed.retry == RetryClass::Retry),
             "refusal of {payload}: {typed:?}"
         );
         return;
@@ -268,8 +269,15 @@ async fn a_single_failed_write_does_not_stop_the_log() {
         .publish_via(&owner, STREAM, b"after".to_vec())
         .await
         .expect("the write after a one-off failure is acknowledged");
+    // An acknowledged "refused" is held like any record, so it must not
+    // also be filtered out as a refusal.
+    let refused: &[&str] = if acked.contains(&"refused") {
+        &[]
+    } else {
+        &["refused"]
+    };
     acked.push("after");
-    assert_holds(&replay(&cluster, &owner).await, &acked, &["refused"]);
+    assert_holds(&replay(&cluster, &owner).await, &acked, refused);
     cluster.shutdown().await;
 }
 
