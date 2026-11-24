@@ -210,6 +210,9 @@ struct Shared<K> {
     /// Told when each vote save begins and ends, once
     /// [`RaftLog::time_vote_saves`] set it.
     vote_timer: std::sync::OnceLock<Arc<dyn VoteTimer>>,
+    /// Set by [`RaftLog::stop_retrying`]: a write the disk refuses fails at
+    /// once instead of waiting for the disk.
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 
 /// Told when each vote save begins and how long it took, its wait for the
@@ -372,6 +375,7 @@ where
                 trim_marked: std::sync::atomic::AtomicBool::new(false),
                 headers_marked: std::sync::atomic::AtomicBool::new(false),
                 vote_timer: std::sync::OnceLock::new(),
+                stopping: tokio::sync::watch::Sender::new(false),
             }),
             types: std::marker::PhantomData,
         })
@@ -458,6 +462,13 @@ where
     {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || shared.first_index())
+    }
+
+    /// Stop holding writes the disk refused: one waiting for the disk now
+    /// fails with the disk's error, and so does any later one. Call before
+    /// stopping the member, whose stop otherwise waits out the retry.
+    pub fn stop_retrying(&self) {
+        self.shared.stopping.send_replace(true);
     }
 
     /// Wait until every append's callback has fired, syncing the log first

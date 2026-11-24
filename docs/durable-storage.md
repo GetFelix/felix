@@ -763,8 +763,10 @@ Four properties:
    the entry is not reported written and the member answers nobody, so it
    counts toward no majority. The publisher gets an outcome-unknown error
    once its wait runs out, and the entry may still land once the disk takes
-   it. A failure that poisons the log, or one that lasts past the minute,
-   goes to openraft and stops the member.
+   it. A failure that poisons the log (a failed rewind among them), or one
+   that lasts past the minute, goes to openraft and stops the member. A member
+   being shut down or moved gives up the held append at once, so its stop
+   does not wait out a full disk.
 
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start

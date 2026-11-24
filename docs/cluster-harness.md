@@ -430,6 +430,7 @@ makes, whether the broker leads the log or follows it:
 write=enospc         # every segment write fails with ENOSPC; or eio
 write=eio_once       # the next segment write fails with EIO, later ones succeed
 write_generation=1   # a new value arms eio_once again
+rewind=fail          # the rewind after a failed write fails too, poisoning the log
 write_delay_ms=200   # each segment write waits first, like a throttled write()
 ```
 
