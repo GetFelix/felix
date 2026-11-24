@@ -126,7 +126,12 @@ impl Cluster {
             let leader = self
                 .wait_for_raft_leader(stream, left.max(Duration::from_millis(100)))
                 .await?;
-            let owner = self.owner(stream).await.ok();
+            // A test may take the control plane down; then no placement
+            // names a leader, and the elected one must hold for `settles`.
+            let owner = match self.control_plane {
+                Some(_) => self.owner(stream).await.ok(),
+                None => None,
+            };
             let now = Instant::now();
             if settle.settled(&leader, owner.as_deref(), now, settles) || now >= deadline {
                 return Ok(leader);
