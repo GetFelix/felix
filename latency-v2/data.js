@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795483535876,
+  "lastUpdate": 1795485555608,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -85602,6 +85602,72 @@ window.BENCHMARK_DATA = {
             "range": "238.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 300.00\nmean: 431.00\nstdev: 238.94\ncv: 55.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de5f293fc6d11bfd074a4ddeacdf2d5639517fe1",
+          "message": "fix(client): a sharded subscription recovers when its entry broker dies (#3061) (#3076)\n\nEvery shard feed can be opened on the cluster client's entry connection.\nWhen that broker died, each shard's reconnect loop asked the entry\nconnection again and never got anywhere. The loop now goes through\nreopen_after_loss, the same path ClusterSubscription uses, so the client\nmoves to another known broker and each shard resubscribes there,\nfollowing redirects and resuming at the #3063 offset.\n\nSpec-Unaffected: client-side reconnect routing; no broker or replication state machine change",
+          "timestamp": "2026-11-23T17:51:38-08:00",
+          "tree_id": "1e33afaf8afb37521979142c9e25f5618dd41cf0",
+          "url": "https://github.com/GetFelix/felix/commit/de5f293fc6d11bfd074a4ddeacdf2d5639517fe1"
+        },
+        "date": 1795485538161,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 61.80\nstdev: 0.45\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 85,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.20\nstdev: 1.64\ncv: 1.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 111,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 112.20\nstdev: 3.27\ncv: 2.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 80.60\nstdev: 0.89\ncv: 1.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "220.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 273.60\nstdev: 220.91\ncv: 80.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 373,
+            "range": "1053.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 373.00\nmean: 816.60\nstdev: 1053.80\ncv: 129.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
