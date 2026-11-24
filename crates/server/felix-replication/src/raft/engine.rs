@@ -352,6 +352,12 @@ impl RaftEngine {
         self.runtime.status(shard)
     }
 
+    /// Replication to every other member of `shard`'s group, while this
+    /// broker's member leads it.
+    pub fn followers(&self, shard: &ShardKey) -> Option<Vec<super::FollowerProgress>> {
+        self.runtime.followers(shard)
+    }
+
     /// The members that vote in `shard`'s group, by the latest membership
     /// this broker's member holds. `None` without a member.
     pub fn voters(&self, shard: &ShardKey) -> Option<std::collections::BTreeSet<super::MemberId>> {
