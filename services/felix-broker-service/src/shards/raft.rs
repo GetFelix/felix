@@ -43,6 +43,7 @@ pub(crate) mod copy_id;
 pub(crate) mod floor;
 mod groups;
 pub(crate) mod reform_survey;
+mod restart;
 pub(crate) use groups::Groups as RaftGroups;
 
 /// How long a leader that could not move its stream to the committed tail
@@ -84,9 +85,10 @@ pub(crate) struct RaftShards {
     /// Set when a member's log failed to close: its last sync may not have
     /// run, so the broker must not record a clean stop.
     close_failed: std::sync::atomic::AtomicBool,
-    /// Every Raft shard in the feed and the broker its placement names as
-    /// leader: where a request goes while no member is open here.
-    placed: parking_lot::Mutex<HashMap<ShardKey, String>>,
+    /// Every Raft shard in the feed: the broker its placement names as
+    /// leader and the voters its leader last reported. Where a request goes
+    /// while no member here knows the leader.
+    placed: parking_lot::Mutex<HashMap<ShardKey, Placed>>,
     /// Shards whose other members are being asked whether a group reached
     /// them.
     forming: parking_lot::Mutex<HashSet<ShardKey>>,
@@ -115,6 +117,8 @@ pub(crate) struct RaftShards {
     carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Limits the warning for a shard whose open waits on the open-file limit.
     held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
+    /// Members closed after their core stopped on a storage error.
+    restarts: parking_lot::Mutex<restart::Restarts>,
     /// This broker's part of each applied re-form plan, from the latest
     /// `start` survey, keyed by shard with the incarnation and the epoch it
     /// starts. The feed pass starts a stopped copy from it.
@@ -293,6 +297,7 @@ impl RaftShards {
             carried_over: parking_lot::Mutex::default(),
             short_warned: parking_lot::Mutex::default(),
             held_warn: parking_lot::Mutex::default(),
+            restarts: parking_lot::Mutex::default(),
             reform_starts: Arc::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
@@ -957,28 +962,44 @@ impl RaftShards {
         }
     }
 
-    /// The route for a Raft shard with no member open here. Its placement's
-    /// leader holds a member, and answers with the group's leader when that
-    /// is another broker. `None` for a shard the feed has not placed on Raft.
+    /// [`Self::close_member`], and for a stream shard its stream too, which
+    /// ends its readers; a later open starts from the log again.
+    async fn close_with_stream(&self, key: &ShardKey, member: Member) {
+        self.close_member(key, member).await;
+        if key.kind == ShardKind::Cache {
+            return;
+        }
+        if let Err(err) = self
+            .broker
+            .close_stream_shard(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
+            .await
+        {
+            tracing::warn!(shard = ?key, error = %err, "could not close a Raft shard's stream");
+        }
+    }
+
+    /// The route for a Raft shard with no member open here, or with one
+    /// that knows no leader and is not a reported voter (a learner joining).
+    /// `None` for a shard the feed has not placed on Raft.
     fn dispatch_without_member(
         &self,
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch> {
-        let leader = self.placed.lock().get(key).cloned()?;
-        // Placed here: the member is still opening, or its open failed and
-        // the next feed pass tries again.
-        if leader.is_empty() || leader == self.local {
+        let placed = self.placed.lock().get(key).cloned()?;
+        // Placed here and a voter: the member is still opening, or its open
+        // failed and the next feed pass tries again.
+        let Some(to) = placed.route(&self.local) else {
             return Some(Dispatch::Unavailable(Reason::NotReady));
-        }
-        Some(match nodes(&leader) {
+        };
+        Some(match nodes(to) {
             Some(advertise_addr) => Dispatch::Forward {
-                node_id: leader,
+                node_id: to.to_string(),
                 advertise_addr,
                 generation: 0,
                 incarnation: 0,
             },
-            None => Dispatch::Unavailable(Reason::OwnerUnavailable(leader)),
+            None => Dispatch::Unavailable(Reason::OwnerUnavailable(to.to_string())),
         })
     }
 
@@ -1152,6 +1173,54 @@ fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>
     (blank, current)
 }
 
+/// Where requests for a Raft shard go while no member here knows its
+/// leader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Placed {
+    /// The broker placement names leader.
+    pub(crate) leader: String,
+    /// The brokers holding the voters the group's leader last reported for
+    /// the shard's incarnation and epoch. Empty before any report.
+    pub(crate) voters: BTreeSet<String>,
+}
+
+impl Placed {
+    fn of(assignment: &ShardAssignment) -> Self {
+        let voters = assignment
+            .raft_voters
+            .as_ref()
+            .filter(|voters| {
+                voters.incarnation == assignment.incarnation
+                    && voters.epoch == assignment.group_epoch()
+            })
+            .map(|voters| voters.members.keys().cloned().collect())
+            .unwrap_or_default();
+        Self {
+            leader: assignment.leader.clone(),
+            voters,
+        }
+    }
+
+    /// The broker to forward to from `local`, or `None` to answer not ready.
+    ///
+    /// Placement's leader while it holds a voter. During a move outside the
+    /// set placement names the destination before the group has added it,
+    /// and the destination answers not ready until it hears the leader
+    /// (#3011), so the request goes to a reported voter, which knows the
+    /// leader. A voter placed here whose member is not open yet answers not
+    /// ready, as it is the one that will serve.
+    pub(crate) fn route(&self, local: &str) -> Option<&str> {
+        let leader = Some(self.leader.as_str()).filter(|leader| !leader.is_empty());
+        let others = || self.voters.iter().map(String::as_str).find(|v| *v != local);
+        match leader {
+            _ if self.voters.is_empty() => leader.filter(|leader| *leader != local),
+            Some(leader) if leader != local && self.voters.contains(leader) => Some(leader),
+            _ if self.voters.contains(local) && leader.is_none_or(|leader| leader == local) => None,
+            _ => others().or(leader.filter(|leader| *leader != local)),
+        }
+    }
+}
+
 /// The brokers placement names for a shard, lowest id first.
 fn brokers_of(assignment: &ShardAssignment) -> BTreeSet<&str> {
     std::iter::once(&assignment.leader)
@@ -1237,7 +1306,7 @@ impl EngineShards for RaftShards {
                     continue;
                 };
                 taken.push((key.clone(), assignment.routing));
-                placed.insert(key.clone(), assignment.leader.clone());
+                placed.insert(key.clone(), Placed::of(&assignment));
                 // Over the count is an RF 1 shard mid-move: its group already
                 // formed, and the destination must report its copy to join.
                 let full = wanted
@@ -1284,25 +1353,25 @@ impl EngineShards for RaftShards {
                 let Some(member) = open.remove(&key) else {
                     continue;
                 };
-                self.close_member(&key, member).await;
-                if key.kind == ShardKind::Cache {
-                    continue;
-                }
-                // Ends the readers; a later open starts from the log again.
-                if let Err(err) = self
-                    .broker
-                    .close_stream_shard(
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        None,
-                    )
-                    .await
-                {
-                    tracing::warn!(shard = ?key, error = %err, "could not close a Raft shard's stream");
-                }
+                self.close_with_stream(&key, member).await;
             }
+            // openraft never restarts a core that stopped on a storage
+            // error, and the member answers nothing until it is opened
+            // again. It is closed here and opened below, from disk as after
+            // a crash, once the disk takes writes.
+            let failed: Vec<(ShardKey, String)> = open
+                .keys()
+                .filter_map(|key| Some((key.clone(), self.runtime.storage_failure(key)?)))
+                .collect();
+            for (key, why) in failed {
+                let Some(member) = open.remove(&key) else {
+                    continue;
+                };
+                tracing::warn!(shard = ?key, error = %why, "a Raft member stopped on a storage error; it opens again from disk once the disk takes writes");
+                self.restarts.lock().stopped(&key);
+                self.close_with_stream(&key, member).await;
+            }
+            self.restarts.lock().retain(|key| fed.contains_key(key));
             self.runtime.retain_admitted(|key| fed.contains_key(key));
             *self.unplaced.lock() = fed
                 .iter()
@@ -1313,6 +1382,9 @@ impl EngineShards for RaftShards {
                 .collect();
             let mut off_placement = 0_u32;
             let mut short: Vec<ShortShard> = Vec::new();
+            // One probe per pass: every shard shares the root, and each heal
+            // costs a write, an fsync and a directory sync.
+            let mut healed: Option<Result<(), String>> = None;
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
                 let held = || ShortShard {
@@ -1342,10 +1414,37 @@ impl EngineShards for RaftShards {
                         }
                         continue;
                     }
+                    if !self.restarts.lock().due(key) {
+                        if keep {
+                            short.push(held());
+                        }
+                        continue;
+                    }
+                    // A failed mark log stops every member on the root, and
+                    // a fresh one cannot open on it either.
+                    if (self.restarts.lock().restarting(key) || root.mark_log().failure().is_some())
+                        && let Err(err) = match &healed {
+                            Some(done) => done.clone(),
+                            None => {
+                                let done = root.heal().await.map_err(|err| err.to_string());
+                                healed = Some(done.clone());
+                                done
+                            }
+                        }
+                    {
+                        if self.held_warn.lock().due(key) {
+                            tracing::warn!(shard = ?key, error = %err, "a Raft member waits for its disk to take writes again before it opens");
+                        }
+                        if keep {
+                            short.push(held());
+                        }
+                        continue;
+                    }
                     match self.open_member(key, assignment, root).await {
                         Ok(member) => {
                             self.carried_over.lock().remove(key);
                             self.held_warn.lock().clear(key);
+                            self.restarts.lock().reopened(key);
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.
@@ -1556,11 +1655,23 @@ impl EngineShards for RaftShards {
         };
         // The hint, not the heard leader: a restarted follower forwards at
         // once, and a forward to a leader that is gone fails and is retried.
+        let heard = status.leader_hint.is_some();
         let leader = status
             .leader_hint
             .filter(|leader| *leader.broker != *self.local)
             .map(|leader| leader.broker);
         Some(match leader {
+            // A copy the group has not made a voter yet learns the leader
+            // only from its first append: a reported voter knows it. A member
+            // that heard itself elected is not that copy: forwarding would
+            // bounce back until its term opens.
+            None if !heard
+                && self.placed.lock().get(key).is_some_and(|placed| {
+                    !placed.voters.is_empty() && !placed.voters.contains(&*self.local)
+                }) =>
+            {
+                return self.dispatch_without_member(key, nodes);
+            }
             // Electing, or elected here and still moving to the tail.
             None => Dispatch::Unavailable(Reason::NotReady),
             Some(leader) => match nodes(&leader) {

@@ -162,12 +162,6 @@ async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
 #[serial]
 #[tokio::test]
 async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
-    if felix_cluster::skip_on_raft_until(
-        3104,
-        "a member stopped by a failed disk write does not reopen once the disk heals",
-    ) {
-        return;
-    }
     let mut cluster = Cluster::start(on_commit(vec![StreamSpec::new(STREAM, 1)]))
         .await
         .expect("start");
@@ -203,10 +197,20 @@ async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
     .await;
 
     cluster.heal(&fault).await.expect("heal");
-    cluster
-        .publish_via(&owner, STREAM, b"after".to_vec())
-        .await
-        .expect("a failed write does not stop the log, so a healed disk takes appends again");
+    // On Raft a refused write is held and retried with a backoff, so the
+    // first publish after the heal may be told to retry while it lands.
+    felix_cluster::wait::until(
+        Duration::from_secs(15),
+        "a healed disk takes appends again",
+        || async {
+            cluster
+                .publish_via(&owner, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("a failed write does not stop the log, so a healed disk takes appends again");
     let refused = ["disk-full-1", "disk-full-2"];
     let held = replay(&cluster, &owner).await;
     assert_holds(&held, &["before", "after"], &refused);
@@ -293,12 +297,6 @@ async fn a_single_failed_write_does_not_stop_the_log() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_leader_whose_write_fails_does_not_ack() {
-    if felix_cluster::skip_on_raft_until(
-        3104,
-        "a member stopped by a failed disk write does not reopen once the disk heals",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(on_commit(vec![StreamSpec::quorum(STREAM, 1, 3)]))
         .await
         .expect("start");
@@ -343,12 +341,6 @@ async fn a_quorum_leader_whose_write_fails_does_not_ack() {
 #[serial]
 #[tokio::test]
 async fn a_follower_whose_write_fails_does_not_count_toward_the_majority() {
-    if felix_cluster::skip_on_raft_until(
-        3104,
-        "a member stopped by a failed disk write does not reopen once the disk heals",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(on_commit(vec![StreamSpec::quorum(STREAM, 1, 3)]))
         .await
         .expect("start");

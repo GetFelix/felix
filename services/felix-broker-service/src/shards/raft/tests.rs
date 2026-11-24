@@ -1942,6 +1942,81 @@ async fn a_publish_on_a_raft_shard_commits_through_its_group() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **A member whose core stopped on a storage error opens again once the
+/// disk heals**, from disk as after a crash, and serves what it held. A
+/// pass while the disk still refuses writes closes it and opens nothing.
+#[tokio::test]
+async fn a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals() {
+    use crate::serving::direct_publish::publish_direct;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let engine = engine(&shards);
+    let orders = key("orders", 0);
+    let mut all = assignments([assigned(orders.clone(), INCARNATION)]);
+    shards.take(&mut all).await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let timeout = Duration::from_secs(10);
+    let publish = |payload: &'static [u8]| {
+        let (broker, engine, orders, shards) = (&broker, &engine, &orders, &shards);
+        async move {
+            let term = shards.leading(orders)?;
+            let handle = broker
+                .resolve_stream_handle("t1", "ns", "orders", 0)
+                .await
+                .ok()?;
+            publish_direct(
+                broker,
+                None,
+                engine,
+                target(handle, orders, term),
+                &[bytes::Bytes::from_static(payload)],
+                None,
+                timeout,
+            )
+            .await
+            .ok()
+            .flatten()
+        }
+    };
+    let first = publish(b"before").await.expect("published");
+
+    let marks = shards.root.get().expect("root").mark_log().clone();
+    marks.fail_writes(true);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while shards.runtime.storage_failure(&orders).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the member never stopped"
+        );
+        let _ = publish(b"refused").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    take_again(&shards, &orders).await;
+    assert!(
+        !shards.runtime.holds(&orders),
+        "a member opened on a disk that refuses writes"
+    );
+
+    marks.fail_writes(false);
+    take_again(&shards, &orders).await;
+    until("the reopened member serves", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+    let after = publish(b"after").await.expect("published after healing");
+    assert!(after > first);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// Run a pass with `key` assigned.
+async fn take_again(shards: &Arc<RaftShards>, key: &ShardKey) {
+    let mut all = assignments([assigned(key.clone(), INCARNATION)]);
+    shards.take(&mut all).await;
+}
+
 /// **Stopping the broker stops every member and closes its log**, so the
 /// storage flush that follows is not racing a group still writing.
 #[tokio::test]
@@ -2598,10 +2673,13 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .placed
-        .lock()
-        .insert(orders.clone(), "broker-a".to_string());
+    shards.placed.lock().insert(
+        orders.clone(),
+        Placed {
+            leader: "broker-a".to_string(),
+            voters: Default::default(),
+        },
+    );
 
     assert_eq!(
         route(&shards, &orders),
@@ -2621,10 +2699,13 @@ async fn an_mqtt_reader_of_a_leaderless_raft_member_waits() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .placed
-        .lock()
-        .insert(orders.clone(), "broker-a".to_string());
+    shards.placed.lock().insert(
+        orders.clone(),
+        Placed {
+            leader: "broker-a".to_string(),
+            voters: Default::default(),
+        },
+    );
     let reads = crate::serving::mqtt::BrokerReads::new(Arc::clone(&broker), Some(ingress(&shards)));
 
     assert_eq!(
@@ -3306,6 +3387,7 @@ mod reform;
 mod restore;
 mod retarget;
 mod retention;
+mod seat_move;
 mod short_placement;
 mod trim;
 

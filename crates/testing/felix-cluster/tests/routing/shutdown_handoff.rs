@@ -461,6 +461,99 @@ async fn a_restarted_broker_takes_shards_again() {
     cluster.shutdown().await;
 }
 
+/// **A broker drained out of every Raft set leads again after a restart
+/// (#3113).** The drain swaps its follower copies for the other brokers', so
+/// no group holds it when it comes back and its old copies are outsiders.
+/// Balance must give it a seat, and the group must admit it and hand it the
+/// leadership, not only name it in placement.
+#[serial]
+#[tokio::test]
+async fn a_broker_drained_out_of_every_set_leads_again_after_a_restart() {
+    if !felix_cluster::suite_runs_on_raft() {
+        return;
+    }
+    const SHARDS: u32 = 3;
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::replicated(STREAM, SHARDS, 2)],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let owners = cluster.shard_owners_for(STREAM).await.expect("owners");
+    let stopping = owners.values().next().expect("a leader").clone();
+    let others: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|node| *node != stopping)
+        .collect();
+
+    cluster.drain_node(&stopping).await.expect("drain");
+    felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "every group to drop the draining broker",
+        || async {
+            cluster.place_shards().await;
+            for shard in 0..SHARDS {
+                let targeted = cluster
+                    .raft_target(STREAM, shard)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|target| !target.contains_key(&stopping));
+                if !targeted {
+                    return false;
+                }
+                for node in &others {
+                    let applied = cluster
+                        .raft_member_of(node, STREAM, shard)
+                        .await
+                        .is_some_and(|member| {
+                            !member.voters.is_empty() && !member.voters.contains(&stopping)
+                        });
+                    if !applied {
+                        return false;
+                    }
+                }
+            }
+            true
+        },
+    )
+    .await
+    .expect("drained out of every set");
+
+    cluster.terminate_node(&stopping).expect("SIGTERM");
+    cluster
+        .wait_for_exit(&stopping, EXIT_WITHIN)
+        .await
+        .expect("exit");
+    cluster.restart_node(&stopping).await.expect("restart");
+    felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "the restarted broker's member to lead a shard",
+        || async {
+            cluster.place_shards().await;
+            let Ok(owners) = cluster.shard_owners_for(STREAM).await else {
+                return false;
+            };
+            for (shard, owner) in owners {
+                if owner == stopping
+                    && cluster
+                        .raft_member_of(&stopping, STREAM, shard)
+                        .await
+                        .is_some_and(|member| member.role == "leader")
+                {
+                    return true;
+                }
+            }
+            false
+        },
+    )
+    .await
+    .expect("a group admitted the restarted broker and it leads");
+    cluster.shutdown().await;
+}
+
 /// **A lone broker does not wait for a handoff that cannot happen.** With
 /// nobody to take its shard it stops as promptly as before.
 #[serial]

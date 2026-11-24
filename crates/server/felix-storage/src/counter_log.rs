@@ -49,6 +49,8 @@ pub struct CounterStore {
     /// Which incarnation of each cache's counters to open, as the cache's.
     incarnations: crate::incarnation::Incarnations,
     dirs: Arc<crate::incarnation::DirIndex>,
+    /// Set by [`Self::leave_to_engines`].
+    engines_only: std::sync::atomic::AtomicBool,
 }
 
 impl CounterStore {
@@ -69,7 +71,15 @@ impl CounterStore {
             compactor: Arc::new(Compactor::from_env()),
             incarnations: Default::default(),
             dirs: Default::default(),
+            engines_only: Default::default(),
         })
+    }
+
+    /// Refuse to open any counter log from here on: a shard engine (Raft)
+    /// keeps every cache shard's counters in its own log on this broker.
+    pub fn leave_to_engines(&self) {
+        self.engines_only
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Apply a signed delta and report the new sum and the record's offset.
@@ -397,7 +407,9 @@ impl CounterStore {
                 let key = key();
                 // Again under the slot's lock, so an open racing a delete
                 // cannot recreate the directory the delete moved away.
-                if self.incarnations.resolve(tenant_id, namespace, scope) != Some(incarnation) {
+                if self.incarnations.resolve(tenant_id, namespace, scope) != Some(incarnation)
+                    || self.engines_only.load(std::sync::atomic::Ordering::Acquire)
+                {
                     return Err(StorageError::Closed(layout::shard_label(&key)));
                 }
                 let dir = layout::incarnation_dir(&self.root, &key, incarnation);
