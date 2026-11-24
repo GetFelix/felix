@@ -123,6 +123,8 @@ async fn an_in_memory_shard_whose_owner_dies_restarts_empty_at_a_new_generation(
         felix_cluster::wait::until_some(PLACED_WITHIN, "the shard to be placed again", || {
             let (cluster, owner) = (&cluster, &owner);
             async move {
+                // The harness runs no reconciler on a timer: the test steps it.
+                cluster.place_shards().await;
                 let now = assignment(cluster).await;
                 (now.leader != *owner).then_some(now)
             }
