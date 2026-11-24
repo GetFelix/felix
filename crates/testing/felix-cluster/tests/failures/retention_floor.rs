@@ -37,16 +37,17 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     })
     .await
     .expect("start cluster");
-    let key = format!("{}/{}/{STREAM}/0", cluster.tenant_id, cluster.namespace);
-    let placed = cluster
-        .shard_assignments()
+    // On Raft the member the group elected serves, not the one placement named.
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
         .await
-        .expect("assignments")
-        .remove(&key)
-        .expect("the stream is placed");
-    let leader = placed.leader.clone();
-    let followers = placed.replicas.clone();
-    assert_eq!(followers.len(), 2, "{placed:?}");
+        .expect("leader");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != leader)
+        .collect();
+    assert_eq!(followers.len(), 2, "{followers:?}");
 
     // The harness publishes a probe of its own first, so the log's start is
     // read from offsets rather than payloads.
@@ -64,20 +65,31 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     // The leader's tail once both followers hold every early record. A report
     // can lag the last ack, so the tail must also be past the last early
     // offset, or the first waiting record could not be told apart.
-    let settled_tail = felix_cluster::wait::until_some(
-        Duration::from_secs(20),
-        "both followers at the leader's tail",
-        || async {
-            let report = cluster.replica_report(STREAM, 0).await.ok().flatten()?;
-            let tail = report.leader_offset.filter(|tail| *tail > last_early)?;
-            followers
-                .iter()
-                .all(|f| report.offsets.get(f) == Some(&tail))
-                .then_some(tail)
-        },
-    )
-    .await
-    .expect("both followers hold the early records");
+    let raft = felix_cluster::suite_runs_on_raft();
+    if raft {
+        cluster
+            .wait_for_replication(STREAM, Duration::from_secs(20))
+            .await
+            .expect("both followers hold the early records");
+    }
+    let settled_tail = if raft {
+        last_early
+    } else {
+        felix_cluster::wait::until_some(
+            Duration::from_secs(20),
+            "both followers at the leader's tail",
+            || async {
+                let report = cluster.replica_report(STREAM, 0).await.ok().flatten()?;
+                let tail = report.leader_offset.filter(|tail| *tail > last_early)?;
+                followers
+                    .iter()
+                    .all(|f| report.offsets.get(f) == Some(&tail))
+                    .then_some(tail)
+            },
+        )
+        .await
+        .expect("both followers hold the early records")
+    };
 
     for follower in &followers {
         cluster.stop_node(follower).await.expect("stop a follower");
@@ -91,7 +103,10 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     let filler = "x".repeat(1024);
     let mut waiting = tokio::task::JoinSet::new();
     for (i, client) in clients.into_iter().enumerate() {
-        if i == 1 {
+        if i == 1 && raft {
+            // A Raft leader reports no tail; give the first record time to land.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        } else if i == 1 {
             // The first waiting record lands alone, in the segment that holds
             // the early ones. Arriving together, the rest can start a new
             // segment there, leaving one wholly below the commit offset that

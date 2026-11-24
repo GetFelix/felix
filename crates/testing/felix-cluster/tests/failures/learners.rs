@@ -58,6 +58,11 @@ async fn acknowledged(cluster: &Cluster, node: &str, payload: &str) -> bool {
 #[serial]
 #[tokio::test]
 async fn a_wiped_follower_counts_only_once_it_holds_the_start() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid learners and the start record; a Raft member that lost its log is caught up by the leader before it votes in a majority",
+    ) {
+        return;
+    }
     let mut cluster = start().await;
     let leader = cluster.owner(STREAM).await.expect("owner");
     for i in 0..RECORDS {

@@ -65,6 +65,11 @@ async fn replication(cluster: &Cluster) -> serde_json::Value {
 #[serial]
 #[tokio::test]
 async fn a_halted_follower_is_shown_and_replaced() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid halts a follower it can no longer ship to and lists it; a Raft follower behind the log start is sent a snapshot instead",
+    ) {
+        return;
+    }
     let mut cluster = start().await;
     let key = format!("{}/{}/{STREAM}/0", cluster.tenant_id, cluster.namespace);
     let before = cluster

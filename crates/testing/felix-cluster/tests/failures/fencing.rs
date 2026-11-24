@@ -346,6 +346,11 @@ async fn records_survive_repeated_failovers() {
 #[serial]
 #[tokio::test]
 async fn a_second_failover_counts_a_follower_its_predecessor_never_reached() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the control plane's replica report names followers by storage identity; a Raft group counts members by its own log, and records_survive_repeated_failovers covers two failovers on Raft",
+    ) {
+        return;
+    }
     let mut cluster = Cluster::start(quorum_cluster(5, 5))
         .await
         .expect("start cluster");

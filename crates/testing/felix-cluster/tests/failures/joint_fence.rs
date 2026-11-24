@@ -80,6 +80,11 @@ async fn level_at(cluster: &Cluster, leader: &str, followers: &[String], generat
 #[serial]
 #[tokio::test]
 async fn a_two_member_swap_waits_for_the_old_majority() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid joint fences; Raft joint consensus needs both majorities by construction",
+    ) {
+        return;
+    }
     let mut cluster = start().await;
     // A set is kept from generation 1 on (0 is no set), and a set never kept
     // is one nobody can stand on. Write the same set again so the leader
@@ -322,6 +327,12 @@ async fn a_rolling_restart_after_joint_fence_is_finalized_serves_every_shard() {
             )
             .await;
         }
+    }
+    // Only a hybrid leader keeps a set it must report unknown; a Raft group
+    // restarts from its own log, so serving after every restart is the check.
+    if felix_cluster::suite_runs_on_raft() {
+        cluster.shutdown().await;
+        return;
     }
     // Each node restarted once, so each counter covers everything since its
     // own restart.

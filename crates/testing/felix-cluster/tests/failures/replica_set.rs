@@ -126,6 +126,11 @@ fn pool_as(cluster: &Cluster, node_id: &str) -> Arc<PeerPool> {
 #[serial]
 #[tokio::test]
 async fn a_replica_that_left_the_set_cannot_win_a_fence() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the hybrid election fence and StaleSet; Raft refuses a removed member's vote by membership",
+    ) {
+        return;
+    }
     let mut cluster = start().await;
     let before = assignment(&cluster).await;
     let leader = before.leader.clone();
