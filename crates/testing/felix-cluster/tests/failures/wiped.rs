@@ -93,6 +93,14 @@ enum Stop {
     Wipe,
 }
 
+impl Stop {
+    /// Whether the follower comes back as the copy it was, so on Raft it is
+    /// still a voter.
+    fn keeps_its_copy(self) -> bool {
+        matches!(self, Self::Clean | Self::Kill)
+    }
+}
+
 /// Stop `node` the way an orchestrator does and wait until the control plane
 /// has it gone. The drain records a clean stop, so it keeps its storage id.
 async fn stop_cleanly(cluster: &mut Cluster, node: &str) {
@@ -291,8 +299,11 @@ async fn raft_restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, st
 /// On Raft, a follower that was stopped, crashed or wiped and cannot be
 /// caught up from the leader holds a copy that may be short. With the leader
 /// and `b` gone it is one voter of three, so nothing is elected and nothing
-/// is acknowledged. Once `b` is back, whoever leads has every record: a copy
-/// that lost its tail cannot win an election against one that kept it.
+/// is acknowledged. A follower that kept its copy (a clean stop or a process
+/// kill) is a voter again once `b` is back, and whoever leads has every
+/// record. A crashed or wiped one comes back under a new copy id, which the
+/// group refuses until it is re-admitted: `b` and that copy are two of three
+/// brokers but one voter, so nothing leads until the old leader is back.
 async fn raft_not_led_by_a_short_copy(stop: Stop) {
     let mut cluster = Cluster::start(config()).await.expect("start");
     let (leader, b, c) = raft_written(&cluster).await;
@@ -310,12 +321,67 @@ async fn raft_not_led_by_a_short_copy(stop: Stop) {
     }
 
     cluster.restart_node(&b).await.expect("restart b");
+    // Whoever leads must not be `c` under a copy the group does not count.
+    let mut not = &leader;
+    if !stop.keeps_its_copy() {
+        raft_no_leader_of(&cluster, &leader, &b, &c, stop).await;
+        cluster
+            .restart_node(&leader)
+            .await
+            .expect("bring the old leader back");
+        not = &c;
+    }
     let serving = cluster
-        .promoted_leader(STREAM, &leader, Duration::from_secs(60))
+        .promoted_leader(STREAM, not, Duration::from_secs(60))
         .await
-        .expect("a leader once two members are up");
+        .expect("a leader once two voters are up");
     assert_eq!(replay(&cluster, &serving).await, all_records(), "{stop:?}");
     cluster.shutdown().await;
+}
+
+/// On Raft, with `leader` down: `b` and the crashed or wiped `c` are both
+/// running, a majority of the group's voters by name, yet neither leads and
+/// neither takes a write for several election timeouts. If `c`'s new copy
+/// counted as the voter it replaced, `b` would be elected here.
+async fn raft_no_leader_of(cluster: &Cluster, leader: &str, b: &str, c: &str, stop: Stop) {
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "b and c to run members, with c one of b's voters",
+        || async {
+            let Some(at_b) = cluster.raft_member(b, STREAM).await else {
+                return false;
+            };
+            cluster.raft_member(c, STREAM).await.is_some()
+                && [leader, b, c]
+                    .iter()
+                    .all(|node| at_b.voters.iter().any(|voter| voter == node))
+        },
+    )
+    .await
+    .expect("the hazard is set up");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        for node in [b, c] {
+            let role = cluster
+                .raft_member(node, STREAM)
+                .await
+                .map(|raft| raft.role);
+            assert_ne!(
+                role.as_deref(),
+                Some("leader"),
+                "{node} led with the {stop:?} copy counted"
+            );
+            let acked = cluster
+                .publish_via(node, STREAM, b"too-early".to_vec())
+                .await
+                .is_ok();
+            assert!(
+                !acked,
+                "{node} acknowledged a write with the {stop:?} copy counted"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 /// On Raft: the broker serving the shard once it takes a write.
@@ -406,27 +472,33 @@ async fn a_wiped_follower_takes_the_fence_but_does_not_count() {
     .await
     .expect("start");
     if felix_cluster::suite_runs_on_raft() {
-        // The wiped copy votes with an empty log, so it cannot make `c` or
-        // anyone else the leader over `b`: whoever leads holds every record,
-        // and the wiped copy is filled from it.
+        // The wiped copy comes back under a new copy id, which the group
+        // refuses until it is re-admitted: `b` and it are two of three
+        // brokers but one voter, so nothing leads until the old leader is
+        // back. Whoever leads then holds every record.
         let (leader, b, c) = raft_written(&cluster).await;
         raft_restart_unreached(&mut cluster, &leader, &c, Stop::Wipe).await;
         cluster.kill_node(&leader).expect("kill the leader");
-        let promoted = cluster
-            .promoted_leader(STREAM, &leader, Duration::from_secs(60))
+        raft_no_leader_of(&cluster, &leader, &b, &c, Stop::Wipe).await;
+        cluster
+            .restart_node(&leader)
             .await
-            .expect("a leader of b and the wiped copy");
-        assert_eq!(promoted, b, "the wiped follower led");
+            .expect("bring the old leader back");
+        let serving = cluster
+            .promoted_leader(STREAM, &c, Duration::from_secs(60))
+            .await
+            .expect("a leader of b and the old leader");
         let mut served = false;
         let deadline = Instant::now() + Duration::from_secs(30);
         while !served && Instant::now() < deadline {
             served = cluster
-                .publish_via(&b, STREAM, b"after-the-wipe".to_vec())
+                .publish_via(&serving, STREAM, b"after-the-wipe".to_vec())
                 .await
                 .is_ok();
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         assert!(served, "the new leader never took a write");
+        assert_eq!(replay(&cluster, &serving).await, all_records());
         assert_eq!(replay(&cluster, &b).await, all_records());
         cluster.shutdown().await;
         return;
