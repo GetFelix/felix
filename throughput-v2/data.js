@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795522116653,
+  "lastUpdate": 1795529247932,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67704,6 +67704,58 @@ window.BENCHMARK_DATA = {
             "range": "3731.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 804551.57\nmean: 805599.12\nstdev: 3731.57\ncv: 0.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1cd5f99bc41f6d0344f26a95efa604a0d5d3100b",
+          "message": "test(controlplane): refuse two features claiming one metadata level (#3037)\n\n* test(controlplane): refuse two features claiming one metadata level (#3024)\n\n* test(raft): level-uniqueness scan walks every store source file and reads wrapped consts",
+          "timestamp": "2026-11-24T13:58:04Z",
+          "tree_id": "51d06d030b2d7125bed5abd0deba8c4637bcddfa",
+          "url": "https://github.com/GetFelix/felix/commit/1cd5f99bc41f6d0344f26a95efa604a0d5d3100b"
+        },
+        "date": 1795529247135,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344229.83,
+            "range": "3880.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344229.83\nmean: 342312.19\nstdev: 3880.81\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344229.83,
+            "range": "3880.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344229.83\nmean: 342312.19\nstdev: 3880.81\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79202.08,
+            "range": "5139.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79202.08\nmean: 76967.86\nstdev: 5139.57\ncv: 6.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 792020.79,
+            "range": "51395.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 792020.79\nmean: 769678.55\nstdev: 51395.74\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
