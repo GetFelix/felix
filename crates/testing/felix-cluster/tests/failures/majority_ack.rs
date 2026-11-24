@@ -55,6 +55,11 @@ async fn start_with_env(
     })
     .await
     .expect("start cluster");
+    if felix_cluster::suite_runs_on_raft() {
+        // A Raft group acknowledges on a majority by construction: there is
+        // no fleet feature to turn on.
+        return cluster;
+    }
     let store = &cluster
         .control_plane
         .as_ref()
@@ -93,11 +98,24 @@ async fn partition_control_plane(cluster: &Cluster, leader: &str) {
             cluster.inject(&fault).await.expect("partition");
         }
     }
+    if felix_cluster::suite_runs_on_raft() {
+        // No lease on Raft: the group never asks the control plane to write.
+        return;
+    }
     felix_cluster::wait::until(Duration::from_secs(20), "the lease to lapse", || async {
         cluster.metric(leader, LEASE_HELD).await.ok().flatten() == Some(0.0)
     })
     .await
     .expect("the leader's lease lapses with the control plane gone");
+}
+
+/// The broker serving the shard: placement's owner on hybrid, the elected
+/// member on Raft.
+async fn serving_leader(cluster: &Cluster) -> String {
+    cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("a serving leader")
 }
 
 /// Everything `node` replays. Reads still need the lease, so a replay is
@@ -130,7 +148,7 @@ async fn held_by(cluster: &Cluster, node: &str) -> Vec<String> {
 #[tokio::test]
 async fn acknowledgements_continue_while_the_control_plane_is_partitioned() {
     let cluster = start(Duration::from_secs(10)).await;
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = serving_leader(&cluster).await;
     cluster
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
@@ -152,11 +170,13 @@ async fn acknowledgements_continue_while_the_control_plane_is_partitioned() {
             });
         acknowledged.push(payload);
     }
-    assert_eq!(
-        cluster.metric(&leader, LEASE_HELD).await.ok().flatten(),
-        Some(0.0),
-        "the lease has to be lapsed while the writes are acknowledged",
-    );
+    if !felix_cluster::suite_runs_on_raft() {
+        assert_eq!(
+            cluster.metric(&leader, LEASE_HELD).await.ok().flatten(),
+            Some(0.0),
+            "the lease has to be lapsed while the writes are acknowledged",
+        );
+    }
 
     cluster.heal_all().await.expect("heal");
     felix_cluster::wait::until(
@@ -171,7 +191,7 @@ async fn acknowledgements_continue_while_the_control_plane_is_partitioned() {
     )
     .await
     .expect("the shard serves once the control plane is back");
-    let owner = cluster.owner(STREAM).await.expect("owner");
+    let owner = serving_leader(&cluster).await;
     let held = held_by(&cluster, &owner).await;
     for record in &acknowledged {
         assert!(
@@ -190,6 +210,12 @@ async fn acknowledgements_continue_while_the_control_plane_is_partitioned() {
 #[serial]
 #[tokio::test]
 async fn a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "a Raft group has no lease: every write, whatever the stream's mode, waits for a majority; \
+         no Raft test covers lease refusal because there is none",
+    ) {
+        return;
+    }
     const LEADER_STREAM: &str = "audit";
     let cluster = start_with(
         3,
@@ -243,7 +269,7 @@ async fn a_leader_stream_refuses_writes_on_a_lapsed_lease_after_the_finalize() {
 #[tokio::test]
 async fn a_write_no_majority_holds_is_not_acknowledged() {
     let cluster = start(Duration::from_secs(3)).await;
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = serving_leader(&cluster).await;
     cluster
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
@@ -274,10 +300,20 @@ async fn a_write_no_majority_holds_is_not_acknowledged() {
     );
 
     cluster.heal(&refuse).await.expect("heal the peers");
-    cluster
-        .publish_via(&leader, STREAM, b"together".to_vec())
-        .await
-        .expect("acknowledged again once a follower answers");
+    // A Raft leader that lost its followers may have stepped down, so the
+    // write goes to whoever serves.
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a write to be acknowledged again once a follower answers",
+        || async {
+            cluster
+                .publish_via_any(STREAM, b"together".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("acknowledged again once a follower answers");
     cluster.shutdown().await;
 }
 
@@ -290,6 +326,10 @@ async fn a_write_no_majority_holds_is_not_acknowledged() {
 #[serial]
 #[tokio::test]
 async fn a_leader_cut_off_from_the_control_plane_loses_nothing_it_acknowledged() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_cut_off_leader_loses_nothing().await;
+        return;
+    }
     let cluster = start(Duration::from_secs(2)).await;
     let old = cluster.owner(STREAM).await.expect("owner");
     cluster
@@ -373,6 +413,82 @@ async fn a_leader_cut_off_from_the_control_plane_loses_nothing_it_acknowledged()
             "{new} lost {record}, which {old} acknowledged: it holds {held:?}"
         );
     }
+    cluster.shutdown().await;
+}
+
+/// On Raft the control plane is not on the write path, so the cut that
+/// matters is the leader's from its followers: it keeps accepting writes it
+/// cannot get a majority for while the followers elect a leader of their own.
+/// Nothing the old leader acknowledged may be missing from the new one.
+async fn raft_cut_off_leader_loses_nothing() {
+    let cluster = start(Duration::from_secs(2)).await;
+    let old = serving_leader(&cluster).await;
+    cluster
+        .publish_via(&old, STREAM, b"before".to_vec())
+        .await
+        .expect("publish while whole");
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds it");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != old)
+        .collect();
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: followers.clone(),
+        })
+        .await
+        .expect("cut the old leader off");
+
+    let elected = std::sync::atomic::AtomicBool::new(false);
+    let writes = async {
+        let mut acknowledged = vec!["before".to_string()];
+        let mut after_election = 0;
+        for i in 0.. {
+            if after_election >= 10 {
+                break;
+            }
+            if elected.load(std::sync::atomic::Ordering::SeqCst) {
+                after_election += 1;
+            }
+            let payload = format!("cut-off-{i}");
+            if cluster
+                .publish_via(&old, STREAM, payload.clone().into_bytes())
+                .await
+                .is_ok()
+            {
+                acknowledged.push(payload);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        acknowledged
+    };
+    let election = async {
+        let new = super::raft::leader_among(&cluster, &followers).await;
+        elected.store(true, std::sync::atomic::Ordering::SeqCst);
+        new
+    };
+    let (acknowledged, _new) = tokio::join!(writes, election);
+
+    cluster.heal_all().await.expect("heal");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a leader to take writes",
+        || async {
+            cluster
+                .publish_via_any(STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the group serves once healed");
+    let serving = serving_leader(&cluster).await;
+    assert_holds(&cluster, &serving, &acknowledged).await;
     cluster.shutdown().await;
 }
 
@@ -508,6 +624,9 @@ async fn assert_holds(cluster: &Cluster, node: &str, acknowledged: &[String]) {
 #[serial]
 #[tokio::test]
 async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     use felix_controlplane_service::cluster::placement::Decision;
 
     let mut cluster = start_nodes(4, Duration::from_secs(2)).await;
@@ -584,6 +703,78 @@ async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
     cluster.shutdown().await;
 }
 
+/// On Raft: a record held by the leader and one follower is acknowledged,
+/// then both die. The follower that lacks it must not lead or acknowledge
+/// anything on its own, and once a holder is back the group serves with the
+/// record.
+async fn raft_majority_down_then_a_holder_back(env: &[(&str, &str)]) {
+    let mut cluster = start_with_env(
+        3,
+        vec![StreamSpec::quorum(STREAM, 1, 3)],
+        Duration::from_secs(2),
+        env,
+    )
+    .await;
+    let old = serving_leader(&cluster).await;
+    cluster
+        .publish_via(&old, STREAM, b"before".to_vec())
+        .await
+        .expect("publish while whole");
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds it");
+    let mut followers = cluster.node_ids().into_iter().filter(|id| *id != old);
+    let holder = followers.next().expect("a follower");
+    let lagging = followers.next().expect("a second follower");
+
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![lagging.clone()],
+        })
+        .await
+        .expect("cut the lagging follower off");
+    cluster
+        .publish_via(&old, STREAM, b"on-two-of-three".to_vec())
+        .await
+        .expect("held by the old leader and one follower");
+    let acknowledged = vec!["before".to_string(), "on-two-of-three".to_string()];
+    cluster.kill_node(&old).expect("kill the old leader");
+    cluster.kill_node(&holder).expect("kill the other holder");
+
+    // One live member of three: it cannot lead, and a copy without the
+    // record must not serve in its place.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    while tokio::time::Instant::now() < deadline {
+        cluster
+            .publish_via(&lagging, STREAM, b"too-early".to_vec())
+            .await
+            .expect_err("a member with a majority of its group down served");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    cluster
+        .restart_node(&holder)
+        .await
+        .expect("bring a holder back");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the group to serve again",
+        || async {
+            cluster
+                .publish_via_any(STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the group serves once a majority is up");
+    let serving = serving_leader(&cluster).await;
+    assert_holds(&cluster, &serving, &acknowledged).await;
+    cluster.shutdown().await;
+}
+
 /// **A promotion waits for a majority of the old replica set.** Three
 /// brokers, RF 3: the old leader acknowledges a record held by itself and one
 /// follower, then both die. The last follower is promoted from a report that
@@ -597,6 +788,10 @@ async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
 #[serial]
 #[tokio::test]
 async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_majority_down_then_a_holder_back(&[("FELIX_DURABLE_FSYNC_MODE", "on_commit")]).await;
+        return;
+    }
     let mut cluster = start_with_env(
         3,
         vec![StreamSpec::quorum(STREAM, 1, 3)],
@@ -694,6 +889,10 @@ async fn a_promotion_waits_while_a_majority_of_the_old_set_is_down() {
 #[serial]
 #[tokio::test]
 async fn under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_majority_down_then_a_holder_back(&[]).await;
+        return;
+    }
     let mut cluster = start(Duration::from_secs(2)).await;
     let assignment = assignment(&cluster).await;
     let old = assignment.leader.clone();
@@ -756,6 +955,88 @@ async fn under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot() {
     cluster.shutdown().await;
 }
 
+/// On Raft: the old leader is cut off from both followers and one of them
+/// wins the next term with the other's vote. That other follower is then
+/// wiped, so it forgets the term it voted in, and is reachable from the
+/// deposed leader again. Whatever the deposed leader writes must not be
+/// acknowledged on it and the wiped copy.
+async fn raft_wiped_follower_refuses_the_deposed_leader() {
+    let mut cluster = start(Duration::from_secs(2)).await;
+    let old = serving_leader(&cluster).await;
+    cluster
+        .publish_via(&old, STREAM, b"before".to_vec())
+        .await
+        .expect("publish while whole");
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds it");
+    let followers: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|id| *id != old)
+        .collect();
+    let isolated = Fault::Refuse {
+        node: old.clone(),
+        peers: followers.clone(),
+    };
+    cluster
+        .inject(&isolated)
+        .await
+        .expect("cut the old leader off from its followers");
+    let new = super::raft::leader_among(&cluster, &followers).await;
+    let other = followers
+        .iter()
+        .find(|id| **id != new)
+        .expect("the other follower")
+        .clone();
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the new leader to serve",
+        || async {
+            cluster
+                .publish_via(&new, STREAM, b"after-the-fence".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the new leader serves with the other follower's vote");
+
+    cluster
+        .stop_node(&other)
+        .await
+        .expect("kill the other follower");
+    let storage = cluster.node(&other).expect("other").storage_dir();
+    std::fs::remove_dir_all(&storage).expect("wipe its storage");
+    cluster
+        .restart_node(&other)
+        .await
+        .expect("restart it empty");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    cluster.heal(&isolated).await.expect("heal");
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![new.clone()],
+        })
+        .await
+        .expect("keep the old leader off the new one");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    let mut i = 0;
+    while tokio::time::Instant::now() < deadline {
+        cluster
+            .publish_via(&old, STREAM, format!("deposed-{i}").into_bytes())
+            .await
+            .expect_err("the deposed leader acknowledged on the wiped follower");
+        i += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_holds(&cluster, &new, &["after-the-fence".to_string()]).await;
+    cluster.shutdown().await;
+}
+
 /// **A wiped follower's promise still refuses the deposed leader (#1267).**
 /// The old leader is cut off from the control plane and from both followers,
 /// and one of them is promoted; its fence counts the other, under the
@@ -767,6 +1048,10 @@ async fn under_periodic_a_promotion_counts_a_holder_back_in_the_same_boot() {
 #[serial]
 #[tokio::test]
 async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_wiped_follower_refuses_the_deposed_leader().await;
+        return;
+    }
     let mut cluster = start(Duration::from_secs(2)).await;
     let assignment = assignment(&cluster).await;
     let old = assignment.leader.clone();
@@ -857,6 +1142,82 @@ async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
     cluster.shutdown().await;
 }
 
+/// On Raft the control plane takes no part, so the split is of the group:
+/// {leader, holder} | {lagging}. The pair goes on acknowledging, the lone
+/// member never leads, and once healed whoever leads holds every write.
+async fn raft_a_minority_does_not_open() {
+    let cluster = start(Duration::from_secs(2)).await;
+    let old = serving_leader(&cluster).await;
+    cluster
+        .publish_via(&old, STREAM, b"before".to_vec())
+        .await
+        .expect("publish while whole");
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds it");
+    let mut followers = cluster.node_ids().into_iter().filter(|id| *id != old);
+    let holder = followers.next().expect("a follower");
+    let lonely = followers.next().expect("a second follower");
+    cluster
+        .inject(&Fault::Refuse {
+            node: lonely.clone(),
+            peers: vec![old.clone(), holder],
+        })
+        .await
+        .expect("cut one member off");
+
+    let mut acknowledged = vec!["before".to_string()];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut i = 0;
+    while tokio::time::Instant::now() < deadline {
+        let payload = format!("majority-{i}");
+        if cluster
+            .publish_via(&old, STREAM, payload.clone().into_bytes())
+            .await
+            .is_ok()
+        {
+            acknowledged.push(payload);
+        }
+        cluster
+            .publish_via(&lonely, STREAM, b"alone".to_vec())
+            .await
+            .expect_err("a member cut off from its group acknowledged a write");
+        assert!(
+            cluster
+                .metric(&lonely, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten()
+                .is_none_or(|led| led < 1.0),
+            "the cut-off member leads",
+        );
+        i += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        acknowledged.len() > 1,
+        "the majority side never acknowledged"
+    );
+
+    cluster.heal_all().await.expect("heal");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "a leader to take writes",
+        || async {
+            cluster
+                .publish_via_any(STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the group serves once healed");
+    let serving = serving_leader(&cluster).await;
+    assert_holds(&cluster, &serving, &acknowledged).await;
+    cluster.shutdown().await;
+}
+
 /// **A partition with the control plane on the minority of the replica set
 /// does not give the shard two leaders.** Four brokers, RF 3, split
 /// {old, holder} | {promoted, spare, control plane}. The old leader goes on
@@ -867,6 +1228,10 @@ async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
 #[serial]
 #[tokio::test]
 async fn a_partitioned_minority_with_the_control_plane_does_not_open() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_a_minority_does_not_open().await;
+        return;
+    }
     let cluster = start_nodes(4, Duration::from_secs(2)).await;
     let assignment = assignment(&cluster).await;
     let old = assignment.leader.clone();
@@ -982,6 +1347,9 @@ async fn a_partitioned_minority_with_the_control_plane_does_not_open() {
 #[serial]
 #[tokio::test]
 async fn seating_a_replacement_keeps_what_the_old_set_acknowledged() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     let mut cluster = start_nodes(4, Duration::from_secs(2)).await;
     let before = assignment(&cluster).await;
     let leader = before.leader.clone();
@@ -1085,6 +1453,9 @@ async fn seating_a_replacement_keeps_what_the_old_set_acknowledged() {
 #[serial]
 #[tokio::test]
 async fn a_lost_follower_is_restored_even_when_its_first_replacement_dies() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
     use felix_controlplane_service::cluster::placement::MovePolicy;
     use felix_controlplane_service::model::{MoveReason, ShardKey, ShardKind};
 

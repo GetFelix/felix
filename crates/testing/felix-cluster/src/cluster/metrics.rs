@@ -139,6 +139,52 @@ impl Cluster {
         .await
     }
 
+    /// [`Self::wait_for_replication`], and on Raft every running broker's
+    /// member holds the log through the leader's last entry, not only a
+    /// majority. For a test that then wipes or stops a follower and needs the
+    /// other one to be a full copy.
+    pub async fn wait_for_every_member_level(
+        &self,
+        stream: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        if !self.config.raft_brokers() {
+            return self.wait_for_replication(stream, timeout).await;
+        }
+        let budget = wait::budget(timeout);
+        let deadline = Instant::now() + budget;
+        loop {
+            let first = self
+                .raft_members(felix_client::ShardKind::Stream, stream)
+                .await;
+            let then = self
+                .raft_members(felix_client::ShardKind::Stream, stream)
+                .await;
+            let why = match raft_leader_caught_up(&first, &then) {
+                Ok(leader) => {
+                    let tail = first
+                        .iter()
+                        .find(|(id, _)| *id == leader)
+                        .and_then(|(_, raft)| raft.last_index);
+                    let short: Vec<&str> = then
+                        .iter()
+                        .filter(|(_, raft)| raft.last_index < tail)
+                        .map(|(id, _)| id.as_str())
+                        .collect();
+                    if short.is_empty() {
+                        return Ok(leader);
+                    }
+                    format!("{leader} leads at {tail:?}; behind: {short:?}")
+                }
+                Err(short) => short,
+            };
+            if Instant::now() >= deadline {
+                bail!("{stream} shard 0 had members short of its leader within {budget:?}; {why}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// The Raft counterpart of [`wait_for_replication`](Self::wait_for_replication).
     /// Publishes nothing, so a test counting records is unaffected.
     ///

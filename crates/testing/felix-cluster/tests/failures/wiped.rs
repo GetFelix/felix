@@ -237,6 +237,104 @@ async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
     }
 }
 
+/// On Raft: [`RECORDS`] acknowledged records, then every member holding
+/// them. Returns the leader, the follower that stays (`b`) and the one that
+/// restarts (`c`). A Raft group has no leader report to wait on, so this
+/// waits for every member to hold the leader's whole log.
+async fn raft_written(cluster: &Cluster) -> (String, String, String) {
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("a serving leader");
+    for i in 0..RECORDS {
+        cluster
+            .publish_via(&leader, STREAM, format!("record-{i}").into_bytes())
+            .await
+            .expect("publish");
+    }
+    let leader = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds the acknowledged records");
+    let mut followers = cluster.node_ids().into_iter().filter(|id| *id != leader);
+    let b = followers.next().expect("a follower");
+    let c = followers.next().expect("a second follower");
+    (leader, b, c)
+}
+
+/// On Raft: stop `c` as `stop` says and start it again while the leader
+/// cannot reach it, so what it holds is what it kept through the stop.
+async fn raft_restart_unreached(cluster: &mut Cluster, leader: &str, c: &str, stop: Stop) {
+    cluster
+        .inject(&Fault::Refuse {
+            node: leader.to_string(),
+            peers: vec![c.to_string()],
+        })
+        .await
+        .expect("inject");
+    match stop {
+        Stop::Clean => stop_cleanly(cluster, c).await,
+        Stop::Kill => cluster.stop_node(c).await.expect("kill c"),
+        Stop::MachineCrash => {
+            cluster.stop_node(c).await.expect("kill c");
+            cluster.reboot_node(c).expect("reboot c's machine");
+        }
+        Stop::Wipe => {
+            cluster.stop_node(c).await.expect("kill c");
+            let storage = cluster.node(c).expect("c").storage_dir();
+            std::fs::remove_dir_all(&storage).expect("wipe c's storage");
+        }
+    }
+    cluster.restart_node(c).await.expect("restart c");
+}
+
+/// On Raft, a follower that was stopped, crashed or wiped and cannot be
+/// caught up from the leader holds a copy that may be short. With the leader
+/// and `b` gone it is one voter of three, so nothing is elected and nothing
+/// is acknowledged. Once `b` is back, whoever leads has every record: a copy
+/// that lost its tail cannot win an election against one that kept it.
+async fn raft_not_led_by_a_short_copy(stop: Stop) {
+    let mut cluster = Cluster::start(config()).await.expect("start");
+    let (leader, b, c) = raft_written(&cluster).await;
+    raft_restart_unreached(&mut cluster, &leader, &c, stop).await;
+    cluster.kill_node(&leader).expect("kill the leader");
+    stop_cleanly(&mut cluster, &b).await;
+
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < deadline {
+        cluster
+            .publish_via(&c, STREAM, b"too-early".to_vec())
+            .await
+            .expect_err("one member of three acknowledged a write");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    cluster.restart_node(&b).await.expect("restart b");
+    let serving = cluster
+        .promoted_leader(STREAM, &leader, Duration::from_secs(60))
+        .await
+        .expect("a leader once two members are up");
+    assert_eq!(replay(&cluster, &serving).await, all_records(), "{stop:?}");
+    cluster.shutdown().await;
+}
+
+/// On Raft: the broker serving the shard once it takes a write.
+async fn raft_serves_again(cluster: &Cluster) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Ok(serving) = cluster.serving_leader(STREAM, Duration::from_secs(5)).await
+            && cluster
+                .publish_via(&serving, STREAM, b"after-the-restart".to_vec())
+                .await
+                .is_ok()
+        {
+            return serving;
+        }
+        assert!(Instant::now() < deadline, "the shard never served again");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 fn all_records() -> Vec<String> {
     (0..RECORDS).map(|i| format!("record-{i}")).collect()
 }
@@ -279,6 +377,10 @@ async fn not_promoted_after(stop: Stop) {
 #[tokio::test]
 #[serial]
 async fn a_wiped_follower_is_not_promoted() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_not_led_by_a_short_copy(Stop::Wipe).await;
+        return;
+    }
     not_promoted_after(Stop::Wipe).await;
 }
 
@@ -303,6 +405,32 @@ async fn a_wiped_follower_takes_the_fence_but_does_not_count() {
     })
     .await
     .expect("start");
+    if felix_cluster::suite_runs_on_raft() {
+        // The wiped copy votes with an empty log, so it cannot make `c` or
+        // anyone else the leader over `b`: whoever leads holds every record,
+        // and the wiped copy is filled from it.
+        let (leader, b, c) = raft_written(&cluster).await;
+        raft_restart_unreached(&mut cluster, &leader, &c, Stop::Wipe).await;
+        cluster.kill_node(&leader).expect("kill the leader");
+        let promoted = cluster
+            .promoted_leader(STREAM, &leader, Duration::from_secs(60))
+            .await
+            .expect("a leader of b and the wiped copy");
+        assert_eq!(promoted, b, "the wiped follower led");
+        let mut served = false;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !served && Instant::now() < deadline {
+            served = cluster
+                .publish_via(&b, STREAM, b"after-the-wipe".to_vec())
+                .await
+                .is_ok();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(served, "the new leader never took a write");
+        assert_eq!(replay(&cluster, &b).await, all_records());
+        cluster.shutdown().await;
+        return;
+    }
     let (leader, b, c) = written(&cluster).await;
     restart_unreached(&mut cluster, &leader, &c, Stop::Wipe).await;
     cluster.kill_node(&leader).expect("kill the leader");
@@ -356,6 +484,10 @@ async fn a_wiped_follower_takes_the_fence_but_does_not_count() {
 #[tokio::test]
 #[serial]
 async fn a_crashed_follower_is_not_promoted() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_not_led_by_a_short_copy(Stop::MachineCrash).await;
+        return;
+    }
     not_promoted_after(Stop::MachineCrash).await;
 }
 
@@ -367,6 +499,10 @@ async fn a_crashed_follower_is_not_promoted() {
 #[tokio::test]
 #[serial]
 async fn a_restarted_follower_is_promoted_past_the_ttl() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_not_led_by_a_short_copy(Stop::Clean).await;
+        return;
+    }
     promoted_past_the_ttl_after(Stop::Clean).await;
 }
 
@@ -376,6 +512,10 @@ async fn a_restarted_follower_is_promoted_past_the_ttl() {
 #[tokio::test]
 #[serial]
 async fn a_killed_follower_is_promoted_past_the_ttl() {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_not_led_by_a_short_copy(Stop::Kill).await;
+        return;
+    }
     promoted_past_the_ttl_after(Stop::Kill).await;
 }
 
@@ -422,6 +562,19 @@ async fn promoted_past_the_ttl_after(stop: Stop) {
 #[tokio::test]
 #[serial]
 async fn a_killed_leader_keeps_its_identity_and_serves_again() {
+    if felix_cluster::suite_runs_on_raft() {
+        let mut cluster = Cluster::start(config()).await.expect("start");
+        let (leader, _b, _c) = raft_written(&cluster).await;
+        cluster.kill_node(&leader).expect("kill the leader");
+        cluster
+            .restart_node(&leader)
+            .await
+            .expect("restart the leader");
+        let serving = raft_serves_again(&cluster).await;
+        assert_eq!(replay(&cluster, &serving).await, all_records());
+        cluster.shutdown().await;
+        return;
+    }
     let mut cluster = Cluster::start(config()).await.expect("start");
     let (leader, _b, _c) = written(&cluster).await;
     let before = registered_storage(&cluster, &leader).await;
@@ -475,6 +628,24 @@ async fn a_killed_leader_keeps_its_identity_and_serves_again() {
 #[tokio::test]
 #[serial]
 async fn a_crashed_leader_that_comes_back_is_replaced() {
+    if felix_cluster::suite_runs_on_raft() {
+        // Every member held the records before the crash, so a leader that
+        // lost its unsynced tail cannot be elected over one that kept it.
+        let mut cluster = Cluster::start(config()).await.expect("start");
+        let (leader, _b, _c) = raft_written(&cluster).await;
+        cluster.kill_node(&leader).expect("kill the leader");
+        cluster
+            .reboot_node(&leader)
+            .expect("reboot the leader's machine");
+        cluster
+            .restart_node(&leader)
+            .await
+            .expect("restart the leader");
+        let serving = raft_serves_again(&cluster).await;
+        assert_eq!(replay(&cluster, &serving).await, all_records());
+        cluster.shutdown().await;
+        return;
+    }
     let mut cluster = Cluster::start(config()).await.expect("start");
     let (leader, _b, _c) = written(&cluster).await;
     let before = registered_storage(&cluster, &leader).await;
@@ -542,6 +713,12 @@ async fn a_crashed_leader_that_comes_back_is_replaced() {
 #[tokio::test]
 #[serial]
 async fn a_crashed_leader_no_follower_is_ahead_of_is_reclaimed() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "a Leader stream acknowledges on the leader alone, so there is a copy to reclaim; on Raft \
+         every write waits for a majority and no Raft test covers leader-only acks",
+    ) {
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         streams: vec![StreamSpec::replicated(STREAM, 1, 3)],
         ..config()
