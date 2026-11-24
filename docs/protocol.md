@@ -1376,7 +1376,7 @@ each of them.
                     "state": "<state>", "halted": "<reason>" } ],
     "raft": { "role": "leader|candidate|follower|learner|stopped",
               "term": <u64>, "leader": "<node>", "last_index": <u64>,
-              "committed": <u64> } } }
+              "committed": <u64>, "voters": ["<node>"] } } }
 ```
 
 Every field after `serving` is left out when it does not apply. The words are
@@ -1409,8 +1409,12 @@ older reader failing to decode the answer.
 - `raft` is this broker's member of the shard's Raft group, present only when
   it holds one. `leader` is the broker the member follows while it hears
   one, itself included; `last_index` is the last entry in its log and
-  `committed` the commit index it knows of. The cluster test harness reads it
-  to wait for a leader whose log a majority holds.
+  `committed` the commit index it knows of. `voters` are the brokers that vote
+  in the group by the latest membership the member's log holds. A member
+  removed from the group never hears of it, so it goes on naming itself a
+  follower with the old voters; the leader's list is the one to trust. The
+  cluster test harness reads it to wait for a leader whose log a majority of
+  those voters holds.
 
 The answer is bounded by the shard's replica set. A broker not in a cluster
 answers `role` `leader` and `phase` `active` for a stream or cache it holds,
