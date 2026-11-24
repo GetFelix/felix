@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795485559723,
+  "lastUpdate": 1795486499048,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67496,6 +67496,58 @@ window.BENCHMARK_DATA = {
             "range": "54282.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1640334.96\nmean: 1632211.70\nstdev: 54282.47\ncv: 3.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "26b2ad628e9cf70acc654daa9f11e5f50eb72ba2",
+          "message": "fix(raft): group describe tail and prompt refusal of unanswered reads (#3077)\n\n* fix(raft): group describe keeps tail >= committed; unanswered reads refuse after the lease\n\nPart of #3050\n\n- Describe on a Raft shard: a poll settles the group entries trailing the\n  last record, so the cursor can pass the records' end the tail was cut\n  to. The tail is now never below the cursor.\n- A read-index round no majority answers is dropped after the lease\n  instead of the election timeout, so a group call to a cut-off leader is\n  refused fast and retryably rather than held for election_max.\n\nSpec-Unaffected: describe reporting and how long an unanswered read round waits; refusing sooner writes nothing and no model covers either\n\n* fix(raft): inspector reports a Raft shard's tail; a read asks again after a late majority\n\nPart of #3050\n\n- shard_inspect looked the log up by the unversioned path, which never\n  finds a Raft shard's log (opened at its incarnation), so the leader\n  reported no tail. It now falls back to the log of the shard it serves.\n- read_index: a round that gave up is followed by another round's wait\n  for any majority answer; a late answer asks again, silence refuses.\n  The timeout error names the wait, not election_max.\n\nSpec-Unaffected: inspector reporting and read-round retry timing; refusing or retrying a read writes nothing\n\n* revert(raft): drop the read_index ask-again retry\n\nPart of #3050\n\nIts test passed without it, and it doubled a cut-off leader's refusal.\nThe round_limit give-up and the accurate TimedOut wait stay.\n\nSpec-Unaffected: removes a read retry; refusing a read writes nothing",
+          "timestamp": "2026-11-23T18:05:15-08:00",
+          "tree_id": "71514ee8e1f3877bb9a6d82ed858a14070b993f4",
+          "url": "https://github.com/GetFelix/felix/commit/26b2ad628e9cf70acc654daa9f11e5f50eb72ba2"
+        },
+        "date": 1795486498325,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348243.06,
+            "range": "11391.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348243.06\nmean: 352525.75\nstdev: 11391.70\ncv: 3.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348243.06,
+            "range": "11391.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348243.06\nmean: 352525.75\nstdev: 11391.70\ncv: 3.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81182.42,
+            "range": "944.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81182.42\nmean: 81054.86\nstdev: 944.95\ncv: 1.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811824.2,
+            "range": "9449.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811824.20\nmean: 810548.55\nstdev: 9449.53\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
