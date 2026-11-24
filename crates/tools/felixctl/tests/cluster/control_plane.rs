@@ -282,6 +282,14 @@ async fn moving_shards_draining_nodes_and_pausing_placement() {
     .await
     .expect("start cluster");
     let env = Env::new(&cluster);
+    // A Raft set changes only once its group formed on the stored target.
+    felix_cluster::wait::until(
+        std::time::Duration::from_secs(30),
+        "the shard's Raft group to form on its target",
+        || async { cluster.raft_set_settled("orders", 0).await.unwrap_or(false) },
+    )
+    .await
+    .expect("a formed group");
     let run = as_operator(&env, &cluster, vec!["placement", "pause", "--json"])
         .await
         .ok();

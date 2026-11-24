@@ -773,6 +773,17 @@ Four properties:
    writer no longer knows the file's length and refuses every later append
    and flush until a restart, when recovery repairs the tail as a torn one.
 
+   On Raft the entry cannot be refused, because openraft already holds it and
+   stops the member on any append error. So the Raft log holds the append and
+   writes it again, backing off up to a second, for up to a minute. Meanwhile
+   the entry is not reported written and the member answers nobody, so it
+   counts toward no majority. The publisher gets an outcome-unknown error
+   once its wait runs out, and the entry may still land once the disk takes
+   it. A failure that poisons the log (a failed rewind among them), or one
+   that lasts past the minute, goes to openraft and stops the member. A member
+   being shut down or moved gives up the held append at once, so its stop
+   does not wait out a full disk.
+
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start
    is better than losing acknowledged records quietly.
@@ -1872,7 +1883,7 @@ fail rather than print the wrong numbers.
 | `felix-broker-service --test open_file_limit` | a shard opened with no descriptors left fails with the open-file limit error, leaks none, does not serve while the held shard keeps serving, and opens once descriptors free up ; each step of the open, run out of descriptors in turn, leaves the shard opening (never failed) and the retry opens it |
 | `felix-broker/tests/durable_streams.rs` | ordering, restart, rejection without storage, durable vs non-durable isolation |
 | `felix-cluster --test backup` | a backup point taken under load is committed and misses nothing acknowledged before it (`a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it`), and a live copy restored to it keeps every earlier acknowledgement and nothing past it (`a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after`) |
-| `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds exactly what was acknowledged |
+| `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds every acknowledged record in order (on Raft a refused one may also land, once) |
 | `felix-cluster --test failures fsync::` | a real broker whose fsyncs are slow, fail with `EIO`, or fail once and then succeed, injected through `FELIX_STORAGE_FAULT_FILE`: a failed flush is never acknowledged, nor is anything after it on that log (see `docs/cluster-harness.md`) |
 
 ## Limits today

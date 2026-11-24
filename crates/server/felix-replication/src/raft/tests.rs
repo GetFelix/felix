@@ -3683,3 +3683,48 @@ fn a_conditional_piece_round_trips_through_its_record() {
         ShardCodec.encode_data(&command).expect_err("refused");
     }
 }
+
+/// **A leader reports how far it has replicated to each other member**, for
+/// `felixctl inspect shard`, and a member it stops hearing from is not live.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_reports_its_replication_to_each_member() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let last = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, last).await;
+    let key = shard(0);
+    let leading = cluster.runtime(&leader.broker);
+    let others: BTreeSet<&str> = BROKERS
+        .into_iter()
+        .filter(|broker| *broker != &*leader.broker)
+        .collect();
+
+    let followers = eventually(|| {
+        let followers = leading.followers(&key)?;
+        followers
+            .iter()
+            .all(|f| f.live && f.matched.is_some_and(|at| at >= last))
+            .then_some(followers)
+    })
+    .await;
+    let named: BTreeSet<&str> = followers.iter().map(|f| &*f.member.broker).collect();
+    assert_eq!(named, others);
+    assert!(followers.iter().all(|f| f.voter), "{followers:?}");
+    for broker in &others {
+        assert_eq!(cluster.runtime(broker).followers(&key), None, "{broker}");
+    }
+
+    let gone = *others.iter().next().expect("a follower");
+    down(&cluster, gone, true);
+    eventually(|| {
+        let followers = leading.followers(&key)?;
+        followers
+            .iter()
+            .any(|f| &*f.member.broker == gone && !f.live)
+            .then_some(())
+    })
+    .await;
+    down(&cluster, gone, false);
+    cluster.stop().await;
+}

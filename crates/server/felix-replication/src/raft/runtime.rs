@@ -472,6 +472,19 @@ pub struct GroupStatus {
     pub membership: MembershipProgress,
 }
 
+/// A leader's replication to one other member of its group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowerProgress {
+    pub member: MemberId,
+    /// False for a learner, which copies the log without voting.
+    pub voter: bool,
+    /// The last entry the leader knows this member holds. `None` until the
+    /// member's first answer.
+    pub matched: Option<u64>,
+    /// The member answered lately, by the leader's own heartbeat window.
+    pub live: bool,
+}
+
 enum Slot {
     /// Reserved by an open that is still starting the member.
     Opening,
@@ -1422,6 +1435,12 @@ impl GroupRuntime {
     /// This broker's member of `shard`'s group, if it has one.
     pub fn status(&self, shard: &ShardKey) -> Option<GroupStatus> {
         self.inner.registry.get(shard).map(|group| group.status())
+    }
+
+    /// Replication to every other member of `shard`'s group, while this
+    /// broker's member leads it. `None` when it does not.
+    pub fn followers(&self, shard: &ShardKey) -> Option<Vec<FollowerProgress>> {
+        self.inner.registry.get(shard)?.followers()
     }
 
     /// Whether this broker holds a member of `shard`: exactly when

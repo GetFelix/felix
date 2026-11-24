@@ -156,3 +156,26 @@ async fn an_open_blank_short_shard_is_counted_and_a_full_one_is_not() {
     shards.take(&mut assignments([replicated()])).await;
     assert_eq!(gauge(&gauges), Some(0.0));
 }
+
+/// **A set over the stream's replica count is full, not short (#3012).** An
+/// RF 1 shard mid-move names its old broker and the destination; the
+/// destination must count the set full to report its copy and join the
+/// group, and neither broker may warn that it is short.
+#[tokio::test(flavor = "current_thread")]
+async fn a_set_over_the_replica_count_counts_as_full() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker_of(root.path(), 1).await;
+    let shards = unbound_shards(&broker);
+    let gauges = Gauges::default();
+    let _recorder = metrics::set_default_local_recorder(&gauges);
+    let orders = key("orders", 0);
+    let mut moving = assigned(orders.clone(), INCARNATION);
+    moving.replicas = vec!["broker-a".to_string(), "broker-b".to_string()];
+
+    shards.take(&mut assignments([moving])).await;
+    assert!(
+        shards.formable.lock().contains_key(&orders),
+        "the grown set was not counted full"
+    );
+    assert_eq!(gauge(&gauges), Some(0.0));
+}

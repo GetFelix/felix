@@ -117,6 +117,22 @@ impl Broker {
         Ok(StreamHandle { state })
     }
 
+    /// The log of a stream shard this broker already serves, whatever
+    /// incarnation it was opened at. `None` without opening anything.
+    pub async fn served_stream_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Option<StreamLog> {
+        self.topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .and_then(|state| state.durable.clone())
+    }
+
     /// End every subscription this broker serves on one stream shard.
     ///
     /// Each subscriber still receives what was already queued for it; its feed
@@ -139,6 +155,27 @@ impl Broker {
             .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
             .map_or(0, |state| {
                 state.end_subscribers(handoff.map(crate::handoff::Ending::Moved))
+            })
+    }
+
+    /// End every subscription this broker serves on one stream shard it
+    /// has stopped leading, telling each reader the shard moved so it
+    /// subscribes again wherever the shard is led now. Unlike a move, no
+    /// resume offset is given: the reader resumes after the last record it
+    /// saw. Returns how many ended.
+    pub async fn end_deposed_subscriptions(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> usize {
+        self.topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .map_or(0, |state| {
+                state.end_subscribers(Some(crate::handoff::Ending::Deposed))
             })
     }
 

@@ -665,19 +665,21 @@ impl DiskLog {
     ) -> Result<Option<PendingAppend>> {
         Ok(self
             .append_pending_at_keeping(first_offset, records, writers)
-            .await?
+            .await
+            .map_err(|refused| refused.error)?
             .map(|(pending, _records)| pending))
     }
 
     /// [`DiskLog::append_pending_at`], handing the records back once they
     /// are written, so a caller that keeps them, as the Raft log's tail
-    /// cache does, needs no copy of its own.
+    /// cache does, needs no copy of its own. A refused write hands them
+    /// back too, so the caller can try again without a copy.
     pub(crate) async fn append_pending_at_keeping(
         &self,
         first_offset: Offset,
         records: Vec<AppendRecord>,
         writers: WrittenBy,
-    ) -> Result<Option<(PendingAppend, Vec<AppendRecord>)>> {
+    ) -> std::result::Result<Option<(PendingAppend, Vec<AppendRecord>)>, append::Refused> {
         let inner = Arc::clone(&self.inner);
         let (written, records) = Self::write_batch_keeping(
             inner,
