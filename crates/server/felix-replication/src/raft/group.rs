@@ -2124,14 +2124,19 @@ impl Group {
             timeout: patience,
         };
         let deadline = tokio::time::Instant::now() + patience;
+        // A majority answers a round within a lease or is not there. Held to
+        // the election timeout instead, a leader cut off from every peer
+        // keeps each group call waiting that long before it can refuse.
+        let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
         loop {
             let raft = self.raft.clone();
             let stop = self.stop.clone();
-            let entered =
-                self.reads
-                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
-                        read_round(raft.clone(), stop.clone())
-                    });
+            let entered = self.reads.enter(
+                &self.runtime,
+                round_limit,
+                Round::QuorumNotEnough,
+                move || read_round(raft.clone(), stop.clone()),
+            );
             // A read that arrives during a round waits for the next one too,
             // so the bound is on the wait, not on one round.
             let round = tokio::select! {
