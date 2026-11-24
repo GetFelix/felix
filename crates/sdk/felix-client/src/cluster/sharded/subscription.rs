@@ -381,10 +381,17 @@ async fn forward_shard(
                     feed.1.start_offset().or(feed.1.live_offset()),
                 ),
             });
-            match cluster
-                .subscribe_shard_following_redirects(&tenant_id, &namespace, &stream, shard, at)
-                .await
-            {
+            // Every feed may have been opened on the entry connection, so
+            // when that is the one lost, the client moves to a broker that
+            // answers before asking again. Asking the dead one never succeeds.
+            let reopened = cluster
+                .reopen_after_loss(&feed.0, || {
+                    cluster.subscribe_shard_following_redirects(
+                        &tenant_id, &namespace, &stream, shard, at,
+                    )
+                })
+                .await;
+            match reopened {
                 Ok(next) => {
                     feed = next;
                     moved_resume_from = None;

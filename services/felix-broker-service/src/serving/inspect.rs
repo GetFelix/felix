@@ -99,12 +99,23 @@ pub(crate) async fn inspect(
         observed.committed = marks.offset(key, route.generation);
     }
     observed.raft = publish_ctx.engine.raft_view(key);
-    // Only a log this broker has open: opening one would create it.
-    if key.kind == ShardKind::Stream
-        && let Some(log) = broker.durable_storage().and_then(|storage| {
+    // Only a log this broker has open: opening one would create it. A Raft
+    // shard's log is opened at its incarnation, so it is found through the
+    // shard this broker serves rather than by the unversioned path.
+    let opened = match key.kind {
+        ShardKind::Stream => match broker.durable_storage().and_then(|storage| {
             storage.opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-        })
-    {
+        }) {
+            Some(log) => Some(log),
+            None => {
+                broker
+                    .served_stream_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .await
+            }
+        },
+        ShardKind::Cache => None,
+    };
+    if let Some(log) = opened {
         observed.tail = log.tail_offset().await.ok();
         observed.accepted_generation = Some(log.accepted_generation());
     }
@@ -155,10 +166,19 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         };
     };
 
-    let role = match &route {
-        Some(route) if route.leader.node_id == node_id => "leader",
-        Some(route) if route.replicas.iter().any(|r| r.node_id == node_id) => "follower",
-        _ => "none",
+    // A Raft shard's leader is whoever its group elected, which placement
+    // only asks for, so the group's own view has the say.
+    let role = match &raft {
+        Some(raft) => match raft.role.as_str() {
+            "leader" => "leader",
+            "stopped" => "none",
+            _ => "follower",
+        },
+        None => match &route {
+            Some(route) if route.leader.node_id == node_id => "leader",
+            Some(route) if route.replicas.iter().any(|r| r.node_id == node_id) => "follower",
+            _ => "none",
+        },
     };
     let assignment = route.as_ref().map(|route| InspectedAssignment {
         generation: route.generation,
@@ -195,14 +215,21 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
     });
 
     let (reason, detail) = if role != "leader" {
-        let detail = match &route {
-            Some(route) => format!(
+        let detail = match (&raft, &route) {
+            (Some(raft), _) => match &raft.leader {
+                Some(leader) => format!("{leader} leads it at term {}", raft.term),
+                None => format!("no leader is known at term {}", raft.term),
+            },
+            (None, Some(route)) => format!(
                 "{} leads it at generation {}",
                 route.leader.node_id, route.generation
             ),
-            None => "no assignment for this shard has reached this broker".to_string(),
+            (None, None) => "no assignment for this shard has reached this broker".to_string(),
         };
         (Some("not_assigned_here"), Some(detail))
+    } else if raft.is_some() {
+        // The group has no fence or lease of this module's kind to wait out.
+        (None, None)
     } else {
         not_serving(
             phase.as_ref(),
@@ -261,11 +288,13 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         node_id,
         shards,
         role: role.to_string(),
-        phase: phase
-            .as_ref()
-            .map_or(Phase::Unassigned, |phase| phase.phase)
-            .label()
-            .to_string(),
+        phase: match (&phase, &raft) {
+            (Some(phase), _) => phase.phase,
+            (None, Some(_)) if role == "leader" => Phase::Active,
+            (None, _) => Phase::Unassigned,
+        }
+        .label()
+        .to_string(),
         serving: reason.is_none(),
         reason: reason.map(str::to_string),
         detail,

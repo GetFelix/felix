@@ -285,8 +285,8 @@ title = "A reconnect deadline bounds a retried operation, whatever attempts rema
 detail = """
 A client configured with a large attempt budget and a short reconnect deadline
 must stop retrying once the deadline passes, rather than spending every
-attempt. Attempt counts alone do not bound time. The fixture holds a shard
-fenced with `POST /fence`, so every publish to its owner is refused at once
+attempt. Attempt counts alone do not bound time. The fixture stops a shard's
+owner from taking writes with `POST /fence`, so every publish to it is refused at once
 with a retryable error; an at-least-once publish through a client built with
 40 attempts and a six second deadline must fail with that error well inside
 fourteen seconds. Without the deadline the same publish backs off through all 40
@@ -419,13 +419,16 @@ id = "error.shard_unavailable_is_retryable"
 required = true
 title = "A shard refusing during a move is reported as retryable"
 detail = """
-While a shard moves, its old owner is fenced and nobody serves it for a moment.
-A publish refused then was not applied, and the error must say so: typed as an
+While a shard moves or elects a leader, nobody serves it for a moment. A
+publish refused then was not applied, and the error must say so: typed as an
 unavailable shard (`shard_unavailable` or `not_leader`) with a retry class that
 allows sending it again. Reporting it as fatal makes an application drop a
 write it could have made; reporting it as outcome-unknown makes a careful one
 treat a clean refusal as a possible duplicate. The fixture's control endpoint
-holds a shard fenced with `POST /fence`.
+`POST /fence` holds a shard where its owner refuses writes: on the hybrid
+engine it stops a move halfway with the owner fenced; on Raft no move happens,
+and every broker is cut off from the others so no majority exists anywhere
+and the owner refuses proposals once its lease lapses.
 """
 
 [[scenario]]
@@ -433,12 +436,15 @@ id = "error.quorum_timeout_is_outcome_unknown"
 required = true
 title = "A write no majority confirmed is reported as outcome unknown"
 detail = """
-A leader that wrote a batch and could not get a majority to confirm it in time
-does not know whether the write will survive. The error must say that
-(`quorum_timeout`, retry class `outcome_unknown`) and must not look like a
-refusal: an application that resends a non-idempotent publish after it may
-write the record twice. The fixture's control endpoint cuts a quorum stream's
-leader off from its followers with `POST /partition`.
+A leader cut off from its followers cannot say whether a write it took will
+survive. The publish must fail with an outcome-unknown error, retry class
+`outcome_unknown`: `quorum_timeout` when it gave up waiting for a majority, or
+`leadership_lost` when a Raft leader stepped down while the batch it had
+appended waited. The fixture keeps a cut-off Raft leader's lease open for
+longer than the scenario runs, so the leader always takes the write. It must not look like a refusal: an application that resends a
+non-idempotent publish after it may write the record twice. The fixture's
+control endpoint cuts a quorum stream's leader off from its followers with
+`POST /partition`. The scenario id keeps its original name.
 """
 
 # ---------------------------------------------------------------------------

@@ -268,7 +268,10 @@ impl ForwardingHandler {
                     // the write failed.
                     let deposed = matches!(
                         err.downcast_ref::<felix_replication::quorum::QuorumError>(),
-                        Some(felix_replication::quorum::QuorumError::LeadershipLost { .. })
+                        Some(
+                            felix_replication::quorum::QuorumError::LeadershipLost { .. }
+                                | felix_replication::quorum::QuorumError::NotAppended { .. }
+                        )
                     );
                     let code = if deposed && publish.producer.is_some() {
                         ErrorCode::LeadershipLost
@@ -349,7 +352,9 @@ impl ForwardingHandler {
         // leads now.
         let resendable = |err: CommitError| {
             let code = match err {
-                CommitError::LeadershipLost { .. } => ErrorCode::LeadershipLost,
+                CommitError::LeadershipLost { .. } | CommitError::NotAppended { .. } => {
+                    ErrorCode::LeadershipLost
+                }
                 _ => ErrorCode::StorageFailed,
             };
             (code, err.to_string())
