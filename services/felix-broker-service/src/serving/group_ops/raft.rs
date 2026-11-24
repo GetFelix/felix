@@ -51,6 +51,22 @@ pub(super) async fn on_raft(
         kind: ShardKind::Stream,
     };
     let Some(groups) = publish_ctx.engine.raft_groups(&key) else {
+        // A durable stream on a Raft broker lives only on its group. Before
+        // the member opens, the hybrid path would open a stream log and group
+        // state of its own that nothing serves.
+        if publish_ctx.engine.runs_raft()
+            && broker
+                .stream_metadata(tenant_id, namespace, stream)
+                .await
+                .is_some_and(|metadata| metadata.durable)
+        {
+            return Err(ClientError::unavailable(
+                &crate::shards::routing::Reason::NotReady,
+                format!(
+                    "the Raft group of {tenant_id}/{namespace}/{stream} shard {shard} is not open on this broker yet; retry"
+                ),
+            ));
+        }
         return Ok(None);
     };
     if publish_ctx.ingress.is_some()

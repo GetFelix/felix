@@ -108,7 +108,7 @@ The broker's publish path takes offsets before it waits on durability
 driver, which ships each follower one batch from its cursor (`felix-replication/src/driver.rs:167`,
 `ship.rs:20` `ship_once`, `follower.rs:24` `FollowerCursor`). The follower
 stores it at the leader's offsets (`replica.rs:663` `apply`, through
-`crates/server/felix-broker/src/durable.rs:643` `append_pending_at`).
+`crates/server/felix-broker/src/durable.rs:599` `append_pending_at`).
 
 ### 2. Commit mark
 
