@@ -1041,6 +1041,7 @@ impl Group {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
+        self.stop_lapsed_recording();
         // A member that takes no vote does not ask for one, unless it
         // promised nobody. One handed the leadership meanwhile is ticked
         // too: its first tick as leader comes once `Pace::wrote` or
@@ -2432,6 +2433,44 @@ impl Group {
         let cache = self.cache.as_ref()?;
         let state = cache.read();
         Some((state.applied() + 1, state.watched_entries(keep)))
+    }
+
+    /// A resuming cache watch's live edge on this member and every kept
+    /// change in `[from, edge)` that `keep` takes, read under one hold of
+    /// the state's lock. The changes are `None` when some from `from` on are
+    /// no longer kept. `None` in a stream shard's group.
+    pub(crate) fn cache_replay(
+        &self,
+        from: u64,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Option<Vec<super::cache::Change>>)> {
+        let cache = self.cache.as_ref()?;
+        let state = cache.read();
+        Some((state.applied() + 1, state.recent_since(from, keep)))
+    }
+
+    /// A cache watch of this group's shard ended here: keep recording for a
+    /// window, so the client's resume can be replayed.
+    pub(crate) fn cache_watch_ended(&self) {
+        if let Some(cache) = &self.cache {
+            cache.write().watch_ended((self.clock)());
+        }
+    }
+
+    /// Free the changes a cache group kept for watches once its window has
+    /// passed with no watch. Never waits on apply.
+    fn stop_lapsed_recording(&self) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let now = (self.clock)();
+        if cache
+            .try_read()
+            .is_some_and(|state| state.recording_lapsed(now))
+            && let Some(mut state) = cache.try_write()
+        {
+            state.stop_lapsed_recording(now);
+        }
     }
 
     /// End `observer`'s watches of this cache group as lagged at the live
