@@ -440,7 +440,8 @@ A leader cut off from its followers cannot say whether a write it took will
 survive. The publish must fail with an outcome-unknown error, retry class
 `outcome_unknown`: `quorum_timeout` when it gave up waiting for a majority, or
 `leadership_lost` when a Raft leader stepped down while the batch it had
-appended waited (its lease lapsed during the wait). It must not look like a refusal: an application that resends a
+appended waited. The fixture keeps a cut-off Raft leader's lease open for
+longer than the scenario runs, so the leader always takes the write. It must not look like a refusal: an application that resends a
 non-idempotent publish after it may write the record twice. The fixture's
 control endpoint cuts a quorum stream's leader off from its followers with
 `POST /partition`. The scenario id keeps its original name.

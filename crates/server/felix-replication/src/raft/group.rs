@@ -85,8 +85,8 @@ pub(crate) struct Group {
     /// which a confirmed read must wait to have applied.
     answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
     /// The furthest entry acknowledged on the leader lease before its
-    /// commit. Only a backup point reads it: a lease write may not be on
-    /// a majority, so reads never wait for it.
+    /// commit. `answered_end` counts it with `answered`, so a confirmed read
+    /// also waits for a lease-acked write to be applied.
     acked_on_lease: parking_lot::Mutex<Option<LogPoint>>,
     /// The data root's mark log, when the member has one. Its
     /// vouched-unsynced marker is synced before a strict log's unsynced write

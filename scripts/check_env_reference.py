@@ -59,6 +59,9 @@ NOT_OPERATIONAL = {
     # Debug builds only: a file that holds a candidate's pre-vote while it
     # exists, so a test can start two candidates' rounds together.
     "FELIX_TEST_PRE_VOTE_GATE",
+    # Overrides the Raft election timeout's upper bound (which is also how
+    # long a leader's write lease lasts) for the client conformance fixture.
+    "FELIX_TEST_RAFT_ELECTION_MAX_MS",
     # Overrides the Raft group thread count, which is derived from the
     # machine, for tests and A/B runs. Documented in `docs/per-shard-raft.md`.
     "FELIX_TEST_RAFT_GROUP_THREADS",

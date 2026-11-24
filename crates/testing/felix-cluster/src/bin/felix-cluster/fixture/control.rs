@@ -15,7 +15,9 @@
 //! - `/link` breaks the connections through the link interposer, with a body
 //!   of `{"fault": "drop" | "reset" | "stall", "hold_ms": N}`. It answers at
 //!   once; a drop or a stall heals itself after `hold_ms`.
-//! - `/heal` undoes all of them.
+//! - `/heal` undoes all of them. After a Raft `/fence` it also waits for the
+//!   movable stream to take a write, so no probe left with an unknown outcome
+//!   lands in it afterwards.
 //! - `POST /tokens` mints a token for the fixture tenant with the same grants
 //!   as `token`, with a body of `{"ttl_secs": N, "forged": false}`, and
 //!   answers `{"token", "ttl_secs"}`. A suite uses a short life to make a
@@ -66,6 +68,9 @@ pub(crate) struct Control {
     movable_stream: String,
     quorum_stream: String,
     drained: Mutex<Option<String>>,
+    /// Set once `/fence` on Raft has sent probes whose outcome may have been
+    /// unknown, for `/heal` to settle.
+    probed: AtomicBool,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +124,7 @@ impl Control {
             movable_stream: movable_stream.to_string(),
             quorum_stream: quorum_stream.to_string(),
             drained: Mutex::new(None),
+            probed: AtomicBool::new(false),
         }
     }
 
@@ -226,6 +232,7 @@ async fn fence_raft(control: &Control) -> Answer {
         tokio::task::block_in_place(|| control.cluster.partition_node(&node.node_id))
             .map_err(failed)?;
     }
+    control.probed.store(true, Ordering::SeqCst);
     // The first probe may be proposed before the owner notices it has no
     // majority, and then times out with its outcome unknown. Only the
     // broker's own retryable answer says nothing was written: two of those
@@ -302,6 +309,11 @@ async fn heal(State(control): State<Arc<Control>>) -> Answer {
             .await
             .map_err(failed)?;
     }
+    if control.probed.swap(false, Ordering::SeqCst) {
+        settle_probes(&control.cluster, &control.movable_stream)
+            .await
+            .map_err(failed)?;
+    }
     // Undraining invites a rebalance back onto the broker. Finish it now so the
     // timer does not start one a later request would freeze.
     {
@@ -312,6 +324,30 @@ async fn heal(State(control): State<Arc<Control>>) -> Answer {
         settled.map_err(failed)?;
     }
     Ok(Json(control.target(drained.as_deref().unwrap_or_default())))
+}
+
+/// Wait until the group accepts a write again. A probe `/fence` sent on Raft
+/// may have been proposed with its outcome unknown, and commits or is
+/// dropped once the group has a majority. The group decides every entry
+/// ahead of a new one first, so this one's ack means no stray probe is left
+/// to land in a later scenario's stream.
+async fn settle_probes(cluster: &Cluster, stream: &str) -> Result<()> {
+    let deadline = Instant::now() + TAKES_EFFECT_WITHIN;
+    loop {
+        for node in &cluster.nodes {
+            if cluster
+                .publish_via(&node.node_id, stream, b"fixture-settle".to_vec())
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        if Instant::now() >= deadline {
+            bail!("{stream} took no write after the partition healed");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// Step placement until no shard is mid-move. The caller holds the placement
