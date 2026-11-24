@@ -2182,6 +2182,17 @@ leader. A forward to a leader that is gone fails, and the client retries.
 > `a_leader_that_loses_its_appends_does_not_stall_the_next_election` and
 > `a_pre_vote_refusal_names_its_vote_uncommitted`.
 
+A member whose placement no longer names its broker routes by placement
+instead, once it hears no leader: its group may have removed it without
+telling it. A refusal there would keep a client that enters on that broker
+retrying on it, so the member redirects readers and forwards writes to the
+leader placement names, as a broker with no member does.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_leaderless_member_placement_moved_off_routes_by_placement`;
+> `services/felix-broker-service/src/shards/routing/tests.rs`,
+> `a_subscribe_to_a_member_placed_elsewhere_is_redirected`.
+
 ### Many groups electing at once
 
 A vote is a small file per shard, the ballot, written whole and renamed
