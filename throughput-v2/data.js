@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795481327865,
+  "lastUpdate": 1795483539398,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67392,6 +67392,58 @@ window.BENCHMARK_DATA = {
             "range": "38323.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803659.28\nmean: 802566.03\nstdev: 38323.72\ncv: 4.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "818584c59e5a015578a90a36f569f382450445b8",
+          "message": "fix: client conformance suites pass on Raft with durable storage (#3072)\n\n* fix: client conformance on Raft reads, refused writes and fixture faults\n\nPart of #3050\n\nSpec-Unaffected: no model covers the read bound wait or the error mapping\n\n* fix: Raft reads use the read barrier, refusals are typed\n\n- Reads after an ack: drop the 1.5 s polling wait. The read barrier now\n  covers writes answered on the leader's lease, offset_for_time and a\n  group seek pass it, and a read that cannot pass it fails as retryable\n  (NotReadable::Settling) instead of answering from the old bound.\n- QuorumError::NotAppended replaces the text-suffix check. Only an\n  openraft refusal with nothing known written (lapsed lease, other term)\n  becomes it; shape refusals and written batches stay outcome unknown.\n- fence_raft counts only refusals the broker typed as retryable.\n- Scenario and client test wording matches what Raft does.\n\nSpec-Unaffected: Raft read barrier and client error classification; no TLA model covers either\n\n* fix: raft inspector role, deterministic lost-quorum scenario, settled fence probes\n\nThe inspector takes a Raft shard's role from its group, not placement's\nroute. The conformance fixture gives brokers a long election timeout so a\ncut-off leader still takes the scenario's write, and /heal waits for the\nmovable stream to take a write after a Raft /fence. Comment fixes in\ngroup.rs and FelixRaftReads.tla.\n\nSpec-Unaffected: the .tla change is a comment-only header update; a higher read bound only delays reads, NoStaleRead is unchanged",
+          "timestamp": "2026-11-23T17:19:27-08:00",
+          "tree_id": "0bbe5fa9df673e36efe2f559be53d45589c55598",
+          "url": "https://github.com/GetFelix/felix/commit/818584c59e5a015578a90a36f569f382450445b8"
+        },
+        "date": 1795483538645,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 542484.58,
+            "range": "33498.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 542484.58\nmean: 546660.91\nstdev: 33498.95\ncv: 6.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 542484.58,
+            "range": "33498.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 542484.58\nmean: 546660.91\nstdev: 33498.95\ncv: 6.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121436.13,
+            "range": "754.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121436.13\nmean: 121314.75\nstdev: 754.06\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1214361.34,
+            "range": "7540.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1214361.34\nmean: 1213147.52\nstdev: 7540.59\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
