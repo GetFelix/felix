@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795531631032,
+  "lastUpdate": 1795534669458,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86130,6 +86130,72 @@ window.BENCHMARK_DATA = {
             "range": "1070.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 358.00\nmean: 1041.40\nstdev: 1070.43\ncv: 102.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a73a290b0254ae710ec443bc3f2ce2a873af3d6",
+          "message": "fix(storage): a dropped io_uring flush still poisons on a failed fsync (#2492) (#3045)\n\n* fix(storage): a dropped io_uring flush still poisons on a failed fsync (#2492)\n\nThe ring's service thread now runs a failure hook when it reaps a failed\ncompletion, before it replies, so a flush future dropped mid-fsync cannot\nlose the failure. roll_now runs its roll in its own task, so a caller that\ngives up cannot leave the roll slot taken or a pre-seal failure unrecorded.\n\n* fix(storage): a log never has two fsyncs in the io_uring ring at once (#2492)\n\nA dropped flush released the flush lock while its fsync was still in the\nring, so the next flush could submit a second fdatasync of the same file.\nThe ring runs them concurrently and Linux reports a writeback error once\nper open file, so the later one could succeed, be reaped first and\nacknowledge records the earlier failure lost. Each log now takes a ring\ngate before submitting and hands it to the failure hook, which the ring\ndrops only once it has answered; the next fsync rechecks for a poison.\n\nTests use a stand-in ring on every platform; the Linux ring tests go\nthrough the flush lock and panic instead of skipping under\nFELIX_TEST_REQUIRE_IO_URING=1, which a new CI step sets.\n\ntask lint was still running at commit time (fmt check passes).\n\n* test(storage): register FELIX_TEST_REQUIRE_IO_URING\n\nSpec-Unaffected: env registry and docs only\n\n* test(storage): tests that hold the flush thread pin their log to it\n\nA test forcing io_uring holds a process-wide switch, so a durability test\nrunning alongside flushed through the ring instead of queueing behind the\nflush thread it held, and saw its injected failure immediately. A per-log\npin keeps those tests on the flush thread.\n\nSpec-Unaffected: test isolation only; no change to the flush path outside tests.",
+          "timestamp": "2026-11-24T15:28:55Z",
+          "tree_id": "57074c765d409916a9c5388a1a49605d8ec0a9c7",
+          "url": "https://github.com/GetFelix/felix/commit/4a73a290b0254ae710ec443bc3f2ce2a873af3d6"
+        },
+        "date": 1795534655221,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "7.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 154.40\nstdev: 7.06\ncv: 4.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 203,
+            "range": "355.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 360.80\nstdev: 355.65\ncv: 98.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 259,
+            "range": "516.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 483.40\nstdev: 516.49\ncv: 106.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.60\nstdev: 4.98\ncv: 2.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 397,
+            "range": "164.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 397.00\nmean: 466.20\nstdev: 164.32\ncv: 35.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 598,
+            "range": "611.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 598.00\nmean: 1004.20\nstdev: 611.65\ncv: 60.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
