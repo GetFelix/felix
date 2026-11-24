@@ -1483,6 +1483,13 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
 /// shard stays held until an operator re-forms it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing() {
+    if ran_in_poisoning_process(
+        "raft::tests::identity::a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing",
+    )
+    .await
+    {
+        return;
+    }
     let mut cluster = Cluster::new(true);
     let roots = Roots::new();
     let runtime = cluster.runtime("a");
