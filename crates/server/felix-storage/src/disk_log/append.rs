@@ -644,17 +644,26 @@ impl LogInner {
                 Err(_) => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
             }
         }
-        match Arc::clone(&self).roll_in_background().await {
-            Ok(()) => {
-                self.roll_state
-                    .store(RollState::Idle as u8, Ordering::Release);
-                Ok(self.segments.read().active().base_offset())
+        // In its own task: a caller that stops waiting must not leave the roll
+        // slot taken, or a failure before the seal unrecorded.
+        let roller = Arc::clone(&self);
+        tokio::spawn(async move {
+            match Arc::clone(&roller).roll_in_background().await {
+                Ok(()) => {
+                    roller
+                        .roll_state
+                        .store(RollState::Idle as u8, Ordering::Release);
+                    Ok(())
+                }
+                Err(err) => {
+                    roller.record_roll_failure(&err);
+                    Err(err)
+                }
             }
-            Err(err) => {
-                self.record_roll_failure(&err);
-                Err(err)
-            }
-        }
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))??;
+        Ok(self.segments.read().active().base_offset())
     }
 
     /// Wait out a background roll in flight and keep another from starting

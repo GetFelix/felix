@@ -420,6 +420,14 @@ jobs:
           cargo test $PACKAGES --doc
           if [ -n "$LIB_PACKAGES" ]; then cargo test $LIB_PACKAGES --lib; fi
 
+      # The io_uring tests skip where there is no ring; here there is one, and
+      # a skip would hide the flusher going untested.
+      - name: Storage flushes through io_uring
+        if: needs.changes.outputs.test_packages == '' || contains(needs.changes.outputs.test_packages, 'felix-storage')
+        env:
+          FELIX_TEST_REQUIRE_IO_URING: "1"
+        run: cargo test -p felix-storage --lib -- uring
+
       - name: Raft groups without group threads
         if: needs.changes.outputs.test_packages == '' || contains(needs.changes.outputs.test_packages, 'felix-replication')
         run: task test:raft-no-group-threads
