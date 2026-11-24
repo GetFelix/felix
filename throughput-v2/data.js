@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795486499048,
+  "lastUpdate": 1795491790177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67548,6 +67548,58 @@ window.BENCHMARK_DATA = {
             "range": "9449.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811824.20\nmean: 810548.55\nstdev: 9449.53\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "23ee170cea1b00c90080cc870dc03455113a8281",
+          "message": "fix: make main green on Raft (group describe, history check, cache watch replay, stalled subscribers) (#3090)\n\n* feat(raft): replay a cache watch resume from each member's recent changes (#3006)\n\nA Raft cache group kept no change history, so a watch resuming from below\nthe applied edge got resnapshot and every key's current value, where the\nhybrid replays [from_offset, tail) from its shard log.\n\nEach cache member now keeps its latest applied changes (4096 changes or\n1 MiB of keys and values per shard) inside CacheState, recorded under the\nstate's write lock whether or not anyone watches. A resume whose offset is\nat or past the oldest kept change is replayed from it, deletes included,\nstarting with the change at from_offset, and joins live delivery at the\nedge read under the same lock. Below that, after a snapshot install, and\nafter a restart the ring starts empty past the snapshot's entry and the\nresume resnapshots after the read barrier, as before.\n\nSpec-Unaffected: FelixRaftCache.tla models apply, snapshot and expiry, not watch delivery; the ring is in-memory state outside the replicated state and the snapshot.\n\n* ci: run the C# SDK job when broker or fixture code changes\n\nIts fixture tests run against a real broker, so a broker-side change\ncould break them without the job running (as #3072 did).\n\nSpec-Unaffected: CI path filter only\n\n* test(history): the Raft liveness check measures the leader's voters\n\nThe post-heal liveness check took the voters from what each member said\nabout itself and compared followers asked before the leader with the\nleader's later commit index. A drained broker's member is cut out of the\ngroup without hearing of it and keeps calling itself a follower, and under\nthe workload a follower asked first is always behind, so a serving shard\nread as stuck for the whole recovery window.\n\nshard_inspect's raft view now names the group's voters. The check counts\nthe leader's voters only, reads the members again after the leader, and a\nvoter it cannot ask still counts against the majority.\n\nFixes #3082\n\nSpec-Unaffected: harness check and an inspector field; no read, write or election behaviour changes\n\n* fix(raft): group describe clamps the cursor, not the tail\n\n#3077 raised the described tail to the cursor when a poll had settled the\ngroup's own trailing entries. That counted group-only entries as records\nand broke the hybrid-parity test (tail is the records' end). Keep the tail\nat the records' end and report the cursor clamped to it: everything below\nthe records' end is finished, so the answer stays true and committed never\nexceeds tail.\n\nSpec-Unaffected: describe output only; no model covers group describe\n\n* fix(raft): cache watch ring records only while watched, live events never evicted\n\n- A live watch report is built from the change itself, so a change bigger\n  than the ring's byte bound still reaches live watchers; it moves the\n  replay floor past itself.\n- A member keeps recent changes only once a watch of the shard has taken\n  a change here, and drops the ring after five minutes without a watch.\n  An unwatched shard takes the same apply path as before.\n- Ring accounting counts the slot and the key's allocation.\n- Handler test for replay, the base, and the read-barrier fallback.\n\nSpec-Unaffected: FelixRaftCache.tla does not model watch delivery\n\n* refactor(raft): the cache apply match names every command\n\nA catch-all arm let a future key-changing command skip the recent-changes\nring, so a resume would be replayed with a gap. Name each command so the\ncompiler asks.\n\nSpec-Unaffected: no behaviour change\n\n* fix(raft): a leaderless member placement moved off routes by placement (#3086)\n\nA group that removes a member does not tell it. The removed member stays\nopen on its broker hearing no leader, and that broker answered every\nsubscribe for the shard with not_ready. A client whose entry broker it was\nretried there until its deadline, every session, so its subscriber stopped\nfor good (history seed 1592590337, after drain broker-0 plus the power cut).\n\nSuch a member, on a broker its placement no longer names, now routes as a\nbroker with no member does: readers are redirected and writes forwarded to\nthe placed leader.\n\nSpec-Unaffected: request routing on a broker only; no log, vote or commit change\n\n* docs(changelog): a removed member no longer stalls subscribers (#3086)\n\nSpec-Unaffected: changelog only",
+          "timestamp": "2026-11-23T19:30:30-08:00",
+          "tree_id": "6fd7b412c4722973262264d2172fa748635f4256",
+          "url": "https://github.com/GetFelix/felix/commit/23ee170cea1b00c90080cc870dc03455113a8281"
+        },
+        "date": 1795491789393,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 476152.3,
+            "range": "39172.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476152.30\nmean: 492826.28\nstdev: 39172.63\ncv: 7.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 476152.3,
+            "range": "39172.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476152.30\nmean: 492826.28\nstdev: 39172.63\ncv: 7.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121031.54,
+            "range": "8723.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121031.54\nmean: 117666.62\nstdev: 8723.97\ncv: 7.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1210315.38,
+            "range": "87239.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1210315.38\nmean: 1176666.24\nstdev: 87239.73\ncv: 7.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
