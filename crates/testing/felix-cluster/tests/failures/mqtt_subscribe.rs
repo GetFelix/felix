@@ -39,6 +39,8 @@ async fn withheld_until_committed(raft: bool) {
     if raft && !super::raft::opted_in() {
         return;
     }
+    // The hybrid form is the Raft one when the suite runs on Raft.
+    let raft = raft || felix_cluster::suite_runs_on_raft();
     let mut broker_env = vec![
         ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
         // A refused publish comes back quickly; the record stays on the

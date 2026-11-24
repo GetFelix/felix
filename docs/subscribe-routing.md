@@ -120,7 +120,10 @@ Not free, and these are the reasons to revisit it:
   from its own log. A broker with no member of the group answers `NotLeader`
   naming the leader placement chose, with generation 0, or refuses it when the
   cluster reports that broker down or in a region this one has no bridge to. A
-  member that hears no leader refuses retryably.
+  member that hears no leader refuses retryably, unless placement no longer
+  names its broker: a member removed from its group is not told and may never
+  hear a leader again, so it redirects to the placed leader as a broker with no
+  member does.
 - **Ownership changing under a live subscription** ends that subscription with
   `NotLeader` naming the new owner. The client reconnects there and resumes from
   its last offset, which durable streams already support; what it must not do is

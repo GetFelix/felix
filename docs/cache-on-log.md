@@ -307,12 +307,17 @@ already reconstructs the state a retained start shortcuts, and serving both
 would deliver every value twice.
 
 On a Raft cache shard any member serves a watch, and a follower's applied
-state can trail a put its leader already acknowledged. A join that hands
-out state, a retained watch or a resume from below the edge (answered with a
-resnapshot), therefore passes the group's read barrier first, the same one a
+state can trail a put its leader already acknowledged. There is no shard
+log to replay, so a member that recently served a watch of the shard keeps
+its latest applied changes in memory (see
+[per-shard-raft.md](per-shard-raft.md), "Watches"), and a resume from an
+offset still kept is replayed from them. A join that hands out state, a
+retained watch or a resume from below the oldest kept change (answered with
+a resnapshot), passes the group's read barrier first, the same one a
 history read uses: the follower applies the leader's read index before it
 takes the snapshot, so the set holds every put acknowledged before the watch
-began. A live-only watch hands out no state and skips the barrier. A barrier
+began. A live-only watch and a replayed resume hand out no state and skip
+the barrier: the changes they miss arrive live. A barrier
 that cannot complete (no leader known, no answer in time) is refused as
 retryable.
 

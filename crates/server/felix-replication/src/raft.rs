@@ -63,8 +63,8 @@ pub use deliver::{IdempotentPublish, RaftReads};
 #[cfg(any(test, feature = "testing"))]
 pub use draws::{TimerSeed, seed_timers};
 pub use engine::{
-    CacheCondition, CacheOp, CacheReply, CacheWatchPoint, GroupWriteError, ProducerRequest,
-    RaftEngine,
+    CacheCondition, CacheOp, CacheReplay, CacheReplayed, CacheReply, CacheWatchPoint,
+    GroupWriteError, ProducerRequest, RaftEngine,
 };
 pub use group::driver::MembershipProgress;
 pub use group::placed::Placement;
@@ -75,8 +75,8 @@ pub use propose::{AckAt, AnswerAt, Batch, Record, Sequenced};
 pub use reform::{GapSnapshot, reform_report};
 pub use root::{RootOpened, RootReport, open_root};
 pub use runtime::{
-    ElectionLoad, GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError,
-    OpenedMember, Role, RuntimeConfig,
+    ElectionLoad, FollowerProgress, GroupRuntime, GroupStatus, InitializeError, InvalidTimers,
+    NotBlank, OpenError, OpenedMember, Role, RuntimeConfig,
 };
 #[cfg(any(test, feature = "testing"))]
 pub use testing::UncheckedRecord;

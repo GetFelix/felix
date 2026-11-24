@@ -281,7 +281,10 @@ pub trait StorageApi: Debug + Send + Sync {
 /// follower reach its log without passing through `put`, so a follower's
 /// observer stays silent. Watches are served where writes are applied.
 pub trait CacheObserver: Debug + Send + Sync {
-    fn cache_changed(&self, change: CacheChange);
+    /// Hand `change` to the shard's watchers. Returns whether the shard had
+    /// any, which a Raft member uses to decide whether to keep recent
+    /// changes for a resume.
+    fn cache_changed(&self, change: CacheChange) -> bool;
 
     /// Whether any change could reach a watcher now. A writer may skip
     /// building a change while this is false: a watcher registered later

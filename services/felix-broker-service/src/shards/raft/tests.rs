@@ -2827,6 +2827,12 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
         ended.expect("ended in time").is_none(),
         "a record reached a deposed leader's subscriber"
     );
+    // Told the shard moved, so a client follows it; no resume offset, since
+    // the next leader may cut this log past what the reader was offered.
+    let moved = receiver
+        .moved()
+        .expect("the subscriber was told the shard moved");
+    assert_eq!(moved.resume_from, None);
     // The member still follows a leader, so a reader registering now is
     // served from the log.
     assert!(
@@ -3307,4 +3313,56 @@ fn a_blank_copy_admits_only_the_brokers_in_the_group_now() {
     moved.successor = Some("broker-e".to_string());
     assert!(admitted(&moved).0.contains("broker-e"));
     assert!(admitted(&moved).1.contains("broker-e"));
+}
+
+/// **A leaderless member that placement moved off routes by placement.** A
+/// member removed from its group is not told, so it stays open here hearing
+/// no leader. Its requests go to the leader placement names, not to the
+/// stale hint, and not "not ready", which would keep a client that enters
+/// here retrying here. Placed here again, it routes as a member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leaderless_member_placement_moved_off_routes_by_placement() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let follower = (0..members.len())
+        .find(|&at| at != leader)
+        .expect("a follower");
+    let other = (0..members.len())
+        .find(|&at| at != leader && at != follower)
+        .expect("another follower");
+    let removed = &members[follower];
+
+    // Moved off while it still hears the leader: it serves readers from its
+    // log until the group lets it go.
+    let mut moved = replicated();
+    moved.leader = members[other].name.to_string();
+    moved.replicas = vec![
+        members[leader].name.to_string(),
+        members[other].name.to_string(),
+        "broker-d".to_string(),
+    ];
+    removed.shards.take(&mut assignments([moved.clone()])).await;
+    assert!(!EngineShards::placed_elsewhere(&*removed.shards, &orders));
+
+    isolate(&net, removed.name);
+    until("the removed member hears no leader", || {
+        removed.shards.runtime.hears_leader(&orders) == Some(false)
+    })
+    .await;
+    removed.shards.take(&mut assignments([moved.clone()])).await;
+    assert!(
+        removed.shards.runtime.status(&orders).is_some(),
+        "still open"
+    );
+    assert!(EngineShards::placed_elsewhere(&*removed.shards, &orders));
+    match EngineShards::dispatch(&*removed.shards, &orders, &addr_of) {
+        Some(Dispatch::Forward { node_id, .. }) => assert_eq!(node_id, members[other].name),
+        dispatched => panic!("not routed by placement: {dispatched:?}"),
+    }
+
+    removed.shards.take(&mut assignments([replicated()])).await;
+    assert!(!EngineShards::placed_elsewhere(&*removed.shards, &orders));
+    for member in &members {
+        member.shards.shutdown().await;
+    }
 }
