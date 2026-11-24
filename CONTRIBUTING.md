@@ -157,7 +157,8 @@ filler that restates what was just said.
   nightly, perf-pr, ipm-gate and tla-walk (tla-walk cancels only PR runs, not
   nightly or dispatch); runs on main are never cancelled.
 - The `Instructions per message` workflow counts the CPU instructions the
-  broker retires per acknowledged message (in-memory stream, 256 B, acked,
+  broker retires per acknowledged message (a durable Raft broker with periodic
+  fsync, 256 B, acked,
   48 keys over 48 shards, batch 1 and 64) and fails when a cell is more than
   3% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
   since hosted runners expose no hardware counters, so only user-space
