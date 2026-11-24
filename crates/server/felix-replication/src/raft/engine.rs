@@ -349,6 +349,12 @@ impl RaftEngine {
         self.runtime.status(shard)
     }
 
+    /// The members that vote in `shard`'s group, by the latest membership
+    /// this broker's member holds. `None` without a member.
+    pub fn voters(&self, shard: &ShardKey) -> Option<std::collections::BTreeSet<super::MemberId>> {
+        self.runtime.voters(shard)
+    }
+
     /// `shard`'s consumer groups as this broker's member has applied them.
     /// `None` without a member, or for a cache shard.
     pub fn groups(
