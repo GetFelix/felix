@@ -197,10 +197,20 @@ async fn a_full_disk_fails_the_publish_and_leaves_no_trace() {
     .await;
 
     cluster.heal(&fault).await.expect("heal");
-    cluster
-        .publish_via(&owner, STREAM, b"after".to_vec())
-        .await
-        .expect("a failed write does not stop the log, so a healed disk takes appends again");
+    // On Raft a refused write is held and retried with a backoff, so the
+    // first publish after the heal may be told to retry while it lands.
+    felix_cluster::wait::until(
+        Duration::from_secs(15),
+        "a healed disk takes appends again",
+        || async {
+            cluster
+                .publish_via(&owner, STREAM, b"after".to_vec())
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("a failed write does not stop the log, so a healed disk takes appends again");
     let refused = ["disk-full-1", "disk-full-2"];
     let held = replay(&cluster, &owner).await;
     assert_holds(&held, &["before", "after"], &refused);
