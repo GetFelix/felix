@@ -2468,7 +2468,11 @@ instead of being left with a feed nothing will write to or end.
   On a `Quorum` stream a batch this broker holds for the committed mark was not
   offered, so `resume_from` is at or below it: the batch is on disk and the next
   leader can still commit it.
-  Absent for an in-memory stream, whose sequence means nothing on another broker.
+  Absent for an in-memory stream, whose sequence means nothing on another broker,
+  and when a Raft leader that was deposed, or a member that knows no leader, ends
+  its readers: its log past what they were offered may be cut by the next
+  leader, so the reader resumes after the last offset it saw, or where it
+  started if it saw none.
   For a cache watch it is the shard log's tail, and absent if writes were still
   in flight when the watch ended; resume after the last offset seen then.
 - `node_id` and `addr` name the broker taking the shard, when this one knows:

@@ -41,21 +41,26 @@ impl DiskLog {
         Self::write_batch_keeping(inner, records, condition, order, writers)
             .await
             .map(|(written, _records)| written)
+            .map_err(|refused| refused.error)
     }
 
     /// [`Self::write_batch`], handing the records back once they are
-    /// written, or when `condition` does not hold.
+    /// written, when `condition` does not hold, and with an error whenever
+    /// the batch is still in hand.
     pub(super) async fn write_batch_keeping(
         inner: Arc<LogInner>,
         records: Vec<AppendRecord>,
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
         writers: WrittenBy,
-    ) -> Result<(std::result::Result<Written, Offset>, Vec<AppendRecord>)> {
+    ) -> std::result::Result<(std::result::Result<Written, Offset>, Vec<AppendRecord>), Refused>
+    {
         if records.is_empty() {
-            return Err(StorageError::InvalidRange);
+            return Err(Refused::with(StorageError::InvalidRange, records));
         }
-        inner.check_healthy()?;
+        if let Err(error) = inner.check_healthy() {
+            return Err(Refused::with(error, records));
+        }
         // Digested here rather than where they are observed, which is under
         // the `segments` write lock every other append waits on.
         let digests: Vec<u64> = if records.iter().any(|r| r.mark != RecordMark::None) {
@@ -78,8 +83,11 @@ impl DiskLog {
                                 | RecordMark::Group
                         ))
             }) {
-                return Err(StorageError::Unsupported(
-                    "membership, counter, batch piece, conditional piece and group records are not written yet",
+                return Err(Refused::with(
+                    StorageError::Unsupported(
+                        "membership, counter, batch piece, conditional piece and group records are not written yet",
+                    ),
+                    records,
                 ));
             }
             records
@@ -127,13 +135,19 @@ impl DiskLog {
                 },
             )
             .await
-            .map_err(StorageError::Io)?;
+            .map_err(|err| Refused {
+                error: StorageError::Io(err),
+                records: None,
+            })?;
         // Back here rather than dropped on the append thread, so neither the
         // batch's memory nor the log's reference count changes hands per
         // append.
         let (appended, records, appender) = appended;
         drop(appender);
-        let appended = appended?;
+        let appended = match appended {
+            Ok(appended) => appended,
+            Err(error) => return Err(Refused::with(error, records)),
+        };
         let (written, prepare_roll, extension) = match appended {
             Ok(appended) => appended,
             Err(tail) => return Ok((Err(tail), records)),
@@ -298,6 +312,24 @@ pub(super) enum HoldAt {
     Reply,
 }
 
+/// An append that failed, with its records when the caller can have them
+/// back.
+pub(crate) struct Refused {
+    pub(crate) error: StorageError,
+    /// `None` once the records were lost with the append thread's reply.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) records: Option<Vec<AppendRecord>>,
+}
+
+impl Refused {
+    fn with(error: StorageError, records: Vec<AppendRecord>) -> Self {
+        Self {
+            error,
+            records: Some(records),
+        }
+    }
+}
+
 /// When [`DiskLog::write_batch`] may write.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum WriteIf {
@@ -396,7 +428,16 @@ impl LogInner {
         // past it, and a flush may already have covered it.
         let mut segments = self.segments.write();
         let segment = segments.active().id();
-        let ((first_offset, last_offset), index) = segments.active_mut().finish(staged, wrote)?;
+        let ((first_offset, last_offset), index) = match segments.active_mut().finish(staged, wrote)
+        {
+            Ok(finished) => finished,
+            Err(err) => {
+                // A failed rewind poisons the writer; the log must say so, or
+                // a caller retrying a refused write would build on it.
+                self.poison_after_writer_failure(&segments);
+                return Err(err);
+            }
+        };
         self.observe_marks(first_offset, records, digests);
         self.records_written
             .fetch_add(records.len() as u64, Ordering::Relaxed);
@@ -789,10 +830,10 @@ impl LogInner {
     }
 
     /// Poison the log if the active writer has poisoned itself, which it does
-    /// when one of its own syncs fails.
+    /// when one of its own syncs, or the rewind after a failed write, fails.
     pub(super) fn poison_after_writer_failure(&self, segments: &SegmentSet) {
         if segments.active().is_poisoned() {
-            self.poison("a sync of the active segment failed".to_string());
+            self.poison("a sync or rewind of the active segment failed".to_string());
         }
     }
 

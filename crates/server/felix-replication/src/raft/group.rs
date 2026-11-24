@@ -40,7 +40,7 @@ use super::propose::{
 };
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
-use super::runtime::{Admission, GroupStatus, OpenError, Role};
+use super::runtime::{Admission, FollowerProgress, GroupStatus, OpenError, Role};
 use super::ticker::{VoteClock, VoteSaves};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -2631,6 +2631,9 @@ impl Group {
     /// already on disk; nothing is written here.
     pub(crate) async fn shutdown(&self) {
         self.stop.cancel();
+        // An append waiting out a full disk would hold the stop for up to
+        // its retry limit.
+        self.log.stop_retrying();
         if let Err(err) = self.raft.shutdown().await {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group did not stop cleanly");
         }
@@ -2769,6 +2772,33 @@ impl Group {
         .flatten()
         .fold(committed, |a, b| if b.index > a.index { b } else { a });
         Some((term, furthest))
+    }
+
+    /// Replication to every other member, while this member leads. Read
+    /// from openraft's metrics, so a member it is not replicating to yet
+    /// is absent.
+    pub(crate) fn followers(&self) -> Option<Vec<FollowerProgress>> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics().borrow_watched().clone();
+        if metrics.state != ServerState::Leader {
+            return None;
+        }
+        let voters: BTreeSet<MemberId> =
+            metrics.membership_config.membership().voter_ids().collect();
+        let live = self.pace.live(metrics.current_term);
+        let followers = metrics
+            .replication
+            .as_ref()?
+            .iter()
+            .filter(|(member, _)| **member != self.member)
+            .map(|(member, matched)| FollowerProgress {
+                member: member.clone(),
+                voter: voters.contains(member),
+                matched: matched.as_ref().map(|id| id.index),
+                live: live.contains(member),
+            })
+            .collect();
+        Some(followers)
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {

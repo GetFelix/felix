@@ -157,6 +157,11 @@ pub enum MoveStep {
     /// A hybrid move left on a Raft shard is dropped. Its group never
     /// reports what the move waits for.
     RaftMoveDropped,
+    /// An RF 1 shard's move is undone: `node`, the destination, leaves the
+    /// set and the old broker keeps the shard, because `node` is down,
+    /// draining or gone before it votes, or draining while it votes, or an
+    /// operator moved the shard back.
+    RaftMoveUndone { node: String },
 }
 
 impl MoveStep {
@@ -202,6 +207,7 @@ impl MoveStep {
             Self::RaftLeader { .. } => "raft_leader",
             Self::RaftReplace { .. } => "raft_replace",
             Self::RaftMoveDropped => "raft_move_dropped",
+            Self::RaftMoveUndone { .. } => "raft_move_undone",
         }
     }
 }
@@ -286,6 +292,10 @@ pub enum Blocked {
     /// A formed Raft group has not reported voters that keep a majority of
     /// the next set (#2905).
     Unapplied,
+    /// An RF 1 shard's move reached two voters, and the destination `node`
+    /// is not serving. Either set of one needs its vote, so the shard stays
+    /// until it is back or an operator re-forms the group.
+    MoveStranded { node: String },
 }
 
 impl std::fmt::Display for Blocked {
@@ -346,6 +356,10 @@ impl std::fmt::Display for Blocked {
             Self::Unapplied => write!(
                 f,
                 "waiting for the group to report voters that keep a majority of the next set"
+            ),
+            Self::MoveStranded { node } => write!(
+                f,
+                "{node} votes in this group of two and is not serving; the move finishes once it is back, or re-form the group without it"
             ),
         }
     }

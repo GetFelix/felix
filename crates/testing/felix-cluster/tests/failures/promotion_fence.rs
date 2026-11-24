@@ -243,6 +243,11 @@ async fn deposed_leader_meets_the_fenced_majority(deposed: Deposed) {
 #[serial]
 #[tokio::test]
 async fn a_partitioned_leader_is_refused_by_the_majority_its_successor_fenced() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the control-plane promotion fence and lease are hybrid; a Raft term refuses a deposed leader, and fencing::a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses covers it",
+    ) {
+        return;
+    }
     deposed_leader_meets_the_fenced_majority(Deposed::Partitioned).await;
 }
 
@@ -250,6 +255,11 @@ async fn a_partitioned_leader_is_refused_by_the_majority_its_successor_fenced() 
 #[serial]
 #[tokio::test]
 async fn a_frozen_leader_is_refused_by_the_majority_its_successor_fenced() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the control-plane promotion fence and lease are hybrid; a Raft term refuses a deposed leader, and fencing::a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses covers it",
+    ) {
+        return;
+    }
     deposed_leader_meets_the_fenced_majority(Deposed::Frozen).await;
 }
 
@@ -259,6 +269,11 @@ async fn a_frozen_leader_is_refused_by_the_majority_its_successor_fenced() {
 #[serial]
 #[tokio::test]
 async fn a_mixed_fleet_fails_over_on_the_lease() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the lease and the fence opt-out are hybrid; Raft elects by term",
+    ) {
+        return;
+    }
     let without_fence = vec![("FELIX_INTERNAL_FENCE".to_string(), "false".to_string())];
     let cluster = Cluster::start(config(vec![without_fence]))
         .await

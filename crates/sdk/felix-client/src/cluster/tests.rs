@@ -7,6 +7,7 @@ mod conditional_outcome;
 mod connections;
 mod dead_leader_dial;
 mod decisions;
+mod deposed_resume;
 mod error_codes;
 mod explicit_shard;
 mod head_trim;

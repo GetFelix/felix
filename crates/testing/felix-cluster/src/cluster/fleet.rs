@@ -65,8 +65,10 @@ impl Cluster {
     }
 
     /// The fleet features `node_id` reports enabled, by the `feature` label
-    /// of its `felix_broker_fleet_feature_enabled` gauge.
-    async fn fleet_features_enabled(&self, node_id: &str) -> Result<BTreeSet<String>> {
+    /// of its `felix_broker_fleet_feature_enabled` gauge. Ask by name rather
+    /// than summing the gauge: a Raft cluster finalizes its own features as
+    /// it forms, so the count never matches what a test finalized.
+    pub async fn fleet_features_enabled(&self, node_id: &str) -> Result<BTreeSet<String>> {
         let node = self
             .node(node_id)
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
