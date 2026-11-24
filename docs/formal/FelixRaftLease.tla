@@ -242,6 +242,31 @@
 (*   SleepAnswerRenews      -- an answer to a sleep request counts as an   *)
 (*                             answer to a leader's message, though the    *)
 (*                             follower's window did not restart.          *)
+(*                                                                         *)
+(* Part 3, the lease allowance (issue 3103; docs/per-shard-raft.md, "A     *)
+(* `Leader` leader's own tail"). `Allowances = TRUE`; off, its variables   *)
+(* do not move. The leader names an allowance (term, seq, end) (`Name`):   *)
+(* entries 1..end may be answered on the lease. It names any end from its  *)
+(* log end (idle) to log end + `Budget` (writes waiting). Appends and      *)
+(* heartbeats carry it; a follower stores the one with the highest seq,    *)
+(* durably, and echoes it in its answer. A local ack also needs the entry  *)
+(* below an end a majority holds in the leader's term (`Granted`). An echo *)
+(* from before the leader last lowered its end is not counted: the         *)
+(* follower may since have stored the lower one. Vote rule (`AllowOk`): a  *)
+(* voter holding (T, end) from L grants, and stands, only for a candidate  *)
+(* whose last log id is at or past the allowance's, or for L itself. The   *)
+(* model has no blank entry, so the allowance's log id is the leader's own *)
+(* entry at `end` when it has one, else (T, end).                          *)
+(*                                                                         *)
+(*   LeaseAckedSurvive      -- a write answered on the lease is in the log *)
+(*                             of every leader of a later term.            *)
+(*                                                                         *)
+(* Knobs, each removes one rule:                                           *)
+(*                                                                         *)
+(*   VoteIgnoresAllowance   -- votes and campaigns ignore the allowance.   *)
+(*   AckIgnoresAllowance    -- a local ack needs only the lease.           *)
+(*   AllowanceNotDurable    -- the stored allowance is lost at a restart.  *)
+(*   EchoBeforeLowering     -- echoes from before a lowering still count.  *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
@@ -261,7 +286,9 @@ CONSTANTS
     VoidEquality, MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends,
     SuspendCheck, WakeCheckLate, RestoreOwnLead, RestoreAnyVote,
     HoldExemptsNamed, HoldExemptsAny,
-    MaxWakes, HoldEndClearsWindow, SleepAnswerRenews
+    MaxWakes, HoldEndClearsWindow, SleepAnswerRenews,
+    Allowances, Budget, MaxNames, VoteIgnoresAllowance, AckIgnoresAllowance,
+    AllowanceNotDurable, EchoBeforeLowering
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -313,7 +340,13 @@ VARIABLES
     woke,         \* woken, and Felix has not yet seen the jump (WakeCheckLate)
     \* Sleep
     holdAge,      \* how long ago a wake not caused by the leader started a hold
-    wakes         \* sleep steps taken, to bound the run
+    wakes,        \* sleep steps taken, to bound the run
+    \* Part 3
+    allow,        \* on disk: the allowance stored, NoAllow for none
+    echo,         \* leader: per follower, the newest allowance it echoed
+    lowSeq,       \* leader: seq of its last lowering; older echoes do not count
+    names,        \* allowances named so far; also the seq source
+    wroteIn       \* history: the term each write was made in
 
 groupVars == <<term, votedFor, followed, led, role, log, commit, heardAge, startAge,
               ackAge, match>>
@@ -322,7 +355,8 @@ histVars  == <<delivered, acked, staleAck, elected, nextId, heldGrant>>
 xVars     == <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
               xmsgs, transfers, suspended, sinceWake, suspends, woke>>
 sleepVars == <<holdAge, wakes>>
-vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars, sleepVars>>
+allowVars == <<allow, echo, lowSeq, names, wroteIn>>
+vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars, sleepVars, allowVars>>
 
 None == -1
 Symm == Permutations(Servers)
@@ -463,6 +497,41 @@ MayGrant(v, c) ==
 \* now, or none.
 Fort(v, c) == IF sup[v][c].left > 0 THEN sup[v][c].epoch ELSE 0
 
+\* Part 3. `idt` is the term of the allowance's log id (see the header).
+NoAllow == [term |-> 0, seq |-> 0, end |-> 0, idt |-> 0, from |-> Nobody]
+
+IdTerm(l, e) ==
+    IF e = 0 THEN 0 ELSE IF e <= Len(log[l]) THEN log[l][e][1] ELSE term[l]
+
+\* The candidate's last log id is at or past the allowance's.
+PastAllowance(c, a) ==
+    \/ LastTerm(c) > a.idt
+    \/ LastTerm(c) = a.idt /\ Len(log[c]) >= a.end
+
+\* The vote rule: v grants c, or stands itself when v = c.
+AllowOk(v, c) ==
+    \/ ~Allowances \/ VoteIgnoresAllowance
+    \/ allow[v].term = 0
+    \/ allow[v].from = c
+    \/ PastAllowance(c, allow[v])
+
+\* A majority of l's term holds an allowance reaching entry p: l by its own
+\* store, each follower by an echo taken since l last lowered its end.
+Granted(l, p) ==
+    Majority({b \in Servers :
+        IF b = l THEN allow[l].term = term[l] /\ allow[l].end >= p
+        ELSE /\ echo[l][b].term = term[l]
+             /\ EchoBeforeLowering \/ echo[l][b].seq >= lowSeq[l]
+             /\ echo[l][b].end >= p})
+
+\* A write appended now is answered on the lease.
+LocalAck(l) ==
+    /\ LeaseValid(l)
+    /\ ~Allowances \/ AckIgnoresAllowance \/ Granted(l, Len(log[l]) + 1)
+
+\* What an append carries: the allowance l named in this term, if any.
+Named(l) == IF allow[l].term = term[l] /\ allow[l].from = l THEN allow[l] ELSE NoAllow
+
 Init ==
     /\ term = [b \in Servers |-> 0]
     /\ votedFor = [b \in Servers |-> Nobody]
@@ -507,6 +576,11 @@ Init ==
     /\ woke = [b \in Servers |-> FALSE]
     /\ holdAge = NoAges
     /\ wakes = 0
+    /\ allow = [b \in Servers |-> NoAllow]
+    /\ echo = [b \in Servers |-> [f \in Servers |-> NoAllow]]
+    /\ lowSeq = [b \in Servers |-> 0]
+    /\ names = 0
+    /\ wroteIn = [i \in 1..MaxWrites |-> 0]
 
 \* One tick of real time. Every age grows by the gain of the clock it is
 \* read on: a message's stamp is read on the leader's clock. A suspended
@@ -549,6 +623,7 @@ Elect(c, Q, nt) ==
        ELSE /\ ~InWindow(c) /\ downAge[c] >= ElectionTimeoutMin
             /\ ~JustStarted(c) \/ HoldSkipped(c)
     /\ \A v \in Q \ {c} : LogOk(c, v) /\ MayGrant(v, c)
+    /\ \A v \in Q : AllowOk(v, c)
     /\ term' = [b \in Servers |-> IF b \in Q THEN nt ELSE term[b]]
     /\ votedFor' = [b \in Servers |-> IF b \in Q THEN c ELSE votedFor[b]]
     \* A vote for a candidate is not committed, and the leader's own does
@@ -599,7 +674,7 @@ Send(l, f) ==
     /\ ~\E m \in msgs : m.kind = "app" /\ m.from = l /\ m.to = f
     /\ msgs' = msgs \cup {[kind |-> "app", from |-> l, to |-> f,
                            term |-> term[l], age |-> 0,
-                           log |-> log[l], n |-> commit[l]]}
+                           log |-> log[l], n |-> commit[l], al |-> Named(l)]}
     /\ UNCHANGED <<groupVars, restarts, histVars, storeVars, xVars>>
 
 Drop(m) ==
@@ -609,6 +684,9 @@ Drop(m) ==
 RecvApp(m) ==
     LET f == m.to
         stale == {a \in msgs : a.kind = "ack" /\ a.from = f /\ a.to = m.from}
+        \* Synced before the answer leaves, so the echo is what is on disk.
+        stored == IF m.al.term = m.term /\ m.al.seq > allow[f].seq
+                  THEN m.al ELSE allow[f]
     IN
     /\ m.kind = "app" /\ m.term >= term[f] /\ Up(f)
     /\ term' = [term EXCEPT ![f] = m.term]
@@ -621,8 +699,12 @@ RecvApp(m) ==
     /\ msgs' = LiveMsgs(((msgs \ {m}) \ stale)
                            \cup {[kind |-> "ack", from |-> f, to |-> m.from,
                                   term |-> m.term, age |-> m.age,
-                                  log |-> <<>>, n |-> Len(m.log)]},
+                                  log |-> <<>>, n |-> Len(m.log),
+                                  al |-> IF stored.term = m.term /\ stored.from = m.from
+                                         THEN stored ELSE NoAllow]},
                         term', role')
+    /\ allow' = [allow EXCEPT ![f] = stored]
+    /\ UNCHANGED <<echo, lowSeq, names, wroteIn>>
     /\ followed' = [followed EXCEPT ![f] = RestartRenewsFollowed]
     /\ led' = [led EXCEPT ![f] = FALSE]
     /\ leaderOf' = [leaderOf EXCEPT ![f] = IF LeaderBypass THEN m.from ELSE Nobody]
@@ -653,6 +735,9 @@ RecvAck(m) ==
                    IF acked[i] = "none"
                       /\ \E k \in 1..newCommit : log[l][k] = <<term[l], i>>
                    THEN "commit" ELSE acked[i]]
+    /\ echo' = IF m.al.term = term[l] /\ m.al.seq > echo[l][f].seq
+               THEN [echo EXCEPT ![l][f] = m.al] ELSE echo
+    /\ UNCHANGED <<allow, lowSeq, names, wroteIn>>
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<term, votedFor, followed, led, role, log, heardAge, startAge, restarts,
                    delivered, staleAck, elected, nextId, heldGrant, storeVars, xVars>>
@@ -662,11 +747,13 @@ ClientWrite(l) ==
     /\ stalledAge[l] = None
     /\ log' = [log EXCEPT ![l] = Append(@, <<term[l], nextId>>)]
     /\ acked' = [acked EXCEPT ![nextId] =
-                    IF LeaseValid(l) THEN "local" ELSE "none"]
+                    IF LocalAck(l) THEN "local" ELSE "none"]
     /\ staleAck' = (staleAck \/
-                     (LeaseValid(l) /\ \E t \in 1..MaxTerm :
+                     (LocalAck(l) /\ \E t \in 1..MaxTerm :
                           t > term[l] /\ elected[t] # {}))
     /\ nextId' = nextId + 1
+    /\ wroteIn' = IF Allowances THEN [wroteIn EXCEPT ![nextId] = term[l]] ELSE wroteIn
+    /\ UNCHANGED <<allow, echo, lowSeq, names>>
     /\ UNCHANGED <<term, votedFor, followed, led, role, commit, heardAge, startAge, ackAge,
                    match, msgs, restarts, delivered, elected, heldGrant, storeVars,
                    xVars>>
@@ -711,6 +798,9 @@ Restart(b) ==
     /\ xfer' = [xfer EXCEPT ![b] = 0]
     /\ auth' = [auth EXCEPT ![b] = NoAuth]
     /\ downAge' = [downAge EXCEPT ![b] = Old]
+    /\ allow' = IF AllowanceNotDurable THEN [allow EXCEPT ![b] = NoAllow] ELSE allow
+    /\ echo' = [echo EXCEPT ![b] = [f \in Servers |-> NoAllow]]
+    /\ UNCHANGED <<lowSeq, names, wroteIn>>
     /\ UNCHANGED <<term, votedFor, followed, led, log, commit, histVars, beats, stalledAge>>
     /\ UNCHANGED <<leaderOf, stepDowns, xmsgs, transfers, suspended, sinceWake, suspends,
                    woke>>
@@ -951,20 +1041,48 @@ SleepAnswer(l, f) ==
                    msgs, restarts, histVars, storeVars, holdAge>>
     /\ UNCHANGED xVars
 
+(***************************************************************************)
+(* Part 3: the lease allowance.                                            *)
+(***************************************************************************)
+
+\* The leader names an allowance and stores it itself, durably. An end
+\* below the last one it named in this term is a lowering: what it already
+\* answered is at or below its log end, so still covered.
+Name(l) ==
+    /\ Allowances /\ names < MaxNames
+    /\ role[l] = "leader" /\ Up(l)
+    /\ \E e \in Len(log[l])..(Len(log[l]) + Budget) :
+          /\ Named(l) = NoAllow \/ e # allow[l].end
+          /\ allow' = [allow EXCEPT ![l] =
+                         [term |-> term[l], seq |-> names + 1, end |-> e,
+                          idt |-> IdTerm(l, e), from |-> l]]
+          /\ lowSeq' = IF Named(l) # NoAllow /\ e < allow[l].end
+                       THEN [lowSeq EXCEPT ![l] = names + 1] ELSE lowSeq
+    /\ names' = names + 1
+    /\ UNCHANGED <<echo, wroteIn>>
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars, xVars, sleepVars>>
+
 Next ==
-    \/ Tick
-    \/ /\ \/ \E c \in Servers, Q \in SUBSET Servers, nt \in 1..MaxTerm : Elect(c, Q, nt)
-          \/ \E l, f \in Servers : Send(l, f) \/ Beat(l, f) \/ Withdraw(l, f)
-          \/ \E m \in msgs : Drop(m) \/ RecvApp(m) \/ RecvAck(m)
-          \/ \E m \in beatMsgs : DropBeat(m) \/ RecvReply(m)
-          \/ \E b \in Servers : ClientWrite(b) \/ Deliver(b) \/ Restart(b) \/ Stall(b)
-          \/ \E b \in Servers : Notice(b) \/ StepDown(b) \/ VoidLate(b) \/ TransferExpire(b)
-                                \/ Suspend(b) \/ Wake(b) \/ SeeWake(b)
-          \/ \E l, t \in Servers : Transfer(l, t)
-          \/ \E m \in xmsgs : RecvXfer(m) \/ DropXfer(m)
+    \/ /\ \/ Tick
+          \/ /\ \/ \E c \in Servers, Q \in SUBSET Servers, nt \in 1..MaxTerm : Elect(c, Q, nt)
+                \/ \E l, f \in Servers : Send(l, f) \/ Beat(l, f) \/ Withdraw(l, f)
+                \/ \E m \in msgs : Drop(m)
+                \/ \E m \in beatMsgs : DropBeat(m) \/ RecvReply(m)
+                \/ \E b \in Servers : Deliver(b) \/ Stall(b)
+                \/ \E b \in Servers : Notice(b) \/ StepDown(b) \/ VoidLate(b)
+                                      \/ TransferExpire(b) \/ Suspend(b) \/ Wake(b)
+                                      \/ SeeWake(b)
+                \/ \E l, t \in Servers : Transfer(l, t)
+                \/ \E m \in xmsgs : RecvXfer(m) \/ DropXfer(m)
+             /\ UNCHANGED sleepVars
+          \/ \E b \in Servers : HoldWake(b) \/ EndHold(b)
+          \/ \E l, f \in Servers : SleepAnswer(l, f)
+       /\ UNCHANGED allowVars
+    \* These set the Part 3 variables themselves.
+    \/ /\ \/ \E m \in msgs : RecvApp(m) \/ RecvAck(m)
+          \/ \E b \in Servers : ClientWrite(b) \/ Restart(b)
        /\ UNCHANGED sleepVars
-    \/ \E b \in Servers : HoldWake(b) \/ EndHold(b)
-    \/ \E l, f \in Servers : SleepAnswer(l, f)
+    \/ \E l \in Servers : Name(l)
 
 Spec == Init /\ [][Next]_vars
 
@@ -1017,6 +1135,10 @@ TypeOK ==
     /\ woke \in [Servers -> BOOLEAN]
     /\ holdAge \in [Servers -> Ages]
     /\ wakes \in 0..MaxWakes
+    /\ \A b \in Servers : allow[b].seq \in 0..MaxNames /\ allow[b].term \in 0..MaxTerm
+    /\ lowSeq \in [Servers -> 0..MaxNames]
+    /\ names \in 0..MaxNames
+    /\ wroteIn \in [1..MaxWrites -> 0..MaxTerm]
 
 LeaseExclusive ==
     \A a, b \in Servers : a # b => ~(LeaseValid(a) /\ LeaseValid(b))
@@ -1042,6 +1164,12 @@ Holds(b, i) == \E k \in 1..Len(log[b]) : log[b][k][2] = i
 AckedSurvive ==
     \A i \in 1..MaxWrites :
         acked[i] = "commit" => Majority({b \in Servers : Holds(b, i)})
+
+\* Part 3: a write answered on the lease is in every later leader's log.
+LeaseAckedSurvive ==
+    \A i \in 1..MaxWrites, b \in Servers :
+        (Allowances /\ acked[i] = "local" /\ role[b] = "leader"
+            /\ term[b] > wroteIn[i]) => Holds(b, i)
 
 StateMachineSafety ==
     \A a, b \in Servers : \A i \in 1..commit[a] :
@@ -1085,6 +1213,16 @@ NeverFailoverAfterLease ==
 \* A restarted broker leads inside its hold: the hold was skipped.
 NeverHoldSkipped ==
     ~\E b \in Servers : role[b] = "leader" /\ restarts > 0 /\ JustStarted(b)
+
+\* Part 3: after a write answered on the lease, a majority holds the old
+\* leader's allowance and another broker leads a later term. Once the
+\* followers hold what was answered, the allowance is no bar.
+NeverFailoverPastAllowance ==
+    ~\E b \in Servers, i \in 1..MaxWrites :
+        /\ acked[i] = "local" /\ wroteIn[i] > 0
+        /\ role[b] = "leader" /\ term[b] > wroteIn[i]
+        /\ b \notin elected[wroteIn[i]]
+        /\ Majority({v \in Servers : allow[v].term = wroteIn[i]})
 
 \* A broker inside its hold grants a vote.
 NeverHeldGrant == ~heldGrant
@@ -1140,6 +1278,7 @@ InertAck(m) ==
     /\ m.kind = "ack"
     /\ m.age >= ackAge[m.to][m.from]
     /\ m.n <= match[m.to][m.from]
+    /\ m.al = NoAllow
 
 DeadSeen(b) ==
     \/ seenTerm[b] = 0 \/ seenAge[b] >= Lease \/ Voided(b, seenTerm[b])
@@ -1151,6 +1290,6 @@ RestartView ==
       [b \in Servers |-> IF DeadSeen(b) THEN <<0, Old>>
                          ELSE <<seenTerm[b], seenAge[b]>>],
       xfer, voidTerm, auth, {m \in xmsgs : term[m.to] <= m.term},
-      transfers, suspended, sinceWake, suspends, woke, sleepVars>>
+      transfers, suspended, sinceWake, suspends, woke, sleepVars, allowVars>>
 
 =============================================================================

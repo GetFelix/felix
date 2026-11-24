@@ -201,7 +201,8 @@ CONSTANTS
     Kept,               \* rotations keep every copy whole, and the re-form reads them all
     Reserve,            \* "every", "leader" or "none": who reserves before its write counts
     MaxCuts,
-    MaxReturns
+    MaxReturns,
+    LeaseAnswers        \* a leader answers records on its lease (issue 3103)
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -230,13 +231,15 @@ VARIABLES
     keptLogs,   \* the copies a broker's rotations kept (Kept)
     synced,     \* how far the current copy's log is on disk (Kept)
     reserve,    \* the index the current copy reserved, synced (Kept)
-    cuts, returns
+    cuts, returns,
+    leaseAcked  \* history: records answered on the lease (LeaseAnswers)
 
 diskVars == <<keptLogs, synced, reserve, cuts, returns>>
 
-vars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs,
+reformVars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs,
           cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, acked, lost,
           elected, writes, steps, places, rotations, rejoins, restarts, diskVars>>
+vars == <<reformVars, leaseAcked>>
 
 Mid(b) == <<b, cid[b]>>
 Simple(V) == [o |-> V, n |-> V]
@@ -321,6 +324,19 @@ AckQuorum(c, l, Q) ==
 \* A broker declared dead takes no step, unless the declaration is wrong.
 Alive(b) == DeadRuns \/ b \notin dead
 
+\* A record is on a live disk: a current or kept copy of a broker not
+\* declared dead (an abandon gives up what only a dead broker held).
+OnLiveDisk(x) ==
+    \E q \in Brokers \ dead : Has(log[q], x) \/ \E k \in keptLogs[q] : Has(k.log, x)
+
+\* The lease allowance of FelixRaftLease.tla, abstracted: voters hold the
+\* allowance, lowered to the kept log's end once the rotated leader reports
+\* it, so no election passes a lease-answered record still on a disk. Past
+\* that only the operator's re-form moves the group on.
+LeaseTailHeld(b) ==
+    \/ ~LeaseAnswers
+    \/ \A x \in leaseAcked : (x.e = ep[b] /\ OnLiveDisk(x)) => Has(log[b], x)
+
 Init ==
     /\ ep = [b \in Brokers |-> 0]
     /\ cid = [b \in Brokers |-> 0]
@@ -350,6 +366,7 @@ Init ==
     /\ synced = [b \in Brokers |-> 0]
     /\ reserve = [b \in Brokers |-> 0]
     /\ cuts = 0 /\ returns = 0
+    /\ leaseAcked = {}
 
 cpVars == <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, lost>>
 counters == <<writes, steps, places, rotations, rejoins, restarts>>
@@ -359,6 +376,7 @@ counters == <<writes, steps, places, rotations, rejoins, restarts>>
 
 Elect(b, Q) ==
     /\ b \in Q
+    /\ LeaseTailHeld(b)
     /\ term[b] < MaxTerm
     /\ Mid(b) \in Voters(Config(b))
     /\ Quorum(Config(b), Q)
@@ -971,7 +989,17 @@ StartEpoch(b, f) ==
     /\ UNCHANGED <<cid, match, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
 
-Next ==
+\* A `Leader` leader answers a record of its own epoch and term on its lease,
+\* after its own write. It need not be synced: a power cut may take it.
+LeaseAnswer(l) ==
+    /\ LeaseAnswers /\ Leads(l)
+    /\ \E i \in (commit[l] + 1)..Len(log[l]) :
+          /\ log[l][i].e = ep[l] /\ log[l][i].t = term[l] /\ log[l][i].k = "rec"
+          /\ leaseAcked' = leaseAcked \cup
+                {[e |-> ep[l], t |-> term[l], i |-> i, ent |-> log[l][i]]}
+    /\ UNCHANGED reformVars
+
+ReformSteps ==
     \/ \E b \in Brokers : \E Q \in SUBSET Brokers : Elect(b, Q)
     \/ \E b \in Brokers : ClientWrite(b) \/ ProposeChange(b) \/ Send(b)
     \/ \E l, f \in Brokers : Replicate(l, f)
@@ -986,6 +1014,9 @@ Next ==
     \/ \E p \in plans : \E pick \in Brokers : Reform(p, pick)
     \/ \E p \in plans : \E b \in DOMAIN p.facts : \E c \in Copies(b) : ReformKept(p, c)
     \/ \E b \in Brokers : \E f \in forms : StartEpoch(b, f)
+
+Next == \/ ReformSteps /\ UNCHANGED leaseAcked
+        \/ \E l \in Brokers : LeaseAnswer(l)
 
 Spec == Init /\ [][Next]_vars
 
@@ -1033,6 +1064,20 @@ OffsetNeverReused ==
     \A x, y \in acked : (x.i = y.i /\ IsRecord(x) /\ IsRecord(y)) => x.ent = y.ent
 
 NothingLost == lost = {}
+
+\* A record answered on the lease that a live disk still holds, current or
+\* kept, is in the base of every later epoch. One the power cut took is the
+\* documented `Leader` loss.
+LeaseAckedReformed ==
+    \A x \in leaseAcked, f \in forms :
+        (f.e > x.e /\ OnLiveDisk(x)) => Has(f.base, x)
+
+\* A witness: a re-form keeps a lease-answered record that only a kept
+\* copy held.
+NeverReformsKeptTail ==
+    ~\E x \in leaseAcked, f \in forms :
+        /\ f.e > x.e /\ Has(f.base, x)
+        /\ \A q \in Brokers : ~Has(log[q], x)
 
 ElectedGroupLeftAlone ==
     [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>

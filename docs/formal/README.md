@@ -595,6 +595,8 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftPlacementReachEarlyWipeVotesAgain.cfg` | witness: a member that lost its volume before the first commit catches up and votes again, and a write is acknowledged | violate `NeverEarlyWipedVotesAgain` |
 | `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters, the command plans, stops them, reads them again and writes epoch 1; two writes, one restart, one late append, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (6.0M distinct states) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
+| `FelixRaftReformLeaseTail.cfg` | the kept-leader re-form (issue #3103): the leader answers two writes on its lease, a power cut rotates it keeping any prefix past what it synced, the followers do not elect past a lease-answered record still on a disk, and the operator re-forms from the kept copy | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `OffsetNeverReused`, `LeaseAckedReformed` |
+| `FelixRaftReformLeaseTailHappens.cfg` | a witness: the re-form keeps a lease-answered record only the kept copy held | violate `NeverReformsKeptTail` |
 | `FelixRaftReformTwoRotated.cfg` | two of three disks lost or restored, each copy left with any prefix of its log, one write; rotated copies are listed and read | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (2.4M distinct states) |
 | `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same (40.6M distinct states) |
 | `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
@@ -789,6 +791,13 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftLeaseSleep.cfg` | `FelixRaftLease.cfg` with sleep (issue #2239): up to two wakes not caused by the leader start a vote hold that may end early; ending it ends only the hold, and a sleep answer renews nothing | pass `LeaseExclusive` |
 | `FelixRaftLeaseSleepHoldEndClearsWindow.cfg` | the hold's early end also clears openraft's refusal window | violate `LeaseExclusive` |
 | `FelixRaftLeaseSleepAnswerRenews.cfg` | a sleep answer renews the lease, though the follower's window did not restart | violate `LeaseExclusive` |
+| `FelixRaftLeaseAllowance.cfg` | `FelixRaftLeaseAck.cfg` with the lease allowance (issue #3103): the leader names an end up to one past its log, three allowances so it can raise, lower and raise again; a local ack needs a majority holding the end, and a voter holding an allowance votes only for a candidate past it or the leader that named it | pass the Part 1 checks and `LeaseAckedSurvive` |
+| `FelixRaftLeaseAllowanceRestart.cfg` | the same with one restart and two allowances | pass the same |
+| `FelixRaftLeaseAllowanceNoVoteRule.cfg` | votes and campaigns ignore the allowance | violate `LeaseAckedSurvive` |
+| `FelixRaftLeaseAllowanceNoAckCheck.cfg` | a local ack needs only the lease | violate `LeaseAckedSurvive` |
+| `FelixRaftLeaseAllowanceNotDurable.cfg` | the stored allowance is lost at a restart | violate `LeaseAckedSurvive` |
+| `FelixRaftLeaseAllowanceEchoBeforeLowering.cfg` | an echo from before the leader lowered its end still counts | violate `LeaseAckedSurvive` |
+| `FelixRaftLeaseAllowanceReachFailover.cfg` | witness: after a lease-answered write the followers that hold it elect one of themselves, as an idle group does | violate `NeverFailoverPastAllowance` |
 | `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design page states and nobody has built (issue #2310) |
 | `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design page states and nobody has built (issue #2310) |
 | `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design page states and nobody has built (issue #2310) |
