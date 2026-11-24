@@ -266,9 +266,9 @@ async fn a_raft_cache_shard_serves_a_watch() -> Result<()> {
 }
 
 /// **A resume joins at the applied edge.** From the edge it is handed
-/// nothing until the next change; from below it, the key's current value
-/// with `resnapshot`, since a Raft shard keeps no change history to replay;
-/// from past an edge this member never reaches, a retryable refusal.
+/// nothing until the next change; from below where the member began keeping
+/// changes, the key's current value with `resnapshot`; from past an edge
+/// this member never reaches, a retryable refusal.
 #[tokio::test]
 async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     let cache = RaftCache::start().await;
@@ -499,4 +499,63 @@ async fn a_full_raft_cache_watch_ends_as_lagged() {
     assert_eq!(recv().await.map(|event| event.offset), Some(first));
     assert!(recv().await.is_none(), "the queue held more than one");
     assert_eq!(watch.lagged(), Some(missed));
+}
+
+/// **A resume from a change the member still keeps is replayed**: every
+/// change to the key from the resume offset on, deletes included, then the
+/// live ones, with no resnapshot. The member keeps changes once a watch of
+/// the shard took one, so a client that drops and comes back is replayed
+/// what it missed rather than handed the key again.
+#[tokio::test]
+async fn a_raft_cache_resume_is_replayed_from_the_kept_changes() -> Result<()> {
+    let cache = RaftCache::start().await;
+    let (_, events) = cache.watch(false, None).await?;
+    let mut events = events.expect("events");
+    let one = cache.write(RaftCache::put("k", b"one")).await;
+    cache.write(RaftCache::put("other", b"x")).await;
+    let two = cache.write(RaftCache::put("k", b"two")).await;
+    assert_eq!(events.change().await?, (Some(b"one".to_vec()), one));
+    assert_eq!(events.change().await?, (Some(b"two".to_vec()), two));
+    drop(events);
+
+    let gone = cache
+        .write(CacheOp::Delete {
+            key: "k".to_string(),
+            version: None,
+        })
+        .await;
+    let three = cache.write(RaftCache::put("k", b"three")).await;
+    let edge = cache.edge();
+    let (started, events) = cache.watch(false, Some(two)).await?;
+    assert!(
+        matches!(
+            started,
+            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset == edge
+        ),
+        "{started:?}"
+    );
+    let mut events = events.expect("events");
+    assert_eq!(events.change().await?, (Some(b"two".to_vec()), two));
+    assert_eq!(events.change().await?, (None, gone));
+    assert_eq!(events.change().await?, (Some(b"three".to_vec()), three));
+    let four = cache.write(RaftCache::put("k", b"four")).await;
+    assert_eq!(events.change().await?, (Some(b"four".to_vec()), four));
+
+    // From before the first kept change, the key's current value instead.
+    let (started, events) = cache.watch(false, Some(one - 1)).await?;
+    assert!(
+        matches!(
+            started,
+            Message::CacheWatchStarted {
+                resnapshot: true,
+                ..
+            }
+        ),
+        "{started:?}"
+    );
+    assert_eq!(
+        events.expect("events").change().await?,
+        (Some(b"four".to_vec()), four)
+    );
+    Ok(())
 }

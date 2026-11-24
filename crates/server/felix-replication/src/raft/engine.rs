@@ -471,6 +471,15 @@ impl RaftEngine {
         Some(CacheReplay { tail, changes })
     }
 
+    /// A cache watch of `shard` on this member ended. The member keeps
+    /// recording the shard's changes for a while, so a resume can be
+    /// replayed rather than resnapshotted.
+    pub fn cache_watch_ended(&self, shard: &ShardKey) {
+        if let Some(group) = self.runtime.group(shard) {
+            group.cache_watch_ended();
+        }
+    }
+
     /// [`Self::cache_watch_point`] for a watch that hands out the current
     /// state, read once this member has applied everything committed when
     /// the watch began. Followers serve watches, and a follower's applied

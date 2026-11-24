@@ -309,6 +309,10 @@ pub(crate) async fn handle_cache_watch_message(
             }
         }
     }
+    // Told when the watch ends, so the member keeps recording for its resume.
+    let raft_ended = raft
+        .is_some()
+        .then(|| (Arc::clone(&publish_ctx.engine), shard_key.clone()));
     let (log, tail, base, gate) = match &raft {
         Some(join) => {
             let mut tail = join.tail;
@@ -557,6 +561,9 @@ pub(crate) async fn handle_cache_watch_message(
     };
     if let Err(err) = catch_up_result {
         subscriptions.release();
+        if let Some((engine, key)) = &raft_ended {
+            raft_watch_ended(engine, key);
+        }
         tracing::info!(error = %err, "cache watch catch-up failed");
         return Ok(true);
     }
@@ -577,15 +584,21 @@ pub(crate) async fn handle_cache_watch_message(
             };
         (auth.revocable.clone(), message)
     });
-    tokio::spawn(run_watch_delivery(
-        watch,
-        event_send,
-        tail,
-        subscriptions,
-        shard_moved,
-        gate,
-        revoked,
-    ));
+    tokio::spawn(async move {
+        run_watch_delivery(
+            watch,
+            event_send,
+            tail,
+            subscriptions,
+            shard_moved,
+            gate,
+            revoked,
+        )
+        .await;
+        if let Some((engine, key)) = raft_ended {
+            raft_watch_ended(&engine, &key);
+        }
+    });
     Ok(true)
 }
 
@@ -655,6 +668,16 @@ fn raft_replay(
         let _ = (engine, key, filter, from);
         None
     }
+}
+
+/// Tell `key`'s Raft member here that a watch of it ended.
+fn raft_watch_ended(engine: &crate::shards::routing::StreamEngine, key: &crate::shards::ShardKey) {
+    #[cfg(feature = "raft")]
+    if let Some(raft) = engine.raft(key) {
+        raft.cache_watch_ended(key);
+    }
+    #[cfg(not(feature = "raft"))]
+    let _ = (engine, key);
 }
 
 #[cfg(feature = "raft")]

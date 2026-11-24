@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use felix_storage::{CacheChange, CacheObserver};
 
-use super::CacheState;
+use super::recent::Change;
 use crate::ShardKey;
 
 /// Where a cache group's member reports its changes.
@@ -24,17 +24,17 @@ impl CacheWatch {
         Self { observer, shard }
     }
 
-    /// Report what the entry at `index` changed, if anything. Called with
-    /// the state's write lock still held, so a watch that reads the applied
-    /// index under that lock sees every change below it in the state and
-    /// every change at or above it on its queue.
-    pub(crate) fn applied(&self, state: &CacheState, index: u64) {
-        if !self.observer.watching() {
-            return;
-        }
-        let Some(change) = state.recent().at(index) else {
-            return;
-        };
+    /// Whether a change could reach a watcher now. While it cannot, apply
+    /// builds no change for this group, unless it is still recording.
+    pub(crate) fn watching(&self) -> bool {
+        self.observer.watching()
+    }
+
+    /// Report `change`, and say whether a watch of this shard was there to
+    /// take it. Called with the state's write lock still held, so a watch
+    /// that reads the applied index under that lock sees every change below
+    /// it in the state and every change at or above it on its queue.
+    pub(crate) fn report(&self, change: &Change) -> bool {
         self.observer.cache_changed(CacheChange {
             tenant_id: self.shard.tenant_id.clone(),
             namespace: self.shard.namespace.clone(),
@@ -42,9 +42,9 @@ impl CacheWatch {
             shard: self.shard.shard,
             key: change.key.clone(),
             value: change.value.clone(),
-            offset: index,
+            offset: change.offset,
             expires_at_millis: change.expires_at.div_ceil(1000),
-        });
+        })
     }
 
     /// The state was replaced by a snapshot: end every watch as lagged at

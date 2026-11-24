@@ -2,8 +2,9 @@
 //! resumes from a recent offset is replayed what it missed, as the hybrid
 //! replays its shard log, rather than handed every key again.
 //!
-//! Kept by every member whether or not anyone watches: a client resumes on
-//! whichever member it reaches, often one it never watched before.
+//! Kept only while a member's shard is watched and for [`WINDOW_MICROS`]
+//! after, so an unwatched shard records nothing and holds nothing. A resume
+//! on a member that kept no changes for it is resnapshotted.
 
 use std::collections::VecDeque;
 
@@ -16,8 +17,13 @@ mod tests;
 const MAX_CHANGES: usize = 4096;
 /// Most bytes of keys and values kept per cache shard.
 const MAX_BYTES: usize = 1 << 20;
-/// What a kept change costs beyond its key and value.
-const OVERHEAD: usize = 48;
+/// How long after a member last saw a watch of a shard it keeps recording,
+/// in the log's microseconds. Covers a client that reconnects after a
+/// dropped connection, a restart or a broker failover.
+pub(crate) const WINDOW_MICROS: u64 = 5 * 60 * 1_000_000;
+/// What a kept change costs beyond its key and value: its slot, plus the
+/// allocator's share of the key's own allocation.
+const OVERHEAD: usize = std::mem::size_of::<Change>() + 16;
 
 /// One applied change to a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +44,8 @@ impl Change {
 }
 
 /// A bounded run of the latest changes. Every change at or past `floor` is
-/// held, so a replay from there is exact.
+/// held, so a replay from there is exact. The deque's slots are allocated
+/// for at most `max_changes`, which bounds the memory beyond `max_bytes`.
 #[derive(Debug)]
 #[cfg_attr(test, derive(Clone))]
 pub(crate) struct Recent {
@@ -66,15 +73,37 @@ impl Recent {
         }
     }
 
+    /// Recording that starts at `floor`: nothing below it was kept.
+    pub(crate) fn starting_at(floor: u64) -> Self {
+        Self {
+            floor,
+            ..Self::default()
+        }
+    }
+
     /// Keep `change`, dropping the oldest past either bound. Changes come in
-    /// offset order.
+    /// offset order. A change bigger than the byte bound is not kept, and
+    /// the floor moves past it.
     pub(crate) fn push(&mut self, change: Change) {
-        self.bytes += change.cost();
+        let cost = change.cost();
+        if cost > self.max_bytes {
+            self.changes.clear();
+            self.bytes = 0;
+            self.floor = change.offset + 1;
+            return;
+        }
+        // Make room first, so the deque never grows past `max_changes`.
+        while !self.changes.is_empty()
+            && (self.changes.len() >= self.max_changes || self.bytes + cost > self.max_bytes)
+        {
+            self.drop_oldest();
+        }
+        self.bytes += cost;
         self.changes.push_back(change);
-        while self.changes.len() > self.max_changes || self.bytes > self.max_bytes {
-            let Some(oldest) = self.changes.pop_front() else {
-                break;
-            };
+    }
+
+    fn drop_oldest(&mut self) {
+        if let Some(oldest) = self.changes.pop_front() {
             self.bytes -= oldest.cost();
             self.floor = oldest.offset + 1;
         }
@@ -87,11 +116,6 @@ impl Recent {
         self.bytes = 0;
         // Index 0 is before any entry, so nothing was missed below 1.
         self.floor = if index == 0 { 0 } else { index + 1 };
-    }
-
-    /// The change the entry at `index` made, if it was the last kept.
-    pub(crate) fn at(&self, index: u64) -> Option<&Change> {
-        self.changes.back().filter(|change| change.offset == index)
     }
 
     /// Every kept change at or past `from` that `keep` takes, in offset

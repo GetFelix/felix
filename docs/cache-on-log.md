@@ -308,9 +308,10 @@ would deliver every value twice.
 
 On a Raft cache shard any member serves a watch, and a follower's applied
 state can trail a put its leader already acknowledged. There is no shard
-log to replay, so each member keeps its latest applied changes in memory
-(see [per-shard-raft.md](per-shard-raft.md), "Watches"), and a resume from
-an offset still kept is replayed from them. A join that hands out state, a
+log to replay, so a member that recently served a watch of the shard keeps
+its latest applied changes in memory (see
+[per-shard-raft.md](per-shard-raft.md), "Watches"), and a resume from an
+offset still kept is replayed from them. A join that hands out state, a
 retained watch or a resume from below the oldest kept change (answered with
 a resnapshot), passes the group's read barrier first, the same one a
 history read uses: the follower applies the leader's read index before it
