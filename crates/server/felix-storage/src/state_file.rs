@@ -32,6 +32,7 @@ pub(crate) fn store(dir: &Path, name: &str, parts: &[&[u8]]) -> io::Result<()> {
 /// As [`store`], with the writes going through the segment writes' path, so
 /// a disk that refuses writes refuses this too. For a write that stands as a
 /// probe of the disk.
+#[cfg(feature = "raft")]
 pub(crate) fn store_through_faults(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     let path = dir.join(name);
     let temporary = temporary(dir, name);
