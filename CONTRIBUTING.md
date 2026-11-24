@@ -158,8 +158,8 @@ filler that restates what was just said.
   nightly or dispatch); runs on main are never cancelled.
 - The `Instructions per message` workflow counts the CPU instructions the
   broker retires per acknowledged message (a durable Raft broker with periodic
-  fsync, 256 B, acked,
-  48 keys over 48 shards, batch 1 and 64) and fails when a cell is more than
+  fsync, 256 B, acked, 48 keys over 48 shards, batch 1 and 64, each cell on
+  a broker of its own) and fails when a cell is more than
   3% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
   since hosted runners expose no hardware counters, so only user-space
   instructions are counted, less the idle broker's per-second cost. If the extra cost is deliberate, run
