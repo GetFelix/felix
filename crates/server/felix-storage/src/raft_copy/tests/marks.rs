@@ -395,6 +395,126 @@ async fn a_hung_batch_holds_batched_appends() {
         .expect("a write after the stall");
 }
 
+/// A failed write stops the log, and a reopen while the disk still refuses
+/// writes fails and leaves it stopped. Once the disk takes writes, the
+/// reopen rewrites the marks as last synced, without the failed write or
+/// the half frame it left, and later writes land.
+#[tokio::test]
+async fn a_reopen_after_the_disk_heals_starts_from_the_synced_marks() {
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 1).await.expect("fresh");
+    let marks = log.for_copy(Arc::from(SHARD), 1);
+    marks.vote(vote(2, "a#1", false)).await.expect("vote");
+    assert!(!log.reopen().await.expect("healthy"));
+
+    log.fail_writes(true);
+    marks
+        .vote(vote(3, "a#1", false))
+        .await
+        .expect_err("a refused write answered Ok");
+    marks
+        .vote(vote(4, "a#1", false))
+        .await
+        .expect_err("a write after a failed one");
+    log.reopen()
+        .await
+        .expect_err("reopened on a disk that refuses writes");
+    assert!(log.failure().is_some());
+
+    log.fail_writes(false);
+    assert!(log.reopen().await.expect("reopen"));
+    assert!(log.failure().is_none());
+    assert_eq!(log.sequence(), 2);
+    assert_eq!(log.marks(SHARD).expect("marks").vote, vote(2, "a#1", false));
+    marks
+        .vote(vote(5, "a#1", false))
+        .await
+        .expect("after the reopen");
+    drop((marks, log));
+
+    let reopened = open(&root);
+    assert_eq!(reopened.sequence(), 3);
+    assert_eq!(
+        reopened.marks(SHARD).expect("marks").vote,
+        vote(5, "a#1", false)
+    );
+}
+
+/// A write whose fsync failed is never tried again: after the reopen it is
+/// not on disk, the sequence did not count it, and a change queued behind
+/// the failure is dropped rather than written later.
+#[tokio::test]
+async fn a_failed_fsync_is_not_retried_by_the_reopen() {
+    let root = Root::new();
+    let log = open(&root);
+    for shard in ["a", "b"] {
+        log.fresh(Arc::from(shard), 1).await.expect("fresh");
+    }
+    let (a, b) = (
+        log.for_copy(Arc::from("a"), 1),
+        log.for_copy(Arc::from("b"), 1),
+    );
+    let sequence = log.sequence();
+    log.fail_next_write();
+    a.vote(vote(2, "x#1", false))
+        .await
+        .expect_err("a failed fsync answered Ok");
+    b.vote(vote(2, "y#1", false))
+        .await
+        .expect_err("a write queued behind a failed one");
+    assert_eq!(log.queued(), 1);
+
+    assert!(log.reopen().await.expect("reopen"));
+    assert_eq!(log.sequence(), sequence);
+    a.vote(vote(3, "x#1", false))
+        .await
+        .expect("after the reopen");
+    let never_voted = VoteMark::default;
+    assert_eq!(log.marks("b").expect("marks").vote, never_voted());
+    drop((a, b, log));
+
+    let reopened = open(&root);
+    assert_eq!(reopened.sequence(), sequence + 1);
+    assert_eq!(
+        reopened.marks("a").expect("marks").vote,
+        vote(3, "x#1", false)
+    );
+    assert_eq!(reopened.marks("b").expect("marks").vote, never_voted());
+}
+
+/// A failed batch ends the batcher and stops the log. The reopen starts the
+/// batcher again, and batched shards' appends go on.
+#[tokio::test(start_paused = true)]
+async fn a_reopen_restarts_the_batched_marks() {
+    use crate::raft_log::LogPositions;
+    use std::time::Duration;
+
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 1).await.expect("fresh");
+    let marks = log.for_copy(Arc::from(SHARD), 1);
+    let (positions, receiver) = tokio::sync::watch::channel(LogPositions::default());
+    marks.batch_from(receiver, Duration::from_secs(1));
+
+    log.fail_writes(true);
+    positions.send_modify(|at| at.flushed = Some(point(1, 5)));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    log.caught_up()
+        .await
+        .expect_err("appends went on past a failed batch");
+
+    log.fail_writes(false);
+    assert!(log.reopen().await.expect("reopen"));
+    log.caught_up()
+        .await
+        .expect("appends go on after the reopen");
+    positions.send_modify(|at| at.flushed = Some(point(1, 9)));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(log.marks(SHARD).expect("marks").log, Some(point(1, 9)));
+    assert!(log.failure().is_none());
+}
+
 /// Callers that arrive while the vouched-unsynced marker is syncing wait for
 /// that sync, and so does one that gave up on it: one write in all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

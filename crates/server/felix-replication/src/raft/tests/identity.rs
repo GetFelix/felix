@@ -1477,6 +1477,96 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     }
 }
 
+/// A single-copy group whose log is poisoned by a failed fsync comes back
+/// as a new copy with no group and an empty log. It leads nothing and
+/// refuses writes, so it never serves an empty log as the shard's data. The
+/// shard stays held until an operator re-forms it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing() {
+    if ran_in_poisoning_process(
+        "raft::tests::identity::a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing",
+    )
+    .await
+    {
+        return;
+    }
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let runtime = cluster.runtime("a");
+    let opened = runtime
+        .open_copy(
+            group(0),
+            &roots.shard_dir("a"),
+            log_config(),
+            &roots.roots["a"],
+        )
+        .await
+        .expect("open copy");
+    let old = opened.member.clone();
+    let log = opened.log;
+    runtime
+        .initialize(&shard(0), BTreeSet::from([old.clone()]))
+        .await
+        .expect("initialize");
+    let write = |payload: &'static [u8]| {
+        let member = runtime.group(&shard(0)).expect("group");
+        async move {
+            let command = Command {
+                timestamp_micros: 1_700_000_000,
+                payload: Bytes::from_static(payload),
+                producer: None,
+                expected: None,
+                trim: None,
+                commit: false,
+                group: false,
+                publisher: None,
+                headers: None,
+                written: None,
+                cond: None,
+            };
+            member.raft().client_write(command).await
+        }
+    };
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while write(b"before").await.is_err() {
+        assert!(tokio::time::Instant::now() < deadline, "no leader");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    log.fail_next_flush();
+    let _ = write(b"poisoning").await;
+    assert!(log.is_poisoned(), "the flush did not fail");
+    assert!(runtime.close(&shard(0)).await);
+    // A poisoned log has nothing left to flush, so its close may fail.
+    let _ = log.close().await;
+
+    let reopened = runtime
+        .open_copy(
+            group(0),
+            &roots.shard_dir("a"),
+            log_config(),
+            &roots.roots["a"],
+        )
+        .await
+        .expect("reopen");
+    assert_eq!(
+        reopened.rotation.as_ref().map(|rotation| rotation.reason),
+        Some(RotateReason::Poisoned)
+    );
+    assert_ne!(reopened.member.copy, old.copy);
+    assert_eq!(reopened.log.tail_offset().await.expect("tail"), 0);
+
+    tokio::time::sleep(3 * timers().election_max).await;
+    let status = runtime.status(&shard(0)).expect("status");
+    assert_ne!(status.role, Role::Leader, "an empty copy led the shard");
+    assert_eq!(status.leader, None);
+    assert!(write(b"after").await.is_err(), "an empty copy took a write");
+    assert_eq!(reopened.log.tail_offset().await.expect("tail"), 0);
+
+    cluster.stop().await;
+    reopened.log.close().await.ok();
+}
+
 /// The marks' name is on disk: it stays the same across builds, and a `/`
 /// in a user's name cannot make two shards share one.
 #[test]
@@ -1815,5 +1905,87 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
     cluster.stop().await;
     for (_, log) in logs {
         log.close().await.ok();
+    }
+}
+
+/// A follower whose mark writes fail stops on the storage error, and the
+/// other two go on. Once its disk takes writes again, the root heals and the
+/// member opens again from its directory, as after a crash: the same copy,
+/// since its log was never cut, and it catches up with what it missed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members)
+        .await
+        .expect("initialize");
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+
+    let leader = cluster.elected(0).await;
+    let failing = *BROKERS
+        .iter()
+        .find(|broker| **broker != &*leader.broker)
+        .expect("a follower");
+    let runtime = cluster.runtime(failing);
+    let old = runtime.status(&shard(0)).expect("status").member;
+    let marks = roots.roots[failing].mark_log();
+    marks.fail_writes(true);
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while runtime.storage_failure(&shard(0)).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never stopped"
+        );
+        cluster.write(0, b"while failing").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let missed = cluster.write(0, b"missed").await;
+    roots.roots[failing]
+        .heal()
+        .await
+        .expect_err("healed while the disk refuses writes");
+
+    marks.fail_writes(false);
+    roots.roots[failing].heal().await.expect("heal");
+    assert!(runtime.close(&shard(0)).await);
+    logs.remove(failing).expect("log").close().await.ok();
+    let reopened = runtime
+        .open_copy(
+            group(0),
+            &roots.shard_dir(failing),
+            log_config(),
+            &roots.roots[failing],
+        )
+        .await
+        .expect("reopen");
+    assert_eq!(reopened.member, old);
+    assert!(reopened.rotation.is_none());
+    logs.insert(failing, reopened.log);
+    let after = cluster.write(0, b"after").await;
+    assert!(after > missed);
+    cluster.committed_everywhere(0, after).await;
+    assert_eq!(runtime.storage_failure(&shard(0)), None);
+    cluster.stop().await;
+    for log in logs.into_values() {
+        log.close().await.expect("close");
     }
 }
