@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795529247932,
+  "lastUpdate": 1795529644564,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -67756,6 +67756,58 @@ window.BENCHMARK_DATA = {
             "range": "51395.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 792020.79\nmean: 769678.55\nstdev: 51395.74\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "605715ead324ccf4316a5dc15d7d1aa6be27d6d0",
+          "message": "test(cluster): the hybrid wiped-follower test reads from the owner (#3110)\n\nOn the hybrid only the shard's owner answers a replay, so the final\nconvergence check reads from the current owner instead of every node.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-24T14:04:53Z",
+          "tree_id": "519b84fd0c12294c6079d72b11763310b60b9280",
+          "url": "https://github.com/GetFelix/felix/commit/605715ead324ccf4316a5dc15d7d1aa6be27d6d0"
+        },
+        "date": 1795529642915,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 430733.05,
+            "range": "23840.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 430733.05\nmean: 429095.95\nstdev: 23840.76\ncv: 5.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 430733.05,
+            "range": "23840.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 430733.05\nmean: 429095.95\nstdev: 23840.76\ncv: 5.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93590.03,
+            "range": "6236.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93590.03\nmean: 90812.54\nstdev: 6236.95\ncv: 6.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 935900.26,
+            "range": "62369.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 935900.26\nmean: 908125.39\nstdev: 62369.50\ncv: 6.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
