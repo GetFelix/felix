@@ -119,6 +119,19 @@ async fn a_control_plane_restart_does_not_expire_the_fleet() {
 
 const PROBE: &str = "fleet_probe";
 
+/// What a build reports to the gate: the features this build implements,
+/// with the probe on the upgraded one. Both keep the real ones, since a new
+/// Raft cluster finalizes its Raft features as it forms and refuses a broker
+/// without them.
+fn reported(upgraded: bool) -> String {
+    felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .chain(upgraded.then_some(PROBE))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn store(cluster: &Cluster) -> &dyn ControlPlaneStore {
     cluster
         .control_plane
@@ -140,9 +153,9 @@ async fn probe_enabled(cluster: &Cluster, node_id: &str) -> bool {
 /// Replace `node_id` with a build reporting `features`, as an upgrade or a
 /// rollback of one broker does. Killed rather than drained: how it stops
 /// does not matter to the gate, and a drain waits out shard handoffs.
-async fn restart_as(cluster: &mut Cluster, node_id: &str, features: &str) -> anyhow::Result<()> {
+async fn restart_as(cluster: &mut Cluster, node_id: &str, features: String) -> anyhow::Result<()> {
     cluster.stop_node(node_id).await?;
-    cluster.set_node_env(node_id, "FELIX_TEST_FLEET_FEATURES", features)?;
+    cluster.set_node_env(node_id, "FELIX_TEST_FLEET_FEATURES", &features)?;
     cluster.restart_node(node_id).await
 }
 
@@ -167,7 +180,7 @@ async fn wait_until_enabled(cluster: &Cluster, node_id: &str) {
 async fn a_fleet_feature_turns_on_only_when_finalized() {
     // Every broker starts as the upgraded build.
     let mut cluster = Cluster::start(ClusterConfig {
-        broker_env: vec![("FELIX_TEST_FLEET_FEATURES".into(), PROBE.into())],
+        broker_env: vec![("FELIX_TEST_FLEET_FEATURES".into(), reported(true))],
         ..config()
     })
     .await
@@ -193,7 +206,7 @@ async fn a_fleet_feature_turns_on_only_when_finalized() {
 
     // Rolling one broker back before finalizing works.
     let rolled = ids[2].clone();
-    restart_as(&mut cluster, &rolled, "")
+    restart_as(&mut cluster, &rolled, reported(false))
         .await
         .expect("a rollback before finalize rejoins");
     let refused = store(&cluster).finalize_fleet_feature(PROBE).await;
@@ -202,7 +215,7 @@ async fn a_fleet_feature_turns_on_only_when_finalized() {
         "finalized with {rolled} serving without it"
     );
 
-    restart_as(&mut cluster, &rolled, PROBE)
+    restart_as(&mut cluster, &rolled, reported(true))
         .await
         .expect("upgrade again");
     store(&cluster)
@@ -217,7 +230,7 @@ async fn a_fleet_feature_turns_on_only_when_finalized() {
     // a feature the others are using.
     cluster.stop_node(&rolled).await.expect("stop");
     cluster
-        .set_node_env(&rolled, "FELIX_TEST_FLEET_FEATURES", "")
+        .set_node_env(&rolled, "FELIX_TEST_FLEET_FEATURES", &reported(false))
         .expect("roll back");
     let refused = cluster.restart_node(&rolled).await;
     assert!(refused.is_err(), "the old build rejoined after a finalize");
@@ -240,7 +253,7 @@ async fn a_fleet_feature_turns_on_only_when_finalized() {
 
     // Upgraded, it rejoins with the feature on.
     cluster
-        .set_node_env(&rolled, "FELIX_TEST_FLEET_FEATURES", PROBE)
+        .set_node_env(&rolled, "FELIX_TEST_FLEET_FEATURES", &reported(true))
         .expect("upgrade");
     cluster
         .restart_node(&rolled)

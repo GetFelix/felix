@@ -34,6 +34,13 @@ async fn start(features: &[&str]) -> Cluster {
         .as_ref()
         .expect("control plane running")
         .store;
+    // A Raft group confirms a `Quorum` read with its majority and has no
+    // lease_free_reads to finalize.
+    let features = if felix_cluster::suite_runs_on_raft() {
+        &[]
+    } else {
+        features
+    };
     for feature in features {
         store
             .finalize_fleet_feature(feature)
@@ -64,9 +71,9 @@ const ALL: &[&str] = &["generation_start", "majority_ack", "lease_free_reads"];
 
 async fn owner(cluster: &Cluster) -> String {
     cluster
-        .shard_owner_of("cache", CACHE, 0)
+        .serving_cache_leader(CACHE, Duration::from_secs(30))
         .await
-        .expect("cache shard owner")
+        .expect("cache shard leader")
 }
 
 /// Cut every broker off from the control plane, and wait until `leader` no
@@ -95,11 +102,6 @@ async fn wait_for_lapse(cluster: &Cluster, leader: &str) {
 #[serial]
 #[tokio::test]
 async fn a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writes() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "the lease_free_reads fleet feature and the lease metric are hybrid mechanisms; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers the cut-off leader",
-    ) {
-        return;
-    }
     let cluster = start(ALL).await;
     let old = owner(&cluster).await;
     cluster
@@ -119,28 +121,35 @@ async fn a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writ
         .into_iter()
         .filter(|id| *id != old)
         .collect();
-    cluster
-        .inject(&Fault::Refuse {
-            node: old.clone(),
-            peers: others,
-        })
-        .await
-        .expect("cut the old leader off from its replicas");
-    for fault in Fault::partition(Endpoint::node(&old), Endpoint::ControlPlane) {
-        cluster.inject(&fault).await.expect("partition");
+    let raft = felix_cluster::suite_runs_on_raft();
+    if raft {
+        // Both ways: the replicas elect among themselves, and the old
+        // leader hears nothing of it.
+        cluster.partition_node(&old).expect("partition");
+    } else {
+        cluster
+            .inject(&Fault::Refuse {
+                node: old.clone(),
+                peers: others,
+            })
+            .await
+            .expect("cut the old leader off from its replicas");
+        for fault in Fault::partition(Endpoint::node(&old), Endpoint::ControlPlane) {
+            cluster.inject(&fault).await.expect("partition");
+        }
+        wait_for_lapse(&cluster, &old).await;
     }
-    wait_for_lapse(&cluster, &old).await;
 
-    felix_cluster::wait::until(Duration::from_secs(30), "a new leader", || async {
+    let new = felix_cluster::wait::until_some(Duration::from_secs(30), "a new leader", || async {
         cluster.place_shards().await;
         cluster
-            .shard_owner_of("cache", CACHE, 0)
+            .serving_cache_leader(CACHE, Duration::from_secs(1))
             .await
-            .is_ok_and(|owner| owner != old)
+            .ok()
+            .filter(|leader| *leader != old)
     })
     .await
-    .expect("the control plane promotes a replica");
-    let new = owner(&cluster).await;
+    .expect("a replica takes over");
     felix_cluster::wait::until(
         Duration::from_secs(30),
         "the new leader to take a write",
@@ -160,9 +169,12 @@ async fn a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writ
         "{old} answered a Quorum read with the value {new} has overwritten"
     );
     let refused = read.expect_err("the cut-off leader answered a Quorum read");
+    // The hybrid's lease is the control plane's, so a refusal for it proves
+    // nothing about the replicas. A Raft leader's lease is its majority's
+    // answers, which is the property itself.
     let why = format!("{refused:#}");
     assert!(
-        !why.contains("lease"),
+        raft || !why.contains("lease"),
         "the read was refused for the lease, which proves nothing here: {why}"
     );
     cluster.shutdown().await;
@@ -173,11 +185,6 @@ async fn a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writ
 #[serial]
 #[tokio::test]
 async fn quorum_reads_continue_while_the_control_plane_is_partitioned() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "the lease_free_reads fleet feature and the lease metric are hybrid mechanisms; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers the cut-off leader",
-    ) {
-        return;
-    }
     let cluster = start(ALL).await;
     let leader = owner(&cluster).await;
     cluster

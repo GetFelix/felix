@@ -217,14 +217,31 @@ async fn a_trim_holds_on_the_leader_promoted_after_it() {
         .collect();
     assert_eq!(held, expected, "every record above the floor is intact");
 
-    // The old trim is refused by the new leader, and a new one lands.
+    // The old trim is refused by the new leader with its tail. On hybrid
+    // that is the offset after the last record. On Raft each leader's blank
+    // entry takes an offset too, so the tail is past it, and nothing a reader
+    // is sent lies between.
     let stale = writer_trim(&cluster, floor_at, trim_at, Some(HOLDER)).await;
-    assert_eq!(stale, ConditionalTrim::Refused { tail: trim_at + 3 });
-    let next = writer_trim(&cluster, floor_at + 2, trim_at + 3, Some(b"holder-2")).await;
+    let ConditionalTrim::Refused { tail } = stale else {
+        panic!("a stale trim is refused, got {stale:?}");
+    };
+    if felix_cluster::suite_runs_on_raft() {
+        assert!(
+            tail > trim_at + 3,
+            "the promoted leader's blank took an offset: {tail}"
+        );
+        let between = read_until_served(&cluster, &promoted, trim_at + 3)
+            .await
+            .expect("read past the last record");
+        assert_eq!(between, Vec::new(), "only blanks follow the last record");
+    } else {
+        assert_eq!(tail, trim_at + 3);
+    }
+    let next = writer_trim(&cluster, floor_at + 2, tail, Some(b"holder-2")).await;
     assert_eq!(
         next,
         ConditionalTrim::Trimmed {
-            offset: Some(trim_at + 3),
+            offset: Some(tail),
             oldest: floor_at + 2
         }
     );

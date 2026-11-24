@@ -8,6 +8,15 @@ use serial_test::serial;
 
 const STREAM: &str = "orders";
 
+/// The last index in `leader`'s member of the stream's group: a Raft
+/// leader reports no tail to the replica report.
+async fn last_index(cluster: &Cluster, leader: &str) -> Option<u64> {
+    cluster
+        .raft_member(leader, STREAM)
+        .await
+        .and_then(|member| member.last_index)
+}
+
 /// **Retention never deletes a record a `Quorum` publish is still waiting
 /// on.** Both followers stop, so the publishes made then wait for a majority
 /// on the leader alone, while retention ticks every second over a bound they
@@ -16,7 +25,8 @@ const STREAM: &str = "orders";
 /// would acknowledge the waiting publishes for records no broker holds. Held
 /// at the commit offset, the leader keeps its log from the last acknowledged
 /// record, the followers catch up by ordinary shipping, and every waiting
-/// publish is acknowledged.
+/// publish is acknowledged. A Raft leader may instead refuse a publish it has
+/// no majority for, writing nothing; none is acknowledged either way.
 #[serial]
 #[tokio::test]
 async fn retention_waits_for_the_followers_of_a_quorum_stream() {
@@ -91,6 +101,12 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
         .expect("both followers hold the early records")
     };
 
+    let settled_index = if raft {
+        last_index(&cluster, &leader).await
+    } else {
+        None
+    };
+
     for follower in &followers {
         cluster.stop_node(follower).await.expect("stop a follower");
     }
@@ -102,10 +118,23 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     }
     let filler = "x".repeat(1024);
     let mut waiting = tokio::task::JoinSet::new();
+    let mut answered = Vec::new();
     for (i, client) in clients.into_iter().enumerate() {
         if i == 1 && raft {
-            // A Raft leader reports no tail; give the first record time to land.
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // A Raft leader with no majority in reach may refuse a record
+            // outright and write nothing, rather than hold it. Either way the
+            // first is settled before the rest are sent.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            while answered.is_empty() && last_index(&cluster, &leader).await <= settled_index {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the first waiting record was neither appended nor refused",
+                );
+                if let Some(answer) = waiting.try_join_next() {
+                    answered.push(answer.expect("publish task"));
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         } else if i == 1 {
             // The first waiting record lands alone, in the segment that holds
             // the early ones. Arriving together, the rest can start a new
@@ -133,7 +162,7 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
         let payload = format!("{i}-{filler}").into_bytes();
         waiting.spawn(async move {
             let publisher = client.publisher().await?;
-            publisher
+            let answer = publisher
                 .publish(
                     &tenant,
                     &namespace,
@@ -141,13 +170,25 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
                     payload,
                     felix_wire::AckMode::PerMessage,
                 )
-                .await
+                .await;
+            anyhow::Ok((i, answer))
         });
     }
     // Three retention ticks over more than twice the bound.
     tokio::time::sleep(Duration::from_secs(4)).await;
-    if let Some(answer) = waiting.try_join_next() {
-        panic!("a publish was answered with no follower up: {answer:?}");
+    while let Some(answer) = waiting.try_join_next() {
+        answered.push(answer.expect("publish task"));
+    }
+    // No publish is acknowledged with no follower up. A Raft leader refuses
+    // what it cannot reach a majority for, and that refusal wrote nothing.
+    let mut refused = std::collections::BTreeSet::new();
+    for answer in answered {
+        match answer {
+            Ok((i, Err(err))) if raft && format!("{err:#}").contains("nothing was written") => {
+                refused.insert(i);
+            }
+            other => panic!("a publish was answered with no follower up: {other:?}"),
+        }
     }
 
     let first = {
@@ -176,7 +217,13 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
     let answers = tokio::time::timeout(Duration::from_secs(40), waiting.join_all())
         .await
         .expect("the waiting publishes were answered");
-    for (i, answer) in answers.into_iter().enumerate() {
+    assert_eq!(
+        answers.len() + refused.len(),
+        24,
+        "every publish was answered"
+    );
+    for answer in answers {
+        let (i, answer) = answer.expect("publish task");
         answer.unwrap_or_else(|err| panic!("publish {i} was not acknowledged: {err:#}"));
     }
 }
