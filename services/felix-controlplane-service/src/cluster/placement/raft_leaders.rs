@@ -16,7 +16,7 @@ use felix_common::random::HashMap;
 use super::leadership::{Leadership, Owner};
 use super::moves::Moves;
 use super::rendezvous::score;
-use super::zones::domain;
+use super::zones::{domain, unspread};
 use super::{Blocked, Decision, Leaving, MoveStep};
 use crate::model::{Node, ShardAssignment, ShardKind, ShardState};
 
@@ -58,7 +58,8 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   the shard waits, shown to the operator.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
-///   recovering.
+///   recovering. With no such member, a live broker outside the set takes a
+///   follower's seat and the lead ([`balanced_outside`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn raft_step<'a>(
     existing: &'a ShardAssignment,
@@ -166,7 +167,9 @@ pub(super) fn raft_step<'a>(
 /// member anywhere, so renaming within sets alone would never give it a
 /// shard again (#3113). The group's leader keeps its seat: it adds the new
 /// copy, swaps the follower out, and hands over once the copy votes.
-/// `None` when no such broker exists, or the shard has no follower to give.
+/// The swap takes a slot from the same per-pass budget as a replacement.
+/// `None` when no such broker exists, or no follower can give its seat
+/// without the set losing a zone.
 fn balanced_outside<'a>(
     existing: &'a ShardAssignment,
     is_serving: &dyn Fn(&str) -> bool,
@@ -190,28 +193,56 @@ fn balanced_outside<'a>(
         .map(|node| node.node_id.as_str())
         .filter(|id| !existing.nodes().any(|member| member == id))
         .collect();
-    let under = |count: &dyn Fn(&str) -> u32| {
-        outside
+    let current: Vec<&'a str> = existing.nodes().map(String::as_str).collect();
+    let was_spread = !unspread(eligible, &current);
+    // The follower that gives `to` its seat: one in `to`'s zone first, so
+    // the set keeps its zones, then the busiest. None that would leave a
+    // spread set short of a zone.
+    let seat_for = |to: &'a str| {
+        existing
+            .replicas
+            .iter()
+            .filter(|node| !existing.learners.contains(*node))
+            .filter(|from| {
+                let next: Vec<&'a str> = current
+                    .iter()
+                    .map(|node| if node == from { to } else { node })
+                    .collect();
+                !(was_spread && unspread(eligible, &next))
+            })
+            .min_by_key(|from| {
+                (
+                    domain(eligible, from) != domain(eligible, to),
+                    u32::MAX - roles(from),
+                    score(key, from),
+                    from.as_str(),
+                )
+            })
+    };
+    let under = |count: &dyn Fn(&str) -> u32, keep: &dyn Fn(&str) -> bool| {
+        let mut candidates: Vec<&'a str> = outside
             .iter()
             .copied()
-            .min_by_key(|node| (count(node), u64::MAX - score(key, node), *node))
-            .filter(|to| count(to).saturating_add(2) <= count(leader))
+            .filter(|to| count(to).saturating_add(2) <= count(leader) && keep(to))
+            .collect();
+        candidates.sort_by_key(|node| (count(node), u64::MAX - score(key, node), *node));
+        candidates
+            .into_iter()
+            .find_map(|to| seat_for(to).map(|from| (to, from)))
     };
-    let for_stream = under(&|node| leaders.of(key, node));
+    let for_stream = under(&|node| leaders.of(key, node), &|_| true);
     moves.stream_wanted |= for_stream.is_some();
-    let to = for_stream.or_else(|| {
+    // As for a member: the totals only where the stream's spread holds.
+    let (to, from) = for_stream.or_else(|| {
         moves
             .cluster_moves
-            .then(|| under(&|node| leaders.total(node)))
+            .then(|| {
+                under(&|node| leaders.total(node), &|to| {
+                    leaders.of(key, to) < leaders.of(key, leader)
+                })
+            })
             .flatten()
-            .filter(|to| leaders.of(key, to) < leaders.of(key, leader))
     })?;
-    // The busiest follower gives its seat up.
-    let from = existing
-        .replicas
-        .iter()
-        .filter(|node| !existing.learners.contains(*node))
-        .min_by_key(|node| (u32::MAX - roles(node), score(key, node), node.as_str()))?;
     if moves.recovering || existing.nodes().any(|node| !is_serving(node)) {
         return Some(Decision::Waiting(Blocked::Recovering));
     }

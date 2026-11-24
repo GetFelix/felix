@@ -1889,11 +1889,15 @@ placement reports, until it is back or the group is re-formed without it;
 its directory: nothing deletes it yet.
 
 When the leader leads two or more shards over a live broker outside the
-set and no member qualifies, balance swaps the busiest follower for that
-broker and names it leader in one write, under the same checks as a
-follower replacement. The group's leader keeps its seat and hands
-leadership over once the new copy votes. This is how a broker a drain
-swapped out of every set, and then restarted, gets shards back (#3113).
+set and no member qualifies, balance swaps a follower for that broker and
+names it leader in one write, under the same checks as a follower
+replacement and from the same per-pass budget. It gives up a follower in
+that broker's zone first, then the busiest, and never one whose swap would
+leave a zone-spread set short of a zone. The group's leader keeps its seat
+and hands leadership over once the new copy votes. This is how a broker a
+drain swapped out of every set, and then restarted, gets shards back
+(#3113). An RF 1 shard has no follower to give, so it is not covered yet
+([#3118](https://github.com/GetFelix/felix/issues/3118)).
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
@@ -1918,8 +1922,11 @@ shard".
 > `a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set`,
 > `a_raft_follower_lost_past_the_delay_is_replaced`,
 > `a_drain_on_a_raft_cluster_finishes_through_the_store`,
-> `a_raft_leader_balances_onto_a_broker_that_holds_no_seat` and
-> `a_raft_leader_balances_outside_its_set_only_once_the_set_settles`;
+> `a_raft_leader_balances_onto_a_broker_that_holds_no_seat`,
+> `a_raft_leader_balances_outside_its_set_only_once_the_set_settles`,
+> `balancing_outside_raft_sets_takes_the_replacement_budget`,
+> `a_raft_leader_balances_outside_its_set_only_where_the_set_keeps_its_zones`
+> and `a_raft_leader_balances_outside_its_set_by_swapping_within_a_zone`;
 > `crates/testing/felix-cluster/tests/routing/shutdown_handoff.rs`,
 > `a_broker_drained_out_of_every_set_leads_again_after_a_restart`.
 

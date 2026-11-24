@@ -4809,11 +4809,16 @@ older control plane added:
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
   renaming within sets would never give it a shard again. One write swaps
-  the busiest follower for it and names it leader, under the same checks as
-  a follower replacement. The group's leader keeps its seat, adds the new
-  copy as a learner, swaps the voters, and hands leadership over once the
-  copy votes and has caught up. A copy the broker kept from before its drain
-  rejoins under its old copy id with its log intact.
+  a follower for it and names it leader, under the same checks as a
+  follower replacement, sharing its budget of 16 set changes a pass. The
+  follower given up is one in the new broker's zone first, then the
+  busiest, and never one whose swap would leave a set spread across zones
+  short of a zone. An RF 1 shard has no follower to give, so this does not
+  reach it yet ([#3118](https://github.com/GetFelix/felix/issues/3118)).
+  The group's leader keeps its seat, adds the new copy as a learner, swaps
+  the voters, and hands leadership over once the copy votes and has caught
+  up. A copy the broker kept from before its drain rejoins under its old
+  copy id with its log intact.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement
