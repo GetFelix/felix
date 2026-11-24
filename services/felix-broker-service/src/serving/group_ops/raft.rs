@@ -313,21 +313,23 @@ impl OnRaft {
         &self,
         publish_ctx: &PublishContext,
     ) -> Result<(felix_broker::GroupSnapshot, u64), ClientError> {
-        let snapshot = self
+        let mut snapshot = self
             .groups
             .describe(&self.key, self.deadline())
             .await
             .map_err(broker)?;
         // Group writes are entries of the shard's log but hold no record, so
-        // the tail stops before the trailing ones: a group that has settled
-        // everything shows no lag, as on the hybrid. A poll settles the
-        // trailing ones too, so the cursor can pass that point; it is the
-        // tail then. The describe ran a read index, so the end covers every
-        // acknowledged publish.
+        // the tail stops before the trailing ones, as on the hybrid. A poll
+        // settles the trailing ones too, so the cursor can pass that point;
+        // it then reports the records' end, which is still true of it. The
+        // describe ran a read index, so the end covers every acknowledged
+        // publish.
         let end = self.read_end(publish_ctx).await?;
         let records_end = publish_ctx.engine.records_end(&self.shard, end);
-        let cursor = snapshot.committed.unwrap_or(0).min(end);
-        Ok((snapshot, records_end.max(cursor)))
+        if let Some(committed) = snapshot.committed.as_mut() {
+            *committed = (*committed).min(records_end);
+        }
+        Ok((snapshot, records_end))
     }
 
     pub(super) async fn delete(&self) -> Result<bool, ClientError> {
