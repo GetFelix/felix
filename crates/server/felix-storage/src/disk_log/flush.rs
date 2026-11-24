@@ -200,6 +200,10 @@ impl LogInner {
     /// Whether flushes go through a ring rather than the flush thread.
     fn ring_enabled(&self) -> bool {
         #[cfg(test)]
+        if self.flush_thread_only.load(Ordering::Acquire) {
+            return false;
+        }
+        #[cfg(test)]
         if self.fake_ring.lock().is_some() {
             return true;
         }

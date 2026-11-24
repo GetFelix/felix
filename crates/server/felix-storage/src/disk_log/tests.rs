@@ -78,6 +78,14 @@ fn open(dir: &TempDir, fsync_mode: FsyncMode) -> DiskLog {
     DiskLog::open(dir.path(), "t/ns/s/0", config(fsync_mode)).expect("open")
 }
 
+/// For a test that holds the flush thread: a ring another test forces for
+/// the process would otherwise take this log's flushes around it.
+pub(super) fn pin_to_flush_thread(log: &DiskLog) {
+    log.inner
+        .flush_thread_only
+        .store(true, std::sync::atomic::Ordering::Release);
+}
+
 async fn read_all(log: &DiskLog, start: Offset) -> Vec<String> {
     log.read_range(ReadRange {
         start,

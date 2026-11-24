@@ -1610,6 +1610,8 @@ impl DiskLog {
             ring_gate: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             fake_ring: Mutex::new(None),
+            #[cfg(test)]
+            flush_thread_only: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(any(test, feature = "fault-injection"))]
@@ -2506,6 +2508,10 @@ struct LogInner {
     /// Replaces the io_uring flusher for tests on every platform.
     #[cfg(test)]
     fake_ring: Mutex<Option<flush::FakeRing>>,
+    /// Keeps this log's flushes on the flush thread even while another test
+    /// forces the ring for the whole process.
+    #[cfg(test)]
+    flush_thread_only: std::sync::atomic::AtomicBool,
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,

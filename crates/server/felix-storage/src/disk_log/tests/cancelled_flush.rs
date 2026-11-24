@@ -37,6 +37,25 @@ async fn drop_a_flush_in_the_ring(
     fsync
 }
 
+/// A log pinned to the flush thread keeps its flushes there with a ring
+/// switched on, so tests that hold that thread do not race the tests that
+/// force the ring for the whole process.
+#[tokio::test]
+async fn a_log_pinned_to_the_flush_thread_skips_the_ring() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    let mut ring = fake_ring(&log);
+    pin_to_flush_thread(&log);
+    log.append(&records(&["a"])).await.expect("append");
+
+    tokio::time::timeout(Duration::from_secs(5), log.sync())
+        .await
+        .expect("the flush went to the ring")
+        .expect("sync");
+    assert!(ring.try_recv().is_err(), "an fsync reached the ring");
+    assert_eq!(log.durable_offset(), tail(&log));
+}
+
 /// The flush future is dropped while its fsync is in the ring, and the fsync
 /// then fails. The log must stop anyway.
 #[tokio::test]
