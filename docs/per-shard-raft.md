@@ -5939,9 +5939,16 @@ on the hybrid.
   watch is handed. That edge is the member's own, so a follower that is
   behind can hand a retained watch a value older than one the client just
   read from the leader. The newer value is committed and arrives as a
-  change once the follower applies it; nothing is lost. The group keeps no
-  change history to replay, so a resume from below the edge is answered
-  with `resnapshot` and each key's current value. A resume from past the
+  change once the follower applies it; nothing is lost. Every member keeps
+  its latest applied changes in memory, watched or not, up to 4096 changes
+  or 1 MiB of keys and values per shard (`raft/cache/recent.rs`). A resume
+  whose offset is still kept is replayed `[from_offset, edge)` from them,
+  deletes included, exactly as the hybrid replays its log, then joins live
+  delivery. One from below the oldest kept change is answered with
+  `resnapshot` and each key's current value, read after the member has
+  applied every put acknowledged before the watch began. A snapshot
+  install and a restart start the kept changes empty, past the snapshot's
+  entry, so a resume from before either resnapshots. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
   apply that far, up to the publish quorum timeout, and is then refused as
   retryable. A snapshot install, and a member left with no leader, end the

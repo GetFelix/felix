@@ -954,13 +954,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 // Before the commit table moves, so a write that waits on
                 // its commit finds its answer.
                 let mut state = cache.write();
-                let before = self
-                    .watch
-                    .as_ref()
-                    .map(|watch| watch.before(&state, &command.1));
                 state.apply(entry.log_id.index, command.0, &command.1);
-                if let (Some(watch), Some(before)) = (&self.watch, before) {
-                    watch.applied(&state, entry.log_id.index, before);
+                if let Some(watch) = &self.watch {
+                    watch.applied(&state, entry.log_id.index);
                 }
                 drop(state);
                 written += 1;

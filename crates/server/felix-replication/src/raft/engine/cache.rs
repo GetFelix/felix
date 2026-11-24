@@ -24,6 +24,30 @@ pub struct CacheWatchPoint {
     pub entries: Vec<felix_storage::CacheSnapshotEntry>,
 }
 
+/// What a watch resuming on a Raft cache shard's member is replayed. See
+/// [`RaftEngine::cache_replay`].
+#[derive(Debug, Clone)]
+pub struct CacheReplay {
+    /// Changes from this offset on reach the watch live.
+    pub tail: u64,
+    /// Every change in `[from, tail)` the watch takes, in offset order, or
+    /// `None` when the member no longer keeps them all and the watch has to
+    /// be handed the current values instead.
+    pub changes: Option<Vec<CacheReplayed>>,
+}
+
+/// One change a resuming watch is replayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheReplayed {
+    pub key: String,
+    /// The value written, or `None` for a removal.
+    pub value: Option<bytes::Bytes>,
+    /// The index of the entry that made it.
+    pub offset: u64,
+    /// Zero is never.
+    pub expires_at_millis: u64,
+}
+
 /// A cache or counter write to a Raft cache shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheOp {

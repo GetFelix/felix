@@ -6,6 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::layers::{Delta, Layers, Tables};
+use super::recent::{Change, Recent};
 use super::{CacheCommand, Condition, Request};
 
 /// A key's value. Its version is the index of the put that wrote it.
@@ -116,6 +117,9 @@ pub(crate) struct CacheState {
     /// Set while a snapshot cut holds the maps. Each op checks it once and
     /// takes an out-of-line path, so steady state runs the plain map code.
     layered: Option<Box<Layered>>,
+    /// The latest changes, for a watch resuming from one. Not in a
+    /// snapshot, so a restored state starts it empty.
+    recent: Recent,
 }
 
 /// A snapshot cut holds `base`, so apply writes to `delta` until the delta
@@ -167,14 +171,46 @@ impl CacheState {
         self.time
     }
 
-    /// Apply the entry at `index`, stamped `stamp`. Returns what a write
-    /// answered, the first time or on a retry.
+    /// Apply the entry at `index`, stamped `stamp`, and keep the change it
+    /// made in [`Self::recent`]. Returns what a write answered, the first
+    /// time or on a retry.
     pub(crate) fn apply(
         &mut self,
         index: u64,
         stamp: u64,
         command: &CacheCommand,
     ) -> Option<Answer> {
+        let key = match command {
+            CacheCommand::Put { key, .. }
+            | CacheCommand::Delete { key, .. }
+            | CacheCommand::Expire { key, .. } => Some(key),
+            CacheCommand::Add { .. } | CacheCommand::Retire { .. } => None,
+        };
+        let was = key.map(|key| self.entry(key).map(|entry| entry.version));
+        let answer = self.fold_in(index, stamp, command);
+        if let (Some(key), Some(was)) = (key, was) {
+            // A refused write, a retry and an expiry of a key written since
+            // change nothing and keep nothing.
+            let change = match self.entry(key) {
+                Some(entry) if entry.version == index => {
+                    Some((Some(entry.value.clone()), entry.expires_at))
+                }
+                None if was.is_some() => Some((None, 0)),
+                _ => None,
+            };
+            if let Some((value, expires_at)) = change {
+                self.recent.push(Change {
+                    offset: index,
+                    key: key.clone(),
+                    value,
+                    expires_at,
+                });
+            }
+        }
+        answer
+    }
+
+    fn fold_in(&mut self, index: u64, stamp: u64, command: &CacheCommand) -> Option<Answer> {
         self.time = stamp;
         self.applied = index;
         let request = match command {
@@ -372,6 +408,7 @@ impl CacheState {
             next_expiry: tables.expiring.first().map(|(at, _)| *at),
             tables,
             layered: None,
+            recent: Recent::default(),
         }
     }
 
@@ -470,12 +507,12 @@ impl CacheState {
     /// The state restored from a snapshot whose last entry is `index`.
     pub(crate) fn restored_through(&mut self, index: u64) {
         self.applied = index;
+        self.recent.restart(index);
     }
 
-    /// What a cache watch sees of `key`: its value, version and expiry,
-    /// whether or not the log's time has passed the expiry yet.
-    pub(crate) fn watched(&self, key: &str) -> Option<Watched> {
-        self.entry(key).map(Watched::of)
+    /// The latest changes this state applied.
+    pub(crate) fn recent(&self) -> &Recent {
+        &self.recent
     }
 
     /// Every key `keep` takes with a value unexpired at the log's time, for

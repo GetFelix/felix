@@ -2426,6 +2426,20 @@ impl Group {
         Some((state.applied() + 1, state.watched_entries(keep)))
     }
 
+    /// A resuming cache watch's live edge on this member and every kept
+    /// change in `[from, edge)` that `keep` takes, read under one hold of
+    /// the state's lock. The changes are `None` when some from `from` on are
+    /// no longer kept. `None` in a stream shard's group.
+    pub(crate) fn cache_replay(
+        &self,
+        from: u64,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Option<Vec<super::cache::Change>>)> {
+        let cache = self.cache.as_ref()?;
+        let state = cache.read();
+        Some((state.applied() + 1, state.recent().since(from, keep)))
+    }
+
     /// End `observer`'s watches of this cache group as lagged at the live
     /// edge. Under the state's lock, so no change lands between the edge
     /// and the ending.
