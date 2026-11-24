@@ -87,8 +87,10 @@ fn has_curl_header() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// The shared library cargo built for this test run. It sits next to the
-/// test binary in `deps`, and is copied up a level by a plain `cargo build`.
+/// The shared library cargo built for this test run. With cargo's older
+/// layout it sits next to the test binary in `deps`; with the per-unit
+/// layout it is in a sibling `build/felix-capi/<hash>/out`. A plain
+/// `cargo build` also copies it up to the profile directory.
 fn shared_library() -> PathBuf {
     let name = if cfg!(target_os = "macos") {
         "libfelix.dylib"
@@ -96,8 +98,22 @@ fn shared_library() -> PathBuf {
         "libfelix.so"
     };
     let exe = std::env::current_exe().expect("test binary path");
-    // The profile directory is some way above the test binary, depending on
-    // cargo's build-dir layout; stop at the target root.
+    let out = exe.parent().expect("the test binary has a directory");
+    // Per-unit layout: the newest sibling unit of this package holding it.
+    let sibling = out
+        .parent()
+        .and_then(Path::parent)
+        .and_then(|package| std::fs::read_dir(package).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(|unit| Some(unit.ok()?.path().join("out").join(name)))
+        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
+        .max()
+        .map(|(_, path)| path);
+    if let Some(path) = sibling {
+        return path;
+    }
+    // Older layout or an uplifted copy: walk up, stopping at the target root.
     for dir in exe.ancestors().skip(1) {
         let path = dir.join(name);
         if path.exists() {
@@ -107,7 +123,7 @@ fn shared_library() -> PathBuf {
             break;
         }
     }
-    panic!("{name} was not built above {}", exe.display())
+    panic!("{name} was not built near {}", exe.display())
 }
 
 #[test]
