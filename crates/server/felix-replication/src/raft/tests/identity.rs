@@ -1817,3 +1817,85 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
         log.close().await.ok();
     }
 }
+
+/// A follower whose mark writes fail stops on the storage error, and the
+/// other two go on. Once its disk takes writes again, the root heals and the
+/// member opens again from its directory, as after a crash: the same copy,
+/// since its log was never cut, and it catches up with what it missed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members)
+        .await
+        .expect("initialize");
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+
+    let leader = cluster.elected(0).await;
+    let failing = *BROKERS
+        .iter()
+        .find(|broker| **broker != &*leader.broker)
+        .expect("a follower");
+    let runtime = cluster.runtime(failing);
+    let old = runtime.status(&shard(0)).expect("status").member;
+    let marks = roots.roots[failing].mark_log();
+    marks.fail_writes(true);
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while runtime.storage_failure(&shard(0)).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never stopped"
+        );
+        cluster.write(0, b"while failing").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let missed = cluster.write(0, b"missed").await;
+    roots.roots[failing]
+        .heal()
+        .await
+        .expect_err("healed while the disk refuses writes");
+
+    marks.fail_writes(false);
+    roots.roots[failing].heal().await.expect("heal");
+    assert!(runtime.close(&shard(0)).await);
+    logs.remove(failing).expect("log").close().await.ok();
+    let reopened = runtime
+        .open_copy(
+            group(0),
+            &roots.shard_dir(failing),
+            log_config(),
+            &roots.roots[failing],
+        )
+        .await
+        .expect("reopen");
+    assert_eq!(reopened.member, old);
+    assert!(reopened.rotation.is_none());
+    logs.insert(failing, reopened.log);
+    let after = cluster.write(0, b"after").await;
+    assert!(after > missed);
+    cluster.committed_everywhere(0, after).await;
+    assert_eq!(runtime.storage_failure(&shard(0)), None);
+    cluster.stop().await;
+    for log in logs.into_values() {
+        log.close().await.expect("close");
+    }
+}

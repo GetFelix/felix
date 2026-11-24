@@ -29,6 +29,21 @@ pub(crate) fn store(dir: &Path, name: &str, parts: &[&[u8]]) -> io::Result<()> {
     crate::io::sync_dir(dir)
 }
 
+/// As [`store`], with the writes going through the segment writes' path, so
+/// a disk that refuses writes refuses this too. For a write that stands as a
+/// probe of the disk.
+pub(crate) fn store_through_faults(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    let path = dir.join(name);
+    let temporary = temporary(dir, name);
+    {
+        let file = crate::fs::File::create(&temporary)?;
+        crate::io::write_all(&file, bytes)?;
+        crate::io::sync_all(&file)?;
+    }
+    crate::fs::rename(&temporary, &path)?;
+    crate::io::sync_dir(dir)
+}
+
 /// The bytes of `name` in `dir`, or `None` when it was never written. A
 /// temporary a crash left behind is not the file and is never read.
 pub(crate) fn load(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
