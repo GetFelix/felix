@@ -41,7 +41,14 @@ async fn start() -> Cluster {
         .as_ref()
         .expect("control plane running")
         .store;
-    for feature in ALL {
+    // A Raft group confirms reads and group writes with its majority and has
+    // none of these to finalize.
+    let features = if felix_cluster::suite_runs_on_raft() {
+        &[]
+    } else {
+        ALL
+    };
+    for feature in features {
         store
             .finalize_fleet_feature(feature)
             .await
@@ -57,7 +64,7 @@ async fn start() -> Cluster {
                     .await
                     .ok()
                     .flatten()
-                    == Some(ALL.len() as f64)
+                    == Some(features.len() as f64)
             }
         })
         .await
@@ -68,9 +75,9 @@ async fn start() -> Cluster {
 
 async fn stream_owner(cluster: &Cluster) -> String {
     cluster
-        .shard_owner_of("stream", STREAM, 0)
+        .serving_leader(STREAM, Duration::from_secs(30))
         .await
-        .expect("stream shard owner")
+        .expect("stream shard leader")
 }
 
 async fn wait_for_lapse(cluster: &Cluster, node: &str) {
@@ -94,9 +101,47 @@ async fn publish_settled(cluster: &Cluster, node: &str, payload: &[u8]) {
     .unwrap_or_else(|err| panic!("{node} takes a publish: {err:#}"));
 }
 
-/// Cut `old` off from the control plane alone, and wait until the control
-/// plane has promoted another broker and that one has taken a publish.
-async fn depose(cluster: &Cluster, old: &str) -> String {
+/// How [`depose`] cuts a Raft leader off. The hybrid's is the control plane
+/// in both cases.
+#[derive(Clone, Copy)]
+enum Cut {
+    /// Nothing reaches its peers either way, so it goes on believing it leads.
+    BothWays,
+    /// Its own requests to its peers fail, so they elect another, whose
+    /// requests it still answers: it hears it was deposed.
+    Outbound,
+}
+
+/// Depose `old` and wait until another broker leads and has taken a
+/// publish. On hybrid, `old` is cut off from the control plane alone, which
+/// promotes another broker. On Raft, `old` is cut off from its peers as `cut`
+/// says and the others elect a leader.
+async fn depose(cluster: &Cluster, old: &str, cut: Cut) -> String {
+    if felix_cluster::suite_runs_on_raft() {
+        match cut {
+            Cut::BothWays => cluster.partition_node(old).expect("partition"),
+            Cut::Outbound => {
+                let peers = cluster
+                    .node_ids()
+                    .into_iter()
+                    .filter(|id| id != old)
+                    .collect();
+                cluster
+                    .inject(&Fault::Refuse {
+                        node: old.to_string(),
+                        peers,
+                    })
+                    .await
+                    .expect("refuse");
+            }
+        }
+        let new = cluster
+            .promoted_leader(STREAM, old, Duration::from_secs(30))
+            .await
+            .expect("the others elect a leader");
+        publish_settled(cluster, &new, b"after").await;
+        return new;
+    }
     for fault in Fault::partition(Endpoint::node(old), Endpoint::ControlPlane) {
         cluster.inject(&fault).await.expect("partition");
     }
@@ -122,11 +167,6 @@ async fn depose(cluster: &Cluster, old: &str) -> String {
 #[serial]
 #[tokio::test]
 async fn readers_and_groups_survive_a_control_plane_partition() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "lease-free sessions are the hybrid lease_free_reads feature; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers a deposed leader",
-    ) {
-        return;
-    }
     let cluster = start().await;
     let leader = stream_owner(&cluster).await;
     publish_settled(&cluster, &leader, b"before").await;
@@ -141,9 +181,9 @@ async fn readers_and_groups_survive_a_control_plane_partition() {
         .expect("subscribe while whole");
 
     let cache_owner = cluster
-        .shard_owner_of("cache", CACHE, 0)
+        .serving_cache_leader(CACHE, Duration::from_secs(30))
         .await
-        .expect("cache shard owner");
+        .expect("cache shard leader");
     cluster
         .cache_put_via(&cache_owner, CACHE, "k", b"v")
         .await
@@ -202,11 +242,6 @@ async fn readers_and_groups_survive_a_control_plane_partition() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_coordinator_refuses_a_group_ack() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "lease-free sessions are the hybrid lease_free_reads feature; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers a deposed leader",
-    ) {
-        return;
-    }
     let cluster = start().await;
     let old = stream_owner(&cluster).await;
     publish_settled(&cluster, &old, b"before").await;
@@ -216,15 +251,17 @@ async fn a_deposed_coordinator_refuses_a_group_ack() {
         .expect("poll while whole");
     let claimed = claimed.first().expect("a record to claim").offset;
 
-    depose(&cluster, &old).await;
+    depose(&cluster, &old, Cut::BothWays).await;
 
     let refused = cluster
         .group_ack_via(&old, STREAM, 0, GROUP, claimed)
         .await
         .expect_err("the deposed coordinator acknowledged a group ack");
+    // The hybrid's lease is the control plane's and proves nothing about
+    // the replicas; a Raft leader's lease is its majority's answers.
     let why = format!("{refused:#}");
     assert!(
-        !why.contains("lease"),
+        felix_cluster::suite_runs_on_raft() || !why.contains("lease"),
         "the ack was refused for the lease, which proves nothing here: {why}"
     );
     cluster.shutdown().await;
@@ -236,11 +273,6 @@ async fn a_deposed_coordinator_refuses_a_group_ack() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_leader_ends_its_subscriptions_and_readers_follow() {
-    if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "lease-free sessions are the hybrid lease_free_reads feature; raft_shards::a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease covers a deposed leader",
-    ) {
-        return;
-    }
     let cluster = start().await;
     let old = stream_owner(&cluster).await;
     publish_settled(&cluster, &old, b"before").await;
@@ -268,7 +300,7 @@ async fn a_deposed_leader_ends_its_subscriptions_and_readers_follow() {
         .expect("subscribe");
     read_until(&mut subscription, b"before", Duration::from_secs(10)).await;
 
-    let new = depose(&cluster, &old).await;
+    let new = depose(&cluster, &old, Cut::Outbound).await;
     assert_ne!(new, old);
     read_until(&mut subscription, b"after", Duration::from_secs(30)).await;
     cluster.shutdown().await;

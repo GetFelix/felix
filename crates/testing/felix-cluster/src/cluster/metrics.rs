@@ -116,6 +116,23 @@ impl Cluster {
         self.owner(stream).await
     }
 
+    /// [`Self::serving_leader`] for shard 0 of `cache`: placement's owner,
+    /// or on Raft the member leading at the highest term with a majority
+    /// holding its commit index.
+    pub async fn serving_cache_leader(&self, cache: &str, timeout: Duration) -> Result<String> {
+        if !self.config.raft_brokers() {
+            return self.shard_owner_of("cache", cache, 0).await;
+        }
+        let what = format!("a leader of cache {cache}");
+        wait::until_some(timeout, &what, || async {
+            self.raft_serving("cache", cache)
+                .await
+                .ok()
+                .map(|(leader, _)| leader)
+        })
+        .await
+    }
+
     /// [`Self::serving_leader`] once it is a broker other than `dead`,
     /// stepping placement meanwhile so a hybrid shard is promoted.
     pub async fn promoted_leader(
