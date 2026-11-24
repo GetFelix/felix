@@ -1285,9 +1285,9 @@ async fn a_wiped_follower_refuses_the_leader_its_lost_promise_had_fenced_out() {
         .wait_for_every_member_level(STREAM, Duration::from_secs(30))
         .await
         .expect("every member converges");
-    for node in cluster.node_ids() {
-        assert_holds(&cluster, &node, &acknowledged).await;
-    }
+    // Only the shard's owner answers a replay on the hybrid.
+    let owner = cluster.owner(STREAM).await.expect("owner");
+    assert_holds(&cluster, &owner, &acknowledged).await;
     cluster.shutdown().await;
 }
 
