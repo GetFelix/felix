@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795548702350,
+  "lastUpdate": 1795549147774,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68016,6 +68016,58 @@ window.BENCHMARK_DATA = {
             "range": "24939.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1580528.08\nmean: 1566953.55\nstdev: 24939.22\ncv: 1.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "992678e2a3ca349d9175e585fa1abf9cc7ef3b69",
+          "message": "fix(raft): a member stopped by a failed disk write reopens once the disk heals (#3108)\n\n* fix(raft): a member stopped by a failed disk write reopens once the disk heals\n\nA failed write also failed the broker-wide raft-marks write, which\npoisoned the mark log for good and stopped every Raft member on the broker\nuntil a restart. Now the broker closes a member stopped on a storage\nerror, checks the disk with a probe write and fsync, rewrites raft-marks\nfrom the last synced marks, and reopens the member through the normal\nopen path, as after a crash. A failed fsync is still never retried: a\npoisoned log rotates to a new copy id on reopen, and a single-copy shard\nwhose only copy rotated is held until an operator re-forms it.\n\nTurns the three writes:: failure tests back on.\n\nFixes #3104\n\nSpec-Unaffected: the reopen is the crash-and-restart open the models already cover\n\n* test(cluster): the full-disk test retries the first publish after the heal\n\nOn Raft a write the full disk refused is held and retried with a backoff,\nso the first publish after the heal may be answered \"retry\" while the held\nwrite lands. Retry it as a client would; the replay checks are unchanged.\n\nSpec-Unaffected: test only\n\n* test(raft): the poisoned single-copy test runs in its own process\n\nA poisoned log is counted for the whole process and never forgotten, so\nthe hybrid replica tests in the same binary attested no trusted copy once\nthis test poisoned one. Run it through ran_in_poisoning_process like the\nother poisoning tests.\n\nSpec-Unaffected: test isolation only; copy-trust behaviour is unchanged.",
+          "timestamp": "2026-11-24T19:32:23Z",
+          "tree_id": "97f02d5b7fb2c4f7534ebcaa93b723d075c45a46",
+          "url": "https://github.com/GetFelix/felix/commit/992678e2a3ca349d9175e585fa1abf9cc7ef3b69"
+        },
+        "date": 1795549147216,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 410144.02,
+            "range": "11348.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 410144.02\nmean: 406826.29\nstdev: 11348.79\ncv: 2.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 410144.02,
+            "range": "11348.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 410144.02\nmean: 406826.29\nstdev: 11348.79\ncv: 2.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94459.99,
+            "range": "1475.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94459.99\nmean: 93763.65\nstdev: 1475.04\ncv: 1.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 944599.94,
+            "range": "14750.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 944599.94\nmean: 937636.51\nstdev: 14750.38\ncv: 1.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
