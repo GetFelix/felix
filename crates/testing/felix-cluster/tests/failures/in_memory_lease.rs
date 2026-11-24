@@ -47,13 +47,13 @@ async fn an_in_memory_quorum_owner_refuses_after_its_lease_lapses() {
         felix_cluster::wait::until(Duration::from_secs(20), "the features to turn on", || {
             let id = id.clone();
             let cluster = &cluster;
+            // Each finalized feature by name: a Raft cluster turns its own
+            // features on as it forms, so a count of all of them never matches.
             async move {
                 cluster
-                    .metric(&id, "felix_broker_fleet_feature_enabled")
+                    .fleet_features_enabled(&id)
                     .await
-                    .ok()
-                    .flatten()
-                    == Some(ALL.len() as f64)
+                    .is_ok_and(|on| ALL.iter().all(|feature| on.contains(*feature)))
             }
         })
         .await
