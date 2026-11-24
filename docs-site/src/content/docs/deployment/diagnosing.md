@@ -15,7 +15,10 @@ Three places answer most questions.
 
 `felixctl inspect shard` asks the brokers that hold a shard for their own view
 of it: whether the leader serves and why not, the fence a promoted leader waits
-on, its lease, the tail and commit mark, and each follower's position.
+on, its lease, the tail and commit mark, and each follower's position. On a
+Raft shard the leader reports each follower as `shipping` once it has answered
+lately, else `stalled`, and leaves `NEXT OFFSET` and `LAG` empty: its group
+counts log entries, not stream offsets. Each follower's own tail is still shown.
 `felixctl inspect subs` asks each broker for the subscriptions it serves: each
 one's queue, the records it has dropped, and how far behind the tail it is.
 Both go over the authenticated client listener and need a broker token allowed
