@@ -270,6 +270,7 @@ fn a_raft_members_view_round_trips() {
         last_index: Some(12),
         committed: Some(11),
         voters: vec!["broker-a".to_string(), "broker-b".to_string()],
+        readable_base: Some(4),
     });
     let frame = Message::ShardInspectInfo {
         view: Box::new(view.clone()),
@@ -294,4 +295,20 @@ fn a_raft_view_without_voters_is_the_older_shape() {
     let raft: crate::InspectedRaft = serde_json::from_value(older.clone()).expect("decode");
     assert!(raft.voters.is_empty());
     assert_eq!(serde_json::to_value(&raft).expect("encode"), older);
+}
+
+/// `readable_base` is left out when absent, and a member's view from a broker
+/// that predates it decodes with none.
+#[test]
+fn a_raft_members_readable_base_is_optional() {
+    let old = serde_json::json!({"role": "follower", "term": 2});
+    let member: crate::InspectedRaft = serde_json::from_value(old.clone()).expect("old view");
+    assert_eq!(member.readable_base, None);
+    assert_eq!(serde_json::to_value(&member).expect("json"), old);
+    let member = crate::InspectedRaft {
+        readable_base: Some(7),
+        ..member
+    };
+    let json = serde_json::to_value(&member).expect("json");
+    assert_eq!(json["readable_base"], 7);
 }

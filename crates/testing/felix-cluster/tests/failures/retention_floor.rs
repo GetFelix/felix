@@ -204,6 +204,9 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
             format!("{err:#}").contains("cannot be subscribed to right now"),
             "the replay was refused for another reason: {err:#}"
         );
+        // The floor is the member's own, read with no majority: it must not
+        // have passed the first record a down follower still needs.
+        assert_raft_floor_held(&cluster, &[&leader], early).await;
     } else {
         assert_floor_held(&cluster, &leader, early).await;
     }
@@ -213,6 +216,11 @@ async fn retention_waits_for_the_followers_of_a_quorum_stream() {
             .restart_node(follower)
             .await
             .expect("restart a follower");
+    }
+    if raft {
+        let all = cluster.node_ids();
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        assert_raft_floor_held(&cluster, &all, early).await;
     }
     let answers = tokio::time::timeout(Duration::from_secs(40), waiting.join_all())
         .await
@@ -266,4 +274,28 @@ async fn assert_floor_held(cluster: &Cluster, leader: &str, early: u64) {
         "retention deleted records above the commit offset: the leader's log now \
          starts at {start}, past early-0 at {early}",
     );
+}
+
+/// Every member in `nodes` still serves from `early` or below, by its own
+/// readable base. Raft has no read that answers without a majority, so the
+/// floor is read from the member rather than by a replay.
+async fn assert_raft_floor_held(cluster: &Cluster, nodes: &[&str], early: u64) {
+    for node in nodes {
+        let base = felix_cluster::wait::until_some(
+            Duration::from_secs(20),
+            "a member to report its readable base",
+            || async {
+                cluster
+                    .raft_member(node, STREAM)
+                    .await
+                    .and_then(|member| member.readable_base)
+            },
+        )
+        .await
+        .expect("readable base");
+        assert!(
+            base <= early,
+            "retention moved {node}'s floor to {base}, past early-0 at {early}",
+        );
+    }
 }

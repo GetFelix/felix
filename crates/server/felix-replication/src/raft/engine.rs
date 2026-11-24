@@ -352,6 +352,13 @@ impl RaftEngine {
         self.runtime.status(shard)
     }
 
+    /// The oldest offset this broker's member of `shard`'s group serves a
+    /// reader, read locally with no round to the group. `None` without a
+    /// member, or for a cache shard.
+    pub fn readable_base(&self, shard: &ShardKey) -> Option<u64> {
+        self.runtime.readable_base(shard)
+    }
+
     /// Replication to every other member of `shard`'s group, while this
     /// broker's member leads it.
     pub fn followers(&self, shard: &ShardKey) -> Option<Vec<super::FollowerProgress>> {

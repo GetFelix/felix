@@ -1371,6 +1371,12 @@ impl Group {
         Some(at)
     }
 
+    /// The oldest offset this member's log serves a reader, read from the
+    /// log itself.
+    pub(crate) fn readable_base(&self) -> u64 {
+        self.log.disk_log().readable_base()
+    }
+
     pub(crate) fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader

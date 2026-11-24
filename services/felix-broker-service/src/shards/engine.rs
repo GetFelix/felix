@@ -81,6 +81,7 @@ impl StreamEngine {
                     .into_iter()
                     .map(|member| member.broker.to_string())
                     .collect(),
+                readable_base: engine.readable_base(shard),
             })
         }
         #[cfg(not(feature = "raft"))]

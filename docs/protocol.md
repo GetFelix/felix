@@ -1376,7 +1376,8 @@ each of them.
                     "state": "<state>", "halted": "<reason>" } ],
     "raft": { "role": "leader|candidate|follower|learner|stopped",
               "term": <u64>, "leader": "<node>", "last_index": <u64>,
-              "committed": <u64>, "voters": ["<node>"] } } }
+              "committed": <u64>, "voters": ["<node>"],
+              "readable_base": <u64> } } }
 ```
 
 Every field after `serving` is left out when it does not apply. The words are
@@ -1410,7 +1411,12 @@ older reader failing to decode the answer.
   it holds one. `leader` is the broker the member follows while it hears
   one, itself included; `last_index` is the last entry in its log and
   `committed` the commit index it knows of. `voters` are the brokers that vote
-  in the group by the latest membership the member's log holds. A member
+  in the group by the latest membership the member's log holds.
+  `readable_base`, on a stream shard, is the oldest offset the member's log
+  serves a reader: where its oldest segment starts or the head floor a trim
+  set, whichever is higher. It is read from the member's own log with no
+  round to the group, so it answers while no majority is up, and an older
+  broker leaves it out. A member
   removed from the group never hears of it, so it goes on naming itself a
   follower with the old voters; the leader's list is the one to trust. The
   cluster test harness reads it to wait for a leader whose log a majority of

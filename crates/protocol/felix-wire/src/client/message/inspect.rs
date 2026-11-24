@@ -87,6 +87,12 @@ pub struct InspectedRaft {
     /// removal, so only a current member's list is the group's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voters: Vec<String>,
+    /// The oldest offset this member's log serves a reader: where its oldest
+    /// segment starts or the head floor a trim set, whichever is higher.
+    /// Read locally, with no round to the group, so it answers with no
+    /// majority up. A stream shard only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readable_base: Option<u64>,
 }
 
 /// A shard's assignment: who leads it, who holds copies, and where a move is

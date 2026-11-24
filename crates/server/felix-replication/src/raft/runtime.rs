@@ -1437,6 +1437,13 @@ impl GroupRuntime {
         self.inner.registry.get(shard).map(|group| group.status())
     }
 
+    /// The oldest offset this broker's member of `shard`'s group serves a
+    /// reader. Local: needs no majority and no read-index round.
+    pub fn readable_base(&self, shard: &ShardKey) -> Option<u64> {
+        let group = self.inner.registry.get(shard)?;
+        (shard.kind == ShardKind::Stream).then(|| group.readable_base())
+    }
+
     /// Replication to every other member of `shard`'s group, while this
     /// broker's member leads it. `None` when it does not.
     pub fn followers(&self, shard: &ShardKey) -> Option<Vec<FollowerProgress>> {

@@ -341,6 +341,7 @@ fn raft_member(role: &str, leader: &str) -> felix_wire::InspectedRaft {
         last_index: Some(9),
         committed: Some(9),
         voters: Vec::new(),
+        readable_base: None,
     }
 }
 

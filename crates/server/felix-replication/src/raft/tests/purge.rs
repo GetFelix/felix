@@ -199,3 +199,23 @@ fn a_pass_stopped_after_its_snapshot_is_finished_by_the_next() {
         Some(PurgeStep::SnapshotThenPurge)
     );
 }
+
+/// A member reports where its log serves readers from with no round to the
+/// group, so the answer does not wait on a majority. A shard it holds no
+/// member of has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_reports_its_readable_base_locally() {
+    let mut cluster = super::Cluster::with(super::timers(), true);
+    cluster.form(0).await;
+    for broker in super::BROKERS {
+        assert_eq!(
+            cluster.runtime(broker).readable_base(&super::shard(0)),
+            Some(0)
+        );
+        assert_eq!(
+            cluster.runtime(broker).readable_base(&super::shard(1)),
+            None
+        );
+    }
+    cluster.stop().await;
+}
