@@ -32,6 +32,39 @@ fn a_floor_waits_for_the_lowest_unanswered_write_of_its_shard() {
     assert_eq!((fourth.sequence, fourth.floor), (5, 4));
 }
 
+/// Concurrent writes never get a floor past a sequence taken before theirs
+/// and still waiting: the state machine would answer that write forgotten
+/// without applying it.
+#[test]
+fn a_concurrent_write_never_floors_past_an_earlier_waiting_one() {
+    let shard = key(1);
+    for _ in 0..200 {
+        let anonymous = Anonymous::new();
+        let start = std::sync::Barrier::new(8);
+        // Nothing is dropped until every thread has taken, so every floor
+        // must be the first sequence.
+        let floors: Vec<u64> = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        let taken: Vec<_> = (0..50).map(|_| anonymous.take(&shard)).collect();
+                        let floors: Vec<u64> =
+                            taken.iter().map(|(request, _)| request.floor).collect();
+                        start.wait();
+                        floors
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .flat_map(|thread| thread.join().unwrap())
+                .collect()
+        });
+        assert!(floors.iter().all(|floor| *floor == 1), "{floors:?}");
+    }
+}
+
 /// A TTL too long for the stamp's microseconds saturates instead of
 /// wrapping to a short one.
 #[test]

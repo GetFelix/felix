@@ -2631,6 +2631,9 @@ impl Group {
     /// already on disk; nothing is written here.
     pub(crate) async fn shutdown(&self) {
         self.stop.cancel();
+        // An append waiting out a full disk would hold the stop for up to
+        // its retry limit.
+        self.log.stop_retrying();
         if let Err(err) = self.raft.shutdown().await {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group did not stop cleanly");
         }

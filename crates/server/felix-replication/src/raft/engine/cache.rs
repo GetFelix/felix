@@ -159,13 +159,16 @@ impl Anonymous {
     }
 
     fn take<'a>(&'a self, shard: &'a ShardKey) -> (Request, Waiting<'a>) {
+        // Taken and recorded under one lock: a later sequence recorded
+        // first would floor past this one, which the shard would then
+        // answer forgotten without applying it.
+        let mut waiting = self.waiting.lock();
         let sequence = {
             let mut next = self.next.lock();
             let taken = *next;
             *next += 1;
             taken
         };
-        let mut waiting = self.waiting.lock();
         let held = waiting.entry(shard.clone()).or_default();
         held.insert(sequence);
         let floor = held.first().copied().unwrap_or(sequence);

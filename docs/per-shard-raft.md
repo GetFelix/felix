@@ -3728,8 +3728,11 @@ broker's lease and the hybrid's fence are not asked.
   until it hears its leader, up to one idle heartbeat.
 - A leader that is deposed ends the subscribers of its term, because
   records it had not seen committed may be replaced, and a gap would read
-  as a drop. They can subscribe again to the same broker, which now serves
-  them from its log. A subscribe that registers after the deposal is kept.
+  as a drop. Each is told `shard_moved` with no `resume_from` and no
+  owner named, so a cluster client subscribes again after the last record
+  it saw, through any broker; the same one now serves it from its log. A
+  member that knows no leader ends its subscribers the same way. A
+  subscribe that registers after the deposal is kept.
 - A resume offset past the end of a follower's log is answered with a
   redirect to the leader, with the leader's client address, since the
   leader may hold records the follower has not received yet. An offset
