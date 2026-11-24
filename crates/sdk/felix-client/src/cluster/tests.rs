@@ -19,6 +19,7 @@ mod reconnect;
 mod record_headers;
 mod reresolve;
 mod sharded_deleted;
+mod sharded_entry_loss;
 mod sharded_lag;
 mod sharded_resume;
 mod stale_width;
