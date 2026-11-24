@@ -7,6 +7,7 @@
 use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use openraft::OptionalSend;
 use openraft::entry::{EntryPayload, RaftEntry};
@@ -20,15 +21,13 @@ use super::{
     EntryCodec, LogPoint, LogReader, LogTypes, RaftLog, VoteTimer, generation_of, invalid, log_id,
     term_at, term_of_generation,
 };
-#[cfg(doc)]
-use crate::DiskLog;
-use crate::StorageError;
-use crate::disk_log::WriterAt;
+use crate::disk_log::{PendingAppend, WriterAt};
 use crate::log::{
     AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, RecordMark, UNKNOWN_WRITER, WrittenBy,
 };
 use crate::raft_copy::VoteMark;
 use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
+use crate::{DiskLog, StorageError};
 
 impl<C, K> RaftLogStorage<C> for RaftLog<C, K>
 where
@@ -297,14 +296,8 @@ where
         let cuts = log.cuts();
         let mut pending = None;
         for mut batch in earlier.into_iter().chain([batch]) {
-            let (appended, records) = log
-                .append_pending_at_keeping(
-                    batch.first,
-                    std::mem::take(&mut batch.records),
-                    WrittenBy::Writers(batch.writers.clone()),
-                )
-                .await
-                .map_err(io_error)?
+            let (appended, records) = write_until_taken(log, &mut batch)
+                .await?
                 .ok_or_else(|| {
                     invalid(format!(
                         "{}: an append at index {} does not continue the log, which ended at {tail}",
@@ -636,6 +629,58 @@ async fn reform_gap(dir: &std::path::Path, tail: Offset, first: Offset) -> io::R
         Some(base) if base.base_end() == tail && base.first_index == first => GapCheck::Gap,
         base => GapCheck::Other(base.map(|base| base.first_index)),
     })
+}
+
+/// How long an append keeps retrying a write the disk refused before it
+/// gives up and the member stops. A full disk usually frees up within that;
+/// past it, a stopped member is easier to see than one that hangs.
+const REFUSED_WRITE_RETRY: Duration = Duration::from_secs(60);
+
+/// Write `batch`, trying again while the disk refuses it and the log is
+/// still sound.
+///
+/// openraft stops a member for good on any append error, and a refused
+/// write is not worth that: the log cut the half-written batch off again,
+/// so nothing of it is on disk and nothing below it changed. A log the
+/// failure poisoned is another matter. Its state on disk is unknown, so its
+/// error goes to openraft and the member stops. A refused entry is never
+/// reported written while this waits, and the member answers nobody, so it
+/// counts toward no majority. Once the disk takes it, it is an entry like
+/// any other.
+async fn write_until_taken(
+    log: &DiskLog,
+    batch: &mut Batch,
+) -> io::Result<Option<(PendingAppend, Vec<AppendRecord>)>> {
+    let give_up = tokio::time::Instant::now() + REFUSED_WRITE_RETRY;
+    let mut backoff = Duration::from_millis(10);
+    loop {
+        let refused = match log
+            .append_pending_at_keeping(
+                batch.first,
+                std::mem::take(&mut batch.records),
+                WrittenBy::Writers(batch.writers.clone()),
+            )
+            .await
+        {
+            Ok(written) => return Ok(written),
+            Err(refused) => refused,
+        };
+        let retry = matches!(refused.error, StorageError::Io(_) | StorageError::Full(_))
+            && !log.is_poisoned()
+            && tokio::time::Instant::now() < give_up;
+        match refused.records {
+            Some(records) if retry => batch.records = records,
+            _ => return Err(io_error(refused.error)),
+        }
+        tracing::warn!(
+            shard = %log.label(),
+            index = batch.first,
+            error = %refused.error,
+            "a Raft log write was refused; retrying"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(1));
+    }
 }
 
 /// A storage error as openraft takes it, keeping an I/O error's kind.
