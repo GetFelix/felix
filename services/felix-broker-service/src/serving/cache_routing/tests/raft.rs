@@ -381,3 +381,67 @@ async fn a_standalone_raft_cache_answers_as_the_hybrid_does() {
     stop.cancel();
     EngineShards::shutdown(&*shards).await;
 }
+
+/// **A cache put or counter add for a shard with no Raft member open here
+/// yet is refused as not ready**, as at startup or before placement reaches
+/// this broker, and the hybrid stores never open a directory for it: what
+/// they wrote would be served by nothing, and the directory would keep the
+/// group from ever claiming the shard.
+#[tokio::test]
+async fn a_cache_write_before_its_member_opens_is_refused() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::cache_broker(root.path(), CACHE).await;
+    let shards = fixture::shards(&broker);
+    let engine = fixture::engine(&shards);
+
+    let put = apply_cache_local(
+        &broker,
+        (&engine, TIMEOUT),
+        None,
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        "k",
+        put_request(Bytes::from_static(b"early"), None),
+        None,
+        0,
+        0,
+        None,
+    )
+    .await
+    .expect_err("a put went to the hybrid's store");
+    let client = ClientError::from_anyhow(&put);
+    assert_eq!(client.retry(), felix_wire::RetryClass::Retry, "{client:?}");
+
+    let add = apply_counter_op(
+        &broker,
+        (&engine, TIMEOUT),
+        None,
+        None,
+        &ForwardCredential::from(""),
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        "hits",
+        CacheRequest::CounterAdd { delta: 1 },
+    )
+    .await
+    .expect_err("a counter add went to the hybrid's store");
+    let client = ClientError::from_anyhow(&add);
+    assert_eq!(client.retry(), felix_wire::RetryClass::Retry, "{client:?}");
+
+    let cache = broker.cache().as_log_cache().expect("a log cache");
+    assert!(
+        !cache.on_disk(TENANT, NAMESPACE, CACHE, 0),
+        "the hybrid cache store made the shard's directory"
+    );
+    let counters = broker.counters().expect("counters");
+    assert!(
+        counters
+            .dirs_on_disk(TENANT, NAMESPACE, CACHE)
+            .await
+            .expect("listed")
+            .is_empty(),
+        "the hybrid counter store made a directory"
+    );
+}

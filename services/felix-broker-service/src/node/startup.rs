@@ -49,8 +49,11 @@ pub(super) struct Stored {
 /// upgrade in 0.8.
 #[cfg(feature = "raft")]
 pub(super) fn refuse_hybrid_data(root: &std::path::Path) -> Result<()> {
-    // Cache logs live under `caches/`; stream shards sit in the root itself.
-    for dir in [root.to_path_buf(), root.join("caches")] {
+    // Stream shards sit in the root itself; the hybrid's other stores each
+    // have a root of their own (`node/storage.rs`).
+    let stores = ["caches", "counters", "groups", "dead-letters"];
+    let dirs = std::iter::once(root.to_path_buf()).chain(stores.map(|store| root.join(store)));
+    for dir in dirs {
         if let Some(found) = felix_storage::raft_copy::hybrid_log_under(&dir)? {
             anyhow::bail!(
                 "{} holds data the hybrid engine wrote, and this standalone broker runs its \

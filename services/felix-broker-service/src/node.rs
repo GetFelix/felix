@@ -399,6 +399,14 @@ where
     // beside the log its Raft member opens.
     if shard_engine == crate::config::ShardEngine::Raft {
         broker.leave_durable_streams_to_engines();
+        // Every durable cache shard and its counters live in a Raft group's
+        // log, so the hybrid stores must never open one by themselves.
+        if let Some(cache) = broker.cache().as_log_cache() {
+            cache.leave_to_engines();
+        }
+        if let Some(counters) = broker.counters() {
+            counters.leave_to_engines();
+        }
     }
     #[cfg(feature = "raft")]
     let raft_shards = if standalone_raft {

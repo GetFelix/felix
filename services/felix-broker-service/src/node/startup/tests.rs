@@ -121,6 +121,20 @@ fn a_hybrid_data_root_is_refused_on_raft() {
     assert!(text.contains("does not migrate"), "{text}");
 }
 
+/// **Hybrid data in any of the other stores' roots is refused too**: a
+/// counter, consumer-group or dead-letter log 0.7 wrote is as unservable on
+/// Raft as a stream's.
+#[cfg(feature = "raft")]
+#[test]
+fn hybrid_data_in_any_store_is_refused_on_raft() {
+    for store in ["caches", "counters", "groups", "dead-letters"] {
+        let root = tempfile::tempdir().expect("tempdir");
+        hybrid_shard_dir(&root.path().join(store));
+        let err = refuse_hybrid_data(root.path()).expect_err(store);
+        assert!(err.to_string().contains(store), "{store}: {err}");
+    }
+}
+
 /// **An empty or missing root starts on Raft.**
 #[cfg(feature = "raft")]
 #[test]

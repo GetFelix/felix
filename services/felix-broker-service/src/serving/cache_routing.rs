@@ -289,7 +289,11 @@ pub(crate) async fn apply_cache_local(
             _ => None,
         };
         let on_raft = raft::apply(engine, &written, generation, key, &request, quorum_timeout);
-        if let Some(answered) = on_raft.await {
+        let on_raft = on_raft.await;
+        if on_raft.is_none() && engine.runs_raft() && cache_store.as_log_cache().is_some() {
+            return Err(raft::not_open(&written));
+        }
+        if let Some(answered) = on_raft {
             drop(fenced);
             let answered = answered.map_err(raft::NotServed::into_anyhow)?;
             let lease = lease.map(|mint| match answered.outcome {
@@ -534,7 +538,11 @@ pub(crate) async fn apply_counter_op(
                 &request,
                 quorum_timeout,
             );
-            if let Some(answered) = on_raft.await {
+            let on_raft = on_raft.await;
+            if on_raft.is_none() && engine.runs_raft() && broker.counters().is_some() {
+                return Err(raft::not_open(&shard_key));
+            }
+            if let Some(answered) = on_raft {
                 drop(fenced);
                 return Ok(answered.map_err(raft::NotServed::into_anyhow)?.sum);
             }
