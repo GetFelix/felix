@@ -171,6 +171,31 @@ impl StreamEngine {
     }
 }
 
+/// Leave every durable shard on `broker` to its engine. Each one, with its
+/// cache entries, counters, group positions and dead letters, lives in a Raft
+/// group's log, so neither the broker nor any hybrid store may open a log for
+/// one by itself: what it wrote would be served by nothing, and its directory
+/// would keep the group from claiming the shard. Call it before the first
+/// stream or cache is registered.
+pub(crate) fn leave_stores_to_engines(broker: &felix_broker::Broker) {
+    broker.leave_durable_streams_to_engines();
+    if let Some(storage) = broker.durable_storage() {
+        storage.leave_to_engines();
+    }
+    if let Some(groups) = broker.consumer_groups() {
+        groups.leave_to_engines();
+    }
+    if let Some(reader) = broker.group_reader() {
+        reader.dead_letters().leave_to_engines();
+    }
+    if let Some(cache) = broker.cache().as_log_cache() {
+        cache.leave_to_engines();
+    }
+    if let Some(counters) = broker.counters() {
+        counters.leave_to_engines();
+    }
+}
+
 /// A publish to a Raft shard refused with nothing proposed.
 #[derive(Debug, thiserror::Error)]
 pub enum RaftRefusal {

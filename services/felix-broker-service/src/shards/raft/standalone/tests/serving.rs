@@ -250,3 +250,117 @@ async fn history_survives_a_restart_with_a_torn_tail() {
     stop.cancel();
     EngineShards::shutdown(&*shards).await;
 }
+
+/// The entries directly under `dir`, sorted; empty when it does not exist.
+fn entries(dir: &std::path::Path) -> Vec<std::ffi::OsString> {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .map(|read| {
+            read.filter_map(|entry| Some(entry.ok()?.file_name()))
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// **A consumer-group seek or commit before the shard's member opens is
+/// refused as not ready**, and neither the broker's stream store nor the
+/// hybrid's group stores make a directory for it: what they wrote would be
+/// served by nothing, and the directory would keep the group from claiming
+/// the shard.
+#[tokio::test]
+async fn a_group_write_before_the_member_opens_is_refused() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = || felix_storage::log::LogConfig {
+        fsync_mode: felix_storage::log::FsyncMode::None,
+        preallocate_segments: false,
+        ..felix_storage::log::LogConfig::default()
+    };
+    let groups =
+        felix_broker::ConsumerGroups::open(root.path().join("groups"), config()).expect("groups");
+    let dead = felix_broker::DeadLetters::open(root.path().join("dead-letters"), config())
+        .expect("dead letters");
+    let broker = Broker::new(felix_storage::EphemeralCache::new().into()).with_consumer_groups(
+        Arc::new(groups),
+        Arc::new(dead),
+        Duration::from_secs(30),
+        5,
+    );
+    let broker = super::super::super::tests::registered(
+        broker,
+        root.path(),
+        1,
+        super::super::super::tests::INCARNATION,
+        felix_broker::ConsistencyLevel::Leader,
+        config(),
+    )
+    .await;
+    crate::shards::routing::leave_stores_to_engines(&broker);
+    // The feed is not started, so no member opens.
+    let runtime =
+        GroupRuntime::start(LOCAL_MEMBER, Default::default(), Arc::new(NoPeers)).expect("runtime");
+    let shards = RaftShards::new(
+        Arc::clone(&broker),
+        runtime,
+        LOCAL_MEMBER.to_string(),
+        Arc::new(fleet_of_one()),
+    );
+    let engine = Arc::new(StreamEngine::default());
+    engine.set_raft(Arc::clone(&shards));
+    let ctx = context(&broker, &engine);
+    let before = [
+        entries(root.path()),
+        entries(&root.path().join("groups")),
+        entries(&root.path().join("dead-letters")),
+    ];
+
+    let not_ready = |err: crate::serving::quic::client_error::ClientError, what: &str| {
+        assert_eq!(
+            err.retry(),
+            felix_wire::RetryClass::Retry,
+            "{what}: {err:?}"
+        );
+        assert_eq!(
+            *err.code(),
+            felix_wire::ErrorCode::ShardUnavailable,
+            "{what}: {err:?}"
+        );
+    };
+    let seek = group_ops::seek(
+        &broker,
+        &ctx,
+        None,
+        "t1",
+        "ns",
+        "orders",
+        0,
+        "workers",
+        felix_wire::StartPosition::Earliest,
+        false,
+    )
+    .await
+    .expect_err("a seek went to the hybrid's group store");
+    not_ready(seek, "seek");
+    let commit = group_ops::settle(
+        &broker,
+        &ctx,
+        None,
+        "t1",
+        "ns",
+        "orders",
+        0,
+        "workers",
+        0,
+        Settle::Ack,
+    )
+    .await
+    .expect_err("an ack went to the hybrid's group store");
+    not_ready(commit, "ack");
+
+    let after = [
+        entries(root.path()),
+        entries(&root.path().join("groups")),
+        entries(&root.path().join("dead-letters")),
+    ];
+    assert_eq!(after, before, "a store made a directory for the shard");
+}

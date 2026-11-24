@@ -2346,9 +2346,11 @@ the stream or cache registered with, and it forms and leads each group off
 the broker's own registrations. The broker is its whole fleet, so every
 `raft_*` feature is finalized from the start. Under `OnCommit` fsync a
 commit waits for one fsync on the single voter. Under `Periodic` or `None`,
-with `raft_written_commit` finalized, a commit waits only for the write and
-a synced offset reservation, and the log fsyncs on the broker's schedule
-("Proposal: commit on a written majority on relaxed brokers"). A standalone broker with no durable storage keeps every
+when the data directory's run is one a crash rotates
+(`run_state::rotates_on_crash`), a commit waits only for the write and a
+synced offset reservation: the log fsyncs on the broker's `Periodic`
+schedule, and once a second under `None`. Otherwise it fsyncs on every
+commit ("Proposal: commit on a written majority on relaxed brokers"). A standalone broker with no durable storage keeps every
 stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
 selects the hybrid, deprecated. After a machine crash under `Periodic` or
 `None` fsync each group re-forms itself from its own copy ("A standalone

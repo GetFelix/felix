@@ -68,6 +68,12 @@ pub(crate) struct DeadLetterLog {
 type ShardKey = (String, String, String, u32);
 
 impl ConsumerGroups {
+    /// Open no log from here on: a shard engine (Raft) keeps this state in
+    /// each durable stream shard's own log on this broker.
+    pub fn leave_to_engines(&self) {
+        self.cursors.leave_to_engines();
+    }
+
     /// Open group state rooted at `root`, recovering whatever is on disk.
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
         Ok(Self {

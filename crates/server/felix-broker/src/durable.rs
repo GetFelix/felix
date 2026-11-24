@@ -41,6 +41,8 @@ pub struct DurableStorage {
     /// then a stream nobody registered opens at incarnation 0 without
     /// waiting, as a tool or a test expects.
     registration_required: Arc<std::sync::atomic::AtomicBool>,
+    /// Set by [`Self::leave_to_engines`].
+    engines_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl DurableStorage {
@@ -55,6 +57,39 @@ impl DurableStorage {
         Self {
             provider,
             registration_required: Default::default(),
+            engines_only: Default::default(),
+        }
+    }
+
+    /// Open no stream log from here on that is not open already: a shard
+    /// engine (Raft) opens every durable stream shard on this broker. A log
+    /// opened here would sit beside the engine's and its directory would keep
+    /// the engine from claiming the shard. Refused with
+    /// [`BrokerError::ShardNotOpen`], which a client retries.
+    pub fn leave_to_engines(&self) {
+        self.engines_only
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// [`BrokerError::ShardNotOpen`] once [`Self::leave_to_engines`] was
+    /// called, unless the log is already open.
+    fn engines_only(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Result<Option<StreamLog>> {
+        if !self.engines_only.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(None);
+        }
+        match self.opened_stream_for(tenant, namespace, stream, shard, incarnation) {
+            Some(log) => Ok(Some(log)),
+            None => Err(BrokerError::ShardNotOpen {
+                stream: stream.to_string(),
+                shard,
+            }),
         }
     }
 
@@ -214,6 +249,9 @@ impl DurableStorage {
         shard: u32,
         base_offset: felix_storage::log::Offset,
     ) -> Result<StreamLog> {
+        if let Some(log) = self.engines_only(tenant, namespace, stream, shard, None)? {
+            return Ok(log);
+        }
         let key = ShardKey {
             tenant: tenant.to_string(),
             namespace: namespace.to_string(),
@@ -240,6 +278,9 @@ impl DurableStorage {
         base_offset: Option<felix_storage::log::Offset>,
         incarnation: u64,
     ) -> Result<StreamLog> {
+        if let Some(log) = self.engines_only(tenant, namespace, stream, shard, Some(incarnation))? {
+            return Ok(log);
+        }
         let key = ShardKey {
             tenant: tenant.to_string(),
             namespace: namespace.to_string(),
@@ -327,6 +368,9 @@ impl DurableStorage {
         stream: &str,
         shard: u32,
     ) -> Result<StreamLog> {
+        if let Some(log) = self.engines_only(tenant, namespace, stream, shard, None)? {
+            return Ok(log);
+        }
         let key = ShardKey {
             tenant: tenant.to_string(),
             namespace: namespace.to_string(),

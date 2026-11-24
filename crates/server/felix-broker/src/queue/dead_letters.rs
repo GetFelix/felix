@@ -108,6 +108,12 @@ const REDRIVEN: &[u8] = b"redriven";
 type ShardKey = (String, String, String, u32);
 
 impl DeadLetters {
+    /// Open no log from here on: a shard engine (Raft) keeps this state in
+    /// each durable stream shard's own log on this broker.
+    pub fn leave_to_engines(&self) {
+        self.entries.leave_to_engines();
+    }
+
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
         Ok(Self {

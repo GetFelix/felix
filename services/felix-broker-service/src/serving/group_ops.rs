@@ -830,7 +830,14 @@ fn reader_and_log<'a>(
         .durable_storage()
         .ok_or_else(|| no_storage("this broker has no durable storage"))?
         .open_stream(tenant_id, namespace, stream, shard)
-        .map_err(storage)?;
+        .map_err(|err| match err {
+            // A Raft broker whose member of the shard is not open yet: the
+            // client retries once it is.
+            felix_broker::BrokerError::ShardNotOpen { .. } => {
+                ClientError::from_broker(&err, err.to_string())
+            }
+            err => storage(err),
+        })?;
     Ok((reader, log, owned))
 }
 
