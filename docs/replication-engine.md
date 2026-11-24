@@ -80,7 +80,7 @@ through traits the service implements:
 
 | Seam | Defined | Implemented by | What it gives the engine |
 | --- | --- | --- | --- |
-| `quorum::ShardServing` | `felix-replication/src/quorum.rs:1041` | `IngressRouter`, `services/felix-broker-service/src/shards/routing.rs:534` | Is the shard replicated, which generation do I serve, is my lease valid |
+| `quorum::ShardServing` | `felix-replication/src/quorum.rs:1049` | `IngressRouter`, `services/felix-broker-service/src/shards/routing.rs:534` | Is the shard replicated, which generation do I serve, is my lease valid |
 | `driver::WriteFence` | `felix-replication/src/driver.rs:298` | `ShardFence`, `services/felix-broker-service/src/shards/lifecycle/fence.rs:444` | Is the shard quiet; callbacks for serving without the lease, deposed, withheld, probed |
 | `reporter::Credential` | `reporter.rs:121` | `NodeCredential`, `services/felix-broker-service/src/cluster/credential.rs:62` | The bearer token a replica report carries |
 | `promotion::PromotionGate` | `felix-replication/src/promotion.rs:66` | `LifecycleGate`, `services/felix-broker-service/src/shards/lifecycle/promotion.rs:46` | Whether a promoted shard may open |
@@ -114,7 +114,7 @@ stores it at the leader's offsets (`replica.rs:663` `apply`, through
 
 The driver computes a majority offset over the cursors (`felix-replication/src/quorum.rs:1777`
 `quorum_offset`, `driver/shard.rs:479`), counted only from the leader's own
-generation start (`felix-replication/src/quorum.rs:1999` `counted_offset`), and publishes it to
+generation start (`felix-replication/src/quorum.rs:2007` `counted_offset`), and publishes it to
 `QuorumMarks` (`felix-replication/src/quorum.rs:37`, `:618`). Writers wait in `await_quorum`
 (`felix-replication/src/quorum.rs:1018`), called from the service:
 

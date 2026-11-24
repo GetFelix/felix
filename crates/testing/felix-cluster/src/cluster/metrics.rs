@@ -150,12 +150,12 @@ impl Cluster {
         let budget = wait::budget(timeout);
         let deadline = Instant::now() + budget;
         loop {
-            let why = match self.raft_members(stream).await {
-                Ok(members) => match raft_leader_caught_up(&members) {
-                    Ok(leader) => return Ok(leader),
-                    Err(short) => short,
-                },
-                Err(err) => format!("{err:#}"),
+            let members = self
+                .raft_members(felix_client::ShardKind::Stream, stream)
+                .await;
+            let why = match raft_leader_caught_up(&members) {
+                Ok(leader) => return Ok(leader),
+                Err(short) => short,
             };
             if Instant::now() >= deadline {
                 bail!(
@@ -166,9 +166,35 @@ impl Cluster {
         }
     }
 
-    /// Every running broker's member of `stream`'s shard 0, by its own
+    /// Whether the brokers run Raft groups rather than hybrid replication.
+    pub(crate) fn raft(&self) -> bool {
+        self.config.raft_brokers()
+    }
+
+    /// The member leading shard 0 of the `kind` (`stream` or `cache`) named
+    /// `name`, by its own report, and its term, once a majority of the
+    /// group holds the log through the leader's commit index. Raft's
+    /// counterpart of a leader with a replica reported caught up.
+    pub(crate) async fn raft_serving(
+        &self,
+        kind: &str,
+        name: &str,
+    ) -> Result<(String, u64), String> {
+        let kind = if kind == "cache" {
+            felix_client::ShardKind::Cache
+        } else {
+            felix_client::ShardKind::Stream
+        };
+        raft_leader_committed(&self.raft_members(kind, name).await)
+    }
+
+    /// Every running broker's member of shard 0 of `name`, by its own
     /// report. A broker that cannot be asked is left out.
-    async fn raft_members(&self, stream: &str) -> Result<Vec<(String, felix_wire::InspectedRaft)>> {
+    async fn raft_members(
+        &self,
+        kind: felix_client::ShardKind,
+        name: &str,
+    ) -> Vec<(String, felix_wire::InspectedRaft)> {
         let mut members = Vec::new();
         for id in self.node_ids() {
             let Some(node) = self.node(&id) else { continue };
@@ -179,20 +205,14 @@ impl Cluster {
                 continue;
             };
             let view = client
-                .inspect_shard(
-                    felix_client::ShardKind::Stream,
-                    &self.tenant_id,
-                    &self.namespace,
-                    stream,
-                    0,
-                )
+                .inspect_shard(kind, &self.tenant_id, &self.namespace, name, 0)
                 .await;
             drop(client);
             if let Some(raft) = view.ok().and_then(|view| view.raft) {
                 members.push((id, raft));
             }
         }
-        Ok(members)
+        members
     }
 
     /// The owner of `stream`'s shard 0, and whether its last report names a
@@ -272,6 +292,23 @@ fn holds_tail(
 pub(crate) fn raft_leader_caught_up(
     members: &[(String, felix_wire::InspectedRaft)],
 ) -> Result<String, String> {
+    raft_leader_holding(members, |led| led.last_index).map(|(leader, _)| leader)
+}
+
+/// [`raft_leader_caught_up`] measured against the leader's commit index
+/// rather than its last entry, returning the leader and its term. Under a
+/// steady workload the leader's last entry keeps moving ahead of its
+/// followers; what it has committed a majority already holds.
+pub(crate) fn raft_leader_committed(
+    members: &[(String, felix_wire::InspectedRaft)],
+) -> Result<(String, u64), String> {
+    raft_leader_holding(members, |led| led.committed)
+}
+
+fn raft_leader_holding(
+    members: &[(String, felix_wire::InspectedRaft)],
+    through: impl Fn(&felix_wire::InspectedRaft) -> Option<u64>,
+) -> Result<(String, u64), String> {
     let Some((leader, led)) = members
         .iter()
         .filter(|(id, raft)| raft.role == "leader" && raft.leader.as_deref() == Some(id.as_str()))
@@ -279,7 +316,7 @@ pub(crate) fn raft_leader_caught_up(
     else {
         return Err(format!("no member leads yet; members: {members:?}"));
     };
-    let Some(tail) = led.last_index else {
+    let Some(tail) = through(led) else {
         return Err(format!("{leader} leads with an empty log"));
     };
     let voters: Vec<_> = members
@@ -291,7 +328,7 @@ pub(crate) fn raft_leader_caught_up(
         .filter(|(_, raft)| raft.last_index.is_some_and(|at| at >= tail))
         .count();
     if holding * 2 > voters.len() {
-        Ok(leader.clone())
+        Ok((leader.clone(), led.term))
     } else {
         Err(format!(
             "{leader} leads at {tail}, held by {holding} of {} voting members: {members:?}",

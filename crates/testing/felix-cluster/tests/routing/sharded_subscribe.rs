@@ -281,6 +281,13 @@ async fn one_shard_failing_over_does_not_stop_the_others() {
         "the victim owns every shard, so nothing could survive it"
     );
 
+    // Every feed opens on the client's entry broker unless a redirect moves it,
+    // and a follower serves reads, so a victim that is the entry broker takes
+    // all the feeds with it. Printed so a red run shows which case it was.
+    eprintln!(
+        "entry broker {:?}; victim {victim}; shard owners {owners:?}",
+        cluster.nodes.first().map(|node| node.node_id.clone())
+    );
     cluster.kill_node(&victim).expect("kill a shard owner");
     wait::until(
         Duration::from_secs(30),
@@ -328,7 +335,7 @@ async fn one_shard_failing_over_does_not_stop_the_others() {
     assert!(
         !seen.is_empty(),
         "nothing arrived at all after one broker died ({accepted} publishes were accepted); \
-         losing one shard tore down the rest"
+         losing one shard tore down the rest; notices: {notices:?}"
     );
     let covered: HashSet<u32> = seen.values().copied().collect();
     assert!(

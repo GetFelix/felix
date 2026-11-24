@@ -116,6 +116,14 @@ impl Leadership {
             && !open
             && committed == Some(term)
         {
+            // The hybrid driver's line, so the history checker's one leader
+            // per generation rule reads Raft terms the same way.
+            tracing::info!(
+                stream = %self.shard.stream,
+                shard = self.shard.shard,
+                generation = term,
+                "a majority took the fence; opening the shard for writes",
+            );
             if let Some(host) = &self.host {
                 host.opened(&self.shard, term);
             }
@@ -250,3 +258,6 @@ impl Leading for Watched {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
