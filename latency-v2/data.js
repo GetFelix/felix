@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795593877009,
+  "lastUpdate": 1795594305051,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86922,6 +86922,72 @@ window.BENCHMARK_DATA = {
             "range": "950.30",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1144.00\nmean: 1521.00\nstdev: 950.30\ncv: 62.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6c5283b244bf37b3207026fc0171ba2cd2da9875",
+          "message": "test(cluster): replace fault files by rename so a broker never reads one half written (#3123) (#3142)\n\n* test(cluster): replace fault files by rename so a broker never reads one half written (#3123)\n\nThe harness wrote a broker's partition, clock and storage fault files in\nplace. A broker re-reads them while it runs, and one that read between the\ntruncate and the write saw an empty file. For the partition file that means\n\"severed from nobody\" for the next 100ms.\n\nThat is what failed majority_ack::a_wiped_follower_refuses_the_leader_its_\nlost_promise_had_fenced_out: healing old<->other rewrote every broker's\npartition file, the new leader read its own while it was empty, and its next\nheartbeat reached the old leader, which stepped down to term 3 as Raft says\nit should. The wiped copy accepted nothing and voted for no one.\n\nSpec-Unaffected: test harness only; no product code or modelled behaviour changes.\n\n* test(cluster): rewrap the fault-file module comment (#3123)\n\nSpec-Unaffected: comment in the test harness only.",
+          "timestamp": "2026-11-25T08:02:11Z",
+          "tree_id": "6785007a30951b6c8e19427d8dca58374e1a87ec",
+          "url": "https://github.com/GetFelix/felix/commit/6c5283b244bf37b3207026fc0171ba2cd2da9875"
+        },
+        "date": 1795594290443,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.80\nstdev: 0.84\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 208.80\nstdev: 4.76\ncv: 2.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 295,
+            "range": "56.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 295.00\nmean: 304.40\nstdev: 56.64\ncv: 18.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 200.80\nstdev: 1.48\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "7.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 392.20\nstdev: 7.19\ncv: 1.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 550,
+            "range": "64.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 550.00\nmean: 572.80\nstdev: 64.38\ncv: 11.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
