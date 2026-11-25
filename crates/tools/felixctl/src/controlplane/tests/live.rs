@@ -537,3 +537,74 @@ async fn a_reform_plan_with_nothing_to_reform() {
     assert_eq!(applied, Err(4), "no such plan");
     h.control_plane.shutdown().await;
 }
+
+/// **A backup point of a cluster with nothing placed is an empty manifest,
+/// written where `--out` says**, named, versioned and stamped with the
+/// metadata it was taken against. Every broker the control plane lists is
+/// asked for Raft offsets, through `--broker` where given.
+#[tokio::test]
+async fn a_backup_point_with_nothing_placed_is_an_empty_manifest() {
+    let h = Harness::start().await;
+    let node = serde_json::from_value(serde_json::json!({
+        "node_id": "broker-x",
+        "spec": {"advertise_addr": "127.0.0.1:9", "region": "local"},
+        "status": {
+            "lifecycle": "live",
+            "last_heartbeat_at_millis": 1,
+            "registered_at_millis": 1,
+            "storage_id": "0123456789abcdef0123456789abcdef",
+        },
+    }))
+    .expect("a node");
+    h.control_plane
+        .store
+        .register_node(node)
+        .await
+        .expect("register");
+    let (broker, seen) = super::scripted(vec![(
+        "200 OK",
+        r#"{"node_id":"broker-x","shards":[],"skipped":[]}"#,
+    )])
+    .await;
+    let operator = h.operator.clone();
+    let out = h.dir.path().join("nightly.json");
+    let override_ = format!("broker-x={broker}");
+    h.run_as(
+        &operator,
+        &[
+            "backup-point",
+            "nightly",
+            "--out",
+            out.to_str().expect("utf-8"),
+            "--broker",
+            &override_,
+        ],
+    )
+    .await
+    .expect("backup point");
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(&out).expect("manifest")).expect("JSON");
+    assert_eq!(manifest["name"], "nightly");
+    assert_eq!(manifest["shards"], serde_json::json!([]));
+    assert!(manifest["format_version"].as_u64().is_some(), "{manifest}");
+    assert!(manifest["taken_at_millis"].as_u64().is_some_and(|t| t > 0));
+
+    let json_out = h.dir.path().join("again.json");
+    h.run_as(
+        &operator,
+        &[
+            "backup-point",
+            "again",
+            "--json",
+            "--out",
+            json_out.to_str().expect("utf-8"),
+            "--broker",
+            "broker-x=http://127.0.0.1:1",
+        ],
+    )
+    .await
+    .expect("a broker that does not answer leads nothing to wait for");
+    assert!(json_out.exists());
+    h.control_plane.shutdown().await;
+}
