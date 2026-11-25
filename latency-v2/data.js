@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795648436290,
+  "lastUpdate": 1795648827395,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88836,6 +88836,72 @@ window.BENCHMARK_DATA = {
             "range": "978.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 671.00\nmean: 1082.60\nstdev: 978.57\ncv: 90.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "17fc8df1d2a4c596683b4fbe74b4432f570b3559",
+          "message": "fix(client): a subscribe that keeps getting not_ready asks the other brokers in its book (#3091) (#3187)\n\n* fix(client): rotate through the broker book on repeated not_ready subscribes (#3091)\n\nopen_shard retried a not_ready subscribe on the entry broker only, so a\nbroker that stayed not_ready pinned the client. Each further not_ready now\nmoves the next attempt to the next broker in the book; redirects and named\nleaders are still followed inside each attempt, and attempts and backoff are\nunchanged.\n\nSpec-Unaffected: client-side retry routing only, no broker or protocol behaviour changes\n\n* fix(client): resume paths rotate through the book on not_ready too (#3091)\n\nThe followed-subscription and sharded resume loops asked only the entry\nbroker. All three loops now share subscribe_shard_rotating. A broker that\ncannot be dialled is stepped over, and a redirect target that lost the shard\nsends the ask back to the broker the attempt started from.\n\nSpec-Unaffected: client-side retry routing only, no broker or protocol behaviour changes",
+          "timestamp": "2026-11-25T23:11:45Z",
+          "tree_id": "8889cd400dc26cafc95f06975da69df810d5e5a8",
+          "url": "https://github.com/GetFelix/felix/commit/17fc8df1d2a4c596683b4fbe74b4432f570b3559"
+        },
+        "date": 1795648811307,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 149.40\nstdev: 0.55\ncv: 0.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "3.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 205.40\nstdev: 3.51\ncv: 1.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 274,
+            "range": "240.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 274.00\nmean: 376.20\nstdev: 240.14\ncv: 63.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "34.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 211.80\nstdev: 34.78\ncv: 16.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 391,
+            "range": "617.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 391.00\nmean: 663.20\nstdev: 617.66\ncv: 93.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 616,
+            "range": "929.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 616.00\nmean: 1129.00\nstdev: 929.10\ncv: 82.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
