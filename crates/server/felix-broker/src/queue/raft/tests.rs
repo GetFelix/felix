@@ -204,7 +204,7 @@ impl Fixture {
             .poll_below(
                 &key(group),
                 &self.log,
-                u64::MAX,
+                || Ok(u64::MAX),
                 max,
                 Instant::now(),
                 None,
@@ -227,7 +227,7 @@ impl Fixture {
             .poll_below(
                 &key(G),
                 &self.log,
-                u64::MAX,
+                || Ok(u64::MAX),
                 max,
                 now,
                 Some(consumer),
@@ -829,6 +829,39 @@ async fn a_claim_survives_a_change_of_leader() {
         fx.poll_as(3, lapsed, &other).await.expect("poll"),
         [(0, 2), (2, 2)]
     );
+}
+
+/// A poll hands out only what is below the commit bound it was given, and
+/// reissues nothing: a record above the bound goes out on a later poll, once
+/// the bound covers it. A test must not mistake that later hand-out for a
+/// second one (#3122).
+#[tokio::test]
+async fn a_record_above_the_commit_bound_waits_for_a_later_poll() {
+    let fx = fixture(5);
+    publish(&fx.log, 2).await;
+    let below = |committed| {
+        let fx = &fx;
+        async move {
+            let claimed = fx
+                .groups
+                .poll_below(
+                    &key(G),
+                    &fx.log,
+                    move || Ok(committed),
+                    10,
+                    Instant::now(),
+                    None,
+                    None,
+                    later(),
+                )
+                .await
+                .expect("poll");
+            claimed.iter().map(|c| c.offset).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(below(1).await, [0], "only the committed record goes out");
+    assert_eq!(below(2).await, [1], "the claimed record went out again");
+    assert_eq!(below(2).await, [0u64; 0], "both claims stand");
 }
 
 /// An extension is written too, so a new leader holds the claim for as

@@ -17,6 +17,7 @@ fn judged(opens: &[Open], led: &[(u64, usize)], committed: &[u64]) -> Vec<String
     let seen = Seen {
         led: &led,
         committed: &committed,
+        read: &BTreeMap::new(),
     };
     judge(opens, &seen)
 }
@@ -58,6 +59,40 @@ fn a_shard_without_a_final_log_is_not_judged_on_it() {
     let seen = Seen {
         led: &BTreeMap::new(),
         committed: &BTreeMap::new(),
+        read: &BTreeMap::new(),
     };
     assert!(judge(&[open(0, 2)], &seen).is_empty());
+}
+
+/// The finding says where the log was read and who still holds the term,
+/// which is what tells a log read from a stale leader from a blank entry
+/// that is gone from every disk (#3126).
+#[test]
+fn a_missing_term_names_where_the_log_was_read_and_who_holds_the_term() {
+    let committed = BTreeMap::from([(0, BTreeSet::from([1, 5]))]);
+    let judged = |holders: &[usize]| {
+        let read = Read {
+            from: 1,
+            term: 5,
+            holders: BTreeMap::from([(6, holders.to_vec())]),
+        };
+        let seen = Seen {
+            led: &BTreeMap::new(),
+            committed: &committed,
+            read: &BTreeMap::from([(0, read)]),
+        };
+        judge(&[open(0, 6)], &seen).remove(0)
+    };
+    let held = judged(&[0, 3]);
+    assert!(
+        held.ends_with(
+            "the log was read from b2 leading term 5, and b1 b4 still hold an entry of it"
+        ),
+        "{held}"
+    );
+    let gone = judged(&[]);
+    assert!(
+        gone.ends_with("and no member's log holds an entry of it"),
+        "{gone}"
+    );
 }

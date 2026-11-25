@@ -9,6 +9,8 @@ use super::{beat, step};
 use crate::args::pace_from;
 use crate::init_tracing;
 
+mod on_raft;
+
 /// What `Quorum` buys and what `Leader` costs, under the same fault.
 ///
 /// The failover demo shows a quorum-acknowledged record surviving. This is its
@@ -22,6 +24,11 @@ use crate::init_tracing;
 pub(crate) async fn consistency(args: &[String]) -> Result<()> {
     init_tracing(false);
     let pace = pace_from(args)?;
+    // What follows is the hybrid engine's story, where a `Leader` shard goes
+    // unavailable. On Raft it stays up and loses records instead.
+    if felix_cluster::suite_runs_on_raft() {
+        return on_raft::consistency(pace).await;
+    }
     const QUORUM_STREAM: &str = "orders-quorum";
     const LEADER_STREAM: &str = "orders-leader";
 

@@ -1685,6 +1685,12 @@ static FelixStatus publish_keyed(FelixClient *client, const struct fixture *f,
   if (status == FELIX_STATUS_OK) {
     status = wait_for(&w, WAIT_MS);
   }
+  /* The broker's answer came through the callback, so the thread's last
+     error is empty: say here what the refusal was. */
+  if (status != FELIX_STATUS_OK) {
+    fprintf(stderr, "keyed publish of %s gave %d (%s)\n", key, (int)status,
+            w.message);
+  }
   waiter_destroy(&w);
   return status;
 }

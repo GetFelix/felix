@@ -650,8 +650,10 @@ async fn raft_leader_kill_under_load() {
 ///
 /// With `from_view`, the restarted follower has
 /// `FELIX_START_WITHOUT_CONTROLPLANE` on and starts from its control-plane
-/// view, and still opens no Raft member before the control plane answers:
-/// its restore check has not run, so its log may be a restored copy.
+/// view, and under the unified fence still opens no Raft member before the
+/// control plane answers: its restore check has not run. With
+/// `FELIX_UNIFIED_FENCE=0` it votes:
+/// [`raft_restarted_member_votes_from_its_view`].
 async fn raft_restarted_member_waits_for_the_control_plane(from_view: bool) {
     let env = if from_view {
         start_from_view_env()
@@ -721,6 +723,103 @@ async fn raft_restarted_member_waits_for_the_control_plane(from_view: bool) {
         .await_node_ready(&restarted)
         .await
         .expect("the restarted follower comes up once the control plane answers");
+    let leader = raft_serving(&cluster).await;
+    acked.extend(publish_acked(&cluster, &leader, "after", 5).await);
+    let missing = missing_on(&cluster, &leader, &acked).await;
+    assert!(
+        missing.is_empty(),
+        "{leader} lost acknowledged records: {missing:?}"
+    );
+    cluster.shutdown().await;
+}
+
+/// On Raft, a follower restarted during the outage with
+/// `FELIX_START_WITHOUT_CONTROLPLANE` on and `FELIX_UNIFIED_FENCE=0` starts
+/// from its control-plane view and opens its member on the run witness,
+/// before the control plane has checked its directory (#3102). With the
+/// leader also dead, two members of three are up, so the survivor is
+/// elected only with the restarted member's vote. The restarted broker does
+/// not lead or serve a client before it registers, and nothing acknowledged
+/// is lost.
+async fn raft_restarted_member_votes_from_its_view() {
+    let mut env = start_from_view_env();
+    env.push(("FELIX_UNIFIED_FENCE".to_string(), "0".to_string()));
+    let mut cluster = raft_start_with(3, 3, false, env).await;
+    finalize_election_features(&cluster).await;
+    let first = raft_serving(&cluster).await;
+    let mut acked = publish_acked(&cluster, &first, "before", 20).await;
+    let old = cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(30))
+        .await
+        .expect("every member holds the records");
+    let mut others = cluster.node_ids().into_iter().filter(|id| *id != old);
+    let restarted = others.next().expect("a follower");
+    let survivor = others.next().expect("a second follower");
+    let generation = stored_assignment(&cluster).await.generation;
+    view_written(&cluster, &restarted, generation).await;
+
+    cluster
+        .crash_control_plane()
+        .await
+        .expect("crash the control plane");
+    cluster.kill_node(&restarted).expect("kill a follower");
+    cluster
+        .start_node_unready_in_place(&restarted)
+        .expect("start the follower again without waiting for it");
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the restarted follower to start from its view",
+        || async { node_logged(&cluster, &restarted, FROM_VIEW) },
+    )
+    .await
+    .expect("the restarted follower starts from its control-plane view");
+    cluster.kill_node(&old).expect("kill the leader");
+
+    // Two members are up, so a leader needs the restarted one's vote, and
+    // only the survivor stands: the restarted broker has not registered.
+    felix_cluster::wait::until(
+        ELECTED_WITHIN * 2,
+        "the survivor to lead with the restarted member's vote",
+        || async {
+            cluster
+                .metric(&survivor, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|led| led >= 1.0)
+        },
+    )
+    .await
+    .expect("the two live members elect a leader while the control plane is down");
+    acked.extend(publish_acked(&cluster, &survivor, "elected", 20).await);
+    assert!(
+        cluster
+            .metric(&restarted, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten()
+            .is_none_or(|led| led < 1.0),
+        "the unregistered {restarted} led a group"
+    );
+    // Not registered, so not serving clients.
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        cluster.publish_via(&restarted, STREAM, b"too-early".to_vec()),
+    )
+    .await;
+    assert!(
+        !matches!(refused, Ok(Ok(()))),
+        "{restarted} served a client before it registered"
+    );
+
+    cluster
+        .recover_control_plane()
+        .await
+        .expect("recover the control plane");
+    cluster
+        .await_node_ready(&restarted)
+        .await
+        .expect("the restarted follower registers once the control plane answers");
     let leader = raft_serving(&cluster).await;
     acked.extend(publish_acked(&cluster, &leader, "after", 5).await);
     let missing = missing_on(&cluster, &leader, &acked).await;
@@ -1650,10 +1749,8 @@ async fn view_written(cluster: &Cluster, node: &str, generation: u64) {
 #[serial]
 #[tokio::test]
 async fn a_broker_restarted_while_the_control_plane_is_down_votes() {
-    if felix_cluster::skip_on_raft_until(
-        3102,
-        "a Raft member started from the control-plane view opens no group until the control plane answers",
-    ) {
+    if felix_cluster::suite_runs_on_raft() {
+        raft_restarted_member_votes_from_its_view().await;
         return;
     }
     let mut cluster = start_with(

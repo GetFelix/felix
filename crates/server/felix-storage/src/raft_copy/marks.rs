@@ -181,7 +181,9 @@ impl MarkLog {
             Some(bytes) => bytes,
             None => {
                 let header = encode_header(0);
-                state_file::store(root, FILE_NAME, &[&header])?;
+                under_id(root, storage_id, || {
+                    state_file::store(root, FILE_NAME, &[&header])
+                })?;
                 header.to_vec()
             }
         };
@@ -276,7 +278,7 @@ impl MarkLog {
             return Ok(());
         }
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _vouching = vouching;
             #[cfg(test)]
             inner.vouch_writes.fetch_add(1, Ordering::Relaxed);
@@ -370,8 +372,11 @@ impl MarkLog {
         };
         let root = inner.root.clone();
         let len = bytes.len() as u64;
+        let id = self.storage_id();
         let file = felix_common::blocking::spawn(move || {
-            state_file::store_through_faults(&root, FILE_NAME, &bytes)?;
+            under_id(&root, id, || {
+                state_file::store_through_faults(&root, FILE_NAME, &bytes)
+            })?;
             crate::fs::OpenOptions::new()
                 .append(true)
                 .open(root.join(FILE_NAME))
@@ -839,7 +844,11 @@ impl MarkLog {
                 io::Write::write_all(&mut &file, &frame[..frame.len() / 2])
                     .and_then(|()| Err(io::Error::other("an injected write failure")))
             } else {
-                crate::io::write_all(&file, &frame).and_then(|()| crate::io::sync_data(&file))
+                // Not held across the write: an append after the removal
+                // goes to the unlinked file and puts nothing back.
+                still_under(&root, id)
+                    .and_then(|()| crate::io::write_all(&file, &frame))
+                    .and_then(|()| crate::io::sync_data(&file))
             };
             if result.is_ok() {
                 // After the sync and before any writer returns.
@@ -884,8 +893,9 @@ impl MarkLog {
         // The old handle names a file the rename unlinks, so it is dropped
         // either way and a failure stops the log.
         writer.file = None;
+        let id = self.storage_id();
         let reopened = felix_common::blocking::spawn(move || {
-            state_file::store(&root, FILE_NAME, &[&bytes])?;
+            under_id(&root, id, || state_file::store(&root, FILE_NAME, &[&bytes]))?;
             crate::fs::OpenOptions::new()
                 .append(true)
                 .open(root.join(FILE_NAME))
@@ -1090,6 +1100,42 @@ fn is_noop(live: &HashMap<Arc<str>, ShardMarks>, queued: &Queued) -> bool {
     let current = live.get(&queued.shard);
     !matches!(queued.update, Update::Fresh)
         && apply(current, queued.copy, &queued.update).as_ref() == current
+}
+
+/// Run `write`, a write of the mark log under `root`, unless the root's
+/// storage id is no longer `id`. A rotation removes the mark log and may
+/// find one still open, as when the restore check of a start from the
+/// control-plane view answers after its members opened. A write after it
+/// would put marks back under an id that no copy outside the root names, and
+/// the restore gate would hold the root at the next reboot. Refused, the
+/// log stops, and so does every vote and append that waits on a mark.
+///
+/// Under the lock the rotation holds from the removal to the new id, so a
+/// write that replaces the file lands wholly before the removal or is
+/// refused.
+fn under_id(root: &Path, id: StorageId, write: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    let _rotation = crate::run_state::ID_RECORDS.lock();
+    check_id(root, id)?;
+    write()
+}
+
+/// Fails once the root's storage id is no longer `id` ([`under_id`]).
+fn still_under(root: &Path, id: StorageId) -> io::Result<()> {
+    let _rotation = crate::run_state::ID_RECORDS.lock();
+    check_id(root, id)
+}
+
+fn check_id(root: &Path, id: StorageId) -> io::Result<()> {
+    // Only an id that reads as another one refuses: a root with none yet
+    // has not been rotated.
+    match crate::storage_identity::load(root) {
+        Ok(Some(found)) if found != id => Err(io::Error::other(format!(
+            "{}: the data root was given the storage id {found} while its mark log was open \
+             under {id}",
+            root.display()
+        ))),
+        _ => Ok(()),
+    }
 }
 
 fn encode_header(sequence: u64) -> [u8; HEADER_LEN] {

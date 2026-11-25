@@ -204,8 +204,8 @@ The short version:
   [Lease tokens](/security/authentication/#lease-tokens).
 - A plain (non-idempotent) forwarded publish can be replayed and duplicated.
   Idempotent producers are deduplicated.
-- **Two Raft groups for one shard.** This applies only with the opt-in
-  per-shard Raft engine (`FELIX_SHARD_ENGINE=raft`). A broker with a stale
+- **Two Raft groups for one shard.** This applies to the per-shard
+  Raft engine, the default on `main`. A broker with a stale
   placement feed could form a second group for a shard; the control plane now
   holds a shard's set until its first group forms
   ([#2794](https://github.com/GetFelix/felix/issues/2794), fixed). Re-placing

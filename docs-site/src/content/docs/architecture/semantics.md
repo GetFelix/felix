@@ -129,7 +129,10 @@ means the record is written, keep the default or use `Quorum`.
 
 An ack sent on enqueue does not make the record readable yet either. A history
 read, a replay or a consumer-group poll sent right after it can miss the record
-until it is written. A durable stream's default ack has no such gap. A client of
+until it is written. A durable stream's default ack has no such gap: on Raft a
+history read, a replay or a consumer-group poll sent after any ack the broker
+gives once the record is written waits for the record to commit and includes
+it. A client of
 a broker that opted out can ask for commit acks on its own connections
 (`ack_on_commit: true` in its `ClientConfig`).
 
@@ -223,8 +226,14 @@ still hold the record. `Leader` can lose records acknowledged since the
 last report, and it tells you at failover time, when the only copy may be on a
 broker that is gone.
 
+That is the 0.7 releases. On the Raft shard engine, the default on `main`, a
+`Leader` publish is acknowledged from the leader's own log while its lease
+holds, and as a `Quorum` one when it does not. The followers elect a new
+leader without the control plane, so the shard stays available, and what a
+lost leader acknowledged alone on its lease is lost.
+
 [`task cluster:consistency`](/demos/cluster-consistency/) runs
-this: the same fault put to both, on a real three-node cluster.
+this on Raft: the same fault put to both, on real three-node clusters.
 
 **What a reader sees of a `Quorum` stream.** A consumer group and a Kafka
 consumer read only up to the shard's quorum mark, the committed high-water

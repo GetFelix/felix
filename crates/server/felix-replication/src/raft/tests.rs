@@ -1105,6 +1105,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         started: tokio::time::Instant::now(),
         tick: millis(config.tick),
         heartbeat: millis(config.heartbeat),
+        peer_deadline: config.peer_deadline(),
         idle_heartbeat: millis(config.idle_heartbeat),
         idle_after: millis(config.idle_after),
         election_min: millis(config.election_min),
@@ -2281,6 +2282,78 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.stop().await;
 }
 
+/// **A member whose broker has not registered votes but does not lead.** A
+/// broker started from its control-plane view serves no client until it
+/// registers, so a group it led would serve nobody. All three restart, and
+/// the old leader and one follower are unregistered: the old leader does not
+/// take its leadership back, the one registered member is elected, which
+/// needs a vote from an unregistered one, and once they register they stand
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_of_an_unregistered_broker_votes_but_does_not_lead() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let last = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, last).await;
+    let old = cluster.elected(0).await;
+    let registered_one = *BROKERS
+        .iter()
+        .rfind(|broker| **broker != &*old.broker)
+        .expect("a follower");
+
+    cluster.stop().await;
+    cluster.start(true);
+    let registered = tokio_util::sync::CancellationToken::new();
+    for broker in BROKERS {
+        if broker != registered_one {
+            cluster.runtime(broker).stand_after(registered.clone());
+        }
+    }
+    cluster.open(0).await;
+    let leader = cluster.elected(0).await;
+    assert_eq!(
+        &*leader.broker, registered_one,
+        "an unregistered broker's member led"
+    );
+    let next = cluster.write(0, b"after").await;
+    assert!(next > last);
+
+    registered.cancel();
+    down(&cluster, registered_one, true);
+    eventually(|| {
+        cluster
+            .leader(0)
+            .filter(|leader| &*leader.broker != registered_one)
+    })
+    .await;
+    cluster.stop().await;
+}
+
+/// **An unregistered broker forms no group.** Forming one elects the member
+/// that forms it, so it waits until the broker has registered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_of_an_unregistered_broker_forms_no_group() {
+    let mut cluster = Cluster::new(true);
+    let registered = tokio_util::sync::CancellationToken::new();
+    cluster.runtime("a").stand_after(registered.clone());
+    cluster.open(0).await;
+    let formed = cluster.runtime("a").initialize(&shard(0), members()).await;
+    assert!(
+        matches!(formed, Err(InitializeError::Raft(_))),
+        "an unregistered broker formed a group: {formed:?}"
+    );
+    assert!(cluster.statuses(0).iter().all(|status| status.term == 0));
+
+    registered.cancel();
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members())
+        .await
+        .expect("initialize");
+    cluster.elected(0).await;
+    cluster.stop().await;
+}
+
 /// **A restarted member's log still holds each record's publisher and
 /// headers.** They live in the entry itself, so a member that reopens its log
 /// serves them to a history read as it did before the restart.
@@ -3369,6 +3442,9 @@ async fn calls_to_a_flaky_peer(wake: bool) -> (u32, usize) {
     let patient = RuntimeConfig {
         election_min: Duration::from_secs(10),
         election_max: Duration::from_secs(20),
+        // A late answer costs one heartbeat, so the few seconds below hold
+        // enough calls to compare.
+        max_peer_deadline: timers().heartbeat,
         ..timers()
     };
     let mut cluster = Cluster::with(patient, true);
@@ -3426,6 +3502,41 @@ fn the_timers_must_make_sense() {
     assert!(heartbeat_past_election.raft(ShardKind::Stream).is_err());
 }
 
+/// A call's deadline is under the shortest election timeout by a heartbeat
+/// whatever it is set to, and never under the heartbeat, which is how long
+/// openraft waited.
+#[test]
+fn a_calls_deadline_is_under_the_election_timeout_and_no_less_than_the_heartbeat() {
+    let shipped = RuntimeConfig::default();
+    assert_eq!(shipped.peer_deadline(), Duration::from_millis(800));
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(10),
+        election_max: Duration::from_secs(20),
+        ..RuntimeConfig::default()
+    };
+    assert_eq!(patient.peer_deadline(), Duration::from_millis(800));
+    let quick = RuntimeConfig {
+        election_min: Duration::from_millis(600),
+        ..RuntimeConfig::default()
+    };
+    assert_eq!(quick.peer_deadline(), Duration::from_millis(400));
+    let long = RuntimeConfig {
+        max_peer_deadline: Duration::from_secs(5),
+        ..RuntimeConfig::default()
+    };
+    assert_eq!(long.peer_deadline(), Duration::from_millis(800));
+    let close = RuntimeConfig {
+        heartbeat: Duration::from_millis(700),
+        ..RuntimeConfig::default()
+    };
+    assert_eq!(close.peer_deadline(), close.heartbeat);
+    for timers in [shipped, patient, quick, long, close] {
+        let raft = timers.raft(ShardKind::Stream).expect("timers");
+        assert!(raft.heartbeat_interval < raft.election_timeout_min);
+        assert!(raft.heartbeat_interval >= timers.heartbeat.as_millis() as u64);
+    }
+}
+
 #[test]
 fn group_threads_are_one_per_four_cores_and_none_under_four() {
     assert_eq!(runtime::group_threads_for(1), 0);
@@ -3445,7 +3556,12 @@ fn the_default_timers_are_the_designs() {
         .raft(ShardKind::Stream)
         .expect("timers");
     assert_eq!(RuntimeConfig::default().tick, Duration::from_millis(50));
-    assert_eq!(raft.heartbeat_interval, 200);
+    assert_eq!(
+        RuntimeConfig::default().heartbeat,
+        Duration::from_millis(200)
+    );
+    // openraft's interval is only the deadline of an append or a heartbeat.
+    assert_eq!(raft.heartbeat_interval, 800);
     assert_eq!(
         RuntimeConfig::default().idle_heartbeat,
         Duration::from_secs(2)

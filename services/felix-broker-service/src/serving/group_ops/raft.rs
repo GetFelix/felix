@@ -125,7 +125,8 @@ impl OnRaft {
     }
 
     /// One past the last committed record: nothing above the commit index
-    /// is handed out or sought to.
+    /// is handed out or sought to. Read it only after a read index, or it
+    /// misses a publish acknowledged before its commit.
     fn committed(&self, publish_ctx: &PublishContext) -> Result<u64, ClientError> {
         publish_ctx
             .engine
@@ -174,7 +175,14 @@ impl OnRaft {
             // covers a claim lapsing or a nack, which nothing signals.
             let mut on_append = super::armed(appended.as_ref());
             let polled = async {
-                let committed = self.committed(publish_ctx).map_err(|err| (err, true))?;
+                // The reader asks for the bound once its read index is
+                // applied, so a record acknowledged before this poll is
+                // below it, as it is for a stream read.
+                let committed = || {
+                    self.committed(publish_ctx).map_err(|_| {
+                        BrokerError::StateNotReadable(felix_broker::NotReadable::Refused)
+                    })
+                };
                 self.groups
                     .poll_below(
                         &self.key,

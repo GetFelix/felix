@@ -666,6 +666,18 @@ report its replicas to the control plane. A cluster whose brokers run Raft
 skips that wait: a Raft shard reports none, and the start still waits for a
 publish to be accepted.
 
+A Raft start waits last for the first hand-overs. The broker that forms a
+group leads its first term and then hands over to the broker placement
+names ([per-shard-raft.md](per-shard-raft.md), "Leaders follow placement").
+Until that lands, `Cluster::owner` names a broker that does not lead yet, the
+leader a test reads can move, and a publish sent during the election is
+refused as not ready. So `Cluster::start` calls
+`Cluster::await_raft_leaders_placed` (60 s) and fails, naming the shard, if a
+hand-over does not land (#3157). A test about the hand-over itself sets
+`ClusterConfig::pending_raft_hand_overs` to start without the wait. A stream
+made later with `Cluster::create_stream` is not covered: call
+`await_raft_leaders_placed` once it is placed.
+
 `Cluster::create_stream` creates a stream on a running cluster and waits for
 nothing. A test that needs a shard placed on fewer brokers than its stream
 asks for starts with no streams, creates one, and steps placement itself:

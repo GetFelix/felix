@@ -622,7 +622,7 @@ impl<K> Shared<K> {
         }
         let next = index.saturating_add(reserved::STEP);
         let dir = self.log.dir().to_path_buf();
-        tokio::task::spawn_blocking(move || reserved::store(&dir, next))
+        felix_common::blocking::spawn(move || reserved::store(&dir, next))
             .await
             .map_err(io::Error::other)??;
         *reserved = Some(next);

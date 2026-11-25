@@ -143,6 +143,38 @@ pub(super) struct Seen<'a> {
     /// Per shard: the terms of the entries in its final committed log.
     /// A shard with no final read is not here and is not judged on this.
     pub(super) committed: &'a BTreeMap<u32, BTreeSet<u64>>,
+    /// Per shard: where that log was read and who else holds what.
+    pub(super) read: &'a BTreeMap<u32, Read>,
+}
+
+/// Where a shard's final log was read, kept so a missing term can be told
+/// apart: a term some member still holds was read past or cut off, and a
+/// term nobody holds is gone from every disk.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Read {
+    /// The member whose log it is, and the term it led then.
+    pub(super) from: usize,
+    pub(super) term: u64,
+    /// Per term: the members whose log holds an entry of it at any offset,
+    /// committed or not.
+    pub(super) holders: BTreeMap<u64, Vec<usize>>,
+}
+
+impl Read {
+    fn missing(&self, term: u64) -> String {
+        let holders = self.holders.get(&term).map_or(&[][..], Vec::as_slice);
+        let on = if holders.is_empty() {
+            "no member's log holds an entry of it".to_string()
+        } else {
+            let names: Vec<_> = holders.iter().map(|member| name(*member)).collect();
+            format!("{} still hold an entry of it", names.join(" "))
+        };
+        format!(
+            "; the log was read from {} leading term {}, and {on}",
+            name(self.from),
+            self.term
+        )
+    }
 }
 
 /// Every open that was not a term Raft elected its broker in with the blank
@@ -184,11 +216,13 @@ pub(super) fn judge(opens: &[Open], seen: &Seen<'_>) -> Vec<String> {
         if let Some(terms) = seen.committed.get(&shard)
             && !terms.contains(&term)
         {
+            let read = seen.read.get(&shard).map(|read| read.missing(term));
             findings.push(format!(
                 "{}: {} opened term {term}, and the final log holds no entry of it, so its \
-                 blank entry was never committed",
+                 blank entry was never committed{}",
                 list(shard),
-                name(member)
+                name(member),
+                read.unwrap_or_default()
             ));
         }
     }

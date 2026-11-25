@@ -68,7 +68,7 @@ felix-cluster — a local multi-node Felix cluster
   smoke [--nodes N]               publish through a non-owner, receive from the owner
   demo [--pace SECONDS]           the whole cross-broker story, start to finish
   failover [--pace SECONDS]       replicate, kill the leader, keep publishing
-  consistency [--pace SECONDS]    what Quorum buys, and what Leader costs, under one fault
+  consistency [--pace SECONDS]    what Quorum keeps and Leader loses when a leader dies
   client-fixture [--out PATH]     a cluster for a client conformance suite to run against
   nodes                           every broker in a running cluster, one per line
   owners                          who leads each shard of a running cluster
