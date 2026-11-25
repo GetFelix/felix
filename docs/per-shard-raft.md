@@ -5505,9 +5505,13 @@ A leader hands over only when all of these hold:
 The transfer closes the shard for the term first (the lease is given up),
 waits up to the shortest election timeout for the target to hold the whole
 log, then asks openraft. Publishes in that window are told the shard is not
-ready. The refusal is retryable and nothing was written: the client sends an
-at-least-once or idempotent publish again, and returns a plain publish's
-refusal to the caller. The target campaigns while the other
+ready. The refusal is retryable and nothing was written, so the client sends
+every publish kind again under its reconnect policy (a plain one too, since
+nothing of it was applied); a hand-over that outlasts the policy returns the
+refusal. A write already proposed when the hand-over began is different: it
+may commit under the new leader, which the old one cannot confirm, so it is
+answered `leadership_lost` (outcome unknown), and a plain publish returns
+that rather than risk a duplicate. The target campaigns while the other
 followers still hear the old leader, so their pre-vote check lets a
 transfer target through.
 

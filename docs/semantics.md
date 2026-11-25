@@ -543,7 +543,10 @@ how-to; this is the contract.
   the entry broker when a cached shard owner refused, with the policy's
   backoff when the entry broker did. A shard between leaders (an election, a
   Raft hand-over, a move) refuses that way, so a publish made then waits it
-  out instead of failing. `publish_at_least_once` also resends what may have
+  out instead of failing. A re-sent publish lands after any made meanwhile,
+  so concurrent publishes to one shard can land out of the order they were
+  called in; awaited one after another they keep it.
+  `publish_at_least_once` also resends what may have
   landed, and can therefore duplicate a record. The names are the contract.
 - **Retries are bounded by an attempt count and a jittered exponential
   backoff**, and optionally by a deadline across every attempt and sleep. The
@@ -561,7 +564,9 @@ how-to; this is the contract.
   shard by then). `retry` and `redirect` from a cached owner drop that
   owner and go straight to the entry broker, since a fenced or draining owner
   will not start serving the shard again; from the entry broker they back off.
-  `retry_after` backs off for at least as long as the broker asked. Every
+  `retry_after` backs off for at least as long as the broker asked, up to the
+  policy's `max_backoff`; a refusal asking for longer is returned to the
+  caller with its `retry_after_ms` rather than slept on. Every
   publish kind does this, since these classes say nothing was applied. One
   exception: a plain publish returns `stale_width`, because the batch has to
   be routed again under the stream's new width.
@@ -721,7 +726,10 @@ broker and the owner, so routing does not launder a credential.
 
 Per-tenant publish quotas are enforced per broker, when configured
 (`FELIX_TENANT_PUBLISH_*`): a token bucket per tenant for bytes and messages,
-checked before a publish is queued. There are no quotas on subscriptions,
+checked before a publish is queued. A publish over quota is refused
+`overloaded` with the wait until the bucket has room in `retry_after_ms`;
+nothing is queued. The client waits it out if it is no longer than its
+policy's `max_backoff`, and otherwise returns the refusal. There are no quotas on subscriptions,
 cache use or storage, and the rate is set per broker by environment rather
 than stored in the control plane.
 

@@ -76,12 +76,19 @@ async fn pair(
     a_script: impl Fn(u64) -> Message + Send + Sync + 'static,
     b_script: impl Fn(u64) -> Message + Send + Sync + 'static,
 ) -> Result<(Client, StubBroker, StubBroker)> {
+    pair_with(policy(), a_script, b_script).await
+}
+
+async fn pair_with(
+    policy: crate::cluster::ReconnectPolicy,
+    a_script: impl Fn(u64) -> Message + Send + Sync + 'static,
+    b_script: impl Fn(u64) -> Message + Send + Sync + 'static,
+) -> Result<(Client, StubBroker, StubBroker)> {
     let (server_config, cert) = build_server_config()?;
     let a = StubBroker::start_with(server_config.clone(), a_script)?;
     let b = StubBroker::start_with(server_config, b_script)?;
     let cluster =
-        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy())
-            .await?;
+        Client::connect_with_policy(&[a.addr], "localhost", default_config(cert)?, policy).await?;
     Ok((cluster, a, b))
 }
 
@@ -401,7 +408,8 @@ async fn an_owner_learned_under_no_width_is_dropped_for_a_keyed_batch() -> Resul
 }
 
 /// **The wait a broker asks for is honoured** between at-least-once attempts,
-/// not just the client's own backoff.
+/// not just the client's own backoff, when the policy's `max_backoff` allows
+/// it. A longer one is returned instead; see `hand_over`.
 #[tokio::test]
 #[serial_test::serial]
 async fn at_least_once_waits_as_long_as_the_broker_asked() -> Result<()> {
@@ -422,7 +430,11 @@ async fn at_least_once_waits_as_long_as_the_broker_asked() -> Result<()> {
             _ => ok(request_id),
         }
     };
-    let (cluster, _a, _b) = pair(script, ok).await?;
+    let policy = crate::cluster::ReconnectPolicy {
+        max_backoff: Duration::from_millis(300),
+        ..policy()
+    };
+    let (cluster, _a, _b) = pair_with(policy, script, ok).await?;
     let started = Instant::now();
     let report = cluster
         .publish_records_at_least_once(

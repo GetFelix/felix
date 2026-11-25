@@ -343,8 +343,13 @@ stream, against a broker that answers plain acked publishes as they complete
 publish window). The client keeps writing to the stream while an answer is
 outstanding, so publishes to healthy shards are answered while the stalled one
 waits. An older broker that grants a window answers every publish in request
-order, so there a stalled shard holds back the answers behind it. Each shard keeps its own order, because
-the broker commits a shard's publishes in the order the stream carried them.
+order, so there a stalled shard holds back the answers behind it. The broker
+commits a shard's publishes in the order the stream carried them, so publishes
+you await one after another land in that order. Publishes in flight together
+to one shard need not: one refused before it was applied (the shard was
+between leaders, say) is sent again after a backoff, and lands after any that
+were sent meanwhile. Await each publish, or use an idempotent producer, when
+order within a shard matters.
 Only an idempotent producer's batches are answered in the order they were
 sent; see [idempotent producers](#idempotent-producers).
 
@@ -471,11 +476,18 @@ success. The codes and their classes are listed under
   publish backs off and goes again, within the policy's attempts and deadline.
   `stale_width` backs off too on the retrying paths, since it does not say the
   owner is wrong; `publish` returns it. `stale_claim` is never retried; the client marks it `fatal`.
-- `RetryAfter` backs off for at least `retry_after_ms`. `not_found` is retried
+- `RetryAfter` backs off for at least `retry_after_ms`, if that is no more
+  than the policy's `max_backoff`. A longer wait (a tenant far over its
+  publish quota) is not slept on: the refusal is returned at once, with
+  `retry_after_ms` in its detail, so a publish never blocks for longer than
+  the policy's attempts times `max_backoff` in backoff. `not_found` is retried
   for 5 s from the first one, long enough for a newly promoted broker to hear
   about the stream from the control plane and no longer.
 - `publish` replaces its connection only for `draining` or when no broker
   answered; any other coded answer came from a live broker.
+- A publish that runs out of attempts returns the broker's last refusal (still
+  a `BrokerError` to `downcast_ref`) with "gave up after N attempt(s) over T"
+  around it. `Client::publish_resends` counts the re-sends.
 
 A broker without error codes gets the old handling: only a credential failure
 is final, and everything else is retried. The full table is under "Retries" in

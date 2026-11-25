@@ -196,7 +196,9 @@ nothing was applied.
   retry waits a random time up to the backoff, the ceiling doubles each
   attempt up to the maximum, and the jitter keeps every client of a cluster
   from retrying in step. The defaults are 200 ms and 2 s, and every wait is
-  capped at the max backoff, even when the backoff is larger.
+  capped at the max backoff, even when the backoff is larger. A wait the
+  broker asks for that is longer than the max backoff is returned to the
+  caller instead of slept on.
 
 A deadline shorter than one attempt's own timeout means no retry happens: the
 first attempt spends the whole budget. Set it to cover at least one attempt

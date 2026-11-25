@@ -743,7 +743,9 @@ impl Driver {
                     if attempt > 0
                         && let Some(at_least) = wait
                     {
-                        let delay = policy.delay_before(attempt - 1).max(at_least);
+                        let Some(delay) = policy.delay_for(attempt - 1, at_least) else {
+                            break;
+                        };
                         if let Some(budget) = policy.deadline
                             && started.elapsed() + delay >= budget
                         {
