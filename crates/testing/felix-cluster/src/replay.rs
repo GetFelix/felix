@@ -11,7 +11,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use felix_client::Event;
 
 /// Where a replay's events come from. [`felix_client::Subscription`] in a
@@ -38,10 +38,7 @@ pub async fn drain<E: Events>(events: &mut E, quiet: Duration) -> Result<Vec<Eve
         match tokio::time::timeout(quiet, events.next_event()).await {
             Err(_) => return Ok(read),
             Ok(Ok(Some(event))) => read.push(event),
-            Ok(Ok(None)) => bail!(
-                "the broker ended the subscription after {} events; the replay is not complete",
-                read.len()
-            ),
+            Ok(Ok(None)) => return Err(ReplayEnded { events: read.len() }.into()),
             Ok(Err(err)) => {
                 return Err(err).with_context(|| {
                     format!(
@@ -53,6 +50,29 @@ pub async fn drain<E: Events>(events: &mut E, quiet: Duration) -> Result<Vec<Eve
         }
     }
 }
+
+/// The broker ended the subscription cleanly before the replay went quiet.
+///
+/// Not retried by a caller: a reset or a refusal is the broker's signal to
+/// subscribe again, while a clean end part way through the history is a
+/// broker answering a short replay as if it were whole.
+#[derive(Debug)]
+pub struct ReplayEnded {
+    /// Events read before the end.
+    pub events: usize,
+}
+
+impl std::fmt::Display for ReplayEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the broker ended the subscription after {} events; the replay is not complete",
+            self.events
+        )
+    }
+}
+
+impl std::error::Error for ReplayEnded {}
 
 /// The payloads of `events`, as text.
 pub fn payloads(events: &[Event]) -> Vec<String> {

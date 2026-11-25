@@ -88,7 +88,7 @@ async fn a_subscription_ended_part_way_is_not_a_replay() {
         .map(|read| payloads(&read))
         .expect_err("a prefix");
     assert!(
-        format!("{err:#}").contains("ended the subscription"),
-        "{err:#}"
+        err.downcast_ref::<super::ReplayEnded>().is_some(),
+        "a clean end must be told apart from a lost subscription: {err:#}"
     );
 }

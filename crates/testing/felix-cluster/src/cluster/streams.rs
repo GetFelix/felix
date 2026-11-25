@@ -361,6 +361,13 @@ impl Cluster {
             };
             match read {
                 Ok(events) => return Ok(events),
+                // Only a refusal or a lost subscription is the broker asking for
+                // a fresh subscribe; a clean end after a prefix is a defect.
+                Err(err) if err.downcast_ref::<crate::replay::ReplayEnded>().is_some() => {
+                    return Err(err.context(format!(
+                        "{node_id} ended a replay of {stream} cleanly before its end"
+                    )));
+                }
                 Err(err) if Instant::now() >= deadline => {
                     return Err(err.context(format!(
                         "{node_id} served no whole replay of {stream} within {within:?}"
