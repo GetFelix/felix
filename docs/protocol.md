@@ -932,6 +932,12 @@ matching key's **current value** instead of the collapsed history. This is the s
 snapshot-plus-changes contract the control plane's assignment watch uses, and
 never a silent gap.
 
+On a Raft cache shard the history is the recent changes each member keeps in
+memory while the shard is watched on any member of its group, so a resume
+replays on whichever member it reaches, the new leader after a failover
+included. A resume from before the oldest change that member kept gets
+`resnapshot: true`.
+
 `retained_count` is how many retained values follow before live delivery, and
 is present exactly when the watch asked for retained delivery. `0` is the
 defined "no retained value" answer: joining an empty key is an answer, not a
