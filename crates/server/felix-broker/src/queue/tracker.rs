@@ -128,6 +128,12 @@ impl GroupTracker {
         (self.in_flight.len(), self.redeliver.len())
     }
 
+    /// Whether `offset` is handed out and unsettled. Only a poll makes a
+    /// claim, and only on a record.
+    pub(crate) fn holds_claim(&self, offset: u64) -> bool {
+        self.in_flight.contains_key(&offset)
+    }
+
     /// Bound how many offsets may be handed out and unsettled at once.
     pub(crate) fn set_max_in_flight(&mut self, max_in_flight: usize) {
         self.max_in_flight = max_in_flight.max(1);

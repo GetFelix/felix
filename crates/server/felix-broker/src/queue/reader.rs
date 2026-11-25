@@ -478,10 +478,13 @@ impl GroupReader {
     /// and settles for them are taken. [`Self::poll`] does this itself; call
     /// it before an [`Self::ack`] or [`Self::nack`] that may be the first
     /// operation on this broker.
-    pub async fn inherit_below(&self, key: &GroupKey, tail: u64) -> Result<()> {
+    ///
+    /// Returns whether `offset` is a claim the group holds: handed out by a
+    /// poll and unsettled, so a record.
+    pub async fn inherit_below(&self, key: &GroupKey, tail: u64, offset: u64) -> Result<bool> {
         let (_held, mut locked) = self.current(key).await?;
         locked.inherit_below(tail);
-        Ok(())
+        Ok(locked.holds_claim(offset))
     }
 
     /// Give one record back, to be handed out again at once.
