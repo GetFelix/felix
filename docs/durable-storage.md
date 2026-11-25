@@ -671,7 +671,9 @@ Four properties:
    counted in `felix_broker_raft_shards_stopped_on_storage_error`,
    `shard_inspect` shows its term and error under `raft.stopped`, and a
    publish or subscribe for the shard on this broker is refused as
-   `not_ready` with the error in the message. See `docs/per-shard-raft.md`,
+   `not_ready`. The refusal says the copy was stopped by a storage error but
+   not what the error was, since it can name the broker's data paths; the
+   broker log and `shard_inspect` have it. See `docs/per-shard-raft.md`,
    "A member that stops on a storage error".
 
    > `disk_log/tests/flush_failures.rs` fails each flush of an append, a

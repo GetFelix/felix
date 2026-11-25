@@ -126,8 +126,8 @@ pub(crate) struct RaftShards {
     held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
     /// Members closed after their core stopped on a storage error.
     restarts: parking_lot::Mutex<restart::Restarts>,
-    /// Why each copy a storage error stopped here stopped, for the gauge,
-    /// `shard_inspect` and the refusal a client gets.
+    /// Why each copy a storage error stopped here stopped, for the gauge and
+    /// `shard_inspect`. A client is told only that it stopped.
     stopped_copies: parking_lot::Mutex<HashMap<ShardKey, StoppedCopy>>,
     /// This broker's part of each applied re-form plan, from the latest
     /// `start` survey, keyed by shard with the incarnation and the epoch it
@@ -1769,10 +1769,9 @@ impl EngineShards for RaftShards {
         };
         // "Still opening" would hide a copy that a failed fsync stopped.
         Some(match dispatch {
-            Dispatch::Unavailable(Reason::NotReady) => match self.stopped_copy(key) {
-                Some(stopped) => Dispatch::Unavailable(Reason::CopyStopped(stopped.error)),
-                None => Dispatch::Unavailable(Reason::NotReady),
-            },
+            Dispatch::Unavailable(Reason::NotReady) if self.stopped_copy(key).is_some() => {
+                Dispatch::Unavailable(Reason::CopyStopped)
+            }
             dispatch => dispatch,
         })
     }

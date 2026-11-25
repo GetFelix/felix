@@ -597,7 +597,9 @@ A poisoned Raft shard log stops only that shard's copy, and `/ready` stays
 and its other shards keep serving. Until the copy hears a leader again,
 `felix_broker_raft_shards_stopped_on_storage_error` counts it, `shard_inspect`
 shows the term and the error under `raft.stopped`, and a request for the
-shard on this broker is refused as `not_ready` with the error in the message.
+shard on this broker is refused as `not_ready`. The refusal says the copy
+was stopped by a storage error but leaves the error out, since it can name
+the broker's data paths. Read it in the broker log or in `shard_inspect`.
 
 ## Distributed tracing
 

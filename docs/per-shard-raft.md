@@ -3040,7 +3040,9 @@ member that stops again within a minute of its reopen waits longer each time,
 from a second up to 30, since every open scans its log.
 
 The broker reports the stop until the copy hears a leader again, or the
-shard leaves the broker. A rotated copy with no other copy to catch up from
+shard leaves the broker. A copy that reopens and leads hears itself, so it
+clears too. A rotated copy clears once the group takes it in as a voter and
+its leader reaches it. A rotated copy with no other copy to catch up from
 stays reported.
 
 - `felix_broker_raft_shards_stopped_on_storage_error` counts such copies.
@@ -3048,7 +3050,10 @@ stays reported.
   the error. While the copy is closed, `raft.role` is `stopped`.
 - A publish or subscribe that would get "still opening the shard" gets
   `not_ready` with "this broker's copy of the shard was stopped by a storage
-  error" and the error. A request this broker can forward to the leader is
+  error", at once: a write is not held waiting for a takeover. The error
+  itself is not in the refusal, because it can name the broker's data paths
+  and segments. It is in the broker log and in `shard_inspect`, which needs
+  `node.view:cluster:*`. A request this broker can forward to the leader is
   still forwarded.
 - `/ready` stays 200. Only a poisoned hybrid log or a failed node record
   fails it.
@@ -3065,7 +3070,9 @@ group's membership, so it is never counted in a quorum with the cut log.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`;
 > `services/felix-broker-service/src/shards/raft/tests/stopped_copy.rs`,
-> `a_poisoned_log_stops_its_shard_alone_and_is_reported`;
+> `a_poisoned_log_stops_its_shard_alone_and_is_reported`,
+> `a_copy_that_reopens_and_leads_is_no_longer_reported` and
+> `a_rotated_follower_is_reported_until_it_hears_the_leader`;
 > `crates/server/felix-storage/src/raft_copy/tests/marks.rs`,
 > `a_reopen_after_the_disk_heals_starts_from_the_synced_marks`,
 > `a_failed_fsync_is_not_retried_by_the_reopen` and

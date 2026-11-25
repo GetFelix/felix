@@ -4,5 +4,8 @@
   such copies in `felix_broker_raft_shards_stopped_on_storage_error`,
   `shard_inspect` shows the term and the error under `raft.stopped`, and a
   publish or subscribe for the shard on that broker is refused as `not_ready`
-  with the error instead of "still opening the shard". A poisoned hybrid log
-  and a failed node record still fail `/ready` (#2300).
+  with "this broker's copy of the shard was stopped by a storage error"
+  instead of "still opening the shard". The refusal does not carry the
+  storage error, which can name the broker's data paths; the broker log and
+  `shard_inspect` do. A poisoned hybrid log and a failed node record still
+  fail `/ready` (#2300).
