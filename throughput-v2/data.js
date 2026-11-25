@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795596012945,
+  "lastUpdate": 1795596409041,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68588,6 +68588,58 @@ window.BENCHMARK_DATA = {
             "range": "5234.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810674.40\nmean: 807534.34\nstdev: 5234.79\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ffd337858aceac8f3196aab77c53487dbba23ae3",
+          "message": "fix(sim): Raft simulator runs keep their blocking work off real threads (#3126) (#3150)\n\n* fix(sim): Raft simulator runs keep their blocking work off real threads (#3126)\n\nFour calls on paths every Raft simulation drives went straight to\ntokio's blocking pool and not through `felix_common::blocking::spawn`:\nthe log's index reservation on the append path, the `vouched-unsynced`\nmarker, the root gate at a member's start and the kept-copy scan when a\ngroup opens. One relaxed power-loss run of seed 1 made 38 such calls.\nWork on a real thread finishes in real time, so where it landed among\nthe simulated tasks depended on how fast the machine was, and a slower\nbuild such as the coverage one saw interleavings a plain build did not.\n\nThey now go through the seam, which runs them as tasks while a simulator\nhas its clock installed and on the pool otherwise. `run_seed` counts the\nthreads its runtime starts (on a current-thread runtime only the pool\nstarts any) and reports a run that started one as a finding.\n\nRefs #3126\n\nSpec-Unaffected: where blocking file work runs, on the pool or as a task under the simulator; no protocol step changes.\n\n* test(sim): a term missing from the final log says where it was read (#3126)\n\nThe finding \"opened term N, and the final log holds no entry of it\" gave\nno way to tell a blank entry lost from every disk from a log read off a\nleader that was behind. It now names the member the log was read from,\nthe term it led, and the members whose logs still hold an entry of the\nmissing term. docs/simulation.md says the check is a safety one, what the\nreal-thread guard catches, and that the crate's own whole-seed unit tests\nrun with `select!` unseeded, so the seed they name does not replay.\n\nRefs #3126\n\nSpec-Unaffected: simulator checks, docs and a changelog fragment only.",
+          "timestamp": "2026-11-25T08:38:08Z",
+          "tree_id": "1043c7bd5b0dd0f1b064b33bcac1922eb923c50e",
+          "url": "https://github.com/GetFelix/felix/commit/ffd337858aceac8f3196aab77c53487dbba23ae3"
+        },
+        "date": 1795596408391,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348970.21,
+            "range": "26437.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348970.21\nmean: 338502.62\nstdev: 26437.23\ncv: 7.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348970.21,
+            "range": "26437.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348970.21\nmean: 338502.62\nstdev: 26437.23\ncv: 7.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80708.34,
+            "range": "825.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80708.34\nmean: 80826.95\nstdev: 825.56\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807083.44,
+            "range": "8255.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807083.44\nmean: 808269.55\nstdev: 8255.58\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
