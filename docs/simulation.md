@@ -615,6 +615,17 @@ What a seed checks:
   that counts.
 - Within 30 seconds of the heal every shard has a leader that acknowledges a
   write, no member refuses a read, and every member serves the same records.
+- Nothing is injected after the heal, so a shard whose final read comes from
+  a later term than the write after the heal must have got there by a
+  placement hand-over: a member asked to hand a term since then to the
+  broker placement names, and that broker leads. Any other new term is an
+  election in a healthy group and fails the seed. The hand-over itself is
+  expected. Placement names a leader per shard (shard `n` on member
+  `n mod members`), and a leader moved off it by a fault hands back once
+  the placed member has caught up and settled, as
+  [Leaders follow placement](per-shard-raft.md#leaders-follow-placement)
+  says. The shard is closed from the transfer to the new leader's open, which
+  takes 12 ms in seed 1233 with the final reads held back until after it.
 - A member opens a shard for writes only in a term Raft elected it in, once
   that term's blank entry is committed. Each member's broker records every
   open the engine reports, so none is missed. At the instant of the open, a
