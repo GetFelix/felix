@@ -337,6 +337,12 @@ impl RaftShards {
         }
     }
 
+    /// Members that open before `registered` is cancelled vote but do not
+    /// lead until it is ([`replication::raft::GroupRuntime::stand_after`]).
+    pub(crate) fn stand_after(&self, registered: tokio_util::sync::CancellationToken) {
+        self.runtime.stand_after(registered);
+    }
+
     /// The Raft engine, when this broker holds a member of `shard`.
     pub(crate) fn engine_for(&self, shard: &ShardKey) -> Option<&RaftEngine> {
         self.runtime.holds(shard).then_some(&self.engine)

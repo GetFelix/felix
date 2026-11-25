@@ -121,7 +121,7 @@ and a connection older than the last one to reclaim never takes anything back.
 Give each live process its own name: two under one name work, but the newer
 takes what the older held when it first reclaims.
 
-On a Raft shard (`FELIX_SHARD_ENGINE=raft`) claims survive a change of leader.
+On a Raft shard, the default on `main`, claims survive a change of leader.
 Every poll that hands records out, and every extension, is written to the
 shard's log before the consumer gets an answer, and the new leader rebuilds the
 claims from it. A holder can still extend, acknowledge or hand back its record,

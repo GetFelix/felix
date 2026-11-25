@@ -474,6 +474,8 @@ where
                 root: root.clone(),
                 witness: witnesses.clone(),
                 restore_checked: restore_checked.clone(),
+                votes_unchecked: membership::votes_unchecked(&config, view.is_some())
+                    .then(|| clients.clone()),
                 link: link.clone(),
                 node_id: membership.node_id.clone(),
                 storage_id,

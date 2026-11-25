@@ -14,6 +14,11 @@ use crate::{ClusterConfig, ControlPlane, wait};
 /// shards, each one goes unprobed with odds near e^-16, about 1 in 10^7.
 const CACHE_PROBE_KEYS_PER_SHARD: u32 = 16;
 
+/// How long a start waits for new Raft groups to hand their first leadership
+/// to placement's leaders. A hand-over that fails once waits out a backoff
+/// of about half a minute before the next try.
+const RAFT_LEADERS_PLACED_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// How many times a broker may be started before the cluster gives up on it.
 ///
 /// More than one because port selection is inherently racy: a port is probed,
@@ -30,6 +35,10 @@ impl Cluster {
     /// each one placeable, every stream's shards have a leader, and the leader
     /// has opened them. A publish issued the moment this returns is expected to
     /// succeed.
+    ///
+    /// On Raft it also waits until each shard is led by the broker placement
+    /// names, so [`Cluster::owner`] names the broker that serves. A test of
+    /// the hand-over itself sets `ClusterConfig::pending_raft_hand_overs`.
     pub async fn start(config: ClusterConfig) -> Result<Self> {
         if config.nodes == 0 {
             bail!("a cluster needs at least one broker");
@@ -132,6 +141,18 @@ impl Cluster {
                     .finalize_fleet_features(&features, Duration::from_secs(30))
                     .await
                     .context("enable the Raft fleet features")?;
+            }
+            // Last, so nothing above can start an election after it. The
+            // broker that formed a Raft group still leads most of them here,
+            // and each hand-over to placement's leader moves the owner a
+            // test is about to read and refuses publishes while it elects.
+            if config.awaits_placed_raft_leaders() {
+                cluster
+                    .await_raft_leaders_placed(RAFT_LEADERS_PLACED_TIMEOUT)
+                    .await
+                    .context(
+                        "set ClusterConfig::pending_raft_hand_overs to start without this wait",
+                    )?;
             }
             anyhow::Ok(())
         }

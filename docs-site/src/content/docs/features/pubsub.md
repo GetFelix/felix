@@ -169,7 +169,7 @@ A few things to know:
   writes when it takes over. After a failover the expected offset is stale
   even with no rival, and the refusal says where the shard is now.
 - A refused publish consumes no offset, so the next write is not held up and
-  leaves no gap. On the Raft engine (`FELIX_SHARD_ENGINE=raft`) the leader
+  leaves no gap. On the Raft shard engine, the default on `main`, the leader
   decides at the offset the entry lands at, so a refusal does consume one
   offset per record: a gap that readers skip, and the tail in the refusal is
   past it.

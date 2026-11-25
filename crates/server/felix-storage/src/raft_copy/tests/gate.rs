@@ -138,6 +138,48 @@ async fn a_rotation_outside_the_gate_starts_the_mark_log_over() {
     }
 }
 
+/// **A rotation that finds the mark log open leaves no marks behind under
+/// the new id.** A start from the control-plane view may open its members
+/// before its restore check answers, and that check rotates a restored
+/// root. The open log's next rewrite would otherwise put `raft-marks` back,
+/// with a sequence nothing outside the root holds under the new id, and the
+/// gate would hold the root after a reboot. So the open log stops: its
+/// writes fail, a rewrite and a reopen are refused, and the root passes at
+/// sequence 0.
+#[tokio::test]
+async fn a_rotation_under_an_open_mark_log_stops_it_and_leaves_no_marks() {
+    let root = Root::new();
+    let copies = root.open();
+    let marks = copies.mark_log();
+    marks.fresh(Arc::from(SHARD), 5).await.expect("fresh");
+    let copy = marks.for_copy(Arc::from(SHARD), 5);
+    copy.vote(vote(1, "a#5", false)).await.expect("vote");
+
+    crate::run_state::copy_trust::rotate_storage_id(root.path(), [8; 16]).expect("rotate");
+    // Any write is past the floor, so the next one rewrites the file.
+    marks.set_compaction_floor(0).await;
+    copy.vote(vote(2, "a#5", false))
+        .await
+        .expect_err("a vote was marked under a storage id the root no longer has");
+    assert!(marks.failure().is_some(), "the mark log did not stop");
+    marks
+        .reopen()
+        .await
+        .expect_err("the stopped log was rewritten under the old id");
+    assert!(
+        !marks_file(&root).exists(),
+        "the open log put its marks back"
+    );
+
+    drop(copy);
+    drop(copies);
+    root.forget_witness();
+    match check(root.path(), NO_EVIDENCE).expect("gate") {
+        Gate::Passed(passed) => assert_eq!(format!("{passed:?}"), "GatePassed { sequence: 0 }"),
+        other => panic!("a rotated root was not passed: {other:?}"),
+    }
+}
+
 /// The control plane holds its copy per storage id. One under another id is
 /// from before a rotation and is not compared, so it neither fails a root
 /// nor vouches for one.

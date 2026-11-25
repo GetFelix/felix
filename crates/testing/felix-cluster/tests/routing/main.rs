@@ -10,6 +10,7 @@ mod cross_broker;
 mod explicit_shard;
 mod forwarded_quorum;
 mod generation_start;
+mod in_memory;
 mod jump_hash;
 mod kafka_leaders;
 mod moved_readers;

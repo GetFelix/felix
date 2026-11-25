@@ -99,7 +99,13 @@ async fn a_cluster_client_follows_a_group_redirect_to_the_leader() {
 }
 
 /// A record claimed through the owner is not handed out again while the claim
-/// stands, no matter which broker is asked.
+/// stands, however often the group is polled.
+///
+/// The check is on offsets, not on a later poll being empty. A `Leader`
+/// stream answers a publish before it commits and a poll hands out only what
+/// has, so the first poll can return the harness's start-up probe alone and
+/// the next one the record published here: two polls with work in them and
+/// nothing handed out twice (#3122).
 #[tokio::test]
 #[serial]
 async fn a_claimed_record_is_not_reissued_by_the_cluster() {
@@ -111,20 +117,35 @@ async fn a_claimed_record_is_not_reissued_by_the_cluster() {
         .await
         .expect("publish");
 
-    let first = cluster
-        .group_poll_via(&owner, STREAM, 0, GROUP, 10)
-        .await
-        .expect("poll");
-    assert!(!first.is_empty());
-
-    let second = cluster
-        .group_poll_via(&owner, STREAM, 0, GROUP, 10)
-        .await
-        .expect("poll");
-    assert!(
-        second.is_empty(),
-        "a record held by one consumer was handed to another",
-    );
+    // Claims stand for the broker's default 30s, far longer than this runs.
+    let mut handed_out = std::collections::BTreeMap::new();
+    let mut polls_after_ours = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while polls_after_ours < 5 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the published record was never handed out; got {handed_out:?}",
+        );
+        let records = cluster
+            .group_poll_records_via(&owner, STREAM, 0, GROUP, 10)
+            .await
+            .expect("poll");
+        for record in records {
+            let payload = String::from_utf8_lossy(&record.payload).into_owned();
+            if let Some(earlier) = handed_out.insert(record.offset, payload.clone()) {
+                panic!(
+                    "offset {} ({payload:?}) was handed out twice while its claim stood; \
+                     first as {earlier:?}, already out: {handed_out:?}",
+                    record.offset,
+                );
+            }
+        }
+        if handed_out.values().any(|payload| payload == "once") {
+            polls_after_ours += 1;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    cluster.shutdown().await;
 }
 
 /// **A group's position survives losing the broker that led its shard**

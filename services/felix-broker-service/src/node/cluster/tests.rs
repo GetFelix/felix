@@ -122,6 +122,7 @@ async fn the_raft_root_opens_after_the_restore_check_and_reaches_the_heartbeat()
             root: root.path().to_path_buf(),
             witness: None,
             restore_checked: restore_checked.clone(),
+            votes_unchecked: None,
             // Answers 503: the control plane has no copy to give.
             link: Some(FakeLink::default()),
             node_id: "broker-a".to_string(),
@@ -155,6 +156,73 @@ async fn the_raft_root_opens_after_the_restore_check_and_reaches_the_heartbeat()
         slot.read().is_some_and(|(_, sequence)| sequence > 0)
     })
     .await;
+    stop.cancel();
+    members.shutdown().await;
+}
+
+/// **A start from the view under the pin rule opens its Raft members before
+/// the restore check.** The control plane is down, so the check has not
+/// answered: the run witness stands in for it, and the member votes so that
+/// the copies still up can elect (#3102). It leads nothing before the
+/// broker registers (`raft::tests::a_member_of_an_unregistered_broker_votes_but_does_not_lead`).
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_view_start_under_the_pin_rule_opens_its_raft_root_before_the_restore_check() {
+    use crate::cluster::membership::RootSequenceSlot;
+    use crate::shards::raft::tests as raft;
+    use crate::shards::routing::EngineShards;
+    use crate::test_support::fake_link::FakeLink;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let witness = tempfile::tempdir().expect("witness");
+    let broker = raft::broker(root.path()).await;
+    let (storage_id, _) =
+        felix_storage::storage_identity::load_or_create(root.path(), || [7; 16]).expect("id");
+    let members = raft::held_shards(&broker);
+    let wake = Arc::new(tokio::sync::Notify::new());
+    members.wake_with(Arc::clone(&wake));
+    let shards = RaftShards {
+        engine_shards: None,
+        handler: None,
+        members: Some(Arc::clone(&members)),
+    };
+    let (restore_checked, registered, stop) = (
+        CancellationToken::new(),
+        CancellationToken::new(),
+        CancellationToken::new(),
+    );
+    let slot = RootSequenceSlot::default();
+    open_raft_root(
+        &shards,
+        RaftRoot {
+            root: root.path().to_path_buf(),
+            witness: Some(witness.path().to_path_buf()),
+            restore_checked: restore_checked.clone(),
+            votes_unchecked: Some(registered.clone()),
+            // Answers 503, as a control plane that is down.
+            link: Some(FakeLink::default()),
+            node_id: "broker-a".to_string(),
+            storage_id,
+            credential: Some(NodeCredential::new("token".to_string())),
+            slot: slot.clone(),
+            stop: stop.clone(),
+            rotated: CancellationToken::new(),
+        },
+    );
+    let orders = raft::key("orders", 0);
+    let fed = || raft::assignments([raft::assigned(orders.clone(), raft::INCARNATION)]);
+
+    tokio::time::timeout(Duration::from_secs(10), wake.notified())
+        .await
+        .expect("the root did not open while the restore check was unanswered");
+    assert!(!restore_checked.is_cancelled());
+    assert_eq!(slot.read(), Some((storage_id, 0)));
+    members.take(&mut fed()).await;
+    assert!(members.engine_for(&orders).is_some());
+
+    // Once the broker registers the member may lead, so its group forms.
+    registered.cancel();
+    raft::take_formed(&members, raft::assigned(orders.clone(), raft::INCARNATION)).await;
     stop.cancel();
     members.shutdown().await;
 }
@@ -209,6 +277,7 @@ async fn a_raft_root_behind_the_control_plane_rotates_and_stops_the_broker() {
             root: root.path().to_path_buf(),
             witness: None,
             restore_checked,
+            votes_unchecked: None,
             link: Some(link),
             node_id: "broker-a".to_string(),
             storage_id,
@@ -276,6 +345,7 @@ async fn a_raft_root_under_an_unregistered_storage_id_stops_the_broker() {
             root: root.path().to_path_buf(),
             witness: None,
             restore_checked,
+            votes_unchecked: None,
             // Answers 503: no copy, so the gate alone would pass the root.
             link: Some(FakeLink::default()),
             node_id: "broker-a".to_string(),
