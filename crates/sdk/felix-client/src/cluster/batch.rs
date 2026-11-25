@@ -113,9 +113,8 @@ impl Client {
     /// frame and keeps its order.
     ///
     /// Retries and failures are those of [`Self::publish`]: a batch the broker
-    /// may have written is not sent again, one a cached owner refused without
-    /// applying is sent once through the entry broker. Returns the first
-    /// record's log offset, when there is one.
+    /// may have written is not sent again, one a broker refused without
+    /// applying is. Returns the first record's log offset, when there is one.
     pub async fn publish_batch(
         &self,
         tenant_id: &str,
@@ -180,10 +179,10 @@ impl Client {
     /// caller's: await the first before the second.
     ///
     /// **Retries.** As [`Self::publish_keyed`]: a piece the broker may have
-    /// written is not sent again, so no record can arrive twice. The one
-    /// re-send is of a piece a cached owner said it did not apply (it moved or
-    /// is draining), which goes once through the entry broker with the
-    /// shard's order intact. For re-sending ambiguous pieces too, accepting
+    /// written is not sent again, so no record can arrive twice. A piece a
+    /// broker said it did not apply (the shard moved, has no leader yet, or
+    /// the broker is draining) is sent again whole, with the shard's order
+    /// intact. For re-sending ambiguous pieces too, accepting
     /// duplicates, see [`Self::publish_records_at_least_once`].
     ///
     /// **Failure is per shard.** A piece is accepted or not as a unit, and

@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use felix_wire::{AckMode, RecordHeaders};
 
+use super::retry::Pace;
 use super::{Attempt, Client, Next, Retrying, ShardKey, next_step, wants_reconnect};
 use crate::client::Connection;
 use crate::publish::{AckOutcome, Blocks, IdempotentProducer, Width, split_records};
@@ -19,10 +20,16 @@ impl Client {
     /// publish goes to a live broker. See [`Self::publish_at_least_once`] for
     /// the other choice.
     ///
-    /// One case is sent again: a cached shard owner that answers
-    /// `shard_unavailable`, `draining` or `not_leader` has said it applied
-    /// nothing, so the owner is forgotten and the record goes once through the
-    /// entry broker, which routes by the current assignment.
+    /// A record a broker refused before applying is sent again: its retry
+    /// class (`shard_unavailable`, `draining`, `not_leader`, `overloaded`,
+    /// `not_found`) says nothing was written. A cached shard owner that
+    /// refuses is forgotten and the record goes at once through the entry
+    /// broker, which routes by the current assignment. A refusal from the
+    /// entry broker, as while a shard is between leaders, is retried under
+    /// the [`super::ReconnectPolicy`]'s attempts, backoff and deadline.
+    ///
+    /// A retried publish can land after one made later, so await a publish
+    /// before the next when their order matters.
     ///
     /// Returns the record's log offset. `None` when the broker acknowledged
     /// before writing it, the stream has no log, the broker predates
@@ -326,8 +333,14 @@ impl Client {
         first.map_or(Ok(()), Err)
     }
 
-    /// One publish to one shard: through its cached owner when there is one,
-    /// else through the entry broker, which forwards.
+    /// One publish to one shard, sent again under the client's
+    /// [`super::ReconnectPolicy`] while a broker refuses it without applying
+    /// anything.
+    ///
+    /// A shard between leaders (a Raft hand-over, an election, a move)
+    /// refuses before it proposes, and says so with its retry class. Sending
+    /// that batch again cannot write it twice. Anything that may have landed
+    /// is returned as it came.
     pub(super) async fn publish_to_shard(
         &self,
         shard: ShardKey,
@@ -336,13 +349,46 @@ impl Client {
         ack: AckMode,
         width: Option<Arc<Width>>,
     ) -> Result<Option<u64>> {
+        let mut pace = Pace::new(&self.policy);
+        let mut retrying = Retrying::default();
+        loop {
+            let err = match self
+                .publish_to_shard_once(&shard, &payload, &routing, ack, &width)
+                .await
+            {
+                Ok(offset) => return Ok(offset),
+                Err(err) => err,
+            };
+            let Some(at_least) = refused_unapplied(&err, &mut retrying) else {
+                return Err(err);
+            };
+            if !pace.wait(at_least).await {
+                return Err(err);
+            }
+            tracing::debug!(
+                error = %format!("{err:#}"),
+                "the broker applied nothing; publishing again",
+            );
+        }
+    }
+
+    /// One attempt: through the shard's cached owner when there is one, else
+    /// through the entry broker, which forwards.
+    async fn publish_to_shard_once(
+        &self,
+        shard: &ShardKey,
+        payload: &[Vec<u8>],
+        routing: &Routing,
+        ack: AckMode,
+        width: &Option<Arc<Width>>,
+    ) -> Result<Option<u64>> {
         // The first publish to a stream asks the cluster who owns its shards
         // (and the ones racing it wait), so a batch with no ack to learn from
         // still reaches its owner. See `discovery`.
         let stream_key: super::StreamKey = (shard.0.clone(), shard.1.clone(), shard.2.clone());
         let state = self.discovery.state(&stream_key).await;
         self.discovery.ensure(&stream_key, &state).await;
-        let routed = match self.discovery.route(&shard, &state).await {
+        let routed = match self.discovery.route(shard, &state).await {
             None => None,
             Some(owner) => match owner.connect(&self.nodes).await {
                 Ok(client) => Some((client, owner.node_id.clone(), owner.width)),
@@ -352,8 +398,8 @@ impl Client {
                     // Only if it is still this one: a newer owner may have been
                     // remembered while the connect hung.
                     let mut owners = self.owners.write().await;
-                    if owners.get(&shard).is_some_and(|c| Arc::ptr_eq(c, &owner)) {
-                        owners.remove(&shard);
+                    if owners.get(shard).is_some_and(|c| Arc::ptr_eq(c, &owner)) {
+                        owners.remove(shard);
                     }
                     drop(owners);
                     self.discovery.mark_unreachable(&stream_key, &owner.node_id);
@@ -364,11 +410,11 @@ impl Client {
         // An owner learned under another width, or under none, owns a shard of
         // the stream as it was or as nobody checked: dropped, and the batch
         // goes through the entry broker.
-        let routed = match (routed, &width) {
+        let routed = match (routed, width) {
             (Some((_, _, learned)), Some(width))
                 if learned != Some((width.shards, width.routing)) =>
             {
-                self.owners.write().await.remove(&shard);
+                self.owners.write().await.remove(shard);
                 self.discovery.mark_stale(&stream_key);
                 None
             }
@@ -376,7 +422,7 @@ impl Client {
         };
         // An unkeyed publish learns shard 0's owner under the stream's width too
         // when it is known, so keyed and unkeyed publishes share one entry.
-        let learned = match &width {
+        let learned = match width {
             Some(width) => Some((width.shards, width.routing)),
             None => {
                 let (_, w) = self
@@ -386,51 +432,53 @@ impl Client {
                 w.learned.then_some((w.shards, w.routing))
             }
         };
-        let payload = match routed {
-            None => payload,
-            Some((owner, node_id)) => {
-                // Kept only so a refusal that applied nothing can be sent on.
-                let retained = payload.clone();
-                let err = match publish_once_to(
-                    &owner,
-                    &shard,
-                    payload,
-                    routing.clone(),
-                    ack,
-                    width.clone(),
-                )
-                .await
-                {
-                    Ok(acked) => {
-                        if let Some(owner) = acked.forwarded_to {
-                            self.remember_owner(shard, owner, learned).await;
-                        }
-                        return Ok(acked.offset);
+        if let Some((owner, node_id)) = routed {
+            let err = match publish_once_to(
+                &owner,
+                shard,
+                payload.to_vec(),
+                routing.clone(),
+                ack,
+                width.clone(),
+            )
+            .await
+            {
+                Ok(acked) => {
+                    if let Some(owner) = acked.forwarded_to {
+                        self.remember_owner(shard.clone(), owner, learned).await;
                     }
-                    Err(err) => err,
-                };
-                let attempt = Attempt {
-                    routed: true,
-                    ..Attempt::default()
-                };
-                let reroute = next_step(&err, attempt) == Next::Reroute;
-                let err = self.forget_owner(&shard, node_id, err).await;
-                if !reroute {
-                    return Err(err);
+                    return Ok(acked.offset);
                 }
-                tracing::debug!(
-                    error = %format!("{err:#}"),
-                    "the cached owner applied nothing; sending through the entry broker",
-                );
-                retained
+                Err(err) => err,
+            };
+            let attempt = Attempt {
+                routed: true,
+                ..Attempt::default()
+            };
+            let reroute = next_step(&err, attempt) == Next::Reroute;
+            let err = self.forget_owner(shard, node_id, err).await;
+            if !reroute {
+                return Err(err);
             }
-        };
+            tracing::debug!(
+                error = %format!("{err:#}"),
+                "the cached owner applied nothing; sending through the entry broker",
+            );
+        }
 
         let client = self.client().await;
-        match publish_once_to(&client, &shard, payload, routing, ack, width).await {
+        let sent = publish_once_to(
+            &client,
+            shard,
+            payload.to_vec(),
+            routing.clone(),
+            ack,
+            width.clone(),
+        );
+        match sent.await {
             Ok(acked) => {
                 if let Some(owner) = acked.forwarded_to {
-                    self.remember_owner(shard, owner, learned).await;
+                    self.remember_owner(shard.clone(), owner, learned).await;
                 }
                 Ok(acked.offset)
             }
@@ -446,6 +494,24 @@ impl Client {
                 }
             }
         }
+    }
+}
+
+/// How long to wait before sending a refused publish again, or `None` when
+/// it must not be sent again.
+///
+/// Only a coded refusal counts: its retry class is the broker saying it
+/// applied nothing. An error without one may follow a write. `stale_width`
+/// is left to the caller, which has to route the batch again first.
+fn refused_unapplied(err: &anyhow::Error, retrying: &mut Retrying) -> Option<Duration> {
+    let broker = err.downcast_ref::<crate::BrokerError>()?;
+    if broker.code == felix_wire::ErrorCode::StaleWidth {
+        return None;
+    }
+    match retrying.next(err, Attempt::default()) {
+        Next::Fail => None,
+        Next::Reroute => Some(Duration::ZERO),
+        Next::Backoff { at_least } => Some(at_least),
     }
 }
 
