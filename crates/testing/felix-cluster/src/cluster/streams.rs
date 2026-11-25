@@ -304,6 +304,73 @@ impl Cluster {
         Ok((client, subscription))
     }
 
+    /// Everything `node_id` replays from the start of `stream`: one whole
+    /// replay, read until nothing has come for `quiet`.
+    ///
+    /// A broker may refuse the subscribe, or end the subscription part way
+    /// through the history, while it is still settling (a follower that
+    /// cannot pass its read barrier, a leader whose term is not open). Both
+    /// are retryable, and what was read before the end is a prefix, not what
+    /// the broker holds. So the replay is started again, for up to `within`,
+    /// until one runs to its end. See [`crate::replay::drain`].
+    pub async fn whole_replay_on(
+        &self,
+        node_id: &str,
+        stream: &str,
+        quiet: Duration,
+        within: Duration,
+    ) -> Result<Vec<felix_client::Event>> {
+        self.whole_replay(node_id, stream, None, quiet, within)
+            .await
+    }
+
+    /// [`Self::whole_replay_on`] for one shard of a stream.
+    pub async fn whole_replay_of_shard(
+        &self,
+        node_id: &str,
+        stream: &str,
+        shard: u32,
+        quiet: Duration,
+        within: Duration,
+    ) -> Result<Vec<felix_client::Event>> {
+        self.whole_replay(node_id, stream, Some(shard), quiet, within)
+            .await
+    }
+
+    async fn whole_replay(
+        &self,
+        node_id: &str,
+        stream: &str,
+        shard: Option<u32>,
+        quiet: Duration,
+        within: Duration,
+    ) -> Result<Vec<felix_client::Event>> {
+        let within = crate::wait::budget(within);
+        let deadline = Instant::now() + within;
+        loop {
+            let opened = match shard {
+                Some(shard) => self.replay_shard(node_id, stream, shard).await,
+                None => self.replay_on(node_id, stream).await,
+            };
+            // The connection is held until the replay is read.
+            let read = match opened {
+                Ok((_client, mut subscription)) => {
+                    crate::replay::drain(&mut subscription, quiet).await
+                }
+                Err(err) => Err(err),
+            };
+            match read {
+                Ok(events) => return Ok(events),
+                Err(err) if Instant::now() >= deadline => {
+                    return Err(err.context(format!(
+                        "{node_id} served no whole replay of {stream} within {within:?}"
+                    )));
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+    }
+
     /// Replay one shard of a stream from the broker that owns it.
     pub async fn replay_shard(
         &self,

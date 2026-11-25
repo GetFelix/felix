@@ -189,13 +189,16 @@ async fn a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats() {
     )
     .await
     .expect("the new leader takes writes");
-    let (_client, mut replay) = cluster.replay_on(&new, STREAM).await.expect("replay");
-    let mut held = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
-    {
-        held.push(String::from_utf8_lossy(&event.payload).to_string());
-    }
+    let held = cluster
+        .whole_replay_on(
+            &new,
+            STREAM,
+            Duration::from_secs(2),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("replay");
+    let held = felix_cluster::replay::payloads(&held);
     assert!(
         held.iter().any(|record| record == "before"),
         "{new} lost a record {old} acknowledged: it holds {held:?}"

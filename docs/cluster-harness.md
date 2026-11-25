@@ -903,6 +903,18 @@ let (owner, non_owner) = cluster.owner_and_non_owner("orders").await?;
 cluster.publish_via(&non_owner, "orders", payload).await?;
 ```
 
+To read back what a broker holds, use `Cluster::whole_replay_on` (or
+`whole_replay_of_shard`), not a loop over `next_event` that stops at the first
+thing that is not an event. A broker that is still settling can end a replay
+part way through the history: a follower refused its read index, a leader whose
+term is not open yet. It resets the event stream, and the client is meant to
+resume. The records read up to then are a prefix, and a test that asserts on
+them reports acknowledged records as lost when none were (#3112).
+`replay::drain` returns an error for a subscription that was lost or ended, and
+`whole_replay_on` starts the replay again until one runs to its end. A helper
+that reads until it has the records it wants and retries otherwise is fine as
+it is.
+
 `Cluster::metric` reads a counter or gauge from one broker's `/metrics`, and
 returns `None` when it was never recorded, which for a counter is the
 difference between "zero so far" and "this code path never ran". That
