@@ -229,6 +229,7 @@ impl OnRaft {
     ) -> Result<(), ClientError> {
         let deadline = self.deadline();
         self.inherit(deadline).await?;
+        super::refuse_non_record(Some(&self.log), offset).await?;
         let settled = match action {
             Settle::Ack => self.groups.ack(&self.key, offset, deadline).await,
             Settle::Nack { delay, attempts } => {
@@ -258,6 +259,7 @@ impl OnRaft {
         by: Duration,
     ) -> Result<(), ClientError> {
         self.inherit(self.deadline()).await?;
+        super::refuse_non_record(Some(&self.log), offset).await?;
         let extended = self
             .groups
             .extend(

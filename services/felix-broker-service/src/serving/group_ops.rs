@@ -573,6 +573,7 @@ pub(crate) async fn settle(
         .inherit_below(&key, tail)
         .await
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
+    refuse_non_record(log.as_ref(), offset).await?;
     let settled = match action {
         Settle::Ack => reader.ack(&key, offset).await,
         Settle::Nack { delay, attempts } => {
@@ -651,6 +652,7 @@ pub(crate) async fn extend(
         .inherit_below(&key, tail)
         .await
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
+    refuse_non_record(log.as_ref(), offset).await?;
     match reader
         .extend(&key, offset, attempts, by, Instant::now())
         .await
@@ -845,6 +847,37 @@ async fn reader_and_log<'a>(
         .open_stream(tenant_id, namespace, stream, shard)
         .map_err(storage)?;
     Ok((reader, Some(log), owned))
+}
+
+/// Refuse a settle or extension aimed at an offset that holds a group entry
+/// or another log entry rather than a record. No group hands one out, so it is
+/// answered as an offset never handed out. Left to the tracker, it would pass
+/// its high-water check, which also covers the entries a poll skipped, or the
+/// predecessor tail a new leader inherits, and be answered done.
+async fn refuse_non_record(
+    log: Option<&felix_broker::StreamLog>,
+    offset: u64,
+) -> Result<(), ClientError> {
+    let Some(log) = log else {
+        return Ok(());
+    };
+    match log.holds_no_client_record(offset).await {
+        Ok(false) => Ok(()),
+        Ok(true) => {
+            // `next` only picks the answer's class; the message below replaces its text.
+            let err = felix_broker::BrokerError::GroupOffsetNotHandedOut {
+                offset,
+                next: offset,
+            };
+            Err(ClientError::from_broker(
+                &err,
+                format!(
+                    "offset {offset} holds a log entry, not a record, so no group handed it out"
+                ),
+            ))
+        }
+        Err(err) => Err(ClientError::from_broker(&err, err.to_string())),
+    }
 }
 
 /// The log's tail, zero for a stream with no log.

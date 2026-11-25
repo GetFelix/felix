@@ -273,6 +273,136 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
     assert_eq!(committed(&leader).await, None, "the cursor moved");
 }
 
+/// **A settle aimed at a log entry that is not a record is refused** (#2784).
+/// The poll passes over a generation start without handing it out, so an ack,
+/// nack, dead letter or extension naming its offset is answered as an offset
+/// never handed out, not as done.
+#[tokio::test]
+async fn a_settle_for_a_generation_start_is_refused() {
+    let leader = Leader::start().await;
+    let publish_ctx = context(&leader);
+    let (_, log, _) = reader_and_log(&leader.broker, &publish_ctx, TENANT, NAMESPACE, DURABLE, 0)
+        .await
+        .expect("served here");
+    let log = log.expect("a durable log");
+    let publish = async |payload: &'static [u8]| {
+        leader
+            .broker
+            .publish_batch(
+                TENANT,
+                NAMESPACE,
+                DURABLE,
+                0,
+                &[Bytes::from_static(payload)],
+            )
+            .await
+            .expect("publish");
+    };
+    publish(b"first").await;
+    let mark = log
+        .append_generation_start(leader::GENERATION)
+        .await
+        .expect("generation start");
+    publish(b"second").await;
+    let claimed = poll(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        10,
+        Duration::ZERO,
+        None,
+        None,
+    )
+    .await
+    .expect("polled");
+    let offsets: Vec<u64> = claimed.iter().map(|c| c.offset).collect();
+    assert_eq!(offsets, vec![mark - 1, mark + 1], "the mark is skipped");
+
+    let before = committed(&leader).await;
+    assert_refused_as_never_handed_out(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        mark,
+    )
+    .await;
+    assert_eq!(committed(&leader).await, before, "the cursor moved");
+}
+
+/// Every settle and an extension at `offset` is refused as an offset never
+/// handed out.
+async fn assert_refused_as_never_handed_out(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    namespace: &str,
+    stream: &str,
+    offset: u64,
+) {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: Some(1),
+        },
+        Settle::DeadLetter,
+    ] {
+        let refused = settle(
+            broker,
+            publish_ctx,
+            None,
+            tenant,
+            namespace,
+            stream,
+            0,
+            GROUP,
+            offset,
+            finish,
+        )
+        .await
+        .expect_err("settled a log entry that is not a record");
+        assert_eq!(
+            (refused.code(), refused.retry()),
+            (
+                &felix_wire::ErrorCode::InvalidRequest,
+                felix_wire::RetryClass::Fatal
+            ),
+            "offset {offset}, {finish:?}: {refused:?}"
+        );
+    }
+    let refused = extend(
+        broker,
+        publish_ctx,
+        None,
+        tenant,
+        namespace,
+        stream,
+        0,
+        GROUP,
+        offset,
+        1,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("extended a log entry that is not a record");
+    assert_eq!(
+        refused.code(),
+        &felix_wire::ErrorCode::InvalidRequest,
+        "extend at {offset}: {refused:?}"
+    );
+}
+
 /// **A group on a `Quorum` stream reads only to the quorum mark.** A record
 /// past it can be lost at failover and its offset reused; a group that had
 /// consumed it would skip whatever the next leader writes there.
@@ -1404,6 +1534,84 @@ async fn a_waiting_raft_poll_is_woken_by_a_commit() {
 
     let at = fixture::write_batch(&shards, &orders, 1, 0, 0, 1, &[b"late"]).await;
     assert_eq!(answered(waiting, "a commit").await, vec![at]);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **On Raft, a settle aimed at one of the group's own entries is refused**
+/// (#2784). Group entries take log indices; a poll passes over them, which
+/// moves the tracker's high water past them, and they were never handed out.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_settle_for_a_group_entry_is_refused() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    fixture::take_formed(&shards, assigned).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::new(fixture::engine(&shards)),
+            ..ClusterContext::default()
+        },
+    );
+    let poll_here = async |max| {
+        poll(
+            &broker,
+            &publish_ctx,
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            GROUP,
+            max,
+            Duration::ZERO,
+            None,
+            None,
+        )
+        .await
+        .expect("polled")
+    };
+    let first = fixture::write_batch(&shards, &orders, 1, 0, 0, 1, &[b"first"]).await;
+    let claimed = poll_here(1).await;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].offset, first);
+    // The poll's own creation and claim entries come right after the record.
+    let entry = first + 1;
+    // Not yet passed by any poll.
+    assert_refused_as_never_handed_out(&broker, &publish_ctx, "t1", "ns", "orders", entry).await;
+
+    let second = fixture::write_batch(&shards, &orders, 2, 0, 0, 1, &[b"second"]).await;
+    let claimed = poll_here(10).await;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].offset, second, "the group entries are skipped");
+    // Passed by the poll, so below the tracker's high water.
+    assert_refused_as_never_handed_out(&broker, &publish_ctx, "t1", "ns", "orders", entry).await;
+
+    // Both records are still the consumer's to finish.
+    for offset in [first, second] {
+        settle(
+            &broker,
+            &publish_ctx,
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            GROUP,
+            offset,
+            Settle::Ack,
+        )
+        .await
+        .expect("acked a record");
+    }
     EngineShards::shutdown(&*shards).await;
 }
 
