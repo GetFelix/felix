@@ -5004,12 +5004,21 @@ older control plane added:
   follower replacement, sharing its budget of 16 set changes a pass. The
   follower given up is one in the new broker's zone first, then the
   busiest, and never one whose swap would leave a set spread across zones
-  short of a zone. An RF 1 shard has no follower to give, so this does not
-  reach it yet ([#3118](https://github.com/GetFelix/felix/issues/3118)).
+  short of a zone.
   The group's leader keeps its seat, adds the new copy as a learner, swaps
   the voters, and hands leadership over once the copy votes and has caught
   up. A copy the broker kept from before its drain rejoins under its old
   copy id with its log intact.
+- An RF 1 shard has no follower to give, so the same balance rule moves
+  it the way an operator move does (#3118): one write grows the set to the
+  leader and the broker, and the shrink below ends the move. Each write
+  takes a slot from the budget of 16. The leader tally counts the shard
+  for the destination from the first write while the destination is live,
+  so later passes start no more moves than the gap calls for. A move for
+  the stream's spread needs the destination to lead fewer in total too,
+  or the totals rule would trade a shard straight back. The undo and
+  stranded rules below apply to it unchanged: between the destination's
+  copy voting and the shrink the group has two voters and needs both.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement
