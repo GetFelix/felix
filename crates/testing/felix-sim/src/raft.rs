@@ -743,6 +743,9 @@ struct Sim {
     terms_seen: Mutex<BTreeMap<u32, Span>>,
     /// Per shard: the terms of the entries in its final read's log.
     committed_terms: Mutex<BTreeMap<u32, BTreeSet<u64>>>,
+    /// Per shard: where that log was read, and which members hold an
+    /// entry of each term, for a finding about a term missing from it.
+    final_log_read: Mutex<BTreeMap<u32, opens::Read>>,
     /// What the run is doing, for the finding of a run that never ends.
     phase: Mutex<&'static str>,
     next_value: AtomicU64,
@@ -979,6 +982,7 @@ impl Sim {
             leases: AtomicUsize::new(0),
             terms_seen: Mutex::new(BTreeMap::new()),
             committed_terms: Mutex::new(BTreeMap::new()),
+            final_log_read: Mutex::new(BTreeMap::new()),
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
             next_process: AtomicUsize::new(0),
@@ -1386,9 +1390,11 @@ impl Sim {
         let opens = self.opens.all();
         let led = self.led.lock().clone();
         let committed = self.committed_terms.lock().clone();
+        let read = self.final_log_read.lock().clone();
         let seen = opens::Seen {
             led: &led,
             committed: &committed,
+            read: &read,
         };
         for finding in self
             .opens
@@ -2472,6 +2478,24 @@ impl Sim {
                     .filter_map(|held| held.generation.and_then(term_of_generation))
                     .collect();
                 self.committed_terms.lock().insert(shard, terms);
+                let mut holders: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+                for member in 0..self.members.len() {
+                    let held: BTreeSet<u64> = records_below(&self.at(member), shard, u64::MAX)
+                        .await
+                        .into_values()
+                        .filter_map(|held| held.generation.and_then(term_of_generation))
+                        .collect();
+                    for term in held {
+                        holders.entry(term).or_default().push(member);
+                    }
+                }
+                let term = at.runtime.status(&key(shard)).map_or(0, |s| s.term);
+                let read = opens::Read {
+                    from: leader,
+                    term,
+                    holders,
+                };
+                self.final_log_read.lock().insert(shard, read);
             }
             let mut history = self.history.lock();
             match leader.and_then(|leader| reads[leader].clone()) {

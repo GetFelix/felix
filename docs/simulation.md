@@ -622,7 +622,12 @@ What a seed checks:
   may have two openers, the watch must not have seen another member lead an
   opened term, and the final log must hold an entry of every opened term: a
   leader writes its blank entry first, so a committed blank leaves its term
-  in the log for good (`felix-sim/src/raft/opens.rs`).
+  in the log for good (`felix-sim/src/raft/opens.rs`). This is a safety
+  check, not a wait: a committed entry missing from the log a leader serves
+  is lost. The finding names the member the log was read from, the term it
+  led, and the members whose logs still hold an entry of the missing term.
+  A term some member still holds was cut off or read from a leader that was
+  behind; a term no member holds is gone from every disk.
 - At most one member passes the leader lease check for a shard at one
   instant. A member that passes it may acknowledge a write on its own log and
   serve a read with no round. Every member is read in one step, before every
@@ -810,10 +815,22 @@ from run to run:
 - The order the node ticker visits groups in, which is by shard.
 - Storage work that a broker hands to tokio's blocking threads. The run
   installs the simulated clock, so that work runs as tasks on the
-  simulation's own thread, as it does in the whole-cluster runs.
+  simulation's own thread, as it does in the whole-cluster runs. Only work
+  sent through `felix_common::blocking::spawn` moves; a bare
+  `tokio::task::spawn_blocking` still runs on a real thread and finishes in
+  real time, so the run then depends on how fast the machine is. A coverage
+  build is slower than a plain one, and saw interleavings the plain build
+  did not (#3126). `run_seed` counts the threads its runtime starts, which
+  on a current-thread runtime are the blocking pool's, and a run that
+  started one fails with a finding
+  (`a_run_hands_no_work_to_real_threads`).
 
 Without the flag tokio's `select!` is not seeded. The faults and the client
-plan still repeat, but the run under them can differ.
+plan still repeat, but the run under them can differ. The crate's own unit
+tests that run a whole seed (`every_power_mode_cuts_and_passes` and the
+others in `felix-sim/src/raft/tests.rs`) are built without it in the
+workspace test and coverage jobs, so a failure there names a seed that will
+not replay the run: seed 1 gave 32 different trace hashes in 32 plain runs.
 
 Each run prints a trace hash: one number over the faults, every operation,
 every delivery, the final reads and the findings. Two runs with the same hash
