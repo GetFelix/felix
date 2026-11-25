@@ -1916,6 +1916,11 @@ impl Group {
                 index,
             });
         let reports = Arc::clone(&self.reports);
+        if early.is_some() {
+            // Here, not in the arm below: the commit is polled first and
+            // can win before that arm ever runs.
+            reports.want();
+        }
         let answered = Arc::clone(&self.answered);
         let raft = self.raft.clone();
         let me = self.member.clone();
