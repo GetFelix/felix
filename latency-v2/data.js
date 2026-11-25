@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795636197399,
+  "lastUpdate": 1795636585072,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88374,6 +88374,72 @@ window.BENCHMARK_DATA = {
             "range": "74.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 303.00\nmean: 324.60\nstdev: 74.96\ncv: 23.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3a9266062e10640f839009ce80583d15e2441bcc",
+          "message": "test(history): the every-family campaign retries a refused fault until each family heals (#3120) (#3169)\n\n* test(history): the every-family campaign retries a refused fault until each family heals\n\nThe every-family campaign went round the fault kinds once in 75 seconds.\nA fault the cluster refused (the campaign logs \"could not ...\" and goes\non) was never tried again, so one 409 from the operator API on a shard\nmove left the Assignment family uncovered and failed the test (#3120).\n\nEveryFamily now picks a refused kind again, up to three times, and the\ncampaign keeps going past its duration, up to twice it, while the\nnemesis is not satisfied. The failure message lists the refused faults\nand why.\n\nSpec-Unaffected: test harness only; no product behaviour changes\n\n* chore: mark the main merge as spec-neutral\n\nSpec-Unaffected: merge of main into a history-tooling branch; no modelled behaviour changes.",
+          "timestamp": "2026-11-25T19:50:39Z",
+          "tree_id": "0c4a5912f7b4165bd9eb218150b3926245e2ec15",
+          "url": "https://github.com/GetFelix/felix/commit/3a9266062e10640f839009ce80583d15e2441bcc"
+        },
+        "date": 1795636574384,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.20\nstdev: 0.84\ncv: 1.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 119,
+            "range": "19.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 127.80\nstdev: 19.77\ncv: 15.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 146,
+            "range": "616.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 420.00\nstdev: 616.04\ncv: 146.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.20\nstdev: 0.45\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 189,
+            "range": "9.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 189.00\nmean: 188.60\nstdev: 9.29\ncv: 4.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 310,
+            "range": "626.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 310.00\nmean: 601.80\nstdev: 626.55\ncv: 104.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
