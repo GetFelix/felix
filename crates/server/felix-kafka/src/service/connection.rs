@@ -84,7 +84,8 @@ async fn read_requests<'a, R>(
 where
     R: AsyncRead + Unpin + Send,
 {
-    let mut session = Session::new(shared, peer_certs);
+    let mut session = Session::new(shared, peer_certs)
+        .map_err(|reason| anyhow::anyhow!("refusing an anonymous connection: {reason}"))?;
     let auth_deadline = Instant::now() + shared.settings.auth_timeout;
     // Whether a produce was queued since the writer last drained.
     let mut pipelined = false;
