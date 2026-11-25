@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795585074809,
+  "lastUpdate": 1795593877009,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86856,6 +86856,72 @@ window.BENCHMARK_DATA = {
             "range": "781.66",
             "unit": "us",
             "extra": "trials: 5\nmedian: 521.00\nmean: 1064.80\nstdev: 781.66\ncv: 73.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3b862e700af0b21df227629cf41362af22477aea",
+          "message": "fix(raft): a Latest subscription's live offset stops at the commit (#3129) (#3138)\n\n* fix(raft): a Latest subscription's live offset stops at the commit (#3129)\n\nOn an engine's log resolve_position took a Latest start from the\ncommitted tail but its live offset from the raw tail. A leader holding\nproposed, uncommitted entries then answered live_offset > start_offset,\nand the records in between later arrived live, breaking the promise that\neverything from live_offset on was written after the join. live now\nstops at the committed tail (never below the start) for every start\nposition and for history_to. Streams not on an engine's log are\nunchanged.\n\nSpec-Unaffected: the TLA models cover commit and apply, not the offsets\na subscription reports at join.\n\n* fix(broker): a settling engine shard refuses every join, not only Latest\n\nEarliest and Offset fell back to the raw tail while the bound was\nSettling, which is the mismatch #3129 removes for a committed bound.\n\nSpec-Unaffected: subscribe offsets on a settling engine log only.",
+          "timestamp": "2026-11-25T07:55:36Z",
+          "tree_id": "5fbf7735a5fcb9e1cec89ed4523998064d4c85a7",
+          "url": "https://github.com/GetFelix/felix/commit/3b862e700af0b21df227629cf41362af22477aea"
+        },
+        "date": 1795593862064,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 154.00\nstdev: 1.58\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "18.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 218.80\nstdev: 18.39\ncv: 8.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 266,
+            "range": "1264.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 962.60\nstdev: 1264.62\ncv: 131.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.20\nstdev: 0.84\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "13.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 395.20\nstdev: 13.99\ncv: 3.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1144,
+            "range": "950.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1144.00\nmean: 1521.00\nstdev: 950.30\ncv: 62.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
