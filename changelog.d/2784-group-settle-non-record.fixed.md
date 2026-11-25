@@ -1,0 +1,1 @@
+- A consumer-group ack, nack, dead letter or extension naming an offset that holds a log entry rather than a record (a group entry on a Raft shard, a generation start, a trim record, a piece of a cut batch) is refused with `invalid_request` as never handed out. It used to be answered `ok` once a poll had passed over that offset, or `stale_claim` before.

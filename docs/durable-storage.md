@@ -694,6 +694,11 @@ Four properties:
    acknowledge records whose pages the kernel dropped. So a log submits its
    next fsync only after the ring has answered the last one, whether or not
    the flush that issued it is still waiting, and checks for a poison first.
+   An fsync the ring never answers counts as failed. If the ring's thread
+   panics, every fsync it held poisons its log before that log's next fsync
+   can start. Without that, the next flush would find the ring gone and fall
+   back to a plain fsync of the same file, which can succeed after the lost
+   one used up the kernel's error.
    A roll started by `roll_now` runs in its own task, so a caller that gives
    up cannot leave the roll slot taken or a failed roll unrecorded.
 
@@ -749,6 +754,10 @@ Four properties:
    > later flush whose fsync succeeds first.
    > `a_dropped_uring_flush_that_fails_still_poisons_the_log` does the
    > second through the real ring on Linux.
+   > `a_ring_thread_that_panics_mid_flight_poisons_the_log` panics the
+   > stand-in ring's thread with a flush in it, and
+   > `a_panicking_service_thread_fails_its_in_flight_flushes` (in
+   > `io/uring_fsync/tests.rs`) panics the real one.
    > `a_failed_node_record_sync_is_not_retried` (in
    > `disk_log/tests/flush_failures.rs`) fails the file sync and then the
    > directory sync of each node record, and

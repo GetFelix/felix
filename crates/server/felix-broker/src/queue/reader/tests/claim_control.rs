@@ -92,7 +92,10 @@ async fn a_claim_from_before_a_seek_cannot_be_extended_or_dead_lettered() {
 
     fx.reader.seek(&key, 0, false).await.expect("seek");
     let tail = fx.log.tail_offset().await.expect("tail");
-    fx.reader.inherit_below(&key, tail).await.expect("inherit");
+    fx.reader
+        .inherit_below(&key, tail, 0)
+        .await
+        .expect("inherit");
 
     let now = base + Duration::from_secs(1);
     assert!(fx.reader.extend(&key, 0, 1, VIS, now).await.is_err());

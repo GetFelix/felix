@@ -1374,6 +1374,16 @@ impl GroupRuntime {
         self.group(shard).is_some_and(|group| group.prefer(broker))
     }
 
+    /// Each placement transfer this broker's member of `shard` asked: the
+    /// term it gave up and the broker it asked to take over. Empty if the
+    /// shard has no group here.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn placed_transfers(&self, shard: &ShardKey) -> Vec<(u64, String)> {
+        self.group(shard)
+            .map(|group| group.placed_transfers.lock().clone())
+            .unwrap_or_default()
+    }
+
     /// The most placement transfers this broker ever had in flight at once.
     #[cfg(any(test, feature = "testing"))]
     pub fn placed_transfers_peak(&self) -> usize {

@@ -1774,6 +1774,27 @@ pub(crate) async fn write_batch(
     written.expect("written")[0]
 }
 
+/// Write `payloads` to `shard`'s group as pieces `position..` of a
+/// conditional batch of `len` records, with no check against the log.
+/// Returns each piece's offset.
+pub(crate) async fn write_cond(
+    shards: &RaftShards,
+    shard: &ShardKey,
+    position: u32,
+    len: u32,
+    payloads: &[&'static [u8]],
+) -> Vec<u64> {
+    let pieces = payloads
+        .iter()
+        .map(|p| bytes::Bytes::from_static(p))
+        .collect();
+    let written = shards
+        .runtime
+        .write_cond_unchecked(shard, position, len, pieces)
+        .await;
+    written.expect("written")
+}
+
 /// Leave `producer_id`'s batch `sequence` cut and then forgotten: its
 /// first record, then the first records of one more cut batch than a log
 /// keeps, each another producer's, so the oldest cut is kept by name only.

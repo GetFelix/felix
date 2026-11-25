@@ -4743,7 +4743,11 @@ enqueue comes before the write and is the one exception.
 A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,
 each held for its full visibility again from then. Group writes are log entries, so they
-take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
+take stream offsets that readers skip. A poll passes over them, so they sit
+below the tracker's high water, yet nobody was handed one. A settle or an
+extension naming an offset the group holds no claim on is checked against
+the log first, and one that names an entry is refused as never handed out
+(#2784). A claim is always a record, so a settle for one skips that read. A group's writes (a cursor advance, a dead letter, a redrive and
 its finish, a discard, a seek, a delete, a claim) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a

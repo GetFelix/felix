@@ -746,6 +746,8 @@ struct Sim {
     /// Per shard: where that log was read, and which members hold an
     /// entry of each term, for a finding about a term missing from it.
     final_log_read: Mutex<BTreeMap<u32, opens::Read>>,
+    /// Per shard: the term of the leader `recover` wrote through.
+    recovered: Mutex<BTreeMap<u32, u64>>,
     /// What the run is doing, for the finding of a run that never ends.
     phase: Mutex<&'static str>,
     next_value: AtomicU64,
@@ -865,6 +867,30 @@ fn name(member: usize) -> String {
     format!("b{}", member + 1)
 }
 
+/// The broker placement names to lead `shard`.
+fn placed(shard: u32, members: usize) -> String {
+    name(shard as usize % members)
+}
+
+/// Whether a shard led by `leader` at `term`, after the write that followed
+/// the heal went through in `recovered`, got there the one way a healthy
+/// group's leadership moves: some member handed a term since `recovered`
+/// to placement's broker, and that broker leads. `transfers` holds each
+/// placement transfer asked, as the term given up and the broker asked.
+fn moved_by_placement(
+    recovered: u64,
+    term: u64,
+    leader: &str,
+    placed: &str,
+    transfers: &[(u64, String)],
+) -> bool {
+    term == recovered
+        || (leader == placed
+            && transfers
+                .iter()
+                .any(|(from, to)| (recovered..term).contains(from) && to == placed))
+}
+
 /// The shipped timers as a member whose clock runs at `rate_ppm` keeps them.
 fn timers(rate_ppm: u64) -> RuntimeConfig {
     let at = |d: Duration| Duration::from_micros(d.as_micros() as u64 * 1_000_000 / rate_ppm);
@@ -945,8 +971,7 @@ impl Sim {
                     .map_err(|err| anyhow::anyhow!("initialize: {err:?}"))?;
                 // Placement names a leader per shard, so the runs include
                 // the hand-overs brokers make to follow it.
-                let placed = name(shard as usize % count);
-                member.runtime.prefer(&key(shard), &placed);
+                member.runtime.prefer(&key(shard), &placed(shard, count));
             }
         }
         let mut history = History::default();
@@ -984,6 +1009,7 @@ impl Sim {
             terms_seen: Mutex::new(BTreeMap::new()),
             committed_terms: Mutex::new(BTreeMap::new()),
             final_log_read: Mutex::new(BTreeMap::new()),
+            recovered: Mutex::new(BTreeMap::new()),
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
             next_process: AtomicUsize::new(0),
@@ -2386,6 +2412,37 @@ impl Sim {
         self.closed.lock().contains_key(&shard)
     }
 
+    /// With no fault since `recover` wrote through a leader, the only thing
+    /// that moves a shard's leadership is that leader handing it to the
+    /// broker placement names, once that broker's member has caught up and
+    /// settled (`docs/per-shard-raft.md`, "Leaders follow placement"). A
+    /// later term led by anyone else, or reached without a hand-over, was
+    /// an election in a healthy group (#2990).
+    fn check_moved_since_recovery(&self, shard: u32, leader: Option<usize>) {
+        let Some(recovered) = self.recovered.lock().get(&shard).copied() else {
+            return;
+        };
+        let Some(leader) = leader else {
+            return;
+        };
+        let Some(term) = self.at(leader).runtime.status(&key(shard)).map(|s| s.term) else {
+            return;
+        };
+        let placed = placed(shard, self.members.len());
+        let transfers: Vec<(u64, String)> = (0..self.members.len())
+            .flat_map(|member| self.at(member).runtime.placed_transfers(&key(shard)))
+            .collect();
+        if !moved_by_placement(recovered, term, &name(leader), &placed, &transfers) {
+            self.finding(format!(
+                "{}: {} leads term {term}, and the write after the heal went through in \
+                 term {recovered}: with no fault since, only a hand-over to placement's \
+                 {placed} moves the leadership",
+                list(shard),
+                name(leader)
+            ));
+        }
+    }
+
     /// After the heal every shard gets an open leader that acknowledges a
     /// write.
     async fn recover(&self) {
@@ -2398,7 +2455,11 @@ impl Sim {
             let mut written = false;
             while !written && Instant::now() < deadline {
                 if let Some(leader) = self.leader(shard) {
+                    let term = self.at(leader).runtime.status(&key(shard)).map(|s| s.term);
                     written = self.append(process, leader, shard).await;
+                    if written && let Some(term) = term {
+                        self.recovered.lock().insert(shard, term);
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -2468,6 +2529,7 @@ impl Sim {
             }
             self.check_terms_agree(shard, &running).await;
             let leader = self.leader(shard);
+            self.check_moved_since_recovery(shard, leader);
             if let Some(leader) = leader
                 && reads[leader].is_some()
             {

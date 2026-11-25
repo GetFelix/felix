@@ -273,6 +273,265 @@ async fn an_ack_for_a_record_newer_than_the_tracker_is_stale_not_invalid() {
     assert_eq!(committed(&leader).await, None, "the cursor moved");
 }
 
+/// **A settle aimed at a log entry that is not a record is refused** (#2784).
+/// The poll passes over a generation start without handing it out, so an ack,
+/// nack, dead letter or extension naming its offset is answered as an offset
+/// never handed out, not as done.
+#[tokio::test]
+async fn a_settle_for_a_generation_start_is_refused() {
+    let leader = Leader::start().await;
+    let publish_ctx = context(&leader);
+    let (_, log, _) = reader_and_log(&leader.broker, &publish_ctx, TENANT, NAMESPACE, DURABLE, 0)
+        .await
+        .expect("served here");
+    let log = log.expect("a durable log");
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            &[Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+        )
+        .await
+        .expect("publish");
+    // Last in the log: a publish after an append outside the publish path
+    // would wait on offsets the sequencer never handed out.
+    let mark = log
+        .append_generation_start(leader::GENERATION)
+        .await
+        .expect("generation start");
+    let claimed = poll(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        10,
+        Duration::ZERO,
+        None,
+        None,
+    )
+    .await
+    .expect("polled");
+    let offsets: Vec<u64> = claimed.iter().map(|c| c.offset).collect();
+    assert_eq!(offsets, vec![mark - 2, mark - 1], "the mark is skipped");
+
+    let before = committed(&leader).await;
+    assert_refused_as_never_handed_out(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        mark,
+    )
+    .await;
+    assert_eq!(committed(&leader).await, before, "the cursor moved");
+}
+
+/// **Every record of a producer's batch can be settled** (#2784). The
+/// later records of a batch carry `Continues` marks; they are records, so a
+/// settle for one is never refused as a log entry, even when the group holds
+/// no claim on it and the log is read to tell.
+#[tokio::test]
+async fn a_settle_for_any_record_of_a_batch_is_taken() {
+    let leader = Leader::start().await;
+    let publish_ctx = context(&leader);
+    let (_, log, _) = reader_and_log(&leader.broker, &publish_ctx, TENANT, NAMESPACE, DURABLE, 0)
+        .await
+        .expect("served here");
+    let log = log.expect("a durable log");
+    let handle = leader
+        .broker
+        .resolve_stream_handle(TENANT, NAMESPACE, DURABLE, 0)
+        .await
+        .expect("handle");
+    let payloads = [b"a", b"b", b"c"].map(|p| Bytes::from_static(p));
+    leader
+        .broker
+        .publish_batch_idempotent(
+            &handle,
+            7,
+            0,
+            &payloads,
+            felix_broker::SequenceReuse::Refuse,
+        )
+        .await
+        .expect("publish");
+    let claimed = poll(
+        &leader.broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        0,
+        GROUP,
+        10,
+        Duration::ZERO,
+        None,
+        None,
+    )
+    .await
+    .expect("polled");
+    assert_eq!(claimed.len(), 3);
+    let marks: Vec<_> = log
+        .read_log_from(claimed[0].offset, usize::MAX)
+        .await
+        .expect("read")
+        .records
+        .iter()
+        .map(|r| r.mark)
+        .collect();
+    assert!(
+        matches!(
+            marks[..],
+            [
+                felix_storage::log::RecordMark::Opens(_),
+                felix_storage::log::RecordMark::Continues,
+                felix_storage::log::RecordMark::Continues
+            ]
+        ),
+        "{marks:?}"
+    );
+    settle_each_twice(
+        &leader.broker,
+        &publish_ctx,
+        TENANT,
+        NAMESPACE,
+        DURABLE,
+        &log,
+        &claimed,
+    )
+    .await;
+}
+
+/// Extend, ack and ack again each of `claimed`, all answered `ok`. The second
+/// ack names a record the group no longer holds a claim on, so it is the one
+/// that asks the log what the offset holds.
+async fn settle_each_twice(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    namespace: &str,
+    stream: &str,
+    log: &felix_broker::StreamLog,
+    claimed: &[felix_wire::GroupRecord],
+) {
+    for record in claimed {
+        let offset = record.offset;
+        assert!(
+            !log.holds_no_client_record(offset)
+                .await
+                .expect("classified"),
+            "record {offset} taken for a log entry"
+        );
+        extend(
+            broker,
+            publish_ctx,
+            None,
+            tenant,
+            namespace,
+            stream,
+            0,
+            GROUP,
+            offset,
+            record.attempts,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("extend {offset}: {err:?}"));
+        for round in ["ack", "second ack"] {
+            settle(
+                broker,
+                publish_ctx,
+                None,
+                tenant,
+                namespace,
+                stream,
+                0,
+                GROUP,
+                offset,
+                Settle::Ack,
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{round} of {offset}: {err:?}"));
+        }
+    }
+}
+
+/// Every settle and an extension at `offset` is refused as an offset never
+/// handed out.
+async fn assert_refused_as_never_handed_out(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    tenant: &str,
+    namespace: &str,
+    stream: &str,
+    offset: u64,
+) {
+    for finish in [
+        Settle::Ack,
+        Settle::Nack {
+            delay: Duration::ZERO,
+            attempts: None,
+        },
+        Settle::Nack {
+            delay: Duration::from_secs(5),
+            attempts: Some(1),
+        },
+        Settle::DeadLetter,
+    ] {
+        let refused = settle(
+            broker,
+            publish_ctx,
+            None,
+            tenant,
+            namespace,
+            stream,
+            0,
+            GROUP,
+            offset,
+            finish,
+        )
+        .await
+        .expect_err("settled a log entry that is not a record");
+        assert_eq!(
+            (refused.code(), refused.retry()),
+            (
+                &felix_wire::ErrorCode::InvalidRequest,
+                felix_wire::RetryClass::Fatal
+            ),
+            "offset {offset}, {finish:?}: {refused:?}"
+        );
+    }
+    let refused = extend(
+        broker,
+        publish_ctx,
+        None,
+        tenant,
+        namespace,
+        stream,
+        0,
+        GROUP,
+        offset,
+        1,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect_err("extended a log entry that is not a record");
+    assert_eq!(
+        refused.code(),
+        &felix_wire::ErrorCode::InvalidRequest,
+        "extend at {offset}: {refused:?}"
+    );
+}
+
 /// **A group on a `Quorum` stream reads only to the quorum mark.** A record
 /// past it can be lost at failover and its offset reused; a group that had
 /// consumed it would skip whatever the next leader writes there.
@@ -1404,6 +1663,185 @@ async fn a_waiting_raft_poll_is_woken_by_a_commit() {
 
     let at = fixture::write_batch(&shards, &orders, 1, 0, 0, 1, &[b"late"]).await;
     assert_eq!(answered(waiting, "a commit").await, vec![at]);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **On Raft, a settle aimed at one of the group's own entries is refused**
+/// (#2784). Group entries take log indices; a poll passes over them, which
+/// moves the tracker's high water past them, and they were never handed out.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_settle_for_a_group_entry_is_refused() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    fixture::take_formed(&shards, assigned).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::new(fixture::engine(&shards)),
+            ..ClusterContext::default()
+        },
+    );
+    let poll_here = async |max| {
+        poll(
+            &broker,
+            &publish_ctx,
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            GROUP,
+            max,
+            Duration::ZERO,
+            None,
+            None,
+        )
+        .await
+        .expect("polled")
+    };
+    let first = fixture::write_batch(&shards, &orders, 1, 0, 0, 1, &[b"first"]).await;
+    let claimed = poll_here(1).await;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].offset, first);
+    // The poll's own creation and claim entries come right after the record.
+    let entry = first + 1;
+    // Not yet passed by any poll.
+    assert_refused_as_never_handed_out(&broker, &publish_ctx, "t1", "ns", "orders", entry).await;
+
+    let second = fixture::write_batch(&shards, &orders, 2, 0, 0, 1, &[b"second"]).await;
+    let claimed = poll_here(10).await;
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].offset, second, "the group entries are skipped");
+    // Passed by the poll, so below the tracker's high water.
+    assert_refused_as_never_handed_out(&broker, &publish_ctx, "t1", "ns", "orders", entry).await;
+
+    // Both records are still the consumer's to finish.
+    for offset in [first, second] {
+        settle(
+            &broker,
+            &publish_ctx,
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            GROUP,
+            offset,
+            Settle::Ack,
+        )
+        .await
+        .expect("acked a record");
+    }
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **On Raft, every record of a whole batch can be settled, and the pieces
+/// of a cut conditional batch cannot** (#2784). A settle in the middle of a
+/// whole conditional batch reads the log from that piece, and the rule must
+/// still find the batch whole; a producer batch's later records carry `Piece`
+/// marks. The cut batch's pieces are skipped by the poll and never handed out.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_settle_takes_every_record_of_a_whole_batch() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+    use felix_storage::log::RecordMark;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    fixture::take_formed(&shards, assigned).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::new(fixture::engine(&shards)),
+            ..ClusterContext::default()
+        },
+    );
+    let log = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle")
+        .log()
+        .cloned()
+        .expect("a durable log");
+    let whole = fixture::write_cond(&shards, &orders, 0, 3, &[b"c0", b"c1", b"c2"]).await;
+    let produced = fixture::write_batch(&shards, &orders, 5, 0, 0, 3, &[b"p0", b"p1", b"p2"]).await;
+    let cut = fixture::write_cond(&shards, &orders, 0, 3, &[b"x0", b"x1"]).await;
+    // Anything but the next piece cuts the batch above.
+    let after = fixture::write_batch(&shards, &orders, 6, 0, 0, 1, &[b"after"]).await;
+    assert_eq!(
+        (whole[0] + 3, produced + 3, cut[1] + 1),
+        (produced, cut[0], after),
+        "the writes are not one run"
+    );
+
+    // A poll may stop where its page ends inside a batch; the next one
+    // reads on from there.
+    let mut claimed = Vec::new();
+    while claimed
+        .last()
+        .is_none_or(|c: &felix_wire::GroupRecord| c.offset < after)
+    {
+        let more = poll(
+            &broker,
+            &publish_ctx,
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            GROUP,
+            10,
+            Duration::ZERO,
+            None,
+            None,
+        )
+        .await
+        .expect("polled");
+        assert!(!more.is_empty(), "the poll stopped short: {claimed:?}");
+        claimed.extend(more);
+    }
+    let offsets: Vec<u64> = claimed.iter().map(|c| c.offset).collect();
+    let mut expected = whole.clone();
+    expected.extend([produced, produced + 1, produced + 2, after]);
+    assert_eq!(offsets, expected, "the cut pieces are skipped");
+    let read = log.read_log_from(produced, usize::MAX).await.expect("read");
+    assert!(
+        matches!(
+            read.records[..3].iter().map(|r| r.mark).collect::<Vec<_>>()[..],
+            [
+                RecordMark::Opens(_),
+                RecordMark::Piece(_),
+                RecordMark::Piece(_)
+            ]
+        ),
+        "{:?}",
+        read.records
+    );
+
+    settle_each_twice(&broker, &publish_ctx, "t1", "ns", "orders", &log, &claimed).await;
+    for piece in cut {
+        assert!(
+            log.holds_no_client_record(piece).await.expect("classified"),
+            "cut piece {piece} taken for a record"
+        );
+        assert_refused_as_never_handed_out(&broker, &publish_ctx, "t1", "ns", "orders", piece)
+            .await;
+    }
     EngineShards::shutdown(&*shards).await;
 }
 
