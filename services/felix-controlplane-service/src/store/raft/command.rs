@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 51;
+pub const METADATA_VERSION: u16 = 52;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -617,6 +617,10 @@ pub enum MetaCommand {
         /// stored, whatever the floor did with the report (#2909).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         vouched_voters: bool,
+        /// Level 52: each report also records its reporter as the broker
+        /// the group elected (`ShardAssignment::raft_leader`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        note_leader: bool,
     },
     /// Declare a node's data directory dead under the storage id its record
     /// holds as this applies

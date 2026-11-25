@@ -5556,6 +5556,36 @@ Pacing keeps this from churning:
 The values are fields of `RuntimeConfig::placement`. Placement's leader is
 only a preference: routing follows the group's real leader.
 
+Rule 4 means a group with a voter down keeps whatever leader it elected. If
+placement then named a different member, the two would disagree until the
+broker came back, and anything that reads the assignment as the shard's
+server (discovery, `felixctl`, dashboards) would point at a follower
+(#3041). So placement follows the group instead:
+
+- Every floor report a leader sends ("Offset floor") also tells the control
+  plane that its sender leads the group, with the term of the entry it
+  reports. The control plane keeps the sender with the highest term as the
+  shard's `raft_leader`. A second sender at the same term is not taken: a
+  new leader reports an older term's entry until its own first entry
+  commits, so a later report at that term can come from a deposed leader.
+  Only a broker in the set, and in the voters the report names, counts.
+  The record is kept from metadata level 52.
+- When placement renames a leader that is down, it names that broker if it
+  is a live, serving member of the set and a voter as last reported. With
+  no such report, while the group is still electing, it names the member
+  leading fewest, as before.
+- While any member of the set is down, a live placement leader that is not
+  the reported one is renamed to it. That covers a rename made before the
+  report arrived.
+
+Nothing acts on this name in a way Raft does not judge. A member that leads
+hands over only through rule 2 to 6, a broker with no member forwards to
+the name and is redirected by the member there, and only the group's leader
+answers a write, after the group commits it. A wrong or stale report costs
+at most a redirect or a hand-over the leader refuses. Once the broker is
+back, the hand-over rules apply again and balancing decides the leader as
+before.
+
 | Metric | Meaning |
 | --- | --- |
 | `felix_broker_raft_shards_led_off_placement` | Shards this broker leads whose placement names another leader. Above zero for long means a hand-over is held back, or placement names a broker that holds no voter of the group |

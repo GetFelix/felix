@@ -414,9 +414,11 @@ fn routed(
     assignment.raft_copy_ids.clear();
     // `placed` stays: a broker reads the group epoch from it, and
     // `raft_formed` too: a broker stops re-sending a marked group's floor.
-    // No broker reads the floor or the ordered targets yet.
+    // No broker reads the floor, the ordered targets or the reported
+    // leader yet.
     assignment.raft_floor = None;
     assignment.raft_ordered = None;
+    assignment.raft_leader = None;
     let target = assignment
         .raft_target
         .take()

@@ -47,9 +47,15 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 /// - A hybrid move left on it is dropped: the group sends none of the
 ///   reports it waits for.
 /// - A leader that is down, on a draining broker, or outside the stream's
-///   region is moved to a live member. A down one is renamed even while
-///   placement is paused, as the hybrid still replaces a failed leader:
-///   brokers with no member forward to the leader placement names.
+///   region is moved to a live member: the one the group reported electing
+///   ([`elected`]) when there is one, else the member leading fewest. A
+///   down one is renamed even while placement is paused, as the hybrid
+///   still replaces a failed leader: brokers with no member forward to the
+///   leader placement names.
+/// - While a member of the set is down, a live leader is renamed to the
+///   member the group reported electing. The group's leader does not hand
+///   over while a voter is down, so naming any other member would leave
+///   placement and the group disagreeing until the broker is back (#3041).
 /// - A down leader with no live member stays named, with no alert: the
 ///   group cannot elect either until a member is back.
 /// - A follower that must leave (`leaving`: an internal, draining or lost
@@ -83,15 +89,6 @@ pub(super) fn raft_step<'a>(
         return decision;
     }
     let leader = existing.leader.as_str();
-    // A leader that must leave is renamed first, below; it is swapped out
-    // as a follower on a later pass.
-    if is_live(leader)
-        && leaving(leader).is_none()
-        && let Some(decision) =
-            replace_leaving(existing, is_serving, leaving, eligible, load, moves)
-    {
-        return decision;
-    }
     let down = !is_serving(leader);
     let key = &existing.key;
     // Only a member can lead: a node outside the set holds no copy.
@@ -101,6 +98,25 @@ pub(super) fn raft_step<'a>(
         .map(String::as_str)
         .filter(|node| is_live(node) && !existing.learners.contains(*node))
         .collect();
+    let elected = elected(existing, &members, is_serving);
+    let degraded = existing.nodes().any(|node| !is_serving(node));
+    // Before a swap: the swap waits on the down member anyway, and the
+    // leader the group runs is the one that will make it.
+    if degraded
+        && is_live(leader)
+        && let Some(to) = elected
+    {
+        return rename(existing, to, true, counted, leaders, moves);
+    }
+    // A leader that must leave is renamed first, below; it is swapped out
+    // as a follower on a later pass.
+    if is_live(leader)
+        && leaving(leader).is_none()
+        && let Some(decision) =
+            replace_leaving(existing, is_serving, leaving, eligible, load, moves)
+    {
+        return decision;
+    }
     let fewest = |count: &dyn Fn(&str) -> u32| {
         members
             .iter()
@@ -142,13 +158,49 @@ pub(super) fn raft_step<'a>(
             Some(to) => to,
         }
     } else {
-        match fewest(&|node| leaders.total(node)) {
+        match elected.or_else(|| fewest(&|node| leaders.total(node))) {
             Some(to) => to,
             None if down => return Decision::Kept,
             None => return Decision::Waiting(Blocked::NoDestination),
         }
     };
-    if moves.paused() && !down {
+    rename(existing, to, down, counted, leaders, moves)
+}
+
+/// The member a Raft shard's group reported electing
+/// ([`ShardAssignment::reported_leader`]), when placement may name it: a
+/// live voter in the set, serving, and not already named. A report naming
+/// anyone else is ignored, and placement chooses as if there were none.
+fn elected<'a>(
+    existing: &ShardAssignment,
+    members: &[&'a str],
+    is_serving: &dyn Fn(&str) -> bool,
+) -> Option<&'a str> {
+    let reported = existing.reported_leader()?;
+    if reported == existing.leader {
+        return None;
+    }
+    members
+        .iter()
+        .copied()
+        .find(|node| *node == reported)
+        .filter(|node| is_serving(node) && existing.may_be_voting(node))
+}
+
+/// The write that names `to` leader, within this pass's budget. `failover`:
+/// the write follows the group rather than moving it, so a pause does not
+/// hold it.
+fn rename<'a>(
+    existing: &'a ShardAssignment,
+    to: &'a str,
+    failover: bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    moves: &mut Moves,
+) -> Decision {
+    let leader = existing.leader.as_str();
+    let key = &existing.key;
+    if moves.paused() && !failover {
         return Decision::Waiting(Blocked::Paused);
     }
     if moves.raft_leaders >= RAFT_LEADERS_PER_PASS {
