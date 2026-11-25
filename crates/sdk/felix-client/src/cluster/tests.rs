@@ -10,6 +10,7 @@ mod decisions;
 mod deposed_resume;
 mod error_codes;
 mod explicit_shard;
+mod hand_over;
 mod head_trim;
 mod identity;
 mod keyed_producer;

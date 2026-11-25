@@ -531,10 +531,12 @@ how-to; this is the contract.
   try. The configured seeds are never removed, so a wrong or stale answer cannot
   leave a client with fewer ways in than it started with.
 - `publish` reconnects but does **not** resend anything that may have landed.
-  Its one re-send is after a cached shard owner answered that it applied
-  nothing, and goes to the entry broker. `publish_at_least_once` resends, and
-  can therefore duplicate a record whose failure it could not prove was not
-  applied. The names are the contract.
+  It sends again only what a broker refused before applying: at once through
+  the entry broker when a cached shard owner refused, with the policy's
+  backoff when the entry broker did. A shard between leaders (an election, a
+  Raft hand-over, a move) refuses that way, so a publish made then waits it
+  out instead of failing. `publish_at_least_once` also resends what may have
+  landed, and can therefore duplicate a record. The names are the contract.
 - **Retries are bounded by an attempt count and a jittered exponential
   backoff**, and optionally by a deadline across every attempt and sleep. The
   deadline is off by default: one shorter than a single attempt's own timeout
@@ -551,7 +553,10 @@ how-to; this is the contract.
   shard by then). `retry` and `redirect` from a cached owner drop that
   owner and go straight to the entry broker, since a fenced or draining owner
   will not start serving the shard again; from the entry broker they back off.
-  `retry_after` backs off for at least as long as the broker asked.
+  `retry_after` backs off for at least as long as the broker asked. Every
+  publish kind does this, since these classes say nothing was applied. One
+  exception: a plain publish returns `stale_width`, because the batch has to
+  be routed again under the stream's new width.
 
   **"Not found" is retried, for 5 s from the first one.** A broker learns its
   streams from the control plane and opens a shard only once it is given one,
@@ -567,6 +572,8 @@ how-to; this is the contract.
 > `a_forbidden_publish_fails_fast_instead_of_retrying`,
 > `a_fenced_owner_is_forgotten_and_the_publish_rerouted`,
 > `an_outcome_unknown_publish_is_surfaced`,
+> `a_publish_refused_during_a_hand_over_is_sent_again`,
+> `an_outcome_in_doubt_is_returned_after_one_attempt`,
 > `not_found_stops_being_retried_after_its_grace`,
 > `a_client_given_one_seed_learns_the_other_brokers`,
 > `the_configured_seed_is_never_dropped`,
