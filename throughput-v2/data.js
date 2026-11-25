@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795635352761,
+  "lastUpdate": 1795635803549,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69472,6 +69472,58 @@ window.BENCHMARK_DATA = {
             "range": "3003.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807269.02\nmean: 807078.64\nstdev: 3003.68\ncv: 0.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d59cc20053047279e8b5697ee15e4344cb2c02c",
+          "message": "fix(kafka): on Raft, Metadata names the leader the member here follows (#3105) (#3170)\n\n* fix(kafka): on Raft, Metadata names the leader the member here follows (#3105)\n\nKafka placement was built from the QUIC forward decision. On a Raft shard\nthat decision is Unavailable when the elected leader sits in a region this\nbroker does not forward to, or has no peer address here, so Metadata\nanswered LEADER_NOT_AVAILABLE although the member knew the leader and the\nclient connects to it itself.\n\nThe Raft engine's member view of its leader is now one function\n(`followed`) that both `dispatch` and a new `EngineShards::elected_leader`\nread, and Kafka placement names that leader whenever the shard is not\nlocal. A broker with no member, or whose member knows no leader, still\nnames the forward target (placement's leader or a reported voter).\n\nMetadata is advisory: produce admission (`admit_write`, the Raft term)\nand fetch bounds (`committed_until`) are unchanged, so no ack, offset or\nread guarantee moves.\n\nSpec-Unaffected: Kafka Metadata routing only; no replication, commit or election state changes\n\n* fix(kafka): put dispatch_without_member's doc comment back above it\n\nSpec-Unaffected: doc comment move, no behaviour changed",
+          "timestamp": "2026-11-25T11:34:27-08:00",
+          "tree_id": "d5db74f9a3761050ecf634d946af0209d4fb7b1c",
+          "url": "https://github.com/GetFelix/felix/commit/1d59cc20053047279e8b5697ee15e4344cb2c02c"
+        },
+        "date": 1795635802763,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360704.97,
+            "range": "10846.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360704.97\nmean: 360220.89\nstdev: 10846.23\ncv: 3.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360704.97,
+            "range": "10846.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360704.97\nmean: 360220.89\nstdev: 10846.23\ncv: 3.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80529.44,
+            "range": "5485.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80529.44\nmean: 78422.74\nstdev: 5485.96\ncv: 7.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805294.36,
+            "range": "54859.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805294.36\nmean: 784227.35\nstdev: 54859.67\ncv: 7.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
