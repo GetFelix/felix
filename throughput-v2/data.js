@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795648441564,
+  "lastUpdate": 1795648831457,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69940,6 +69940,58 @@ window.BENCHMARK_DATA = {
             "range": "7058.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816494.31\nmean: 814450.94\nstdev: 7058.82\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "17fc8df1d2a4c596683b4fbe74b4432f570b3559",
+          "message": "fix(client): a subscribe that keeps getting not_ready asks the other brokers in its book (#3091) (#3187)\n\n* fix(client): rotate through the broker book on repeated not_ready subscribes (#3091)\n\nopen_shard retried a not_ready subscribe on the entry broker only, so a\nbroker that stayed not_ready pinned the client. Each further not_ready now\nmoves the next attempt to the next broker in the book; redirects and named\nleaders are still followed inside each attempt, and attempts and backoff are\nunchanged.\n\nSpec-Unaffected: client-side retry routing only, no broker or protocol behaviour changes\n\n* fix(client): resume paths rotate through the book on not_ready too (#3091)\n\nThe followed-subscription and sharded resume loops asked only the entry\nbroker. All three loops now share subscribe_shard_rotating. A broker that\ncannot be dialled is stepped over, and a redirect target that lost the shard\nsends the ask back to the broker the attempt started from.\n\nSpec-Unaffected: client-side retry routing only, no broker or protocol behaviour changes",
+          "timestamp": "2026-11-25T23:11:45Z",
+          "tree_id": "8889cd400dc26cafc95f06975da69df810d5e5a8",
+          "url": "https://github.com/GetFelix/felix/commit/17fc8df1d2a4c596683b4fbe74b4432f570b3559"
+        },
+        "date": 1795648830577,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360588.91,
+            "range": "4580.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360588.91\nmean: 362448.44\nstdev: 4580.38\ncv: 1.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360588.91,
+            "range": "4580.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360588.91\nmean: 362448.44\nstdev: 4580.38\ncv: 1.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81499.99,
+            "range": "532.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81499.99\nmean: 81557.06\nstdev: 532.73\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814999.89,
+            "range": "5327.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814999.89\nmean: 815570.55\nstdev: 5327.35\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
