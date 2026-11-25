@@ -157,13 +157,16 @@ jobs:
           # The baseline is main's; another base would be compared to the wrong numbers.
           # A different compiler instruments code differently, so its line
           # counts are not comparable with a baseline main measured on its own.
+          # Only the channel's value counts, so reformatting the line skips nothing.
+          channel() { grep -E '^[[:space:]]*channel[[:space:]]*=' | tr -d ' \t\r"' || true; }
           git fetch --quiet --depth=1 origin main
-          main_toolchain=$(git show FETCH_HEAD:rust-toolchain.toml | grep -E '^channel')
-          pr_toolchain=$(grep -E '^channel' rust-toolchain.toml)
+          main_toolchain=$(git show FETCH_HEAD:rust-toolchain.toml | channel)
+          pr_toolchain=$(channel < rust-toolchain.toml)
           if [ "$BASE_REF" != main ]; then
             echo "::notice::base is $BASE_REF, not main; skipping the coverage gate"
             python3 scripts/ci/coverage_gate.py percent lcov.info
-          elif [ "$main_toolchain" != "$pr_toolchain" ]; then
+          elif [ -n "$main_toolchain" ] && [ -n "$pr_toolchain" ] &&
+            [ "$main_toolchain" != "$pr_toolchain" ]; then
             echo "::notice::toolchain changes ($main_toolchain -> $pr_toolchain); main's baseline is not comparable, skipping the coverage gate"
             python3 scripts/ci/coverage_gate.py percent lcov.info
           elif git fetch --quiet --depth=1 origin badges &&
