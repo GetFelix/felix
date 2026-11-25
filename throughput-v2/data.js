@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795614372806,
+  "lastUpdate": 1795615052299,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69264,6 +69264,58 @@ window.BENCHMARK_DATA = {
             "range": "10079.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1107779.42\nmean: 1112305.02\nstdev: 10079.90\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e38cc0116b0513cce297f11a17b1a45fe861f8fb",
+          "message": "fix(test): main's felix-broker test build, plus poll wording after #3146 (#3168)\n\n* docs: a group poll after an ack includes the record (#3146)\n\n#3144 described the poll gap #3146 fixed as behaviour. Say what a poll\ndoes now, and narrow the semantics page's 'any ack' to acks given once\nthe record is written: an enqueue ack comes before the write.\n\nSpec-Unaffected: docs and a test doc comment only.\n\n* test(groups): pass poll_below its bound as a closure\n\n#3144's new test passed an integer; #3149, merged first, made the bound a\nclosure read after the read index. Each was green alone; together main's\nfelix-broker test build fails.\n\nSpec-Unaffected: test call site only.",
+          "timestamp": "2026-11-25T13:52:28Z",
+          "tree_id": "abda8820be19f817fda7316c492ec8abdc0a1ef8",
+          "url": "https://github.com/GetFelix/felix/commit/e38cc0116b0513cce297f11a17b1a45fe861f8fb"
+        },
+        "date": 1795615051647,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 644971.84,
+            "range": "51449.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 644971.84\nmean: 652887.09\nstdev: 51449.43\ncv: 7.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 644971.84,
+            "range": "51449.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 644971.84\nmean: 652887.09\nstdev: 51449.43\ncv: 7.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156461.67,
+            "range": "2536.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156461.67\nmean: 156826.67\nstdev: 2536.17\ncv: 1.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1564616.67,
+            "range": "25361.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1564616.67\nmean: 1568266.72\nstdev: 25361.70\ncv: 1.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
