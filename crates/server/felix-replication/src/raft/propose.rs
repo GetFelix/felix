@@ -288,7 +288,7 @@ impl Unstamped {
             CacheCommand::Delete { key, .. }
             | CacheCommand::Expire { key, .. }
             | CacheCommand::Add { key, .. } => key.len(),
-            CacheCommand::Retire { .. } => 0,
+            CacheCommand::Retire { .. } | CacheCommand::Watched => 0,
         }
     }
 

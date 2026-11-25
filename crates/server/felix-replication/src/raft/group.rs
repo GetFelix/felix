@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use bytes::Bytes;
 
-use super::cache::{Answer, CacheCommand, CacheWatch};
+use super::cache::{Answer, CacheCommand, CacheWatch, MARK_RETRY_MICROS, WatchSignal};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits, SkipClaim, Skips};
 use super::executor::Placed;
@@ -121,6 +121,11 @@ pub(crate) struct Group {
     reached_before: AtomicBool,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
+    /// Watch activity on this member, for the marks that keep every
+    /// member of a watched cache shard recording.
+    watch_signal: Arc<WatchSignal>,
+    /// When this member, leading, last appended a mark, on its clock.
+    marked_at: AtomicU64,
     /// A stream shard's consumer groups, as this member has applied them.
     groups: Option<Groups>,
     /// The snapshot a cache shard's member is being sent.
@@ -809,6 +814,7 @@ impl Group {
             copy_id,
             log.first_index_reader(),
         );
+        let watch_signal = Arc::new(WatchSignal::default());
         let machine::Opened {
             mut machine,
             commits,
@@ -820,7 +826,9 @@ impl Group {
             snapshots,
             id.shard.kind,
             Some(log.disk_log()),
-            cache_changes.map(|observer| CacheWatch::new(observer, Arc::clone(&id.shard))),
+            cache_changes.map(|observer| {
+                CacheWatch::new(observer, Arc::clone(&id.shard), Arc::clone(&watch_signal))
+            }),
         )
         .await?;
         let purge_at = machine.purging(log.reader());
@@ -919,6 +927,8 @@ impl Group {
             leadership,
             reached_before: AtomicBool::new(false),
             cache,
+            watch_signal,
+            marked_at: AtomicU64::new(0),
             groups,
             incoming: Arc::default(),
             clock,
@@ -1066,6 +1076,7 @@ impl Group {
             return;
         }
         self.stop_lapsed_recording();
+        self.signal_watched();
         // A member that takes no vote does not ask for one, unless it
         // promised nobody. One handed the leadership meanwhile is ticked
         // too: its first tick as leader comes once `Pace::wrote` or
@@ -1631,7 +1642,10 @@ impl Group {
                 self.pace.forget_leader();
                 false
             }
-            Request::Snapshot { .. } | Request::Written { .. } | Request::ReadIndex => false,
+            Request::Snapshot { .. }
+            | Request::Written { .. }
+            | Request::ReadIndex
+            | Request::Watched => false,
         };
         if held && asks {
             // Dropped, not refused: the candidate asks again at its next
@@ -1770,6 +1784,10 @@ impl Group {
                     None => None,
                 };
                 Ok(Reply::ReadIndex { index })
+            }
+            Request::Watched => {
+                self.mark_watched();
+                Ok(Reply::Watched)
             }
         }
     }
@@ -2442,7 +2460,9 @@ impl Group {
             CacheCommand::Put { request, .. }
             | CacheCommand::Delete { request, .. }
             | CacheCommand::Add { request, .. } => Some(*request),
-            CacheCommand::Expire { .. } | CacheCommand::Retire { .. } => None,
+            CacheCommand::Expire { .. } | CacheCommand::Retire { .. } | CacheCommand::Watched => {
+                None
+            }
         };
         self.cache_commit(vec![Unstamped { command, ttl }], timeout)
             .await?;
@@ -2492,6 +2512,7 @@ impl Group {
         keep: &dyn Fn(&str) -> bool,
     ) -> Option<(u64, Vec<(String, super::cache::Watched)>)> {
         let cache = self.cache.as_ref()?;
+        self.watch_signal.saw();
         let state = cache.read();
         Some((state.applied() + 1, state.watched_entries(keep)))
     }
@@ -2506,6 +2527,7 @@ impl Group {
         keep: &dyn Fn(&str) -> bool,
     ) -> Option<(u64, Option<Vec<super::cache::Change>>)> {
         let cache = self.cache.as_ref()?;
+        self.watch_signal.saw();
         let state = cache.read();
         Some((state.applied() + 1, state.recent_since(from, keep)))
     }
@@ -2514,8 +2536,89 @@ impl Group {
     /// window, so the client's resume can be replayed.
     pub(crate) fn cache_watch_ended(&self) {
         if let Some(cache) = &self.cache {
+            self.watch_signal.saw();
             cache.write().watch_ended((self.clock)());
         }
+    }
+
+    /// If a watch here was active since the applied state last held a
+    /// fresh mark, have one appended: this member's own when it leads, or
+    /// its leader's when asked. Asked again every [`MARK_RETRY_MICROS`]
+    /// until a mark is applied here, so a lost ask or a failover costs a
+    /// retry, never a member that silently stops recording. An unwatched
+    /// shard never gets past the first load.
+    fn signal_watched(&self) {
+        let Some(seen) = self.watch_signal.unmarked() else {
+            return;
+        };
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let now = (self.clock)();
+        let Some(wants) = cache.try_read().map(|state| state.wants_mark(now)) else {
+            return;
+        };
+        if !wants {
+            self.watch_signal.marked(seen);
+            return;
+        }
+        let asked_at = &self.watch_signal.asked_at;
+        let retry = asked_at
+            .load(Ordering::Relaxed)
+            .saturating_add(MARK_RETRY_MICROS);
+        if now < retry {
+            return;
+        }
+        asked_at.store(now, Ordering::Relaxed);
+        if self.leads() {
+            self.mark_watched();
+            return;
+        }
+        use openraft::async_runtime::watch::WatchReceiver;
+        let leader = self.raft.metrics().borrow_watched().current_leader.clone();
+        let Some(leader) = leader.filter(|leader| *leader != self.member) else {
+            return;
+        };
+        let deadline = self.pace.timers.peer_deadline;
+        let request = RaftRequest {
+            group: self.id.clone(),
+            to: leader,
+            beat: Beat::default(),
+            report: Ask::Nothing,
+            deadline,
+            body: Request::Watched,
+        };
+        let transport = Arc::clone(&self.transport);
+        // A lost ask is asked again: the applied state shows no fresh mark.
+        self.runtime.spawn(async move {
+            let _ = tokio::time::timeout(deadline, transport.send(request)).await;
+        });
+    }
+
+    /// Append a [`CacheCommand::Watched`] if this member leads with the
+    /// shard open and the last mark it applied keeps members recording for
+    /// less than a window more. One in flight at a time, so a watched
+    /// shard costs about one entry a window.
+    fn mark_watched(&self) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let now = (self.clock)();
+        if self.open_term().is_none() || !cache.read().wants_mark(now) {
+            return;
+        }
+        let last = self.marked_at.load(Ordering::Relaxed);
+        if last != 0 && now < last.saturating_add(MARK_RETRY_MICROS) {
+            return;
+        }
+        self.marked_at.store(now, Ordering::Relaxed);
+        let mark = vec![Unstamped {
+            command: CacheCommand::Watched,
+            ttl: 0,
+        }];
+        // Queued by the call; nothing waits on it. A mark that does not
+        // commit is asked for again.
+        drop(self.queue(propose::split_cache(mark)));
     }
 
     /// Free the changes a cache group kept for watches once its window has

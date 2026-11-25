@@ -63,6 +63,7 @@ async fn watched_machine(
     let watch = CacheWatch::new(
         Arc::clone(recorder) as Arc<dyn CacheObserver>,
         Arc::new(shard(N)),
+        Arc::default(),
     );
     let opened =
         super::super::super::machine::Machine::open(snapshots, ShardKind::Cache, None, Some(watch))
