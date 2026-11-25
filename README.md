@@ -85,8 +85,9 @@ cursor over it. A framed protocol
 (felix-wire) over QUIC streams carries all three, with explicit control over
 multiplexing, batching, and flow control.
 
-Shards are placed across brokers by the control plane, replicated by leader leases
-and log shipping, and survive losing a leader; a publish can be made to wait for a
+Shards are placed across brokers by the control plane, replicated, and survive
+losing a leader. On `main` each durable shard is one Raft group; the 0.7 releases
+replicate by leader leases and log shipping. Either way a publish can be made to wait for a
 quorum of the replica set before it is acknowledged.
 
 Two processes run a cluster: brokers, which hold the data and serve clients over
@@ -188,8 +189,9 @@ early to keep p99/p999 predictable.
 - Durable log-structured storage with segments, sparse indexes that are always
   rebuilt from the data, torn-tail repair, and a refusal to start on interior
   corruption
-- Replication with leader leases, `Leader` or `Quorum` acknowledgement, and
-  failover to a replica that holds the log
+- Replication with `Leader` or `Quorum` acknowledgement and failover to a
+  replica that holds the log: a Raft group per durable shard on `main`, leader
+  leases and log shipping in the 0.7 releases
 - A log-backed cache, routed to one owner per key and replicated
 - Consumer groups: poll, acknowledge, redeliver, bound the redelivery,
   dead-letter and redrive
