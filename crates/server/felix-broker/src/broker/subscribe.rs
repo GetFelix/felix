@@ -575,7 +575,8 @@ struct Position {
     /// The start reported to the subscriber, past generation-start records the
     /// log ends with when it asked for `latest`.
     joined: u64,
-    /// Where a reader of the history has everything that was in the stream.
+    /// Where a reader of the history has everything that was in the stream:
+    /// the tail, or on an engine's log the committed tail.
     live: u64,
 }
 
@@ -648,9 +649,15 @@ async fn resolve_position(
     };
     // Where a reader of the history has everything that was in the stream.
     // Reported past a trailing generation-start record, a reader that
-    // caught up would wait at it for an event that never comes.
+    // caught up would wait at it for an event that never comes. On an
+    // engine's log that is the committed tail: records past it reach the
+    // subscriber live once they commit, so they count as written after.
+    let edge = match bound {
+        ReadBound::Committed(mark) if stream_state.engine_log => mark.min(tail).max(requested),
+        _ => tail,
+    };
     let live = match &durable {
-        Some(log) => log.event_end(joined, tail).await?,
+        Some(log) => log.event_end(joined, edge).await?,
         None => tail,
     };
     Ok(Position {
@@ -815,10 +822,11 @@ pub struct JoinOffsets {
     /// `Latest`, just past the last event, so before any generation-start
     /// records the log ends with, and equal to `live_offset`.
     pub start_offset: u64,
-    /// The tail when the subscriber was registered, less any generation-start
-    /// records the log ended with (they carry no event), never below
-    /// `start_offset`. Records in `[start_offset, live_offset)` were already
-    /// written at join; every event from `live_offset` on was written after.
+    /// The tail when the subscriber was registered (on an engine's log, the
+    /// committed tail), less any generation-start records the log ended
+    /// with (they carry no event), never below `start_offset`. Records in
+    /// `[start_offset, live_offset)` were already written at join; every
+    /// event from `live_offset` on was written after.
     pub live_offset: u64,
 }
 

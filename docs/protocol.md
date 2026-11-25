@@ -377,7 +377,9 @@ registered: anything below it was already in the stream, anything from it on
 was written after, and nothing falls between. It leaves out generation-start
 records the log ends with (they hold an offset but never an event, so a reader
 waiting for the raw tail would wait forever), but is never below
-`start_offset`.
+`start_offset`. On a Raft shard the tail is the committed tail: an entry the
+leader holds but has not committed yet reaches the subscriber live once it
+commits, so it counts as written after.
 
 For `latest` the two are equal, and both stop short of those trailing records:
 on a log that holds events `0` and `1` and then two generation starts, `latest`

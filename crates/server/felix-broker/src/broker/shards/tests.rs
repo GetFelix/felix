@@ -152,7 +152,7 @@ mod engine_log {
     use crate::durable::StreamLog;
     use crate::{
         Broker, BrokerError, LogDelivery, ProposalCommitted, ProposalFailed, ReadBound, ReadBounds,
-        SequenceReuse, StreamHandle, StreamMetadata,
+        SequenceReuse, StartPosition, StreamHandle, StreamMetadata,
     };
 
     #[derive(Debug)]
@@ -341,6 +341,55 @@ mod engine_log {
             "{trimmed:?}"
         );
         assert_eq!(log.tail_offset().await.expect("tail"), 2, "nothing written");
+    }
+
+    /// **On a shard bounded by its commit, a subscription's live offset is
+    /// the committed tail, not the raw tail (#3129).** Records past the
+    /// commit reach the subscriber live once they commit, so a `Latest`
+    /// join reports `live_offset == start_offset`, and nothing below the
+    /// live offset arrives as a live event.
+    #[tokio::test]
+    async fn live_offset_stops_at_the_commit_not_the_raw_tail() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 5).await;
+        let (broker, bound) = broker(ReadBound::Committed(3)).await;
+        let handle = open(&broker, &log).await;
+        handle.deliver_from_log().await.expect("pass");
+
+        let join = |start| {
+            let broker = &broker;
+            async move {
+                let resumed = broker
+                    .subscribe_from("t1", "ns", "orders", 0, start)
+                    .await
+                    .expect("subscribe");
+                (resumed.join.expect("durable join"), resumed.subscription)
+            }
+        };
+        let (latest, subscription) = join(StartPosition::Latest).await;
+        assert_eq!((latest.start_offset, latest.live_offset), (3, 3));
+        let (earliest, _) = join(StartPosition::Earliest).await;
+        assert_eq!((earliest.start_offset, earliest.live_offset), (0, 3));
+        // Past the commit but inside the log: never below the start.
+        let (ahead, _) = join(StartPosition::Offset(4)).await;
+        assert_eq!((ahead.start_offset, ahead.live_offset), (4, 4));
+        // A bounded read reaches only as far as the commit without a subscriber.
+        let to = |end| broker.history_to("t1", "ns", "orders", 0, StartPosition::Earliest, end);
+        assert_eq!(
+            to(3).await.expect("history").map(|j| j.live_offset),
+            Some(3)
+        );
+        assert_eq!(to(5).await.expect("history"), None);
+
+        let (mut receiver, _guard) = subscription.into_parts();
+        *bound.0.lock() = ReadBound::Committed(5);
+        handle.deliver_from_log().await.expect("pass");
+        let (first, _, delivered) = batch(&mut receiver).await;
+        assert!(
+            first >= latest.live_offset,
+            "{first} arrived live below {latest:?}"
+        );
+        assert_eq!((first, delivered), (3, payloads(&["3", "4"])));
     }
 
     /// **What it holds survives this broker being deposed.** A batch joins
