@@ -17,6 +17,15 @@ const STEADY: Duration = Duration::from_secs(60);
 /// The longest a member that keeps stopping waits between reopens.
 const MAX_WAIT: Duration = Duration::from_secs(30);
 
+/// A copy here that a storage error stopped, kept until it rejoins a
+/// working group or its shard leaves this broker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoppedCopy {
+    /// The term the copy was at when it stopped.
+    pub(crate) term: u64,
+    pub(crate) error: String,
+}
+
 #[derive(Default)]
 pub(super) struct Restarts(HashMap<ShardKey, Restart>);
 

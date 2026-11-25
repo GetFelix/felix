@@ -78,6 +78,10 @@ pub enum Reason {
     /// Deliberately not `Local`: serving now would acknowledge a write against
     /// a log that is not yet recovered.
     NotReady,
+    /// This node's copy of a Raft shard was stopped by a storage error, with
+    /// the error. Retryable like [`Self::NotReady`]: another copy takes over,
+    /// or this one rejoins once it is reopened.
+    CopyStopped(String),
     /// This node's routing view is behind the caller's.
     Stale { have: u64, wanted: u64 },
     /// The shard is moving to another broker and has not cut over yet.
@@ -95,7 +99,7 @@ impl Reason {
         match self {
             Self::NotAssigned => wire::NOT_ASSIGNED,
             Self::OwnerUnavailable(_) => wire::OWNER_UNAVAILABLE,
-            Self::NotReady => wire::NOT_READY,
+            Self::NotReady | Self::CopyStopped(_) => wire::NOT_READY,
             Self::Stale { .. } => wire::STALE,
             Self::Moving => wire::MOVING,
             Self::RegionNotRoutable { .. } => wire::REGION_NOT_ROUTABLE,
@@ -109,6 +113,10 @@ impl std::fmt::Display for Reason {
             Self::NotAssigned => write!(f, "shard is not assigned to any broker"),
             Self::OwnerUnavailable(detail) => write!(f, "shard owner is unavailable: {detail}"),
             Self::NotReady => write!(f, "this broker is still opening the shard"),
+            Self::CopyStopped(error) => write!(
+                f,
+                "this broker's copy of the shard was stopped by a storage error: {error}"
+            ),
             Self::Stale { have, wanted } => {
                 write!(
                     f,

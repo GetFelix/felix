@@ -806,7 +806,7 @@ impl LogInner {
                 return;
             }
             tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
-            super::note_poisoned(&self.label, &reason);
+            super::note_poisoned(&self.label, &reason, self.config.raft_log);
             *failure = Some(reason);
             super::ANY_POISONED.store(true, Ordering::Release);
         }

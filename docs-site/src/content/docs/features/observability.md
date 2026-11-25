@@ -566,8 +566,8 @@ It turns true once the catalog is applied, every durable stream is recovered,
 and every listener is bound. A broker that cannot bind a port exits without
 ever reporting ready, so whatever started it sees a failed start, not a crash.
 
-`/ready` also turns false when a log is poisoned, which happens when a disk
-flush (an fsync) fails on it. The body has one line per poisoned log, with
+`/ready` also turns false when a hybrid log is poisoned, which happens when
+a disk flush (an fsync) fails on it. The body has one line per poisoned log, with
 its tenant and what stopped it:
 
 ```text
@@ -589,10 +589,15 @@ restarts on the same boot cuts a poisoned `OnCommit` log back to its last
 synced point and writes its state files again, but the reboot is still the
 safe path.
 
-For now one poisoned log makes the whole broker not ready, healthy shards
-included. The plan is for only that shard to stop, with its leader handing
-over to another copy and `/ready` staying 200
-([#2300](https://github.com/GetFelix/felix/issues/2300)).
+For now one poisoned hybrid log makes the whole broker not ready, healthy
+shards included.
+
+A poisoned Raft shard log stops only that shard's copy, and `/ready` stays
+200. Another copy takes over if this one led, the broker reopens the copy,
+and its other shards keep serving. Until the copy hears a leader again,
+`felix_broker_raft_shards_stopped_on_storage_error` counts it, `shard_inspect`
+shows the term and the error under `raft.stopped`, and a request for the
+shard on this broker is refused as `not_ready` with the error in the message.
 
 ## Distributed tracing
 
