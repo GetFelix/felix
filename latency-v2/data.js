@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795596006698,
+  "lastUpdate": 1795596405531,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87054,6 +87054,72 @@ window.BENCHMARK_DATA = {
             "range": "688.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 553.00\nmean: 851.20\nstdev: 688.23\ncv: 80.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ffd337858aceac8f3196aab77c53487dbba23ae3",
+          "message": "fix(sim): Raft simulator runs keep their blocking work off real threads (#3126) (#3150)\n\n* fix(sim): Raft simulator runs keep their blocking work off real threads (#3126)\n\nFour calls on paths every Raft simulation drives went straight to\ntokio's blocking pool and not through `felix_common::blocking::spawn`:\nthe log's index reservation on the append path, the `vouched-unsynced`\nmarker, the root gate at a member's start and the kept-copy scan when a\ngroup opens. One relaxed power-loss run of seed 1 made 38 such calls.\nWork on a real thread finishes in real time, so where it landed among\nthe simulated tasks depended on how fast the machine was, and a slower\nbuild such as the coverage one saw interleavings a plain build did not.\n\nThey now go through the seam, which runs them as tasks while a simulator\nhas its clock installed and on the pool otherwise. `run_seed` counts the\nthreads its runtime starts (on a current-thread runtime only the pool\nstarts any) and reports a run that started one as a finding.\n\nRefs #3126\n\nSpec-Unaffected: where blocking file work runs, on the pool or as a task under the simulator; no protocol step changes.\n\n* test(sim): a term missing from the final log says where it was read (#3126)\n\nThe finding \"opened term N, and the final log holds no entry of it\" gave\nno way to tell a blank entry lost from every disk from a log read off a\nleader that was behind. It now names the member the log was read from,\nthe term it led, and the members whose logs still hold an entry of the\nmissing term. docs/simulation.md says the check is a safety one, what the\nreal-thread guard catches, and that the crate's own whole-seed unit tests\nrun with `select!` unseeded, so the seed they name does not replay.\n\nRefs #3126\n\nSpec-Unaffected: simulator checks, docs and a changelog fragment only.",
+          "timestamp": "2026-11-25T08:38:08Z",
+          "tree_id": "1043c7bd5b0dd0f1b064b33bcac1922eb923c50e",
+          "url": "https://github.com/GetFelix/felix/commit/ffd337858aceac8f3196aab77c53487dbba23ae3"
+        },
+        "date": 1795596390868,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 151.00\nstdev: 1.87\ncv: 1.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 205.60\nstdev: 2.30\ncv: 1.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 259,
+            "range": "672.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 561.40\nstdev: 672.29\ncv: 119.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "11.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 204.20\nstdev: 11.78\ncv: 5.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "149.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 460.20\nstdev: 149.94\ncv: 32.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 590,
+            "range": "897.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 590.00\nmean: 1190.00\nstdev: 897.61\ncv: 75.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
