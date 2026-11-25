@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use super::*;
+use crate::cache::{CacheChange, CacheObserver};
 
 #[tokio::test]
 async fn cache_ttl_expiry() {
@@ -337,4 +338,75 @@ async fn forget_cache_drops_only_that_caches_entries() {
         cache.get("t1", "default", "users", 0, "k").await.unwrap(),
         Some(Bytes::from_static(b"v"))
     );
+}
+
+/// An observer that never hears anything, to offer to a store with no log.
+#[derive(Debug)]
+struct Deaf;
+
+impl CacheObserver for Deaf {
+    fn cache_changed(&self, _change: CacheChange) -> bool {
+        false
+    }
+}
+
+/// **A store with no log offers nothing that needs one**: no shard log, no
+/// applied offset, no expiry or index work, and it refuses a change observer,
+/// so no watch is ever served over offsets it cannot give. Shard lifecycle
+/// calls are harmless no-ops.
+#[tokio::test]
+async fn a_store_without_a_log_offers_nothing_that_needs_one() {
+    let cache = EphemeralCache::new();
+    cache
+        .put("t1", "ns", "c", 0, "k", Bytes::from_static(b"v"), None)
+        .await
+        .expect("put");
+    assert!(!cache.has_log());
+    assert!(cache.as_log_cache().is_none());
+    assert!(cache.shard_log("t1", "ns", "c", 0).await.is_none());
+    assert!(cache.shard_log_at("t1", "ns", "c", 0, 5).await.is_none());
+    assert!(cache.open_shards().is_empty());
+    assert_eq!(
+        cache
+            .applied_through("t1", "ns", "c", 0)
+            .await
+            .expect("applied"),
+        None
+    );
+    assert_eq!(
+        cache
+            .expire_due("t1", "ns", "c", 0, 100, &|| true)
+            .await
+            .expect("expire"),
+        0
+    );
+    assert!(
+        !cache.set_change_observer(std::sync::Arc::new(Deaf)),
+        "a store with no log must refuse to be watched"
+    );
+    cache.close_shard("t1", "ns", "c", 0).await.expect("close");
+    cache
+        .forget_index("t1", "ns", "c", 0)
+        .await
+        .expect("forget");
+    cache
+        .set_retention_hold("t1", "ns", "c", true)
+        .await
+        .expect("hold");
+    let err = cache
+        .live_entries("t1", "ns", "c", 0)
+        .await
+        .expect_err("no snapshot to begin a watch from");
+    assert!(matches!(err, crate::StorageError::Unsupported(_)), "{err}");
+    cache.shutdown().await.expect("shutdown");
+    assert_eq!(
+        cache.get("t1", "ns", "c", 0, "k").await.expect("get"),
+        Some(Bytes::from_static(b"v")),
+        "the no-ops leave the data alone"
+    );
+
+    // An observer that does not override them is always watching, and a
+    // reset reaches no one.
+    assert!(Deaf.watching());
+    Deaf.cache_reset("t1", "ns", "c", 0, 9);
 }
