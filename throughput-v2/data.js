@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795608771083,
+  "lastUpdate": 1795609083216,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69160,6 +69160,58 @@ window.BENCHMARK_DATA = {
             "range": "19826.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 929205.28\nmean: 921317.12\nstdev: 19826.79\ncv: 2.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "025e17b4e4b8004601236d81d448286d0890b6eb",
+          "message": "fix(broker): an in-memory stream's replay carries no offsets, and its shard keeps nothing on disk (#3136) (#3140)\n\n* fix(broker): an in-memory stream's replay carries no offsets, and its shard keeps nothing on disk (#3136)\n\nA replay of an in-memory stream wrote its ring backlog with the ring's\npositions as offsets, so a subscriber starting from Earliest saw offset 0\non a stream that has none. The subscribe handler now drops offsets and\nskips from the replay format when the stream has no log.\n\nThe shard lifecycle opened a stream log, its ballot, epochs and group logs\nfor every placement of a stream shard, in-memory or not. DurableShardStore\nnow skips may_lead, open and release for a stream the broker has\nregistered as in memory. A stream not registered yet still counts as\ndurable.\n\nCopies #3068's cluster pin for the takeover case.\n\nSpec-Unaffected: the lifecycle change only skips shards of in-memory streams, which no TLA spec models; durable shards are unchanged\n\n* fix(broker): fenced promotions, group operations and a late release open no log for an in-memory stream (#3136)\n\nThe promotion gate wrote term starts to the stream log and both group\nlogs of every shard it opened, and each group operation opened the\nstream log, so an in-memory stream still got a log on disk. A release\nthat followed the stream's delete created one too. The durable-direction\ntest now places a shard that only the lifecycle opens, and covers an\nunregistered stream and a store without a broker.\n\nSpec-Unaffected: no TLA spec models which shards keep a log on disk\n\n* fix(replication): an in-memory stream is not fenced and its group logs are not shipped (#3136)\n\nA promoted shard's fence opened the leader's stream log and had every\nreplica open its own, before the gate ever ran, so an in-memory stream\nstill got a log on each broker at a takeover. The fence now answers for\nsuch a shard as it does for a cache kept in memory: nothing to fence,\nopen on the lease.\n\nThe leader of an in-memory stream no longer labels its cursor and\ndead-letter logs with a generation, so a shipped copy could not be\nranked at the next promotion. They were shipped (the new test lands\nboth on a follower without the change), so they now stay on the leader,\nas the stream's records do.\n\nSpec-Unaffected: the fence and group-log shipping are unchanged for every shard that has a log; no TLA spec models an in-memory stream's shard",
+          "timestamp": "2026-11-25T12:10:47Z",
+          "tree_id": "5b05aa6b6c37a409acea5e5f1000c1ea767fd50a",
+          "url": "https://github.com/GetFelix/felix/commit/025e17b4e4b8004601236d81d448286d0890b6eb"
+        },
+        "date": 1795609082391,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 664503.1,
+            "range": "28277.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 664503.10\nmean: 655443.20\nstdev: 28277.97\ncv: 4.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 664503.1,
+            "range": "28277.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 664503.10\nmean: 655443.20\nstdev: 28277.97\ncv: 4.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158493.57,
+            "range": "2277.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158493.57\nmean: 157868.56\nstdev: 2277.87\ncv: 1.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1584935.72,
+            "range": "22778.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1584935.72\nmean: 1578685.66\nstdev: 22778.72\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
