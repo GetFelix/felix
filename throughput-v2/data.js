@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795607075834,
+  "lastUpdate": 1795607969988,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69004,6 +69004,58 @@ window.BENCHMARK_DATA = {
             "range": "51528.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1599962.24\nmean: 1578285.51\nstdev: 51528.69\ncv: 3.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a099a7a482b9afebd21bf65f3e6b4d0da5be80a",
+          "message": "build(deps): bump the cargo-minor-and-patch group across 1 directory with 5 updates (#3162)\n\nBumps the cargo-minor-and-patch group with 5 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [bytes](https://github.com/tokio-rs/bytes) | `1.12.1` | `1.12.2` |\n| [uuid](https://github.com/uuid-rs/uuid) | `1.29.2` | `1.29.3` |\n| [clap](https://github.com/clap-rs/clap) | `4.6.7` | `4.6.8` |\n| [clap_complete](https://github.com/clap-rs/clap) | `4.6.11` | `4.6.12` |\n| [clap_mangen](https://github.com/clap-rs/clap) | `0.3.3` | `0.3.4` |\n\n\n\nUpdates `bytes` from 1.12.1 to 1.12.2\n- [Release notes](https://github.com/tokio-rs/bytes/releases)\n- [Changelog](https://github.com/tokio-rs/bytes/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/tokio-rs/bytes/compare/v1.12.1...v1.12.2)\n\nUpdates `uuid` from 1.29.2 to 1.29.3\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.2...v1.29.3)\n\nUpdates `clap` from 4.6.7 to 4.6.8\n- [Release notes](https://github.com/clap-rs/clap/releases)\n- [Changelog](https://github.com/clap-rs/clap/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/clap-rs/clap/compare/clap_complete-v4.6.7...clap_complete-v4.6.8)\n\nUpdates `clap_complete` from 4.6.11 to 4.6.12\n- [Release notes](https://github.com/clap-rs/clap/releases)\n- [Changelog](https://github.com/clap-rs/clap/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/clap-rs/clap/compare/clap_complete-v4.6.11...clap_complete-v4.6.12)\n\nUpdates `clap_mangen` from 0.3.3 to 0.3.4\n- [Release notes](https://github.com/clap-rs/clap/releases)\n- [Changelog](https://github.com/clap-rs/clap/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/clap-rs/clap/compare/clap_mangen-v0.3.3...clap_mangen-v0.3.4)\n\n---\nupdated-dependencies:\n- dependency-name: bytes\n  dependency-version: 1.12.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: uuid\n  dependency-version: 1.29.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: clap\n  dependency-version: 4.6.8\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: clap_complete\n  dependency-version: 4.6.12\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: clap_mangen\n  dependency-version: 0.3.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-25T11:51:40Z",
+          "tree_id": "7e2db28d1a0cd9fd53ea6c2e23ab1ae0b14fc285",
+          "url": "https://github.com/GetFelix/felix/commit/4a099a7a482b9afebd21bf65f3e6b4d0da5be80a"
+        },
+        "date": 1795607968834,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340638.8,
+            "range": "18583.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340638.80\nmean: 349231.15\nstdev: 18583.17\ncv: 5.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340638.8,
+            "range": "18583.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340638.80\nmean: 349231.15\nstdev: 18583.17\ncv: 5.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78724.5,
+            "range": "3120.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78724.50\nmean: 77550.72\nstdev: 3120.48\ncv: 4.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 787244.99,
+            "range": "31204.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 787244.99\nmean: 775507.17\nstdev: 31204.80\ncv: 4.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
