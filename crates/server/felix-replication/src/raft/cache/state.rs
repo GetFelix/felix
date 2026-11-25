@@ -122,10 +122,11 @@ pub(crate) struct CacheState {
     recent: Option<Box<Recent>>,
     /// Until when, in the log's time, `recent` keeps recording.
     watched_until: u64,
-    /// Until when, in the log's time, the latest applied
-    /// [`CacheCommand::Watched`] asks every member to record. Derived from
-    /// the log like `recent`, and like it not in a snapshot.
-    marked_until: u64,
+    /// Until when, in the log's time, the applied
+    /// [`CacheCommand::Watched`] entries ask every member to record. A
+    /// function of the applied entries, so it is in the snapshot: a member
+    /// that opens from one inside a mark's life records from there.
+    pub(super) marked_until: u64,
 }
 
 /// A snapshot cut holds `base`, so apply writes to `delta` until the delta
@@ -141,6 +142,7 @@ struct Layered {
 /// Apply goes on meanwhile and does not change it.
 pub(crate) struct Cut {
     time: u64,
+    marked_until: u64,
     base: Arc<Tables>,
     /// Writes not yet folded into `base` when the cut was taken.
     delta: Option<Arc<Delta>>,
@@ -152,7 +154,7 @@ impl Cut {
             base: &self.base,
             delta: self.delta.as_deref(),
         };
-        super::snapshot::encode(self.time, maps)
+        super::snapshot::encode(self.time, self.marked_until, maps)
     }
 }
 
@@ -465,13 +467,14 @@ impl CacheState {
         {
             while self.fold(usize::MAX) {}
         }
-        let time = self.time;
+        let (time, marked_until) = (self.time, self.marked_until);
         match &self.layered {
             None => {
                 let base = Arc::new(std::mem::take(&mut self.tables));
                 self.next_expiry = None;
                 let cut = Cut {
                     time,
+                    marked_until,
                     base: Arc::clone(&base),
                     delta: None,
                 };
@@ -483,6 +486,7 @@ impl CacheState {
             }
             Some(layered) => Cut {
                 time,
+                marked_until,
                 base: Arc::clone(&layered.base),
                 delta: (!layered.delta.is_empty()).then(|| Arc::new(layered.delta.clone())),
             },
@@ -544,8 +548,14 @@ impl CacheState {
     }
 
     /// The state restored from a snapshot whose last entry is `index`.
+    /// Inside a mark's life it records from past `index`: nothing at or
+    /// below it can be replayed, everything above it is applied here.
     pub(crate) fn restored_through(&mut self, index: u64) {
         self.applied = index;
+        if self.recent.is_none() && self.time < self.marked_until {
+            self.watched_until = self.watched_until.max(self.marked_until);
+            self.recent = Some(Box::default());
+        }
         if let Some(recent) = &mut self.recent {
             recent.restart(index);
         }
@@ -783,6 +793,7 @@ impl PartialEq for CacheState {
             }
         };
         self.time == other.time
+            && self.marked_until == other.marked_until
             && ours.entries().eq(theirs.entries())
             && ours.expiring().eq(theirs.expiring())
             && ours.counters().eq(theirs.counters())

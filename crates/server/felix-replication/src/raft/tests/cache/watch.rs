@@ -790,3 +790,81 @@ async fn an_unwatched_shard_appends_no_mark() {
     }
     cluster.stop().await;
 }
+
+/// **A member that opens from a snapshot inside a mark's life records from
+/// past the snapshot's entry**, after an install and after a restart, so a
+/// resume above that floor is replayed and one at or below it resnapshots.
+/// A snapshot with no live mark starts no recording: an unwatched shard
+/// still pays nothing after either.
+#[tokio::test]
+async fn a_member_opening_inside_a_mark_records_past_its_snapshot() {
+    use super::super::super::cache::WINDOW_MICROS;
+    use openraft::storage::RaftStateMachine;
+    let recorder = Recorder::new();
+    recorder.watching.store(false, Ordering::Release);
+    for live in [true, false] {
+        let dir = tempdir().expect("dir");
+        let mut sent = CacheState::default();
+        sent.apply(3, 30, &CacheCommand::Watched);
+        // Without a live mark: a later entry stamped past its life.
+        let stamp = if live { 40 } else { 31 + 2 * WINDOW_MICROS };
+        sent.apply(5, stamp, &put("k", b"sent", 5));
+        let resumed = |cache: &super::super::super::machine::Cache| {
+            let state = cache.read();
+            (
+                state.recent_since(5, &|_| true).is_some(),
+                state
+                    .recent_since(6, &|_| true)
+                    .map(|kept| offsets_of(&kept)),
+            )
+        };
+        {
+            let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+            install(&mut machine, 5, &sent).await;
+            let opened = match live {
+                true => Some(vec![]),
+                false => None,
+            };
+            assert_eq!(resumed(&cache), (false, opened), "after the install");
+        }
+        let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+        // openraft applies the log above the snapshot again.
+        machine
+            .apply(entries(6, 7, |index| keyed(index, 2)))
+            .await
+            .expect("apply");
+        let kept = match live {
+            true => Some(vec![6, 7]),
+            false => None,
+        };
+        assert_eq!(resumed(&cache), (false, kept), "after the restart");
+    }
+}
+
+/// **A snapshot carries the mark's end, and two states differ by it**; a
+/// version 1 snapshot, which has none, reads as one with no live mark.
+#[test]
+fn a_snapshot_carries_the_mark() {
+    let mut marked = CacheState::default();
+    marked.apply(1, 10, &put("k", b"one", 1));
+    marked.apply(2, 20, &CacheCommand::Watched);
+    let mut unmarked = CacheState::default();
+    unmarked.apply(1, 10, &put("k", b"one", 1));
+    unmarked.apply(
+        2,
+        20,
+        &CacheCommand::Expire {
+            key: "k".into(),
+            version: 99,
+        },
+    );
+    assert_ne!(marked, unmarked, "the mark is state");
+    let bytes = marked.snapshot();
+    let restored = CacheState::restore(&bytes, true).expect("restore");
+    assert_eq!(restored, marked);
+    let mut old = bytes.to_vec();
+    old[0] = 1;
+    old.drain(9..17);
+    let restored = CacheState::restore(&Bytes::from(old), true).expect("version 1");
+    assert_eq!(restored, unmarked);
+}
