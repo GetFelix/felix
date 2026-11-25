@@ -1,0 +1,1 @@
+A client subscribing to a shard that answers `not_ready` now asks the other brokers in its book on the following attempts, instead of retrying only the broker it entered through. A redirect or a named leader is still followed at once, and the attempts and backoff are unchanged (#3091).

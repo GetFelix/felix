@@ -161,6 +161,11 @@ impl Client {
     /// majority. That is a moment, not an answer about the stream, so it and
     /// the other retryable refusals get the policy's attempts and backoff, as
     /// a publish does. A fatal refusal is returned at once.
+    ///
+    /// A broker that keeps answering `not_ready` must not pin the client to
+    /// it: each further `not_ready` moves the next attempt to the next broker
+    /// in the book, starting from the entry broker. A redirect or a named
+    /// leader is still followed at once, inside each attempt.
     pub(crate) async fn open_shard(
         &self,
         tenant_id: &str,
@@ -173,9 +178,11 @@ impl Client {
         let mut retrying = Retrying::default();
         let attempts = self.policy.attempts.max(1);
         let mut attempt = 0;
+        // Consecutive `not_ready` answers; picks which broker the next attempt asks.
+        let mut not_ready = 0;
         loop {
             let error = match self
-                .subscribe_shard_following_redirects(tenant_id, namespace, stream, shard, start)
+                .open_shard_once(tenant_id, namespace, stream, shard, start, not_ready)
                 .await
             {
                 Ok(opened) => return Ok(opened),
@@ -186,6 +193,11 @@ impl Client {
                 Next::Reroute => Duration::ZERO,
                 Next::Backoff { at_least } => at_least,
             };
+            if is_not_ready(&error) {
+                not_ready += 1;
+            } else {
+                not_ready = 0;
+            }
             attempt += 1;
             if attempt >= attempts {
                 return Err(error);
@@ -200,6 +212,45 @@ impl Client {
             }
             tokio::time::sleep(delay).await;
         }
+    }
+
+    /// One attempt of [`Self::open_shard`]: the entry broker after no
+    /// `not_ready`, otherwise the `not_ready`-th broker along from it in the
+    /// book, wrapping round. The book is the entry broker, then every other
+    /// endpoint in order.
+    async fn open_shard_once(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: Option<felix_wire::StartPosition>,
+        not_ready: usize,
+    ) -> Result<(Arc<Connection>, crate::Subscription)> {
+        let entry = self.client().await;
+        if not_ready == 0 {
+            return self
+                .subscribe_shard_via(entry, tenant_id, namespace, stream, shard, start)
+                .await;
+        }
+        let entry_addr = entry.dialled();
+        let mut book = vec![entry_addr];
+        book.extend(
+            self.endpoints()
+                .await
+                .into_iter()
+                .filter(|addr| *addr != entry_addr),
+        );
+        let addr = book[not_ready % book.len()];
+        let first = if addr == entry_addr {
+            entry
+        } else {
+            self.connect_to(addr)
+                .await
+                .with_context(|| format!("connect to {addr} to ask for shard {shard}"))?
+        };
+        self.subscribe_shard_via(first, tenant_id, namespace, stream, shard, start)
+            .await
     }
 
     /// One shard, following the cluster to whichever broker owns *that shard*.
@@ -448,4 +499,14 @@ impl Client {
         })
         .await
     }
+}
+
+/// Whether `error` is a broker saying the shard is still opening.
+fn is_not_ready(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::BrokerError>()
+        .is_some_and(|broker| {
+            broker.code == felix_wire::ErrorCode::ShardUnavailable
+                && broker.reason() == Some("not_ready")
+        })
 }
