@@ -831,10 +831,10 @@ async fn a_claim_survives_a_change_of_leader() {
     );
 }
 
-/// A poll hands out only what is below the commit bound it was given, so a
-/// record acknowledged before it commits waits for a later poll. That poll
-/// returns work straight after one that also did, and reissues nothing: what
-/// a test must not mistake for a second hand-out (#3122).
+/// A poll hands out only what is below the commit bound it was given, and
+/// reissues nothing: a record above the bound goes out on a later poll, once
+/// the bound covers it. A test must not mistake that later hand-out for a
+/// second one (#3122).
 #[tokio::test]
 async fn a_record_above_the_commit_bound_waits_for_a_later_poll() {
     let fx = fixture(5);
