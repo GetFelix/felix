@@ -4710,7 +4710,10 @@ wait ran out, otherwise `leadership_lost`), as a stream write is: the entry
 may commit under the next leader, and a retry there would redrive, delete
 or claim a second time. Claims are group entries
 too: a poll that hands records out, and an extension, writes a claim and
-answers once it applied. A leader that stops leading drops the shard's
+answers once it applied. A poll hands out only what this member had applied
+when it began. A `Leader` stream answers a publish before its commit, so
+the record can go out on a later poll than the first one after its ack.
+A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,
 each held for its full visibility again from then. Group writes are log entries, so they
 take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
