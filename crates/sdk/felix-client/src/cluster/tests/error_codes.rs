@@ -362,3 +362,69 @@ async fn a_deadline_ends_retries_that_the_attempt_budget_would_allow() -> Result
     assert!(err.downcast_ref::<BrokerError>().is_some() || format!("{err:#}").contains("refused"));
     Ok(())
 }
+
+/// **A broker that stays `not_ready` does not pin the subscribe.** The next
+/// attempts ask the other brokers in the book, and one that serves the shard
+/// ends the wait.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_subscribe_leaves_a_broker_that_stays_not_ready() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let stuck = StubBroker::start_with(server_config.clone(), |_| {
+        error(ErrorCode::ShardUnavailable, Some("not_ready"))
+    })?;
+    let serving = StubBroker::start_with(server_config, |_| Message::Subscribed {
+        subscription_id: 0,
+        start_offset: None,
+        live_offset: None,
+        queue_capacity: None,
+    })?;
+    let cluster = Arc::new(
+        Client::connect_with_policy(
+            &[stuck.addr, serving.addr],
+            "localhost",
+            build_client_config_with_overrides(cert, 1)?,
+            fast_policy(),
+        )
+        .await?,
+    );
+
+    cluster
+        .subscribe("t1", "default", "orders")
+        .await
+        .expect("the second broker serves the shard");
+
+    assert_eq!(serving.subscribes(), 1);
+    assert!(stuck.subscribes() <= 2, "not asked in a loop");
+    Ok(())
+}
+
+/// A shard no broker has opened is still given up on after the policy's
+/// attempts in total, however many brokers there are to ask.
+#[tokio::test]
+#[serial_test::serial]
+async fn rotating_on_not_ready_stays_within_the_attempts() -> Result<()> {
+    let (server_config, cert) = build_server_config()?;
+    let not_ready = || error(ErrorCode::ShardUnavailable, Some("not_ready"));
+    let a = StubBroker::start_with(server_config.clone(), move |_| not_ready())?;
+    let b = StubBroker::start_with(server_config, move |_| not_ready())?;
+    let cluster = Arc::new(
+        Client::connect_with_policy(
+            &[a.addr, b.addr],
+            "localhost",
+            build_client_config_with_overrides(cert, 1)?,
+            fast_policy(),
+        )
+        .await?,
+    );
+
+    cluster
+        .subscribe("t1", "default", "orders")
+        .await
+        .err()
+        .expect("nobody serves it");
+
+    assert_eq!(a.subscribes() + b.subscribes(), fast_policy().attempts);
+    assert!(a.subscribes() > 0 && b.subscribes() > 0, "both were asked");
+    Ok(())
+}
