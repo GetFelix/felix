@@ -6223,6 +6223,43 @@ up stops holding the floor. Such a write has no retry guarantee: a client that
 sends it again after an unknown outcome may apply it twice, as on the
 hybrid.
 
+### Cache entry and snapshot bytes
+
+Both are little-endian and start with a version byte
+(`raft/cache/record.rs`, `raft/cache/snapshot.rs`). A key is a four-byte
+length and its UTF-8 bytes. A member refuses an entry or a snapshot whose
+version or kind it does not know: an entry stops the member, as skipping
+it would leave its state unlike the others', and a snapshot is refused
+before it is stored.
+
+A cache entry is version 1, then a one-byte kind. A request is three
+eight-byte fields: producer, sequence and floor. A condition is a tag byte
+(0 none, 1 absent, 2 version) and an eight-byte version.
+
+| Kind | Name | After the kind |
+|---|---|---|
+| 0 | put | request, condition, expiry (8), key, then the value to the entry's end |
+| 1 | delete | request, condition (none or version), key |
+| 2 | expire | version (8), key |
+| 3 | add | request, delta (8, signed), key |
+| 4 | retire | producer (8), floor (8) |
+| 5 | watched | nothing |
+
+A cache snapshot is version 2:
+
+| Field | Size |
+|---|---|
+| version | 1 |
+| log's time | 8 |
+| end of the last watched entry's life, in the log's time (0 for none) | 8 |
+| value count, then per value: key, version (8), expiry (8), value length (4), value | 8 + each |
+| counter count, then per counter: key, sum (8, signed) | 8 + each |
+| producer count, then per producer: id (8), floor (8), answer count (8), then per answer: sequence (8), answer tag (1), answer value (8) | 8 + each |
+
+Version 1 is the same without the watched entry's end. This build still
+reads it, as a snapshot with no live watched entry, and writes only
+version 2.
+
 ### Serving a cache shard from its group
 
 A broker that runs Raft shards (`FELIX_SHARD_ENGINE=raft`) also runs every
