@@ -4,8 +4,9 @@
 //!
 //! Every fault a broker has to cooperate with is a file the broker was
 //! pointed at when it started (partition, clock, storage), so injecting is a
-//! write and healing a delete. Link faults need no cooperation at all: they
-//! are rules in the harness's own proxies.
+//! write and healing a delete. A write replaces the file by rename: the broker
+//! reads it while it runs, and must never see it half written. Link faults
+//! need no cooperation at all: they are rules in the harness's own proxies.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -82,7 +83,7 @@ impl Cluster {
                     }
                     clock.file_body()
                 };
-                std::fs::write(&path, content)
+                replace_file(&path, &content)
                     .with_context(|| format!("write the clock fault for {process:?}"))?;
                 if *process == Endpoint::ControlPlane {
                     self.follow_clock(&path)?;
@@ -178,7 +179,7 @@ impl Cluster {
                             }
                         };
                         if let Some(content) = content {
-                            std::fs::write(&path, content).with_context(|| {
+                            replace_file(&path, &content).with_context(|| {
                                 format!("write the clock fault for {process:?}")
                             })?;
                         }
@@ -621,7 +622,7 @@ impl Cluster {
             match refused.get(&node.node_id).filter(|peers| !peers.is_empty()) {
                 Some(peers) => {
                     let listed: Vec<&str> = peers.iter().map(String::as_str).collect();
-                    std::fs::write(&path, listed.join("\n"))
+                    replace_file(&path, &listed.join("\n"))
                         .with_context(|| format!("write the partition file for {}", node.node_id))?
                 }
                 None => remove_if_present(&path)?,
@@ -656,8 +657,7 @@ impl Cluster {
             disk.generation,
             disk.write_generation,
         );
-        std::fs::write(&path, body)
-            .with_context(|| format!("write the storage fault for {node_id}"))
+        replace_file(&path, &body).with_context(|| format!("write the storage fault for {node_id}"))
     }
 }
 
@@ -776,6 +776,18 @@ fn process_is_stopped(pid: u32) -> bool {
 /// nothing to do with what it is testing.
 fn await_partition_reread() {
     std::thread::sleep(PARTITION_REREAD);
+}
+
+/// Put `body` at `path` by rename, so a broker reading the file sees the old
+/// contents or the new and never the empty file between a truncate and a
+/// write. An empty partition file means "severed from nobody": one such
+/// reading and a cut-off leader hears the term it was cut off from (#3123).
+fn replace_file(path: &Path, body: &str) -> Result<()> {
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(".staged");
+    let staged = PathBuf::from(staged);
+    std::fs::write(&staged, body).with_context(|| format!("write {}", staged.display()))?;
+    std::fs::rename(&staged, path).with_context(|| format!("replace {}", path.display()))
 }
 
 fn remove_if_present(path: &Path) -> Result<()> {

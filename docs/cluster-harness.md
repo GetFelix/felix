@@ -310,6 +310,13 @@ An endpoint is a broker (`Endpoint::node(id)`) or the control plane. A fault
 naming a broker the cluster does not have, or a link fault on a cluster
 started without proxies, is an error rather than a no-op.
 
+The partition, clock and storage faults are files the broker re-reads while
+it runs. The harness replaces such a file by rename, so the broker reads the
+old contents or the new ones. Written in place, the file is empty for a
+moment, and an empty partition file severs nothing: a leader cut off from the
+group could hear the newer term in that moment, and a test of the cut would
+then be testing something else.
+
 `Suspend` signals the broker's process alone. Brokers start no children, so
 that is the whole of it, and they stay in the harness's process group so a
 Ctrl-C of the test still reaches them.
