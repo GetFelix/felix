@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795582340920,
+  "lastUpdate": 1795585074809,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86790,6 +86790,72 @@ window.BENCHMARK_DATA = {
             "range": "593.61",
             "unit": "us",
             "extra": "trials: 5\nmedian: 374.00\nmean: 630.60\nstdev: 593.61\ncv: 94.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a776705d894bf71448e44cc9077b5ddca11ba771",
+          "message": "feat(raft): a standalone durable broker runs each shard as a Raft group of one (#2986) (#3000)\n\n* feat(raft): Raft is the default shard engine (#2167)\n\nWith FELIX_SHARD_ENGINE unset, a control plane forms new clusters for\nRaft and a broker with a node id, internal listener and durable storage\nruns its durable stream shards on Raft. The broker service turns on the\nraft feature by default, so the release build has the engine. A broker\nthat cannot run Raft keeps the hybrid path and is not compared with the\ncontrol plane's engine unless it registers. FELIX_SHARD_ENGINE=hybrid is\ndeprecated and logs a warning. The cluster harness pins brokers to the\nhybrid so the hybrid tests keep running until deletion.\n\ndocs/hybrid-retirement.md is rewritten for a fresh 0.8: no bridge build,\nno shard_raft or hybrid_retired latch, deletion gated on the Raft gate's\nparity items, #2954 and perf against v0.7.0.\n\n* build(raft): the broker binary depends on openraft; gate test-only Raft items\n\nThe release build now has the raft feature, so the containment check no\nlonger lists felix-broker-service, and two items only tests use are\ncompiled only for tests, so the default build has no dead-code warnings.\n\n* chore: note the spec pairing for the Raft default\n\nSpec-Unaffected: the felix-replication change only compiles two test-only items under cfg(test/testing); the engine default changes configuration, not the protocol either engine runs.\n\n* fix(raft): a broker with a node id runs Raft or refuses to start\n\nA registering broker with FELIX_SHARD_ENGINE unset that could not run Raft\n(no durable storage, no internal listener, no raft feature) fell back to the\nhybrid engine and, without a data directory, skipped the comparison with the\ncontrol plane's engine. It now refuses to start and names the missing\nprerequisite, and every registering broker is compared with the recorded\nengine whether or not it keeps a data directory.\n\nA standalone broker still runs the hybrid path and warns, naming how to run\nRaft. The engine-mismatch refusal advises the prerequisite rather than the\ndeprecated hybrid setting, and the control plane's deprecation warning fires\nonly when the engine in effect is hybrid (for a Raft group, the recorded one).\n\ncompose.yaml and felix-cluster up stay on the hybrid path until keyed cache\nwatches work on Raft (#2792, #2985); the docs say so.\n\nSpec-Unaffected: startup configuration check and log lines; no replication or apply-path change\n\n* wip(raft): route standalone Raft shards through their group\n\n* feat(raft): a standalone durable broker runs each shard as a Raft group of one (#2986)\n\n* test(raft): standalone broker serving paths, docs, changelog (#2986)\n\n* fix(standalone): refuse to start on Raft over a data root the hybrid engine wrote (#2986)\n\n* Merge origin/main into feat/standalone-raft-2986\n\nThe standalone assignment fills the new raft_seed field (None).\n\n* feat(storage): record the storage id a relaxed crash minted\n\nA standalone broker re-forms its own shards only on durable evidence that a\ncopy was rotated by a relaxed crash. run_state::begin writes the new id to\nrelaxed-crash-id after the rotation; relaxed_crash_id reads it back only\nwhile it is still the directory's id, so a later restore or operator\nrotation voids it.\n\n* feat(storage): a group of one re-forms itself after a relaxed crash\n\nCopyRoot::reform_alone plans the next epoch of a single-voter group from\nits kept copies with the rule every re-form uses, records the plan, stops\nthe copy and starts it in the new epoch. It acts only while the root's\nrelaxed-crash record covers the copy's storage id and every kept copy of the\nnewest epoch was minted under an id a relaxed crash rotated away. A plan for\na copy of an older id, left by a second crash, is dropped and the group is\nplanned again above the reservation the first carried.\n\n* chore(demos): lockfiles pick up felix-storage's serde_json\n\nSpec-Unaffected: lockfiles only\n\n* feat(storage): a group of one's self re-form keeps every synced record\n\nThe plan vouches for each copy's whole log when the group's only broker\nre-forms it, instead of cutting at the saved commit, which is written at\nmost once a second. Paired with FelixRaftReform's Alone mode:\nFelixRaftReformAlone passes KeptLossBound, FelixRaftReformAloneCutToCommit\n(the old cut) violates it.\n\n* feat(standalone): re-form a group of one after a relaxed crash, before its member opens\n\n* test(standalone): a crash right after an operator rotation does not re-form\n\n* docs: a standalone broker re-forms itself after a relaxed crash\n\n* docs(formal): cite the alone re-form tests by name\n\n* test(raft): standalone re-forms start above every reservation, docs say a restored standalone volume can reuse offsets\n\nA standalone broker cannot tell a restored volume from a relaxed crash, so\nthe docs no longer claim a restore leaves no evidence. The alone tests now\nassert the new epoch starts above the reservation, and a broker test covers\na second Periodic crash after publishing in epoch 1.\n\nSpec-Unaffected: docs and tests only, no code change.\n\n* test(routing): #3036's unbridged-region tests pass the stream engine\n\n* chore(compose): run the compose broker as standalone Raft\n\nKeyed cache watches work on Raft now (#2792), so the hybrid pin goes.\n\n* fix(storage): record a relaxed crash before rotating its id\n\nA crash between the rotation and the evidence left every standalone shard held with no way out (#3048 item 3). The evidence now goes first, and a record cut short by a crash keeps its chain on the retry.\n\n* fix(raft): refuse a cache or counter op before its Raft member opens\n\nOn a Raft broker a cache or counter operation for a shard with no member open fell through to the hybrid stores. The acked write was never served, its directory kept the shard from opening on Raft, and a standalone restart refused the data root. It is now refused as not ready, and the hybrid cache and counter stores open no log by themselves on a Raft broker.\n\n* docs(raft): standalone commit cost per fsync mode; restored directories can reuse offsets\n\n* fix(raft): no store opens a durable shard's log by itself on a Raft broker\n\nA consumer-group seek or ack before the shard's member opened fell through to the hybrid's group store and opened a hybrid stream directory, so the acked write was lost and the shard could not open on Raft. DurableStorage now opens no stream log that is not open already, and the consumer-group and dead-letter stores open none, set with the cache and counter stores in one place (leave_stores_to_engines). Group ops answer the refusal as retryable not ready, and a forwarded cache or counter op on an owner with no member open is refused retryably.\n\n* fix(raft): refuse a group op on a durable stream before its member opens\n\nGuarding DurableStorage broke in-memory streams in a cluster: the hybrid lifecycle opens a stream log for those too. The group-op entry point now refuses a durable stream with no member open as retryable not ready, and stream storage is left unguarded.\n\n* fix(raft): keep an in-memory stream's group state open beside the engine\n\nLeaving the hybrid group stores to engines refused every stream's\nconsumer-group and dead-letter logs, including in-memory streams, which\nstill run on the hybrid lifecycle on a Raft broker. Their shards were\nnever served.\n\nThe group stores now refuse by default once left to engines and open\nonly a name registration keeps for the hybrid: an in-memory stream at\nits registered incarnation. A durable stream's registration, or a\ndelete, removes the name, so its group state stays with its engine.\n\nSpec-Unaffected: hybrid group-store open gating on the broker; no TLA spec models it",
+          "timestamp": "2026-11-25T05:31:24Z",
+          "tree_id": "85d970a90f937a681ff0ec1e65eb73e272d644e7",
+          "url": "https://github.com/GetFelix/felix/commit/a776705d894bf71448e44cc9077b5ddca11ba771"
+        },
+        "date": 1795585059703,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 125.60\nstdev: 0.89\ncv: 0.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 172,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 172.20\nstdev: 2.49\ncv: 1.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 229,
+            "range": "305.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 229.00\nmean: 440.40\nstdev: 305.57\ncv: 69.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 173,
+            "range": "4.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 174.80\nstdev: 4.02\ncv: 2.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 360,
+            "range": "127.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 360.00\nmean: 408.40\nstdev: 127.56\ncv: 31.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 521,
+            "range": "781.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 521.00\nmean: 1064.80\nstdev: 781.66\ncv: 73.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
