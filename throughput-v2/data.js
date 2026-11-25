@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795565027885,
+  "lastUpdate": 1795574079138,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68276,6 +68276,58 @@ window.BENCHMARK_DATA = {
             "range": "36345.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1554456.04\nmean: 1545092.01\nstdev: 36345.82\ncv: 2.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a64e61e92f9de67d1b926e80f9c50325d5ed3e55",
+          "message": "chore: build with Rust 1.100.0 (#3127)\n\n* chore: build with Rust 1.100.0\n\nMoves every toolchain pin (rust-toolchain.toml, workflows, Dockerfiles,\nrunner setup, docs) from 1.99.1 to 1.100.0. The MSRV stays 1.97.\n\nClippy 1.100's needless_bool fired on should_reset_throttle; the test\nhook moves into a cfg-split helper so the non-test build still compiles.\n\nSpec-Unaffected: toolchain pin and a lint fix only; no behaviour change.\n\n* chore: name the changelog fragment after #3127\n\n* fix(replication): the non-raft seal arm panics directly\n\nRust 1.100 makes Infallible an alias for `!`, so unreachable_seal() now\ndiverges and the seal_refusal call around it is unreachable code. Call\nunreachable! in the arm instead and drop the two helpers that only\nexisted to produce the Infallible. Same panic, same message.\n\nSpec-Unaffected: non-raft build only; behaviour unchanged.\n\n* test: find built binaries under cargo 1.100's build-dir layout\n\nCargo 1.100 moved test executables to build/<pkg>/<hash>/out/, so the\n\"exe dir, or its parent if deps\" lookup no longer reached the profile\ndirectory and every cluster test failed with felix-broker not found.\nfelix_cluster::built_binary walks up from the test executable and stops\nat the target root (CACHEDIR.TAG); the broker, felixctl, loadgen and\nlibfelix lookups use it. Also re-points three replica.rs line citations\nthat the seal-arm change shifted.\n\nSpec-Unaffected: test harness binary lookup and doc citations only.\n\n* test(capi): find libfelix in a sibling unit under cargo 1.100\n\nThe per-unit build-dir layout puts the cdylib in its own\nbuild/felix-capi/<hash>/out, beside the test binary's unit rather than\nabove it, so the coverage run (no plain cargo build to uplift it) could\nnot find it. Look in the package's sibling units first, newest wins.\n\nSpec-Unaffected: test lookup only.\n\n* ci(coverage): skip the line gate when the PR changes the toolchain\n\nA different rustc instruments code differently (1.100 counts about 30%\nfewer regions and 6,800 fewer lines than 1.99), so a PR that changes\nrust-toolchain.toml cannot be compared with main's baseline. Report the\npercentage as a notice instead; main's next run sets the new baseline.\n\nSpec-Unaffected: CI gate only.\n\n* ci(coverage): compare only the channel's value; never fail on a missing line\n\nSpec-Unaffected: CI gate only.",
+          "timestamp": "2026-11-25T02:27:54Z",
+          "tree_id": "547e4b1bd74310bbc2ad0449fd61b354e9379929",
+          "url": "https://github.com/GetFelix/felix/commit/a64e61e92f9de67d1b926e80f9c50325d5ed3e55"
+        },
+        "date": 1795574078392,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 602967.64,
+            "range": "55611.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 602967.64\nmean: 611792.62\nstdev: 55611.17\ncv: 9.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 602967.64,
+            "range": "55611.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 602967.64\nmean: 611792.62\nstdev: 55611.17\ncv: 9.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158970.79,
+            "range": "4642.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158970.79\nmean: 158054.33\nstdev: 4642.92\ncv: 2.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1589707.94,
+            "range": "46429.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1589707.94\nmean: 1580543.30\nstdev: 46429.19\ncv: 2.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
