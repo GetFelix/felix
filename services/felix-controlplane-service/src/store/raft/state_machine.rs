@@ -684,11 +684,18 @@ impl MetadataStateMachine {
                 tenant_id,
                 principal_ids,
                 revoked_at,
-            } => store
-                .revoke_principals(&tenant_id, principal_ids, revoked_at)
-                .await
-                .map(|()| MetaResponse::Unit)
-                .map_err(Into::into),
+                assertions,
+            } => if assertions {
+                store
+                    .revoke_principals_explicitly(&tenant_id, principal_ids, revoked_at)
+                    .await
+            } else {
+                store
+                    .revoke_principals(&tenant_id, principal_ids, revoked_at)
+                    .await
+            }
+            .map(|()| MetaResponse::Unit)
+            .map_err(Into::into),
             MetaCommand::PurgeExpiredRefreshTokens { before_secs } => store
                 .purge_expired_refresh_tokens(before_secs)
                 .await

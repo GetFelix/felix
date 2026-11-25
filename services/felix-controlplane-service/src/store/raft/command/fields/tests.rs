@@ -528,6 +528,7 @@ fn exported() -> ExportedState {
             tenant_id: s("t"),
             principal_id: s("p"),
             revoked_at: 1,
+            assertions_revoked_at: Some(1),
         }],
         stream_tombstones: vec![crate::model::StreamTombstone {
             tenant_id: s("t"),
@@ -872,6 +873,7 @@ fn commands() -> Vec<MetaCommand> {
             tenant_id: s("t"),
             principal_ids: vec![s("p")],
             revoked_at: 1,
+            assertions: true,
         },
         MetaCommand::ChangeAuthAndRevoke {
             tenant_id: s("t"),

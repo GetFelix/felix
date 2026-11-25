@@ -614,21 +614,7 @@ pub async fn revoke_principal_refresh_tokens(
     if body.principal_id.trim().is_empty() {
         return Err(api_validation_error("principal_id must not be empty"));
     }
-    // The cutoff first: an exchange that stores a chain after the chains are
-    // ended below checks the cutoff again and ends its own. A 409 from it
-    // still ends the chains.
-    let cut =
-        crate::auth::revocation::revoke(&state, &tenant_id, vec![body.principal_id.clone()]).await;
-    let revoked = state
-        .store
-        .revoke_refresh_tokens_for_principal(&tenant_id, &body.principal_id)
-        .await
-        .map_err(|err| api_internal("failed to revoke refresh tokens", &err))?;
-    metrics::counter!("felix_refresh_tokens_revoked_total").increment(revoked);
-    cut.map_err(|err| match err {
-        StoreError::Conflict(what) => api_conflict("conflict", &what),
-        err => api_internal("failed to revoke the principal's sessions", &err),
-    })?;
+    let revoked = cut_off(&state, &tenant_id, &body.principal_id).await?;
     tracing::info!(
         tenant_id = %tenant_id,
         principal_id = %body.principal_id,
@@ -636,6 +622,41 @@ pub async fn revoke_principal_refresh_tokens(
         "revoked a principal's refresh tokens",
     );
     Ok(Json(RevokeRefreshTokensResponse { revoked }))
+}
+
+/// End `principal_id`'s refresh chains and revoke it explicitly, answering
+/// how many chains ended.
+///
+/// The cutoff first: an exchange that stores a chain after the chains are
+/// ended checks the cutoff again and ends its own. In the other order, a
+/// chain stored between the two writes would see no cutoff and outlive the
+/// revocation. A 409 from the cutoff still ends the chains.
+pub(crate) async fn cut_off(
+    state: &AppState,
+    tenant_id: &str,
+    principal_id: &str,
+) -> Result<u64, ApiError> {
+    let cut = crate::auth::revocation::revoke_explicitly(
+        state,
+        tenant_id,
+        vec![principal_id.to_string()],
+    )
+    .await;
+    #[cfg(test)]
+    if let Ok(between) = tests::BETWEEN_CUTOFF_AND_CHAINS.try_with(Clone::clone) {
+        between().await;
+    }
+    let revoked = state
+        .store
+        .revoke_refresh_tokens_for_principal(tenant_id, principal_id)
+        .await
+        .map_err(|err| api_internal("failed to revoke refresh tokens", &err))?;
+    metrics::counter!("felix_refresh_tokens_revoked_total").increment(revoked);
+    cut.map_err(|err| match err {
+        StoreError::Conflict(what) => api_conflict("conflict", &what),
+        err => api_internal("failed to revoke the principal's sessions", &err),
+    })?;
+    Ok(revoked)
 }
 
 /// Revoke `principal_ids` as of now.
@@ -737,4 +758,4 @@ fn policy_in_scope(policy: &PolicyRule, scopes: &[ParsedObject], tenant_id: &str
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

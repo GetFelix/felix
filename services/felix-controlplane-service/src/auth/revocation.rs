@@ -38,6 +38,11 @@ pub struct PrincipalRevocation {
     pub principal_id: String,
     /// Seconds since the epoch. Tokens issued at or before it are revoked.
     pub revoked_at: i64,
+    /// Set only by an explicit revocation, never by an RBAC edit: an IdP
+    /// token of the principal issued at or before it, plus the IdP clock
+    /// skew, is refused at exchange. Seconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertions_revoked_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -78,8 +83,9 @@ pub(crate) fn reached_by(groupings: &[GroupingRule], subject: &str) -> Vec<Strin
     reached.into_iter().map(str::to_string).collect()
 }
 
-/// Revoke `principal_ids` of `tenant_id` as of now.
-pub(crate) async fn revoke(
+/// Revoke `principal_ids` of `tenant_id` as of now, explicitly: their IdP
+/// tokens issued until now stop exchanging too.
+pub(crate) async fn revoke_explicitly(
     state: &AppState,
     tenant_id: &str,
     principal_ids: Vec<String>,
@@ -87,27 +93,27 @@ pub(crate) async fn revoke(
     let count = principal_ids.len() as u64;
     state
         .store
-        .revoke_principals(tenant_id, principal_ids, crate::auth::refresh::now_secs())
+        .revoke_principals_explicitly(tenant_id, principal_ids, crate::auth::refresh::now_secs())
         .await?;
     metrics::counter!("felix_principal_revocations_total").increment(count);
     Ok(())
 }
 
-/// `principal_id`'s revocation cutoff, counting the whole tenant's.
-pub(crate) async fn cutoff(
+/// Both of `principal_id`'s cutoffs, counting the whole tenant's.
+pub(crate) async fn cutoffs(
     state: &AppState,
     tenant_id: &str,
     principal_id: &str,
-) -> Result<Option<i64>, ApiError> {
+) -> Result<crate::store::PrincipalCutoffs, ApiError> {
     state
         .store
-        .principal_revoked_at(tenant_id, principal_id)
+        .principal_cutoffs(tenant_id, principal_id)
         .await
         .map_err(|err| api_internal("failed to load revocations", &err))
 }
 
 /// Whether an IdP token issued at `issued_at` predates `revoked_at`, its
-/// principal's cutoff, and so must not be exchanged.
+/// principal's assertion cutoff, and so must not be exchanged.
 ///
 /// The cutoff is a control-plane clock reading and `issued_at` an IdP's, so
 /// `skew_secs` is added to the cutoff: an IdP clock running ahead would

@@ -385,6 +385,7 @@
 0 import_state.state.placement_holder
 0 import_state.state.placement_token
 7 import_state.state.principal_revocations
+53 import_state.state.principal_revocations[].assertions_revoked_at
 7 import_state.state.principal_revocations[].principal_id
 7 import_state.state.principal_revocations[].revoked_at
 7 import_state.state.principal_revocations[].seq
@@ -874,6 +875,7 @@
 1 retire_signing_key.kid
 1 retire_signing_key.tenant_id
 7 revoke_principals
+53 revoke_principals.assertions
 7 revoke_principals.principal_ids
 7 revoke_principals.revoked_at
 7 revoke_principals.tenant_id
@@ -1073,6 +1075,7 @@
 0 snapshot.state.placement_holder
 0 snapshot.state.placement_token
 7 snapshot.state.principal_revocations
+53 snapshot.state.principal_revocations[].assertions_revoked_at
 7 snapshot.state.principal_revocations[].principal_id
 7 snapshot.state.principal_revocations[].revoked_at
 7 snapshot.state.principal_revocations[].seq

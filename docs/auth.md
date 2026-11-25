@@ -260,8 +260,8 @@ Example:
    - `exp/nbf` with clock skew
    - `iat` is present, a number, and not later than now plus the clock skew
    - `aud` matches configured audiences
-   - `iat` is after the principal's revocation cutoff plus the clock skew,
-     if it has one (see [Revoking a principal](#revoking-a-principal))
+   - `iat` is after the principal's last explicit revocation plus the clock
+     skew, if it has one (see [Revoking a principal](#revoking-a-principal))
 4) Control plane derives `principal_id` and loads RBAC policies/groupings for the tenant.
 5) Effective permissions are computed from Casbin and expanded for inheritance.
 6) Optional request filters reduce the permission set. `requested` keeps only
@@ -539,21 +539,31 @@ control plane holds a mint that falls in the same second as a revocation of
 its principal until that second has passed (at most two seconds, for clock
 skew between members).
 
-`/token/exchange` refuses, with `401`, an IdP token whose `iat` is at or before
-its principal's cutoff plus the IdP clock skew (60 s). A revocation therefore
-ends what the IdP issued before it, not only what Felix did: an IdP token
-taken before the revocation, even one with time left, mints no access token
-and no refresh chain. To exchange again, the client needs an IdP token issued
-more than 60 s after the revocation. A client that keeps its refresh chain
-does not notice; one that re-exchanges a cached IdP token gets `401` until it
-asks the IdP for a new one. The same holds for a cutoff that an RBAC removal
-or an issuer change recorded. An IdP token without a numeric `iat` is never
-exchanged, whether or not its principal has a cutoff.
+There are two kinds of cutoff. Every revocation records the first, which
+ends the broker tokens Felix minted. Only `refresh-tokens/revoke` records the
+second, because only that call says the principal itself must be cut off:
+
+- An RBAC removal or an issuer change takes back rights, not the identity.
+  Exchange holds the mint until the cutoff's second has passed and mints a
+  token with the current rules, from any IdP token that is still valid.
+- After `refresh-tokens/revoke`, `/token/exchange` refuses, with `401`, an IdP
+  token whose `iat` is at or before the revocation plus the IdP clock skew
+  (60 s). An IdP token taken before the revocation, even one with time left,
+  mints no access token and no refresh chain. To exchange again, the client
+  needs an IdP token issued more than 60 s after the revocation. With
+  `"principal_id": "*"` this holds for every principal of the tenant.
+
+An IdP token without a numeric `iat` is never exchanged, whether or not its
+principal has a cutoff.
 
 An exchange checks the cutoff again once its refresh token is stored, and ends
 that chain if a revocation landed in between. `refresh-tokens/revoke` records
 the cutoff before it ends the principal's chains, so a chain an exchange
 stores after them is caught by that second check.
+
+Under Raft the second kind needs every member at metadata version 53. Below
+it, `refresh-tokens/revoke` records only the first, as older builds do, and
+an exchange from an IdP token issued before it still succeeds.
 
 `/token/delegate` refuses a subject token issued at or
 before a revocation of its subject or of the caller, and a caller whose own
@@ -605,11 +615,11 @@ leader predates that read, a member reads its own state, and its apply lag
 adds to the window below.
 
 An IdP's `iat` is the IdP's clock, not a member's. The 60 s skew is added to
-the cutoff, not taken off it: an IdP clock up to 60 s ahead of the member that
-took the revocation would otherwise stamp a token issued before the revocation
-with an `iat` after it. Erring this way costs a fresh login up to 60 s of
-`401`s after a revocation; erring the other way would let a token from before
-it through.
+an explicit revocation's cutoff, not taken off it: an IdP clock up to 60 s
+ahead of the member that took the revocation would otherwise stamp a token
+issued before the revocation with an `iat` after it. Erring this way costs a
+fresh login up to 60 s of `401`s after an explicit revocation; erring the
+other way would let a token from before it through.
 
 That leaves clock skew between members. A token minted just before a revocation, on a member
 whose clock runs `d` seconds ahead of the member that took the revocation, can

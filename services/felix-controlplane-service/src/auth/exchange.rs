@@ -231,8 +231,8 @@ const ASSERTION_REVOKED: &str = "the token was issued before its principal was r
 
 /// [`mint_for_principal`] on the strength of an IdP token issued at
 /// `issued_at`. Refused with `401` when that is at or before the principal's
-/// revocation cutoff plus the allowed clock skew, both before minting and
-/// again once the refresh token is stored.
+/// assertion cutoff (an explicit revocation) plus the allowed clock skew,
+/// both before minting and again once the refresh token is stored.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn mint_for_assertion(
     state: &AppState,
@@ -312,15 +312,18 @@ pub(crate) async fn mint_for_assertion(
     }
 
     let skew = state.oidc_validator.clock_skew_seconds();
-    let cutoff = crate::auth::revocation::cutoff(state, &tenant_id, principal_id).await?;
+    // Only an explicit revocation refuses the IdP token. An RBAC edit's
+    // cutoff ends what Felix minted under the old rules, and the token
+    // minted here carries the current ones.
+    let cutoffs = crate::auth::revocation::cutoffs(state, &tenant_id, principal_id).await?;
     if let Some(issued_at) = issued_at
-        && crate::auth::revocation::assertion_revoked(issued_at, cutoff, skew)
+        && crate::auth::revocation::assertion_revoked(issued_at, cutoffs.assertions, skew)
     {
         return Err(refused(Refusal::InvalidToken, ASSERTION_REVOKED));
     }
     // Token times are whole seconds, and the cutoff may come from a member
     // whose clock is ahead: the token minted here must carry an `iat` after it.
-    crate::auth::revocation::wait_past(cutoff).await;
+    crate::auth::revocation::wait_past(cutoffs.tokens).await;
     let ttl = access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,
@@ -363,7 +366,7 @@ pub(crate) async fn mint_for_assertion(
     if let Ok(revoked_at) = tests::REVOKE_AFTER_STORE.try_with(|at| *at) {
         state
             .store
-            .revoke_principals(&tenant_id, vec![principal_id.to_string()], revoked_at)
+            .revoke_principals_explicitly(&tenant_id, vec![principal_id.to_string()], revoked_at)
             .await
             .expect("revoke");
     }
@@ -371,8 +374,8 @@ pub(crate) async fn mint_for_assertion(
     // the principal's chains, and missed this one. Revoking writes the cutoff
     // before it ends chains, so a chain stored after that sees it here.
     if let Some(issued_at) = issued_at {
-        let cutoff = crate::auth::revocation::cutoff(state, &tenant_id, principal_id).await?;
-        if crate::auth::revocation::assertion_revoked(issued_at, cutoff, skew) {
+        let cutoffs = crate::auth::revocation::cutoffs(state, &tenant_id, principal_id).await?;
+        if crate::auth::revocation::assertion_revoked(issued_at, cutoffs.assertions, skew) {
             state
                 .store
                 .revoke_refresh_family(&tenant_id, &family_id)

@@ -481,12 +481,14 @@ sequenceDiagram
     C->>B: Auth with a token minted after the cutoff
 ```
 
-A revocation also ends what the IdP issued before it. `/token/exchange`
-refuses, with `401`, an IdP token whose `iat` is at or before the cutoff plus
-the 60 s IdP clock skew, so a token taken before the revocation mints neither
-an access token nor a refresh chain, however long it has left. A client that
-re-exchanges after a revocation needs an IdP token issued more than 60 s after
-it. A refresh chain from after the cutoff is not affected.
+`refresh-tokens/revoke` also ends what the IdP issued before it.
+`/token/exchange` then refuses, with `401`, an IdP token of that principal
+whose `iat` is at or before the revocation plus the 60 s IdP clock skew, so a
+token taken before the revocation mints neither an access token nor a refresh
+chain, however long it has left. To exchange again, the client needs an IdP
+token issued more than 60 s after the revocation. A revocation from an RBAC
+edit or an issuer change does not do this: it takes back rights, not the
+identity, so the next exchange mints a token with the current rules.
 
 A gateway that is revoked, or loses `token.delegate`, can no longer bind or
 delegate user tokens with a `felix-controlplane` token minted before that,

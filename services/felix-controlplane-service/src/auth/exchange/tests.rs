@@ -857,16 +857,16 @@ async fn live_chains(state: &AppState) -> u64 {
         .expect("count")
 }
 
-/// **An IdP token issued before a revocation of its principal does not
-/// exchange.** Neither a token nor a refresh chain comes out of it, however
-/// long the IdP token has left.
+/// **An IdP token issued before an explicit revocation of its principal does
+/// not exchange.** Neither a token nor a refresh chain comes out of it,
+/// however long the IdP token has left.
 #[tokio::test]
 async fn an_idp_token_issued_before_a_revocation_is_refused() {
     let (state, _keys) = revocable(60).await;
     let revoked_at = crate::auth::refresh::now_secs();
     state
         .store
-        .revoke_principals("t1", vec!["p:user".into()], revoked_at)
+        .revoke_principals_explicitly("t1", vec!["p:user".into()], revoked_at)
         .await
         .expect("revoke");
 
@@ -879,11 +879,11 @@ async fn an_idp_token_issued_before_a_revocation_is_refused() {
     }
     assert_eq!(live_chains(&state).await, 0);
 
-    // A tenant-wide revocation counts too.
+    // An explicit revocation of the whole tenant counts too.
     let (state, _keys) = revocable(60).await;
     state
         .store
-        .revoke_principals(
+        .revoke_principals_explicitly(
             "t1",
             vec![crate::auth::revocation::ALL_PRINCIPALS.into()],
             revoked_at,
@@ -909,12 +909,80 @@ async fn an_idp_token_issued_past_the_cutoff_and_skew_exchanges() {
     let revoked_at = now - 120;
     state
         .store
-        .revoke_principals("t1", vec!["p:user".into()], revoked_at)
+        .revoke_principals_explicitly("t1", vec!["p:user".into()], revoked_at)
         .await
         .expect("revoke");
     exchange_issued_at(&state, revoked_at + 61)
         .await
         .expect("issued past the cutoff and the skew");
+}
+
+/// **An RBAC edit's cutoff does not refuse the IdP token.** It ends what Felix
+/// minted under the old rules; an exchange of an IdP token from before it
+/// waits out the second and mints under the current rules.
+#[tokio::test]
+async fn an_rbac_cutoff_waits_and_mints_from_an_older_idp_token() {
+    for principal_id in ["p:user", crate::auth::revocation::ALL_PRINCIPALS] {
+        let (state, keys) = revocable(60).await;
+        let revoked_at = crate::auth::refresh::now_secs();
+        state
+            .store
+            .revoke_principals("t1", vec![principal_id.into()], revoked_at)
+            .await
+            .expect("revoke");
+        let minted = exchange_issued_at(&state, revoked_at - 600)
+            .await
+            .unwrap_or_else(|err| panic!("refused under {principal_id}: {}", err.status));
+        let claims = crate::auth::felix_token::verify_token(&keys, "t1", &minted.felix_token, 0)
+            .expect("verify");
+        assert!(
+            claims.iat > revoked_at,
+            "minted at {} under a cutoff of {revoked_at}",
+            claims.iat
+        );
+    }
+}
+
+/// With both kinds on one principal, the explicit one decides: an IdP token
+/// from before it is refused, one from between it and a later RBAC edit
+/// exchanges.
+#[tokio::test]
+async fn an_explicit_cutoff_refuses_under_an_rbac_one_too() {
+    let (state, _keys) = revocable(60).await;
+    let now = crate::auth::refresh::now_secs();
+    state
+        .store
+        .revoke_principals_explicitly("t1", vec!["p:user".into()], now - 200)
+        .await
+        .expect("explicit");
+    state
+        .store
+        .revoke_principals("t1", vec!["p:user".into()], now)
+        .await
+        .expect("rbac");
+    let err = exchange_issued_at(&state, now - 150)
+        .await
+        .expect_err("refused");
+    assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
+    exchange_issued_at(&state, now - 100)
+        .await
+        .expect("issued past the explicit cutoff");
+
+    // The other order: an RBAC edit does not lower the explicit cutoff.
+    state
+        .store
+        .revoke_principals_explicitly("t1", vec!["p:user".into()], now)
+        .await
+        .expect("explicit");
+    state
+        .store
+        .revoke_principals("t1", vec!["p:user".into()], now - 300)
+        .await
+        .expect("rbac");
+    let err = exchange_issued_at(&state, now - 1)
+        .await
+        .expect_err("refused");
+    assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
 }
 
 /// With no skew, an IdP token issued in the second after a revocation made
@@ -926,7 +994,7 @@ async fn a_mint_in_the_second_of_a_revocation_waits_it_out() {
     let revoked_at = crate::auth::refresh::now_secs();
     state
         .store
-        .revoke_principals("t1", vec!["p:user".into()], revoked_at)
+        .revoke_principals_explicitly("t1", vec!["p:user".into()], revoked_at)
         .await
         .expect("revoke");
     let minted = exchange_issued_at(&state, revoked_at + 1)
@@ -953,5 +1021,37 @@ async fn a_revocation_during_an_exchange_ends_its_chain() {
         .await
         .expect_err("refused");
     assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
+    assert_eq!(live_chains(&state).await, 0);
+}
+
+/// **`refresh-tokens/revoke` writes the cutoff before it ends chains.** An
+/// exchange that lands between the two writes is refused; in the other
+/// order it would store a chain after they were ended, see no cutoff yet,
+/// and keep it.
+#[tokio::test]
+async fn an_exchange_between_the_revoke_writes_keeps_no_chain() {
+    let (state, _keys) = revocable(60).await;
+    let issued_at = crate::auth::refresh::now_secs() - 1;
+    let exchanged = Arc::new(std::sync::Mutex::new(None));
+    let between: crate::auth::admin::tests::Between = {
+        let (state, exchanged) = (state.clone(), exchanged.clone());
+        Arc::new(move || {
+            let (state, exchanged) = (state.clone(), exchanged.clone());
+            Box::pin(async move {
+                let status = exchange_issued_at(&state, issued_at)
+                    .await
+                    .map_or_else(|err| err.status, |_| axum::http::StatusCode::OK);
+                *exchanged.lock().expect("lock") = Some(status);
+            })
+        })
+    };
+    crate::auth::admin::tests::BETWEEN_CUTOFF_AND_CHAINS
+        .scope(between, crate::auth::admin::cut_off(&state, "t1", "p:user"))
+        .await
+        .expect("cut off");
+    assert_eq!(
+        *exchanged.lock().expect("lock"),
+        Some(axum::http::StatusCode::UNAUTHORIZED)
+    );
     assert_eq!(live_chains(&state).await, 0);
 }

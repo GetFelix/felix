@@ -5525,3 +5525,45 @@ async fn a_member_that_does_not_lead_refuses_an_import() {
     );
     assert!(inner.is_unused().await, "a follower wrote the import");
 }
+
+/// **Below level 53 an explicit revocation is the one older builds write.**
+/// It still refuses the principal's broker tokens, and records no assertion
+/// cutoff a member below the level would drop. At the level it records one.
+#[tokio::test]
+async fn an_explicit_revocation_keeps_its_assertion_cutoff_for_its_level() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), ASSERTION_CUTOFF_LEVEL - 1).await;
+    store
+        .revoke_principals_explicitly("t1", vec!["alice".into()], 100)
+        .await
+        .expect("revoke below the level");
+    assert_eq!(
+        store.principal_cutoffs("t1", "alice").await.expect("read"),
+        crate::store::PrincipalCutoffs {
+            tokens: Some(100),
+            assertions: None,
+        }
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        store
+            .revoke_principals_explicitly("t1", vec!["alice".into()], 200)
+            .await
+            .expect("revoke");
+        let cutoffs = store.principal_cutoffs("t1", "alice").await.expect("read");
+        if cutoffs.assertions == Some(200) {
+            assert_eq!(cutoffs.tokens, Some(200));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no assertion cutoff once every member reported the level: {cutoffs:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}

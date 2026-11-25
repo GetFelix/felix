@@ -97,8 +97,9 @@ MQTT as the `CONNECT` password.
   every listener.
 - **Revocation.** Revoking a principal, or removing a rule that reached it,
   ends what its tokens opened on every broker within about one sync interval
-  (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, 2 s by default). An IdP token issued
-  before the revocation, plus 60 s of clock skew, no longer exchanges.
+  (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, 2 s by default). After an explicit
+  revocation, an IdP token issued before it, plus 60 s of clock skew, no
+  longer exchanges.
 - **Unauthenticated work is cheap and bounded.** Until a stream
   authenticates, QUIC frames are capped (`FELIX_PREAUTH_MAX_FRAME_BYTES`),
   only a few streams per connection are read
