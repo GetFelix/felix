@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795596874357,
+  "lastUpdate": 1795601238017,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68692,6 +68692,58 @@ window.BENCHMARK_DATA = {
             "range": "38055.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1628772.89\nmean: 1645465.80\nstdev: 38055.12\ncv: 2.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3734bc5c0bea438199d582906f0bd28c85c6a6a5",
+          "message": "test(fixture): report ready only once every Raft shard is led by its placed leader (#3130) (#3148)\n\nThe broker that forms a Raft group wins its first term, then hands the\nleadership to the broker placement names, two groups at a time. Each\nhand-over closes its shard for an election, and a publish that lands in\none is refused as not ready. Cluster start only proves shard 0 takes a\nwrite and returns as soon as placement stops writing, so the fixture\ncould report ready with hand-overs still to come. A client suite's plain\nkeyed publish does not retry, so one landing on such a shard failed:\n`pubsub.c:5548 keyed publish 5 failed`, on key-5, the only key of the\neight that routes to shard 1, under 4 s after the fixture started.\n\n`Cluster::await_raft_leaders_placed` asks each shard's placed leader for\nits own member's view and waits until it leads, on two looks in a row.\nThe fixture calls it before it writes the fixture file. Nothing is\nwritten to any shard.\n\nThe C helper now prints the status and message of a refused keyed\npublish. The broker's answer comes through the callback, so the check's\n\"last error: none\" said nothing about it.\n\ndocs/per-shard-raft.md said the client retries a publish refused during\na hand-over. Only an at-least-once or idempotent publish is sent again.\n\nSpec-Unaffected: test harness readiness, a test diagnostic and a doc\nsentence; no broker or protocol behaviour changes.",
+          "timestamp": "2026-11-25T09:58:30Z",
+          "tree_id": "3b13885bc576759095cbf3f2777ecf8ac90584e4",
+          "url": "https://github.com/GetFelix/felix/commit/3734bc5c0bea438199d582906f0bd28c85c6a6a5"
+        },
+        "date": 1795601237332,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 368602.56,
+            "range": "13514.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368602.56\nmean: 361581.62\nstdev: 13514.58\ncv: 3.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 368602.56,
+            "range": "13514.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 368602.56\nmean: 361581.62\nstdev: 13514.58\ncv: 3.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81346.56,
+            "range": "971.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81346.56\nmean: 81341.78\nstdev: 971.91\ncv: 1.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813465.61,
+            "range": "9719.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813465.61\nmean: 813417.75\nstdev: 9719.16\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
