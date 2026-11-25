@@ -185,6 +185,10 @@ async fn the_feed_s_wake_is_handed_to_the_engine_behind() {
         fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
             Box::pin(async { true })
         }
+
+        fn elected_leader(&self, _key: &ShardKey) -> Option<String> {
+            None
+        }
     }
     let inner = Arc::new(Woken::default());
     let check = check_over(true, &[], Some(Arc::clone(&inner) as Arc<dyn EngineShards>)).await;

@@ -937,9 +937,7 @@ pub trait EngineShards: Send + Sync {
     /// filtered by whether this broker may forward there or knows its
     /// address, and never a hop through a broker that only knows the leader.
     /// `None` when no member here follows another broker.
-    fn elected_leader(&self, _key: &ShardKey) -> Option<String> {
-        None
-    }
+    fn elected_leader(&self, key: &ShardKey) -> Option<String>;
 
     /// Whether `key`'s subscribers and readers are served on this broker
     /// although it does not lead the shard: from the engine's log, up to

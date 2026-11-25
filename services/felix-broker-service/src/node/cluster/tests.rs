@@ -399,6 +399,10 @@ impl shard_routing::EngineShards for HoldsOne {
         Some(shard_routing::Dispatch::Local { generation: 7 })
     }
 
+    fn elected_leader(&self, key: &crate::shards::ShardKey) -> Option<String> {
+        (*key == self.0).then(|| "broker-b".to_string())
+    }
+
     fn serves_reads(&self, key: &crate::shards::ShardKey) -> bool {
         *key == self.0
     }
@@ -494,6 +498,11 @@ async fn the_backup_endpoint_sees_the_members_behind_the_engine_check() {
     assert!(router.engine_serves_reads(&key), "serves_reads");
     assert!(router.engine_leads_unheard(&key), "leads_unheard");
     assert!(router.engine_placed_elsewhere(&key), "placed_elsewhere");
+    assert_eq!(
+        router.engine_elected_leader(&key).as_deref(),
+        Some("broker-b"),
+        "elected_leader"
+    );
     assert_eq!(router.engine_backup_members().len(), 1, "backup_members");
 
     let offsets = crate::observability::backup::BackupOffsets {
