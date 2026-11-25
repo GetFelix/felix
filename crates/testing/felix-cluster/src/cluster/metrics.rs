@@ -311,6 +311,100 @@ impl Cluster {
         view.ok().and_then(|view| view.raft)
     }
 
+    /// Wait until every Raft shard is led by the broker placement names.
+    ///
+    /// The broker that forms a group wins its first term and then hands the
+    /// leadership to placement's broker, a few groups at a time. Each
+    /// hand-over closes its shard for an election, and a publish that lands
+    /// in one is refused as not ready. `Cluster::start` only proves shard 0
+    /// takes a write, so a caller that cannot retry, such as a client suite
+    /// in another language, waits here first (#3130).
+    ///
+    /// Nothing is written. Two looks in a row must agree, so a leader seen
+    /// between two elections does not count. Returns at once on the hybrid.
+    pub async fn await_raft_leaders_placed(&self, timeout: Duration) -> Result<()> {
+        if !self.raft() {
+            return Ok(());
+        }
+        let budget = wait::budget(timeout);
+        let deadline = Instant::now() + budget;
+        let mut last = None;
+        loop {
+            // A pass may still rename a leader; the wait then covers that
+            // hand-over too.
+            self.place_shards().await;
+            let why = match self.raft_leader_terms().await {
+                Ok(terms) if last.as_ref() == Some(&terms) => return Ok(()),
+                Ok(terms) => {
+                    last = Some(terms);
+                    "leaders seen once; looking again".to_string()
+                }
+                Err(short) => {
+                    last = None;
+                    short
+                }
+            };
+            if Instant::now() >= deadline {
+                bail!("not every Raft shard was led by its placed leader within {budget:?}; {why}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// The term each Raft shard's placed leader leads it in, by shard key, or
+    /// the first shard its placed leader does not lead yet.
+    async fn raft_leader_terms(&self) -> Result<std::collections::BTreeMap<String, u64>, String> {
+        use felix_client::ShardKind;
+        let owners = self
+            .shard_owners()
+            .await
+            .map_err(|err| format!("could not read the assignments: {err:#}"))?;
+        // An in-memory stream has no log for a group to run.
+        let streams = self
+            .config
+            .streams
+            .iter()
+            .filter(|spec| spec.durable)
+            .map(|spec| ("stream", ShardKind::Stream, &spec.name, spec.shards));
+        let caches = self
+            .config
+            .caches
+            .iter()
+            .map(|spec| ("cache", ShardKind::Cache, &spec.name, spec.shards));
+        let mut clients = std::collections::HashMap::new();
+        let mut terms = std::collections::BTreeMap::new();
+        for (label, kind, name, shards) in streams.chain(caches) {
+            for shard in 0..shards {
+                let key = format!(
+                    "{label}/{}/{}/{name}/{shard}",
+                    self.tenant_id, self.namespace
+                );
+                let Some(placed) = owners.get(&key) else {
+                    return Err(format!("{key} has no assignment"));
+                };
+                if !clients.contains_key(placed) {
+                    let addr = self
+                        .node(placed)
+                        .ok_or_else(|| format!("{key} is placed on unknown node {placed}"))?
+                        .client_addr;
+                    let client =
+                        crate::client::connect(addr, &self.tenant_id, &self.inspector_token())
+                            .await
+                            .map_err(|err| format!("could not ask {placed}: {err:#}"))?;
+                    clients.insert(placed.clone(), client);
+                }
+                let view = clients[placed]
+                    .inspect_shard(kind, &self.tenant_id, &self.namespace, name, shard)
+                    .await
+                    .map_err(|err| format!("{placed} did not describe {key}: {err:#}"))?;
+                let term = raft_led_as_placed(placed, view.raft.as_ref())
+                    .map_err(|short| format!("{key}: {short}"))?;
+                terms.insert(key, term);
+            }
+        }
+        Ok(terms)
+    }
+
     /// Every running broker's member of shard 0 of `name`, by its own
     /// report. A broker that cannot be asked is left out.
     async fn raft_members(
@@ -403,6 +497,37 @@ fn holds_tail(
         .find(|follower| report.offsets.get(*follower).is_some_and(|at| *at >= tail))
         .cloned()
         .ok_or_else(|| format!("no caught-up replica at the tail: {}", summary()))
+}
+
+/// The term `placed`, the broker placement names as a shard's leader, leads
+/// the shard's group in by its own member's report, or why the group still
+/// has a hand-over ahead of it.
+///
+/// A leader that names nobody, or somebody else, was deposed or is giving
+/// its term up. Placement's broker must hold a voter of the group: one that
+/// holds none is never handed the leadership, and this never says it leads.
+pub(crate) fn raft_led_as_placed(
+    placed: &str,
+    member: Option<&felix_wire::InspectedRaft>,
+) -> Result<u64, String> {
+    let Some(member) = member else {
+        return Err(format!(
+            "{placed} is placed as leader and has no member open"
+        ));
+    };
+    if member.role == "leader" && member.leader.as_deref() == Some(placed) {
+        return Ok(member.term);
+    }
+    Err(match &member.leader {
+        Some(leader) if leader != placed => format!(
+            "{leader} leads at term {} and has not handed over to {placed}",
+            member.term
+        ),
+        _ => format!(
+            "{placed} is placed as leader and is a {} at term {}",
+            member.role, member.term
+        ),
+    })
 }
 
 /// The broker leading the group, once a majority of its voting members hold

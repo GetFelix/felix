@@ -5364,9 +5364,16 @@ A leader hands over only when all of these hold:
 The transfer closes the shard for the term first (the lease is given up),
 waits up to the shortest election timeout for the target to hold the whole
 log, then asks openraft. Publishes in that window are told the shard is not
-ready, and the client retries. The target campaigns while the other
+ready. The refusal is retryable and nothing was written: the client sends an
+at-least-once or idempotent publish again, and returns a plain publish's
+refusal to the caller. The target campaigns while the other
 followers still hear the old leader, so their pre-vote check lets a
 transfer target through.
+
+A new group goes through this once: the broker that formed it leads its
+first term, then hands over. The test harness's
+`Cluster::await_raft_leaders_placed` waits until every shard's placed leader
+leads, and the `client-fixture` cluster reports ready only after it (#3130).
 
 Pacing keeps this from churning:
 
