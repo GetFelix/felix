@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795628588542,
+  "lastUpdate": 1795629007818,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88110,6 +88110,72 @@ window.BENCHMARK_DATA = {
             "range": "1208.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 751.00\nmean: 1488.60\nstdev: 1208.28\ncv: 81.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b01f8927f4734f782c7344510f8ccfb61f9c7a70",
+          "message": "fix(placement): balance an RF 1 Raft shard onto an under-loaded broker (#3118) (#3163)\n\n* fix(placement): balance an RF 1 Raft shard onto an under-loaded broker (#3118)\n\nRaft balance renamed a leader to another member of the set, or, since\n#3113, swapped a follower for a broker outside it. An RF 1 set has one\nmember: no member to rename to, and `balanced_outside` found no follower\nto give a seat, so it returned `None` and the shard was kept. A broker\nwith no RF 1 shard (a new one, or one a shard was moved off) never got\none unless an operator moved it.\n\n`balanced_outside` now starts the move an operator move of an RF 1 shard\nmakes: one write grows the set to the leader and the broker (`grown`),\nand `finish_single_move` shrinks it once the leader reports the new copy\nvoting. The same balance rule picks the broker (two or more leaders\nunder the leader, the stream's spread first, then the totals), with the\nsame checks (nothing recovering, target settled, group formed, the\nformed-set hold, room under `max_shards`, not paused), and each write\ntakes a slot from the 16 set changes a pass.\n\nThe grow write keeps the old leader, so the leader tally would still see\nthe gap on the next pass and start a move for every other shard on the\nbroker. The tally now counts an RF 1 move in flight for its destination\nwhile that broker is live, whoever started the move.\n\nNo group-side change: the writes are the two an operator move already\nmakes, and the store's formed-set hold still refuses the shrink before\nthe destination votes.\n\nSpec-Unaffected: control-plane placement policy only; the Raft group, its membership change and the store's checks are unchanged.\n\n* fix(placement): an RF 1 balance move does not trade a shard back\n\nOn a fresh three-broker cluster, placed two leaders each, the stream rule\nmoved wide/0 to the broker leading none of wide. That left the broker\nleading three, so the totals rule moved orders the other way: two whole-log\ncopies and back where it started. A publish during the trade reached a\nbroker that did not lead yet, which failed felixctl's cluster test in\ncoverage. An RF 1 move for the stream's spread now needs the destination\nto lead fewer in total as well.\n\nSpec-Unaffected: placement balance heuristic, no TLA spec models it",
+          "timestamp": "2026-11-25T17:44:38Z",
+          "tree_id": "3fbda8c528448a40bafa440a9ea90a61133d625b",
+          "url": "https://github.com/GetFelix/felix/commit/b01f8927f4734f782c7344510f8ccfb61f9c7a70"
+        },
+        "date": 1795628994261,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 0.45\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "2.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.40\nstdev: 2.88\ncv: 2.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 185,
+            "range": "14.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 182.80\nstdev: 14.31\ncv: 7.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "11.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 138.20\nstdev: 11.17\ncv: 8.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 351,
+            "range": "316.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 351.00\nmean: 507.00\nstdev: 316.52\ncv: 62.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2195,
+            "range": "863.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2195.00\nmean: 1826.20\nstdev: 863.55\ncv: 47.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
