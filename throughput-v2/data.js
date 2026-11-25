@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795628592961,
+  "lastUpdate": 1795629013425,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69368,6 +69368,58 @@ window.BENCHMARK_DATA = {
             "range": "8922.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812936.06\nmean: 813751.95\nstdev: 8922.42\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b01f8927f4734f782c7344510f8ccfb61f9c7a70",
+          "message": "fix(placement): balance an RF 1 Raft shard onto an under-loaded broker (#3118) (#3163)\n\n* fix(placement): balance an RF 1 Raft shard onto an under-loaded broker (#3118)\n\nRaft balance renamed a leader to another member of the set, or, since\n#3113, swapped a follower for a broker outside it. An RF 1 set has one\nmember: no member to rename to, and `balanced_outside` found no follower\nto give a seat, so it returned `None` and the shard was kept. A broker\nwith no RF 1 shard (a new one, or one a shard was moved off) never got\none unless an operator moved it.\n\n`balanced_outside` now starts the move an operator move of an RF 1 shard\nmakes: one write grows the set to the leader and the broker (`grown`),\nand `finish_single_move` shrinks it once the leader reports the new copy\nvoting. The same balance rule picks the broker (two or more leaders\nunder the leader, the stream's spread first, then the totals), with the\nsame checks (nothing recovering, target settled, group formed, the\nformed-set hold, room under `max_shards`, not paused), and each write\ntakes a slot from the 16 set changes a pass.\n\nThe grow write keeps the old leader, so the leader tally would still see\nthe gap on the next pass and start a move for every other shard on the\nbroker. The tally now counts an RF 1 move in flight for its destination\nwhile that broker is live, whoever started the move.\n\nNo group-side change: the writes are the two an operator move already\nmakes, and the store's formed-set hold still refuses the shrink before\nthe destination votes.\n\nSpec-Unaffected: control-plane placement policy only; the Raft group, its membership change and the store's checks are unchanged.\n\n* fix(placement): an RF 1 balance move does not trade a shard back\n\nOn a fresh three-broker cluster, placed two leaders each, the stream rule\nmoved wide/0 to the broker leading none of wide. That left the broker\nleading three, so the totals rule moved orders the other way: two whole-log\ncopies and back where it started. A publish during the trade reached a\nbroker that did not lead yet, which failed felixctl's cluster test in\ncoverage. An RF 1 move for the stream's spread now needs the destination\nto lead fewer in total as well.\n\nSpec-Unaffected: placement balance heuristic, no TLA spec models it",
+          "timestamp": "2026-11-25T17:44:38Z",
+          "tree_id": "3fbda8c528448a40bafa440a9ea90a61133d625b",
+          "url": "https://github.com/GetFelix/felix/commit/b01f8927f4734f782c7344510f8ccfb61f9c7a70"
+        },
+        "date": 1795629012348,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513615.12,
+            "range": "20392.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513615.12\nmean: 507428.57\nstdev: 20392.41\ncv: 4.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513615.12,
+            "range": "20392.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513615.12\nmean: 507428.57\nstdev: 20392.41\ncv: 4.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118605.81,
+            "range": "1103.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118605.81\nmean: 118592.10\nstdev: 1103.72\ncv: 0.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1186058.09,
+            "range": "11037.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1186058.09\nmean: 1185920.96\nstdev: 11037.16\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
