@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795593881444,
+  "lastUpdate": 1795594308537,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68484,6 +68484,58 @@ window.BENCHMARK_DATA = {
             "range": "7627.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802035.79\nmean: 801990.21\nstdev: 7627.92\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6c5283b244bf37b3207026fc0171ba2cd2da9875",
+          "message": "test(cluster): replace fault files by rename so a broker never reads one half written (#3123) (#3142)\n\n* test(cluster): replace fault files by rename so a broker never reads one half written (#3123)\n\nThe harness wrote a broker's partition, clock and storage fault files in\nplace. A broker re-reads them while it runs, and one that read between the\ntruncate and the write saw an empty file. For the partition file that means\n\"severed from nobody\" for the next 100ms.\n\nThat is what failed majority_ack::a_wiped_follower_refuses_the_leader_its_\nlost_promise_had_fenced_out: healing old<->other rewrote every broker's\npartition file, the new leader read its own while it was empty, and its next\nheartbeat reached the old leader, which stepped down to term 3 as Raft says\nit should. The wiped copy accepted nothing and voted for no one.\n\nSpec-Unaffected: test harness only; no product code or modelled behaviour changes.\n\n* test(cluster): rewrap the fault-file module comment (#3123)\n\nSpec-Unaffected: comment in the test harness only.",
+          "timestamp": "2026-11-25T08:02:11Z",
+          "tree_id": "6785007a30951b6c8e19427d8dca58374e1a87ec",
+          "url": "https://github.com/GetFelix/felix/commit/6c5283b244bf37b3207026fc0171ba2cd2da9875"
+        },
+        "date": 1795594307806,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359343.91,
+            "range": "10047.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359343.91\nmean: 355031.22\nstdev: 10047.20\ncv: 2.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359343.91,
+            "range": "10047.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359343.91\nmean: 355031.22\nstdev: 10047.20\ncv: 2.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80397.02,
+            "range": "5304.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80397.02\nmean: 78297.72\nstdev: 5304.72\ncv: 6.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803970.23,
+            "range": "53047.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803970.23\nmean: 782977.22\nstdev: 53047.26\ncv: 6.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
