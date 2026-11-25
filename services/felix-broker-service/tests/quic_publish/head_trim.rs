@@ -15,8 +15,12 @@ struct Session {
 }
 
 impl Session {
-    /// Authenticate with `perms`, offering error codes and, when `head_trim`,
-    /// `FEATURE_HEAD_TRIM`.
+    /// Authenticate with `perms`, offering error codes, commit acks with their
+    /// offsets and, when `head_trim`, `FEATURE_HEAD_TRIM`.
+    ///
+    /// The helper broker acks durable publishes on enqueue, so without commit
+    /// acks a trim sent right after a publish can read the tail before the
+    /// batch reaches the log.
     async fn open(
         addr: std::net::SocketAddr,
         cert: CertificateDer<'static>,
@@ -43,13 +47,17 @@ impl Session {
         } else {
             0
         };
-        let (features, features_hi) =
-            felix_wire::offer_features(felix_wire::FEATURE_ERROR_CODES, hi);
+        let (features, features_hi) = felix_wire::offer_features(
+            felix_wire::FEATURE_ERROR_CODES | felix_wire::FEATURE_ACK_ON_COMMIT,
+            hi,
+        );
         let answer = session
             .exchange(Message::Auth {
                 tenant_id: "t1".to_string(),
                 token,
-                client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
+                client_flags: Some(
+                    felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_BINARY_PUBLISH_ACK_OFFSET,
+                ),
                 client_features: Some(features),
                 client_features_hi: features_hi,
                 client_flags_ext: None,
@@ -77,6 +85,7 @@ impl Session {
         .context("the broker closed the stream")
     }
 
+    /// Publish `count` records to a shard that holds none yet.
     async fn publish(&mut self, count: usize) -> Result<()> {
         let answer = self
             .exchange(Message::PublishBatch {
@@ -90,9 +99,16 @@ impl Session {
                 ack: Some(AckMode::PerBatch),
             })
             .await?;
+        // An offset is sent only once the batch is in the log.
         anyhow::ensure!(
-            matches!(answer, Message::PublishOk { .. }),
-            "publish: {answer:?}"
+            matches!(
+                answer,
+                Message::PublishOk {
+                    offset: Some(0),
+                    ..
+                }
+            ),
+            "publish acked after its write at 0: {answer:?}"
         );
         Ok(())
     }
