@@ -1393,7 +1393,11 @@ engine uses the same `ρ` the control-plane lease uses today and sets the lease
 from it. The config refuses a lease that breaks the inequality.
 
 **openraft settings.** `heartbeat_interval`, `election_timeout_min` and
-`election_timeout_max`, plus the follower-side vote refusal above. Neither
+`election_timeout_max`, plus the follower-side vote refusal above. With its
+tick off, openraft uses `heartbeat_interval` only as the deadline of an
+append or a heartbeat, so Felix sets it to that deadline and paces the
+heartbeats itself (`docs/per-shard-raft.md`, "A call's deadline"). The lease
+counts from a message's hand-off, so the deadline is not in the margin. Neither
 0.9 nor 0.10 steps a leader down when it loses its majority. 0.10's
 `quorum_loss_probe_interval` only pauses heartbeats and replication after
 the lease runs out, and `removed_leader_step_down` covers only a leader
