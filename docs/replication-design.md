@@ -2378,8 +2378,10 @@ An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
 `Quorum` publish has no offset to wait on a mark for (`await_quorum`). With no
 inherited record there is nothing for a start record to cover, and the broker
-has no log to append one to, so a promoted in-memory shard opens as soon as
-its fence settles.
+has no log to append one to. A promoted in-memory shard is not fenced either:
+a fence would open a log here and on each replica it asks, so the shard opens
+on the lease. Its group logs stay on its leader and are not shipped, since
+they carry no generation for the next promotion to rank a copy by.
 
 **Across versions: the `generation_start` fleet feature.** The record and the
 counting rule switch on together, when an operator finalizes
@@ -2398,7 +2400,16 @@ With `majority_ack` finalized, a `Quorum` stream shard acknowledges a write
 counter add) once a majority of its replica set, the leader included, has answered that it
 holds the write at the leader's generation. That is `AckByFollowers` in
 `docs/formal/FelixShard.tla`, `HeldAtGen` and `quorum::held_at_generation` in
-code. The report and the lease leave the write's path:
+code.
+
+This applies only to a shard that keeps a log: a durable stream, or a cache
+on a broker with a cache log. An in-memory `Quorum` stream has nothing on its
+followers to answer for, so it keeps the lease for writes, readers and group
+sessions alike (`quorum::serves_on_followers_word`). Without it, an owner cut
+off from the control plane would keep acknowledging beside the broker the
+shard is placed on after its lease lapses.
+
+For a shard with a log, the report and the lease leave the write's path:
 
 - **Counting.** A follower counts up to the offset its own `ReplicateOk` at
   this generation confirmed (`FollowerCursor::confirmed`), never to where it
@@ -2636,7 +2647,7 @@ round.
 ### Readers and group sessions without the lease
 
 Built once the fleet finalizes `lease_free_reads` (#885), for replicated
-`Quorum` shards, and not for a broker started with `FELIX_QUORUM_READS=lease`.
+`Quorum` shards that keep a log (not in-memory streams), and not for a broker started with `FELIX_QUORUM_READS=lease`.
 
 On the lease, a lapse ends every subscription and cache watch on the broker,
 refuses new ones (`redirect_for`), makes the committed mark answer `Refused`

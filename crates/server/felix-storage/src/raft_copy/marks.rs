@@ -72,6 +72,11 @@ struct Inner {
     /// Shards whose log mark is written in batches. Locked before `queue`.
     batched: parking_lot::Mutex<HashMap<Arc<str>, Source>>,
     batcher: AtomicBool,
+    /// The batch interval, once a batcher started, so a reopen restarts it.
+    batch_interval: parking_lot::Mutex<Option<Duration>>,
+    /// Counts reopens, under `failed`'s lock, so a batch that failed before
+    /// one does not stop the reopened log.
+    reopens: AtomicU64,
     /// Set once a write fails, for callers that cannot wait on the writer.
     failed: parking_lot::Mutex<Option<Arc<str>>>,
     /// True while the batched marks are too old to take another append.
@@ -93,6 +98,9 @@ struct Inner {
     stall: tokio::sync::RwLock<()>,
     #[cfg(test)]
     fail_next: AtomicBool,
+    /// Every write and reopen fails while set, as on a bad disk.
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_writes: AtomicBool,
 }
 
 #[derive(Default)]
@@ -128,9 +136,21 @@ struct Writer {
     /// failed.
     failed: Option<Arc<str>>,
     failed_from: Option<u64>,
+    /// The tickets each earlier failure answered with an error, closed by
+    /// the [`MarkLog::reopen`] that ended it.
+    failed_before: Vec<std::ops::Range<u64>>,
 }
 
 impl Writer {
+    /// Whether taken ticket `ticket` was answered with an error.
+    fn failed(&self, ticket: u64) -> bool {
+        self.failed_from.is_some_and(|from| ticket >= from)
+            || self
+                .failed_before
+                .iter()
+                .any(|range| range.contains(&ticket))
+    }
+
     fn failure(&self) -> io::Error {
         io::Error::other(
             self.failed
@@ -161,7 +181,9 @@ impl MarkLog {
             Some(bytes) => bytes,
             None => {
                 let header = encode_header(0);
-                state_file::store(root, FILE_NAME, &[&header])?;
+                under_id(root, storage_id, || {
+                    state_file::store(root, FILE_NAME, &[&header])
+                })?;
                 header.to_vec()
             }
         };
@@ -192,9 +214,12 @@ impl MarkLog {
                     taken: 0,
                     failed: None,
                     failed_from: None,
+                    failed_before: Vec::new(),
                 }),
                 batched: parking_lot::Mutex::default(),
                 batcher: AtomicBool::new(false),
+                batch_interval: parking_lot::Mutex::default(),
+                reopens: AtomicU64::new(0),
                 failed: parking_lot::Mutex::default(),
                 held: watch::channel(false).0,
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
@@ -210,6 +235,8 @@ impl MarkLog {
                 stall: tokio::sync::RwLock::default(),
                 #[cfg(test)]
                 fail_next: AtomicBool::new(false),
+                #[cfg(any(test, feature = "fault-injection"))]
+                fail_writes: AtomicBool::new(false),
             }),
         })
     }
@@ -251,7 +278,7 @@ impl MarkLog {
             return Ok(());
         }
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _vouching = vouching;
             #[cfg(test)]
             inner.vouch_writes.fetch_add(1, Ordering::Relaxed);
@@ -310,6 +337,94 @@ impl MarkLog {
             .lock()
             .as_deref()
             .map(|why| io::Error::other(why.to_string()))
+    }
+
+    /// Start the log again after a failed write, once the disk takes
+    /// writes: the file is rewritten whole, through a temporary, from the
+    /// marks as last synced, and later writes go to it. False if the log
+    /// had not failed.
+    ///
+    /// Nothing is read back from the failed file, and its failed write is
+    /// not tried again: after a failed fsync its pages may say anything. The
+    /// rewrite is a new file, synced before it replaces the old one. Every
+    /// write queued before this fails, as the failure answered it, so a
+    /// caller told of a failure is never later told its mark is synced.
+    /// Fails, and the log stays stopped, if the rewrite does.
+    pub async fn reopen(&self) -> io::Result<bool> {
+        let inner = &self.inner;
+        let mut writer = inner.writer.lock().await;
+        if writer.failed.is_none() && inner.failed.lock().is_none() {
+            return Ok(false);
+        }
+        #[cfg(any(test, feature = "fault-injection"))]
+        if inner.fail_writes.load(Ordering::Relaxed) {
+            return Err(io::Error::other("an injected write failure"));
+        }
+        let bytes = {
+            let live = inner.live.read();
+            let sequence = self.sequence();
+            let records: Vec<(&Arc<str>, &ShardMarks)> = live.iter().collect();
+            let mut bytes = encode_header(sequence).to_vec();
+            if !records.is_empty() {
+                bytes.extend(encode_frame(sequence, &records)?);
+            }
+            bytes
+        };
+        let root = inner.root.clone();
+        let len = bytes.len() as u64;
+        let id = self.storage_id();
+        let file = felix_common::blocking::spawn(move || {
+            under_id(&root, id, || {
+                state_file::store_through_faults(&root, FILE_NAME, &bytes)
+            })?;
+            crate::fs::OpenOptions::new()
+                .append(true)
+                .open(root.join(FILE_NAME))
+        })
+        .await
+        .map_err(io::Error::other)??;
+        {
+            let mut queue = inner.queue.lock();
+            let dropped = queue.next;
+            queue.next += 1;
+            queue.named.clear();
+            queue.updates.clear();
+            let from = writer.failed_from.take().unwrap_or(dropped).min(dropped);
+            writer.failed_before.push(from..dropped + 1);
+            writer.taken = dropped + 1;
+        }
+        writer.file = Some(file);
+        writer.len = len;
+        writer.compact_at = inner
+            .compact_floor
+            .load(Ordering::Relaxed)
+            .max(len.saturating_mul(4));
+        let why = writer.failed.take();
+        {
+            let mut failed = inner.failed.lock();
+            *failed = None;
+            inner.reopens.fetch_add(1, Ordering::AcqRel);
+        }
+        drop(writer);
+        tracing::warn!(
+            path = %inner.root.join(FILE_NAME).display(),
+            failed = why.as_deref().unwrap_or("the batched marks were not written"),
+            "reopened the mark log from its last synced marks"
+        );
+        self.hold_appends(false);
+        let interval = *inner.batch_interval.lock();
+        if let Some(interval) = interval {
+            self.start_batcher(interval);
+        }
+        Ok(true)
+    }
+
+    /// Fail every write and reopen while `failing`, as a disk that refuses
+    /// writes would. For tests.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub fn fail_writes(&self, failing: bool) {
+        self.inner.fail_writes.store(failing, Ordering::Relaxed);
     }
 
     /// Wait while the batched log marks are [`STALL_INTERVALS`] intervals
@@ -411,6 +526,7 @@ impl MarkLog {
     /// is written. The check runs once an interval, so a log runs at most
     /// about `STALL_INTERVALS + 1` intervals ahead of its mark.
     pub(crate) fn start_batcher(&self, interval: Duration) {
+        *self.inner.batch_interval.lock() = Some(interval);
         if self.inner.batcher.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -428,6 +544,7 @@ impl MarkLog {
                     return;
                 };
                 let log = MarkLog { inner };
+                let reopens = log.inner.reopens.load(Ordering::Acquire);
                 let started = tokio::time::Instant::now();
                 let batch = log.mark_batched();
                 tokio::pin!(batch);
@@ -467,7 +584,10 @@ impl MarkLog {
                     }
                     Err(err) => {
                         tracing::error!(error = %err, "the batched log marks were not written");
-                        log.poison(&err);
+                        if !log.poison(&err, reopens) {
+                            // Failed before a reopen: the reopened log goes on.
+                            continue;
+                        }
                         // Held appends wake to the failure.
                         log.hold_appends(false);
                         return;
@@ -631,9 +751,10 @@ impl MarkLog {
         let mut writer = inner.writer.lock().await;
         if ticket < writer.taken {
             // Another caller wrote it.
-            return match writer.failed_from {
-                Some(failed) if ticket >= failed => Err(writer.failure()),
-                _ => Ok(()),
+            return if writer.failed(ticket) {
+                Err(writer.failure())
+            } else {
+                Ok(())
             };
         }
         if writer.failed.is_none() {
@@ -713,9 +834,22 @@ impl MarkLog {
         let witness_dir = inner.witness.clone();
         let id = self.storage_id();
         let frame_len = frame.len() as u64;
+        #[cfg(any(test, feature = "fault-injection"))]
+        let refused = inner.fail_writes.load(Ordering::Relaxed);
+        #[cfg(not(any(test, feature = "fault-injection")))]
+        let refused = false;
         let written = felix_common::blocking::spawn(move || {
-            let result =
-                crate::io::write_all(&file, &frame).and_then(|()| crate::io::sync_data(&file));
+            let result = if refused {
+                // Half the frame lands, as on a disk that fills mid-write.
+                io::Write::write_all(&mut &file, &frame[..frame.len() / 2])
+                    .and_then(|()| Err(io::Error::other("an injected write failure")))
+            } else {
+                // Not held across the write: an append after the removal
+                // goes to the unlinked file and puts nothing back.
+                still_under(&root, id)
+                    .and_then(|()| crate::io::write_all(&file, &frame))
+                    .and_then(|()| crate::io::sync_data(&file))
+            };
             if result.is_ok() {
                 // After the sync and before any writer returns.
                 witness::record_sequence(&root, witness_dir.as_deref(), id, sequence);
@@ -759,8 +893,9 @@ impl MarkLog {
         // The old handle names a file the rename unlinks, so it is dropped
         // either way and a failure stops the log.
         writer.file = None;
+        let id = self.storage_id();
         let reopened = felix_common::blocking::spawn(move || {
-            state_file::store(&root, FILE_NAME, &[&bytes])?;
+            under_id(&root, id, || state_file::store(&root, FILE_NAME, &[&bytes]))?;
             crate::fs::OpenOptions::new()
                 .append(true)
                 .open(root.join(FILE_NAME))
@@ -798,13 +933,21 @@ impl MarkLog {
     }
 
     /// Fail the batched shards' appends with `err` at once, and every write
-    /// that takes the writer from now on.
-    fn poison(&self, err: &io::Error) {
+    /// that takes the writer from now on, and end the batcher, unless the
+    /// log was reopened since `reopens`. True if it stopped the log.
+    fn poison(&self, err: &io::Error, reopens: u64) -> bool {
         let message: Arc<str> = Arc::from(format!(
             "{}: the mark log stopped: {err}",
             self.inner.root.join(FILE_NAME).display()
         ));
-        self.inner.failed.lock().get_or_insert(message);
+        let mut failed = self.inner.failed.lock();
+        if self.inner.reopens.load(Ordering::Acquire) != reopens {
+            return false;
+        }
+        failed.get_or_insert(message);
+        // Under the lock, so a reopen after this starts another batcher.
+        self.inner.batcher.store(false, Ordering::Release);
+        true
     }
 }
 
@@ -957,6 +1100,42 @@ fn is_noop(live: &HashMap<Arc<str>, ShardMarks>, queued: &Queued) -> bool {
     let current = live.get(&queued.shard);
     !matches!(queued.update, Update::Fresh)
         && apply(current, queued.copy, &queued.update).as_ref() == current
+}
+
+/// Run `write`, a write of the mark log under `root`, unless the root's
+/// storage id is no longer `id`. A rotation removes the mark log and may
+/// find one still open, as when the restore check of a start from the
+/// control-plane view answers after its members opened. A write after it
+/// would put marks back under an id that no copy outside the root names, and
+/// the restore gate would hold the root at the next reboot. Refused, the
+/// log stops, and so does every vote and append that waits on a mark.
+///
+/// Under the lock the rotation holds from the removal to the new id, so a
+/// write that replaces the file lands wholly before the removal or is
+/// refused.
+fn under_id(root: &Path, id: StorageId, write: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    let _rotation = crate::run_state::ID_RECORDS.lock();
+    check_id(root, id)?;
+    write()
+}
+
+/// Fails once the root's storage id is no longer `id` ([`under_id`]).
+fn still_under(root: &Path, id: StorageId) -> io::Result<()> {
+    let _rotation = crate::run_state::ID_RECORDS.lock();
+    check_id(root, id)
+}
+
+fn check_id(root: &Path, id: StorageId) -> io::Result<()> {
+    // Only an id that reads as another one refuses: a root with none yet
+    // has not been rotated.
+    match crate::storage_identity::load(root) {
+        Ok(Some(found)) if found != id => Err(io::Error::other(format!(
+            "{}: the data root was given the storage id {found} while its mark log was open \
+             under {id}",
+            root.display()
+        ))),
+        _ => Ok(()),
+    }
 }
 
 fn encode_header(sequence: u64) -> [u8; HEADER_LEN] {

@@ -12,7 +12,7 @@ use crate::serving::forward::{CacheRequest, ForwardCredential, ForwardKey, Forwa
 use crate::serving::lease::LeaseMint;
 use crate::serving::quic::client_error::ClientError;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
-use crate::shards::routing::{Dispatch, IngressRouter, StreamEngine, dispatch_write, shard_for};
+use crate::shards::routing::{Dispatch, IngressRouter, StreamEngine, shard_for};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Where one cache operation belongs.
@@ -43,15 +43,30 @@ pub(crate) enum CacheRoute {
 /// to the new owner, as a publish does, rather than being refused.
 pub(crate) async fn resolve_cache_route(
     ingress: Option<&IngressRouter>,
+    engine: Option<&StreamEngine>,
     tenant_id: &str,
     namespace: &str,
     cache: &str,
     key: &str,
 ) -> CacheRoute {
     let Some(router) = ingress else {
+        // A standalone broker's durable cache is a Raft group of one, written
+        // at the term it leads.
+        let shard_key = ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: cache.to_string(),
+            shard: 0,
+            kind: ShardKind::Cache,
+        };
+        let generation = match engine.and_then(|engine| engine.standalone_dispatch(&shard_key)) {
+            Some(Dispatch::Local { generation }) => generation,
+            Some(Dispatch::Unavailable(reason)) => return CacheRoute::Refused(reason),
+            Some(Dispatch::Forward { .. }) | None => 0,
+        };
         return CacheRoute::Local {
             shard: 0,
-            generation: 0,
+            generation,
             fenced: None,
         };
     };
@@ -68,7 +83,7 @@ pub(crate) async fn resolve_cache_route(
         kind: ShardKind::Cache,
     };
 
-    let (dispatched, fenced) = dispatch_write(Some(router), &shard_key).await;
+    let (dispatched, fenced) = router.dispatch_write(&shard_key).await;
     match dispatched {
         Dispatch::Local { generation } => CacheRoute::Local {
             shard,
@@ -168,7 +183,7 @@ pub(crate) async fn apply_cache_request(
     if lease.is_some() && !matches!(request, CacheRequest::PutIf { .. }) {
         return Err(ClientError::internal("only a conditional put mints a lease token").into());
     }
-    match resolve_cache_route(ingress, tenant_id, namespace, cache, key).await {
+    match resolve_cache_route(ingress, Some(quorum.0), tenant_id, namespace, cache, key).await {
         CacheRoute::Local {
             shard,
             generation,
@@ -274,7 +289,11 @@ pub(crate) async fn apply_cache_local(
             _ => None,
         };
         let on_raft = raft::apply(engine, &written, generation, key, &request, quorum_timeout);
-        if let Some(answered) = on_raft.await {
+        let on_raft = on_raft.await;
+        if on_raft.is_none() && engine.runs_raft() && cache_store.as_log_cache().is_some() {
+            return Err(raft::not_open(&written));
+        }
+        if let Some(answered) = on_raft {
             drop(fenced);
             let answered = answered.map_err(raft::NotServed::into_anyhow)?;
             let lease = lease.map(|mint| match answered.outcome {
@@ -495,7 +514,7 @@ pub(crate) async fn apply_counter_op(
     key: &str,
     request: CacheRequest,
 ) -> anyhow::Result<Option<i64>> {
-    match resolve_cache_route(ingress, tenant_id, namespace, cache, key).await {
+    match resolve_cache_route(ingress, Some(quorum.0), tenant_id, namespace, cache, key).await {
         CacheRoute::Local {
             shard,
             generation,
@@ -519,7 +538,11 @@ pub(crate) async fn apply_counter_op(
                 &request,
                 quorum_timeout,
             );
-            if let Some(answered) = on_raft.await {
+            let on_raft = on_raft.await;
+            if on_raft.is_none() && engine.runs_raft() && broker.counters().is_some() {
+                return Err(raft::not_open(&shard_key));
+            }
+            if let Some(answered) = on_raft {
                 drop(fenced);
                 return Ok(answered.map_err(raft::NotServed::into_anyhow)?.sum);
             }

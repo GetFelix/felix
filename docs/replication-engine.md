@@ -114,7 +114,7 @@ stores it at the leader's offsets (`replica.rs:663` `apply`, through
 
 The driver computes a majority offset over the cursors (`felix-replication/src/quorum.rs:1777`
 `quorum_offset`, `driver/shard.rs:479`), counted only from the leader's own
-generation start (`felix-replication/src/quorum.rs:1984` `counted_offset`), and publishes it to
+generation start (`felix-replication/src/quorum.rs:2007` `counted_offset`), and publishes it to
 `QuorumMarks` (`felix-replication/src/quorum.rs:37`, `:618`). Writers wait in `await_quorum`
 (`felix-replication/src/quorum.rs:1018`), called from the service:
 
@@ -137,13 +137,13 @@ the fence before it opens: `felix-replication/src/promotion.rs:168` `fence_shard
 promise the generation (the follower answers in `replica.rs:1275` `fence`),
 catches up, appends a generation-start record, and the driver opens it
 (`felix-replication/src/driver.rs:677` `open_promoted`). A follower refuses a stale leader with
-`FencedEpoch` (`replica.rs:2099` `check_shard_fence`). The engine tells the
+`FencedEpoch` (`replica.rs:2101` `check_shard_fence`). The engine tells the
 broker through `WriteFence` callbacks (`felix-replication/src/driver.rs:298` onward): `deposed`,
 `withheld`, `serve_without_lease`, `passed`.
 
 Around that core sit the parts that make it safe across crashes and lost
 disks: ballots (`crates/server/felix-storage/src/disk_log/ballot.rs:191`),
-vouching and copy trust (`replica.rs:1894` `record_vouch`, `follower.rs:107`),
+vouching and copy trust (`replica.rs:1896` `record_vouch`, `follower.rs:107`),
 unclean starts (`unclean.rs`), reclaim (`reclaim.rs`), and opt-in election
 without the control plane (`felix-replication/src/election.rs:31`, `election/candidate.rs:403`,
 `replica/election.rs`), switched on by `FELIX_INTERNAL_ELECTION`
@@ -153,7 +153,7 @@ without the control plane (`felix-replication/src/election.rs:31`, `election/can
 
 The control plane picks the new set. A promotion across a set change runs a
 joint fence that needs answers from both the old and the new set
-(`promotion/joint.rs:216` `JointSets`, `replica.rs:2550` `joint_fence`). A new
+(`promotion/joint.rs:216` `JointSets`, `replica.rs:2552` `joint_fence`). A new
 replica joins as a learner that ships but does not count toward the mark
 (`ship.rs:665`, `driver/shard.rs:746`), and a follower too far behind is
 rebuilt (`felix-replication/src/rebuild.rs:40`). The driver learns of a change when the router
@@ -451,8 +451,12 @@ shard is the same under either engine, and it follows from that one error:
   healthy shards, and the poisoned log shows in metrics and status. The log
   stays poisoned until the broker restarts; `docs/durable-storage.md` says
   when a restart is safe. A per-shard Raft copy does not come back with
-  that log: it restarts as a new copy with an empty log
-  (`docs/per-shard-raft.md`, "Group and member identity").
+  that log: once the disk takes writes again it reopens, without a restart,
+  as a new copy with an empty log (the old directory is kept as `.kept`).
+  With other copies alive it catches up from its group. With one copy, or
+  when every copy rotated, the shard is held until an operator re-forms it
+  (`felixctl raft reform`) and serves nothing meanwhile
+  (`docs/per-shard-raft.md`, "A member that stops on a storage error").
 
 On the hybrid, a poisoned process attests no trusted copy to a fence, and a
 promotion does not let it continue as leader, so another copy takes over
@@ -1389,7 +1393,11 @@ engine uses the same `ρ` the control-plane lease uses today and sets the lease
 from it. The config refuses a lease that breaks the inequality.
 
 **openraft settings.** `heartbeat_interval`, `election_timeout_min` and
-`election_timeout_max`, plus the follower-side vote refusal above. Neither
+`election_timeout_max`, plus the follower-side vote refusal above. With its
+tick off, openraft uses `heartbeat_interval` only as the deadline of an
+append or a heartbeat, so Felix sets it to that deadline and paces the
+heartbeats itself (`docs/per-shard-raft.md`, "A call's deadline"). The lease
+counts from a message's hand-off, so the deadline is not in the margin. Neither
 0.9 nor 0.10 steps a leader down when it loses its majority. 0.10's
 `quorum_loss_probe_interval` only pauses heartbeats and replication after
 the lease runs out, and `removed_leader_step_down` covers only a leader

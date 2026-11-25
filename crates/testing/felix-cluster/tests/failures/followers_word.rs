@@ -155,6 +155,11 @@ async fn still_leads_after(cluster: &Cluster, old: &str, window: Duration) -> bo
 #[serial]
 #[tokio::test]
 async fn a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "placement moves a hybrid leader on its followers' word; a Raft group elects its own leader, as one_leader_throughout in failover.rs checks",
+    ) {
+        return;
+    }
     let cluster = start(ALL).await;
     let old = cluster.owner(STREAM).await.expect("owner");
     publish_and_report(&cluster, &old, true).await;
@@ -184,13 +189,16 @@ async fn a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats() {
     )
     .await
     .expect("the new leader takes writes");
-    let (_client, mut replay) = cluster.replay_on(&new, STREAM).await.expect("replay");
-    let mut held = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
-    {
-        held.push(String::from_utf8_lossy(&event.payload).to_string());
-    }
+    let held = cluster
+        .whole_replay_on(
+            &new,
+            STREAM,
+            Duration::from_secs(2),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("replay");
+    let held = felix_cluster::replay::payloads(&held);
     assert!(
         held.iter().any(|record| record == "before"),
         "{new} lost a record {old} acknowledged: it holds {held:?}"
@@ -203,6 +211,11 @@ async fn a_leader_its_followers_cannot_reach_is_replaced_while_it_heartbeats() {
 #[serial]
 #[tokio::test]
 async fn one_follower_that_cannot_reach_the_leader_moves_nothing() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "placement moves a hybrid leader on its followers' word; a Raft group elects its own leader, as one_leader_throughout in failover.rs checks",
+    ) {
+        return;
+    }
     let cluster = start(ALL).await;
     let old = cluster.owner(STREAM).await.expect("owner");
     publish_and_report(&cluster, &old, true).await;
@@ -229,6 +242,11 @@ async fn one_follower_that_cannot_reach_the_leader_moves_nothing() {
 #[serial]
 #[tokio::test]
 async fn without_lease_free_reads_the_leader_is_not_moved_on_its_followers_word() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "placement moves a hybrid leader on its followers' word; a Raft group elects its own leader, as one_leader_throughout in failover.rs checks",
+    ) {
+        return;
+    }
     let cluster = start(&["generation_start", "majority_ack"]).await;
     let old = cluster.owner(STREAM).await.expect("owner");
     publish_and_report(&cluster, &old, false).await;

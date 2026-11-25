@@ -980,6 +980,9 @@ impl StreamState {
     /// That holds per subscriber whatever its queue dropped, which is why it
     /// is the stream's position and not what the subscriber received.
     ///
+    /// With `Ending::Deposed`, each receiver learns the shard moved and to
+    /// resume after the last record it saw.
+    ///
     /// With `Ending::Deleted`, each receiver learns the stream is gone, and so
     /// does any subscriber that registers on this state afterwards.
     pub(crate) fn end_subscribers(&self, ending: Option<Ending>) -> usize {
@@ -1017,6 +1020,13 @@ impl StreamState {
                     .set(FeedEnd::Moved(ShardMoved { resume_from, to }));
                 // A subscriber that registers after this, if the shard comes
                 // back, must not inherit the old move.
+                state.ended = Arc::default();
+            }
+            Some(Ending::Deposed) => {
+                let _ = state.ended.set(FeedEnd::Moved(ShardMoved {
+                    resume_from: None,
+                    to: ShardHandoff::default(),
+                }));
                 state.ended = Arc::default();
             }
             Some(Ending::Deleted) => {

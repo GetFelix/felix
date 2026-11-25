@@ -43,11 +43,18 @@ durable stream and the `config` and `stats` caches can be watched, counted in
 and read back. The [use cases](/use-cases/overview/) each end with a short "Try
 it" that runs against this stack.
 
-This stack's broker has no node id, so it runs standalone, on the older hybrid
-shard engine, and logs a warning saying so. A clustered broker runs Raft.
-`felix-cluster up` below also runs the hybrid engine unless you set
-`FELIX_SHARD_ENGINE=raft`. Both move to Raft in
-[#2985](https://github.com/GetFelix/felix/issues/2985).
+This stack's broker has no node id, so it runs standalone. The 0.7.3 images
+the file pins replicate with the older engine, which 0.8.0 removes. From 0.8.0
+a standalone broker with durable storage runs each durable shard as a Raft
+group of one, with no peers. The nightly images, built from `main`, already do,
+and the same commands work on them:
+
+```bash
+FELIX_VERSION=nightly docker compose up -d
+```
+
+Run `docker compose down -v` before you switch versions. A broker on Raft
+refuses to open a data directory the older engine wrote.
 
 The credentials are for your machine only, and the printed settings show how
 to use an installed `felixctl` instead. See
@@ -60,7 +67,7 @@ build on this stack and take you from a first stream to a small app.
 
 ## Prerequisites
 
-- **Rust** 1.97 or later; the repo pins 1.99.1 and rustup fetches it ([rustup](https://rustup.rs/))
+- **Rust** 1.97 or later; the repo pins 1.100.0 and rustup fetches it ([rustup](https://rustup.rs/))
 - **Git**
 - Optional: [Task](https://taskfile.dev/), for the shortcuts CI uses
 
@@ -109,6 +116,11 @@ The session file sits in your system temp directory (`$TMPDIR`, or `/tmp`). It r
 (`t1`), namespace (`ns`), a client token and every broker's address, and it is
 how the other commands find the cluster.
 
+Every broker `up` starts runs the Raft shard engine, and so does the control
+plane: each shard is one Raft group, and its leader is the broker listed under
+`shard ownership`. `orders` has a replication factor of 1, so its group has one
+member. Add `--replication-factor 3` to spread it over all three brokers.
+
 It holds until you interrupt it. In a second window, subscribe:
 
 ```bash
@@ -149,7 +161,7 @@ paying for a relay on every record.
 cargo run --release -p felix-cluster -- smoke        # publish through a non-owner, receive from the owner
 cargo run --release -p felix-cluster -- demo         # the cross-broker story, paced for reading
 cargo run --release -p felix-cluster -- failover     # kill the leader, keep publishing
-cargo run --release -p felix-cluster -- consistency  # what Quorum buys and Leader costs, under a fault
+cargo run --release -p felix-cluster -- consistency  # what Quorum keeps and Leader loses when a leader dies
 cargo run --release -p felix-cluster -- status       # membership and shard ownership, then exit
 ```
 

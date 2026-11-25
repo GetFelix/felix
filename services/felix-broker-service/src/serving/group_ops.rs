@@ -126,7 +126,7 @@ async fn poll_rechecking(
             .await;
     }
     let (reader, log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let deadline = Instant::now() + wait;
     let mut first = true;
@@ -165,18 +165,22 @@ async fn poll_rechecking(
             Err(refused) => return Err(refused),
         };
         first = false;
-        let claimed = reader
-            .poll_below(
-                &key,
-                &log,
-                committed.unwrap_or(u64::MAX),
-                max_records,
-                Instant::now(),
-                consumer,
-                visibility,
-            )
-            .await
-            .map_err(storage);
+        let claimed = match &log {
+            Some(log) => reader
+                .poll_below(
+                    &key,
+                    log,
+                    committed.unwrap_or(u64::MAX),
+                    max_records,
+                    Instant::now(),
+                    consumer,
+                    visibility,
+                )
+                .await
+                .map_err(storage),
+            // Nothing to hand out: an in-memory stream keeps no records.
+            None => Ok(Vec::new()),
+        };
         drop(fenced);
         let claimed = claimed?;
         if !claimed.is_empty() {
@@ -266,7 +270,7 @@ pub(crate) async fn dead_letters(
         return on_raft.dead_letters().await;
     }
     let (reader, _log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     commit_ops::refuse_read_without_lease(publish_ctx)?;
     let listed = reader.dead_lettered(&key).await.map_err(storage)?;
@@ -309,7 +313,7 @@ pub(crate) async fn manage_dead_letter(
         };
     }
     let (reader, _log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
     let taken = if redrive {
@@ -361,11 +365,11 @@ pub(crate) async fn seek(
         return on_raft.seek(publish_ctx, start, if_new).await;
     }
     let (reader, log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
-    let earliest = log.readable_base();
-    let latest = read_end(broker, publish_ctx, &owned, &log).await?;
+    let earliest = log.as_ref().map_or(0, |log| log.readable_base());
+    let latest = read_end(broker, publish_ctx, &owned, log.as_ref()).await?;
     let offset = seek_offset(start, earliest, latest, shard)?;
     let seek = reader.seek(&key, offset, if_new).await.map_err(storage)?;
     owned.confirm(publish_ctx).await?;
@@ -425,11 +429,11 @@ pub(crate) async fn describe(
         return on_raft.describe(publish_ctx).await;
     }
     let (reader, log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     commit_ops::refuse_read_without_lease(publish_ctx)?;
     let snapshot = reader.describe(&key).await.map_err(storage)?;
-    let tail = read_end(broker, publish_ctx, &owned, &log).await?;
+    let tail = read_end(broker, publish_ctx, &owned, log.as_ref()).await?;
     commit_ops::confirm_read_leader(publish_ctx, &owned.key).await?;
     Ok((snapshot, tail))
 }
@@ -462,7 +466,7 @@ pub(crate) async fn delete(
         return on_raft.delete().await;
     }
     let (reader, _log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
     let existed = reader.delete(&key).await.map_err(storage)?;
@@ -476,13 +480,14 @@ async fn read_end(
     broker: &Broker,
     publish_ctx: &PublishContext,
     owned: &Owned,
-    log: &felix_broker::StreamLog,
+    log: Option<&felix_broker::StreamLog>,
 ) -> Result<u64, ClientError> {
     let committed = committed_bound(broker, publish_ctx, owned).await?;
-    let tail = log.tail_offset().await.map_err(storage)?;
-    Ok(tail
-        .min(committed.unwrap_or(u64::MAX))
-        .min(log.poisoned_read_end().unwrap_or(u64::MAX)))
+    let tail = tail_of(log).await?;
+    Ok(tail.min(committed.unwrap_or(u64::MAX)).min(
+        log.and_then(|log| log.poisoned_read_end())
+            .unwrap_or(u64::MAX),
+    ))
 }
 
 /// The quorum mark a group may read to, `None` when the shard has none.
@@ -558,12 +563,12 @@ pub(crate) async fn settle(
         return on_raft.settle(offset, action, group).await;
     }
     let (reader, log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
     // A claim handed out before the shard moved here is still the consumer's
     // to settle.
-    let tail = log.tail_offset().await.map_err(storage)?;
+    let tail = tail_of(log.as_ref()).await?;
     reader
         .inherit_below(&key, tail)
         .await
@@ -594,7 +599,7 @@ pub(crate) async fn settle(
     // after the tracker was built and not yet polled. Told apart from past
     // the tail, which cannot have been handed out by anyone.
     if let felix_broker::BrokerError::GroupOffsetNotHandedOut { .. } = err
-        && offset < log.tail_offset().await.map_err(storage)?
+        && offset < tail_of(log.as_ref()).await?
     {
         return Err(ClientError::new(
             felix_wire::ErrorCode::StaleClaim,
@@ -635,13 +640,13 @@ pub(crate) async fn extend(
         return on_raft.extend(offset, attempts, by).await;
     }
     let (reader, log, owned) =
-        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
+        reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard).await?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     // Claims are leader memory, so this writes nothing durable. It is still
     // fenced: an extension landing after the shard moved would be lost
     // without the consumer hearing of it.
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
-    let tail = log.tail_offset().await.map_err(storage)?;
+    let tail = tail_of(log.as_ref()).await?;
     reader
         .inherit_below(&key, tail)
         .await
@@ -792,7 +797,7 @@ fn owned_here(
         .engine
         .refuse_on_raft(&key, "consumer groups")
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    match dispatch(publish_ctx.ingress.as_deref(), &key) {
+    match dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key) {
         Dispatch::Local { generation } => Ok(Owned {
             key,
             generation,
@@ -807,7 +812,11 @@ fn owned_here(
 }
 
 /// The pieces a group operation needs, or why it cannot run.
-fn reader_and_log<'a>(
+///
+/// No log for an in-memory stream: it has none, and opening one here would
+/// leave the stream served as durable by whoever found it (#3136). Its group
+/// operations run as they would over an empty log.
+async fn reader_and_log<'a>(
     broker: &'a Broker,
     publish_ctx: &PublishContext,
     tenant_id: &str,
@@ -817,7 +826,7 @@ fn reader_and_log<'a>(
 ) -> Result<
     (
         &'a std::sync::Arc<felix_broker::GroupReader>,
-        felix_broker::StreamLog,
+        Option<felix_broker::StreamLog>,
         Owned,
     ),
     ClientError,
@@ -826,12 +835,24 @@ fn reader_and_log<'a>(
     let reader = broker.group_reader().ok_or_else(|| {
         no_storage("this broker has no durable storage, so it serves no consumer groups")
     })?;
-    let log = broker
+    let logs = broker
         .durable_storage()
-        .ok_or_else(|| no_storage("this broker has no durable storage"))?
+        .ok_or_else(|| no_storage("this broker has no durable storage"))?;
+    if crate::shards::lifecycle::in_memory_stream(broker, &owned.key).await {
+        return Ok((reader, None, owned));
+    }
+    let log = logs
         .open_stream(tenant_id, namespace, stream, shard)
         .map_err(storage)?;
-    Ok((reader, log, owned))
+    Ok((reader, Some(log), owned))
+}
+
+/// The log's tail, zero for a stream with no log.
+async fn tail_of(log: Option<&felix_broker::StreamLog>) -> Result<u64, ClientError> {
+    match log {
+        Some(log) => log.tail_offset().await.map_err(storage),
+        None => Ok(0),
+    }
 }
 
 fn group_key(tenant_id: &str, namespace: &str, stream: &str, shard: u32, group: &str) -> GroupKey {

@@ -66,6 +66,13 @@
 (* (SelfStart): it is the only placed broker, so no other disk can hold a  *)
 (* newer record.                                                           *)
 (*                                                                         *)
+(* With Alone, a standalone broker's group of one re-forms itself after a  *)
+(* relaxed crash: a power cut rotates the copy as a restore (a new storage *)
+(* id) and its saved commit can lag what it synced, since it is written at *)
+(* most once a second. "whole" vouches for each copy's whole log, as no    *)
+(* other disk can hold a newer record; "commit" keeps the usual rule, cut  *)
+(* to the saved commit, and loses synced records (KeptLossBound).          *)
+(*                                                                         *)
 (* Membership inside an epoch changes through a joint configuration, and a *)
 (* member uses the newest membership in its log, committed or not.         *)
 (*                                                                         *)
@@ -199,6 +206,7 @@ CONSTANTS
     FloorIndexOnly,
     CutToCommit,
     Kept,               \* rotations keep every copy whole, and the re-form reads them all
+    Alone,              \* "off", "whole" or "commit": a group of one re-forms itself
     Reserve,            \* "every", "leader" or "none": who reserves before its write counts
     MaxCuts,
     MaxReturns,
@@ -572,11 +580,14 @@ KeptCopy(b, l, t, by) ==
     [e |-> ep[b], cid |-> cid[b], log |-> l, commit |-> Min(commit[b], Len(l)),
      vote |-> <<ep[b], t>>, by |-> by, res |-> reserve[b]]
 
-KeepCopy(b, l, t, by) ==
-    /\ keptLogs' = [keptLogs EXCEPT ![b] = @ \cup {KeptCopy(b, l, t, by)}]
+\* A kept copy whose saved commit is `s`.
+KeepCopyAt(b, l, t, by, s) ==
+    /\ keptLogs' = [keptLogs EXCEPT ![b] = @ \cup {[KeptCopy(b, l, t, by) EXCEPT !.commit = s]}]
     /\ NewCopy(b, <<>>)
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = [reserve EXCEPT ![b] = 0]
+
+KeepCopy(b, l, t, by) == KeepCopyAt(b, l, t, by, Min(commit[b], Len(l)))
 
 \* A restore whose kept copy is later reclaimed: a new empty copy and no
 \* kept copy of the old id, so the old copy's vote is gone (#2671). The
@@ -620,7 +631,12 @@ PowerCutRotate(b, n) ==
     /\ cuts < MaxCuts
     /\ cuts' = cuts + 1
     /\ n \in synced[b]..Len(log[b])
-    /\ KeepCopy(b, SubSeq(log[b], 1, n), term[b], "power-cut")
+    /\ IF Alone = "off"
+       THEN KeepCopy(b, SubSeq(log[b], 1, n), term[b], "power-cut")
+       \* A standalone broker's relaxed crash mints a new storage id, so the
+       \* copy rotates as a restore, with a saved commit that can lag.
+       ELSE \E s \in 0..Min(commit[b], n) :
+                KeepCopyAt(b, SubSeq(log[b], 1, n), term[b], "restore", s)
     /\ UNCHANGED <<cpVars, writes, steps, places, rotations, rejoins, restarts, returns>>
 
 \* A broker declared dead comes back under a new storage id: its current copy
@@ -920,14 +936,18 @@ ReformKept(p, src) ==
         R == UNION {Copies(b) : b \in S}
         T == Top(R)
         mk == Marked(e, R)
-        V(c) == VouchK(c, e, T, mk)
+        \* One broker, placed alone, in every voter set of the epoch.
+        one == /\ Alone # "off"
+               /\ Cardinality(Placed) = 1 /\ S = Placed /\ dead = {}
+               /\ \A Vs \in VoterSets(e, R) : \A m \in Vs : m[1] \in S
+        V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk)
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
         top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
                                    MaxOf({c.res : c \in R})))
         \* Unmarked, and no vote read is above every entry read.
         tEntry == ~mk /\ T = MaxKey({LastKey(c.log) : c \in R})
-        held == IF tEntry
+        held == IF tEntry \/ one
                 THEN {x \in acked \ lost : x.e <= e /\ \E c \in R : Has(c.log, x) /\ x.i <= Cap(c.e, e)}
                 ELSE {}
     IN /\ Kept
@@ -1085,8 +1105,8 @@ ElectedGroupLeftAlone ==
 
 \* With Kept, AckedSurvive allows any record the vouch rule left out. This
 \* bounds it: in an unmarked group where no vote read is above every entry
-\* read, no acknowledged record a read copy holds below its epoch's cap is
-\* lost.
+\* read, or in a group of one under Alone, no acknowledged record a read
+\* copy holds below its epoch's cap is lost.
 KeptLossBound ==
     [][\A f \in forms' \ forms : f.held \cap lost' = {}]_vars
 

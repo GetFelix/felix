@@ -50,7 +50,7 @@ async fn claim(
         .poll_below(
             &group_key(),
             log,
-            member.bound(),
+            || Ok(member.bound()),
             16,
             std::time::Instant::now(),
             Some(consumer),
@@ -259,5 +259,103 @@ async fn a_killed_leader_mid_claim_skips_nothing_and_hands_out_once() {
         groups.ack(&group_key(), last + 50, soon()).await,
         Err(BrokerError::GroupOffsetNotHandedOut { .. })
     ));
+    stop(&members).await;
+}
+
+/// A zero-wait poll of `orders` on `member`, through the path a client's
+/// `GroupPoll` takes.
+fn poll_now(
+    member: &Member,
+) -> tokio::task::JoinHandle<Result<Vec<u64>, crate::serving::quic::client_error::ClientError>> {
+    use crate::serving::quic::ClusterContext;
+    use crate::serving::quic::handlers::publish::build_publish_context;
+
+    let broker = Arc::clone(&member.broker);
+    let publish_ctx = build_publish_context(
+        Arc::clone(&member.broker),
+        &crate::config::BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::clone(&member.engine),
+            ..ClusterContext::default()
+        },
+    );
+    tokio::spawn(async move {
+        let polled = crate::serving::group_ops::poll(
+            &broker,
+            &publish_ctx,
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            "workers",
+            16,
+            Duration::ZERO,
+            None,
+            None,
+        );
+        Ok(polled.await?.iter().map(|record| record.offset).collect())
+    })
+}
+
+/// How long a poll is watched to see that it hands nothing out while the
+/// record cannot commit. Well inside the read's patience (`election_max`).
+const HELD: Duration = Duration::from_millis(150);
+
+/// **A poll right after a `Quorum` publish answered on a written majority
+/// hands the record out, and not before it commits.** With every follower's
+/// fsync held the write is acknowledged but cannot commit. The poll starts
+/// after the ack, so it waits for the commit and then returns the record,
+/// as a stream read does. A bound taken before that wait would leave it out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poll_after_a_written_ack_waits_for_the_commit_and_hands_it_out() {
+    let periodic = FsyncMode::Periodic {
+        interval: Duration::from_millis(250),
+    };
+    let (_net, members, leader) = trio_fsync(ConsistencyLevel::Quorum, periodic).await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"q0").await;
+
+    let logs = follower_logs(&members, leader).await;
+    let held = futures::future::join_all(logs.iter().map(|log| log.hold_flushes())).await;
+    let answered = members[leader].publish_within(term, b"q1", Duration::from_secs(10));
+    let offset = answered.await.expect("answered before its commit");
+    assert!(members[leader].bound() <= offset, "it committed");
+
+    let polled = poll_now(&members[leader]);
+    tokio::time::sleep(HELD).await;
+    assert!(!polled.is_finished(), "a poll answered above the commit");
+    drop(held);
+    let got = polled.await.expect("joined").expect("polled");
+    assert!(got.contains(&offset), "{offset} acked, poll gave {got:?}");
+    stop(&members).await;
+}
+
+/// **A poll right after a `Leader` publish answered on the lease hands the
+/// record out, and not before it commits.** The followers answer heartbeats
+/// but take no entries, so the lease holds and the write cannot commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_poll_after_a_lease_ack_waits_for_the_commit_and_hands_it_out() {
+    let (net, members, leader) = trio_at(ConsistencyLevel::Leader).await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"l0").await;
+
+    for (at, member) in members.iter().enumerate() {
+        if at != leader {
+            net.starved.lock().insert(member.name.to_string());
+        }
+    }
+    let answered = members[leader].publish_within(term, b"l1", Duration::from_secs(10));
+    let offset = answered.await.expect("answered on the lease");
+    assert!(members[leader].bound() <= offset, "it committed");
+
+    let polled = poll_now(&members[leader]);
+    tokio::time::sleep(HELD).await;
+    assert!(!polled.is_finished(), "a poll answered above the commit");
+    net.starved.lock().clear();
+    let got = polled.await.expect("joined").expect("polled");
+    assert!(got.contains(&offset), "{offset} acked, poll gave {got:?}");
     stop(&members).await;
 }

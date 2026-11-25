@@ -577,6 +577,20 @@ impl ForwardingHandler {
                 .apply_cache_on_raft(op, &key, mint, entry_expires_at)
                 .await;
         }
+        // A Raft broker keeps every cache shard on a group. With no member
+        // open here yet the hybrid stores must not take it; the requester
+        // retries (its client sees the shard as not ready).
+        if self.engine.runs_raft() {
+            metrics::record_served(metrics::OUTCOME_REFUSED);
+            return InternalMessage::ForwardCacheError(ForwardCacheError {
+                correlation_id,
+                code: ErrorCode::Unavailable,
+                detail: format!(
+                    "the Raft group of {}/{}/{} shard {} is not open on this broker yet",
+                    key.tenant_id, key.namespace, key.stream, key.shard
+                ),
+            });
+        }
 
         // A read follows the lease as a write does: another broker may be
         // leading the shard by now, with writes this one never saw. A fleet

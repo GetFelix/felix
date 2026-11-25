@@ -512,6 +512,23 @@ impl Broker {
             .cloned()
     }
 
+    /// Every registered cache, as `(tenant, namespace, cache, metadata)`.
+    pub async fn registered_caches(&self) -> Vec<(String, String, String, CacheMetadata)> {
+        self.caches
+            .read()
+            .await
+            .iter()
+            .map(|(key, metadata)| {
+                (
+                    key.tenant_id.clone(),
+                    key.namespace.clone(),
+                    key.cache.clone(),
+                    metadata.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Every stream registered for a tenant, as `(namespace, stream, metadata)`,
     /// sorted by namespace then stream.
     pub async fn tenant_streams(&self, tenant_id: &str) -> Vec<(String, String, StreamMetadata)> {

@@ -21,7 +21,8 @@
 //! The design is in `docs/per-shard-raft.md`, "Group and member identity",
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
-mod copy_file;
+mod alone;
+pub(crate) mod copy_file;
 pub(crate) mod epoch_file;
 mod fresh_epoch;
 mod gate;
@@ -44,6 +45,7 @@ pub(crate) mod tests;
 mod vouch;
 mod wire;
 
+pub use alone::{Alone, AlonePlan, Aloned, EpochRecord, LocalRecord, ReadCopy};
 pub use copy_file::CopyFile;
 #[allow(
     unused_imports,
@@ -55,7 +57,7 @@ pub use fresh_epoch::{FreshEpoch, write_fresh_epoch};
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
-    holds_log_without_copy, kept_copies, reached_before,
+    holds_log_without_copy, hybrid_log_under, kept_copies, reached_before,
 };
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{
@@ -85,6 +87,8 @@ pub(crate) use rotated_by::RotatedBy;
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
 pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
+#[cfg(test)]
+pub(crate) use vouch::plan_reform;
 pub use vouch::{
     BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RESTORE_OFFSETS_PER_MILLI,
     RestoreAt, VoterId,
@@ -93,9 +97,7 @@ pub use vouch::{
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
-pub(crate) use vouch::{
-    Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, plan_reform, probes,
-};
+pub(crate) use vouch::{Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource, probes};
 pub use wire::{
     PlanView, REPORT_VERSION, SurveyStep, VersionMismatch, WireBase, WireCopy, WireFloor,
     WireReport, WireRotated, WireStart, first_probes, plan_starts, survey_step,

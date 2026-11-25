@@ -96,7 +96,7 @@ pub(super) fn not_served_here(
         kind: ShardKind::Stream,
     };
     let publish_ctx = cx.publish_ctx;
-    match dispatch(publish_ctx.ingress.as_deref(), &key) {
+    match dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key) {
         Dispatch::Local { .. } => None,
         dispatched => {
             let not_here = match &dispatched {

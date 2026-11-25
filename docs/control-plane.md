@@ -599,6 +599,13 @@ up, so it never counts as down.
 Peers learn a broker's address only from the control plane, so a broker
 started this way votes only if it comes back at its registered address.
 
+Under `FELIX_SHARD_ENGINE=raft` a broker started this way opens its Raft
+members, and votes, before the control plane answers only with
+`FELIX_UNIFIED_FENCE=0`. They do not lead until the broker has registered.
+With the unified fence, the default, they wait for the control plane. See
+`docs/per-shard-raft.md`, "Voting before the restore check", for what the
+run witness proves and what it does not.
+
 ```mermaid
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
@@ -1841,6 +1848,7 @@ copy has to move:
 | --- | --- | --- |
 | Balance, drain or operator move to a member | Stage, fence, cut over | One write that changes only `leader`, to another member |
 | Operator move outside the set | Copied in first | One write that gives the destination the leader's seat and names it leader |
+| Balance with no member to take a leader | As any balance move | One write that swaps a follower for a live broker outside the set, two or more leaders under the leader, and names it leader (#3113). An RF 1 shard grows to that broker, then shrinks to it (#3118) |
 | Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
 | Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
 | Follower on an internal node | Replaced | Replaced, the same way |
@@ -1887,12 +1895,31 @@ placement reports, until it is back or the group is re-formed without it;
 `docs/per-shard-raft.md` has the steps. A removed copy keeps
 its directory: nothing deletes it yet.
 
+When the leader leads two or more shards over a live broker outside the
+set and no member qualifies, balance swaps a follower for that broker and
+names it leader in one write, under the same checks as a follower
+replacement and from the same per-pass budget. It gives up a follower in
+that broker's zone first, then the busiest, and never one whose swap would
+leave a zone-spread set short of a zone. The group's leader keeps its seat
+and hands leadership over once the new copy votes. This is how a broker a
+drain swapped out of every set, and then restarted, gets shards back
+(#3113). An RF 1 shard has no follower to give, so balance moves it by the
+two writes of an RF 1 operator move, above: grow to the leader and that
+broker, then shrink once its copy votes (#3118). Each write takes a slot
+from the per-pass budget, and the move counts as a leader for the
+destination from the first write, so one gap starts one move. A move for
+the stream's spread is taken only where the destination also leads fewer in
+total than the leader, so it never trades a shard each way between two
+brokers. It is undone or stranded as an operator's RF 1 move is.
+
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
 leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
 waits while a broker is down, as for the hybrid. A down leader is renamed even
 while paused, as the hybrid still replaces a failed leader: a broker with no
-member forwards requests to the leader placement names. The set changes only
+member forwards requests to the leader placement names, or, while that
+broker holds no voter yet (a move outside the set), to a voter the group's
+leader reported. The set changes only
 through the group's membership target
 ([#2235](https://github.com/GetFelix/felix/issues/2235)). A shard switched
 from the hybrid is not placed here at all. See
@@ -1906,8 +1933,15 @@ shard".
 > `an_operator_moves_a_raft_leader_to_a_member_in_one_write`,
 > `an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat`,
 > `a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set`,
-> `a_raft_follower_lost_past_the_delay_is_replaced` and
-> `a_drain_on_a_raft_cluster_finishes_through_the_store`.
+> `a_raft_follower_lost_past_the_delay_is_replaced`,
+> `a_drain_on_a_raft_cluster_finishes_through_the_store`,
+> `a_raft_leader_balances_onto_a_broker_that_holds_no_seat`,
+> `a_raft_leader_balances_outside_its_set_only_once_the_set_settles`,
+> `balancing_outside_raft_sets_takes_the_replacement_budget`,
+> `a_raft_leader_balances_outside_its_set_only_where_the_set_keeps_its_zones`
+> and `a_raft_leader_balances_outside_its_set_by_swapping_within_a_zone`;
+> `crates/testing/felix-cluster/tests/routing/shutdown_handoff.rs`,
+> `a_broker_drained_out_of_every_set_leads_again_after_a_restart`.
 
 #### Adopting an elected leader
 

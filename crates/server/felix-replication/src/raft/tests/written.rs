@@ -892,6 +892,25 @@ async fn a_relaxed_leader_acknowledges_on_relaxed_followers_reports() {
     led.cluster.stop().await;
 }
 
+/// A `Quorum` write that is committed before its wait is first polled is
+/// answered by the commit and never reaches the written count. The wait
+/// still makes the leader ask, or the next write's appends go out unasked
+/// and it is acknowledged only once the leader has applied it (#3117).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wait_on_a_committed_write_still_makes_the_leader_ask() {
+    use super::super::network::Ask;
+    let mut led = led_relaxed(&BROKERS).await;
+    assert_eq!(led.group().reports().ask(), Ask::Nothing, "nothing waited");
+    let written = led.propose().await;
+    let committed = led.engine.await_commit(&shard(0), written, PATIENCE).await;
+    committed.expect("committed");
+
+    let acked = led.acked(written, AckAt::Written).await;
+    acked.expect("acknowledged");
+    assert_eq!(led.group().reports().ask(), Ask::Written);
+    led.cluster.stop().await;
+}
+
 /// A relaxed leader whose relaxed followers have not written a record does
 /// not acknowledge it on reports of another term, and does once a follower
 /// reports it in the leader's term.

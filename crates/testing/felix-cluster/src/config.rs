@@ -80,6 +80,13 @@ pub struct ClusterConfig {
     /// when any broker runs Raft, else the hybrid. Brokers take theirs from
     /// `broker_env`.
     pub control_plane_engine: Option<String>,
+    /// Let [`Cluster::start`](crate::Cluster::start) return while new Raft
+    /// groups still have their first leadership to hand over. Off by default:
+    /// a start then waits until every Raft shard is led by the broker
+    /// placement names, so the owner a test reads next is the broker that
+    /// serves and stays it (#3157). Only a test about the hand-over itself
+    /// wants it pending.
+    pub pending_raft_hand_overs: bool,
 }
 
 impl Default for ClusterConfig {
@@ -105,6 +112,7 @@ impl Default for ClusterConfig {
             joint_fence: false,
             node_expiry: Duration::from_secs(1),
             control_plane_engine: None,
+            pending_raft_hand_overs: false,
         }
     }
 }
@@ -123,6 +131,12 @@ impl ClusterConfig {
     /// features, e.g. to check what is refused before one is finalized.
     pub(crate) fn raft_by_suite_default(&self) -> bool {
         self.named_engine().is_none() && default_engine() == "raft"
+    }
+
+    /// Whether a start waits for every Raft shard's placed leader to lead.
+    /// The hybrid has no hand-over: placement's owner serves from the start.
+    pub(crate) fn awaits_placed_raft_leaders(&self) -> bool {
+        self.raft_brokers() && !self.pending_raft_hand_overs
     }
 
     fn named_engine(&self) -> Option<&str> {

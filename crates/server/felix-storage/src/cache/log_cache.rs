@@ -59,6 +59,11 @@ pub struct LogCache {
     /// Markers and floors under `.streams/` in this store's root, for a
     /// store whose names are caches; see `crate::incarnation::marker`.
     markers: Arc<crate::incarnation::marker::MarkerFiles>,
+    /// Set by [`Self::leave_to_engines`].
+    engines_only: std::sync::atomic::AtomicBool,
+    /// The names a store left to engines still opens, at one incarnation
+    /// each. See [`Self::keep_for_hybrid`].
+    hybrid: SyncMutex<felix_common::random::HashMap<(String, String, String), u64>>,
 }
 
 impl LogCache {
@@ -77,6 +82,8 @@ impl LogCache {
             root,
             config,
             shards: ShardSlots::new(),
+            engines_only: Default::default(),
+            hybrid: Default::default(),
             incarnations: Default::default(),
             dirs: Default::default(),
             compactor: Arc::new(Compactor::from_env()),
@@ -628,6 +635,34 @@ impl LogCache {
         Ok(entries)
     }
 
+    /// Refuse to open any shard's log from here on: a shard engine (Raft)
+    /// owns every cache shard on this broker. A log opened here would be a
+    /// second copy of the shard that nothing serves, and its directory would
+    /// keep the engine from claiming the shard.
+    pub fn leave_to_engines(&self) {
+        self.engines_only
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// On a store left to engines, still open `name`'s shards at
+    /// `incarnation`, or stop with `None`. A name not kept this way stays
+    /// refused, so a store holding consumer-group state for both kinds of
+    /// stream opens only the ones the hybrid lifecycle serves (in-memory).
+    pub fn keep_for_hybrid(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        name: &str,
+        incarnation: Option<u64>,
+    ) {
+        let key = (tenant.to_string(), namespace.to_string(), name.to_string());
+        let mut hybrid = self.hybrid.lock();
+        match incarnation {
+            Some(incarnation) => hybrid.insert(key, incarnation),
+            None => hybrid.remove(&key),
+        };
+    }
+
     /// The log backing one cache shard.
     ///
     /// For replication, which ships a shard's records to followers and needs
@@ -1143,6 +1178,15 @@ impl LogCache {
                 let key = key();
                 // Again under the slot's lock, as `DiskLogProvider` does.
                 if self.incarnations.resolve(tenant, namespace, cache) != Some(incarnation) {
+                    return Err(StorageError::Closed(layout::shard_label(&key)));
+                }
+                if self.engines_only.load(std::sync::atomic::Ordering::Acquire)
+                    && self.hybrid.lock().get(&(
+                        tenant.to_string(),
+                        namespace.to_string(),
+                        cache.to_string(),
+                    )) != Some(&incarnation)
+                {
                     return Err(StorageError::Closed(layout::shard_label(&key)));
                 }
                 let dir = layout::incarnation_dir(&self.root, &key, incarnation);

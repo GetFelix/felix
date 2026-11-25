@@ -106,6 +106,35 @@ fn member(
     )
 }
 
+/// **A fresh group is not settled while the broker that formed it still
+/// leads (#3130).** `broker-0` forms every group it is lowest in and wins
+/// the first term; the shard closes for an election when it hands over to
+/// the broker placement names, so a publish sent before that can be refused.
+#[test]
+fn a_shard_is_not_led_as_placed_until_the_hand_over_lands() {
+    // What `broker-1`, placed as leader, reports before the hand-over.
+    let (_, following) = member("broker-1", "follower", 1, Some("broker-0"), Some(3));
+    let short = raft_led_as_placed("broker-1", Some(&following)).unwrap_err();
+    assert!(short.contains("broker-0 leads at term 1"), "{short}");
+
+    // Mid hand-over: the old term is closed and nobody leads the next yet.
+    let (_, electing) = member("broker-1", "candidate", 2, None, Some(3));
+    let short = raft_led_as_placed("broker-1", Some(&electing)).unwrap_err();
+    assert!(short.contains("is a candidate at term 2"), "{short}");
+
+    let (_, leading) = member("broker-1", "leader", 2, Some("broker-1"), Some(4));
+    assert_eq!(raft_led_as_placed("broker-1", Some(&leading)), Ok(2));
+}
+
+#[test]
+fn a_placed_leader_with_no_member_or_no_following_does_not_lead() {
+    let short = raft_led_as_placed("broker-1", None).unwrap_err();
+    assert!(short.contains("has no member open"), "{short}");
+    // Cut off or giving the term up: still a leader by role, heard by no one.
+    let (_, deposed) = member("broker-1", "leader", 2, None, Some(4));
+    assert!(raft_led_as_placed("broker-1", Some(&deposed)).is_err());
+}
+
 #[test]
 fn a_raft_wait_names_the_leader_once_a_majority_holds_its_tail() {
     let members = [
@@ -231,4 +260,29 @@ fn a_raft_liveness_check_reads_the_followers_after_the_leader() {
         Ok(("c".to_string(), 5))
     );
     assert_eq!(raft_leader_caught_up(&first, &then), Ok("c".to_string()));
+}
+
+#[test]
+fn a_raft_leader_placement_named_serves_at_once() {
+    let mut settle = LeaderSettle::default();
+    assert!(settle.settled("b2", Some("b2"), Instant::now(), Duration::from_secs(2)));
+}
+
+#[test]
+fn a_raft_leader_placement_did_not_name_serves_only_once_it_keeps_leading() {
+    let settles = Duration::from_secs(2);
+    let start = Instant::now();
+    let mut settle = LeaderSettle::default();
+    // The broker that formed the group, before the group-start transfer.
+    assert!(!settle.settled("b0", Some("b2"), start, settles));
+    assert!(!settle.settled("b0", Some("b2"), start + Duration::from_secs(1), settles));
+    // A different leader starts the wait again.
+    assert!(!settle.settled(
+        "b1",
+        Some("b2"),
+        start + Duration::from_millis(1500),
+        settles
+    ));
+    assert!(!settle.settled("b1", None, start + Duration::from_secs(3), settles));
+    assert!(settle.settled("b1", None, start + Duration::from_millis(3500), settles));
 }

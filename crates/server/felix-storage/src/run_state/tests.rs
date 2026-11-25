@@ -21,6 +21,16 @@ thread_local! {
     pub(super) static SYNC_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Make `forget_boot`'s in-place cut fail.
     pub(super) static CUT_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The point in `begin`'s rotation where an injected crash stops it.
+    static CRASH_AT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Stop `begin` as a crash at `point` would.
+pub(super) fn crash_point(point: u8) -> Result<()> {
+    if CRASH_AT.with(std::cell::Cell::get) == point {
+        return Err(StorageError::Io(std::io::Error::other("injected crash")));
+    }
+    Ok(())
 }
 
 fn syncs() -> u32 {
@@ -1116,5 +1126,181 @@ fn an_undecodable_mint_record_reads_as_none() {
         whole.replacen("minted_id", "minted", 1),
     ] {
         assert_eq!(read(&damaged), None, "{damaged:?}");
+    }
+}
+
+/// A relaxed machine crash leaves the evidence a standalone broker re-forms
+/// on: the id it rotated away.
+#[test]
+fn a_relaxed_crash_records_the_id_it_rotated_away() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+    assert!(relaxed_crash_sources(dir.path()).expect("read").is_empty());
+    let second = begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+    assert!(second.rotated);
+    assert_eq!(
+        relaxed_crash_sources(dir.path()).expect("read"),
+        vec![first.id]
+    );
+}
+
+/// Crashes in a row chain, so a shard not opened in between still counts.
+#[test]
+fn crashes_in_a_row_chain_their_ids() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+    let second = begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+    let third = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    assert!(third.rotated);
+    assert_eq!(
+        relaxed_crash_sources(dir.path()).expect("read"),
+        vec![second.id, first.id]
+    );
+}
+
+/// A Raft copy in `dir` minted under `minted`.
+#[cfg(feature = "raft")]
+fn copy_minted_under(dir: &Path, minted: StorageId) {
+    crate::fs::create_dir_all(dir).expect("shard dir");
+    let copy = crate::raft_copy::copy_file::CopyFile { copy: 1, minted };
+    crate::raft_copy::copy_file::store(dir, &copy).expect("copy file");
+}
+
+/// However many crashes follow, the record keeps an id a copy on disk was
+/// minted under, in a shard directory or kept beside one. An id no copy
+/// names goes once it is older than the newest few, so the record is bounded
+/// by the copies on disk (#3119).
+#[test]
+#[cfg(feature = "raft")]
+fn a_long_crash_loop_keeps_the_ids_copies_were_minted_under() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+    copy_minted_under(&dir.path().join("shards").join("0"), first.id);
+    let second = begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+    let third = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    copy_minted_under(&dir.path().join(".kept").join("1.7"), third.id);
+    let mut ids = vec![first.id, second.id, third.id];
+    for n in 0..3 * RELAXED_CRASHES_KEPT {
+        let boot = if n % 2 == 0 { REBOOTED } else { BOOT };
+        ids.push(begin_in(dir.path(), PERIODIC, boot, &mut fresh).id);
+    }
+    let sources = relaxed_crash_sources(dir.path()).expect("read");
+    assert!(sources.contains(&first.id), "{sources:?}");
+    assert!(sources.contains(&third.id), "{sources:?}");
+    assert!(!sources.contains(&second.id), "{sources:?}");
+    // The newest ids rotated away, newest first, then the two still named.
+    let newest: Vec<_> = ids
+        .iter()
+        .rev()
+        .skip(1)
+        .take(RELAXED_CRASHES_KEPT)
+        .collect();
+    assert_eq!(
+        sources
+            .iter()
+            .take(RELAXED_CRASHES_KEPT)
+            .collect::<Vec<_>>(),
+        newest
+    );
+    assert_eq!(sources.len(), RELAXED_CRASHES_KEPT + 2);
+}
+
+/// A copy file that cannot be read keeps the whole record: which ids are
+/// still named is unknown, and dropping one could hold a shard.
+#[test]
+#[cfg(feature = "raft")]
+fn an_unreadable_copy_keeps_every_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    begin_on(dir.path(), PERIODIC, &mut fresh);
+    let shard = dir.path().join("shards").join("0");
+    crate::fs::create_dir_all(&shard).expect("shard dir");
+    std::fs::write(
+        shard.join(crate::raft_copy::copy_file::FILE_NAME),
+        b"damaged",
+    )
+    .expect("write");
+    let crashes = 2 * RELAXED_CRASHES_KEPT;
+    for n in 0..crashes {
+        let boot = if n % 2 == 0 { REBOOTED } else { BOOT };
+        begin_in(dir.path(), PERIODIC, boot, &mut fresh);
+    }
+    assert_eq!(
+        relaxed_crash_sources(dir.path()).expect("read").len(),
+        crashes
+    );
+}
+
+/// A clean stop and an `OnCommit` crash keep the id, so neither leaves
+/// evidence.
+#[test]
+fn a_clean_stop_and_an_on_commit_crash_leave_no_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    let second = begin_in(dir.path(), ON_COMMIT, REBOOTED, &mut fresh);
+    assert!(!second.rotated);
+    assert!(relaxed_crash_sources(dir.path()).expect("read").is_empty());
+    mark_clean(dir.path(), first.id).expect("mark clean");
+    begin_on(dir.path(), PERIODIC, &mut fresh);
+    assert!(relaxed_crash_sources(dir.path()).expect("read").is_empty());
+}
+
+/// A restore or an operator rotation after the crash changes the id, which
+/// voids the record, and a crash after it starts the chain over.
+#[test]
+fn a_later_rotation_voids_the_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    begin_on(dir.path(), PERIODIC, &mut fresh);
+    begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+    let operator = copy_trust::rotate_storage_id(dir.path(), [200; 16]).expect("rotate");
+    assert!(relaxed_crash_sources(dir.path()).expect("read").is_empty());
+    begin_on(dir.path(), PERIODIC, &mut fresh);
+    assert_eq!(
+        relaxed_crash_sources(dir.path()).expect("read"),
+        vec![operator]
+    );
+}
+
+/// A clean restart after the crash keeps the id and the evidence, so a
+/// re-form the first start did not finish is still owed.
+#[test]
+fn a_clean_restart_keeps_the_evidence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+    let crashed = begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+    mark_clean(dir.path(), crashed.id).expect("mark clean");
+    let again = begin_on(dir.path(), PERIODIC, &mut fresh);
+    assert_eq!(again.id, crashed.id);
+    assert_eq!(
+        relaxed_crash_sources(dir.path()).expect("read"),
+        vec![first.id]
+    );
+}
+
+/// A crash on either side of a relaxed crash's rotation leaves the evidence
+/// whole, so the next start still names every id the crashes rotated away.
+#[test]
+fn a_crash_during_the_rotation_keeps_the_evidence() {
+    for point in [1, 2] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fresh = counter(0);
+        let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+        let second = begin_in(dir.path(), PERIODIC, REBOOTED, &mut fresh);
+        CRASH_AT.with(|at| at.set(point));
+        let cut = begin(dir.path(), PERIODIC, None, BOOT, no_repair, &mut fresh);
+        CRASH_AT.with(|at| at.set(0));
+        assert!(cut.is_err(), "point {point}");
+        let again = Some(BootId::from_bytes([3; 16]));
+        let third = begin_in(dir.path(), PERIODIC, again, &mut fresh);
+        assert!(third.rotated, "point {point}");
+        let sources = relaxed_crash_sources(dir.path()).expect("read");
+        assert!(sources.contains(&second.id), "point {point}: {sources:?}");
+        assert!(sources.contains(&first.id), "point {point}: {sources:?}");
     }
 }

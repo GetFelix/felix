@@ -115,6 +115,20 @@ impl CopyRoot {
         &self.marks
     }
 
+    /// Whether the root's disk takes writes again, for a member that
+    /// stopped on a storage error and is about to open again: a probe file
+    /// written, fsynced and removed at the root, then the mark log reopened
+    /// if it had failed ([`MarkLog::reopen`]). An error means the disk is
+    /// still failing and nothing should open yet.
+    pub async fn heal(&self) -> io::Result<()> {
+        let root = self.marks.root().to_path_buf();
+        felix_common::blocking::spawn(move || probe(&root))
+            .await
+            .map_err(io::Error::other)??;
+        self.marks.reopen().await?;
+        Ok(())
+    }
+
     /// Open `dir` as `shard`'s copy, as a log labelled `label` under
     /// `config`, rotating the copy when the directory cannot keep its id.
     ///
@@ -519,6 +533,31 @@ pub fn holds_log_without_copy(dir: &Path) -> io::Result<bool> {
     engine_marker::holds_segments(dir).map_err(io::Error::other)
 }
 
+/// A directory directly under `root` that holds a log and no copy file: the
+/// hybrid engine's data, which no Raft member may open. `None` for a root
+/// with none, or that does not exist yet. Directories starting with `.`
+/// (kept copies) are not shard directories.
+pub fn hybrid_log_under(root: &Path) -> io::Result<Option<PathBuf>> {
+    let entries = match crate::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let mut found: Option<PathBuf> = None;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let dir = entry.path();
+        // The smallest path, so the error names the same directory each run.
+        if holds_log_without_copy(&dir)? && found.as_ref().is_none_or(|first| dir < *first) {
+            found = Some(dir);
+        }
+    }
+    Ok(found)
+}
+
 pub(super) fn parent_of(dir: &Path) -> io::Result<PathBuf> {
     dir.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -554,4 +593,18 @@ fn kept_path(dir: &Path, parent: &Path, replaced: Option<u64>) -> io::Result<Pat
         }
         n += 1;
     }
+}
+
+/// The file [`CopyRoot::heal`] probes the disk with.
+const PROBE: &str = ".disk-probe";
+
+fn probe(root: &Path) -> io::Result<()> {
+    let path = root.join(PROBE);
+    {
+        let file = crate::fs::File::create(&path)?;
+        crate::io::write_all(&file, b"probe")?;
+        crate::io::sync_all(&file)?;
+    }
+    crate::fs::remove_file(&path)?;
+    crate::io::sync_dir(root)
 }

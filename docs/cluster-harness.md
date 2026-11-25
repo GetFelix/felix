@@ -310,6 +310,13 @@ An endpoint is a broker (`Endpoint::node(id)`) or the control plane. A fault
 naming a broker the cluster does not have, or a link fault on a cluster
 started without proxies, is an error rather than a no-op.
 
+The partition, clock and storage faults are files the broker re-reads while
+it runs. The harness replaces such a file by rename, so the broker reads the
+old contents or the new ones. Written in place, the file is empty for a
+moment, and an empty partition file severs nothing: a leader cut off from the
+group could hear the newer term in that moment, and a test of the cut would
+then be testing something else.
+
 `Suspend` signals the broker's process alone. Brokers start no children, so
 that is the whole of it, and they stay in the harness's process group so a
 Ctrl-C of the test still reaches them.
@@ -430,6 +437,7 @@ makes, whether the broker leads the log or follows it:
 write=enospc         # every segment write fails with ENOSPC; or eio
 write=eio_once       # the next segment write fails with EIO, later ones succeed
 write_generation=1   # a new value arms eio_once again
+rewind=fail          # the rewind after a failed write fails too, poisoning the log
 write_delay_ms=200   # each segment write waits first, like a throttled write()
 ```
 
@@ -657,6 +665,18 @@ both steps on every code change. It reports and does not gate a merge yet.
 report its replicas to the control plane. A cluster whose brokers run Raft
 skips that wait: a Raft shard reports none, and the start still waits for a
 publish to be accepted.
+
+A Raft start waits last for the first hand-overs. The broker that forms a
+group leads its first term and then hands over to the broker placement
+names ([per-shard-raft.md](per-shard-raft.md), "Leaders follow placement").
+Until that lands, `Cluster::owner` names a broker that does not lead yet, the
+leader a test reads can move, and a publish sent during the election is
+refused as not ready. So `Cluster::start` calls
+`Cluster::await_raft_leaders_placed` (60 s) and fails, naming the shard, if a
+hand-over does not land (#3157). A test about the hand-over itself sets
+`ClusterConfig::pending_raft_hand_overs` to start without the wait. A stream
+made later with `Cluster::create_stream` is not covered: call
+`await_raft_leaders_placed` once it is placed.
 
 `Cluster::create_stream` creates a stream on a running cluster and waits for
 nothing. A test that needs a shard placed on fewer brokers than its stream
@@ -894,6 +914,18 @@ let cluster = Cluster::start(ClusterConfig::default()).await?;
 let (owner, non_owner) = cluster.owner_and_non_owner("orders").await?;
 cluster.publish_via(&non_owner, "orders", payload).await?;
 ```
+
+To read back what a broker holds, use `Cluster::whole_replay_on` (or
+`whole_replay_of_shard`), not a loop over `next_event` that stops at the first
+thing that is not an event. A broker that is still settling can end a replay
+part way through the history: a follower refused its read index, a leader whose
+term is not open yet. It resets the event stream, and the client is meant to
+resume. The records read up to then are a prefix, and a test that asserts on
+them reports acknowledged records as lost when none were (#3112).
+`replay::drain` returns an error for a subscription that was lost or ended, and
+`whole_replay_on` starts the replay again until one runs to its end. A helper
+that reads until it has the records it wants and retries otherwise is fine as
+it is.
 
 `Cluster::metric` reads a counter or gauge from one broker's `/metrics`, and
 returns `None` when it was never recorded, which for a counter is the

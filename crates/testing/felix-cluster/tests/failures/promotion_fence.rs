@@ -243,6 +243,11 @@ async fn deposed_leader_meets_the_fenced_majority(deposed: Deposed) {
 #[serial]
 #[tokio::test]
 async fn a_partitioned_leader_is_refused_by_the_majority_its_successor_fenced() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the control-plane promotion fence and lease are hybrid; a Raft term refuses a deposed leader, and fencing::a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses covers it",
+    ) {
+        return;
+    }
     deposed_leader_meets_the_fenced_majority(Deposed::Partitioned).await;
 }
 
@@ -250,6 +255,11 @@ async fn a_partitioned_leader_is_refused_by_the_majority_its_successor_fenced() 
 #[serial]
 #[tokio::test]
 async fn a_frozen_leader_is_refused_by_the_majority_its_successor_fenced() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the control-plane promotion fence and lease are hybrid; a Raft term refuses a deposed leader, and fencing::a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses covers it",
+    ) {
+        return;
+    }
     deposed_leader_meets_the_fenced_majority(Deposed::Frozen).await;
 }
 
@@ -259,6 +269,11 @@ async fn a_frozen_leader_is_refused_by_the_majority_its_successor_fenced() {
 #[serial]
 #[tokio::test]
 async fn a_mixed_fleet_fails_over_on_the_lease() {
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "the lease and the fence opt-out are hybrid; Raft elects by term",
+    ) {
+        return;
+    }
     let without_fence = vec![("FELIX_INTERNAL_FENCE".to_string(), "false".to_string())];
     let cluster = Cluster::start(config(vec![without_fence]))
         .await
@@ -319,22 +334,25 @@ async fn a_mixed_fleet_fails_over_on_the_lease() {
 
     // A subscribe can still be refused as not ready for a moment after the
     // shard opens. Only that refusal is transient.
+    // So is a replay the broker ends part way: what it read is a prefix.
     let deadline = Instant::now() + Duration::from_secs(10);
-    let (_client, mut replay) = loop {
-        match cluster.replay_on(&promoted, STREAM).await {
-            Ok(replay) => break replay,
+    let held = loop {
+        let (_client, mut replay) = match cluster.replay_on(&promoted, STREAM).await {
+            Ok(replay) => replay,
             Err(err) if not_ready(&err) && Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(err) => panic!("replay on the new leader: {err:#}"),
+        };
+        match felix_cluster::replay::drain(&mut replay, Duration::from_secs(2)).await {
+            Ok(events) => break felix_cluster::replay::payloads(&events),
+            Err(_) if Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(err) => panic!("replay on the new leader: {err:#}"),
         }
     };
-    let mut held = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
-    {
-        held.push(String::from_utf8_lossy(&event.payload).to_string());
-    }
     assert!(
         held.contains(&"acknowledged".to_string()),
         "the new leader lost an acknowledged record: {held:?}"

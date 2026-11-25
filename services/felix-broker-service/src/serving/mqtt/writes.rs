@@ -281,7 +281,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 incarnation,
             },
             _,
-        ) = dispatch_write(ingress, key).await
+        ) = dispatch_write(ingress, &self.engine, key).await
         else {
             return None;
         };
@@ -390,7 +390,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             return self.send_on_raft(batch, key, handle, term, deadline).await;
         }
         let ingress = self.engine.serving().map(|ingress| &**ingress);
-        let (permit, generation) = match dispatch_write(ingress, key).await {
+        let (permit, generation) = match dispatch_write(ingress, &self.engine, key).await {
             (Dispatch::Local { .. }, _) if on_raft => return Sent::Leaderless,
             (Dispatch::Local { generation }, mut held) => {
                 match fence::enter_or_keep(&mut held, ingress, Some(key), generation) {

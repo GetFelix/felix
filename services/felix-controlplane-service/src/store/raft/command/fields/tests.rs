@@ -1220,3 +1220,110 @@ fn a_dropped_field_is_named_and_an_empty_one_is_not() {
     );
     assert!(dropped_fields(&decoded, &decoded).is_empty());
 }
+
+/// Every `const NAME_LEVEL: <ty> = N;` declared anywhere under `store/`,
+/// including values rustfmt wrapped onto the next line.
+fn declared_levels() -> Vec<(String, u16)> {
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read store dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && path.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store");
+    let mut files = Vec::new();
+    rust_files(&root, &mut files);
+    let mut found = Vec::new();
+    for file in files {
+        let source = std::fs::read_to_string(&file).expect("read source");
+        let words: Vec<&str> = source.split_whitespace().collect();
+        for at in 0..words.len() {
+            if words[at] != "const" {
+                continue;
+            }
+            // `const NAME_LEVEL: ty = N;` split on whitespace: NAME_LEVEL:, ty, =, N;
+            let Some(name) = words.get(at + 1).and_then(|w| w.strip_suffix(':')) else {
+                continue;
+            };
+            if !name.ends_with("_LEVEL") || words.get(at + 3) != Some(&"=") {
+                continue;
+            }
+            let value = words.get(at + 4).map(|v| v.trim_end_matches(';'));
+            let level = value
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{name} in {} is not a literal level", file.display()));
+            found.push((name.to_string(), level));
+        }
+    }
+    found
+}
+
+/// Two features that each take the next level merge cleanly (the version
+/// line is identical), so only a check on main sees the clash.
+#[test]
+fn no_two_features_claim_one_level() {
+    let mut owner: BTreeMap<u16, String> = BTreeMap::new();
+    for (name, level) in declared_levels() {
+        if let Some(other) = owner.insert(level, name.clone()) {
+            panic!(
+                "{other} and {name} both claim metadata level {level}; \
+                 give the newer feature the next free level and raise METADATA_VERSION"
+            );
+        }
+    }
+    assert!(owner.len() > 30, "the scan found too few level constants");
+    let top = *owner.keys().max().expect("levels");
+    assert!(
+        top <= METADATA_VERSION,
+        "{} is at level {top}, above METADATA_VERSION {METADATA_VERSION}",
+        owner[&top]
+    );
+}
+
+/// From level 11 on, a level is one feature, so the design doc's level
+/// table names each level once.
+#[test]
+fn the_level_table_names_one_feature_per_level() {
+    let doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/metadata-raft-design.md"
+    ));
+    let mut rows: BTreeMap<u16, String> = BTreeMap::new();
+    let mut in_table = false;
+    for line in doc.lines() {
+        if line.starts_with("| Field | Level |") {
+            in_table = true;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if !line.starts_with('|') {
+            break;
+        }
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let Some(level) = cells.get(2).and_then(|cell| cell.parse::<u16>().ok()) else {
+            continue;
+        };
+        if level < 11 {
+            continue;
+        }
+        if let Some(other) = rows.insert(level, cells[1].to_string()) {
+            panic!(
+                "docs/metadata-raft-design.md lists level {level} for two features: \
+                 {other} and {}",
+                cells[1]
+            );
+        }
+    }
+    assert!(
+        rows.contains_key(&METADATA_VERSION),
+        "no row for METADATA_VERSION"
+    );
+}

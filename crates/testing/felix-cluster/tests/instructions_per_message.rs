@@ -42,13 +42,17 @@ const WARMUP_FACTOR: usize = 4;
 /// How long the idle broker is counted to find its per-second background cost.
 const IDLE_WINDOW: Duration = Duration::from_secs(10);
 
-/// (cell name, publish batch size, measured messages).
-const CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
+/// (cell name, publish batch size, measured messages). Each cell gets a broker
+/// of its own: under callgrind on aarch64 a broker runs slower the longer it
+/// has run, on either engine, while its instructions per unit of work stay
+/// put. A cell measured on an aged broker then picks up more of the cost that
+/// scales with time, and its acks can queue past the client's timeout.
+static CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
 
 /// The same load as `b64` on a broker whose MQTT listener is on and idle. The
 /// gate holds it to `b64` from the same run: a listener nobody uses must cost
 /// the QUIC path nothing.
-const MQTT_IDLE_CELLS: [(&str, usize, usize); 1] = [("b64_mqtt_idle", 64, 80_000)];
+static MQTT_IDLE_CELLS: [(&str, usize, usize); 1] = [("b64_mqtt_idle", 64, 80_000)];
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -58,19 +62,7 @@ fn env_usize(name: &str, default: usize) -> usize {
 }
 
 fn loadgen_binary() -> Result<PathBuf> {
-    let mut dir = std::env::current_exe().context("locate the running executable")?;
-    dir.pop();
-    if dir.ends_with("deps") {
-        dir.pop();
-    }
-    let candidate = dir.join("felix-loadgen");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-    Err(anyhow!(
-        "felix-loadgen not found at {}; build it first",
-        candidate.display()
-    ))
+    felix_cluster::built_binary("felix-loadgen").map_err(|err| anyhow!("{err}; build it first"))
 }
 
 /// Run the ingest scenario and return the records the broker acknowledged.
@@ -343,7 +335,10 @@ async fn broker_instructions_per_message() {
         std::env::var("FELIX_IPM_DIR")
             .expect("set FELIX_IPM_DIR to the callgrind output directory"),
     );
-    let mut cells = measure_cells(&dir, reps, Vec::new(), &CELLS).await;
+    let mut cells = serde_json::Map::new();
+    for cell in CELLS.chunks(1) {
+        cells.extend(measure_cells(&dir, reps, Vec::new(), cell).await);
+    }
     let mqtt_env = vec![
         (
             "FELIX_MQTT_LISTEN".to_string(),

@@ -198,6 +198,14 @@ treat it as down and elect one of themselves. It starts this way only if the
 control plane is down rather than refusing it, and only from the data
 directory the control plane last registered.
 
+Under `FELIX_SHARD_ENGINE=raft` the two settings mean the same. With the
+unified fence the restarted broker opens no Raft member until the control
+plane answers. With `FELIX_UNIFIED_FENCE=0` its members vote during the
+outage and do not lead until it registers. That trusts the run witness in
+place of the control plane's check of the directory, so do not start a copy
+of a live data directory on a second machine under the same node id without
+`felix-broker rotate-storage-id` first.
+
 It also starts this way only after a restart that keeps `/dev/shm`: the broker
 process restarting on the same Linux machine without a reboot, or its
 container restarting inside a live Kubernetes pod. A fresh container

@@ -318,7 +318,7 @@ fn redirect(publish_ctx: &PublishContext, peer_features: u32, target: &Target) -
         shard,
         kind: ShardKind::Stream,
     };
-    let dispatched = dispatch(publish_ctx.ingress.as_deref(), &key);
+    let dispatched = dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key);
     if matches!(dispatched, Dispatch::Local { .. }) {
         return None;
     }

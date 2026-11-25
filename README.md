@@ -62,7 +62,7 @@ starts three brokers, kills the leader mid-write, and checks from outside that n
     <img src="https://img.shields.io/badge/rust%20min-1.97-blue" alt="Minimum supported Rust 1.97" />
   </a>
   <a href="rust-toolchain.toml">
-    <img src="https://img.shields.io/badge/rust%20built%20with-1.99.1-blue" alt="Built and tested with Rust 1.99.1" />
+    <img src="https://img.shields.io/badge/rust%20built%20with-1.100.0-blue" alt="Built and tested with Rust 1.100.0" />
   </a>
   <a href="https://docs.getfelix.dev">
     <img src="https://img.shields.io/badge/Documentation-8A2BE2" alt="Documentation" />
@@ -85,8 +85,9 @@ cursor over it. A framed protocol
 (felix-wire) over QUIC streams carries all three, with explicit control over
 multiplexing, batching, and flow control.
 
-Shards are placed across brokers by the control plane, replicated by leader leases
-and log shipping, and survive losing a leader; a publish can be made to wait for a
+Shards are placed across brokers by the control plane, replicated, and survive
+losing a leader. On `main` each durable shard is one Raft group; the 0.7 releases
+replicate by leader leases and log shipping. Either way a publish can be made to wait for a
 quorum of the replica set before it is acknowledged.
 
 Two processes run a cluster: brokers, which hold the data and serve clients over
@@ -188,8 +189,9 @@ early to keep p99/p999 predictable.
 - Durable log-structured storage with segments, sparse indexes that are always
   rebuilt from the data, torn-tail repair, and a refusal to start on interior
   corruption
-- Replication with leader leases, `Leader` or `Quorum` acknowledgement, and
-  failover to a replica that holds the log
+- Replication with `Leader` or `Quorum` acknowledgement and failover to a
+  replica that holds the log: a Raft group per durable shard on `main`, leader
+  leases and log shipping in the 0.7 releases
 - A log-backed cache, routed to one owner per key and replicated
 - Consumer groups: poll, acknowledge, redeliver, bound the redelivery,
   dead-letter and redrive
@@ -232,7 +234,7 @@ is kept current per capability. Trust it when another page disagrees.
 
 ## Getting Started
 
-You need Rust 1.99.1 and [Task](https://taskfile.dev). Docker or Podman is
+You need Rust 1.100.0 and [Task](https://taskfile.dev). Docker or Podman is
 optional: the compose stack and the TLA+ checker use one (see
 [Docker or Podman](https://docs.getfelix.dev/getting-started/containers/)).
 

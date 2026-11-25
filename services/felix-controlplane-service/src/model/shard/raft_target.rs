@@ -142,7 +142,7 @@ impl ShardAssignment {
     /// reported, the group exists and moves to a new set by changing its
     /// membership. A re-form starts a new group, so an earlier epoch's mark
     /// releases nothing.
-    pub(crate) fn holds_unformed_set(&self) -> bool {
+    pub fn holds_unformed_set(&self) -> bool {
         self.raft_target.is_some() && self.raft_formed != Some(self.formed_key())
     }
 

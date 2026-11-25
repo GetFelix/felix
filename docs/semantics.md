@@ -45,7 +45,12 @@ read back or delivered on replay. Only a refusal before anything is written
 (an authorization, validation or idempotent-sequence error) means the record
 does not exist. A failed fsync also stops that shard's log: every later write
 to it fails until the broker restarts and recovery reads back what actually
-reached the disk.
+reached the disk. A per-shard Raft member does not wait for the restart: once
+the disk takes writes it reopens as a new copy (the old directory is kept
+as `.kept`). With other copies alive it catches up from its group. With one
+copy, or when every copy rotated, the shard is held until an operator
+re-forms it (`docs/per-shard-raft.md`, "Re-forming a group"); it never
+serves an empty log.
 
 > Held by `crates/server/felix-storage/src/disk_log/` recovery tests, including
 > `a_crash_before_the_header_is_written_leaves_the_log_openable`,
@@ -115,8 +120,9 @@ the record is written, leave the default or declare the stream `Quorum`.
 An ack on accept does not make the record readable yet. A history read, a
 subscriber's replay or a consumer-group poll sent right after it can come back
 without the record, because nothing reads a record before it is written. A
-durable stream's default ack is sent after the write and has no such gap. A
-client of a broker that opted out can ask for commit acks on its own
+durable stream's default ack is sent after the write and has no such gap, for
+a consumer-group poll as for a read ("What a reader sees of a `Quorum` stream"
+below). A client of a broker that opted out can ask for commit acks on its own
 connections (`ClientConfig::ack_on_commit`).
 
 A commit-acked publish, which is a durable stream's by default, waits for room
@@ -456,11 +462,33 @@ throughput rather than correctness.
   with no added latency. If a failed flush poisons a `Leader` stream's log,
   its readers stop at the last durable offset from then on: the batch whose
   flush failed was refused, and no reader sees it.
+  On Raft every level reads to the commit. Two acks are sent before the
+  commit: a `Leader` ack while the leader's lease holds, and a `Quorum` ack on
+  a stream that does not fsync on commit, which is sent once a majority has
+  written the record. A `stream_read`, a replay from an offset or a Kafka fetch
+  sent after any ack given once the record is written still includes it (an
+  ack sent on enqueue comes before the write). Before it reads, the member
+  waits until every write the leader has acknowledged is committed, and the
+  read is refused, retryably, if that takes longer than an election timeout.
+  The record is served by a member that has not synced its own copy yet too:
+  the commit already needed a majority to hold it. A subscription that starts
+  at `Latest` does not wait and gets such a record live once it commits.
+  A consumer-group poll matches a read here. A poll sent after either early
+  ack makes the same wait and only then takes the commit as its bound, so it
+  hands the record out, with `wait_ms` 0 too. It never hands out a record above
+  the commit, and it is refused with a retryable error, not answered without
+  the record, if the wait outlasts an election timeout.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
-  > `a_promoted_leader_with_no_majority_yet_refuses_reads`.
+  > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
+  > `a_read_shows_a_committed_record_the_member_has_not_synced`,
+  > `a_read_after_a_lease_answer_waits_for_that_entry`,
+  > `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`,
+  > `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused`,
+  > `a_poll_after_a_written_ack_waits_for_the_commit_and_hands_it_out`,
+  > `a_poll_after_a_lease_ack_waits_for_the_commit_and_hands_it_out`.
 - **Replayed history is never dropped.** The overflow policy governs live
   records only. History below the join's `live_offset` is read off disk for
   that subscriber alone, so there is no publisher to protect: it waits for room
@@ -511,10 +539,12 @@ how-to; this is the contract.
   try. The configured seeds are never removed, so a wrong or stale answer cannot
   leave a client with fewer ways in than it started with.
 - `publish` reconnects but does **not** resend anything that may have landed.
-  Its one re-send is after a cached shard owner answered that it applied
-  nothing, and goes to the entry broker. `publish_at_least_once` resends, and
-  can therefore duplicate a record whose failure it could not prove was not
-  applied. The names are the contract.
+  It sends again only what a broker refused before applying: at once through
+  the entry broker when a cached shard owner refused, with the policy's
+  backoff when the entry broker did. A shard between leaders (an election, a
+  Raft hand-over, a move) refuses that way, so a publish made then waits it
+  out instead of failing. `publish_at_least_once` also resends what may have
+  landed, and can therefore duplicate a record. The names are the contract.
 - **Retries are bounded by an attempt count and a jittered exponential
   backoff**, and optionally by a deadline across every attempt and sleep. The
   deadline is off by default: one shorter than a single attempt's own timeout
@@ -531,7 +561,10 @@ how-to; this is the contract.
   shard by then). `retry` and `redirect` from a cached owner drop that
   owner and go straight to the entry broker, since a fenced or draining owner
   will not start serving the shard again; from the entry broker they back off.
-  `retry_after` backs off for at least as long as the broker asked.
+  `retry_after` backs off for at least as long as the broker asked. Every
+  publish kind does this, since these classes say nothing was applied. One
+  exception: a plain publish returns `stale_width`, because the batch has to
+  be routed again under the stream's new width.
 
   **"Not found" is retried, for 5 s from the first one.** A broker learns its
   streams from the control plane and opens a shard only once it is given one,
@@ -547,6 +580,8 @@ how-to; this is the contract.
 > `a_forbidden_publish_fails_fast_instead_of_retrying`,
 > `a_fenced_owner_is_forgotten_and_the_publish_rerouted`,
 > `an_outcome_unknown_publish_is_surfaced`,
+> `a_publish_refused_during_a_hand_over_is_sent_again`,
+> `an_outcome_in_doubt_is_returned_after_one_attempt`,
 > `not_found_stops_being_retried_after_its_grace`,
 > `a_client_given_one_seed_learns_the_other_brokers`,
 > `the_configured_seed_is_never_dropped`,

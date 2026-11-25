@@ -701,6 +701,7 @@ async fn a_crash_before_the_mark_is_written_is_finished_by_the_next_start() {
 async fn a_failed_flush_poisons_the_log_after_its_caller_gives_up() {
     let dir = tempdir().expect("dir");
     let log = open(&dir, FsyncMode::None);
+    pin_to_flush_thread(&log);
     log.append(&records(&["a", "b"])).await.expect("append");
 
     // Hold the flush thread, so the flush queues behind and is still waiting

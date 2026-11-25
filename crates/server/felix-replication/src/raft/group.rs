@@ -77,6 +77,8 @@ pub(crate) struct Group {
     lease: Arc<Lease>,
     /// Empty for a member that started with no vote on disk.
     hold: Hold,
+    /// See [`Host::stands_after`].
+    stands_after: Option<CancellationToken>,
     /// Carries this member's written position to its leader.
     transport: Arc<dyn RaftTransport>,
     /// The written positions other members told this one.
@@ -195,6 +197,8 @@ pub(crate) struct Timers {
     pub(crate) started: tokio::time::Instant,
     pub(crate) tick: u64,
     pub(crate) heartbeat: u64,
+    /// [`super::RuntimeConfig::peer_deadline`].
+    pub(crate) peer_deadline: Duration,
     pub(crate) idle_heartbeat: u64,
     pub(crate) idle_after: u64,
     pub(crate) election_min: u64,
@@ -694,6 +698,10 @@ pub(crate) struct Host {
     pub(crate) acked: Arc<AtomicU64>,
     /// Where a cache shard's member reports its changes for watches.
     pub(crate) cache_changes: Option<Arc<dyn felix_storage::CacheObserver>>,
+    /// Until this is cancelled the member votes and replicates but does not
+    /// stand, take its old leadership back or take a transfer: its broker
+    /// serves no client yet, so a group it led would serve nobody.
+    pub(crate) stands_after: Option<CancellationToken>,
     /// The group thread its tasks run on. `None` runs them on the runtime
     /// the group is opened on.
     pub(crate) thread: Option<Placed>,
@@ -742,8 +750,18 @@ impl Group {
             placed_budget,
             acked,
             cache_changes,
+            stands_after,
             thread,
         } = host;
+        // Leader restore makes a member lead without an election, which a
+        // member that may not stand yet must not do either.
+        let config = match &stands_after {
+            Some(after) if !after.is_cancelled() => Arc::new(Config {
+                enable_leader_restore: Some(false),
+                ..(*config).clone()
+            }),
+            _ => config,
+        };
         let runtime = thread
             .as_ref()
             .map_or_else(tokio::runtime::Handle::current, |thread| {
@@ -883,6 +901,7 @@ impl Group {
             pace,
             lease,
             hold,
+            stands_after,
             transport,
             reports,
             answered: Arc::default(),
@@ -1020,7 +1039,12 @@ impl Group {
     /// Form the group from its first member set. Every member of the set
     /// calls this with the same set. A member that has already voted or
     /// holds an entry is past this step, and the call does nothing.
+    /// Refused while the member's broker may not lead ([`Host::stands_after`]).
     pub(crate) async fn initialize(&self, members: BTreeSet<MemberId>) -> Result<(), String> {
+        // Forming a group elects the member that forms it.
+        if self.stands_unregistered() {
+            return Err("this member's broker has not registered, so it forms no group".into());
+        }
         // Each group gets its own copy of the names. A caller forming many
         // groups from one set would otherwise have every group's clones
         // count on the same three allocations, from every thread.
@@ -1047,7 +1071,13 @@ impl Group {
         // too: its first tick as leader comes once `Pace::wrote` or
         // `Pace::unanswered` lowers `due` below the hold's end.
         if self.waits_to_stand() && !self.leads() {
-            self.pace.due.store(self.hold.stands, Ordering::Relaxed);
+            // No end is known for a broker that has not registered, so it
+            // is looked at again one election timeout on.
+            let due = match self.stands_unregistered() {
+                true => self.pace.timers.now() + self.pace.timers.election_min,
+                false => self.hold.stands,
+            };
+            self.pace.due.store(due, Ordering::Relaxed);
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
@@ -1059,7 +1089,13 @@ impl Group {
             self.allow_elections();
         }
         let mut dropped = Dropped(Some(&self.dropped_ticks));
-        let ticked = self.raft.trigger().tick().await;
+        // The ticker found a leader's heartbeat due by its own gap, so it
+        // is sent whatever openraft's timer says: that timer runs at the
+        // peer deadline, which is longer than the gap.
+        let ticked = match self.leads() {
+            true => self.raft.trigger().heartbeat().await,
+            false => self.raft.trigger().tick().await,
+        };
         dropped.0 = None;
         self.pace.due.store(self.next_due(), Ordering::Relaxed);
         if let Err(err) = ticked
@@ -1200,7 +1236,15 @@ impl Group {
     /// Whether this member is held from standing: it may have promised
     /// another voter, and `Hold::stands` has not come.
     fn waits_to_stand(&self) -> bool {
-        !self.hold.campaigns && self.pace.timers.now() < self.hold.stands
+        self.stands_unregistered()
+            || (!self.hold.campaigns && self.pace.timers.now() < self.hold.stands)
+    }
+
+    /// Whether this member's broker may not lead yet ([`Host::stands_after`]).
+    fn stands_unregistered(&self) -> bool {
+        self.stands_after
+            .as_ref()
+            .is_some_and(|after| !after.is_cancelled())
     }
 
     /// When the vote hold ends, and this member's jitter.
@@ -1529,7 +1573,7 @@ impl Group {
             tracing::debug!(group = %self.id, error = %err, "no written report: its marker did not sync");
             return;
         }
-        let deadline = Duration::from_millis(self.pace.timers.heartbeat);
+        let deadline = self.pace.timers.peer_deadline;
         let request = RaftRequest {
             group: self.id.clone(),
             to: leader,
@@ -1705,6 +1749,9 @@ impl Group {
                     }
                 }
             }
+            Request::TransferLeader(_) if self.stands_unregistered() => Err(Refused::Unreachable(
+                "this member's broker has not registered, so it takes no leadership".to_string(),
+            )),
             Request::TransferLeader(req) => self
                 .raft
                 .handle_transfer_leader(req)
@@ -1835,6 +1882,15 @@ impl Group {
         &self.copy
     }
 
+    /// Why the member's core stopped, if it stopped on a storage error.
+    pub(crate) fn storage_failure(&self) -> Option<String> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        match &self.raft.metrics().borrow_watched().running_state {
+            Err(openraft::error::Fatal::StorageError(err)) => Some(err.to_string()),
+            _ => None,
+        }
+    }
+
     /// Cancelled when the member is shut down.
     pub(crate) fn stopped(&self) -> CancellationToken {
         self.stop.clone()
@@ -1907,6 +1963,11 @@ impl Group {
                 index,
             });
         let reports = Arc::clone(&self.reports);
+        if early.is_some() {
+            // Here, not in the arm below: the commit is polled first and
+            // can win before that arm ever runs.
+            reports.want();
+        }
         let answered = Arc::clone(&self.answered);
         let raft = self.raft.clone();
         let me = self.member.clone();
@@ -2631,6 +2692,9 @@ impl Group {
     /// already on disk; nothing is written here.
     pub(crate) async fn shutdown(&self) {
         self.stop.cancel();
+        // An append waiting out a full disk would hold the stop for up to
+        // its retry limit.
+        self.log.stop_retrying();
         if let Err(err) = self.raft.shutdown().await {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group did not stop cleanly");
         }

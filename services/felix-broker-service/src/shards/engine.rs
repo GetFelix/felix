@@ -171,6 +171,31 @@ impl StreamEngine {
     }
 }
 
+/// Leave every durable shard on `broker` to its engine. Each one, with its
+/// cache entries, counters, group positions and dead letters, lives in a Raft
+/// group's log, so neither the broker nor any hybrid store may open a log for
+/// one by itself: what it wrote would be served by nothing, and its directory
+/// would keep the group from claiming the shard. Call it before the first
+/// stream or cache is registered. An in-memory stream still runs on the
+/// hybrid lifecycle: registration keeps its group and dead-letter state open
+/// in the hybrid stores (`Broker::settle_incarnation`), and a group op checks
+/// for the member itself (`group_ops::raft::on_raft`).
+pub(crate) fn leave_stores_to_engines(broker: &felix_broker::Broker) {
+    broker.leave_durable_streams_to_engines();
+    if let Some(groups) = broker.consumer_groups() {
+        groups.leave_to_engines();
+    }
+    if let Some(reader) = broker.group_reader() {
+        reader.dead_letters().leave_to_engines();
+    }
+    if let Some(cache) = broker.cache().as_log_cache() {
+        cache.leave_to_engines();
+    }
+    if let Some(counters) = broker.counters() {
+        counters.leave_to_engines();
+    }
+}
+
 /// A publish to a Raft shard refused with nothing proposed.
 #[derive(Debug, thiserror::Error)]
 pub enum RaftRefusal {
@@ -289,6 +314,26 @@ impl StreamEngine {
         {
             let _ = shard;
             false
+        }
+    }
+
+    /// Where a request for `key` goes on a broker with no ingress router,
+    /// which is a standalone one: the Raft group's answer when a group runs
+    /// the shard here, `None` for a shard that is simply local.
+    pub(crate) fn standalone_dispatch(&self, key: &ShardKey) -> Option<super::routing::Dispatch> {
+        if self.hybrid.serving().is_some() {
+            return None;
+        }
+        #[cfg(feature = "raft")]
+        {
+            use super::routing::EngineShards;
+            // A single voter forwards nowhere, so no broker has an address.
+            self.raft.get()?.dispatch(key, &|_| None)
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = key;
+            None
         }
     }
 

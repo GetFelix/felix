@@ -86,7 +86,12 @@ pub async fn resolve_publish(
     let mut scratch = String::new();
     let route = resolve_route(
         broker,
-        Authority { ingress, lease },
+        // Its callers are cluster members, which route through `ingress`.
+        Authority {
+            ingress,
+            lease,
+            engine: None,
+        },
         &mut cache,
         &mut scratch,
         tenant_id,
@@ -102,7 +107,7 @@ pub async fn resolve_publish(
             fenced,
         } => Ok(Resolution::Local(LocalTarget {
             handle,
-            shard: shard_key_at(ingress, tenant_id, namespace, stream, shard),
+            shard: shard_key_at(ingress, None, tenant_id, namespace, stream, shard),
             generation,
             fenced,
         })),

@@ -319,3 +319,129 @@ async fn a_cache_shard_with_hybrid_counters_is_refused() {
         "a cache shard with hybrid counters opened on Raft"
     );
 }
+
+/// **A standalone broker answers every cache and counter operation as the
+/// hybrid's store does**, routed at the term its group of one leads with no
+/// ingress router, and a value put with a TTL stops being read once it
+/// lapses. The hybrid's expiry pass never opens the Raft cache.
+#[tokio::test]
+async fn a_standalone_raft_cache_answers_as_the_hybrid_does() {
+    use crate::shards::raft::standalone::tests::standalone;
+
+    let hybrid_root = tempfile::tempdir().expect("tempdir");
+    let hybrid = fixture::cache_broker(hybrid_root.path(), CACHE).await;
+    let on_hybrid = script(&hybrid, &StreamEngine::default(), None).await;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::cache_broker(root.path(), CACHE).await;
+    let (shards, engine, stop) = standalone(&broker);
+    let key = cache_key(0);
+    fixture::until("the term is served", || shards.leading(&key).is_some()).await;
+    let on_raft = script(&broker, &engine, None).await;
+    assert_eq!(on_raft, on_hybrid);
+    assert!(engine.on_raft(&key), "the cache did not run on its group");
+
+    apply_cache_request(
+        &broker,
+        (&engine, TIMEOUT),
+        None,
+        None,
+        &ForwardCredential::from(""),
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        "ttl",
+        put_request(Bytes::from_static(b"v"), Some(Duration::from_millis(200))),
+        None,
+    )
+    .await
+    .expect("put");
+    crate::node::cache_expiry::expire_once(&broker, None).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let read = apply_cache_request(
+        &broker,
+        (&engine, TIMEOUT),
+        None,
+        None,
+        &ForwardCredential::from(""),
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        "ttl",
+        CacheRequest::Get,
+        None,
+    )
+    .await
+    .expect("read");
+    assert_eq!(read.value, None, "an expired entry was read");
+    assert!(
+        broker.cache().open_shards().is_empty(),
+        "the hybrid store opened a Raft cache"
+    );
+    stop.cancel();
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A cache put or counter add for a shard with no Raft member open here
+/// yet is refused as not ready**, as at startup or before placement reaches
+/// this broker, and the hybrid stores never open a directory for it: what
+/// they wrote would be served by nothing, and the directory would keep the
+/// group from ever claiming the shard.
+#[tokio::test]
+async fn a_cache_write_before_its_member_opens_is_refused() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::cache_broker(root.path(), CACHE).await;
+    let shards = fixture::shards(&broker);
+    let engine = fixture::engine(&shards);
+
+    let put = apply_cache_local(
+        &broker,
+        (&engine, TIMEOUT),
+        None,
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        "k",
+        put_request(Bytes::from_static(b"early"), None),
+        None,
+        0,
+        0,
+        None,
+    )
+    .await
+    .expect_err("a put went to the hybrid's store");
+    let client = ClientError::from_anyhow(&put);
+    assert_eq!(client.retry(), felix_wire::RetryClass::Retry, "{client:?}");
+
+    let add = apply_counter_op(
+        &broker,
+        (&engine, TIMEOUT),
+        None,
+        None,
+        &ForwardCredential::from(""),
+        TENANT,
+        NAMESPACE,
+        CACHE,
+        "hits",
+        CacheRequest::CounterAdd { delta: 1 },
+    )
+    .await
+    .expect_err("a counter add went to the hybrid's store");
+    let client = ClientError::from_anyhow(&add);
+    assert_eq!(client.retry(), felix_wire::RetryClass::Retry, "{client:?}");
+
+    let cache = broker.cache().as_log_cache().expect("a log cache");
+    assert!(
+        !cache.on_disk(TENANT, NAMESPACE, CACHE, 0),
+        "the hybrid cache store made the shard's directory"
+    );
+    let counters = broker.counters().expect("counters");
+    assert!(
+        counters
+            .dirs_on_disk(TENANT, NAMESPACE, CACHE)
+            .await
+            .expect("listed")
+            .is_empty(),
+        "the hybrid counter store made a directory"
+    );
+}
