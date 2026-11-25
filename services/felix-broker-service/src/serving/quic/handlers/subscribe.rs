@@ -230,6 +230,8 @@ pub(crate) async fn handle_subscribe_message(
             }
         }
         let mut replay = None;
+        // An in-memory stream's ring counts records, but they have no offsets.
+        let mut in_memory = false;
         let mut join = history_only;
         let mut subscription = if history_only.is_some() {
             None
@@ -277,6 +279,7 @@ pub(crate) async fn handle_subscribe_message(
                     .await
                 {
                     Ok(resumed) => {
+                        in_memory = resumed.join.is_none();
                         replay = Some((resumed.history, resumed.backlog, resumed.backlog_start));
                         join = resumed.join;
                         resumed.subscription
@@ -439,8 +442,8 @@ pub(crate) async fn handle_subscribe_message(
         // below. History, then backlog, then live -- contiguous.
         let delivery = TenantDelivery::for_tenant(&tenant_id);
         let format = EventFormat {
-            offsets: offsets_enabled,
-            skips: skip_enabled,
+            offsets: offsets_enabled && !in_memory,
+            skips: skip_enabled && !in_memory,
             publisher: publisher_enabled,
             headers: headers_enabled,
             timestamps: timestamps_enabled,

@@ -770,9 +770,10 @@ async fn the_read_end_of_a_shard_no_longer_served_here_is_refused() {
         leader::QUORUM,
         0,
     )
+    .await
     .expect("served here");
     assert_eq!(
-        read_end(&leader.broker, &publish_ctx, &owned, &log)
+        read_end(&leader.broker, &publish_ctx, &owned, log.as_ref())
             .await
             .expect("read end"),
         2
@@ -780,7 +781,7 @@ async fn the_read_end_of_a_shard_no_longer_served_here_is_refused() {
 
     // The successor leads it with no replicas.
     leader.cut_over(&leader::stream_key(leader::QUORUM));
-    let refused = read_end(&leader.broker, &publish_ctx, &owned, &log)
+    let refused = read_end(&leader.broker, &publish_ctx, &owned, log.as_ref())
         .await
         .expect_err("answered for a shard served elsewhere");
     assert_eq!(refused.code(), &felix_wire::ErrorCode::ShardUnavailable);
@@ -858,9 +859,10 @@ async fn a_seek_to_latest_is_refused_until_the_new_generation_has_a_mark() {
         leader::QUORUM,
         0,
     )
+    .await
     .expect("served here");
     assert_eq!(
-        read_end(&leader.broker, &publish_ctx, &owned, &log)
+        read_end(&leader.broker, &publish_ctx, &owned, log.as_ref())
             .await
             .expect("read end"),
         2
@@ -911,6 +913,106 @@ async fn group_reads_after_the_lease_lapses_are_refused() {
     dead_letters_here(&leader, &publish_ctx, DURABLE)
         .await
         .expect("listed on a renewed lease");
+}
+
+/// **Group operations on an in-memory stream leave no stream log behind.**
+/// Each used to open the shard's log, and a log on disk is how an in-memory
+/// stream comes to be served as durable (#3136). They answer as over an
+/// empty log instead.
+#[tokio::test]
+async fn group_operations_on_an_in_memory_stream_open_no_log() {
+    let leader = Leader::start().await;
+    let publish_ctx = context(&leader);
+    let broker = &leader.broker;
+    let on_disk = || {
+        broker.durable_storage().expect("storage").stream_on_disk(
+            TENANT,
+            NAMESPACE,
+            leader::EPHEMERAL,
+            0,
+        )
+    };
+    broker
+        .publish(TENANT, NAMESPACE, leader::EPHEMERAL, "kept nowhere".into())
+        .await
+        .expect("publish");
+
+    let claimed = poll(
+        broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        leader::EPHEMERAL,
+        0,
+        GROUP,
+        1,
+        Duration::ZERO,
+        None,
+        None,
+    )
+    .await
+    .expect("poll");
+    assert!(
+        claimed.is_empty(),
+        "an in-memory stream handed out a record"
+    );
+    assert!(!on_disk(), "a poll opened the log");
+
+    let landed = seek(
+        broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        leader::EPHEMERAL,
+        0,
+        GROUP,
+        StartPosition::Latest,
+        false,
+    )
+    .await
+    .expect("seek");
+    assert_eq!(landed.offset, 0);
+    assert!(!on_disk(), "a seek opened the log");
+
+    let (_, tail) = describe_here(&leader, &publish_ctx, leader::EPHEMERAL)
+        .await
+        .expect("describe");
+    assert_eq!(tail, 0);
+    dead_letters_here(&leader, &publish_ctx, leader::EPHEMERAL)
+        .await
+        .expect("dead letters");
+    settle(
+        broker,
+        &publish_ctx,
+        None,
+        TENANT,
+        NAMESPACE,
+        leader::EPHEMERAL,
+        0,
+        GROUP,
+        0,
+        Settle::Ack,
+    )
+    .await
+    .expect_err("acked a record nobody was handed");
+    assert!(
+        delete(
+            broker,
+            &publish_ctx,
+            None,
+            TENANT,
+            NAMESPACE,
+            leader::EPHEMERAL,
+            0,
+            GROUP,
+        )
+        .await
+        .expect("delete"),
+        "the seek left no group to delete"
+    );
+    assert!(!on_disk(), "a group operation opened the log");
 }
 
 async fn describe_here(

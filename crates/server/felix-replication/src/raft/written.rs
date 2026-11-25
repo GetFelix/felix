@@ -70,6 +70,15 @@ impl Reports {
         }
     }
 
+    /// A `Quorum` write is about to wait on reports, so appends ask for
+    /// them from here on. Called when the wait is made, not from inside
+    /// it: a write that commits before its wait is first polled never
+    /// reaches the count, and the next write's appends would still go out
+    /// unasked and be acknowledged only at their commit.
+    pub(crate) fn want(&self) {
+        self.wanted.store(true, Ordering::Relaxed);
+    }
+
     /// What a leader's append that carries entries asks the follower for.
     pub(crate) fn ask(&self) -> Ask {
         if self.wanted.load(Ordering::Relaxed) {
@@ -157,7 +166,7 @@ impl Reports {
         at: LogPoint,
     ) {
         use openraft::async_runtime::watch::WatchReceiver;
-        self.wanted.store(true, Ordering::Relaxed);
+        self.want();
         let mut metrics = raft.metrics();
         loop {
             let wrote = self

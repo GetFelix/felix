@@ -29,8 +29,9 @@ implementation was found, which is a weaker check.
 queue semantics from one storage engine, optimized for high-fanout delivery with
 predictable tail latency and strict slow-consumer isolation.
 
-Shards of a stream or cache are placed across brokers, replicated by leader
-leases and log shipping, and survive the loss of a leader; a publish can be made
+Shards of a stream or cache are placed across brokers, replicated, and survive
+the loss of a leader. On `main` each durable shard is one Raft group; the 0.7
+releases replicate by leader leases and log shipping. Either way a publish can be made
 to wait for a quorum of the replica set before it is acknowledged. What is not
 yet true of a cluster is spelled out row by row in
 [section 2](#2-what-felix-does-today). Most of the multi-node rows are ✅;

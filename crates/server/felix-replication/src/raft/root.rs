@@ -205,7 +205,7 @@ async fn judge(
     registered: StorageId,
     control_plane: Option<ControlPlaneCopy>,
 ) -> io::Result<Judged> {
-    tokio::task::spawn_blocking(move || {
+    felix_common::blocking::spawn(move || {
         // A rotation that failed after writing the new id leaves a root
         // that passes at sequence 0 under an id nobody registered.
         if let Some(storage_id) =

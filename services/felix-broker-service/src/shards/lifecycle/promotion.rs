@@ -67,7 +67,13 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
         // stays closed without it: the next pass fences again and retries,
         // rather than serving on a mark that would never cover what this
         // leader inherited.
+        //
+        // An in-memory stream's shard has no log to record any of it in, and
+        // opening one would leave the stream served as durable (#3136). It
+        // goes straight to serving, as it does when it opens on the lease.
+        let in_memory = super::in_memory_stream(&self.broker, key).await;
         let logs = match key.kind {
+            crate::shards::ShardKind::Stream if in_memory => Vec::new(),
             crate::shards::ShardKind::Stream => match self.storage.open_stream(
                 &key.tenant_id,
                 &key.namespace,
@@ -105,7 +111,10 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
         // The group logs carry the generation too, so the next promotion
         // ranks their copies as it ranks the records. No start record: no
         // mark counts on them.
-        if key.kind == crate::shards::ShardKind::Stream && self.broker.group_reader().is_some() {
+        if key.kind == crate::shards::ShardKind::Stream
+            && !in_memory
+            && self.broker.group_reader().is_some()
+        {
             for kind in super::GROUP_LOGS {
                 let recorded = match self
                     .broker

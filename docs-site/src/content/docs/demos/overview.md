@@ -72,13 +72,13 @@ cargo run --release -p felix-broker-service --bin queue-semantics-demo
 
 ### Leader vs Quorum (`felix-cluster consistency`)
 
-- The same fault, a leader cut off from its replicas, put to two streams that
-  differ only in `consistency`.
-- Quorum refuses the write while the shard stays available. Leader takes it, and
-  the shard goes unavailable when the leader dies, because promoting a replica
-  would drop a record that was acknowledged.
-- Neither is data loss. The demo's point is that `Leader` trades availability
-  for latency, and moves when you find out.
+- The same fault, a leader cut off from its followers and then killed, put to
+  two streams that differ only in `consistency`.
+- Quorum stops answering once the leader is alone, so the new leader holds
+  every acknowledged record. Leader keeps answering until its lease runs out,
+  and those records are lost with the old leader.
+- Both shards stay available. The demo's point is that `Leader` trades the
+  records its leader acknowledged alone for latency.
 - See [Leader vs Quorum](/demos/cluster-consistency/).
 
 ```bash

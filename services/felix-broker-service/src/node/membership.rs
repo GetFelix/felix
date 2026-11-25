@@ -290,6 +290,20 @@ pub(super) fn attest(marks: &felix_replication::quorum::QuorumMarks, kept: super
     marks.set_kept_ballots(kept.ballots);
 }
 
+/// Whether this start's Raft members open, and vote, before its restore
+/// check has answered: only a start from the control-plane view, whose run
+/// witness showed the directory is the one its last run left, and only
+/// under the pin rule (`FELIX_UNIFIED_FENCE=0`). With the unified fence a
+/// restarted broker counts for nothing until the control plane has checked
+/// it, on Raft as on the hybrid engine.
+pub(super) fn votes_unchecked(config: &BrokerConfig, from_view: bool) -> bool {
+    from_view
+        && config
+            .peer_transport
+            .as_ref()
+            .is_some_and(|peer| !(peer.fence && peer.unified_fence))
+}
+
 /// What client service and the control-plane sync wait on.
 pub(super) struct Gates {
     /// Client listeners and forwarded client requests. `seeded` itself

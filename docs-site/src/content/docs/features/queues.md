@@ -51,16 +51,15 @@ A poll sees a record once it is written, which is not always when its publish
 was acknowledged. A broker run with `FELIX_ACK_ON_COMMIT=0` acknowledges
 a `Leader` stream's publish when it is queued, so a poll sent right after the
 ack can come back without it. The next poll gets it. By default a durable
-stream acks after the write and has no such gap on the hybrid engine. Against a
-broker that opted out, publish with commit acks: `ack_on_commit: true` in the
-producer's `ClientConfig`, or `FELIX_ACK_ON_COMMIT=true` on the broker.
+stream acks after the write and has no such gap. Against a broker that opted
+out, publish with commit acks: `ack_on_commit: true` in the producer's
+`ClientConfig`, or `FELIX_ACK_ON_COMMIT=true` on the broker.
 
-On a Raft shard a poll reads up to the commit, and two acks are sent before it:
-a `Leader` stream's while the leader's lease holds, and a `Quorum` stream's
-when the broker does not fsync on commit. A poll that does not wait, sent right
-after such an ack, can come back without the record. The next poll, or a poll
-that waits, gets it once it commits. A `Quorum` stream on a broker with
-`FELIX_DURABLE_FSYNC_MODE=on_commit` acks at the commit and has no such gap.
+On a Raft shard a poll hands out records up to the commit, and two acks are
+sent before it: a `Leader` stream's while the leader's lease holds, and a
+`Quorum` stream's when the broker does not fsync on commit. A poll sent after
+such an ack still gets the record, as a history read does: it waits for the
+acknowledged record to commit before it answers, even with no wait asked for.
 
 ## What the broker guarantees
 
@@ -122,7 +121,7 @@ and a connection older than the last one to reclaim never takes anything back.
 Give each live process its own name: two under one name work, but the newer
 takes what the older held when it first reclaims.
 
-On a Raft shard (`FELIX_SHARD_ENGINE=raft`) claims survive a change of leader.
+On a Raft shard, the default on `main`, claims survive a change of leader.
 Every poll that hands records out, and every extension, is written to the
 shard's log before the consumer gets an answer, and the new leader rebuilds the
 claims from it. A holder can still extend, acknowledge or hand back its record,

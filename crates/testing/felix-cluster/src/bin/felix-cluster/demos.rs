@@ -5,6 +5,7 @@
 
 mod consistency;
 mod failover;
+mod replay;
 mod tour;
 
 pub(crate) use consistency::consistency;

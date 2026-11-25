@@ -377,7 +377,9 @@ registered: anything below it was already in the stream, anything from it on
 was written after, and nothing falls between. It leaves out generation-start
 records the log ends with (they hold an offset but never an event, so a reader
 waiting for the raw tail would wait forever), but is never below
-`start_offset`.
+`start_offset`. On a Raft shard the tail is the committed tail: an entry the
+leader holds but has not committed yet reaches the subscriber live once it
+commits, so it counts as written after.
 
 For `latest` the two are equal, and both stop short of those trailing records:
 on a log that holds events `0` and `1` and then two generation starts, `latest`
@@ -529,12 +531,13 @@ processes under one name, cannot keep taking claims still being worked on. Two
 live processes under one name are still a mistake: the newer one takes what
 the older held when it first reclaimed.
 
-On a Raft stream shard a poll hands out records up to the commit and does not
-wait for a publish that was acknowledged before its commit: a `Leader` publish
-acknowledged under the leader's lease, or a `Quorum` publish on a stream that
-does not fsync on commit. A poll with `wait_ms` 0 sent right after such an ack
-can come back without the record. A later poll, or one still waiting when the
-record commits, gets it.
+On a Raft stream shard a poll sent after a publish's ack hands that record
+out, at every level, as a `StreamRead` includes it. A `Leader` ack under the
+leader's lease and a `Quorum` ack on a stream that does not fsync on commit are
+sent before the commit, so the poll first waits for the writes already
+acknowledged to commit, with `wait_ms` 0 too. It hands out nothing above the
+commit. If that wait takes longer than an election timeout the poll is refused
+with a retryable error instead of answered without them.
 
 On a Raft stream shard a poll's claims (offsets, attempts, the member, the
 visibility) are a group entry in the shard's log, applied before the poll is
@@ -1156,7 +1159,8 @@ page, each one from the last answer's `next_offset`.
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
 - On a Raft shard a read sent after a publish's ack includes that record, at
-  every level. A `Leader` ack under the leader's lease and a `Quorum` ack on a
+  every level. An ack sent on enqueue is the exception: it comes before the
+  write. A `Leader` ack under the leader's lease and a `Quorum` ack on a
   stream that does not fsync on commit are sent before the commit, so the read
   first waits for the writes already acknowledged to commit. If that takes
   longer than an election timeout the read is refused with a retryable error
