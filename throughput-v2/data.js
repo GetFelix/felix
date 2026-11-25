@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795635803549,
+  "lastUpdate": 1795636200833,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69524,6 +69524,58 @@ window.BENCHMARK_DATA = {
             "range": "54859.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805294.36\nmean: 784227.35\nstdev: 54859.67\ncv: 7.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4700dba0f3a89fb4b2901e8f2a427c7c509635c1",
+          "message": "test: cover config parsing, kafka refusals, storage codecs and errors, C API groups (#3176)\n\n* test: cover broker env config refusals and unread limits\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover peer transport env parsing and its refusals\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover the raft copy report wire round trip and version refusal\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover the C API group calls refusing a null client\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover snapshot receive refusals and a damaged stored snapshot\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover the counter record codec and storage error messages\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover kafka transaction and group refusals per partition\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover control-plane API TLS refusals and the declare-dead API\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover adopting an opaque rotated node credential\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover what a cache store without a log refuses or skips\n\nSpec-Unaffected: tests only, no product code changes",
+          "timestamp": "2026-11-25T11:44:25-08:00",
+          "tree_id": "64501639afec784e40930fd8e140db336f25c937",
+          "url": "https://github.com/GetFelix/felix/commit/4700dba0f3a89fb4b2901e8f2a427c7c509635c1"
+        },
+        "date": 1795636200079,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 599580.53,
+            "range": "87801.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 599580.53\nmean: 630255.36\nstdev: 87801.28\ncv: 13.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 599580.53,
+            "range": "87801.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 599580.53\nmean: 630255.36\nstdev: 87801.28\ncv: 13.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158325.3,
+            "range": "14737.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158325.30\nmean: 153978.27\nstdev: 14737.91\ncv: 9.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1583253,
+            "range": "147379.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1583253.00\nmean: 1539782.69\nstdev: 147379.05\ncv: 9.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
