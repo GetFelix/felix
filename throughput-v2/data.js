@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795607969988,
+  "lastUpdate": 1795608325475,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69056,6 +69056,58 @@ window.BENCHMARK_DATA = {
             "range": "31204.80",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 787244.99\nmean: 775507.17\nstdev: 31204.80\ncv: 4.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e45b24349ccfc9be6e6c658fc14af06d75f71c34",
+          "message": "fix(raft): a shard commits over a peer link slower than its heartbeat (#3101) (#3164)\n\nopenraft gives every append and heartbeat a deadline of its\n`heartbeat_interval`, so with a round trip past 200 ms each one was given\nup before its answer arrived and nothing reached a majority.\n\nA call now has a deadline of its own, `RuntimeConfig::peer_deadline()`:\n`max_peer_deadline` (800 ms), cut to the shortest election timeout less one\nheartbeat and never under the heartbeat. openraft's `heartbeat_interval` is\nset to it, and the node ticker sends a due leader's heartbeat itself with\n`Trigger::heartbeat()`, at the same gap as before. The lease is unchanged:\nit counts from a message's hand-off.\n\nThe Raft link test goes back to the hybrid's 400 ms delay.\n\nSpec-Unaffected: only how long a leader waits for an answer and who paces its heartbeats change; the lease, votes and commit rules the specs model are as before.",
+          "timestamp": "2026-11-25T11:59:42Z",
+          "tree_id": "33862d196daddb32e780d8a5fc929176861ceb1e",
+          "url": "https://github.com/GetFelix/felix/commit/e45b24349ccfc9be6e6c658fc14af06d75f71c34"
+        },
+        "date": 1795608324613,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 521558.1,
+            "range": "42300.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521558.10\nmean: 533271.86\nstdev: 42300.71\ncv: 7.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 521558.1,
+            "range": "42300.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 521558.10\nmean: 533271.86\nstdev: 42300.71\ncv: 7.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125503.28,
+            "range": "611.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125503.28\nmean: 125513.31\nstdev: 611.01\ncv: 0.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1255032.81,
+            "range": "6110.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1255032.81\nmean: 1255133.13\nstdev: 6110.03\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
