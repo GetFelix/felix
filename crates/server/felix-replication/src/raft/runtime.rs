@@ -493,6 +493,12 @@ pub struct GroupStatus {
     pub client_writes: u64,
     /// Where the membership stands against the control plane's target.
     pub membership: MembershipProgress,
+    /// The voter sets of the last membership in this member's log,
+    /// committed or not: one, or two while a change is joint. Learners are
+    /// in none. Empty for a copy that holds no membership yet.
+    pub voter_sets: Vec<BTreeSet<MemberId>>,
+    /// The log entry that membership is from. `None` for the initial one.
+    pub membership_at: Option<LogPoint>,
 }
 
 /// A leader's replication to one other member of its group.

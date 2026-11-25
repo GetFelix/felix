@@ -1485,6 +1485,14 @@ async fn a_backup_point_reads_the_leaders_acknowledged_end() {
         let [read] = member.shards.backup_members().try_into().expect("one");
         assert_eq!(read.key, orders);
         assert_eq!(read.incarnation, INCARNATION);
+        // What the collector counts a majority against (#3179).
+        assert_eq!(*read.member.broker, *member.name);
+        let [voters] = &read.voter_sets[..] else {
+            panic!("one voter set: {:?}", read.voter_sets);
+        };
+        assert_eq!(voters.len(), BROKERS.len(), "{voters:?}");
+        assert!(voters.contains(&read.member), "{voters:?}");
+        assert!(read.membership_at.is_some(), "the forming entry");
         if at == 1 {
             assert_eq!(read.term, term);
             let end = read.committed_end.expect("the leader gives an end");

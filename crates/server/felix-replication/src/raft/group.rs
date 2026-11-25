@@ -2751,6 +2751,19 @@ impl Group {
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
             client_writes: self.client_writes.load(Ordering::Relaxed),
             membership: self.membership_progress(),
+            voter_sets: metrics
+                .membership_config
+                .membership()
+                .get_joint_config()
+                .clone(),
+            membership_at: metrics
+                .membership_config
+                .log_id()
+                .as_ref()
+                .map(|id| LogPoint {
+                    term: **id.committed_leader_id(),
+                    index: id.index,
+                }),
         }
     }
 

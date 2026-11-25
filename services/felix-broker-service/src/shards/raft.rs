@@ -1785,7 +1785,10 @@ impl EngineShards for RaftShards {
                 Some(super::routing::BackupMember {
                     key,
                     incarnation: group.epoch,
+                    member: status.member,
                     term: status.term,
+                    voter_sets: status.voter_sets,
+                    membership_at: status.membership_at,
                     committed_end: acked.map(|last| last.index + 1),
                     end_term: acked.map(|last| last.term),
                 })
