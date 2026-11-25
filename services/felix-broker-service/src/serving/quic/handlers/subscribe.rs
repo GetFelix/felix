@@ -60,6 +60,10 @@ use replay::{CountingSink, EventFormat, ReplayRevoked, write_history, write_repl
 /// serving the shard before the subscription went live.
 const NOT_SERVING_HERE: quinn::VarInt = quinn::VarInt::from_u32(1);
 
+/// Application code on an event stream reset because the replay failed some
+/// other way before it had written the history it owed.
+const REPLAY_FAILED: quinn::VarInt = quinn::VarInt::from_u32(2);
+
 /// Handle a subscribe request received on the bi-directional control stream.
 ///
 /// This function is invoked from the control stream read loop when a `Message::Subscribe`
@@ -522,18 +526,24 @@ pub(crate) async fn handle_subscribe_message(
             Err(err) => {
                 subscriptions.release();
                 tracing::info!(error = %err, "subscription replay failed");
-                // Stopped serving the shard mid-replay (lease lapsed, shard moved).
-                // Finishing the stream would read as a clean end; a reset reads
-                // as a lost subscription, which the client resumes from its last
-                // offset wherever the shard is served now.
-                if err.chain().any(|cause| {
+                // The history is cut short whatever the cause: the shard
+                // stopped being served here (lease lapsed, shard moved), it
+                // was closed under the read, or the read itself failed.
+                // Finishing the stream would read as a clean end; a reset
+                // reads as a lost subscription, which the client resumes from
+                // its last offset wherever the shard is served now. A no-op
+                // when the failure was the client going away.
+                let not_serving = err.chain().any(|cause| {
                     matches!(
                         cause.downcast_ref::<felix_broker::BrokerError>(),
                         Some(felix_broker::BrokerError::NotReadable { .. })
                     )
-                }) {
-                    let _ = event_send.reset(NOT_SERVING_HERE);
-                }
+                });
+                let _ = event_send.reset(if not_serving {
+                    NOT_SERVING_HERE
+                } else {
+                    REPLAY_FAILED
+                });
                 return Ok(true);
             }
         };

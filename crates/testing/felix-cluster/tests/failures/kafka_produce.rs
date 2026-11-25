@@ -730,14 +730,18 @@ async fn move_shard(cluster: &Cluster, destination: &str) {
 /// `(offset, payload)` of the producer's records, replayed over QUIC from
 /// `owner`. The harness's own probe records are left out.
 async fn read_back(cluster: &Cluster, owner: &str) -> Vec<(u64, String)> {
-    let (_client, mut subscription) = cluster
-        .replay_shard(owner, STREAM, 0)
+    let events = cluster
+        .whole_replay_of_shard(
+            owner,
+            STREAM,
+            0,
+            Duration::from_secs(3),
+            Duration::from_secs(30),
+        )
         .await
         .expect("replay");
     let mut read = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(3), subscription.next_event()).await
-    {
+    for event in events {
         let payload = String::from_utf8_lossy(&event.payload).into_owned();
         if payload.starts_with('r') && payload[1..].parse::<u32>().is_ok() {
             read.push((event.offset.expect("durable offsets"), payload));

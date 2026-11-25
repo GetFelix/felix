@@ -32,7 +32,8 @@
 //! assertions that must hold on any deployment, and [`session`] is how the
 //! `felix-cluster` CLI finds a cluster started in another terminal.
 //! [`history`] runs randomized fault campaigns and checks what the clients
-//! saw against what a replicated log promises.
+//! saw against what a replicated log promises. [`replay`] reads a replay to its
+//! end and refuses one the broker cut short.
 
 pub mod client;
 mod cluster;
@@ -46,6 +47,7 @@ mod node;
 pub mod pki;
 pub mod ports;
 mod proxy;
+pub mod replay;
 pub mod scenarios;
 pub mod session;
 pub mod wait;
