@@ -5,6 +5,7 @@ mod cache_incarnation;
 mod dropped_hold;
 mod every_change;
 mod held_open;
+mod in_memory;
 mod off_runtime;
 mod promotion;
 mod refused;

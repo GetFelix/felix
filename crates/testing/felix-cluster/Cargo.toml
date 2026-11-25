@@ -70,7 +70,8 @@ rumqttc = { version = "0.25.1", default-features = false }
 # ephemeral ports they were handed are more likely to collide.
 serial_test = { workspace = true }
 # The Kafka tests run kcat in a container and need to bound how long it runs.
-tokio = { workspace = true, features = ["process"] }
+# Paused time for the replay helper's own tests.
+tokio = { workspace = true, features = ["process", "test-util"] }
 
 [lints]
 workspace = true

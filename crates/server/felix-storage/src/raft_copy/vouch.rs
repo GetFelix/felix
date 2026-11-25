@@ -236,6 +236,9 @@ pub(crate) enum Refused<B> {
     /// No broker with a copy id holds the base, so the epoch would have no
     /// voter.
     NoVoters,
+    /// A re-form of one was asked for a group another broker was or could
+    /// have been a voter of.
+    NotAlone,
 }
 
 /// One copy as the rule sees it.
@@ -273,11 +276,29 @@ pub(crate) fn probes<B>(
 }
 
 /// The plan for the next epoch, by the rule in `ReformKept`.
+#[cfg(test)]
 pub(crate) fn plan_reform<B: Ord + Clone>(
     record: &GroupRecord<B>,
     reports: &BTreeMap<B, BrokerReport<B>>,
 ) -> Result<ReformPlan<B>, Refused<B>> {
+    plan_reform_as(record, reports, false)
+}
+
+/// [`plan_reform`], or with `alone` the plan of a group whose only broker
+/// re-forms it by itself (`AloneWhole` in `FelixRaftReform`). Then every
+/// copy vouches for its whole log: a lone voter committed every entry by
+/// itself, and no other disk can hold a newer one, so cutting at the saved
+/// commit would drop synced records for nothing. Refused unless one broker
+/// is placed, none is dead, and every voter set read names only it.
+pub(crate) fn plan_reform_as<B: Ord + Clone>(
+    record: &GroupRecord<B>,
+    reports: &BTreeMap<B, BrokerReport<B>>,
+    alone: bool,
+) -> Result<ReformPlan<B>, Refused<B>> {
     let placed = record.placed.as_ref().ok_or(Refused::NoPlacedRecord)?;
+    if alone && !is_alone(record, reports) {
+        return Err(Refused::NotAlone);
+    }
     let epoch = record.bases.len() as u64;
     let live: BTreeMap<&B, &BrokerReport<B>> = reports
         .iter()
@@ -402,9 +423,10 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         {
             safe = safe.max(floor.index + 1);
         }
-        let whole = marked.is_none() && copy.last == Some(top);
+        let whole = alone || (marked.is_none() && copy.last == Some(top));
         let vouch = if whole { copy.end } else { safe }.min(cap);
-        if marked.is_none() && entries.is_some_and(|entries| entries < top) && cap > vouch {
+        if !alone && marked.is_none() && entries.is_some_and(|entries| entries < top) && cap > vouch
+        {
             cut_by_vote = true;
         }
         vouched.push(vouch);
@@ -550,6 +572,32 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         cut_by_vote,
         floor,
     })
+}
+
+/// Whether one broker is placed, none is dead, and every voter set the
+/// record holds or a report read names only that broker.
+fn is_alone<B: Ord + Clone>(
+    record: &GroupRecord<B>,
+    reports: &BTreeMap<B, BrokerReport<B>>,
+) -> bool {
+    let Some(placed) = &record.placed else {
+        return false;
+    };
+    let mut only = placed.iter();
+    let (Some(me), None) = (only.next(), only.next()) else {
+        return false;
+    };
+    let mine = |set: &BTreeSet<VoterId<B>>| set.iter().all(|(broker, _)| broker == me);
+    record.dead.is_empty()
+        && reports.keys().all(|broker| broker == me)
+        && record.seed.as_ref().is_some_and(mine)
+        && record.ordered.iter().flatten().all(mine)
+        && reports.values().all(|report| {
+            report
+                .memberships
+                .as_ref()
+                .is_some_and(|sets| sets.iter().all(mine))
+        })
 }
 
 /// The first voter set of the epoch whose majority has unknown votes, or

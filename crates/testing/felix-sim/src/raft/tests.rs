@@ -251,6 +251,35 @@ fn every_power_mode_cuts_and_passes() {
     }
 }
 
+/// A run on real threads is not the seed's run: the blocking pool finishes
+/// in real time, so a slow build (coverage) interleaves differently from a
+/// fast one (#3126). A relaxed power run restarts members, opens groups,
+/// reserves log indexes and vouches for unsynced writes, all of which once
+/// went to the pool.
+#[test]
+fn a_run_hands_no_work_to_real_threads() {
+    let config = RaftSimConfig {
+        disks: Disks::RelaxedPowerLoss,
+        nemesis: Duration::from_secs(40),
+        ..RaftSimConfig::default()
+    };
+    let outcome = run_seed(1, config);
+    assert!(outcome.power.cuts > 0, "no member started again");
+    let off: Vec<_> = outcome
+        .findings
+        .iter()
+        .filter(|finding| finding.contains("real thread"))
+        .collect();
+    assert!(off.is_empty(), "{off:?}");
+}
+
+#[test]
+fn work_on_real_threads_is_a_finding() {
+    assert_eq!(off_the_runtime(0), None);
+    let finding = off_the_runtime(2).expect("a finding");
+    assert!(finding.contains("2 real thread(s)"), "{finding}");
+}
+
 /// Logs whose flushes keep nothing answer writes that a power cut takes.
 /// `raft-power-loss` must catch that: the cut member comes back without
 /// records it had flushed, or with a hole recovery refuses to read past.

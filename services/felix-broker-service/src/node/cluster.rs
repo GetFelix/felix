@@ -144,7 +144,7 @@ pub(super) fn start_raft_shards(
     engine: &Arc<shard_routing::StreamEngine>,
     fleet: &Arc<felix_common::fleet::FleetGate>,
 ) -> Result<RaftShards> {
-    use replication::raft::{GroupRuntime, PeerTransport, RuntimeConfig};
+    use replication::raft::{GroupRuntime, PeerTransport};
 
     let (Some(membership), Some(pool), Some((router, _, _, _))) =
         (&config.membership, peers, cluster)
@@ -156,21 +156,12 @@ pub(super) fn start_raft_shards(
         Arc::clone(pool),
         Arc::new(move |broker: &str| router.node_addr(broker)),
     );
-    let mut timers = RuntimeConfig::default();
-    if let Some(lease) = settings.lease {
-        timers.lease = lease;
-    }
-    if let Some(elections) = settings.elections_at_once {
-        timers.max_elections_at_once = elections;
-    }
-    if let Some(longest) = settings.election_max {
-        timers.election_max = longest;
-    }
-    if let Some(threads) = settings.group_threads {
-        timers.group_threads = threads;
-    }
-    let runtime = GroupRuntime::start(membership.node_id.clone(), timers, Arc::new(transport))
-        .map_err(|err| anyhow::anyhow!("start the Raft group runtime: {err}"))?;
+    let runtime = GroupRuntime::start(
+        membership.node_id.clone(),
+        timers(settings),
+        Arc::new(transport),
+    )
+    .map_err(|err| anyhow::anyhow!("start the Raft group runtime: {err}"))?;
     let shards = crate::shards::raft::RaftShards::new(
         Arc::clone(broker),
         runtime.clone(),
@@ -185,6 +176,111 @@ pub(super) fn start_raft_shards(
     })
 }
 
+/// Start a standalone broker's Raft shards: a group of one for each durable
+/// stream and cache shard, under [`standalone::LOCAL_MEMBER`], fed by
+/// [`standalone::run`] off the broker's own registrations. There is no
+/// peer, no internal listener and no control-plane placement. Call it before
+/// any stream registers.
+///
+/// [`standalone::LOCAL_MEMBER`]: crate::shards::raft::standalone::LOCAL_MEMBER
+/// [`standalone::run`]: crate::shards::raft::standalone::run
+#[cfg(feature = "raft")]
+pub(super) fn start_standalone_raft_shards(
+    settings: crate::config::RaftSettings,
+    broker: &Arc<Broker>,
+    engine: &Arc<shard_routing::StreamEngine>,
+    fleet: &Arc<felix_common::fleet::FleetGate>,
+    storage_id: felix_storage::StorageId,
+    stop: &CancellationToken,
+) -> Result<RaftShards> {
+    use crate::shards::raft::standalone::{self, LOCAL_MEMBER, NoPeers};
+    use replication::raft::{GroupRuntime, RootOpened, open_root};
+
+    let root = broker
+        .durable_storage()
+        .context("a standalone broker runs Raft shards only on durable storage")?
+        .root()
+        .to_path_buf();
+    let runtime = GroupRuntime::start(LOCAL_MEMBER, timers(settings), Arc::new(NoPeers))
+        .map_err(|err| anyhow::anyhow!("start the Raft group runtime: {err}"))?;
+    let shards = crate::shards::raft::RaftShards::new(
+        Arc::clone(broker),
+        runtime,
+        LOCAL_MEMBER.to_string(),
+        Arc::clone(fleet),
+    );
+    engine.set_raft(Arc::clone(&shards));
+    // Readers see only what a group committed, as on a cluster member.
+    broker.set_read_bounds(Arc::new(replication::engine::CommittedReads::new(
+        Arc::clone(engine),
+    )));
+    let (members, broker, stop) = (Arc::clone(&shards), Arc::clone(broker), stop.clone());
+    tokio::spawn(async move {
+        // The gate guards against a restored root voting in a group whose
+        // other members remember its newer votes. A single voter has no
+        // other member and no copy that could be ahead of its root, so it
+        // vouches for the root itself: a copy at sequence 0 is never ahead.
+        let own_copy = || async move {
+            Some(felix_storage::raft_copy::ControlPlaneCopy {
+                storage_id,
+                sequence: 0,
+            })
+        };
+        let root = loop {
+            match open_root(&root, None, false, storage_id, own_copy, ROOT_RETRY, &stop).await {
+                Ok(RootOpened::Open(opened)) => break Arc::new(opened),
+                Ok(RootOpened::Stopped) => return,
+                Ok(other) => {
+                    tracing::error!(
+                        root = %root.display(),
+                        outcome = ?other,
+                        "the Raft restore gate refused this standalone broker's data root; no \
+                         Raft member opens",
+                    );
+                    return;
+                }
+                Err(err) => {
+                    tracing::error!(
+                        root = %root.display(),
+                        error = %err,
+                        "could not run the Raft restore gate on the data root; retrying",
+                    );
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = tokio::time::sleep(ROOT_RETRY) => {}
+                    }
+                }
+            }
+        };
+        members.set_root(root);
+        standalone::run(members, broker, stop).await;
+    });
+    Ok(RaftShards {
+        engine_shards: Some(Arc::clone(&shards) as Arc<dyn shard_routing::EngineShards>),
+        handler: None,
+        members: Some(shards),
+    })
+}
+
+/// The runtime's timers, with what the environment changed.
+#[cfg(feature = "raft")]
+fn timers(settings: crate::config::RaftSettings) -> replication::raft::RuntimeConfig {
+    let mut timers = replication::raft::RuntimeConfig::default();
+    if let Some(lease) = settings.lease {
+        timers.lease = lease;
+    }
+    if let Some(elections) = settings.elections_at_once {
+        timers.max_elections_at_once = elections;
+    }
+    if let Some(longest) = settings.election_max {
+        timers.election_max = longest;
+    }
+    if let Some(threads) = settings.group_threads {
+        timers.group_threads = threads;
+    }
+    timers
+}
+
 /// How often a data root the restore gate holds is checked again.
 #[cfg(feature = "raft")]
 const ROOT_RETRY: Duration = Duration::from_secs(5);
@@ -197,6 +293,12 @@ pub(super) struct RaftRoot<L> {
     /// Cancelled once the start's restore check has answered. A rotation
     /// that check makes removes the mark log, so the gate waits for it.
     pub(super) restore_checked: CancellationToken,
+    /// Set by a start from the control-plane view under the pin rule
+    /// (`FELIX_UNIFIED_FENCE=0`), to the token cancelled once the broker has
+    /// registered. The gate then judges the root on the run witness without
+    /// waiting for the restore check, and the members that open vote but do
+    /// not lead until the broker has registered.
+    pub(super) votes_unchecked: Option<CancellationToken>,
     pub(super) link: Option<L>,
     pub(super) node_id: String,
     /// The storage id this run registers under.
@@ -216,6 +318,11 @@ pub(super) struct RaftRoot<L> {
 /// members open once it passes. A root behind a copy gets a new storage id
 /// and the broker stops. See `docs/per-shard-raft.md`, "The root
 /// sequence".
+///
+/// With [`RaftRoot::votes_unchecked`] the gate does not wait for the
+/// restore check: the run witness is the proof that the root is the one the
+/// last run left, so its members vote while the control plane is down. See
+/// `docs/per-shard-raft.md`, "Voting before the restore check".
 #[cfg(feature = "raft")]
 pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftRoot<L>) {
     use crate::cluster::membership::registered;
@@ -226,9 +333,12 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
         return;
     };
     tokio::spawn(async move {
-        tokio::select! {
-            () = on.stop.cancelled() => return,
-            () = on.restore_checked.cancelled() => {}
+        match &on.votes_unchecked {
+            Some(registered) => members.stand_after(registered.clone()),
+            None => tokio::select! {
+                () = on.stop.cancelled() => return,
+                () = on.restore_checked.cancelled() => {}
+            },
         }
         // No answer and no record are both no copy.
         let (link, credential, node_id) = (
@@ -236,7 +346,14 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
             on.credential.as_ref(),
             on.node_id.as_str(),
         );
+        let (checked, unchecked) = (&on.restore_checked, on.votes_unchecked.is_some());
         let control_plane = move || async move {
+            // A start that votes before its restore check found the control
+            // plane down. Until the check hears from it, asking again would
+            // only hold the vote up by a request timeout.
+            if unchecked && !checked.is_cancelled() {
+                return None;
+            }
             let (storage_id, sequence) = registered(link?, node_id, credential?)
                 .await
                 .ok()??
@@ -248,8 +365,9 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
         };
         let mut failed = false;
         let root = loop {
-            // The restore check has answered and rotated a restored root
-            // itself, so the gate is not told of one again.
+            // The restore check rotates a restored root itself, whether it
+            // answered before the gate or answers after, so the gate is not
+            // told of one.
             let opened = open_root(
                 &on.root,
                 on.witness.as_deref(),

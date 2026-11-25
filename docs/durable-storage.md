@@ -706,6 +706,7 @@ Four properties:
    - *Node records* under the durable root: the storage id, `run-state`,
      the registration, `head-trimmed`, `record-headers`,
      `record-generations`, `replaced-storage`, `lost-copy`, `rotated-ids`,
+     `relaxed-crash-id`,
      `last-rotation`, `registered-at`,
      `copy-trust`, `copy-trust-kept`, `run-token`, `controlplane.view`
      (written or removed), the stream incarnation markers under `.streams/`,
@@ -1662,6 +1663,17 @@ leader at the generation it had already accepted. The start records the id it
 rotated away in `rotated-ids` (`docs/storage-format.md`), so a set that still
 names the copy under that id is read as naming this directory's own copy, with
 its promises, and not a lost one.
+
+A standalone broker has no other copy to catch a rotated one up. The start
+records a relaxed crash's rotation in `relaxed-crash-id`, and each Raft group
+of one then re-forms itself from its own kept copy: it keeps every record
+that reached the disk, including ones past the saved commit, and starts its
+next offsets above everything the crashed run reserved. What it loses is the
+unsynced tail `Periodic` allows. A data directory restored from a snapshot or
+backup is not detected: it starts from the reservation the snapshot holds and
+can give out offsets handed out after that point again
+([#3048](https://github.com/GetFelix/felix/issues/3048)). See `docs/per-shard-raft.md`, "A standalone
+broker re-forms itself".
 
 Losing the directory does reset them. So a copy with no promise on disk, on
 any broker, answers a fence only as its routing view backs it: with no route

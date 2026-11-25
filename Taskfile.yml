@@ -604,6 +604,7 @@ tasks:
     cmds:
       - for:
           - demos/cross_tenant_isolation
+          - demos/failover
           - demos/rbac-live
           - demos/slow-consumer
           - demos/state-divergence

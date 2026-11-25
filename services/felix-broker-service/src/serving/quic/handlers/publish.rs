@@ -75,6 +75,8 @@ pub(crate) use order::AckOrder;
 pub(crate) use parked::ParkedPublishes;
 pub(crate) use route::{DeclaredWidth, resolve_publish_shard};
 #[cfg(test)]
+pub(crate) use route::{PublishRoute, resolve_route, shard_key_at};
+#[cfg(test)]
 pub(crate) use scheduler::{PublishScheduler, test_channel};
 pub(crate) use stream_cache::StreamHandleCache;
 pub(crate) use uni::{
@@ -97,7 +99,7 @@ use crate::serving::quic::preauth::PreAuthGate;
 use crate::shards::routing::IngressRouter;
 use ack::EnqueuePolicy;
 use admission::AdmissionPermit;
-use route::Authority;
+pub(crate) use route::Authority;
 #[cfg(not(test))]
 use scheduler::PublishScheduler;
 
@@ -259,6 +261,7 @@ impl PublishContext {
         Authority {
             ingress: self.ingress.as_deref(),
             lease: self.lease.as_deref(),
+            engine: Some(&self.engine),
         }
     }
 }

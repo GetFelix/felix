@@ -880,7 +880,8 @@ async fn group_admit(
         shard,
         kind: ShardKind::Stream,
     };
-    let (dispatched, fenced) = dispatch_write(publish_ctx.ingress.as_deref(), &key).await;
+    let (dispatched, fenced) =
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key).await;
     if matches!(dispatched, Dispatch::Local { .. }) {
         return Ok(fenced);
     }

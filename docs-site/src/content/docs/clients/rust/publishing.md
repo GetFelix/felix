@@ -197,8 +197,10 @@ for piece in report.failed() {
   broker appends contiguously. Different shards have no order between them.
 - **Retries.** As for a single publish: a batch the broker may have written is
   not sent again, so nothing arrives twice. A batch a cached leader refused
-  without applying (it moved or is draining) is sent once through the entry
-  broker, which forwards it and names the new leader.
+  without applying (it moved or is draining) is sent through the entry
+  broker, which forwards it and names the new leader. One the entry broker
+  refused without applying (the shard has no leader yet) is sent again with
+  the reconnect policy's backoff.
   `publish_records_at_least_once` also re-sends ambiguous batches after the
   reconnect backoff and **may duplicate**.
 - **Failure is per shard.** `BatchReport` lists each shard's records by their
@@ -465,9 +467,10 @@ success. The codes and their classes are listed under
   accepts duplicates by name, the second's sequence prevents them.
 - `Retry` and `Redirect` (`shard_unavailable`, `draining`, `not_leader`) from a
   cached shard owner drop that owner and go straight to the entry broker, even
-  from `publish`, since nothing was applied. From the entry broker the retrying
-  paths back off. `stale_width` backs off too: it does not say the owner is
-  wrong. `stale_claim` is never retried; the client marks it `fatal`.
+  from `publish`, since nothing was applied. From the entry broker every
+  publish backs off and goes again, within the policy's attempts and deadline.
+  `stale_width` backs off too on the retrying paths, since it does not say the
+  owner is wrong; `publish` returns it. `stale_claim` is never retried; the client marks it `fatal`.
 - `RetryAfter` backs off for at least `retry_after_ms`. `not_found` is retried
   for 5 s from the first one, long enough for a newly promoted broker to hear
   about the stream from the control plane and no longer.

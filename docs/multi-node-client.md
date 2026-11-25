@@ -179,9 +179,13 @@ nothing to resolve and stays stranded until it is rebuilt. Give it a name.
 
 When the broker in use goes away:
 
-- **`publish` reconnects and does not resend.** It returns the error with the
-  connection already replaced, so your next call goes somewhere live. Use it
-  when a duplicate is worse than a gap, and handle the error.
+- **`publish` reconnects and does not resend what may have landed.** It
+  returns that error with the connection already replaced, so your next call
+  goes somewhere live. Use it when a duplicate is worse than a gap, and handle
+  the error. A refusal that says nothing was applied (the shard has no leader
+  yet, is moving, or the broker is draining) is retried under the reconnect
+  policy, so a publish made during an election or right after a stream is
+  created is not failed by it.
 - **`publish_at_least_once` reconnects and resends.** It can therefore deliver
   the record twice. The broker cannot tell, because only your application holds
   an identity that would make deduplication possible. The name is the contract.
@@ -467,8 +471,8 @@ it (see "Error codes" in `docs/protocol.md`):
 | Class | Codes (usually) | `publish_at_least_once`, idempotent producer | `publish` |
 | --- | --- | --- | --- |
 | `fatal` | `unauthenticated`, `forbidden`, `invalid_request`, `limit_exceeded`, `stale_claim` (the broker sends `retry`; the client treats it as `fatal`) | Returned at once, marked "not retried" | Returned |
-| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_width` (never reroutes; the client and the `Client` drop the stream's width, so the retry asks for it again) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | From a cached owner: forget it and send once through the entry broker. Otherwise returned |
-| `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one. `not_found` only for 5 s from the first one | Returned |
+| `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_width` (never reroutes; the client and the `Client` drop the stream's width, so the retry asks for it again) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | The same, within the policy's attempts and deadline. `stale_width` is returned |
+| `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one. `not_found` only for 5 s from the first one | The same |
 | `outcome_unknown` | `quorum_timeout`, `leadership_lost`, `unacknowledged`, `internal`, `storage` | Sent again: that is what at-least-once means, and the idempotent producer's sequence makes it safe | **Returned, never sent again** |
 
 - **A cached route is dropped as soon as it answers "nothing applied".** An

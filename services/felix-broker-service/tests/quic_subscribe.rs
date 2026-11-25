@@ -1455,6 +1455,32 @@ async fn quic_subscribe_range_stops_at_its_end() -> Result<()> {
     assert!(!open.reached_end());
     drop(open);
 
+    // A replay of an in-memory stream comes from its ring, whose positions
+    // are not offsets: the events carry none (#3136).
+    publisher
+        .publish(
+            "t1",
+            "default",
+            "chatter",
+            b"hello".to_vec(),
+            felix_wire::AckMode::PerMessage,
+        )
+        .await?;
+    let mut replay = client
+        .subscribe_from(
+            "t1",
+            "default",
+            "chatter",
+            Some(felix_client::StartPosition::Earliest),
+        )
+        .await?;
+    let event = timeout(Duration::from_secs(10), replay.next_event())
+        .await??
+        .expect("the replayed record");
+    assert_eq!(event.payload.as_ref(), b"hello");
+    assert_eq!(event.offset, None, "an in-memory stream has no offsets");
+    drop(replay);
+
     let refused = client
         .subscribe_range(
             "t1",

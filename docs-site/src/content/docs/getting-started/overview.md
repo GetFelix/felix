@@ -101,8 +101,9 @@ flowchart TB
   subscriber registry, fanout, cache index, consumer groups.
 - **`felix-storage`** writes the durable log to disk as append-only segments.
   See [Durable Storage](/architecture/durable-storage/).
-- **`felix-replication`** ships each shard's log from its leader to its
-  followers and counts the majority a `Quorum` write waits for.
+- **`felix-replication`** replicates each shard's log. On `main` a durable
+  shard is one Raft group, whose commit is the majority a `Quorum` write
+  waits for.
 - **`felix-client`** is the Rust SDK: publisher, subscription, and cache APIs
   over pooled connections, with reconnection and redirect-following in the
   cluster client. Python (`crates/sdk/felix-python`) and TypeScript

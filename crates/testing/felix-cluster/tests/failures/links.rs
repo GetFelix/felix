@@ -136,18 +136,14 @@ async fn a_one_way_partition_from_the_leader_stops_quorum_acks_until_healed() {
 
 /// **A slow link slows the acknowledgement by at least its delay.** Each
 /// `Quorum` publish waits on a follower's round trip, so holding the
-/// leader's packets to both followers for 400ms (120ms on Raft) makes every one of them take
-/// that long, and healing takes it away again.
+/// leader's packets to both followers for 400ms makes every one of them take
+/// that long, and healing takes it away again. That is twice a Raft shard's
+/// heartbeat interval: its appends wait for the answer by a deadline of
+/// their own.
 #[serial]
 #[tokio::test]
 async fn a_delayed_link_slows_quorum_acks_by_the_delay() {
-    // A Raft shard times every append out at its 200 ms heartbeat interval,
-    // so a slower link stops its commits altogether (#3101).
-    let delay = if felix_cluster::suite_runs_on_raft() {
-        Duration::from_millis(120)
-    } else {
-        Duration::from_millis(400)
-    };
+    let delay = Duration::from_millis(400);
     let cluster = Cluster::start(proxied_quorum_cluster())
         .await
         .expect("start");

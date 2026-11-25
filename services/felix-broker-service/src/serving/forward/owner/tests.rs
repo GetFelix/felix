@@ -233,6 +233,18 @@ fn handler_routed(
     auth: Arc<BrokerAuth>,
     router: Arc<ShardRouter>,
 ) -> ForwardingHandler {
+    handler_on(broker, marks, timeout, auth, router, |_| {})
+}
+
+/// [`handler_routed`], with `engine` given its last pieces by `wire`.
+fn handler_on(
+    broker: Arc<Broker>,
+    marks: Option<Arc<QuorumMarks>>,
+    timeout: Duration,
+    auth: Arc<BrokerAuth>,
+    router: Arc<ShardRouter>,
+    wire: impl FnOnce(&crate::shards::routing::StreamEngine),
+) -> ForwardingHandler {
     let ingress = Arc::new(crate::shards::routing::IngressRouter::new(
         Arc::clone(&router),
         Arc::default(),
@@ -266,12 +278,11 @@ fn handler_routed(
         ingress.fence().open(key, *generation);
     }
     ingress.publish_servable(servable);
+    let engine = crate::shards::routing::StreamEngine::new(marks, Some(ingress));
+    wire(&engine);
     ForwardingHandler::new(
         broker,
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            marks,
-            Some(ingress),
-        )),
+        Arc::new(engine),
         router,
         "10.0.0.1:7001".to_string(),
         timeout,
@@ -2371,4 +2382,47 @@ mod on_raft {
         );
         fixture::stop(&members).await;
     }
+}
+
+/// **A forwarded cache or counter op on an owner that runs its shards on Raft
+/// but has no member of the shard open yet is refused as retryable**, which
+/// the requester's client sees as not ready, and the hybrid's stores take
+/// nothing.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_forwarded_cache_op_with_no_raft_member_open_is_not_ready() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = crate::shards::raft::tests::cache_broker(root.path(), CACHE).await;
+    let shards = crate::shards::raft::tests::shards(&broker);
+    let credentials = Credentials::new();
+    let handler = handler_on(
+        Arc::clone(&broker),
+        None,
+        Duration::from_secs(1),
+        Arc::clone(&credentials.auth),
+        router(),
+        |engine| engine.set_raft(Arc::clone(&shards)),
+    );
+    let token = credentials.token(&[
+        &format!("cache.read:cache:{TENANT}/{NAMESPACE}/{CACHE}"),
+        &format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}"),
+    ]);
+    for op in [CacheOpKind::Put, CacheOpKind::Get, CacheOpKind::CounterAdd] {
+        let mut forwarded = forwarded_cache_op(op, token.clone());
+        if op == CacheOpKind::CounterAdd {
+            forwarded.value = felix_storage::counter_log::encode_sum(1);
+        }
+        match handler.apply_cache_op(forwarded).await {
+            InternalMessage::ForwardCacheError(err) => {
+                assert_eq!(err.code, ErrorCode::Unavailable, "{op:?}: {err:?}");
+                assert!(err.detail.contains("not open"), "{op:?}: {err:?}");
+            }
+            other => panic!("a {op:?} with no member open was answered {other:?}"),
+        }
+    }
+    let cache = broker.cache().as_log_cache().expect("a log cache");
+    assert!(
+        !cache.on_disk(TENANT, NAMESPACE, CACHE, 0),
+        "the hybrid cache store made the shard's directory"
+    );
 }
