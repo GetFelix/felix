@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795635347527,
+  "lastUpdate": 1795635800015,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88242,6 +88242,72 @@ window.BENCHMARK_DATA = {
             "range": "1304.36",
             "unit": "us",
             "extra": "trials: 5\nmedian: 552.00\nmean: 1466.00\nstdev: 1304.36\ncv: 88.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d59cc20053047279e8b5697ee15e4344cb2c02c",
+          "message": "fix(kafka): on Raft, Metadata names the leader the member here follows (#3105) (#3170)\n\n* fix(kafka): on Raft, Metadata names the leader the member here follows (#3105)\n\nKafka placement was built from the QUIC forward decision. On a Raft shard\nthat decision is Unavailable when the elected leader sits in a region this\nbroker does not forward to, or has no peer address here, so Metadata\nanswered LEADER_NOT_AVAILABLE although the member knew the leader and the\nclient connects to it itself.\n\nThe Raft engine's member view of its leader is now one function\n(`followed`) that both `dispatch` and a new `EngineShards::elected_leader`\nread, and Kafka placement names that leader whenever the shard is not\nlocal. A broker with no member, or whose member knows no leader, still\nnames the forward target (placement's leader or a reported voter).\n\nMetadata is advisory: produce admission (`admit_write`, the Raft term)\nand fetch bounds (`committed_until`) are unchanged, so no ack, offset or\nread guarantee moves.\n\nSpec-Unaffected: Kafka Metadata routing only; no replication, commit or election state changes\n\n* fix(kafka): put dispatch_without_member's doc comment back above it\n\nSpec-Unaffected: doc comment move, no behaviour changed",
+          "timestamp": "2026-11-25T11:34:27-08:00",
+          "tree_id": "d5db74f9a3761050ecf634d946af0209d4fb7b1c",
+          "url": "https://github.com/GetFelix/felix/commit/1d59cc20053047279e8b5697ee15e4344cb2c02c"
+        },
+        "date": 1795635772025,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.40\nstdev: 1.52\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "3.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 207.20\nstdev: 3.19\ncv: 1.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "10.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 270.40\nstdev: 10.90\ncv: 4.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 199.60\nstdev: 1.52\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 388,
+            "range": "13.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 387.00\nstdev: 13.40\ncv: 3.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 580,
+            "range": "987.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 580.00\nmean: 1002.80\nstdev: 987.81\ncv: 98.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
