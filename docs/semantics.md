@@ -120,8 +120,9 @@ the record is written, leave the default or declare the stream `Quorum`.
 An ack on accept does not make the record readable yet. A history read, a
 subscriber's replay or a consumer-group poll sent right after it can come back
 without the record, because nothing reads a record before it is written. A
-durable stream's default ack is sent after the write and has no such gap. A
-client of a broker that opted out can ask for commit acks on its own
+durable stream's default ack is sent after the write and has no such gap, for
+a consumer-group poll as for a read ("What a reader sees of a `Quorum` stream"
+below). A client of a broker that opted out can ask for commit acks on its own
 connections (`ClientConfig::ack_on_commit`).
 
 A commit-acked publish, which is a durable stream's by default, waits for room
@@ -464,12 +465,22 @@ throughput rather than correctness.
   On Raft every level reads to the commit, and a `stream_read` sent after a
   publish was acknowledged includes that record, on a member that has not
   synced its own copy yet too: the commit already needed a majority to hold it.
+  A consumer-group poll matches a read here. Two acks are sent before the
+  commit: a `Leader` ack while the leader's lease holds, and a `Quorum` ack on
+  a stream that does not fsync on commit. A poll sent after either one first
+  waits until every write the leader has acknowledged is committed, and only
+  then takes the commit as its bound, so it hands the record out, with
+  `wait_ms` 0 too. It never hands out a record above the commit. If the wait
+  outlasts an election timeout the poll is refused with a retryable error
+  instead of answered without the record.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
   > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
-  > `a_read_shows_a_committed_record_the_member_has_not_synced`.
+  > `a_read_shows_a_committed_record_the_member_has_not_synced`,
+  > `a_poll_after_a_written_ack_waits_for_the_commit_and_hands_it_out`,
+  > `a_poll_after_a_lease_ack_waits_for_the_commit_and_hands_it_out`.
 - **Replayed history is never dropped.** The overflow policy governs live
   records only. History below the join's `live_offset` is read off disk for
   that subscriber alone, so there is no publisher to protect: it waits for room

@@ -3431,6 +3431,13 @@ was answered:
 So a read never misses a write that committed before the read began,
 whatever answered it.
 
+A consumer-group poll is such a read. The group reader runs `confirm_read`,
+which also waits for the furthest entry answered on the lease or on a written
+majority, and takes the poll's bound (`read_bound`) only after it. A poll that
+starts after a publish's answer therefore hands the record out, and never one
+above the commit. A seek to `latest` and a describe take their end after the
+same wait.
+
 Reads of one shard share rounds. A group asks one round at a time, and a
 round confirms every read that arrived before it was asked. A read that
 arrives while a round is out waits for the next one, which is asked when

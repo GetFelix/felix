@@ -55,6 +55,12 @@ stream acks after the write and has no such gap. Against a broker that opted
 out, publish with commit acks: `ack_on_commit: true` in the producer's
 `ClientConfig`, or `FELIX_ACK_ON_COMMIT=true` on the broker.
 
+On a Raft shard a poll hands out records up to the commit, and two acks are
+sent before it: a `Leader` stream's while the leader's lease holds, and a
+`Quorum` stream's when the broker does not fsync on commit. A poll sent after
+such an ack still gets the record, as a history read does: it waits for the
+acknowledged record to commit before it answers, even with no wait asked for.
+
 ## What the broker guarantees
 
 **A record is held by one consumer at a time.** While a claim stands, no other
