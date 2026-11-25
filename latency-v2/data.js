@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795564193782,
+  "lastUpdate": 1795565024589,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86592,6 +86592,72 @@ window.BENCHMARK_DATA = {
             "range": "661.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 524.00\nmean: 810.80\nstdev: 661.55\ncv: 81.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f631ad84c0c6b888b26ac7c2a4400c263de22470",
+          "message": "fix(raft): a read right after an acknowledged publish includes it (#3115) (#3116)\n\n* fix(raft): a read right after an acknowledged publish includes it (#3115)\n\nA stream_read cut its page at the reading broker's own synced offset\nunder on_commit. A Raft log always opens on_commit unless written commit\nis on, and a commit needs only a majority to sync, so the member that\nanswers the read (follower or leader) can have applied a committed record\nit has not synced yet. The read then answered an acknowledged publish\nwith an empty page. On an engine's log the read now stops at the commit,\nwhich already holds only records that stay.\n\nSpec-Unaffected: the TLA models cover commit and apply, not the broker's\npage cut over a member's own sync.\n\n* fix(raft): refuse an engine-log read with no commit bound (#3115)\n\nWhile a Raft member closes or opens again its shard's bound can fall back\nto Unbounded, and reading to the raw tail would serve a follower's\nuncommitted entries. Such a read is now refused, retryably. Also pins the\nread-after-ack test at the Leader level and corrects the comment: under\nwritten commit a majority holds the entry, it need not have synced it.\n\nSpec-Unaffected: broker read bound handling only.",
+          "timestamp": "2026-11-24T23:57:59Z",
+          "tree_id": "788ce4b425438253669986b3f398d9783e560aee",
+          "url": "https://github.com/GetFelix/felix/commit/f631ad84c0c6b888b26ac7c2a4400c263de22470"
+        },
+        "date": 1795565005693,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 67,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 67.00\nmean: 67.20\nstdev: 0.84\ncv: 1.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "2.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.60\nstdev: 2.97\ncv: 3.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 128,
+            "range": "3.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 126.80\nstdev: 3.90\ncv: 3.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.20\nstdev: 2.28\ncv: 2.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "58.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 215.60\nstdev: 58.23\ncv: 27.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 333,
+            "range": "543.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 333.00\nmean: 617.00\nstdev: 543.33\ncv: 88.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
