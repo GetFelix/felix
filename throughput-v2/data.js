@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795649349572,
+  "lastUpdate": 1795649651076,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70044,6 +70044,58 @@ window.BENCHMARK_DATA = {
             "range": "13354.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1198305.31\nmean: 1196165.01\nstdev: 13354.56\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3a5a7e5d32cf22a9ff31f8accd9ddcf7805348bf",
+          "message": "fix(kafka): an anonymous connection ends with its client certificate (#2903) (#3193)\n\nUnder FELIX_KAFKA_ANONYMOUS_TENANT a connection started as\nPrincipal::anonymous with no end, so a client that presented a\ncertificate was served past its notAfter. The anonymous principal now\ncomes from Cluster::anonymous, which the broker bounds by the chain with\nthe same Revocable end an authenticated connection gets: the connection\ncloses at notAfter, a request after it is refused, and a chain that has\nalready ended or cannot be read is refused. No certificate: unchanged.\n\nSpec-Unaffected: Kafka listener connection lifetime under the dev switch; no modeled replication or storage state",
+          "timestamp": "2026-11-25T15:25:42-08:00",
+          "tree_id": "ee2a8f008d952987951200409eb692a9f804fb93",
+          "url": "https://github.com/GetFelix/felix/commit/3a5a7e5d32cf22a9ff31f8accd9ddcf7805348bf"
+        },
+        "date": 1795649650316,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 575575.59,
+            "range": "71096.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 575575.59\nmean: 604639.45\nstdev: 71096.62\ncv: 11.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 575575.59,
+            "range": "71096.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 575575.59\nmean: 604639.45\nstdev: 71096.62\ncv: 11.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156679.71,
+            "range": "7374.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156679.71\nmean: 153688.43\nstdev: 7374.03\ncv: 4.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1566797.12,
+            "range": "73740.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1566797.12\nmean: 1536884.30\nstdev: 73740.29\ncv: 4.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
