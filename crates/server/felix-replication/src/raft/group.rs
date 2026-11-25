@@ -195,6 +195,8 @@ pub(crate) struct Timers {
     pub(crate) started: tokio::time::Instant,
     pub(crate) tick: u64,
     pub(crate) heartbeat: u64,
+    /// [`super::RuntimeConfig::peer_deadline`].
+    pub(crate) peer_deadline: Duration,
     pub(crate) idle_heartbeat: u64,
     pub(crate) idle_after: u64,
     pub(crate) election_min: u64,
@@ -1059,7 +1061,13 @@ impl Group {
             self.allow_elections();
         }
         let mut dropped = Dropped(Some(&self.dropped_ticks));
-        let ticked = self.raft.trigger().tick().await;
+        // The ticker found a leader's heartbeat due by its own gap, so it
+        // is sent whatever openraft's timer says: that timer runs at the
+        // peer deadline, which is longer than the gap.
+        let ticked = match self.leads() {
+            true => self.raft.trigger().heartbeat().await,
+            false => self.raft.trigger().tick().await,
+        };
         dropped.0 = None;
         self.pace.due.store(self.next_due(), Ordering::Relaxed);
         if let Err(err) = ticked
@@ -1529,7 +1537,7 @@ impl Group {
             tracing::debug!(group = %self.id, error = %err, "no written report: its marker did not sync");
             return;
         }
-        let deadline = Duration::from_millis(self.pace.timers.heartbeat);
+        let deadline = self.pace.timers.peer_deadline;
         let request = RaftRequest {
             group: self.id.clone(),
             to: leader,

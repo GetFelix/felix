@@ -316,6 +316,65 @@ async fn the_lease_is_as_old_as_the_message_a_majority_answered() {
     led.cluster.stop().await;
 }
 
+/// **A shard commits over a link slower than its heartbeat** (#3101).
+/// With every append and heartbeat answered two heartbeats late, a write
+/// still commits, the leader keeps its term on heartbeats alone, and the
+/// lease is as old as the trip: the longer deadline waits for the answer
+/// and credits nothing for the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_slower_than_the_heartbeat_commits_and_ages_the_lease() {
+    use openraft::Instant as _;
+    use openraft::async_runtime::watch::WatchReceiver;
+    let mut led = Led::leased().await;
+    let slow = timers().heartbeat * 2;
+    assert!(slow < timers().peer_deadline());
+    *led.cluster.net.answer_after.lock() = Some(slow);
+    // Every answer from before is this old by then.
+    tokio::time::sleep(slow).await;
+
+    let member = led.member();
+    let aged = || {
+        let acked = member.raft().metrics().borrow_watched().last_quorum_acked;
+        let age = acked.expect("the leader was answered").elapsed();
+        assert!(
+            age >= slow,
+            "an answer {slow:?} late made the lease {age:?} old"
+        );
+        acked
+    };
+    for _ in 0..3 {
+        let began = tokio::time::Instant::now();
+        let wrote = tokio::time::timeout(SOON, led.cluster.write(0, b"slow")).await;
+        wrote.expect("a write over a link slower than the heartbeat never committed");
+        assert!(began.elapsed() >= slow, "the commit did not wait the trip");
+        aged();
+    }
+    // No write from here: only heartbeats cross the link.
+    let mut newest = aged();
+    let mut answers = 0;
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < until {
+        let acked = aged();
+        if newest != acked {
+            newest = acked;
+            answers += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(answers > 2, "only {answers} heartbeats were answered");
+    assert_eq!(led.status().role, Role::Leader);
+    assert_eq!(
+        led.status().term,
+        led.term,
+        "the slow link cost an election"
+    );
+    assert!(
+        led.engine.admit_local_ack(&shard(0), led.term).is_ok(),
+        "the lease lapsed over a link {slow:?} slow"
+    );
+    led.cluster.stop().await;
+}
+
 /// **The answer to a pre-vote this member asked for gives nothing up**,
 /// whatever vote it names: a member that only asked has changed no vote.
 #[test]
