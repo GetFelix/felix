@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795574079138,
+  "lastUpdate": 1795582345584,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68328,6 +68328,58 @@ window.BENCHMARK_DATA = {
             "range": "46429.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1589707.94\nmean: 1580543.30\nstdev: 46429.19\ncv: 2.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aafc859be23b6e31c81f5e6ad2f3d49a4877891c",
+          "message": "build(deps): bump ghcr.io/devcontainers/features/docker-outside-of-docker (#3133)\n\nBumps ghcr.io/devcontainers/features/docker-outside-of-docker from 1.10.1 to 1.10.3.\n\n---\nupdated-dependencies:\n- dependency-name: ghcr.io/devcontainers/features/docker-outside-of-docker\n  dependency-version: 1.10.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-24T20:44:54-08:00",
+          "tree_id": "da22941aabece1b45f63243e6a2fe4f6d1aabe34",
+          "url": "https://github.com/GetFelix/felix/commit/aafc859be23b6e31c81f5e6ad2f3d49a4877891c"
+        },
+        "date": 1795582344598,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 536978.41,
+            "range": "14513.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 536978.41\nmean: 539756.16\nstdev: 14513.96\ncv: 2.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 536978.41,
+            "range": "14513.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 536978.41\nmean: 539756.16\nstdev: 14513.96\ncv: 2.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118968.64,
+            "range": "1307.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118968.64\nmean: 118458.84\nstdev: 1307.35\ncv: 1.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1189686.35,
+            "range": "13073.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1189686.35\nmean: 1184588.44\nstdev: 13073.46\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
