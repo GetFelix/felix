@@ -529,6 +529,13 @@ processes under one name, cannot keep taking claims still being worked on. Two
 live processes under one name are still a mistake: the newer one takes what
 the older held when it first reclaimed.
 
+On a Raft stream shard a poll hands out records up to the commit and does not
+wait for a publish that was acknowledged before its commit: a `Leader` publish
+acknowledged under the leader's lease, or a `Quorum` publish on a stream that
+does not fsync on commit. A poll with `wait_ms` 0 sent right after such an ack
+can come back without the record. A later poll, or one still waiting when the
+record commits, gets it.
+
 On a Raft stream shard a poll's claims (offsets, attempts, the member, the
 visibility) are a group entry in the shard's log, applied before the poll is
 answered, so the next leader holds them. It records them as held on a
@@ -1148,6 +1155,12 @@ page, each one from the last answer's `next_offset`.
   for more. A page that reaches that point comes back
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
+- On a Raft shard a read sent after a publish's ack includes that record, at
+  every level. A `Leader` ack under the leader's lease and a `Quorum` ack on a
+  stream that does not fsync on commit are sent before the commit, so the read
+  first waits for the writes already acknowledged to commit. If that takes
+  longer than an election timeout the read is refused with a retryable error
+  instead of answered without them.
 - A `Quorum` leader that has not committed anything at its generation yet,
   just after a promotion, answers `shard_unavailable` with reason `not_ready`
   instead of a page. Retry it: an empty page is only ever an answer at the

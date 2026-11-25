@@ -3425,11 +3425,16 @@ was answered:
 | Answered | Observed by a read that starts after the answer |
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease on a stream fsynced on commit | Always |
-| On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
+| On the lease, after the leader's own write (`Leader`) | Always, by the wait in the next row: the leader keeps the furthest entry it answered on the lease too. A failover between the answer and the commit can lose the write, and a read waiting for it is then refused |
 | When a majority has written it (`Quorum`, or `Leader` with no lease, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. A stream read that could start below a head trim's floor takes it on the leader ("Head trims"); a tail subscribe and live delivery are bounded by the commit (`read_bound`) alone. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
+
+A consumer-group poll is not such a read for the last two rows. It takes its
+bound from the commit before the group's own read-index wait, so a poll with
+no wait sent between the answer and the commit comes back without the record.
+A later poll, or one still waiting at the commit, gets it.
 
 Reads of one shard share rounds. A group asks one round at a time, and a
 round confirms every read that arrived before it was asked. A read that

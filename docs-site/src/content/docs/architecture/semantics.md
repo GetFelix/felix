@@ -129,7 +129,12 @@ means the record is written, keep the default or use `Quorum`.
 
 An ack sent on enqueue does not make the record readable yet either. A history
 read, a replay or a consumer-group poll sent right after it can miss the record
-until it is written. A durable stream's default ack has no such gap. A client of
+until it is written. A durable stream's default ack has no such gap on the
+hybrid engine. On Raft a history read or a replay sent after any ack includes
+the record. A consumer-group poll with no wait can come back without it after a
+`Leader` ack sent while the leader's lease holds, or a `Quorum` ack on a stream
+that does not fsync on commit, because both are sent before the commit that a
+poll reads to. The next poll gets it. A client of
 a broker that opted out can ask for commit acks on its own connections
 (`ack_on_commit: true` in its `ClientConfig`).
 

@@ -120,7 +120,10 @@ the record is written, leave the default or declare the stream `Quorum`.
 An ack on accept does not make the record readable yet. A history read, a
 subscriber's replay or a consumer-group poll sent right after it can come back
 without the record, because nothing reads a record before it is written. A
-durable stream's default ack is sent after the write and has no such gap. A
+durable stream's default ack is sent after the write and has no such gap on the
+hybrid engine. On Raft a history read or a replay sent after any ack includes
+the record, and a consumer-group poll with no wait can still miss it after two
+kinds of ack; "What a reader sees of a `Quorum` stream" below says which. A
 client of a broker that opted out can ask for commit acks on its own
 connections (`ClientConfig::ack_on_commit`).
 
@@ -461,15 +464,30 @@ throughput rather than correctness.
   with no added latency. If a failed flush poisons a `Leader` stream's log,
   its readers stop at the last durable offset from then on: the batch whose
   flush failed was refused, and no reader sees it.
-  On Raft every level reads to the commit, and a `stream_read` sent after a
-  publish was acknowledged includes that record, on a member that has not
-  synced its own copy yet too: the commit already needed a majority to hold it.
+  On Raft every level reads to the commit. Two acks are sent before the
+  commit: a `Leader` ack while the leader's lease holds, and a `Quorum` ack on
+  a stream that does not fsync on commit, which is sent once a majority has
+  written the record. A `stream_read`, a replay from an offset or a Kafka fetch
+  sent after any ack still includes the record. Before it reads, the member
+  waits until every write the leader has acknowledged is committed, and the
+  read is refused, retryably, if that takes longer than an election timeout.
+  The record is served by a member that has not synced its own copy yet too:
+  the commit already needed a majority to hold it. A subscription that starts
+  at `Latest` does not wait and gets such a record live once it commits.
+  A consumer-group poll does not wait for those writes either. A poll with
+  `wait_ms` 0 sent right after one of the two early acks can come back without
+  the record. A later poll, or one still waiting when the record commits, gets
+  it, and nothing is lost. A poll sent after an ack that waited for the commit,
+  such as a `Quorum` ack under `on_commit`, always includes the record.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
   > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
-  > `a_read_shows_a_committed_record_the_member_has_not_synced`.
+  > `a_read_shows_a_committed_record_the_member_has_not_synced`,
+  > `a_read_after_a_lease_answer_waits_for_that_entry`,
+  > `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`,
+  > `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused`.
 - **Replayed history is never dropped.** The overflow policy governs live
   records only. History below the join's `live_offset` is read off disk for
   that subscriber alone, so there is no publisher to protect: it waits for room
