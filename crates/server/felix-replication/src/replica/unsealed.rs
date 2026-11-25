@@ -33,10 +33,6 @@ pub(crate) enum SealedWrite {
     Ballot,
 }
 
-pub(crate) fn seal_refusal(correlation_id: u64, _: &std::convert::Infallible) -> InternalMessage {
-    unsealed(correlation_id)
-}
-
 fn unsealed(correlation_id: u64) -> InternalMessage {
     refused(
         correlation_id,

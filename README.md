@@ -62,7 +62,7 @@ starts three brokers, kills the leader mid-write, and checks from outside that n
     <img src="https://img.shields.io/badge/rust%20min-1.97-blue" alt="Minimum supported Rust 1.97" />
   </a>
   <a href="rust-toolchain.toml">
-    <img src="https://img.shields.io/badge/rust%20built%20with-1.99.1-blue" alt="Built and tested with Rust 1.99.1" />
+    <img src="https://img.shields.io/badge/rust%20built%20with-1.100.0-blue" alt="Built and tested with Rust 1.100.0" />
   </a>
   <a href="https://docs.getfelix.dev">
     <img src="https://img.shields.io/badge/Documentation-8A2BE2" alt="Documentation" />
@@ -232,7 +232,7 @@ is kept current per capability. Trust it when another page disagrees.
 
 ## Getting Started
 
-You need Rust 1.99.1 and [Task](https://taskfile.dev). Docker or Podman is
+You need Rust 1.100.0 and [Task](https://taskfile.dev). Docker or Podman is
 optional: the compose stack and the TLA+ checker use one (see
 [Docker or Podman](https://docs.getfelix.dev/getting-started/containers/)).
 

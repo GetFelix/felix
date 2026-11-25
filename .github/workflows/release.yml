@@ -93,7 +93,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -153,7 +153,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       # No rust-cache here or in the rebuild: a cache restored from another
       # path or run is exactly what the byte comparison below must not trust.
@@ -240,7 +240,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       - name: Record the runner image
         run: |
@@ -416,7 +416,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
           targets: ${{ matrix.target }}
 
       - name: Rust cache
@@ -846,7 +846,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -1026,7 +1026,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -1098,12 +1098,12 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
 
       # Pinned, like every other Rust job here. `@stable` installs the target
-      # on *stable*, and then rust-toolchain.toml switches cargo to 1.99.1,
+      # on *stable*, and then rust-toolchain.toml switches cargo to 1.100.0,
       # which does not have it -- invisible on four legs whose target is the
       # runner's own, and fatal on the one that cross-compiles.
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
           targets: ${{ matrix.target }}
 
       - uses: actions/setup-node@v7
@@ -1124,7 +1124,7 @@ jobs:
           python3 -m pip install --require-hashes --only-binary :all: -r scripts/ci/requirements/zigbuild.txt
           python3 -c 'import ziglang, os; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
 
-      # rustc 1.99.1 passes -Wl,--fix-cortex-a53-843419 on aarch64 Linux (1.97.1
+      # rustc 1.100.0 passes -Wl,--fix-cortex-a53-843419 on aarch64 Linux (1.97.1
       # did not) and zig rejects it as an unsupported linker arg. napi 2 has no hook to drop it, so
       # a `zig` ahead of the real one on PATH strips it.
       - name: Strip the unsupported linker arg from zig
@@ -1151,7 +1151,7 @@ jobs:
           # Names the toolchain so rustup does not also install the rustfmt and
           # clippy that rust-toolchain.toml lists, which a build does not need
           # and which failed with "detected conflict: 'bin/cargo-fmt'".
-          RUSTUP_TOOLCHAIN: "1.99.1"
+          RUSTUP_TOOLCHAIN: "1.100.0"
           # No RUSTFLAGS here. zig's notice about ignoring -O1 is only a warning.
         run: napi build --platform --release --target ${{ matrix.target }} $ZIG
 
@@ -1442,7 +1442,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -1643,7 +1643,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: "1.99.1"
+          toolchain: "1.100.0"
 
       - name: Rust cache
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
