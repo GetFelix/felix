@@ -293,6 +293,12 @@ pub(super) struct RaftRoot<L> {
     /// Cancelled once the start's restore check has answered. A rotation
     /// that check makes removes the mark log, so the gate waits for it.
     pub(super) restore_checked: CancellationToken,
+    /// Set by a start from the control-plane view under the pin rule
+    /// (`FELIX_UNIFIED_FENCE=0`), to the token cancelled once the broker has
+    /// registered. The gate then judges the root on the run witness without
+    /// waiting for the restore check, and the members that open vote but do
+    /// not lead until the broker has registered.
+    pub(super) votes_unchecked: Option<CancellationToken>,
     pub(super) link: Option<L>,
     pub(super) node_id: String,
     /// The storage id this run registers under.
@@ -312,6 +318,11 @@ pub(super) struct RaftRoot<L> {
 /// members open once it passes. A root behind a copy gets a new storage id
 /// and the broker stops. See `docs/per-shard-raft.md`, "The root
 /// sequence".
+///
+/// With [`RaftRoot::votes_unchecked`] the gate does not wait for the
+/// restore check: the run witness is the proof that the root is the one the
+/// last run left, so its members vote while the control plane is down. See
+/// `docs/per-shard-raft.md`, "Voting before the restore check".
 #[cfg(feature = "raft")]
 pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftRoot<L>) {
     use crate::cluster::membership::registered;
@@ -322,9 +333,12 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
         return;
     };
     tokio::spawn(async move {
-        tokio::select! {
-            () = on.stop.cancelled() => return,
-            () = on.restore_checked.cancelled() => {}
+        match &on.votes_unchecked {
+            Some(registered) => members.stand_after(registered.clone()),
+            None => tokio::select! {
+                () = on.stop.cancelled() => return,
+                () = on.restore_checked.cancelled() => {}
+            },
         }
         // No answer and no record are both no copy.
         let (link, credential, node_id) = (
@@ -332,7 +346,14 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
             on.credential.as_ref(),
             on.node_id.as_str(),
         );
+        let (checked, unchecked) = (&on.restore_checked, on.votes_unchecked.is_some());
         let control_plane = move || async move {
+            // A start that votes before its restore check found the control
+            // plane down. Until the check hears from it, asking again would
+            // only hold the vote up by a request timeout.
+            if unchecked && !checked.is_cancelled() {
+                return None;
+            }
             let (storage_id, sequence) = registered(link?, node_id, credential?)
                 .await
                 .ok()??
@@ -344,8 +365,9 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
         };
         let mut failed = false;
         let root = loop {
-            // The restore check has answered and rotated a restored root
-            // itself, so the gate is not told of one again.
+            // The restore check rotates a restored root itself, whether it
+            // answered before the gate or answers after, so the gate is not
+            // told of one.
             let opened = open_root(
                 &on.root,
                 on.witness.as_deref(),

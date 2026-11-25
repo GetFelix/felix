@@ -2281,6 +2281,78 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.stop().await;
 }
 
+/// **A member whose broker has not registered votes but does not lead.** A
+/// broker started from its control-plane view serves no client until it
+/// registers, so a group it led would serve nobody. All three restart, and
+/// the old leader and one follower are unregistered: the old leader does not
+/// take its leadership back, the one registered member is elected, which
+/// needs a vote from an unregistered one, and once they register they stand
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_of_an_unregistered_broker_votes_but_does_not_lead() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let last = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, last).await;
+    let old = cluster.elected(0).await;
+    let registered_one = *BROKERS
+        .iter()
+        .rfind(|broker| **broker != &*old.broker)
+        .expect("a follower");
+
+    cluster.stop().await;
+    cluster.start(true);
+    let registered = tokio_util::sync::CancellationToken::new();
+    for broker in BROKERS {
+        if broker != registered_one {
+            cluster.runtime(broker).stand_after(registered.clone());
+        }
+    }
+    cluster.open(0).await;
+    let leader = cluster.elected(0).await;
+    assert_eq!(
+        &*leader.broker, registered_one,
+        "an unregistered broker's member led"
+    );
+    let next = cluster.write(0, b"after").await;
+    assert!(next > last);
+
+    registered.cancel();
+    down(&cluster, registered_one, true);
+    eventually(|| {
+        cluster
+            .leader(0)
+            .filter(|leader| &*leader.broker != registered_one)
+    })
+    .await;
+    cluster.stop().await;
+}
+
+/// **An unregistered broker forms no group.** Forming one elects the member
+/// that forms it, so it waits until the broker has registered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_of_an_unregistered_broker_forms_no_group() {
+    let mut cluster = Cluster::new(true);
+    let registered = tokio_util::sync::CancellationToken::new();
+    cluster.runtime("a").stand_after(registered.clone());
+    cluster.open(0).await;
+    let formed = cluster.runtime("a").initialize(&shard(0), members()).await;
+    assert!(
+        matches!(formed, Err(InitializeError::Raft(_))),
+        "an unregistered broker formed a group: {formed:?}"
+    );
+    assert!(cluster.statuses(0).iter().all(|status| status.term == 0));
+
+    registered.cancel();
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members())
+        .await
+        .expect("initialize");
+    cluster.elected(0).await;
+    cluster.stop().await;
+}
+
 /// **A restarted member's log still holds each record's publisher and
 /// headers.** They live in the entry itself, so a member that reopens its log
 /// serves them to a history read as it did before the restart.

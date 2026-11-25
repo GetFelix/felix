@@ -240,10 +240,70 @@ shards. Until the root passes, no Raft member opens, a request for a Raft
 shard placed here is answered "not ready", and the log says once why the
 root is held. When it passes, the routing feed is woken and the members
 open. A broker that started from its saved control-plane view, with the
-control plane down, has not had its restore check answered yet. Its Raft
-members wait for the control plane too, even with a witness: the check's
-verdict is one of the gate's inputs, and a rotation it makes removes the
-mark log, which must not be open by then.
+control plane down, has not had its restore check answered yet. Under the
+unified fence, the default, its Raft members wait for the control plane
+too, even with a witness: a restarted broker counts for nothing until the
+control plane has checked it, as on the hybrid engine. With
+`FELIX_UNIFIED_FENCE=0` they open on the witness.
+
+**Voting before the restore check.** A broker with
+`FELIX_START_WITHOUT_CONTROLPLANE` on and `FELIX_UNIFIED_FENCE=0` that
+starts from its view runs the gate at once, with no incarnation verdict
+(issue #3102). With the leader also dead, the copies still up could not
+elect otherwise, and the shard would wait for the control plane. What
+stands in for the verdict is the run witness, twice:
+
+- The start qualified for its view only because the witness names this
+  directory, this boot and the token the last start wrote
+  (`docs/durable-storage.md`, "The run witness"). So the root is the one
+  the last run on this machine left, or a copy taken during that run.
+- The gate compares the root's sequence with the witness's copy, which is
+  exact for votes. A copy taken during the last run and put back is behind
+  it as soon as one vote or one batch of log marks followed the copy.
+
+The control plane is not asked for its copy until the restore check has
+heard from it, so a control plane that takes no connection does not hold
+the vote up. A root with marks and no witness copy of its sequence is
+still held until the control plane has one.
+
+Members that open this way vote and replicate but do not lead until the
+broker has registered (`GroupRuntime::stand_after`): they do not stand, do
+not take their old leadership back at the start, and refuse a leadership
+transfer. The broker serves no client before it registers, so a group it
+led would serve nobody while a peer that could lead it waited.
+
+When the control plane answers, the deferred restore check runs as before.
+A directory it finds restored gets a new storage id and the broker stops.
+That rotation now finds the mark log open, so the open log stops instead of
+writing again: once the root's storage id is no longer the one the log was
+opened under, every mark write fails, and with it every vote and every
+append that waits on a mark, and the file is not put back by a rewrite or
+a reopen (`marks.rs`, `under_id`). The restart finds a root with no marks
+under the new id, and every copy rejoins as a new member.
+
+What this gives up against a start that waits:
+
+- **A copy taken in the last run before that run recorded its
+  registration, with no mark written since.** The incarnation verdict
+  would rotate it. The witness passes it, as it passes any root put back
+  inside the last mark interval ("What the gate cannot see"). The members
+  vote until the control plane answers, then the check rotates the root.
+- **A second machine that runs a copy of the directory under the same node
+  id.** The control plane registers it at a later incarnation, and a start
+  that asks is rotated for it. A start from the view does not ask, so both
+  machines hold the same copy ids, and each can vote once in one term.
+  Starting a copy of a live directory elsewhere needs
+  `felix-broker rotate-storage-id` first, as a restored snapshot does.
+
+Both are why the default waits. The gain is the one the switch has on the
+hybrid engine: a shard with two live copies of three stays available while
+the control plane is down and a broker restarts.
+
+> Tests: `node::cluster::tests::a_view_start_under_the_pin_rule_opens_its_raft_root_before_the_restore_check`,
+> `raft::tests::a_member_of_an_unregistered_broker_votes_but_does_not_lead`,
+> `raft_copy::tests::gate::a_rotation_under_an_open_mark_log_stops_it_and_leaves_no_marks`,
+> and on a cluster
+> `failures::replica_election::a_broker_restarted_while_the_control_plane_is_down_votes`.
 
 **A hold that no evidence can end.** A held root reports nothing, so the
 control plane learns a root's sequence only from a broker whose root is
@@ -336,7 +396,9 @@ by the gate or any other path (a restore, a crash under relaxed fsync, the
 operator command, a deleted `storage-id` file), removes the root's mark log
 before it writes the new id. `open_root` is called only after the start's
 restore check has answered, so no rotation removes a mark log that is
-open. Every shard directory minted under the old id rotates when it opens,
+open, except on a start that votes before the check; there the open log
+stops at the rotation ("Voting before the restore check"). Every shard
+directory minted under the old id rotates when it opens,
 so the old marks protect nothing. Kept, they would carry a sequence that
 no copy outside the root names under the new id, and the root would be
 held after the next reboot. A crash between the removal and the new id
