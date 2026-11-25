@@ -76,6 +76,19 @@ pub async fn connect_cluster_with(
         .with_context(|| format!("connect a cluster client to any of {addrs:?}"))
 }
 
+/// [`connect_cluster`] with a retry policy of the test's choosing.
+pub async fn connect_cluster_with_policy(
+    addrs: &[SocketAddr],
+    tenant_id: &str,
+    token: &str,
+    policy: felix_client::ReconnectPolicy,
+) -> Result<felix_client::Client> {
+    let config = client_config(tenant_id, token)?;
+    felix_client::Client::connect_with_policy(addrs, "localhost", config, policy)
+        .await
+        .with_context(|| format!("connect a cluster client to any of {addrs:?}"))
+}
+
 fn client_config(tenant_id: &str, token: &str) -> Result<ClientConfig> {
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(rustls::ALL_VERSIONS)

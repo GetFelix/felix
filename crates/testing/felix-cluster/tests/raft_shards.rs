@@ -307,6 +307,70 @@ async fn a_shard_started_on_raft_forms_its_group_on_the_target_from_its_copies()
     cluster.shutdown().await;
 }
 
+/// **A plain publish made while a fresh group hands over its first term
+/// lands, once.** The broker that forms each group leads term 1 and then
+/// hands it to the placed leader, closing the shard for the election.
+/// `Cluster::start` returns with those hand-overs still to come, and nothing
+/// here waits for them: a publish refused `not_ready` in that window was
+/// never proposed, so the client sends it again. A re-send that wrote twice
+/// would leave a gap in the offsets the shard acknowledged.
+#[tokio::test]
+#[serial]
+async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
+    if !opted_in() {
+        return;
+    }
+    const SHARDS: u32 = 12;
+    const ROUNDS: usize = 4;
+    let cluster = Cluster::start(raft_cluster_with(StreamSpec::quorum(STREAM, SHARDS, 3)))
+        .await
+        .expect("start cluster");
+    let addrs = cluster.broker_addrs();
+    // A hand-over that fails once is asked again about 30 s later, so the
+    // budget is time, not a handful of attempts.
+    let policy = felix_client::ReconnectPolicy {
+        attempts: 600,
+        backoff: Duration::from_millis(50),
+        max_backoff: Duration::from_millis(500),
+        deadline: Some(ELECTED_WITHIN),
+    };
+    let client = felix_cluster::client::connect_cluster_with_policy(
+        &addrs,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+        policy,
+    )
+    .await
+    .expect("connect a cluster client");
+
+    let mut acked: Vec<Vec<u64>> = vec![Vec::new(); SHARDS as usize];
+    for round in 0..ROUNDS {
+        for shard in 0..SHARDS {
+            let offset = client
+                .publish_on_shard(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    shard,
+                    format!("{shard}/{round}").into_bytes(),
+                    AckMode::PerMessage,
+                )
+                .await
+                .unwrap_or_else(|err| panic!("publish {round} to shard {shard}: {err:#}"))
+                .expect("a durable stream acknowledges with an offset");
+            acked[shard as usize].push(offset);
+        }
+    }
+    for (shard, offsets) in acked.iter().enumerate() {
+        let first = offsets[0];
+        let expected: Vec<u64> = (first..first + ROUNDS as u64).collect();
+        assert_eq!(
+            offsets, &expected,
+            "shard {shard} holds something between two acknowledged publishes"
+        );
+    }
+}
+
 fn headers(trace: &str) -> felix_client::RecordHeaders {
     felix_client::RecordHeaders {
         key: Some(bytes::Bytes::from(format!("key-{trace}"))),
