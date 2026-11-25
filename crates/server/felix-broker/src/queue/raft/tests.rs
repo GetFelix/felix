@@ -831,6 +831,39 @@ async fn a_claim_survives_a_change_of_leader() {
     );
 }
 
+/// A poll hands out only what is below the commit bound it was given, so a
+/// record acknowledged before it commits waits for a later poll. That poll
+/// returns work straight after one that also did, and reissues nothing: what
+/// a test must not mistake for a second hand-out (#3122).
+#[tokio::test]
+async fn a_record_above_the_commit_bound_waits_for_a_later_poll() {
+    let fx = fixture(5);
+    publish(&fx.log, 2).await;
+    let below = |committed| {
+        let fx = &fx;
+        async move {
+            let claimed = fx
+                .groups
+                .poll_below(
+                    &key(G),
+                    &fx.log,
+                    committed,
+                    10,
+                    Instant::now(),
+                    None,
+                    None,
+                    later(),
+                )
+                .await
+                .expect("poll");
+            claimed.iter().map(|c| c.offset).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(below(1).await, [0], "only the committed record goes out");
+    assert_eq!(below(2).await, [1], "the claimed record went out again");
+    assert_eq!(below(2).await, [0u64; 0], "both claims stand");
+}
+
 /// An extension is written too, so a new leader holds the claim for as
 /// long as the extension asked, not the visibility timeout.
 #[tokio::test]
