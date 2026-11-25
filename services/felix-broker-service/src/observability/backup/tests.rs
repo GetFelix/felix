@@ -344,10 +344,41 @@ async fn led_shards_are_listed_in_key_order() {
     let dir = tempfile::tempdir().expect("tempdir");
     let ingress = ingress(&[
         assignment(key("scratch", 0, ShardKind::Stream), "broker-a", 1, &[]),
+        assignment(key("quorum", 0, ShardKind::Cache), "broker-a", 1, &[]),
+        assignment(key("audit", 0, ShardKind::Stream), "broker-a", 1, &[]),
         assignment(key("orders", 0, ShardKind::Stream), "broker-a", 1, &[]),
         assignment(key("missing", 0, ShardKind::Stream), "broker-a", 1, &[]),
     ]);
-    let answer = collect(&source(broker(dir.path()).await, Some(ingress))).await;
+    let broker = broker(dir.path()).await;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "audit",
+            StreamMetadata {
+                durable: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    let answer = collect(&source(broker, Some(ingress))).await;
+    let shards: Vec<(&str, u64)> = answer["shards"]
+        .as_array()
+        .expect("shards")
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().expect("name"),
+                s["shard"].as_u64().expect("shard"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shards,
+        [("audit", 0), ("orders", 0), ("quorum", 0)],
+        "{answer}"
+    );
     let names: Vec<&str> = answer["skipped"]
         .as_array()
         .expect("skipped")

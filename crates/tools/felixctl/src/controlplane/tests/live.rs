@@ -295,10 +295,10 @@ async fn placement_commands_without_brokers() {
             .await,
         Err(2)
     );
-    assert!(
+    assert_eq!(
         h.run_as(&operator, &["placement", "abandon", "orders", "0", "--yes"])
-            .await
-            .is_err(),
+            .await,
+        Err(5),
         "no such shard to abandon"
     );
     h.control_plane.shutdown().await;
