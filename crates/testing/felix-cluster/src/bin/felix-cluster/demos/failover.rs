@@ -3,11 +3,14 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec, wait};
+use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 
 use super::{beat, step};
 use crate::args::{flag_usize, pace_from};
 use crate::{STREAM, init_tracing};
+
+/// How long a healthy cluster may take to elect a leader or catch a replica up.
+const SETTLES_WITHIN: Duration = Duration::from_secs(20);
 
 /// Replication, quorum acknowledgement and failover, end to end.
 ///
@@ -28,7 +31,9 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
         ..Default::default()
     })
     .await?;
-    let leader = cluster.owner(STREAM).await?;
+    // The broker that serves the shard. On Raft that is the member the group
+    // elected, which placement names but does not choose.
+    let leader = cluster.serving_leader(STREAM, SETTLES_WITHIN).await?;
     for node in &cluster.nodes {
         let role = if node.node_id == leader {
             "leader"
@@ -76,16 +81,10 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
             .await?;
         println!("  acknowledged: before-{index}   (a majority holds it, not just the leader)");
     }
-    wait::until(Duration::from_secs(20), "replication to settle", || async {
-        matches!(
-            cluster
-                .metric(&leader, "felix_broker_replication_lag_records")
-                .await,
-            Ok(Some(lag)) if lag == 0.0
-        )
-    })
-    .await?;
-    println!("\n  Replication lag on {leader}: 0 — every replica holds everything it does.");
+    cluster
+        .wait_for_every_member_level(STREAM, SETTLES_WITHIN)
+        .await?;
+    println!("\n  Replication has caught up: {leader} is not the only broker holding them.");
     beat(pace).await;
 
     step(&format!(
@@ -94,18 +93,11 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
     let killed_at = std::time::Instant::now();
     cluster.kill_node(&leader)?;
     println!("  Gone. Not a graceful shutdown — the process is dead.");
-    wait::until(
-        Duration::from_secs(30),
-        "a replica to be promoted",
-        || async {
-            cluster.place_shards().await;
-            matches!(cluster.owner(STREAM).await, Ok(owner) if owner != leader)
-        },
-    )
-    .await?;
-    let promoted = cluster.owner(STREAM).await?;
+    let promoted = cluster
+        .promoted_leader(STREAM, &leader, Duration::from_secs(30))
+        .await?;
     println!(
-        "  {promoted} promoted after {:?}.",
+        "  {promoted} took over after {:?}.",
         Duration::from_millis(killed_at.elapsed().as_millis() as u64)
     );
     println!("  It was chosen because it holds the log — a broker that did not");
