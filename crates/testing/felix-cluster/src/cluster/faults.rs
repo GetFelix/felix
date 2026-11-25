@@ -5,8 +5,8 @@
 //! Every fault a broker has to cooperate with is a file the broker was
 //! pointed at when it started (partition, clock, storage), so injecting is a
 //! write and healing a delete. A write replaces the file by rename: the broker
-//! reads it while it runs, and must never see it half written. Link faults need no cooperation at all: they
-//! are rules in the harness's own proxies.
+//! reads it while it runs, and must never see it half written. Link faults
+//! need no cooperation at all: they are rules in the harness's own proxies.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
