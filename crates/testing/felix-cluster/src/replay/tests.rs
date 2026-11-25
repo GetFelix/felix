@@ -92,3 +92,31 @@ async fn a_subscription_ended_part_way_is_not_a_replay() {
         "a clean end must be told apart from a lost subscription: {err:#}"
     );
 }
+
+/// A subscription that the broker ended because the shard moved.
+struct Moved(Scripted);
+
+impl Events for Moved {
+    async fn next_event(&mut self) -> Result<Option<Event>> {
+        self.0.next_event().await
+    }
+
+    fn moved(&self) -> bool {
+        true
+    }
+}
+
+/// **A shard that moved is a reason to subscribe again**, not a clean end of
+/// a short replay: the caller retries it rather than failing.
+#[tokio::test(start_paused = true)]
+async fn a_subscription_ended_by_a_move_is_retried_not_failed() {
+    let mut replay = Moved(Scripted::new([Step::Event("harness-probe"), Step::Ended]));
+    let err = drain(&mut replay, QUIET)
+        .await
+        .map(|read| payloads(&read))
+        .expect_err("a prefix");
+    assert!(
+        err.downcast_ref::<super::ReplayEnded>().is_none(),
+        "a move must not read as a clean end: {err:#}"
+    );
+}

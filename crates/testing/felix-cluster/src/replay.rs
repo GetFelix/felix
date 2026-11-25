@@ -11,7 +11,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use felix_client::Event;
 
 /// Where a replay's events come from. [`felix_client::Subscription`] in a
@@ -19,11 +19,21 @@ use felix_client::Event;
 pub trait Events {
     /// See [`felix_client::Subscription::next_event`].
     fn next_event(&mut self) -> impl Future<Output = Result<Option<Event>>> + Send;
+
+    /// Whether the broker ended it because the shard moved: a deliberate end
+    /// that asks the client to subscribe again, not a short replay.
+    fn moved(&self) -> bool {
+        false
+    }
 }
 
 impl Events for felix_client::Subscription {
     fn next_event(&mut self) -> impl Future<Output = Result<Option<Event>>> + Send {
         felix_client::Subscription::next_event(self)
+    }
+
+    fn moved(&self) -> bool {
+        self.shard_moved().is_some()
     }
 }
 
@@ -38,6 +48,10 @@ pub async fn drain<E: Events>(events: &mut E, quiet: Duration) -> Result<Vec<Eve
         match tokio::time::timeout(quiet, events.next_event()).await {
             Err(_) => return Ok(read),
             Ok(Ok(Some(event))) => read.push(event),
+            Ok(Ok(None)) if events.moved() => bail!(
+                "the shard moved after {} events; subscribe again for the whole replay",
+                read.len()
+            ),
             Ok(Ok(None)) => return Err(ReplayEnded { events: read.len() }.into()),
             Ok(Err(err)) => {
                 return Err(err).with_context(|| {
