@@ -809,6 +809,8 @@ async fn a_member_opening_inside_a_mark_records_past_its_snapshot() {
         // Without a live mark: a later entry stamped past its life.
         let stamp = if live { 40 } else { 31 + 2 * WINDOW_MICROS };
         sent.apply(5, stamp, &put("k", b"sent", 5));
+        // As a receiver holds it: parsed from the bytes, recording nothing.
+        let sent = CacheState::restore(&sent.snapshot(), true).expect("parse");
         let resumed = |cache: &super::super::super::machine::Cache| {
             let state = cache.read();
             (
