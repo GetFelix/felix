@@ -572,6 +572,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     raft_voters: None,
                     raft_seed: None,
                     raft_bases: None,
+                    raft_leader: None,
                     raft_ordered: None,
                 })
                 .await

@@ -826,6 +826,7 @@ pub(super) fn move_step<'a>(
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         };
         return Decision::Move(
@@ -1213,6 +1214,7 @@ pub(super) fn start(
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {

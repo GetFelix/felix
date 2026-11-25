@@ -465,6 +465,7 @@ async fn seed_shards(store: &InMemoryStore) {
                 raft_voters: None,
                 raft_seed: None,
                 raft_bases: None,
+                raft_leader: None,
                 raft_ordered: None,
             })
             .await
@@ -607,6 +608,7 @@ async fn shard_assignments_carry_the_streams_routing() {
                 raft_voters: None,
                 raft_seed: None,
                 raft_bases: None,
+                raft_leader: None,
                 raft_ordered: None,
             })
             .await

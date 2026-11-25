@@ -1849,7 +1849,7 @@ copy has to move:
 | Balance, drain or operator move to a member | Stage, fence, cut over | One write that changes only `leader`, to another member |
 | Operator move outside the set | Copied in first | One write that gives the destination the leader's seat and names it leader |
 | Balance with no member to take a leader | As any balance move | One write that swaps a follower for a live broker outside the set, two or more leaders under the leader, and names it leader (#3113). An RF 1 shard grows to that broker, then shrinks to it (#3118) |
-| Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
+| Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader: the one the group reported electing, else the member leading fewest. The group elects on its own |
 | Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
 | Follower on an internal node | Replaced | Replaced, the same way |
 | Follower lost past `restore_after_millis` | Replaced | Replaced, the same way |
@@ -1915,7 +1915,11 @@ brokers. It is undone or stranded as an operator's RF 1 move is.
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
 leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
-waits while a broker is down, as for the hybrid. A down leader is renamed even
+waits while a broker is down, as for the hybrid. While a member is down the
+group's leader does not hand over, so placement names the member the group
+reported electing ([per-shard-raft.md](per-shard-raft.md), "Leaders follow
+placement"), even while paused: the write moves nothing and asks for no
+transfer, it only records what the group did. A down leader is renamed even
 while paused, as the hybrid still replaces a failed leader: a broker with no
 member forwards requests to the leader placement names, or, while that
 broker holds no voter yet (a move outside the set), to a voter the group's

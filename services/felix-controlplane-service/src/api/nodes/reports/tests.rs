@@ -39,6 +39,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     }
 }
@@ -181,6 +182,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -336,6 +338,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     for _ in 0..=generation_bumps {
@@ -803,6 +806,7 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -900,6 +904,7 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -977,6 +982,7 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -1050,6 +1056,7 @@ async fn named_y_beside_z() -> (
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
