@@ -1,14 +1,18 @@
-//! A standalone broker after a crash: under `Periodic` a machine crash
-//! rotates the storage id, and the group of one re-forms itself from its
-//! own copy. A clean stop, an `OnCommit` crash and an operator's rotation
-//! leave it alone.
+//! A standalone broker after a crash or a restore: under `Periodic` a
+//! machine crash rotates the storage id, and the group of one re-forms
+//! itself from its own copy. A restore through `rotate-storage-id` re-forms
+//! it too, on the restore time line. A clean stop, an `OnCommit` crash and
+//! an operator's rotation by hand leave it alone.
 
 use std::path::Path;
 use std::time::Duration;
 
 use felix_broker::ConsistencyLevel;
 use felix_storage::log::FsyncMode;
-use felix_storage::raft_copy::{EpochRecord, LocalRecord, group_epoch, highest_reserved};
+use felix_storage::raft_copy::{
+    DEFAULT_OFFSET_GAP, EpochRecord, LocalRecord, RESTORE_OFFSETS_PER_MILLI, group_epoch,
+    highest_reserved,
+};
 use felix_storage::run_state::{self, BootId};
 
 use super::super::super::tests::{INCARNATION, broker_at};
@@ -148,6 +152,10 @@ async fn a_periodic_crash_re_forms_and_keeps_every_synced_record() {
     assert!(
         first > reserved,
         "the epoch starts at {first}, not above the reservation {reserved}"
+    );
+    assert!(
+        first < DEFAULT_OFFSET_GAP,
+        "a relaxed crash took the restore time line: {first}"
     );
     assert_eq!(payloads(&broker).await, written());
     let next = publish(&broker, &engine, &[b"six"]).await;
@@ -305,6 +313,150 @@ async fn a_second_periodic_crash_re_forms_above_the_first_epochs_reservation() {
     assert_eq!(payloads(&broker).await, expected);
     let last = publish(&broker, &engine, &[b"eight"]).await;
     assert!(last >= next + 2, "offset {last} reused below {}", next + 2);
+    stop.cancel();
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// The restore time line now: no first index a restore plans from here on is
+/// below it.
+fn time_line_now() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_millis();
+    RESTORE_OFFSETS_PER_MILLI * u64::try_from(now).expect("millis") + DEFAULT_OFFSET_GAP
+}
+
+/// Copy the directory tree at `from` to `to`, as an operator's backup does.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create");
+    for entry in std::fs::read_dir(from).expect("read dir") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy");
+        }
+    }
+}
+
+/// Put the copy at `backup` back as the whole data directory at `root`.
+fn put_back(backup: &Path, root: &Path) {
+    std::fs::remove_dir_all(root).expect("wipe");
+    copy_tree(backup, root);
+}
+
+/// Stop the shards and the broker, recording a clean stop.
+async fn stop_cleanly(
+    root: &Path,
+    broker: Arc<Broker>,
+    shards: Arc<RaftShards>,
+    stop: CancellationToken,
+) {
+    stop.cancel();
+    assert!(EngineShards::shutdown(&*shards).await);
+    drop(broker);
+    let id = felix_storage::storage_identity::load(root)
+        .expect("id")
+        .expect("an id");
+    run_state::mark_clean(root, id).expect("clean");
+}
+
+/// **A restore through `rotate-storage-id` re-forms the group of one on the
+/// restore time line**, under `OnCommit` and `Periodic`: the next offset is
+/// past every offset given out after the backup was taken, and the
+/// restored records read back.
+#[tokio::test]
+async fn a_restore_gives_out_no_offset_given_out_after_the_backup() {
+    for (fsync, relaxed) in [(FsyncMode::OnCommit, false), (PERIODIC, true)] {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backup = tempfile::tempdir().expect("backup");
+        begin(root.path(), relaxed, 1);
+        let broker = broker_in(root.path(), fsync.clone()).await;
+        let (shards, engine, stop) = standalone(&broker);
+        led(&shards).await;
+        let dir = orders_dir(&broker);
+        let first = publish(&broker, &engine, &[b"one", b"two"]).await;
+        stop_cleanly(root.path(), broker, shards, stop).await;
+        copy_tree(root.path(), backup.path());
+
+        assert!(!begin(root.path(), relaxed, 1), "a clean stop keeps the id");
+        let (broker, shards, engine, stop) = reopen(root.path(), fsync.clone(), first + 2).await;
+        let after = publish(&broker, &engine, &[b"three", b"four"]).await;
+        let handed_out = after + 2;
+        stop_cleanly(root.path(), broker, shards, stop).await;
+
+        put_back(backup.path(), root.path());
+        crate::node::storage::rotate_storage_id(root.path()).expect("rotate-storage-id");
+        let line = time_line_now();
+        begin(root.path(), relaxed, 2);
+        let (broker, shards, engine, stop) = reopen(root.path(), fsync.clone(), first + 2).await;
+        assert_eq!(
+            group_epoch(&dir).expect("epoch"),
+            Some(1),
+            "{fsync:?}: re-formed"
+        );
+        let planned = LocalRecord
+            .load(&dir)
+            .expect("plan")
+            .expect("a recorded plan")
+            .bases
+            .last()
+            .expect("a base")
+            .first_index;
+        assert!(
+            planned >= line,
+            "{fsync:?}: the epoch starts at {planned}, below the time line {line}"
+        );
+        assert_eq!(
+            payloads(&broker).await,
+            vec![b"one".to_vec(), b"two".to_vec()],
+            "{fsync:?}"
+        );
+        let next = publish(&broker, &engine, &[b"five"]).await;
+        assert!(
+            next >= handed_out,
+            "{fsync:?}: offset {next} was given out after the backup (below {handed_out})"
+        );
+        assert!(next >= line, "{fsync:?}: offset {next} below the time line");
+        stop.cancel();
+        EngineShards::shutdown(&*shards).await;
+    }
+}
+
+/// **A restore from a backup taken before a self re-form gives none of the
+/// re-formed epoch's offsets out again.** That epoch started above the
+/// backup's reservation, so the reservation the backup holds is below
+/// every offset it gave out; only the time line clears them.
+#[tokio::test]
+async fn a_restore_from_before_a_re_form_reuses_none_of_its_offsets() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let backup = tempfile::tempdir().expect("backup");
+    begin(root.path(), true, 1);
+    let w = write(root.path(), PERIODIC).await;
+    copy_tree(root.path(), backup.path());
+
+    // A machine crash after the backup: the group re-forms above the
+    // backup's reservation and gives out offsets there.
+    assert!(begin(root.path(), true, 2), "a relaxed crash rotates");
+    let (broker, shards, engine, stop) = reopen(root.path(), PERIODIC, w.end).await;
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), Some(1));
+    let after = publish(&broker, &engine, &[b"six"]).await;
+    assert!(after > w.reserved.expect("a reservation"));
+    stop_cleanly(root.path(), broker, shards, stop).await;
+
+    put_back(backup.path(), root.path());
+    crate::node::storage::rotate_storage_id(root.path()).expect("rotate-storage-id");
+    begin(root.path(), true, 3);
+    let (broker, shards, engine, stop) = reopen(root.path(), PERIODIC, w.end).await;
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), Some(1), "re-formed");
+    assert_eq!(payloads(&broker).await, written());
+    let next = publish(&broker, &engine, &[b"seven"]).await;
+    assert!(
+        next > after,
+        "offset {next} reused: the re-formed epoch gave out {after} after the backup"
+    );
     stop.cancel();
     EngineShards::shutdown(&*shards).await;
 }

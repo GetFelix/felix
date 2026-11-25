@@ -61,7 +61,9 @@ any log. See
   first, right after taking the point; if a restore refuses one, take a new
   point and copy again.
 - **Brokers with no cluster** have no assignments, so there is nothing to take
-  a point of. Stop a single broker and copy its data directory instead.
+  a point of. Stop a single broker and copy its data directory instead, and
+  restore it as described under
+  [Restoring a standalone broker](#restoring-a-standalone-broker).
 
 ## Taking a backup
 
@@ -274,6 +276,43 @@ from the last second with no election since. That window is longer while the
 mark writer is backed up, up to about six seconds. A whole data directory put
 back in the same run to such a state is not detected either, so restore whole
 data directories only while the broker is stopped.
+:::
+
+## Restoring a standalone broker
+
+A broker with no `FELIX_NODE_ID` keeps everything in its one data directory,
+so its backup is a copy of that directory, taken with the broker stopped.
+
+1. Stop the broker.
+2. Replace its whole `FELIX_DURABLE_STORAGE_DIR` with the copy.
+3. Run the restore tool on it, with the broker still stopped:
+
+   ```bash
+   felix-broker rotate-storage-id --dir /var/lib/felix
+   ```
+
+4. Start the broker.
+
+Each stream and cache shard starts again from the records in the copy.
+Anything acknowledged after the copy was taken is gone, and so are its
+offsets: the first record published after the restore gets an offset of at
+least 2^14 per millisecond of the broker's clock plus 2^40. A consumer that
+kept an offset from after the copy finds no record there, and no new record
+ever takes it. This holds under every fsync mode, as long as a shard
+averaged at most 2^13 offsets per millisecond since its last restore and the
+broker's clock has not gone back between the two restores.
+
+:::caution[Always run the tool]
+Step 3 is what tells the broker the directory was put back. Nothing inside
+the directory can show that on its own, so a copy started without it, a
+rolled-back volume snapshot or a restored VM included, hands out again the
+offsets it handed out after the copy was taken. A reader that stored one of
+them then reads a different record there.
+
+If the tool stops part way, it leaves `restore-pending` in the directory and
+the broker refuses to start until you run the tool again. Deleting
+`storage-id` by hand is not the same: it records no restore, and the
+broker's shards stay closed.
 :::
 
 ## Rebuilding one broker's copy
