@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795643362567,
+  "lastUpdate": 1795643937650,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69784,6 +69784,58 @@ window.BENCHMARK_DATA = {
             "range": "5477.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811838.39\nmean: 813846.94\nstdev: 5477.31\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3cfb35ce0c89828fbffb679b75f051a7455b4717",
+          "message": "fix(storage): an io_uring fsync dropped unanswered poisons its log (#3047) (#3180)\n\nIf the io_uring service thread panicked, unwinding dropped each in-flight\nfsync's failure hook without running it. The hook owns the log's ring gate,\nso the gate came free with no poison and no answer, and the next flush found\nthe ring gone and fell back to sync_data on the same file. If the lost fsync\nhad failed, the fallback could succeed and mark records durable.\n\nOnFailure is now a guard. Once handed to the ring, dropping it unanswered\nruns the hook with an error, so the log is poisoned before the gate goes.\nA request the ring never took (no ring, no descriptor, send failed) is\nwithdrawn and releases the gate silently. InFlight fails itself on drop, and\nSubmission drops its hook before its reply, so the log stops before any\nwaiter hears.\n\nSpec-Unaffected: io_uring flusher failure handling is not modelled in TLA+",
+          "timestamp": "2026-11-25T13:42:59-08:00",
+          "tree_id": "f124ce0735d048422d1f5c76e14db33f88383a69",
+          "url": "https://github.com/GetFelix/felix/commit/3cfb35ce0c89828fbffb679b75f051a7455b4717"
+        },
+        "date": 1795643936776,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 427388.8,
+            "range": "16359.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 427388.80\nmean: 422887.95\nstdev: 16359.13\ncv: 3.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 427388.8,
+            "range": "16359.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 427388.80\nmean: 422887.95\nstdev: 16359.13\ncv: 3.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97991.64,
+            "range": "7216.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97991.64\nmean: 94889.11\nstdev: 7216.86\ncv: 7.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 979916.43,
+            "range": "72168.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 979916.43\nmean: 948891.11\nstdev: 72168.62\ncv: 7.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
