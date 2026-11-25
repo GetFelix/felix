@@ -206,3 +206,116 @@ fn an_empty_publisher_in_a_record_row_is_absent() {
     assert!(row.publisher.is_null());
     assert_eq!(row.publisher_len, 0);
 }
+
+/// The last error on this thread, as Rust text.
+fn last_error() -> String {
+    let message = crate::error::felix_last_error_message();
+    assert!(!message.is_null(), "a refused call leaves a message");
+    // SAFETY: owned by the library until the next call on this thread.
+    unsafe { CStr::from_ptr(message) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// **Every group entry point refuses a null client up front**, with
+/// `FELIX_STATUS_INVALID_ARGUMENT` and a message saying so, before it looks
+/// at its callback or spawns anything.
+#[test]
+fn every_group_call_refuses_a_null_client() {
+    let client = std::ptr::null();
+    let (t, n, s, g) = (
+        c"t".as_ptr(),
+        c"ns".as_ptr(),
+        c"orders".as_ptr(),
+        c"g".as_ptr(),
+    );
+    let (cancel, user) = (std::ptr::null(), std::ptr::null_mut());
+    // SAFETY (each call): every pointer is null or a NUL-terminated literal,
+    // and no callback is given.
+    let calls: [(&str, &dyn Fn() -> FelixStatus); 13] = [
+        ("poll", &|| unsafe {
+            felix_client_group_poll(
+                client,
+                t,
+                n,
+                s,
+                0,
+                g,
+                10,
+                0,
+                0,
+                std::ptr::null(),
+                false,
+                cancel,
+                None,
+                user,
+            )
+        }),
+        ("ack", &|| unsafe {
+            felix_client_group_ack(client, t, n, s, 0, g, 1, cancel, None, user)
+        }),
+        ("nack", &|| unsafe {
+            felix_client_group_nack(client, t, n, s, 0, g, 1, 2, 50, cancel, None, user)
+        }),
+        ("dead_letter", &|| unsafe {
+            felix_client_group_dead_letter(client, t, n, s, 0, g, 1, cancel, None, user)
+        }),
+        ("discard", &|| unsafe {
+            felix_client_group_discard(client, t, n, s, 0, g, 1, cancel, None, user)
+        }),
+        ("redrive", &|| unsafe {
+            felix_client_group_redrive(client, t, n, s, 0, g, 1, cancel, None, user)
+        }),
+        ("extend", &|| unsafe {
+            felix_client_group_extend(client, t, n, s, 0, g, 1, 2, 500, cancel, None, user)
+        }),
+        ("dead_letters", &|| unsafe {
+            felix_client_group_dead_letters(client, t, n, s, 0, g, cancel, None, user)
+        }),
+        ("seek", &|| unsafe {
+            felix_client_group_seek(
+                client,
+                t,
+                n,
+                s,
+                0,
+                g,
+                crate::subscription::FELIX_START_EARLIEST,
+                0,
+                cancel,
+                None,
+                user,
+            )
+        }),
+        ("create", &|| unsafe {
+            felix_client_group_create(
+                client,
+                t,
+                n,
+                s,
+                0,
+                g,
+                crate::subscription::FELIX_START_OFFSET,
+                9,
+                cancel,
+                None,
+                user,
+            )
+        }),
+        ("describe", &|| unsafe {
+            felix_client_group_describe(client, t, n, s, 0, g, cancel, None, user)
+        }),
+        ("delete", &|| unsafe {
+            felix_client_group_delete(client, t, n, s, 0, g, cancel, None, user)
+        }),
+        ("stream_shards", &|| unsafe {
+            felix_client_stream_shards(client, t, n, s, cancel, None, user)
+        }),
+    ];
+    for (name, call) in calls {
+        // Cleared, so each message is this call's own.
+        crate::error::clear_last_error();
+        assert_eq!(call(), FELIX_STATUS_INVALID_ARGUMENT, "{name}");
+        assert_eq!(last_error(), "client is null", "{name}");
+    }
+}

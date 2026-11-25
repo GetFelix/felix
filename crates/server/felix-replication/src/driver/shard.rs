@@ -428,6 +428,28 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             None => std::mem::take(&mut entry.carried),
         })
         .clone();
+    // An in-memory stream's records never reach a log, so there is nothing to
+    // ship and no log to open: opening one would put it on disk here, and the
+    // broker refuses to (#3071). Its moves still wait on reports. Asked
+    // without an await, so a durable shard's pass yields where it always did.
+    if key.kind == felix_router::ShardKind::Stream
+        && broker.stream_in_memory(&key.tenant_id, &key.namespace, &key.stream)
+    {
+        return in_memory_pass(
+            broker,
+            fence,
+            marks,
+            reporter,
+            shard_key,
+            route,
+            entry,
+            aux,
+            &inherited_ids,
+            incarnation,
+            elected,
+        )
+        .await;
+    }
     let Some(log) = broker
         .shard_log_for(
             log_kind,
@@ -2064,6 +2086,74 @@ pub(super) async fn group_level(
             .map(|(node, _)| node)
             .collect(),
     )
+}
+
+/// A pass over a shard of an in-memory stream. Its log would be empty, so the
+/// report is the one a pass over an empty log makes: tail 0 and every follower
+/// level. Nothing is opened or shipped, and the shard keeps its lease.
+#[allow(clippy::too_many_arguments)]
+async fn in_memory_pass<'a>(
+    broker: &Broker,
+    fence: &dyn WriteFence,
+    marks: &QuorumMarks,
+    reporter: Option<&Reporter>,
+    shard_key: ShardKey,
+    route: &Route,
+    mut entry: ShardCursors,
+    aux: AuxCursors,
+    inherited: &BTreeMap<String, String>,
+    incarnation: u64,
+    elected: Option<felix_common::membership::ElectedLeadership>,
+) -> ShardPass<'a> {
+    let key = &shard_key;
+    reconcile_followers(&mut entry, route);
+    if marks.serving().decided(key.kind) {
+        fence.passed(&watch_key(key), route.generation);
+    }
+    // Checked before the report, as for a log: nothing can land after it.
+    let quiesced = route.draining && fence.quiesced(&watch_key(key));
+    let drained = quiesced && drain_ready(key, route, &caught_up(0, &entry.followers), &[]);
+    let report = shard_report(
+        key,
+        route.generation,
+        0,
+        0,
+        &entry.followers,
+        inherited,
+        drained,
+    )
+    .at_incarnation(incarnation)
+    .with_elected(elected);
+    // No mark is published above 0: an in-memory publish takes no offset and
+    // waits on none (`await_quorum`).
+    publish_mark(
+        broker,
+        reporter,
+        marks,
+        key,
+        incarnation,
+        route.generation,
+        &report,
+        0,
+        false,
+        None,
+    )
+    .await;
+    let behind = report.caught_up.is_empty()
+        && entry
+            .followers
+            .iter()
+            .any(|follower| follower.halted.is_none());
+    ShardPass {
+        generation: route.generation,
+        incarnation,
+        report: Some(report),
+        lag: lag_records(0, &entry.followers),
+        tail: Some(0),
+        drain_pending: route.draining && !drained,
+        behind,
+        ..ShardPass::quiet(shard_key, entry, aux)
+    }
 }
 
 /// `report`, with where each follower has got with the counter log.

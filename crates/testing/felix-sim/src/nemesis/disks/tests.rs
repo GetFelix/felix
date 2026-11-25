@@ -94,3 +94,73 @@ async fn a_cache_loss_forgets_only_writes_before_the_fault() {
         .collect();
     assert_eq!(puts, vec![(1, false), (2, true)]);
 }
+
+fn disk_plan(seed: u64, brokers: usize, window: Duration, cut: bool, wipes: bool) -> super::Plan {
+    super::Plan::default().with_disk_faults(seed, brokers, window, cut, wipes)
+}
+
+/// **A seed replays the same disk faults**, both kinds off adds none, and
+/// the schedule is in time order with nothing starting after the window.
+#[test]
+fn disk_faults_are_seeded_ordered_and_inside_the_window() {
+    let window = Duration::from_secs(180);
+    assert!(disk_plan(7, 5, window, false, false).steps.is_empty());
+    for seed in 0..50 {
+        let plan = disk_plan(seed, 5, window, true, true);
+        assert_eq!(plan, disk_plan(seed, 5, window, true, true), "seed {seed}");
+        assert!(!plan.steps.is_empty(), "seed {seed}");
+        assert!(plan.steps.windows(2).all(|w| w[0].at <= w[1].at));
+        assert!(plan.steps.iter().all(|step| step.at < window));
+    }
+}
+
+/// **A cut takes two brokers or a majority, a wipe one or two, never the
+/// same broker twice and never one that does not exist**; each stays down
+/// between 5 and 20 seconds.
+#[test]
+fn disk_faults_pick_distinct_existing_brokers() {
+    let brokers = 5;
+    let mut cuts = 0;
+    let mut wipes = 0;
+    for seed in 0..100 {
+        for step in disk_plan(seed, brokers, Duration::from_secs(300), true, true).steps {
+            let (nodes, down_for, allowed): (Vec<usize>, Duration, &[usize]) = match step.fault {
+                super::Fault::MajorityCut { nodes, down_for } => {
+                    cuts += 1;
+                    (nodes, down_for, &[2, brokers / 2 + 1])
+                }
+                super::Fault::Wipe {
+                    nodes, down_for, ..
+                } => {
+                    wipes += 1;
+                    (nodes, down_for, &[1, 2])
+                }
+                other => panic!("not a disk fault: {other:?}"),
+            };
+            assert!(allowed.contains(&nodes.len()), "{nodes:?}");
+            assert!(
+                nodes.windows(2).all(|w| w[0] < w[1]),
+                "sorted, distinct: {nodes:?}"
+            );
+            assert!(nodes.iter().all(|&n| n < brokers), "{nodes:?}");
+            assert!(
+                (Duration::from_secs(5)..=Duration::from_secs(20)).contains(&down_for),
+                "{down_for:?}"
+            );
+        }
+    }
+    assert!(cuts > 0 && wipes > 0, "cuts {cuts}, wipes {wipes}");
+}
+
+/// **A window shorter than the first fault's start schedules nothing**:
+/// every disk fault waits at least ten seconds into the run.
+#[test]
+fn a_short_window_has_no_disk_faults() {
+    for seed in 0..20 {
+        assert!(
+            disk_plan(seed, 3, Duration::from_secs(10), true, true)
+                .steps
+                .is_empty()
+        );
+    }
+}

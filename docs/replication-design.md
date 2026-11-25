@@ -2381,7 +2381,26 @@ inherited record there is nothing for a start record to cover, and the broker
 has no log to append one to. A promoted in-memory shard is not fenced either:
 a fence would open a log here and on each replica it asks, so the shard opens
 on the lease. Its group logs stay on its leader and are not shipped, since
-they carry no generation for the next promotion to rank a copy by.
+they carry no generation for the next promotion to rank a copy by. So a
+consumer group's committed positions on an in-memory stream do not survive a
+failover: the group resumes on the new leader with no committed position,
+just as the stream starts there empty.
+
+The shard has no log on disk at all, on its leader or its followers. The
+broker refuses to open the records log of a stream registered in memory,
+whoever asks (`Broker::shard_log` and its variants), and the replication pass
+opens none: it reports the shard as a pass over an empty log would, at tail 0
+with every follower level, so a move still finishes on its reports and a
+drained report still goes out once the fence is quiet
+(`an_in_memory_shard_reports_without_a_log`,
+`a_draining_in_memory_shard_reports_drained`). Whatever the replication
+factor, nothing is on disk for the stream's records: the report names every
+follower caught up at the shard's generation, which is what placement fences
+a move on (`ready_to_fence`) and what a restore and a drained cut-over wait
+for (`reported_generation`, `is_drained`)
+(`an_in_memory_shard_with_replicas_drains_on_an_empty_log`,
+`an_in_memory_shards_move_destination_is_reported_caught_up`). A stream this
+broker has not registered counts as durable.
 
 **Across versions: the `generation_start` fleet feature.** The record and the
 counting rule switch on together, when an operator finalizes

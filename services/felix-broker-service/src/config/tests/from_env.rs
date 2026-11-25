@@ -396,3 +396,308 @@ fn from_env_respects_batch_settings() {
 
     clear_felix_env();
 }
+
+/// **A metrics bind that is not an address is refused**, naming the variable,
+/// rather than falling back to the default port.
+#[serial]
+#[test]
+fn an_unparseable_metrics_bind_is_refused() {
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_BROKER_METRICS_BIND", "not-an-address");
+    }
+    let err = BrokerConfig::from_env().expect_err("bad metrics bind");
+    assert!(
+        format!("{err:#}").contains("FELIX_BROKER_METRICS_BIND"),
+        "{err:#}"
+    );
+}
+
+/// **The IO runtime thread count is trimmed, a blank value means unset, and a
+/// non-number is an error** naming the value, not a silent default.
+#[serial]
+#[test]
+fn io_runtime_threads_is_parsed_strictly() {
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_IO_RUNTIME_THREADS", "   ");
+    }
+    assert_eq!(
+        BrokerConfig::from_env().expect("blank").io_runtime_threads,
+        None
+    );
+
+    unsafe {
+        env::set_var("FELIX_IO_RUNTIME_THREADS", " 6 ");
+    }
+    assert_eq!(
+        BrokerConfig::from_env().expect("six").io_runtime_threads,
+        Some(6)
+    );
+
+    unsafe {
+        env::set_var("FELIX_IO_RUNTIME_THREADS", "lots");
+    }
+    let err = BrokerConfig::from_env().expect_err("not a number");
+    let message = format!("{err:#}");
+    assert!(message.contains("FELIX_IO_RUNTIME_THREADS"), "{message}");
+    assert!(message.contains("lots"), "{message}");
+}
+
+/// **Starting without the control plane takes the usual truthy spellings in
+/// any case; anything else leaves it off**, since it gives up a safety check.
+#[serial]
+#[test]
+fn start_without_controlplane_needs_an_explicit_yes() {
+    for (value, expected) in [
+        ("1", true),
+        ("TRUE", true),
+        (" yes ", true),
+        ("On", true),
+        ("0", false),
+        ("maybe", false),
+        ("", false),
+    ] {
+        clear_felix_env();
+        unsafe {
+            env::set_var("FELIX_START_WITHOUT_CONTROLPLANE", value);
+        }
+        let config = BrokerConfig::from_env().expect("config");
+        assert_eq!(config.start_without_controlplane, expected, "{value:?}");
+    }
+}
+
+/// **A refresh token passed by value is refused**: refreshing spends it, and
+/// the broker would have nowhere to write the replacement. A blank value is
+/// treated as unset.
+#[serial]
+#[test]
+fn a_refresh_token_by_value_is_refused() {
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_NODE_REFRESH_TOKEN", "a-refresh-token");
+    }
+    let err = BrokerConfig::from_env().expect_err("by value");
+    let message = err.to_string();
+    assert!(
+        message.contains("FELIX_NODE_REFRESH_TOKEN_FILE"),
+        "{message}"
+    );
+
+    unsafe {
+        env::set_var("FELIX_NODE_REFRESH_TOKEN", "  ");
+    }
+    assert!(
+        BrokerConfig::from_env().is_ok(),
+        "a blank value is no value"
+    );
+}
+
+/// **The refresh token file path is trimmed, and a blank one is no file.**
+#[serial]
+#[test]
+fn the_refresh_token_file_path_is_trimmed() {
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_NODE_REFRESH_TOKEN_FILE", "  /run/felix/refresh  ");
+    }
+    assert_eq!(
+        BrokerConfig::from_env()
+            .expect("path")
+            .node_refresh_token_file,
+        Some(std::path::PathBuf::from("/run/felix/refresh"))
+    );
+
+    unsafe {
+        env::set_var("FELIX_NODE_REFRESH_TOKEN_FILE", " ");
+    }
+    assert_eq!(
+        BrokerConfig::from_env()
+            .expect("blank")
+            .node_refresh_token_file,
+        None
+    );
+}
+
+/// **A token file that cannot be read is an error naming the variable and the
+/// path**, not an empty credential the control plane would refuse later.
+#[serial]
+#[test]
+fn an_unreadable_token_file_is_refused() {
+    let dir = TempDir::new().expect("dir");
+    let missing = dir.path().join("absent.token");
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_NODE_TOKEN_FILE", missing.to_str().expect("path"));
+    }
+    let err = BrokerConfig::from_env().expect_err("missing file");
+    let message = format!("{err:#}");
+    assert!(message.contains("FELIX_NODE_TOKEN_FILE"), "{message}");
+    assert!(message.contains("absent.token"), "{message}");
+}
+
+/// **`FELIX_QUORUM_READS` defaults to the majority round, takes `lease` in any
+/// case, and refuses anything else** rather than guess which safety level was
+/// meant.
+#[serial]
+#[test]
+fn quorum_reads_take_majority_or_lease_only() {
+    use crate::config::env::quorum_reads_by_lease;
+
+    clear_felix_env();
+    assert!(!quorum_reads_by_lease().expect("unset"));
+    for (value, lease) in [("", false), ("majority", false), (" LEASE ", true)] {
+        unsafe {
+            env::set_var("FELIX_QUORUM_READS", value);
+        }
+        assert_eq!(quorum_reads_by_lease().expect(value), lease, "{value:?}");
+    }
+    unsafe {
+        env::set_var("FELIX_QUORUM_READS", "fast");
+    }
+    let err = quorum_reads_by_lease().expect_err("unknown mode");
+    assert!(err.to_string().contains("fast"), "{err}");
+}
+
+/// **An explicit listener count of zero, or one whose ports run past 65535, is
+/// refused**; a non-number names the value.
+#[serial]
+#[test]
+fn quic_listener_counts_that_cannot_bind_are_refused() {
+    for (bind, count, needle) in [
+        ("0.0.0.0:5000", "0", "is 0"),
+        ("0.0.0.0:65534", "3", "runs past 65535"),
+        ("0.0.0.0:5000", "four", "four"),
+    ] {
+        clear_felix_env();
+        unsafe {
+            env::set_var("FELIX_QUIC_BIND", bind);
+            env::set_var("FELIX_QUIC_LISTENERS", count);
+        }
+        let err = BrokerConfig::from_env().expect_err(count);
+        let message = format!("{err:#}");
+        assert!(message.contains(needle), "{count}: {message}");
+    }
+    clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_QUIC_BIND", "0.0.0.0:65534");
+        env::set_var("FELIX_QUIC_LISTENERS", "2");
+    }
+    assert_eq!(
+        BrokerConfig::from_env().expect("fits").quic_listeners,
+        2,
+        "a range ending exactly at 65535 fits"
+    );
+}
+
+/// **The admission, group, publish-connection and shard-move limits are read
+/// from their variables**, and the group's visibility ceiling is never below
+/// its visibility timeout.
+#[serial]
+#[test]
+fn from_env_reads_the_admission_group_and_move_limits() {
+    clear_felix_env();
+    let vars = [
+        ("FELIX_PREAUTH_MAX_FRAME_BYTES", "4096"),
+        ("FELIX_PREAUTH_MAX_STREAMS_PER_CONN", "3"),
+        ("FELIX_AUTH_TIMEOUT_MS", "0"),
+        ("FELIX_MAX_CLIENT_CONNECTIONS", "77"),
+        ("FELIX_GROUP_VISIBILITY_TIMEOUT_MS", "90000"),
+        ("FELIX_GROUP_MAX_ATTEMPTS", "9"),
+        ("FELIX_GROUP_MAX_WAIT_MS", "1500"),
+        ("FELIX_GROUP_MAX_VISIBILITY_MS", "1000"),
+        ("FELIX_GROUP_MAX_IN_FLIGHT", "250"),
+        ("FELIX_BROKER_PUB_FLUSH_CONCURRENCY", "5"),
+        ("FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES", "65536"),
+        ("FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES", "131072"),
+        ("FELIX_BROKER_PUBLISH_WINDOW", "17"),
+        ("FELIX_SUBSCRIBER_QUEUE_CAPACITY_MAX", "8192"),
+        ("FELIX_MAX_SUBSCRIPTIONS_PER_CONN", "12"),
+        ("FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL", "40"),
+        ("FELIX_PUBLISH_QUORUM_TIMEOUT_MS", "2500"),
+        ("FELIX_SHARD_MOVE_HOLD_MS", "0"),
+        ("FELIX_SHARD_MOVE_HOLD_MAX", "33"),
+        ("FELIX_REPLICATION_REBUILD_MAX_CONCURRENT", "2"),
+        ("FELIX_REPLICATION_REBUILD_BYTES_PER_SEC", "1048576"),
+        ("FELIX_SHARD_MOVE_BYTES_PER_SEC", "2097152"),
+    ];
+    for (key, value) in vars {
+        unsafe {
+            env::set_var(key, value);
+        }
+    }
+    let config = BrokerConfig::from_env().expect("config");
+    assert_eq!(config.preauth_max_frame_bytes, 4096);
+    assert_eq!(config.preauth_max_streams_per_conn, 3);
+    assert_eq!(config.auth_timeout_ms, 0, "zero means no auth deadline");
+    assert_eq!(config.max_client_connections, 77);
+    assert_eq!(config.group_visibility_timeout_ms, 90_000);
+    assert_eq!(config.group_max_attempts, 9);
+    assert_eq!(config.group_max_wait_ms, 1500);
+    assert_eq!(
+        config.group_max_visibility_ms, 90_000,
+        "the ceiling is never below the visibility timeout"
+    );
+    assert_eq!(config.group_max_in_flight, 250);
+    assert_eq!(config.pub_flush_concurrency, 5);
+    assert_eq!(config.pub_conn_inflight_bytes, 65_536);
+    assert_eq!(config.pub_conn_total_inflight_bytes, Some(131_072));
+    assert_eq!(config.publish_window, 17);
+    assert_eq!(config.subscriber_queue_capacity_max, 8192);
+    assert_eq!(config.max_subscriptions_per_conn, 12);
+    assert_eq!(config.max_subscriptions_per_conn_total, Some(40));
+    assert_eq!(config.publish_quorum_timeout_ms, 2500);
+    assert_eq!(config.shard_move_hold_ms, 0);
+    assert_eq!(config.shard_move_hold_max, 33);
+    assert_eq!(config.replication_rebuild_max_concurrent, 2);
+    assert_eq!(config.replication_rebuild_bytes_per_sec, 1_048_576);
+    assert_eq!(config.shard_move_bytes_per_sec, 2_097_152);
+}
+
+/// **A zero where zero would disable a limit falls back to the default**,
+/// while optional totals stay unset.
+#[serial]
+#[test]
+fn zero_admission_and_group_limits_keep_their_defaults() {
+    clear_felix_env();
+    for key in [
+        "FELIX_PREAUTH_MAX_FRAME_BYTES",
+        "FELIX_PREAUTH_MAX_STREAMS_PER_CONN",
+        "FELIX_MAX_CLIENT_CONNECTIONS",
+        "FELIX_GROUP_VISIBILITY_TIMEOUT_MS",
+        "FELIX_GROUP_MAX_ATTEMPTS",
+        "FELIX_GROUP_MAX_IN_FLIGHT",
+        "FELIX_BROKER_PUBLISH_CONN_TOTAL_INFLIGHT_BYTES",
+        "FELIX_MAX_SUBSCRIPTIONS_PER_CONN_TOTAL",
+        "FELIX_PUBLISH_QUORUM_TIMEOUT_MS",
+    ] {
+        unsafe {
+            env::set_var(key, "0");
+        }
+    }
+    let config = BrokerConfig::from_env().expect("config");
+    assert_eq!(
+        config.preauth_max_frame_bytes,
+        DEFAULT_PREAUTH_MAX_FRAME_BYTES
+    );
+    assert_eq!(
+        config.preauth_max_streams_per_conn,
+        DEFAULT_PREAUTH_MAX_STREAMS_PER_CONN
+    );
+    assert_eq!(
+        config.max_client_connections,
+        DEFAULT_MAX_CLIENT_CONNECTIONS
+    );
+    assert_eq!(
+        config.group_visibility_timeout_ms,
+        DEFAULT_GROUP_VISIBILITY_TIMEOUT_MS
+    );
+    assert_eq!(config.group_max_attempts, DEFAULT_GROUP_MAX_ATTEMPTS);
+    assert_eq!(config.group_max_in_flight, DEFAULT_GROUP_MAX_IN_FLIGHT);
+    assert_eq!(config.pub_conn_total_inflight_bytes, None);
+    assert_eq!(config.max_subscriptions_per_conn_total, None);
+    assert_eq!(
+        config.publish_quorum_timeout_ms,
+        DEFAULT_PUBLISH_QUORUM_TIMEOUT_MS
+    );
+}

@@ -359,3 +359,109 @@ async fn a_dropped_commit_holds_the_slot_until_its_rename_ends() {
     drop(slot_frees(&store).await);
     assert_eq!(store.current().await.expect("read"), Some(later));
 }
+
+/// **A staged snapshot reports what it covers and how much of its data has
+/// arrived**, and refuses data past its end once finished.
+#[tokio::test]
+async fn a_finished_receive_takes_no_more_data() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    let last = Some(SnapshotId { term: 3, index: 12 });
+    let mut staged = store
+        .begin_receive(last, Bytes::from_static(b"meta"), 6)
+        .await
+        .expect("begin");
+    assert_eq!(staged.last(), last);
+    assert_eq!(staged.data_len(), 6);
+    assert_eq!(staged.written(), 0);
+    staged
+        .write(Bytes::from_static(b"abcd"))
+        .await
+        .expect("write");
+    assert_eq!(staged.written(), 4);
+    staged
+        .write(Bytes::from_static(b"ef"))
+        .await
+        .expect("write");
+    staged.finish().await.expect("finish");
+
+    let err = staged
+        .write(Bytes::new())
+        .await
+        .expect_err("data after the end");
+    assert!(err.to_string().contains("after its end"), "{err}");
+    assert_eq!(staged.written(), 6, "a refused write counts nothing");
+}
+
+/// **Nothing is read back from a receive before it is finished**: an
+/// unfinished file has no crc to check it against.
+#[tokio::test]
+async fn an_unfinished_receive_cannot_be_read_back() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    let mut staged = store
+        .begin_receive(None, Bytes::new(), 4)
+        .await
+        .expect("begin");
+    staged
+        .write(Bytes::from_static(b"ab"))
+        .await
+        .expect("write");
+    for err in [
+        staged.read().await.expect_err("read"),
+        staged.next_chunk(16).await.expect_err("next_chunk"),
+    ] {
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+        assert!(err.to_string().contains("before it was finished"), "{err}");
+    }
+}
+
+/// **A receive told to stop refuses further data**, so a close is not held up
+/// by a sender that keeps writing.
+#[tokio::test]
+async fn a_closing_store_refuses_more_received_data() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    let mut staged = store
+        .begin_receive(None, Bytes::new(), 4)
+        .await
+        .expect("begin");
+    let closer = store.clone();
+    let close = tokio::spawn(async move { closer.close().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), staged.closing())
+        .await
+        .expect("the receive was not told to stop");
+    let err = staged
+        .write(Bytes::from_static(b"ab"))
+        .await
+        .expect_err("closing");
+    assert!(err.to_string().contains("closed"), "{err}");
+    assert_eq!(staged.written(), 0);
+    drop(staged);
+    close.await.expect("join").expect("close");
+}
+
+/// **A stored snapshot whose file length disagrees with its header is
+/// refused when opened for sending**, rather than streamed to a peer short
+/// or with trailing bytes.
+#[tokio::test]
+async fn a_stored_snapshot_of_the_wrong_length_does_not_open() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    assert!(
+        store
+            .install(snapshot(1, 4, "the state"))
+            .await
+            .expect("install")
+    );
+    let path = dir.path().join("raft-snapshot");
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes.push(0);
+    std::fs::write(&path, &bytes).expect("write");
+    let err = store.open_current().await.expect_err("a trailing byte");
+    assert!(err.to_string().contains("does not decode"), "{err}");
+
+    std::fs::write(&path, b"short").expect("write");
+    let err = store.open_current().await.expect_err("a cut header");
+    assert!(err.to_string().contains("does not decode"), "{err}");
+}

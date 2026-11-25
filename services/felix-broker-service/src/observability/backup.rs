@@ -299,3 +299,6 @@ fn kind_name(kind: ShardKind) -> &'static str {
         ShardKind::Cache => "cache",
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -199,6 +199,95 @@ fn api_tls_is_both_paths_or_neither() {
     assert_eq!(tls.key_path, "/etc/felix/api/tls.key");
 }
 
+/// **A key without its certificate names the certificate as missing.**
+#[serial]
+#[test]
+fn api_tls_key_without_a_cert_names_the_cert() {
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_KEY", "/etc/felix/api/tls.key");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("key without cert");
+    assert!(
+        err.to_string()
+            .contains("FELIX_CONTROLPLANE_TLS_CERT is not set"),
+        "{err}"
+    );
+}
+
+/// **Client certificates need a TLS listener and a token binding needs client
+/// certificates**: each half-configuration is refused rather than read as a
+/// control that checks nothing.
+#[serial]
+#[test]
+fn api_client_certs_need_tls_and_binding_needs_client_certs() {
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CA", "/etc/felix/api/ca.crt");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("ca without tls");
+    assert!(
+        err.to_string()
+            .contains("client certificates can only be verified"),
+        "{err}"
+    );
+
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT", "true");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("bind without anything");
+    assert!(
+        err.to_string()
+            .contains("clients present no certificate to bind"),
+        "{err}"
+    );
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CERT", "/etc/felix/api/tls.crt");
+        env::set_var("FELIX_CONTROLPLANE_TLS_KEY", "/etc/felix/api/tls.key");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("bind without a ca");
+    assert!(
+        err.to_string()
+            .contains("without FELIX_CONTROLPLANE_TLS_CLIENT_CA"),
+        "{err}"
+    );
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CA", "/etc/felix/api/ca.crt");
+    }
+    let tls = ControlPlaneConfig::from_env()
+        .expect("complete")
+        .api_tls
+        .expect("api tls");
+    assert_eq!(tls.client_ca_path.as_deref(), Some("/etc/felix/api/ca.crt"));
+    assert!(tls.bind_subject);
+}
+
+/// **The binding switch takes booleans and refuses anything else.**
+#[serial]
+#[test]
+fn api_bind_subject_refuses_a_value_that_is_not_a_boolean() {
+    let _env = clear_felix_env();
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT", "strict");
+    }
+    let err = ControlPlaneConfig::from_env().expect_err("not a boolean");
+    assert!(err.to_string().contains("\"strict\""), "{err}");
+
+    unsafe {
+        env::set_var("FELIX_CONTROLPLANE_TLS_CLIENT_CERT_BIND_SUBJECT", "no");
+    }
+    assert!(
+        ControlPlaneConfig::from_env()
+            .expect("off")
+            .api_tls
+            .is_none(),
+        "binding off with nothing else set is plain HTTP"
+    );
+}
+
 #[serial]
 #[test]
 fn api_ui_is_off_unless_asked_for_and_rejects_unknown_values() {

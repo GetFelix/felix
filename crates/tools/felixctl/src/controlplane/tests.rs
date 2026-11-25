@@ -148,3 +148,5 @@ async fn a_503_unavailable_is_not_retried() {
     assert_eq!(exit_for(&err), Exit::Server);
     assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+mod live;

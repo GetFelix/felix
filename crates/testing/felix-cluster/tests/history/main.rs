@@ -24,7 +24,8 @@ use felix_cluster::history::nemesis::ClusterView;
 use felix_cluster::history::register::RegisterAction;
 use felix_cluster::history::rng::Rng;
 use felix_cluster::history::{
-    self, Campaign, Fault, FaultFamily, FaultKind, History, Mode, Nemesis, RandomNemesis,
+    self, Campaign, EveryFamily, Fault, FaultFamily, FaultKind, History, Mode, Nemesis,
+    RandomNemesis,
 };
 use serial_test::serial;
 
@@ -35,8 +36,9 @@ const SEED: u64 = 0x5eed_0001;
 /// Long enough for several faults of each kind, short enough for the PR job.
 const DURATION: Duration = Duration::from_secs(45);
 
-/// Long enough for [`RoundRobin::every_family`] to go once round the families, faults
-/// that restart a broker included.
+/// Long enough for [`every_family`] to go once round the families, faults
+/// that restart a broker included. A kind refused on the way is picked again,
+/// and the campaign runs on, up to twice this, until every family has healed.
 const EVERY_FAMILY_DURATION: Duration = Duration::from_secs(75);
 
 /// Long enough for [`RoundRobin`] to go once round the adversarial kinds,
@@ -123,7 +125,7 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
         "every-family campaign: seed {seed}, mode {mode}; rerun with \
          FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
     );
-    let mut nemesis = RoundRobin::every_family();
+    let mut nemesis = every_family();
     let history = run_checked(&campaign, &mut nemesis).await;
 
     let healed: BTreeSet<FaultFamily> = nemesis
@@ -144,8 +146,14 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
     ] {
         assert!(
             healed.contains(&family),
-            "seed {seed}: no {family:?} fault was injected and healed; picked {:?}",
+            "seed {seed}: no {family:?} fault was injected and healed; picked {:?}; refused: {:?}",
             nemesis.picked,
+            history
+                .faults
+                .iter()
+                .filter(|f| f.what.starts_with("could not"))
+                .map(|f| &f.what)
+                .collect::<Vec<_>>(),
         );
     }
 }
@@ -432,26 +440,23 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
     history
 }
 
-impl RoundRobin {
-    /// Goes round the single fault kinds in a fixed order that visits every
-    /// family in its first five picks, so a short run is sure to see each
-    /// one.
-    fn every_family() -> Self {
-        Self::new(vec![
-            FaultKind::DropOutbound,
-            FaultKind::ClockRate,
-            FaultKind::FsyncFailOnce,
-            FaultKind::MoveShard,
-            FaultKind::Kill,
-            FaultKind::Drain,
-            FaultKind::DelayOutbound,
-            FaultKind::ControlPlaneClockStep,
-            FaultKind::SlowFsync,
-            FaultKind::Pause,
-            FaultKind::DropControlPlaneReplies,
-            FaultKind::Partition,
-        ])
-    }
+/// Goes round the single fault kinds in a fixed order that visits every
+/// family in its first five picks, so a short run is sure to see each one.
+fn every_family() -> EveryFamily {
+    EveryFamily::new(vec![
+        FaultKind::DropOutbound,
+        FaultKind::ClockRate,
+        FaultKind::FsyncFailOnce,
+        FaultKind::MoveShard,
+        FaultKind::Kill,
+        FaultKind::Drain,
+        FaultKind::DelayOutbound,
+        FaultKind::ControlPlaneClockStep,
+        FaultKind::SlowFsync,
+        FaultKind::Pause,
+        FaultKind::DropControlPlaneReplies,
+        FaultKind::Partition,
+    ])
 }
 
 /// Goes round `kinds` in order, one fault of each, drawing targets from the

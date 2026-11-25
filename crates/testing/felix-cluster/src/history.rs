@@ -41,4 +41,4 @@ mod workload;
 pub use campaign::{Campaign, Mode};
 pub use checker::{Report, Rule, Violation, check, check_list_append};
 pub use model::History;
-pub use nemesis::{Fault, FaultFamily, FaultKind, Nemesis, RandomNemesis};
+pub use nemesis::{EveryFamily, Fault, FaultFamily, FaultKind, Nemesis, RandomNemesis};

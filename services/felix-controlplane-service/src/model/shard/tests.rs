@@ -1261,3 +1261,27 @@ fn a_seal_needs_the_sealers_copy_id() {
         Err(SealReportError::AnotherSealer("broker-a".to_string()))
     );
 }
+
+/// **A move reason's stored name reads back as the same reason**, every
+/// variant, and a name no reason has is not taken for one.
+#[test]
+fn move_reasons_round_trip_through_their_stored_names() {
+    let all = [
+        MoveReason::Drain,
+        MoveReason::Balance,
+        MoveReason::Operator,
+        MoveReason::Replace,
+        MoveReason::Restore,
+    ];
+    for reason in all {
+        assert_eq!(MoveReason::parse(reason.as_str()), Some(reason));
+        assert_eq!(reason.to_string(), reason.as_str());
+        // The serde name is the stored one too.
+        assert_eq!(
+            serde_json::to_value(reason).expect("json"),
+            serde_json::json!(reason.as_str())
+        );
+    }
+    assert_eq!(MoveReason::parse("Drain"), None);
+    assert_eq!(MoveReason::parse(""), None);
+}

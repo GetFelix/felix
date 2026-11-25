@@ -188,6 +188,9 @@ every record it held. Only an operator can give the records up:
 `POST /v1/placement/abandon/...` (`felixctl placement abandon`) places
 the shard afresh on another broker, which starts from an empty log. An
 in-memory stream has no log to wait for and is placed again straight away.
+Whatever its replication factor, its records and its consumer groups'
+committed positions stay on the leader, in memory, so after a failover the
+stream starts empty and each group resumes with no committed position.
 
 > `an_unreplicated_durable_shard_waits_for_its_owner` and
 > `an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone`.
