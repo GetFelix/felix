@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795635800015,
+  "lastUpdate": 1795636197399,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88308,6 +88308,72 @@ window.BENCHMARK_DATA = {
             "range": "987.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 580.00\nmean: 1002.80\nstdev: 987.81\ncv: 98.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4700dba0f3a89fb4b2901e8f2a427c7c509635c1",
+          "message": "test: cover config parsing, kafka refusals, storage codecs and errors, C API groups (#3176)\n\n* test: cover broker env config refusals and unread limits\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover peer transport env parsing and its refusals\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover the raft copy report wire round trip and version refusal\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover the C API group calls refusing a null client\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover snapshot receive refusals and a damaged stored snapshot\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover the counter record codec and storage error messages\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover kafka transaction and group refusals per partition\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover control-plane API TLS refusals and the declare-dead API\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover adopting an opaque rotated node credential\n\nSpec-Unaffected: tests only, no product code changes\n\n* test: cover what a cache store without a log refuses or skips\n\nSpec-Unaffected: tests only, no product code changes",
+          "timestamp": "2026-11-25T11:44:25-08:00",
+          "tree_id": "64501639afec784e40930fd8e140db336f25c937",
+          "url": "https://github.com/GetFelix/felix/commit/4700dba0f3a89fb4b2901e8f2a427c7c509635c1"
+        },
+        "date": 1795636186410,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 64,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 64.00\nmean: 64.20\nstdev: 1.30\ncv: 2.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 89,
+            "range": "4.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 88.80\nstdev: 4.55\ncv: 5.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 111,
+            "range": "271.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 231.40\nstdev: 271.49\ncv: 117.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 81,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 80.60\nstdev: 1.82\ncv: 2.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "20.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 189.80\nstdev: 20.56\ncv: 10.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 303,
+            "range": "74.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 324.60\nstdev: 74.96\ncv: 23.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
