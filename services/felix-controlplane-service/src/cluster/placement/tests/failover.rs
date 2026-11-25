@@ -442,6 +442,33 @@ fn an_unreplicated_durable_shard_waits_for_its_owner() {
     }
 }
 
+/// **An in-memory shard whose owner is gone (Down, Left, or no longer in the
+/// catalog) is placed again in the same pass**, on either engine: it has no log for another broker to lack, so
+/// the wait above does not apply to it.
+#[test]
+fn an_in_memory_shard_whose_owner_is_gone_is_placed_again_at_once() {
+    let streams = vec![ephemeral_stream("orders", 1)];
+    let existing = vec![assigned("orders", "broker-a", &[])];
+    for lifecycle in [Some(NodeLifecycle::Down), Some(NodeLifecycle::Left), None] {
+        let mut nodes = vec![node("broker-b", NodeLifecycle::Live, None)];
+        if let Some(lifecycle) = lifecycle {
+            nodes.insert(0, node("broker-a", lifecycle, None));
+        }
+        for raft_streams in [false, true] {
+            let policy = MovePolicy {
+                raft_streams,
+                ..MovePolicy::default()
+            };
+            let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, policy);
+            assert_eq!(
+                plan.shards[0].decision,
+                Decision::Place("broker-b".to_string(), Vec::new()),
+                "{lifecycle:?}, raft_streams {raft_streams}",
+            );
+        }
+    }
+}
+
 /// The owner coming back is what ends the wait: it keeps the shard at the
 /// same generation, with every record it held.
 #[test]
@@ -456,23 +483,6 @@ fn a_returning_owner_keeps_its_unreplicated_shard() {
     let plan = plan(&streams, &[], &nodes, &existing, &NothingCaughtUp);
 
     assert_eq!(plan.kept(), 1);
-}
-
-/// A shard held only in memory has no log to lose, so it is placed again
-/// straight away.
-#[test]
-fn an_unreplicated_ephemeral_shard_is_placed_after_its_node_is_lost() {
-    let streams = vec![ephemeral_stream("orders", 1)];
-    let nodes = vec![node("broker-b", NodeLifecycle::Live, None)];
-    let existing = vec![assigned("orders", "broker-a", &[])];
-
-    let plan = plan(&streams, &[], &nodes, &existing, &NothingCaughtUp);
-
-    let (_, leader, _) = plan
-        .to_place()
-        .next()
-        .expect("an ephemeral shard should still be placed");
-    assert_eq!(leader, "broker-b");
 }
 
 /// A shard that has never been assigned is a first placement, not a failover,

@@ -213,6 +213,20 @@ the new leader. Offsets are the log's, and the new leader holds the same log, so
 the consumer resumes at the offset it asked for. Nothing is skipped or repeated;
 the client sees a short pause.
 
+On a Raft shard the leader Metadata names is the one the group elected, which
+may not be the one placement names (a group just formed, a failover with a
+voter down). A broker whose member follows a leader names that leader, even one
+in a region it does not forward to or one it has no peer address for: the
+client connects to it itself. A broker with no member of the group, or whose
+member knows no leader yet, names the broker it would forward to (placement's
+leader, or a reported voter); that broker answers `NOT_LEADER_OR_FOLLOWER` if
+it does not lead, and its own Metadata names the elected leader.
+
+> `services/felix-broker-service/src/shards/routing/tests.rs`,
+> `kafka_metadata_names_the_elected_leader_a_forward_cannot_reach`;
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_request_off_the_leader_is_routed_to_it`.
+
 ```mermaid
 sequenceDiagram
     participant C as Kafka consumer

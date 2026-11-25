@@ -76,6 +76,7 @@ async fn a_publish_refused_during_a_hand_over_is_sent_again() -> Result<()> {
         .publish("t1", "default", "orders", b"x".to_vec(), ack)
         .await?;
     assert_eq!(broker.publishes(), 3, "publish");
+    assert_eq!(client.publish_resends(), 2, "each re-send is counted");
 
     let (broker, client) = not_ready().await?;
     client
@@ -199,5 +200,84 @@ async fn a_shard_that_stays_closed_fails_after_the_policys_attempts() -> Result<
     assert_eq!(broker_error.code, ErrorCode::ShardUnavailable);
     assert_eq!(broker_error.reason(), Some("not_ready"));
     assert_eq!(broker.publishes(), ATTEMPTS);
+    assert_eq!(client.publish_resends(), (ATTEMPTS - 1) as u64);
+    // The bare refusal would read like one attempt failed.
+    let said = format!("{err:#}");
+    assert!(
+        said.contains(&format!("gave up after {ATTEMPTS} attempt(s) over")),
+        "{said}"
+    );
+    Ok(())
+}
+
+/// **A broker's wait is capped by the policy.** A tenant over its quota is
+/// told how long until it has room, which can be minutes. A publish that
+/// slept that long on every attempt would hang its caller for the policy's
+/// attempts times it, so a wait above `max_backoff` returns the refusal at
+/// once, saying why, and the caller decides.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_quota_wait_longer_than_max_backoff_is_returned_not_slept() -> Result<()> {
+    const ASKED_MS: u64 = 60_000;
+    let (broker, cert) = StubBroker::start(|request_id| Message::PublishError {
+        request_id,
+        message: format!("tenant publish quota exceeded; retry in {ASKED_MS} ms"),
+        retry: Some(ErrorCode::Overloaded.default_retry()),
+        code: Some(ErrorCode::Overloaded),
+        detail: Some(ErrorDetail {
+            reason: Some("tenant_quota".to_string()),
+            retry_after_ms: Some(ASKED_MS),
+        }),
+    })?;
+    let config: ClientConfig = build_client_config_with_overrides(cert, 0)?;
+    let client =
+        Client::connect_with_policy(&[broker.addr], "localhost", config, fast_policy()).await?;
+
+    // Far below the 60 s asked for and far above a few local round trips.
+    let bound = Duration::from_secs(10);
+    let plain = tokio::time::timeout(
+        bound,
+        client.publish(
+            "t1",
+            "default",
+            "orders",
+            b"x".to_vec(),
+            AckMode::PerMessage,
+        ),
+    )
+    .await
+    .expect("a plain publish returns the quota refusal instead of sleeping on it")
+    .expect_err("over quota");
+    let broker_error = plain.downcast_ref::<BrokerError>().expect("coded");
+    assert_eq!(broker_error.code, ErrorCode::Overloaded);
+    assert_eq!(
+        broker_error.detail.as_ref().and_then(|d| d.retry_after_ms),
+        Some(ASKED_MS),
+        "the caller still sees how long the broker asked for",
+    );
+    let said = format!("{plain:#}");
+    assert!(said.contains("gave up after 1 attempt(s)"), "{said}");
+    assert!(
+        said.contains("longer than the policy's max_backoff"),
+        "{said}"
+    );
+    assert_eq!(broker.publishes(), 1);
+    assert_eq!(client.publish_resends(), 0);
+
+    // The re-sending paths share the cap.
+    tokio::time::timeout(
+        bound,
+        client.publish_at_least_once(
+            "t1",
+            "default",
+            "orders",
+            b"x".to_vec(),
+            AckMode::PerMessage,
+        ),
+    )
+    .await
+    .expect("an at-least-once publish returns the quota refusal too")
+    .expect_err("over quota");
+    assert_eq!(broker.publishes(), 2);
     Ok(())
 }

@@ -3993,6 +3993,16 @@ go to the shard's engine ("Head trims" and "Atomic commits", above).
 **Kafka produce and MQTT publish.** Both work on a Raft shard and get the
 same answers as on the hybrid.
 
+Kafka is not forwarded: Metadata tells the client which broker leads each
+partition. A broker whose member follows a leader names that leader, read
+from the same member state `dispatch` forwards by, and names it even where
+`dispatch` would not forward (a region this broker has no bridge to, or no
+peer address for it). Elsewhere Metadata names the broker a forward would go
+to, as above (#3105).
+
+> `services/felix-broker-service/src/shards/routing/tests.rs`,
+> `kafka_metadata_names_the_elected_leader_a_forward_cannot_reach`.
+
 A Kafka produce goes to the shard's leader, as on the hybrid, and is
 proposed to its group. A plain batch is one proposal. An idempotent
 producer numbers records, not batches, so each record is stored as a
@@ -5512,9 +5522,13 @@ A leader hands over only when all of these hold:
 The transfer closes the shard for the term first (the lease is given up),
 waits up to the shortest election timeout for the target to hold the whole
 log, then asks openraft. Publishes in that window are told the shard is not
-ready. The refusal is retryable and nothing was written: the client sends an
-at-least-once or idempotent publish again, and returns a plain publish's
-refusal to the caller. The target campaigns while the other
+ready. The refusal is retryable and nothing was written, so the client sends
+every publish kind again under its reconnect policy (a plain one too, since
+nothing of it was applied); a hand-over that outlasts the policy returns the
+refusal. A write already proposed when the hand-over began is different: it
+may commit under the new leader, which the old one cannot confirm, so it is
+answered `leadership_lost` (outcome unknown), and a plain publish returns
+that rather than risk a duplicate. The target campaigns while the other
 followers still hear the old leader, so their pre-vote check lets a
 transfer target through.
 

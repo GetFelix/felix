@@ -207,6 +207,9 @@ pub struct Client {
     /// The one client per broker that every field above draws from, so a
     /// broker costs one connection however many roles it plays.
     nodes: Arc<nodes::Nodes>,
+    /// Plain publishes the broker refused before applying, sent again. See
+    /// [`Client::publish_resends`].
+    publish_resends: std::sync::atomic::AtomicU64,
 }
 
 impl Client {
@@ -295,6 +298,7 @@ impl Client {
             down_redirects: std::sync::Mutex::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
+            publish_resends: Default::default(),
         };
         cluster.discover().await;
         Ok(cluster)
@@ -321,6 +325,18 @@ impl Client {
 
     pub(crate) fn policy(&self) -> &ReconnectPolicy {
         &self.policy
+    }
+
+    /// How many times this client has sent a plain publish again after a
+    /// broker refused it before applying anything (a shard closed for a
+    /// leadership hand-over, a broker draining, a tenant briefly over quota).
+    ///
+    /// Each is one extra request, not one extra record: a refused publish was
+    /// never written. A count that keeps rising says publishes are waiting on
+    /// the cluster. At-least-once and idempotent publishes count elsewhere.
+    pub fn publish_resends(&self) -> u64 {
+        self.publish_resends
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Ask the broker in use which brokers a client may connect to, and add

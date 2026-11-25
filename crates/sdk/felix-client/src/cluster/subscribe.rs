@@ -190,7 +190,9 @@ impl Client {
             if attempt >= attempts {
                 return Err(error);
             }
-            let delay = self.policy.delay_before(attempt - 1).max(at_least);
+            let Some(delay) = self.policy.delay_for(attempt - 1, at_least) else {
+                return Err(error);
+            };
             if let Some(budget) = self.policy.deadline
                 && started.elapsed() + delay >= budget
             {

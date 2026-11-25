@@ -299,6 +299,14 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
         self.inner.as_ref()?.dispatch(key, nodes)
     }
 
+    fn elected_leader(&self, key: &ShardKey) -> Option<String> {
+        // A refused shard is answered by `dispatch`, which names no leader.
+        if self.any_refused.load(Ordering::Acquire) && self.refused.lock().contains_key(key) {
+            return None;
+        }
+        self.inner.as_ref()?.elected_leader(key)
+    }
+
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
         if let Some(inner) = &self.inner {
             inner.wake_with(Arc::clone(&wake));

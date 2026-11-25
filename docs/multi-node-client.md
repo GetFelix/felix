@@ -460,6 +460,16 @@ by a deadline.
   ceiling doubling to `max_backoff`. Every client of a cluster notices a
   failover at the same instant, and an unjittered backoff would send all of them
   at the freshly promoted broker together.
+- **`max_backoff` caps the broker's waits too.** A `retry_after_ms` above it
+  (a tenant far over its publish quota is told how long until it has room) is
+  not slept on: the refusal is returned at once, `retry_after_ms` and all, and
+  the caller decides. So with no deadline a retrying call still sleeps at most
+  `attempts - 1` times `max_backoff` (8 s by default). Sleeping less than the
+  broker asked would only be refused again.
+- **A call that gives up says so.** `publish` returns the last refusal with
+  "gave up after N attempt(s) over T" around it; the code is still a
+  `BrokerError` underneath. `Client::publish_resends` counts the plain
+  publishes sent again.
 - **`deadline` is `None` by default, deliberately.** A deadline shorter than one
   attempt's own timeout prevents any retry at all: the first attempt spends the
   budget and the loop exits having tried once. Set it from your own latency
@@ -472,7 +482,7 @@ it (see "Error codes" in `docs/protocol.md`):
 | --- | --- | --- | --- |
 | `fatal` | `unauthenticated`, `forbidden`, `invalid_request`, `limit_exceeded`, `stale_claim` (the broker sends `retry`; the client treats it as `fatal`) | Returned at once, marked "not retried" | Returned |
 | `retry`, `redirect` | `shard_unavailable`, `draining`, `not_leader`, `stale_width` (never reroutes; the client and the `Client` drop the stream's width, so the retry asks for it again) | From a cached owner or leader: forget it and go again at once through the entry broker. From the entry broker: back off and retry | The same, within the policy's attempts and deadline. `stale_width` is returned |
-| `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one. `not_found` only for 5 s from the first one | The same |
+| `retry_after` | `overloaded`, `not_found` | Back off, at least `retry_after_ms` when the broker gave one; one above `max_backoff` is returned instead. `not_found` only for 5 s from the first one | The same |
 | `outcome_unknown` | `quorum_timeout`, `leadership_lost`, `unacknowledged`, `internal`, `storage` | Sent again: that is what at-least-once means, and the idempotent producer's sequence makes it safe | **Returned, never sent again** |
 
 - **A cached route is dropped as soon as it answers "nothing applied".** An
