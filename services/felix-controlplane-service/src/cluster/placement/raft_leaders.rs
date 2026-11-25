@@ -250,7 +250,12 @@ fn balanced_outside<'a>(
             .into_iter()
             .find_map(|to| seat_for(to).map(|from| (to, from)))
     };
-    let for_stream = under(&|node| leaders.of(key, node), &|_| true);
+    // An RF 1 move copies the whole log, so it serves the stream's spread
+    // only where the totals hold too. Otherwise a fresh cluster, placed
+    // even on totals, trades one shard each way between two brokers.
+    let for_stream = under(&|node| leaders.of(key, node), &|to| {
+        !single || leaders.total(to) < leaders.total(leader)
+    });
     moves.stream_wanted |= for_stream.is_some();
     // As for a member: the totals only where the stream's spread holds.
     let (to, from) = for_stream.or_else(|| {

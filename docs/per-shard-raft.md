@@ -4889,7 +4889,9 @@ older control plane added:
   leader and the broker, and the shrink below ends the move. Each write
   takes a slot from the budget of 16. The leader tally counts the shard
   for the destination from the first write while the destination is live,
-  so later passes start no more moves than the gap calls for. The undo and
+  so later passes start no more moves than the gap calls for. A move for
+  the stream's spread needs the destination to lead fewer in total too,
+  or the totals rule would trade a shard straight back. The undo and
   stranded rules below apply to it unchanged: between the destination's
   copy voting and the shrink the group has two voters and needs both.
 - A leader that goes down is renamed to a live member, in the same kind of

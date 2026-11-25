@@ -1545,3 +1545,43 @@ async fn a_cache_drain_on_a_raft_cluster_finishes_through_the_store() {
         assert_eq!(assignment.successor, None);
     }
 }
+
+/// **A fresh cluster's RF 1 shards stay where they were placed.** The first
+/// pass places leaders even on the cluster's totals, two each here, which
+/// leaves `wide` led twice by one broker. Balancing that spread would trade a
+/// shard each way between two brokers, each a whole log copy, and publishes
+/// during the trade reach a broker that does not lead yet.
+#[test]
+fn a_fresh_cluster_starts_no_one_member_raft_moves() {
+    let streams = vec![
+        replicated_stream("orders", 1, 1),
+        replicated_stream("wide", 3, 1),
+    ];
+    let caches = vec![super::caches::cache("sessions", 2)];
+    let nodes = live(&["broker-0", "broker-1", "broker-2"]);
+    let first = plan_with(&streams, &caches, &nodes, &[], &NothingCaughtUp, raft());
+    let existing: Vec<ShardAssignment> = first
+        .shards
+        .iter()
+        .filter_map(|p| match &p.decision {
+            Decision::Place(leader, _) => {
+                let mut placed = single_of(&p.key.stream, p.key.shard, leader);
+                placed.key.kind = p.key.kind;
+                Some(placed)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(existing.len(), 6, "{first:?}");
+
+    let plan = plan_with(
+        &streams,
+        &caches,
+        &nodes,
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+}

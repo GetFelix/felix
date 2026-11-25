@@ -1900,8 +1900,10 @@ drain swapped out of every set, and then restarted, gets shards back
 two writes of an RF 1 operator move, above: grow to the leader and that
 broker, then shrink once its copy votes (#3118). Each write takes a slot
 from the per-pass budget, and the move counts as a leader for the
-destination from the first write, so one gap starts one move. It is undone
-or stranded as an operator's RF 1 move is.
+destination from the first write, so one gap starts one move. A move for
+the stream's spread is taken only where the destination also leads fewer in
+total than the leader, so it never trades a shard each way between two
+brokers. It is undone or stranded as an operator's RF 1 move is.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
