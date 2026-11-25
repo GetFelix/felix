@@ -3928,12 +3928,21 @@ broker's lease and the hybrid's fence are not asked.
   leader may hold records the follower has not received yet. An offset
   between the follower's applied index and its log's tail is accepted,
   and waits.
+- Each page of a replay's history passes the read barrier again. A page
+  that is refused (the follower's leader gave no read index, or the leader
+  serving the replay has not opened its term) ends the replay with a reset
+  event stream, not a clean end: the pages already sent are a prefix of
+  the history. The client resumes after the last record it received
+  (`docs/protocol.md`, "Shard moves"). A reader that takes that prefix for
+  the whole history skips acknowledged records, which is what issue #3112
+  saw in a test.
 
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_raft_shard_is_subscribed_to_on_its_leader_and_followers`,
 > `a_follower_behind_a_resume_offset_redirects_to_its_leader`,
 > `a_member_with_no_leader_serves_no_reader`,
-> `a_leader_no_majority_answers_serves_no_reader`;
+> `a_leader_no_majority_answers_serves_no_reader`,
+> `a_replay_that_loses_its_shard_part_way_is_reset_not_finished`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_restarted_follower_forwards_before_it_hears_its_leader`,
 > `a_deposed_leader_lets_its_subscribers_go`;
