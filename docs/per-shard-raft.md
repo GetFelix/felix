@@ -5444,7 +5444,9 @@ transfer target through.
 A new group goes through this once: the broker that formed it leads its
 first term, then hands over. The test harness's
 `Cluster::await_raft_leaders_placed` waits until every shard's placed leader
-leads, and the `client-fixture` cluster reports ready only after it (#3130).
+leads. `Cluster::start` returns only after it, unless the test sets
+`ClusterConfig::pending_raft_hand_overs`, and so does the `client-fixture`
+cluster (#3130, #3157).
 
 Pacing keeps this from churning:
 
