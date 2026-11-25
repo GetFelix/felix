@@ -182,7 +182,7 @@ async fn a_group_position_survives_a_leader_failover() {
 
     // Consume and finish everything.
     let claimed = cluster
-        .group_poll_via(&owner, STREAM, 0, GROUP, 10)
+        .group_poll_records_via(&owner, STREAM, 0, GROUP, 10)
         .await
         .expect("poll");
     assert!(!claimed.is_empty(), "nothing to consume");
@@ -190,9 +190,11 @@ async fn a_group_position_survives_a_leader_failover() {
     // all of them. That count is what a fresh group should see afterwards, and
     // what this one should not.
     let finished = claimed.len();
-    for offset in 0..finished as u64 {
+    // The offsets handed out, not 0..finished: on a Raft shard the log's own
+    // entries take offsets too, and a settle naming one is refused.
+    for record in &claimed {
         cluster
-            .group_ack_via(&owner, STREAM, 0, GROUP, offset)
+            .group_ack_via(&owner, STREAM, 0, GROUP, record.offset)
             .await
             .expect("ack");
     }
