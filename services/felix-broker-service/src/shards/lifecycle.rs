@@ -1532,21 +1532,13 @@ impl DurableShardStore {
 }
 
 impl DurableShardStore {
-    /// Whether `key` is a shard of a stream the broker has registered as in
-    /// memory. Such a shard has nothing on disk: opening its log would create
-    /// one, and a broker that later found it would serve the stream as durable
-    /// (#3136). A stream not registered here yet counts as durable, so an
-    /// unknown stream keeps everything a durable one needs.
+    /// [`in_memory_stream`] on this store's broker. A store without a broker
+    /// cannot tell, so every shard counts as durable.
     async fn in_memory_stream(&self, key: &ShardKey) -> bool {
-        let Some(starts) = &self.generation_starts else {
-            return false;
-        };
-        key.kind == ShardKind::Stream
-            && starts
-                .broker
-                .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
-                .await
-                .is_some_and(|metadata| !metadata.durable)
+        match &self.generation_starts {
+            Some(starts) => in_memory_stream(&starts.broker, key).await,
+            None => false,
+        }
     }
 
     /// A stream shard's log, at `incarnation` when it is not 0, opened on the
@@ -1849,6 +1841,16 @@ impl ShardStore for DurableShardStore {
 
     async fn release(&self, key: &ShardKey) -> anyhow::Result<()> {
         if key.kind == ShardKind::Cache || self.in_memory_stream(key).await {
+            return Ok(());
+        }
+        // A flush is for what this broker wrote, and it wrote nothing to a
+        // log that is not there. Opening one would create it: a release can
+        // follow the stream's delete, and a deleted in-memory stream reads as
+        // durable above (#3136).
+        if !self
+            .storage
+            .stream_on_disk(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        {
             return Ok(());
         }
         let log = self.open_stream_log(key, 0).await?;
@@ -2466,6 +2468,19 @@ async fn start_generation(
         return Ok(());
     }
     write_generation_start(broker, log, key, generation).await
+}
+
+/// Whether `key` is a shard of a stream `broker` has registered as in
+/// memory. Such a shard has nothing on disk: opening its log would create
+/// one, and a broker that later found it would serve the stream as durable
+/// (#3136). A stream not registered here yet counts as durable, so an
+/// unknown stream keeps everything a durable one needs.
+pub(crate) async fn in_memory_stream(broker: &felix_broker::Broker, key: &ShardKey) -> bool {
+    key.kind == ShardKind::Stream
+        && broker
+            .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
+            .await
+            .is_some_and(|metadata| !metadata.durable)
 }
 
 /// Move a stream shard up to its log's tail before this broker leads it. See
