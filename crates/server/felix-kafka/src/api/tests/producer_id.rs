@@ -1,5 +1,10 @@
+use kafka_protocol::messages::add_partitions_to_txn_request::AddPartitionsToTxnTopic;
+use kafka_protocol::messages::txn_offset_commit_request::{
+    TxnOffsetCommitRequestPartition, TxnOffsetCommitRequestTopic,
+};
 use kafka_protocol::messages::{
-    EndTxnRequest, FindCoordinatorRequest, InitProducerIdRequest, TransactionalId,
+    AddOffsetsToTxnRequest, AddPartitionsToTxnRequest, EndTxnRequest, FindCoordinatorRequest,
+    GroupId, InitProducerIdRequest, TopicName, TransactionalId, TxnOffsetCommitRequest,
 };
 use kafka_protocol::protocol::StrBytes;
 
@@ -76,4 +81,102 @@ async fn transactions_are_refused_everywhere_a_producer_could_start_one() {
         )
         .await;
     assert_eq!(end.error_code, 53);
+}
+
+fn topic(name: &'static str) -> TopicName {
+    TopicName(StrBytes::from_static_str(name))
+}
+
+/// **The transaction APIs a client sends mid-transaction are refused per
+/// partition, echoing every topic and partition it named**, so a client that
+/// got past the coordinator lookup still learns why for each one.
+#[tokio::test]
+async fn mid_transaction_requests_are_refused_for_every_partition() {
+    let fixture = Fixture::anonymous().await;
+    let mut client = fixture.connect();
+    let tx = || TransactionalId(StrBytes::from_static_str("tx"));
+
+    let added = client
+        .call(
+            &AddPartitionsToTxnRequest::default()
+                .with_v3_and_below_transactional_id(tx())
+                .with_v3_and_below_topics(vec![
+                    AddPartitionsToTxnTopic::default()
+                        .with_name(topic("orders"))
+                        .with_partitions(vec![0, 2]),
+                    AddPartitionsToTxnTopic::default()
+                        .with_name(topic("audit"))
+                        .with_partitions(vec![1]),
+                ]),
+            3,
+        )
+        .await;
+    let answered: Vec<(String, Vec<(i32, i16)>)> = added
+        .results_by_topic_v3_and_below
+        .iter()
+        .map(|t| {
+            (
+                t.name.0.to_string(),
+                t.results_by_partition
+                    .iter()
+                    .map(|p| (p.partition_index, p.partition_error_code))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        answered,
+        vec![
+            ("orders".to_string(), vec![(0, 53), (2, 53)]),
+            ("audit".to_string(), vec![(1, 53)]),
+        ]
+    );
+
+    let offsets = client
+        .call(
+            &AddOffsetsToTxnRequest::default()
+                .with_transactional_id(tx())
+                .with_group_id(GroupId(StrBytes::from_static_str("g"))),
+            3,
+        )
+        .await;
+    assert_eq!(offsets.error_code, 53);
+
+    let committed = client
+        .call(
+            &TxnOffsetCommitRequest::default()
+                .with_transactional_id(tx())
+                .with_group_id(GroupId(StrBytes::from_static_str("g")))
+                .with_topics(vec![
+                    TxnOffsetCommitRequestTopic::default()
+                        .with_name(topic("orders"))
+                        .with_partitions(vec![
+                            TxnOffsetCommitRequestPartition::default()
+                                .with_partition_index(4)
+                                .with_committed_offset(10),
+                            TxnOffsetCommitRequestPartition::default()
+                                .with_partition_index(5)
+                                .with_committed_offset(11),
+                        ]),
+                ]),
+            3,
+        )
+        .await;
+    let answered: Vec<(String, Vec<(i32, i16)>)> = committed
+        .topics
+        .iter()
+        .map(|t| {
+            (
+                t.name.0.to_string(),
+                t.partitions
+                    .iter()
+                    .map(|p| (p.partition_index, p.error_code))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        answered,
+        vec![("orders".to_string(), vec![(4, 53), (5, 53)])]
+    );
 }
