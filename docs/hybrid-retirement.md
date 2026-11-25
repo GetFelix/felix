@@ -260,7 +260,7 @@ The order, decided with Raft as the default:
 - The code deletion pull requests (#2259 to #2265) start when single-voter
   Raft (#3000) merges, because a standalone broker keeps its durable streams
   on the hybrid path until then.
-- The skipped Raft gaps (#2995, #3030, #3032, #3001, #3005) are fixed along
+- The skipped Raft gaps (#3030, #3032, #3001, #3005) are fixed along
   the way. A cluster test tracked by an issue skips on Raft and says so.
 - Raft performance still has to match the v0.7.0 release binary on the
   gate's cells (#2646). The comparison is against v0.7.0, not against the

@@ -1497,6 +1497,17 @@ impl GroupRuntime {
         self.inner.registry.holds(shard)
     }
 
+    /// Every group this broker holds an open member of, whatever placement
+    /// or the copy id report says of it.
+    pub fn held_groups(&self) -> Vec<GroupId> {
+        self.inner
+            .registry
+            .ticked()
+            .iter()
+            .map(|group| group.id.clone())
+            .collect()
+    }
+
     /// [`GroupStatus::leader`]`.is_some()` for this broker's member of
     /// `shard`, without building the status. `None` when it holds none.
     pub fn hears_leader(&self, shard: &ShardKey) -> Option<bool> {

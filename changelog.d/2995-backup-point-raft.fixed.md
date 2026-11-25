@@ -1,0 +1,1 @@
+`felixctl backup-point` on a Raft cluster no longer fails with "not led there": brokers list every open Raft member in `/backup/offsets`, and the collector decides which shards are Raft ones again on every round.

@@ -199,10 +199,8 @@ fn a_raft_shard_is_read_on_its_elected_leader() {
         assignment("orders", 0, "a", 3),
         assignment("other", 0, "a", 1),
     ];
-    let answers = vec![
-        ("a".to_string(), raft_answer(7, None)),
-        ("b".to_string(), raft_answer(7, Some(42))),
-    ];
+    let (a, b) = (raft_answer(7, None), raft_answer(7, Some(42)));
+    let answers = vec![("a".to_string(), &a), ("b".to_string(), &b)];
     let raft = raft_keys(&assigned, &answers);
     assert!(raft.contains(&assigned[0].key()));
     assert!(!raft.contains(&assigned[1].key()), "not a Raft shard");
@@ -225,10 +223,64 @@ fn a_raft_shard_is_read_on_its_elected_leader() {
 #[test]
 fn a_leader_behind_a_newer_term_is_not_read() {
     let assigned = [assignment("orders", 0, "a", 3)];
-    let answers = vec![
-        ("a".to_string(), raft_answer(7, Some(40))),
-        ("b".to_string(), raft_answer(8, None)),
-    ];
+    let (a, b) = (raft_answer(7, Some(40)), raft_answer(8, None));
+    let answers = vec![("a".to_string(), &a), ("b".to_string(), &b)];
     let missing = match_raft(&[&assigned[0]], &answers).expect_err("no leader at term 8");
     assert!(missing[0].contains("term 8"), "{missing:?}");
+}
+
+/// **A shard no broker lists a Raft member of yet is asked about again,
+/// not read on placement's leader for good (#2995).** In the first round
+/// no broker lists `orders/0` (its members are not open yet), and `a`,
+/// which placement names, does not lead it. In the second, `b` leads it.
+#[tokio::test]
+async fn a_raft_shard_unlisted_in_one_round_is_read_on_its_leader_in_the_next() {
+    let assigned = [assignment("orders", 0, "a", 3)];
+    let mut rounds = 0;
+    let round = || {
+        rounds += 1;
+        let first = rounds == 1;
+        async move {
+            let empty = || answer(serde_json::json!({ "shards": [] }));
+            if first {
+                vec![
+                    ("a".to_string(), Ok(empty())),
+                    ("b".to_string(), Ok(empty())),
+                ]
+            } else {
+                vec![
+                    ("a".to_string(), Ok(raft_answer(7, None))),
+                    ("b".to_string(), Ok(raft_answer(7, Some(42)))),
+                ]
+            }
+        }
+    };
+    let shards = collect_rounds(round, &assigned, Duration::ZERO)
+        .await
+        .expect("the second round has a leader");
+    assert_eq!(shards.len(), 1);
+    assert_eq!(shards[0].leader, "b");
+    assert_eq!(shards[0].logs.records, 42);
+}
+
+/// **A hybrid shard is read on placement's leader in the same round.** An
+/// unreachable leader leaves its shards missing, so the round is asked
+/// again rather than giving a partial point.
+#[test]
+fn a_hybrid_shard_whose_leader_did_not_answer_is_missing() {
+    let assigned = [assignment("orders", 0, "a", 3)];
+    let round: Round = vec![("a".to_string(), Err(anyhow::anyhow!("refused")))];
+    let missing = match_round(&assigned, &round).expect_err("no answer");
+    assert!(missing[0].contains("refused"), "{missing:?}");
+
+    let round: Round = vec![(
+        "a".to_string(),
+        Ok(answer(serde_json::json!({ "shards": [
+            { "tenant_id": "t", "namespace": "ns", "name": "orders", "shard": 0, "kind": "stream",
+              "generation": 3, "logs": { "records": 9 } }
+        ] }))),
+    )];
+    let shards = match_round(&assigned, &round).expect("point");
+    assert_eq!(shards[0].leader, "a");
+    assert_eq!(shards[0].logs.records, 9);
 }

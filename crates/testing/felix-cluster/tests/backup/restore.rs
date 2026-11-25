@@ -22,9 +22,6 @@ const SHARDS: u32 = 2;
 #[serial]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after() {
-    if felix_cluster::skip_on_raft_until(2995, "restore to a backup point") {
-        return;
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, SHARDS, 3)],

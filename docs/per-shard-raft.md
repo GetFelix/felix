@@ -979,7 +979,10 @@ mechanism:
 - `felixctl backup-point` reads each shard's committed offsets from its
   leader, and the operator copies the leaders' shard directories while they
   run. Every broker is asked, since the elected leader need not be the one
-  placement names. The point is read only from a member serving its term
+  placement names. Each broker lists every member it has open, not just
+  the ones its copy id report holds (a member off placement or at an
+  unproven epoch can still lead), and the collector decides which shards
+  are Raft ones again on every round (#2995). The point is read only from a member serving its term
   at the newest term any member reports: a leader at an older term may be
   deposed without knowing it, and a new one knows the commit index only
   once it has committed in its own term. The point is one past the furthest
