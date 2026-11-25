@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795607962504,
+  "lastUpdate": 1795608321458,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87648,6 +87648,72 @@ window.BENCHMARK_DATA = {
             "range": "1000.60",
             "unit": "us",
             "extra": "trials: 5\nmedian: 728.00\nmean: 1189.20\nstdev: 1000.60\ncv: 84.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e45b24349ccfc9be6e6c658fc14af06d75f71c34",
+          "message": "fix(raft): a shard commits over a peer link slower than its heartbeat (#3101) (#3164)\n\nopenraft gives every append and heartbeat a deadline of its\n`heartbeat_interval`, so with a round trip past 200 ms each one was given\nup before its answer arrived and nothing reached a majority.\n\nA call now has a deadline of its own, `RuntimeConfig::peer_deadline()`:\n`max_peer_deadline` (800 ms), cut to the shortest election timeout less one\nheartbeat and never under the heartbeat. openraft's `heartbeat_interval` is\nset to it, and the node ticker sends a due leader's heartbeat itself with\n`Trigger::heartbeat()`, at the same gap as before. The lease is unchanged:\nit counts from a message's hand-off.\n\nThe Raft link test goes back to the hybrid's 400 ms delay.\n\nSpec-Unaffected: only how long a leader waits for an answer and who paces its heartbeats change; the lease, votes and commit rules the specs model are as before.",
+          "timestamp": "2026-11-25T11:59:42Z",
+          "tree_id": "33862d196daddb32e780d8a5fc929176861ceb1e",
+          "url": "https://github.com/GetFelix/felix/commit/e45b24349ccfc9be6e6c658fc14af06d75f71c34"
+        },
+        "date": 1795608299177,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 71.20\nstdev: 1.10\ncv: 1.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 124,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 123.20\nstdev: 2.17\ncv: 1.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 152,
+            "range": "24.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 162.80\nstdev: 24.59\ncv: 15.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 88.80\nstdev: 3.27\ncv: 3.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 196,
+            "range": "221.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 325.80\nstdev: 221.02\ncv: 67.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 562,
+            "range": "805.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 562.00\nmean: 962.40\nstdev: 805.11\ncv: 83.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
