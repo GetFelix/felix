@@ -164,9 +164,7 @@ impl Broker {
         shard: u32,
     ) -> std::result::Result<StreamLog, Unopened> {
         if !self.may_open(kind, tenant_id, namespace, name)
-            || self
-                .in_memory_stream(kind, tenant_id, namespace, name)
-                .await
+            || self.in_memory_stream(kind, tenant_id, namespace, name)
         {
             return Err(Unopened::Absent);
         }
@@ -238,9 +236,7 @@ impl Broker {
         base_offset: u64,
     ) -> std::result::Result<StreamLog, Unopened> {
         if !self.may_open(kind, tenant_id, namespace, name)
-            || self
-                .in_memory_stream(kind, tenant_id, namespace, name)
-                .await
+            || self.in_memory_stream(kind, tenant_id, namespace, name)
         {
             return Err(Unopened::Absent);
         }
@@ -345,9 +341,7 @@ impl Broker {
             return any().await;
         };
         if !self.may_open(kind, tenant_id, namespace, name)
-            || self
-                .in_memory_stream(kind, tenant_id, namespace, name)
-                .await
+            || self.in_memory_stream(kind, tenant_id, namespace, name)
         {
             return Err(Unopened::Absent);
         }
@@ -589,21 +583,17 @@ impl Broker {
     /// Whether `kind` is the records log of a stream registered here as in
     /// memory. Such a stream has no log: its records never reach one, and
     /// opening it would leave an empty log on disk for replication to ship
-    /// (#3071). A stream not registered here counts as durable, so an unknown
-    /// stream keeps everything a durable one needs. Its group logs are not
-    /// covered: they open through the group stores whatever the durability.
-    async fn in_memory_stream(
+    /// (#3071). A stream not registered here counts as durable. Its group logs
+    /// are not covered: they open through the group stores whatever the
+    /// durability. Synchronous so a durable stream's open awaits nothing new.
+    fn in_memory_stream(
         &self,
         kind: LogKind,
         tenant_id: &str,
         namespace: &str,
         name: &str,
     ) -> bool {
-        kind == LogKind::Stream
-            && self
-                .stream_metadata(tenant_id, namespace, name)
-                .await
-                .is_some_and(|metadata| !metadata.durable)
+        kind == LogKind::Stream && self.stream_in_memory(tenant_id, namespace, name)
     }
 
     /// Tell a stream that records reached its log without passing through it.

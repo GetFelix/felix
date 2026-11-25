@@ -65,6 +65,17 @@ async fn pass(
     router: &ShardRouter,
     fence: &dyn WriteFence,
 ) -> Pass {
+    pass_with(follower, broker, router, fence, &mut HashMap::default()).await
+}
+
+/// [`pass`], carrying the shard's cursors from one pass to the next.
+async fn pass_with(
+    follower: &AcceptingFollower,
+    broker: &Arc<Broker>,
+    router: &ShardRouter,
+    fence: &dyn WriteFence,
+    cursors: &mut HashMap<ShardKey, ShardCursors>,
+) -> Pass {
     replicate_once_with(
         follower,
         broker,
@@ -73,7 +84,7 @@ async fn pass(
         &crate::promotion::NoGate,
         &QuorumMarks::new(),
         None,
-        &mut HashMap::default(),
+        cursors,
         &mut HashMap::default(),
         &mut HashMap::default(),
         &mut HashMap::default(),
@@ -194,4 +205,103 @@ async fn a_draining_in_memory_shard_reports_drained() {
     assert_eq!(pass.reports.len(), 1, "{:?}", pass.reports);
     assert!(pass.reports[0].drained);
     assert_eq!(pass.reports[0].caught_up, vec!["broker-b".to_string()]);
+}
+
+/// **An in-memory shard with replicas drains with nothing on disk**, after a
+/// publish. The publish never reaches a log, nothing ships, and the drained
+/// report still counts every follower caught up, so placement can finish a
+/// move of a live leader on it (`is_drained`, #3158).
+#[tokio::test]
+async fn an_in_memory_shard_with_replicas_drains_on_an_empty_log() {
+    let (broker, dir) = broker_with_stream(false).await;
+    broker
+        .publish(TENANT, NAMESPACE, STREAM, Bytes::from("in memory"))
+        .await
+        .expect("publish");
+    let router = draining_router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = AcceptingFollower::default();
+
+    let pass = pass(&follower, &broker, &router, &Unfenced).await;
+
+    let report = pass
+        .reports
+        .into_iter()
+        .find(|report| report.drained)
+        .expect("an in-memory shard should drain");
+    assert_eq!(report.tail, 0, "an in-memory publish reached the log");
+    let mut caught_up = report.caught_up.clone();
+    caught_up.sort();
+    assert_eq!(
+        caught_up,
+        vec!["broker-b".to_string(), "broker-c".to_string()]
+    );
+    assert_eq!(follower.batches(), Vec::new());
+    assert_eq!(
+        paths_naming_stream(dir.path()),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+/// **A move's destination is reported caught up at the move's generation.**
+/// Placement fences a move only once the leader reports at the generation
+/// that added the copy (`reported_generation`) and names it caught up
+/// (`ready_to_fence`); a restore waits on the same report.
+#[tokio::test]
+async fn an_in_memory_shards_move_destination_is_reported_caught_up() {
+    let (broker, dir) = broker_with_stream(false).await;
+    let router = router(LOCAL, &["broker-b"], 4);
+    let follower = AcceptingFollower::default();
+    let mut cursors = HashMap::default();
+    pass_with(&follower, &broker, &router, &Unfenced, &mut cursors).await;
+
+    publish(&router, LOCAL, &["broker-b", "broker-c"], 5);
+    let pass = pass_with(&follower, &broker, &router, &Unfenced, &mut cursors).await;
+
+    assert_eq!(pass.reports.len(), 1, "{:?}", pass.reports);
+    let report = &pass.reports[0];
+    assert_eq!(report.generation, 5);
+    assert!(
+        report.caught_up.contains(&"broker-c".to_string()),
+        "the destination is not caught up: {report:?}",
+    );
+    assert_eq!(follower.batches(), Vec::new());
+    assert_eq!(
+        paths_naming_stream(dir.path()),
+        Vec::<std::path::PathBuf>::new()
+    );
+}
+
+/// **A stream deleted in memory and created again durable has a log.** What
+/// the broker refuses follows the registration: a delete clears it, and the
+/// new registration sets it again.
+#[tokio::test]
+async fn a_stream_recreated_durable_opens_its_log() {
+    let (broker, _dir) = broker_with_stream(false).await;
+    assert!(broker.stream_in_memory(TENANT, NAMESPACE, STREAM));
+    broker
+        .remove_stream(TENANT, NAMESPACE, STREAM)
+        .await
+        .expect("remove");
+    assert!(!broker.stream_in_memory(TENANT, NAMESPACE, STREAM));
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+
+    assert!(!broker.stream_in_memory(TENANT, NAMESPACE, STREAM));
+    assert!(
+        broker
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .is_some()
+    );
 }

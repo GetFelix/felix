@@ -430,8 +430,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
         .clone();
     // An in-memory stream's records never reach a log, so there is nothing to
     // ship and no log to open: opening one would put it on disk here, and the
-    // broker refuses to (#3071). Its moves still wait on reports.
-    if crate::promotion::in_memory_stream(broker, key).await {
+    // broker refuses to (#3071). Its moves still wait on reports. Asked
+    // without an await, so a durable shard's pass yields where it always did.
+    if key.kind == felix_router::ShardKind::Stream
+        && broker.stream_in_memory(&key.tenant_id, &key.namespace, &key.stream)
+    {
         return in_memory_pass(
             broker,
             fence,
@@ -2085,7 +2088,6 @@ pub(super) async fn group_level(
     )
 }
 
-/// `report`, with where each follower has got with the counter log.
 /// A pass over a shard of an in-memory stream. Its log would be empty, so the
 /// report is the one a pass over an empty log makes: tail 0 and every follower
 /// level. Nothing is opened or shipped, and the shard keeps its lease.
@@ -2154,6 +2156,7 @@ async fn in_memory_pass<'a>(
     }
 }
 
+/// `report`, with where each follower has got with the counter log.
 fn with_counter_offsets(mut report: ShardReport, counters: &[FollowerCursor]) -> ShardReport {
     report.counter_offsets = crate::reporter::moving(counters);
     report
