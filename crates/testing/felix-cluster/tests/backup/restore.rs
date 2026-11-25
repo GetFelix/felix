@@ -6,6 +6,7 @@ use std::path::Path;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec, broker_binary};
 use felix_storage::DiskLog;
+use felix_storage::disk_log::engine_marker;
 use felix_storage::disk_log::layout::shard_dir;
 use felix_storage::log::{AppendOnlyLog, LogConfig, ReadRange, ShardKey};
 use serial_test::serial;
@@ -63,8 +64,7 @@ async fn a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing
             &backups.path().join(&entry.leader),
             &shard_key(&cluster, shard),
         );
-        let log = DiskLog::open(&dir, format!("{STREAM}/{shard}"), LogConfig::default())
-            .expect("open the copy");
+        let log = open_copy(&dir, &format!("{STREAM}/{shard}")).expect("open the copy");
         copied_past_the_point |= log.tail_offset().await.expect("tail") > entry.logs.records;
         log.shutdown().await.expect("close the copy");
     }
@@ -94,8 +94,7 @@ async fn a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing
             &backups.path().join(&entry.leader),
             &shard_key(&cluster, shard),
         );
-        let log = DiskLog::open(&dir, format!("{STREAM}/{shard}"), LogConfig::default())
-            .expect("open the restored copy");
+        let log = open_copy(&dir, &format!("{STREAM}/{shard}")).expect("open the restored copy");
         let tail = log.tail_offset().await.expect("tail");
         assert_eq!(
             tail, entry.logs.records,
@@ -116,9 +115,12 @@ async fn a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing
             .expect("read the restored copy")
             .records;
         assert!(records.iter().all(|r| r.offset < entry.logs.records));
+        // A Raft log also holds blank and membership entries; no publish
+        // is one of them.
         restored.extend(
             records
                 .into_iter()
+                .filter(|r| r.mark.is_data())
                 .map(|r| String::from_utf8(r.payload.to_vec()).expect("utf8")),
         );
     }
@@ -171,4 +173,19 @@ fn copy_live_shard(from: &Path, to: &Path) {
         // A temporary a rename is about to replace can vanish mid-listing.
         let _ = std::fs::copy(from.join(&name), to.join(&name));
     }
+}
+
+/// Open a copied shard directory as `felix-broker restore-point` does: a
+/// Raft member's log as a Raft log, whose offsets are entry indexes, like
+/// the point's for that shard.
+fn open_copy(dir: &Path, label: &str) -> felix_storage::Result<DiskLog> {
+    let raft_log = engine_marker::claimed_for_raft(dir, label)?;
+    DiskLog::open(
+        dir,
+        label,
+        LogConfig {
+            raft_log,
+            ..LogConfig::default()
+        },
+    )
 }
