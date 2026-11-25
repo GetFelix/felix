@@ -300,3 +300,68 @@ fn ignored_flushes_are_caught_by_power_loss() {
         assert!(caught, "seed {seed}: {}", outcome.first_failure());
     }
 }
+
+fn page(offsets: &[u64], next: u64) -> felix_storage::log::ReadPage {
+    felix_storage::log::ReadPage {
+        records: offsets
+            .iter()
+            .map(|offset| felix_storage::log::LogRecord {
+                offset: *offset,
+                timestamp_micros: 0,
+                checksum: 0,
+                payload: Bytes::from_static(b"x"),
+                mark: RecordMark::None,
+                publisher: None,
+                headers: None,
+                generation: Some(1),
+            })
+            .collect(),
+        next,
+    }
+}
+
+/// A read that fails mid-log is an error naming the offset, not a short log
+/// that the term judges would call a missing entry (#3126).
+#[tokio::test]
+async fn a_read_error_while_collecting_a_log_is_reported() {
+    let mut calls = 0;
+    let got = collect_below(10, async |range: ReadRange| {
+        calls += 1;
+        if calls == 1 {
+            Ok(page(&[0, 1, 2], 3))
+        } else {
+            assert_eq!(range.start, 3);
+            Err(felix_storage::StorageError::InvalidRange)
+        }
+    })
+    .await;
+    let (offset, error) = got.unwrap_err();
+    assert_eq!(offset, 3);
+    assert!(!error.is_empty());
+}
+
+/// The end of the log, and a start below a trimmed base, end the read
+/// quietly.
+#[tokio::test]
+async fn a_clean_end_of_log_is_not_an_error() {
+    let mut calls = 0;
+    let got = collect_below(10, async |_| {
+        calls += 1;
+        Ok(if calls == 1 {
+            page(&[0, 1], 2)
+        } else {
+            page(&[], 2)
+        })
+    })
+    .await;
+    assert_eq!(got.unwrap().len(), 2);
+    let trimmed = collect_below(10, async |_| {
+        Err(felix_storage::StorageError::Trimmed {
+            requested: 0,
+            oldest: 5,
+            trim_headers: None,
+        })
+    })
+    .await;
+    assert!(trimmed.unwrap().is_empty());
+}

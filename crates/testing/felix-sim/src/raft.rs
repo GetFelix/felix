@@ -808,19 +808,53 @@ async fn record_in(at: &Member, shard: u32, offset: u64) -> Option<Held> {
     })
 }
 
-/// Every record of `at`'s log of `shard` below `bound`, by offset.
-async fn records_below(at: &Member, shard: u32, bound: u64) -> BTreeMap<u64, Held> {
-    let (mut records, mut start) = (BTreeMap::new(), 0);
+/// Every record of `at`'s log of `shard` below `bound`, by offset. A read
+/// that fails is an `Err` naming the member, the shard, the offset and the
+/// error, so a short log is never taken for a missing record. The tail and a
+/// trimmed base end the read without one.
+async fn records_below(
+    member: usize,
+    at: &Member,
+    shard: u32,
+    bound: u64,
+) -> Result<BTreeMap<u64, Held>, String> {
     let log = &at.logs[shard as usize];
+    collect_below(bound, async |range| log.read_range(range).await)
+        .await
+        .map_err(|(offset, error)| {
+            format!(
+                "{}: reading {}'s log to its end failed at offset {offset}: {error}",
+                list(shard),
+                name(member)
+            )
+        })
+}
+
+/// The collector under [`records_below`]: pages from `read` until the tail,
+/// `bound`, or a trimmed base. `Err` is the offset of a failed read and its
+/// error.
+async fn collect_below(
+    bound: u64,
+    mut read: impl AsyncFnMut(ReadRange) -> felix_storage::Result<felix_storage::log::ReadPage>,
+) -> Result<BTreeMap<u64, Held>, (u64, String)> {
+    let (mut records, mut start) = (BTreeMap::new(), 0);
     while start < bound {
         let range = ReadRange {
             start,
             max_bytes: 1 << 20,
         };
-        let Ok(page) = log.read_range(range).await else {
-            break;
+        let page = match read(range).await {
+            Ok(page) => page,
+            Err(felix_storage::StorageError::Trimmed { .. }) => break,
+            Err(error) => return Err((start, error.to_string())),
         };
         if page.records.is_empty() {
+            // Only trim records lie below `next`, so a page can be empty
+            // short of the tail.
+            if page.next > start {
+                start = page.next;
+                continue;
+            }
             break;
         }
         for record in page.records {
@@ -835,7 +869,7 @@ async fn records_below(at: &Member, shard: u32, bound: u64) -> BTreeMap<u64, Hel
             }
         }
     }
-    records
+    Ok(records)
 }
 
 /// A shard's directory below a member's data root, in the disk modes.
@@ -1350,8 +1384,14 @@ impl Sim {
             let Ok(bound) = at.engine.read_bound(&key(shard)) else {
                 continue;
             };
-            let log = records_below(&at, shard, bound)
-                .await
+            let records = match records_below(member, &at, shard, bound).await {
+                Ok(records) => records,
+                Err(finding) => {
+                    self.finding(finding);
+                    continue;
+                }
+            };
+            let log = records
                 .into_iter()
                 .map(|(offset, held)| (offset, held.generation))
                 .collect();
@@ -1944,7 +1984,13 @@ impl Sim {
             for shard in 0..self.shards {
                 let log = &at.logs[shard as usize];
                 let bound = flushed_bound(reported[shard as usize], log.durable_offset());
-                let records = records_below(&at, shard, bound).await;
+                let records = match records_below(member, &at, shard, bound).await {
+                    Ok(records) => records,
+                    Err(finding) => {
+                        self.finding(finding);
+                        continue;
+                    }
+                };
                 let mut credit = self.credit.lock();
                 let held = credit.entry((member, shard)).or_default();
                 held.bound = held.bound.max(bound);
@@ -2094,7 +2140,13 @@ impl Sim {
         at.runtime.shutdown().await;
         for shard in 0..self.shards {
             let bound = cut.durable[shard as usize];
-            let records = records_below(&at, shard, bound).await;
+            let records = match records_below(member, &at, shard, bound).await {
+                Ok(records) => records,
+                Err(finding) => {
+                    self.finding(finding);
+                    continue;
+                }
+            };
             let mut credit = self.credit.lock();
             let held = credit.entry((member, shard)).or_default();
             held.bound = held.bound.max(bound);
@@ -2269,7 +2321,13 @@ impl Sim {
             else {
                 continue;
             };
-            let kept = records_below(opened, shard, bound).await;
+            let kept = match records_below(member, opened, shard, bound).await {
+                Ok(kept) => kept,
+                Err(finding) => {
+                    self.finding(finding);
+                    continue;
+                }
+            };
             let lost = credited
                 .iter()
                 .find(|(offset, record)| kept.get(offset) != Some(record));
@@ -2411,6 +2469,55 @@ impl Sim {
         }
     }
 
+    /// The leader's committed terms and, per member, what its whole log holds,
+    /// for `opens::judge`. A log that cannot be read to its end is a finding,
+    /// and the shard is left unjudged: a short log would read as a missing
+    /// term.
+    async fn record_final_log(&self, shard: u32, leader: usize) {
+        let at = self.at(leader);
+        let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
+        let terms = match records_below(leader, &at, shard, bound).await {
+            Ok(records) => records
+                .into_values()
+                .filter_map(|held| held.generation.and_then(term_of_generation))
+                .collect(),
+            Err(finding) => return self.finding(finding),
+        };
+        let mut holders: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+        let mut logs = Vec::new();
+        for member in 0..self.members.len() {
+            let records = match records_below(member, &self.at(member), shard, u64::MAX).await {
+                Ok(records) => records,
+                Err(finding) => return self.finding(finding),
+            };
+            let last = records.last_key_value().map(|(offset, held)| {
+                let term = held.generation.and_then(term_of_generation).unwrap_or(0);
+                (term, *offset)
+            });
+            let held: BTreeSet<u64> = records
+                .into_values()
+                .filter_map(|held| held.generation.and_then(term_of_generation))
+                .collect();
+            for term in held {
+                holders.entry(term).or_default().push(member);
+            }
+            logs.push(opens::MemberLog {
+                member,
+                last,
+                leader: self.leader(shard) == Some(member),
+            });
+        }
+        let term = at.runtime.status(&key(shard)).map_or(0, |s| s.term);
+        self.committed_terms.lock().insert(shard, terms);
+        let read = opens::Read {
+            from: leader,
+            term,
+            holders,
+            logs,
+        };
+        self.final_log_read.lock().insert(shard, read);
+    }
+
     /// With the writers stopped: no member refuses a read and every member
     /// serves the same records. The leader's read is the list's final read.
     async fn final_reads(&self) {
@@ -2471,32 +2578,7 @@ impl Sim {
             if let Some(leader) = leader
                 && reads[leader].is_some()
             {
-                let at = self.at(leader);
-                let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
-                let terms = records_below(&at, shard, bound)
-                    .await
-                    .into_values()
-                    .filter_map(|held| held.generation.and_then(term_of_generation))
-                    .collect();
-                self.committed_terms.lock().insert(shard, terms);
-                let mut holders: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
-                for member in 0..self.members.len() {
-                    let held: BTreeSet<u64> = records_below(&self.at(member), shard, u64::MAX)
-                        .await
-                        .into_values()
-                        .filter_map(|held| held.generation.and_then(term_of_generation))
-                        .collect();
-                    for term in held {
-                        holders.entry(term).or_default().push(member);
-                    }
-                }
-                let term = at.runtime.status(&key(shard)).map_or(0, |s| s.term);
-                let read = opens::Read {
-                    from: leader,
-                    term,
-                    holders,
-                };
-                self.final_log_read.lock().insert(shard, read);
+                self.record_final_log(shard, leader).await;
             }
             let mut history = self.history.lock();
             match leader.and_then(|leader| reads[leader].clone()) {
