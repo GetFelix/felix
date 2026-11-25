@@ -162,12 +162,16 @@ impl<C: GroupConsensus> RaftGroups<C> {
 
     /// [`GroupReader::poll_below`](super::GroupReader::poll_below) on a Raft
     /// shard. Gives up waiting for the shard at `deadline`.
+    ///
+    /// `committed` gives one past the last committed record. It is asked
+    /// only after the read index, so the poll hands out every record
+    /// acknowledged before it began, and still nothing above the commit.
     #[allow(clippy::too_many_arguments)]
     pub async fn poll_below(
         &self,
         key: &GroupKey,
         log: &crate::durable::StreamLog,
-        committed: u64,
+        committed: impl Fn() -> Result<u64> + Sync,
         max: usize,
         now: Instant,
         consumer: Option<&GroupConsumer>,
@@ -176,7 +180,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
     ) -> Result<Vec<Claimed>> {
         let poll = || {
             self.poll_once(
-                key, log, committed, max, now, consumer, visibility, deadline,
+                key, log, &committed, max, now, consumer, visibility, deadline,
             )
         };
         match poll().await {
@@ -193,7 +197,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
         &self,
         key: &GroupKey,
         log: &crate::durable::StreamLog,
-        committed: u64,
+        committed: &(impl Fn() -> Result<u64> + Sync),
         max: usize,
         now: Instant,
         consumer: Option<&GroupConsumer>,
@@ -201,6 +205,9 @@ impl<C: GroupConsensus> RaftGroups<C> {
         deadline: Instant,
     ) -> Result<Vec<Claimed>> {
         let (_fresh, mut guard) = self.current(key, deadline).await?;
+        // After the read index `current` ran, not before: a bound taken
+        // first misses a publish acknowledged ahead of its commit.
+        let committed = committed()?;
         let log_tail = log.tail_offset().await?;
         let tail = log_tail
             .min(committed)

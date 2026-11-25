@@ -531,6 +531,14 @@ processes under one name, cannot keep taking claims still being worked on. Two
 live processes under one name are still a mistake: the newer one takes what
 the older held when it first reclaimed.
 
+On a Raft stream shard a poll sent after a publish's ack hands that record
+out, at every level, as a `StreamRead` includes it. A `Leader` ack under the
+leader's lease and a `Quorum` ack on a stream that does not fsync on commit are
+sent before the commit, so the poll first waits for the writes already
+acknowledged to commit, with `wait_ms` 0 too. It hands out nothing above the
+commit. If that wait takes longer than an election timeout the poll is refused
+with a retryable error instead of answered without them.
+
 On a Raft stream shard a poll's claims (offsets, attempts, the member, the
 visibility) are a group entry in the shard's log, applied before the poll is
 answered, so the next leader holds them. It records them as held on a

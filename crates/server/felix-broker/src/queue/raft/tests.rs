@@ -204,7 +204,7 @@ impl Fixture {
             .poll_below(
                 &key(group),
                 &self.log,
-                u64::MAX,
+                || Ok(u64::MAX),
                 max,
                 Instant::now(),
                 None,
@@ -227,7 +227,7 @@ impl Fixture {
             .poll_below(
                 &key(G),
                 &self.log,
-                u64::MAX,
+                || Ok(u64::MAX),
                 max,
                 now,
                 Some(consumer),
