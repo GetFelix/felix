@@ -48,3 +48,22 @@ fn a_failed_metadata_heal_is_reported_with_the_inject_error() {
     assert!(text.contains("members disagree"), "{text}");
     assert!(text.contains("no write accepted"), "{text}");
 }
+
+/// The every-family run ended at its deadline with a move refused and no
+/// assignment fault healed (#3120). A nemesis not yet satisfied keeps the
+/// run going past the duration, but never past twice it.
+#[test]
+fn an_unsatisfied_nemesis_keeps_the_run_going_up_to_twice_the_duration() {
+    let secs = Duration::from_secs;
+    let mut campaign = Campaign::from_env(1, secs(75), Mode::Lease).expect("campaign");
+    campaign.duration = secs(75);
+    assert_eq!(campaign.round_at(secs(10), true), Round::Fault);
+    assert_eq!(campaign.round_at(secs(10), false), Round::Fault);
+    assert_eq!(campaign.round_at(secs(76), true), Round::StopAt(secs(75)));
+    assert_eq!(campaign.round_at(secs(76), false), Round::Fault);
+    assert_eq!(campaign.round_at(secs(149), false), Round::Fault);
+    assert_eq!(
+        campaign.round_at(secs(150), false),
+        Round::StopAt(secs(150))
+    );
+}

@@ -642,7 +642,10 @@ variant, and its arms in `Fault::inject`, `Fault::heal` and `Display`
 needs something of the cluster's configuration, say so through `Nemesis`'s
 `needs_*` methods. To drive a
 campaign with something other than a random schedule, such as a replay of the
-faults a failing run printed, implement `Nemesis`.
+faults a failing run printed, implement `Nemesis`. Its `outcome` hears
+whether each fault was injected and healed, and `satisfied` can keep the
+campaign going past its duration, up to twice it, until the nemesis has
+seen what it needs.
 
 > `a_fault_campaign_keeps_quorum_histories_valid`: a 45-second lease-free
 > campaign of kills, pauses and partitions leaves a valid history, with at
@@ -651,7 +654,16 @@ faults a failing run printed, implement `Nemesis`.
 > `every_fault_family_is_injected_and_healed_in_a_campaign`: a 75-second
 > campaign on the lease that goes round every kind in a fixed order leaves a valid history
 > and injects and heals at least one fault of each family. The order puts a
-> shard move fourth and a drain sixth, so both run on every PR.
+> shard move fourth and a drain sixth, so both run on every PR. The cluster
+> may refuse a fault for good reason: the operator API answers a move with a
+> 409 while the broker it names has only just restarted. So the nemesis
+> (`EveryFamily`) picks a refused kind again, up to three times, and the
+> campaign runs past 75 seconds, up to 150, until every family has healed. A
+> failure lists the faults that were refused and why.
+> `a_refused_move_is_picked_again_until_its_family_heals`,
+> `a_kind_refused_every_time_is_given_up_after_its_tries` and
+> `an_unsatisfied_nemesis_keeps_the_run_going_up_to_twice_the_duration`: the
+> retry and the overrun, without a cluster.
 > `adversarial_faults_heal_and_every_shard_serves_again`: a 150-second
 > lease-free campaign on four brokers that goes round the compound kinds,
 > starting with the three it checks for so a slow run is less likely to end

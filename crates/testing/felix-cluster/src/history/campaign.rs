@@ -424,12 +424,16 @@ impl Campaign {
         rng: &mut Rng,
         opens: &mut BTreeSet<Opened>,
     ) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + self.duration;
+        let start = tokio::time::Instant::now();
         loop {
             let quiet = rng.between(self.quiet.0, self.quiet.1);
-            if tokio::time::Instant::now() + quiet >= deadline {
-                tokio::time::sleep_until(deadline).await;
-                return Ok(());
+            let next = tokio::time::Instant::now() + quiet;
+            match self.round_at(next - start, nemesis.satisfied()) {
+                Round::Fault => {}
+                Round::StopAt(at) => {
+                    tokio::time::sleep_until(start + at).await;
+                    return Ok(());
+                }
             }
             tokio::time::sleep(quiet).await;
 
@@ -443,6 +447,7 @@ impl Campaign {
                         Ok(led) => led,
                         Err(err) => {
                             workload.fault(format!("could not {fault}: {err:#}"));
+                            nemesis.outcome(&fault, false);
                             continue;
                         }
                     }
@@ -457,6 +462,7 @@ impl Campaign {
                 let healed = fault.heal(cluster).await;
                 workload.set_addrs(cluster.broker_addrs());
                 after_failed_inject(fault.kind(), err, healed, &fault)?;
+                nemesis.outcome(&fault, false);
             } else {
                 if let Fault::ElectWithoutControlPlane { node, .. } = &fault {
                     let elected =
@@ -479,6 +485,7 @@ impl Campaign {
                     .with_context(|| format!("heal {fault}"))?;
                 workload.set_addrs(cluster.broker_addrs());
                 workload.fault(format!("healed {fault}"));
+                nemesis.outcome(&fault, true);
             }
             // Nothing is drawn from `rng` here, so the check does not change
             // which faults a seed picks.
@@ -489,6 +496,21 @@ impl Campaign {
             if nemesis.needs_election() {
                 super::leaders::read(cluster, opens);
             }
+        }
+    }
+
+    /// Whether a fault whose quiet spell ends `elapsed` into the run still
+    /// fits. Up to the duration it does when it ends before it; past that,
+    /// only while the nemesis is not yet satisfied, and never beyond twice
+    /// the duration, so a fault that can never be injected ends the run.
+    fn round_at(&self, elapsed: Duration, satisfied: bool) -> Round {
+        let cap = self.duration * 2;
+        if satisfied && elapsed >= self.duration {
+            Round::StopAt(self.duration)
+        } else if elapsed >= cap {
+            Round::StopAt(cap)
+        } else {
+            Round::Fault
         }
     }
 
@@ -595,6 +617,15 @@ async fn settled_read(
 
 fn millis_of(elapsed: Duration) -> String {
     millis(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// What [`Campaign::unleash`] does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Round {
+    /// Wait out the quiet spell, then pick and inject a fault.
+    Fault,
+    /// Stop once this long into the run.
+    StopAt(Duration),
 }
 
 fn random_seed() -> u64 {
