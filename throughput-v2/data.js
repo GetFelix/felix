@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795615052299,
+  "lastUpdate": 1795628592961,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69316,6 +69316,58 @@ window.BENCHMARK_DATA = {
             "range": "25361.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1564616.67\nmean: 1568266.72\nstdev: 25361.70\ncv: 1.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f08dbd1cf9a52f210c835c5dfd9dc592c78ac8da",
+          "message": "test(cluster): a replay the broker ended part way is not a whole replay (#3112) (#3154)\n\n* test(cluster): a replay the broker ended part way is not a whole replay (#3112)\n\nfencing::a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses\nreported before-1..3 missing from a replay that returned only\nharness-probe. Nothing was lost and the broker did what it documents. The\nreplay ran on a follower while the leader had just resumed from SIGSTOP.\nA read during the replay was refused its read index (Settling), so the\nbroker reset the event stream, which tells the client to resume after its\nlast offset. The test's drain loop stopped at the first thing that was\nnot an event and took the prefix for everything the broker held.\n\n- felix_cluster::replay::drain reads until the stream goes quiet and\n  returns an error for a subscription that was lost or ended first.\n  Cluster::whole_replay_on and whole_replay_of_shard start the replay\n  again until one runs to its end.\n- The failure tests that asserted on one drain use them: fencing,\n  followers_word, majority_ack, promotion_fence, writes, kafka_produce,\n  mqtt_publish, and clients/reconnect.\n- A service-level test pins the broker side: a replay whose shard stops\n  being readable part way resets the event stream and never ends it\n  cleanly below acknowledged records.\n- docs/protocol.md and docs/per-shard-raft.md say the reset covers Raft\n  shards; docs/cluster-harness.md says how a test reads a replay.\n\nSpec-Unaffected: test harness, tests and docs only; no broker behaviour changes\n\n* test(cluster): a replay the broker ends cleanly part way fails, it is not retried\n\ndrain now returns a typed ReplayEnded for a clean end, and whole_replay\nfails on it instead of subscribing again: only a refusal or a lost\nsubscription asks for a fresh subscribe. Otherwise a short replay that a\nbroker answers as whole would pass every converted test.\n\nSpec-Unaffected: test harness only.\n\n* test(cluster): a replay ended because the shard moved is subscribed again\n\nThe review of #3167 found broker-2's clean end in the majority_ack test\ncarried no replay failure, so it may be a legitimate shard_moved end.\ndrain now asks the subscription: a move is retried like a lost\nsubscription, and only a reasonless clean end is ReplayEnded.\n\nSpec-Unaffected: test harness only.",
+          "timestamp": "2026-11-25T17:34:07Z",
+          "tree_id": "a82702e92606ba9b273f20d56f9c00bb70d6359b",
+          "url": "https://github.com/GetFelix/felix/commit/f08dbd1cf9a52f210c835c5dfd9dc592c78ac8da"
+        },
+        "date": 1795628592283,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354133.39,
+            "range": "7742.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354133.39\nmean: 354513.46\nstdev: 7742.10\ncv: 2.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354133.39,
+            "range": "7742.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354133.39\nmean: 354513.46\nstdev: 7742.10\ncv: 2.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81293.61,
+            "range": "892.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81293.61\nmean: 81375.19\nstdev: 892.24\ncv: 1.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812936.06,
+            "range": "8922.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812936.06\nmean: 813751.95\nstdev: 8922.42\ncv: 1.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
