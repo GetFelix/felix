@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795564197257,
+  "lastUpdate": 1795565027885,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68224,6 +68224,58 @@ window.BENCHMARK_DATA = {
             "range": "2184.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 824990.37\nmean: 825539.80\nstdev: 2184.63\ncv: 0.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f631ad84c0c6b888b26ac7c2a4400c263de22470",
+          "message": "fix(raft): a read right after an acknowledged publish includes it (#3115) (#3116)\n\n* fix(raft): a read right after an acknowledged publish includes it (#3115)\n\nA stream_read cut its page at the reading broker's own synced offset\nunder on_commit. A Raft log always opens on_commit unless written commit\nis on, and a commit needs only a majority to sync, so the member that\nanswers the read (follower or leader) can have applied a committed record\nit has not synced yet. The read then answered an acknowledged publish\nwith an empty page. On an engine's log the read now stops at the commit,\nwhich already holds only records that stay.\n\nSpec-Unaffected: the TLA models cover commit and apply, not the broker's\npage cut over a member's own sync.\n\n* fix(raft): refuse an engine-log read with no commit bound (#3115)\n\nWhile a Raft member closes or opens again its shard's bound can fall back\nto Unbounded, and reading to the raw tail would serve a follower's\nuncommitted entries. Such a read is now refused, retryably. Also pins the\nread-after-ack test at the Leader level and corrects the comment: under\nwritten commit a majority holds the entry, it need not have synced it.\n\nSpec-Unaffected: broker read bound handling only.",
+          "timestamp": "2026-11-24T23:57:59Z",
+          "tree_id": "788ce4b425438253669986b3f398d9783e560aee",
+          "url": "https://github.com/GetFelix/felix/commit/f631ad84c0c6b888b26ac7c2a4400c263de22470"
+        },
+        "date": 1795565027232,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 619276.26,
+            "range": "63586.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 619276.26\nmean: 637964.07\nstdev: 63586.14\ncv: 9.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 619276.26,
+            "range": "63586.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 619276.26\nmean: 637964.07\nstdev: 63586.14\ncv: 9.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 155445.6,
+            "range": "3634.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 155445.60\nmean: 154509.20\nstdev: 3634.58\ncv: 2.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1554456.04,
+            "range": "36345.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1554456.04\nmean: 1545092.01\nstdev: 36345.82\ncv: 2.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
