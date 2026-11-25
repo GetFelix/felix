@@ -40,10 +40,13 @@
 //! `<durable root>/rotated-ids` names the ids this directory had before a
 //! crash rotated them while it kept every ballot. See [`record_rotated_id`].
 //!
-//! `<durable root>/relaxed-crash-id` names the id a relaxed crash gave the
-//! directory, so a standalone broker can tell that a rotated copy was
-//! rotated by the crash that let it lose its unsynced tail, and not by a
-//! restore or an operator. See [`relaxed_crash_id`].
+//! `<durable root>/relaxed-crash-id` names the id a relaxed crash or a
+//! restore through Felix's tooling gave the directory, so a standalone
+//! broker can tell that a rotated copy was rotated by one of them, and not
+//! by an operator deleting the id. See [`relaxed_crash_sources`].
+//!
+//! `<durable root>/restore-pending` says a restore tool is rotating the id.
+//! No start runs while it is there. See [`rotate_for_restore`].
 //!
 //! `<durable root>/copy-trust` names the copies a leader has vouched for
 //! since the last rotation, and the copies this broker led before a crash.
@@ -216,6 +219,18 @@ pub fn begin(
     repair_pending: impl FnOnce() -> bool,
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
+    // A restore that stopped part way may have put older data back under
+    // the id it had, with no evidence yet; a start would hand out its
+    // offsets again.
+    if crate::fs::try_exists(root.join(RESTORE_PENDING_FILE_NAME)).map_err(StorageError::Io)? {
+        return Err(StorageError::Io(std::io::Error::other(format!(
+            "a restore of the data directory {} did not finish ({RESTORE_PENDING_FILE_NAME} is \
+             there); with the broker stopped, run `felix-broker rotate-storage-id --dir {}` and \
+             start it again",
+            root.display(),
+            root.display(),
+        ))));
+    }
     // A deleted storage-id is a rotation too: start the Raft mark log over
     // before the new id exists, as `copy_trust::rotate_storage_id` does.
     if storage_identity::load(root)?.is_none() {
@@ -272,7 +287,7 @@ pub fn begin(
         // way out. Evidence naming an id never installed is void, and the
         // retry's record keeps its chain.
         if matches!(last_run, LastRun::Crashed { relaxed: true, .. }) {
-            record_relaxed_crash(root, loaded, StorageId::from_bytes(next))?;
+            record_relaxed_crash(root, loaded, StorageId::from_bytes(next), false)?;
         }
         #[cfg(test)]
         tests::crash_point(1)?;
@@ -570,40 +585,86 @@ const ROTATED_IDS_HEADER: &str = "rotated_ids\n";
 const ROTATED_IDS_KEPT: usize = 16;
 
 /// The name, under the durable root, of the record of the ids relaxed
-/// crashes rotated away. Not a directory, so shard discovery passes over it.
+/// crashes and restores rotated away. Not a directory, so shard discovery
+/// passes over it.
 pub const RELAXED_CRASH_FILE_NAME: &str = "relaxed-crash-id";
 const RELAXED_CRASH_HEADER: &str = "relaxed_crash\n";
+/// Marks an id in that record that a restore rotated away.
+const RESTORE_TAG: &str = " restore";
+
+/// The name, under the durable root, of the marker [`rotate_for_restore`]
+/// holds while it runs.
+pub const RESTORE_PENDING_FILE_NAME: &str = "restore-pending";
+
+/// An id [`reform_evidence`] names: one a relaxed crash rotated away, or,
+/// with `restore`, one a restore did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rotated {
+    pub id: StorageId,
+    pub restore: bool,
+}
+
+/// Give the data directory at `root` the storage id `fresh` because its
+/// contents were put back from a copy, and record that as the evidence a
+/// standalone broker re-forms on: its groups then start above every offset
+/// they could have given out (`docs/per-shard-raft.md`, "A standalone broker
+/// re-forms itself"). For the restore tools, with the broker stopped.
+///
+/// [`RESTORE_PENDING_FILE_NAME`] is written first and removed last, and
+/// [`begin`] refuses to start while it is there: a crash part way could
+/// otherwise leave restored data under the old id with no evidence. Running
+/// this again finishes it and keeps the evidence of the first run.
+pub fn rotate_for_restore(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
+    let Some(from) = storage_identity::load(root)? else {
+        // No id: no copy was minted under one, so there is nothing to chain.
+        return copy_trust::rotate_storage_id(root, fresh);
+    };
+    let marker = format!("restore_pending\n{}\n", from.to_hex());
+    write_atomically(root, RESTORE_PENDING_FILE_NAME, marker.as_bytes(), true)?;
+    #[cfg(test)]
+    tests::crash_point(3)?;
+    record_relaxed_crash(root, from, StorageId::from_bytes(fresh), true)?;
+    #[cfg(test)]
+    tests::crash_point(4)?;
+    let id = copy_trust::rotate_storage_id(root, fresh)?;
+    #[cfg(test)]
+    tests::crash_point(5)?;
+    remove_record(root, RESTORE_PENDING_FILE_NAME)?;
+    Ok(id)
+}
 /// The newest ids the record keeps whatever is on disk. An older one stays
 /// only while a copy minted under it is ([`minted_ids`]).
 const RELAXED_CRASHES_KEPT: usize = 8;
 
-/// Write the record: the id `to` this crash gave the directory, then the ids
-/// it and the crashes before it rotated away, newest first. A chain that
-/// does not end at `from` was broken by another kind of rotation, so it
-/// starts over.
+/// Write the record: the id `to` this crash or restore gave the directory,
+/// then the ids it and the ones before it rotated away, newest first, each
+/// marked when a restore rotated it. A chain that does not end at `from` was
+/// broken by another kind of rotation, so it starts over.
 ///
 /// The record is bounded by the copies on disk and not by a count of
 /// crashes: dropping an id a copy still names would hold that shard for
 /// good, since a standalone broker re-forms only a copy minted under an id
 /// in the record.
-fn record_relaxed_crash(root: &Path, from: StorageId, to: StorageId) -> Result<()> {
+fn record_relaxed_crash(root: &Path, from: StorageId, to: StorageId, restore: bool) -> Result<()> {
+    let mut restore = restore;
     let mut sources = match read_relaxed_crash(root)? {
         Some((head, sources)) if head == from => sources,
-        // A record for a rotation from `from` that a crash cut short.
-        Some((_, mut sources)) if sources.first() == Some(&from) => {
-            sources.remove(0);
+        // A record for a rotation from `from` that a crash cut short. A
+        // restore's mark stays with the retry.
+        Some((_, mut sources)) if sources.first().is_some_and(|first| first.id == from) => {
+            restore |= sources.remove(0).restore;
             sources
         }
         _ => Vec::new(),
     };
-    sources.insert(0, from);
+    sources.insert(0, Rotated { id: from, restore });
     if sources.len() > RELAXED_CRASHES_KEPT {
         match minted_ids(root) {
             Ok(minted) => {
                 let mut at = 0;
-                sources.retain(|id| {
+                sources.retain(|rotated| {
                     at += 1;
-                    at <= RELAXED_CRASHES_KEPT || minted.contains(id)
+                    at <= RELAXED_CRASHES_KEPT || minted.contains(&rotated.id)
                 });
             }
             // Not knowing which ids are still named, keep them all: a long
@@ -617,8 +678,11 @@ fn record_relaxed_crash(root: &Path, from: StorageId, to: StorageId) -> Result<(
         }
     }
     let mut body = format!("{RELAXED_CRASH_HEADER}{}\n", to.to_hex());
-    for id in &sources {
-        body.push_str(&id.to_hex());
+    for rotated in &sources {
+        body.push_str(&rotated.id.to_hex());
+        if rotated.restore {
+            body.push_str(RESTORE_TAG);
+        }
         body.push('\n');
     }
     write_atomically(root, RELAXED_CRASH_FILE_NAME, body.as_bytes(), true)
@@ -655,7 +719,7 @@ fn minted_ids(_root: &Path) -> std::io::Result<HashSet<StorageId>> {
     ))
 }
 
-fn read_relaxed_crash(root: &Path) -> Result<Option<(StorageId, Vec<StorageId>)>> {
+fn read_relaxed_crash(root: &Path) -> Result<Option<(StorageId, Vec<Rotated>)>> {
     let bytes = match crate::fs::read(root.join(RELAXED_CRASH_FILE_NAME)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -665,25 +729,46 @@ fn read_relaxed_crash(root: &Path) -> Result<Option<(StorageId, Vec<StorageId>)>
         .ok()
         .and_then(|text| text.strip_prefix(RELAXED_CRASH_HEADER))
         .and_then(|text| {
-            let mut ids = text.lines().map(StorageId::from_hex);
-            let head = ids.next()??;
-            Some((head, ids.collect::<Option<Vec<_>>>()?))
+            let mut lines = text.lines();
+            let head = StorageId::from_hex(lines.next()?)?;
+            let sources = lines
+                .map(|line| {
+                    let (hex, restore) = match line.strip_suffix(RESTORE_TAG) {
+                        Some(hex) => (hex, true),
+                        None => (line, false),
+                    };
+                    Some(Rotated {
+                        id: StorageId::from_hex(hex)?,
+                        restore,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some((head, sources))
         });
     Ok(decoded)
 }
 
-/// The storage ids relaxed crashes rotated away, newest first, when the
-/// directory's id is still the one the last of them gave it; empty
-/// otherwise. A copy minted under one of them was rotated by a relaxed crash
-/// and lost, at most, what a relaxed fsync mode lets a crash lose. A
-/// restore or an operator rotation after the crash changes the id, which
-/// voids the record, and a file that does not decode is no evidence.
-pub fn relaxed_crash_sources(root: &Path) -> Result<Vec<StorageId>> {
+/// The storage ids relaxed crashes and [`rotate_for_restore`] rotated away,
+/// newest first, when the directory's id is still the one the last of them
+/// gave it; empty otherwise. A copy minted under one of them was rotated by
+/// a relaxed crash, which lost at most what a relaxed fsync mode lets a
+/// crash lose, or by a restore the operator chose. Any other rotation after
+/// them changes the id, which voids the record, and a file that does not
+/// decode is no evidence.
+pub fn reform_evidence(root: &Path) -> Result<Vec<Rotated>> {
     let current = storage_identity::load(root)?;
     Ok(match read_relaxed_crash(root)? {
         Some((head, sources)) if Some(head) == current => sources,
         _ => Vec::new(),
     })
+}
+
+/// The ids of [`reform_evidence`].
+pub fn relaxed_crash_sources(root: &Path) -> Result<Vec<StorageId>> {
+    Ok(reform_evidence(root)?
+        .into_iter()
+        .map(|rotated| rotated.id)
+        .collect())
 }
 
 /// Record, durably, that this directory ran under `id` until a crash rotated
