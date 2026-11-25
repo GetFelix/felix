@@ -6,9 +6,9 @@
 //! and the group's leader hands its leadership there. Moving a leader is one
 //! write that changes `leader` to another member of the set. The set changes
 //! when a member must leave (an internal, draining or lost broker) or an
-//! operator moves a shard outside it: one member is swapped for a live node
-//! and the group's leader runs the membership change. `docs/control-plane.md`,
-//! "Raft shards".
+//! operator or a balance pass moves a shard outside it: one member is swapped
+//! for a live node and the group's leader runs the membership change.
+//! `docs/control-plane.md`, "Raft shards".
 use std::collections::BTreeSet;
 
 use felix_common::random::HashMap;
@@ -59,7 +59,8 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering. With no such member, a live broker outside the set takes a
-///   follower's seat and the lead ([`balanced_outside`]).
+///   follower's seat and the lead, or an RF 1 shard starts its move there
+///   ([`balanced_outside`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn raft_step<'a>(
     existing: &'a ShardAssignment,
@@ -126,7 +127,14 @@ pub(super) fn raft_step<'a>(
         match to {
             None => {
                 return balanced_outside(
-                    existing, is_serving, counted, leaders, moves, eligible, load,
+                    existing,
+                    replication_factor,
+                    is_serving,
+                    counted,
+                    leaders,
+                    moves,
+                    eligible,
+                    load,
                 )
                 .unwrap_or(Decision::Kept);
             }
@@ -170,8 +178,16 @@ pub(super) fn raft_step<'a>(
 /// The swap takes a slot from the same per-pass budget as a replacement.
 /// `None` when no such broker exists, or no follower can give its seat
 /// without the set losing a zone.
+///
+/// An RF 1 shard has no follower, so it moves as an operator moves it
+/// (#3118): this write grows the set to the leader and the broker
+/// ([`grown`]), and [`finish_single_move`] shrinks it once the copy votes.
+/// The tally counts the shard for the broker from this write on
+/// ([`will_lead`]), so later passes do not start more moves than the gap.
+#[allow(clippy::too_many_arguments)]
 fn balanced_outside<'a>(
     existing: &'a ShardAssignment,
+    replication_factor: u32,
     is_serving: &dyn Fn(&str) -> bool,
     counted: &dyn Fn(&str) -> bool,
     leaders: &mut Leadership<'a>,
@@ -193,12 +209,16 @@ fn balanced_outside<'a>(
         .map(|node| node.node_id.as_str())
         .filter(|id| !existing.nodes().any(|member| member == id))
         .collect();
+    let single = replication_factor.max(1) == 1 && existing.replicas.is_empty();
     let current: Vec<&'a str> = existing.nodes().map(String::as_str).collect();
     let was_spread = !unspread(eligible, &current);
     // The follower that gives `to` its seat: one in `to`'s zone first, so
     // the set keeps its zones, then the busiest. None that would leave a
-    // spread set short of a zone.
+    // spread set short of a zone. A set of one gives the leader's own.
     let seat_for = |to: &'a str| {
+        if single {
+            return Some(&existing.leader);
+        }
         existing
             .replicas
             .iter()
@@ -230,7 +250,12 @@ fn balanced_outside<'a>(
             .into_iter()
             .find_map(|to| seat_for(to).map(|from| (to, from)))
     };
-    let for_stream = under(&|node| leaders.of(key, node), &|_| true);
+    // An RF 1 move copies the whole log, so it serves the stream's spread
+    // only where the totals hold too. Otherwise a fresh cluster, placed
+    // even on totals, trades one shard each way between two brokers.
+    let for_stream = under(&|node| leaders.of(key, node), &|to| {
+        !single || leaders.total(to) < leaders.total(leader)
+    });
     moves.stream_wanted |= for_stream.is_some();
     // As for a member: the totals only where the stream's spread holds.
     let (to, from) = for_stream.or_else(|| {
@@ -249,15 +274,19 @@ fn balanced_outside<'a>(
     if let Err(blocked) = seat_open(existing) {
         return Some(Decision::Waiting(blocked));
     }
-    let next = ShardAssignment {
-        leader: to.to_string(),
-        replicas: existing
-            .replicas
-            .iter()
-            .map(|node| if node == from { leader } else { node })
-            .map(str::to_string)
-            .collect(),
-        ..existing.renamed()
+    let next = if single {
+        grown(existing, to)
+    } else {
+        ShardAssignment {
+            leader: to.to_string(),
+            replicas: existing
+                .replicas
+                .iter()
+                .map(|node| if node == from { leader } else { node })
+                .map(str::to_string)
+                .collect(),
+            ..existing.renamed()
+        }
     };
     // The store refuses the write on the same check (#2905).
     if existing.holds_formed_set(&next.nodes().cloned().collect()) {
@@ -341,6 +370,20 @@ fn single_move_destination(existing: &ShardAssignment, replication_factor: u32) 
         [to] if replication_factor.max(1) == 1 => Some(to),
         _ => None,
     }
+}
+
+/// The broker the leader tally counts a Raft shard for: the destination of
+/// an RF 1 move while it is live, since the move ends with it leading, and
+/// the leader otherwise. A destination that is not live is dropped or
+/// waited for, and the leader keeps the shard.
+pub(super) fn will_lead<'a>(
+    existing: &'a ShardAssignment,
+    replication_factor: u32,
+    is_live: &dyn Fn(&str) -> bool,
+) -> &'a str {
+    single_move_destination(existing, replication_factor)
+        .filter(|to| is_live(to))
+        .unwrap_or(existing.leader.as_str())
 }
 
 /// The write that drops an RF 1 move's destination, back to the leader

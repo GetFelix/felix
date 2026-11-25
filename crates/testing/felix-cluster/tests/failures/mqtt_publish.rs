@@ -646,18 +646,17 @@ async fn new_owner(cluster: &Cluster, gone: &str) -> String {
 
 /// The payloads of the test's messages, replayed over QUIC from `owner`.
 async fn read_back(cluster: &Cluster, owner: &str) -> Vec<String> {
-    let (_client, mut subscription) = cluster
-        .replay_shard(owner, STREAM, 0)
+    let events = cluster
+        .whole_replay_of_shard(
+            owner,
+            STREAM,
+            0,
+            Duration::from_secs(3),
+            Duration::from_secs(30),
+        )
         .await
         .expect("replay");
-    let mut read = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(3), subscription.next_event()).await
-    {
-        let payload = String::from_utf8_lossy(&event.payload).into_owned();
-        if payload.starts_with('m') {
-            read.push(payload);
-        }
-    }
+    let mut read = felix_cluster::replay::payloads(&events);
+    read.retain(|payload| payload.starts_with('m'));
     read
 }

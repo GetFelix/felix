@@ -121,23 +121,16 @@ async fn serving_leader(cluster: &Cluster) -> String {
 /// Everything `node` replays. Reads still need the lease, so a replay is
 /// retried until the node has renewed it.
 async fn held_by(cluster: &Cluster, node: &str) -> Vec<String> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    let (_client, mut replay) = loop {
-        match cluster.replay_on(node, STREAM).await {
-            Ok(opened) => break opened,
-            Err(err) if tokio::time::Instant::now() > deadline => {
-                panic!("replay on {node}: {err:#}")
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    };
-    let mut held = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
-    {
-        held.push(String::from_utf8_lossy(&event.payload).to_string());
-    }
-    held
+    let held = cluster
+        .whole_replay_on(
+            node,
+            STREAM,
+            Duration::from_secs(2),
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("replay on {node}: {err:#}"));
+    felix_cluster::replay::payloads(&held)
 }
 
 /// **With the control plane unreachable, a leader keeps acknowledging what a
