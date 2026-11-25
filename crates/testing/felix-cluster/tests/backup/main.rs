@@ -133,18 +133,8 @@ struct PointLogs {
 /// A backup point of the cluster, taken by running `felixctl backup-point`
 /// (built alongside the tests by `cargo test --workspace`) against it.
 async fn take_point(cluster: &Cluster, name: &str) -> Manifest {
-    let mut exe = std::env::current_exe().expect("the running executable");
-    exe.pop();
-    // Integration test binaries live in `target/<profile>/deps`.
-    if exe.ends_with("deps") {
-        exe.pop();
-    }
-    let exe = exe.join("felixctl");
-    assert!(
-        exe.exists(),
-        "felixctl not found at {}; build it with `cargo build -p felixctl`",
-        exe.display()
-    );
+    let exe = felix_cluster::built_binary("felixctl")
+        .unwrap_or_else(|err| panic!("{err}; build it with `cargo build -p felixctl`"));
     let scratch = tempfile::tempdir().expect("tempdir");
     let out = scratch.path().join("point.json");
     let mut command = std::process::Command::new(exe);

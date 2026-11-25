@@ -137,13 +137,13 @@ the fence before it opens: `felix-replication/src/promotion.rs:168` `fence_shard
 promise the generation (the follower answers in `replica.rs:1275` `fence`),
 catches up, appends a generation-start record, and the driver opens it
 (`felix-replication/src/driver.rs:677` `open_promoted`). A follower refuses a stale leader with
-`FencedEpoch` (`replica.rs:2099` `check_shard_fence`). The engine tells the
+`FencedEpoch` (`replica.rs:2101` `check_shard_fence`). The engine tells the
 broker through `WriteFence` callbacks (`felix-replication/src/driver.rs:298` onward): `deposed`,
 `withheld`, `serve_without_lease`, `passed`.
 
 Around that core sit the parts that make it safe across crashes and lost
 disks: ballots (`crates/server/felix-storage/src/disk_log/ballot.rs:191`),
-vouching and copy trust (`replica.rs:1894` `record_vouch`, `follower.rs:107`),
+vouching and copy trust (`replica.rs:1896` `record_vouch`, `follower.rs:107`),
 unclean starts (`unclean.rs`), reclaim (`reclaim.rs`), and opt-in election
 without the control plane (`felix-replication/src/election.rs:31`, `election/candidate.rs:403`,
 `replica/election.rs`), switched on by `FELIX_INTERNAL_ELECTION`
@@ -153,7 +153,7 @@ without the control plane (`felix-replication/src/election.rs:31`, `election/can
 
 The control plane picks the new set. A promotion across a set change runs a
 joint fence that needs answers from both the old and the new set
-(`promotion/joint.rs:216` `JointSets`, `replica.rs:2550` `joint_fence`). A new
+(`promotion/joint.rs:216` `JointSets`, `replica.rs:2552` `joint_fence`). A new
 replica joins as a learner that ships but does not count toward the mark
 (`ship.rs:665`, `driver/shard.rs:746`), and a follower too far behind is
 rebuilt (`felix-replication/src/rebuild.rs:40`). The driver learns of a change when the router

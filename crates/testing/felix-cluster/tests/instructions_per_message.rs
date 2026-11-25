@@ -62,19 +62,7 @@ fn env_usize(name: &str, default: usize) -> usize {
 }
 
 fn loadgen_binary() -> Result<PathBuf> {
-    let mut dir = std::env::current_exe().context("locate the running executable")?;
-    dir.pop();
-    if dir.ends_with("deps") {
-        dir.pop();
-    }
-    let candidate = dir.join("felix-loadgen");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-    Err(anyhow!(
-        "felix-loadgen not found at {}; build it first",
-        candidate.display()
-    ))
+    felix_cluster::built_binary("felix-loadgen").map_err(|err| anyhow!("{err}; build it first"))
 }
 
 /// Run the ingest scenario and return the records the broker acknowledged.
