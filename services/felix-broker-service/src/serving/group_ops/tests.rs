@@ -285,25 +285,23 @@ async fn a_settle_for_a_generation_start_is_refused() {
         .await
         .expect("served here");
     let log = log.expect("a durable log");
-    let publish = async |payload: &'static [u8]| {
-        leader
-            .broker
-            .publish_batch(
-                TENANT,
-                NAMESPACE,
-                DURABLE,
-                0,
-                &[Bytes::from_static(payload)],
-            )
-            .await
-            .expect("publish");
-    };
-    publish(b"first").await;
+    leader
+        .broker
+        .publish_batch(
+            TENANT,
+            NAMESPACE,
+            DURABLE,
+            0,
+            &[Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+        )
+        .await
+        .expect("publish");
+    // Last in the log: a publish after an append outside the publish path
+    // would wait on offsets the sequencer never handed out.
     let mark = log
         .append_generation_start(leader::GENERATION)
         .await
         .expect("generation start");
-    publish(b"second").await;
     let claimed = poll(
         &leader.broker,
         &publish_ctx,
@@ -321,7 +319,7 @@ async fn a_settle_for_a_generation_start_is_refused() {
     .await
     .expect("polled");
     let offsets: Vec<u64> = claimed.iter().map(|c| c.offset).collect();
-    assert_eq!(offsets, vec![mark - 1, mark + 1], "the mark is skipped");
+    assert_eq!(offsets, vec![mark - 2, mark - 1], "the mark is skipped");
 
     let before = committed(&leader).await;
     assert_refused_as_never_handed_out(
