@@ -614,18 +614,21 @@ pub async fn revoke_principal_refresh_tokens(
     if body.principal_id.trim().is_empty() {
         return Err(api_validation_error("principal_id must not be empty"));
     }
+    // The cutoff first: an exchange that stores a chain after the chains are
+    // ended below checks the cutoff again and ends its own. A 409 from it
+    // still ends the chains.
+    let cut =
+        crate::auth::revocation::revoke(&state, &tenant_id, vec![body.principal_id.clone()]).await;
     let revoked = state
         .store
         .revoke_refresh_tokens_for_principal(&tenant_id, &body.principal_id)
         .await
         .map_err(|err| api_internal("failed to revoke refresh tokens", &err))?;
     metrics::counter!("felix_refresh_tokens_revoked_total").increment(revoked);
-    crate::auth::revocation::revoke(&state, &tenant_id, vec![body.principal_id.clone()])
-        .await
-        .map_err(|err| match err {
-            StoreError::Conflict(what) => api_conflict("conflict", &what),
-            err => api_internal("failed to revoke the principal's sessions", &err),
-        })?;
+    cut.map_err(|err| match err {
+        StoreError::Conflict(what) => api_conflict("conflict", &what),
+        err => api_internal("failed to revoke the principal's sessions", &err),
+    })?;
     tracing::info!(
         tenant_id = %tenant_id,
         principal_id = %body.principal_id,

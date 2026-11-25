@@ -97,7 +97,8 @@ MQTT as the `CONNECT` password.
   every listener.
 - **Revocation.** Revoking a principal, or removing a rule that reached it,
   ends what its tokens opened on every broker within about one sync interval
-  (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, 2 s by default).
+  (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`, 2 s by default). An IdP token issued
+  before the revocation, plus 60 s of clock skew, no longer exchanges.
 - **Unauthenticated work is cheap and bounded.** Until a stream
   authenticates, QUIC frames are capped (`FELIX_PREAUTH_MAX_FRAME_BYTES`),
   only a few streams per connection are read
@@ -259,9 +260,6 @@ a new tenant before any admin token exists.
   signing key keeps verifying for up to 24 hours after the last successful
   fetch. Monitor `felix_revocation_feed_last_success_seconds` and
   `felix_jwks_oldest_age_seconds`.
-- **An identity-provider token issued before a revocation still exchanges**
-  after it, for its remaining lifetime
-  ([#2839](https://github.com/GetFelix/felix/issues/2839)).
 - **Single-use upstream tokens are single-use per control-plane member**, not
   across the group ([#2844](https://github.com/GetFelix/felix/issues/2844)).
 - **The tenant JWKS route tells an anonymous caller whether a tenant exists**

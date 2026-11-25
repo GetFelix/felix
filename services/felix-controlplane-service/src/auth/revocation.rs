@@ -93,24 +93,36 @@ pub(crate) async fn revoke(
     Ok(())
 }
 
-/// Hold a mint for `principal_id` until a revocation made this second is in
-/// the past. Token times are whole seconds, so a token minted in the same
-/// second as a revocation would be refused with the ones it replaced.
-pub(crate) async fn wait_out_revocation(
+/// `principal_id`'s revocation cutoff, counting the whole tenant's.
+pub(crate) async fn cutoff(
     state: &AppState,
     tenant_id: &str,
     principal_id: &str,
-) -> Result<(), ApiError> {
-    let revoked_at = state
+) -> Result<Option<i64>, ApiError> {
+    state
         .store
         .principal_revoked_at(tenant_id, principal_id)
         .await
-        .map_err(|err| api_internal("failed to load revocations", &err))?;
-    wait_past(revoked_at).await;
-    Ok(())
+        .map_err(|err| api_internal("failed to load revocations", &err))
 }
 
-/// [`wait_out_revocation`] for a cutoff already read.
+/// Whether an IdP token issued at `issued_at` predates `revoked_at`, its
+/// principal's cutoff, and so must not be exchanged.
+///
+/// The cutoff is a control-plane clock reading and `issued_at` an IdP's, so
+/// `skew_secs` is added to the cutoff: an IdP clock running ahead would
+/// otherwise stamp a token issued before the revocation with a later `iat`.
+/// The cost is on the safe side: a fresh IdP token is refused until
+/// `skew_secs` after the revocation.
+pub(crate) fn assertion_revoked(issued_at: i64, revoked_at: Option<i64>, skew_secs: u64) -> bool {
+    revoked_at.is_some_and(|cutoff| {
+        issued_at <= cutoff.saturating_add(i64::try_from(skew_secs).unwrap_or(i64::MAX))
+    })
+}
+
+/// Hold a mint until a revocation made this second is in the past. Token
+/// times are whole seconds, so a token minted in the same second as a
+/// revocation would be refused with the ones it replaced.
 pub(crate) async fn wait_past(revoked_at: Option<i64>) {
     let Some(revoked_at) = revoked_at else {
         return;

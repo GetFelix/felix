@@ -1171,3 +1171,211 @@ fn mint_upstream_token_with_claims(
     )
     .expect("token")
 }
+
+/// A tenant trusting `issuer`, with `user-1` granted a read, behind a
+/// validator allowing 60 s of clock skew.
+async fn revocable_app(issuer: &str) -> (axum::Router, Arc<InMemoryStore>, String) {
+    let store = Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 200,
+        change_retention_max_rows: Some(200),
+    }));
+    store
+        .create_tenant(Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "Tenant One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .upsert_idp_issuer(
+            "t1",
+            IdpIssuerConfig {
+                issuer: issuer.to_string(),
+                audiences: vec!["aud-1".to_string()],
+                jwks_url: Some(format!("{issuer}/jwks")),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("issuer");
+    let principal = principal_id(issuer, "user-1");
+    store
+        .add_rbac_policy(
+            "t1",
+            PolicyRule {
+                subject: principal.clone(),
+                object: "stream:t1/payments/*".to_string(),
+                action: "stream.subscribe".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    store
+        .set_tenant_signing_keys(
+            "t1",
+            TenantSigningKeys {
+                current: SigningKey {
+                    kid: "k1".to_string(),
+                    alg: Algorithm::EdDSA,
+                    private_key: FELIX_PRIVATE_KEY,
+                    public_key: Ed25519SigningKey::from_bytes(&FELIX_PRIVATE_KEY)
+                        .verifying_key()
+                        .to_bytes(),
+                },
+                previous: vec![],
+            },
+        )
+        .await
+        .expect("keys");
+    let state = AppState {
+        region: Region {
+            region_id: "local".to_string(),
+            display_name: "Local Region".to_string(),
+        },
+        api_version: "v1".to_string(),
+        features: FeatureFlags {
+            durable_storage: false,
+            tiered_storage: false,
+            bridges: false,
+        },
+        store: store.clone(),
+        oidc_validator: UpstreamOidcValidator::new_with_allowed_algorithms(
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+            60,
+            vec![Algorithm::RS256],
+        ),
+        bootstrap_enabled: false,
+        bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
+        node_liveness: Default::default(),
+        readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
+            std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
+        )),
+        in_flight: Default::default(),
+        placement_wakes: Default::default(),
+        move_policy: Default::default(),
+        new_cluster: Default::default(),
+        audit: Default::default(),
+    };
+    (build_router(state), store, principal)
+}
+
+async fn exchange_status(app: &axum::Router, token: &str) -> StatusCode {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/tenants/t1/token/exchange")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request");
+    app.clone()
+        .into_service::<Body>()
+        .oneshot(req)
+        .await
+        .expect("exchange")
+        .status()
+}
+
+/// **A revocation ends what the IdP issued before it.** An IdP token minted
+/// one second before its principal was revoked, still unexpired, is refused
+/// with 401 rather than exchanged for a new token and refresh chain.
+#[tokio::test]
+async fn an_idp_token_from_before_a_revocation_does_not_exchange() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    let now = chrono::Utc::now().timestamp();
+    let before = mint_upstream_token_with_claims(
+        &idp_key().pem,
+        &issuer,
+        "aud-1",
+        "kid-1",
+        json!({ "iat": now - 1 }),
+    );
+    assert_eq!(exchange_status(&app, &before).await, StatusCode::OK);
+
+    store
+        .revoke_principals("t1", vec![principal.clone()], now)
+        .await
+        .expect("revoke");
+    assert_eq!(
+        exchange_status(&app, &before).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // Only the chain from before the revocation, none from after it.
+    assert_eq!(
+        store
+            .revoke_refresh_tokens_for_principal("t1", &principal)
+            .await
+            .expect("count"),
+        1,
+    );
+}
+
+/// The 60 s of clock skew counts against the IdP token: one issued within it
+/// of the cutoff is refused, one issued after it exchanges.
+#[tokio::test]
+async fn an_idp_token_from_past_the_cutoff_and_skew_exchanges() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    let now = chrono::Utc::now().timestamp();
+    store
+        .revoke_principals("t1", vec![principal], now - 120)
+        .await
+        .expect("revoke");
+    let issued = |iat: i64| {
+        mint_upstream_token_with_claims(
+            &idp_key().pem,
+            &issuer,
+            "aud-1",
+            "kid-1",
+            json!({ "iat": iat }),
+        )
+    };
+    assert_eq!(
+        exchange_status(&app, &issued(now - 60)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        exchange_status(&app, &issued(now - 58)).await,
+        StatusCode::OK
+    );
+}
+
+/// An IdP token with no `iat`, or one that is not a number, never exchanges,
+/// under a cutoff or not.
+#[tokio::test]
+async fn an_idp_token_without_an_iat_does_not_exchange() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    let now = chrono::Utc::now().timestamp();
+    let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+    header.kid = Some("kid-1".to_string());
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(idp_key().pem.as_bytes()).expect("enc");
+    let without = jsonwebtoken::encode(
+        &header,
+        &json!({ "iss": issuer, "sub": "user-1", "aud": "aud-1", "exp": now + 300 }),
+        &key,
+    )
+    .expect("token");
+    let unparsable = mint_upstream_token_with_claims(
+        &idp_key().pem,
+        &issuer,
+        "aud-1",
+        "kid-1",
+        json!({ "iat": "yesterday" }),
+    );
+    for revoked in [false, true] {
+        if revoked {
+            store
+                .revoke_principals("t1", vec![principal.clone()], now - 600)
+                .await
+                .expect("revoke");
+        }
+        for token in [&without, &unparsable] {
+            assert_eq!(exchange_status(&app, token).await, StatusCode::UNAUTHORIZED);
+        }
+    }
+}
