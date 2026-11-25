@@ -893,6 +893,187 @@ fn a_raft_leader_balances_only_onto_a_broker_with_room() {
     assert_eq!(plan.moves().count(), 0, "{plan:?}");
 }
 
+/// RF 1 shard `shard` of `stream` on `leader` alone, formed and settled.
+fn single_of(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
+    seated(stream, shard, leader, &[])
+}
+
+/// `written`, an RF 1 shard's grown set, as the store and group leave it:
+/// the target stored for both brokers, and `voters` the reported voters.
+fn grown_as(written: &ShardAssignment, voters: &[&str]) -> ShardAssignment {
+    let mut grown = written.clone();
+    let members: BTreeMap<String, u64> = grown.nodes().map(|n| (n.clone(), 7)).collect();
+    grown.raft_target.as_mut().unwrap().members = members.clone();
+    grown.raft_copy_ids = members.clone();
+    grown.raft_voters.as_mut().unwrap().members = members
+        .into_iter()
+        .filter(|(node, _)| voters.contains(&node.as_str()))
+        .collect();
+    grown
+}
+
+/// **An RF 1 shard balances onto a broker that leads none (#3118).** A set
+/// of one has no member to rename to and no follower to swap, so balance
+/// starts the two-write move an operator would: grow to the leader and the
+/// broker, then shrink once its copy votes. The move counts for the broker
+/// while it runs, so the gap of two starts one move, not one per pass.
+#[test]
+fn a_one_member_raft_shard_balances_onto_a_broker_that_leads_none() {
+    let streams = vec![replicated_stream("orders", 2, 1)];
+    let nodes = live(&["broker-a", "broker-b"]);
+    let existing = vec![
+        single_of("orders", 0, "broker-a"),
+        single_of("orders", 1, "broker-a"),
+    ];
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+    let moves: Vec<_> = plan.moves().collect();
+    assert_eq!(moves.len(), 1, "{plan:?}");
+    let (key, step, written) = moves[0];
+    assert_eq!(
+        step,
+        &MoveStep::RaftReplace {
+            from: "broker-a".to_string(),
+            to: "broker-b".to_string()
+        }
+    );
+    // The old copy keeps leading until the new one votes.
+    assert_eq!(written.leader, "broker-a");
+    assert_eq!(written.replicas, vec!["broker-b".to_string()]);
+    let other = existing.iter().find(|a| &a.key != key).unwrap().clone();
+
+    // The copy is still a learner: the move waits, and the other shard
+    // stays, since `broker-b` already counts as leading this one.
+    let learning = vec![grown_as(written, &["broker-a"]), other.clone()];
+    let plan = plan_with(&streams, &[], &nodes, &learning, &NothingCaughtUp, raft());
+    assert_eq!(only_waits(&plan), vec![Blocked::Unapplied], "{plan:?}");
+
+    let voting = vec![grown_as(written, &["broker-a", "broker-b"]), other.clone()];
+    let plan = plan_with(&streams, &[], &nodes, &voting, &NothingCaughtUp, raft());
+    let moves: Vec<_> = plan.moves().collect();
+    assert_eq!(moves.len(), 1, "{plan:?}");
+    let (_, _, shrunk) = moves[0];
+    assert_eq!(shrunk.leader, "broker-b");
+    assert!(shrunk.replicas.is_empty());
+
+    // One each: balanced, and nothing moves back.
+    let mut done = shrunk.clone();
+    settle(&mut done);
+    let after = vec![done, other];
+    let plan = plan_with(&streams, &[], &nodes, &after, &NothingCaughtUp, raft());
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    assert_eq!(plan.waiting().count(), 0, "{plan:?}");
+}
+
+/// A gap of one is balanced: an RF 1 move copies the whole log, so it is
+/// not made to trade one leader back and forth.
+#[test]
+fn a_one_member_raft_shard_stays_on_a_gap_of_one() {
+    let streams = vec![replicated_stream("orders", 3, 1)];
+    let existing = vec![
+        single_of("orders", 0, "broker-a"),
+        single_of("orders", 1, "broker-a"),
+        single_of("orders", 2, "broker-b"),
+    ];
+    let nodes = live(&["broker-a", "broker-b"]);
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+}
+
+/// An RF 1 balance move is held by what holds any set change: a pause, a
+/// target not stored for the set, and a broker with no room.
+#[test]
+fn a_one_member_raft_shard_balances_only_when_its_set_may_change() {
+    let streams = vec![replicated_stream("orders", 2, 1)];
+    let nodes = live(&["broker-a", "broker-b"]);
+    let existing = vec![
+        single_of("orders", 0, "broker-a"),
+        single_of("orders", 1, "broker-a"),
+    ];
+    let plan_of = |nodes: &[Node], existing: &[ShardAssignment], policy| {
+        plan_with(&streams, &[], nodes, existing, &NothingCaughtUp, policy)
+    };
+
+    let paused = MovePolicy {
+        paused: true,
+        ..raft()
+    };
+    let plan = plan_of(&nodes, &existing, paused);
+    assert!(only_waits(&plan).contains(&Blocked::Paused), "{plan:?}");
+
+    let mut unsettled = existing.clone();
+    for assignment in &mut unsettled {
+        assignment.raft_target = None;
+    }
+    let plan = plan_of(&nodes, &unsettled, raft());
+    assert!(
+        only_waits(&plan).contains(&Blocked::TargetUnsettled),
+        "{plan:?}"
+    );
+
+    let mut full = nodes.clone();
+    full[1].spec.capacity.max_shards = Some(0);
+    let plan = plan_of(&full, &existing, raft());
+    assert_eq!(only_waits(&plan), vec![], "{plan:?}");
+}
+
+/// RF 1 moves take the pass's budget of set changes: seventeen streams
+/// that each want one start sixteen.
+#[test]
+fn balancing_one_member_raft_shards_takes_the_replacement_budget() {
+    let names: Vec<String> = (0..17).map(|n| format!("s{n:02}")).collect();
+    let streams: Vec<Stream> = names
+        .iter()
+        .map(|name| replicated_stream(name, 2, 1))
+        .collect();
+    let existing: Vec<ShardAssignment> = names
+        .iter()
+        .flat_map(|name| {
+            [
+                single_of(name, 0, "broker-a"),
+                single_of(name, 1, "broker-a"),
+            ]
+        })
+        .collect();
+    let nodes = live(&["broker-a", "broker-b"]);
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    assert_eq!(plan.moves().count(), RAFT_REPLACEMENTS_PER_PASS, "{plan:?}");
+    assert!(
+        plan.moves()
+            .all(|(_, _, written)| written.leader == "broker-a"
+                && written.replicas == ["broker-b".to_string()]),
+        "{plan:?}"
+    );
+    assert!(
+        plan.waiting().any(|(_, why)| why == &Blocked::MoveLimit),
+        "{plan:?}"
+    );
+}
+
+/// **A move in flight counts for its destination, whoever started it.**
+/// Three RF 1 shards on `broker-a`, one of them growing onto `broker-b`:
+/// that is two against one once it lands, so nothing else starts.
+#[test]
+fn a_one_member_raft_move_in_flight_counts_for_its_destination() {
+    let streams = vec![replicated_stream("orders", 3, 1)];
+    let mut moving = single_of("orders", 0, "broker-a");
+    moving.replicas = vec!["broker-b".to_string()];
+    let existing = vec![
+        grown_as(&moving, &["broker-a"]),
+        single_of("orders", 1, "broker-a"),
+        single_of("orders", 2, "broker-a"),
+    ];
+    let nodes = live(&["broker-a", "broker-b"]);
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    assert_eq!(only_waits(&plan), vec![Blocked::Unapplied], "{plan:?}");
+}
+
 /// Four shards of `orders` on `broker-a`, `-b` and `-c`, `broker-a`
 /// leading two, and one shard of `extra` on `broker-c` alone, so `broker-c`
 /// holds the most copies. `broker-d` leads none and holds no seat.

@@ -1841,7 +1841,7 @@ copy has to move:
 | --- | --- | --- |
 | Balance, drain or operator move to a member | Stage, fence, cut over | One write that changes only `leader`, to another member |
 | Operator move outside the set | Copied in first | One write that gives the destination the leader's seat and names it leader |
-| Balance with no member to take a leader | As any balance move | One write that swaps a follower for a live broker outside the set, two or more leaders under the leader, and names it leader (#3113) |
+| Balance with no member to take a leader | As any balance move | One write that swaps a follower for a live broker outside the set, two or more leaders under the leader, and names it leader (#3113). An RF 1 shard grows to that broker, then shrinks to it (#3118) |
 | Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
 | Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
 | Follower on an internal node | Replaced | Replaced, the same way |
@@ -1896,8 +1896,12 @@ that broker's zone first, then the busiest, and never one whose swap would
 leave a zone-spread set short of a zone. The group's leader keeps its seat
 and hands leadership over once the new copy votes. This is how a broker a
 drain swapped out of every set, and then restarted, gets shards back
-(#3113). An RF 1 shard has no follower to give, so it is not covered yet
-([#3118](https://github.com/GetFelix/felix/issues/3118)).
+(#3113). An RF 1 shard has no follower to give, so balance moves it by the
+two writes of an RF 1 operator move, above: grow to the leader and that
+broker, then shrink once its copy votes (#3118). Each write takes a slot
+from the per-pass budget, and the move counts as a leader for the
+destination from the first write, so one gap starts one move. It is undone
+or stranded as an operator's RF 1 move is.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a

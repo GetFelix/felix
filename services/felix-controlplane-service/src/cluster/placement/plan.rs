@@ -271,16 +271,6 @@ fn plan_once(
     // completes: a staged successor already counts. Otherwise an over-share
     // node stages more moves than it needs and the destination ends up over.
     let mut leaders = Leadership::default();
-    for assignment in existing {
-        // Every role, followers too: `max_shards` caps roles.
-        for node in assignment.nodes().filter(|node| is_live(node)) {
-            *load.entry(node.as_str()).or_default() += 1;
-        }
-        let will_lead = will_lead(assignment, &is_live);
-        if is_live(will_lead) {
-            leaders.add(Owner::of(&assignment.key), will_lead);
-        }
-    }
 
     // Keyed by the same string `owner_of` builds, so the lookup below cannot
     // disagree with the key it is derived from.
@@ -296,6 +286,29 @@ fn plan_once(
             )
         })
         .collect();
+
+    for assignment in existing {
+        // Every role, followers too: `max_shards` caps roles.
+        for node in assignment.nodes().filter(|node| is_live(node)) {
+            *load.entry(node.as_str()).or_default() += 1;
+        }
+        let placeable = placeable_of.get(owner_of(&assignment.key).as_str());
+        // An RF 1 Raft move names its destination leader only at its end,
+        // so it counts for the destination from the start (#3118).
+        let will_lead = if raft_leaders::on_raft(
+            assignment,
+            policy.raft_streams,
+            placeable.is_none_or(|p| p.durable),
+        ) {
+            let replication_factor = placeable.map_or(1, |p| p.replication_factor);
+            raft_leaders::will_lead(assignment, replication_factor, &is_live)
+        } else {
+            will_lead(assignment, &is_live)
+        };
+        if is_live(will_lead) {
+            leaders.add(Owner::of(&assignment.key), will_lead);
+        }
+    }
 
     let mut keys: Vec<ShardKey> = placeables
         .iter()
