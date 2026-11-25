@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795629013425,
+  "lastUpdate": 1795635352761,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69420,6 +69420,58 @@ window.BENCHMARK_DATA = {
             "range": "11037.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1186058.09\nmean: 1185920.96\nstdev: 11037.16\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6626bc66f4cdbdfa0e563af207e5b79bf133f505",
+          "message": "docs(retirement): in-memory shards keep the lease, and a lost owner is placed again on both engines (#3064) (#3068)\n\n* test(cluster): pin in-memory streams on a Raft cluster before the hybrid goes (#3064)\n\nAn in-memory shard never becomes a Raft group and today runs on the\nhybrid lifecycle, driver, promote fence and control-plane lease. Add\ncluster tests for what must survive the deletion: served through any\nbroker with no Raft group, owner loss gives a new generation and an\nempty owner, a cut-off owner refuses after its lease.\n\ndocs/hybrid-retirement.md gets an \"In-memory shards\" section with the\ninventory and the design, keeps cluster/lease.rs, and makes PR 6 wait\non #3066. The code split is filed as #3065, #3066 and #3067.\n\nSpec-Unaffected: tests and docs only, no modelled code changes\n\n* test(cluster): in-memory readers end on an owner change; inventory gaps (#3064)\n\nThe owner-loss test now requires the dead owner's subscriber to end\nrather than be carried over, and drops the restarted-owner block. The\ncut-off test requires the reader to be ended with the no-owner reason\nat the generation it served. The Raft gauge check requires the metric.\n\nThe doc adds the lease-free row (#3069), the Quorum branch of\npublish_in_memory, and what the lease gate, watch_leadership and\nclose_stream_shard keep; size rows recounted.\n\nSpec-Unaffected: tests and docs only, no modelled code changes\n\n* test(cluster): step placement while waiting for an in-memory shard to move\n\nThe harness control plane runs no reconciler on a timer, so the owner-dies\ntest waited 180 s for a placement nobody ran. It now steps placement in its\nwait, as the durable failover tests do. Placement itself places the shard in\nthe pass after its owner goes down, on both engines; a unit test pins that.\n\nSpec-Unaffected: test-only change; placement logic is unchanged\n\n* docs: in-memory shards open no disk log\n\nSpec-Unaffected: docs only\n\n* test(placement): an in-memory shard whose owner left the catalog is placed again\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-25T11:23:32-08:00",
+          "tree_id": "6035ab3fdc6c1cde9e192f99f100872f4b254b2b",
+          "url": "https://github.com/GetFelix/felix/commit/6626bc66f4cdbdfa0e563af207e5b79bf133f505"
+        },
+        "date": 1795635351742,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343338.16,
+            "range": "16491.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343338.16\nmean: 347090.64\nstdev: 16491.05\ncv: 4.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343338.16,
+            "range": "16491.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343338.16\nmean: 347090.64\nstdev: 16491.05\ncv: 4.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80726.9,
+            "range": "300.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80726.90\nmean: 80707.86\nstdev: 300.37\ncv: 0.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 807269.02,
+            "range": "3003.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 807269.02\nmean: 807078.64\nstdev: 3003.68\ncv: 0.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
