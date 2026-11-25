@@ -1763,19 +1763,28 @@ impl EngineShards for RaftShards {
     /// before its commit. The marks are read after the served check and
     /// kept only if they are of the served term, so a leader re-elected in
     /// between never reports an older term's marks under the new one.
+    ///
+    /// Every member open here is listed, not only the ones the copy id
+    /// report holds: that set leaves out a member at an unproven epoch or
+    /// off placement, which still votes and may lead. A shard no broker
+    /// listed would be read as a hybrid one on placement's leader, which
+    /// does not lead it (#2995), and a leader left out would hide its term
+    /// from the collector's newest-term check.
     fn backup_members(&self) -> Vec<super::routing::BackupMember> {
-        self.held_copies()
+        self.runtime
+            .held_groups()
             .into_iter()
-            .filter_map(|held| {
-                let status = self.runtime.status(&held.key)?;
-                let acked = (self.leading(&held.key) == Some(status.term))
-                    .then(|| self.runtime.led_acked(&held.key))
+            .filter_map(|group| {
+                let key = (*group.shard).clone();
+                let status = self.runtime.status(&key)?;
+                let acked = (self.leading(&key) == Some(status.term))
+                    .then(|| self.runtime.led_acked(&key))
                     .flatten()
                     .filter(|(term, _)| *term == status.term)
                     .map(|(_, last)| last);
                 Some(super::routing::BackupMember {
-                    key: held.key,
-                    incarnation: held.incarnation,
+                    key,
+                    incarnation: group.epoch,
                     term: status.term,
                     committed_end: acked.map(|last| last.index + 1),
                     end_term: acked.map(|last| last.term),
