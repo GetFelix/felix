@@ -2566,18 +2566,16 @@ impl Group {
             self.watch_signal.marked(seen);
             return;
         }
-        let asked_at = &self.watch_signal.asked_at;
-        let retry = asked_at
-            .load(Ordering::Relaxed)
-            .saturating_add(MARK_RETRY_MICROS);
-        if now < retry {
-            return;
-        }
-        asked_at.store(now, Ordering::Relaxed);
         if self.leads() {
             self.mark_watched();
             return;
         }
+        let asked_at = &self.watch_signal.asked_at;
+        let last = asked_at.load(Ordering::Relaxed);
+        if last != 0 && now < last.saturating_add(MARK_RETRY_MICROS) {
+            return;
+        }
+        asked_at.store(now, Ordering::Relaxed);
         use openraft::async_runtime::watch::WatchReceiver;
         let leader = self.raft.metrics().borrow_watched().current_leader.clone();
         let Some(leader) = leader.filter(|leader| *leader != self.member) else {
