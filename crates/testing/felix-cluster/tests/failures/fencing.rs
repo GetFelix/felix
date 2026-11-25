@@ -32,19 +32,17 @@ async fn replay(cluster: &Cluster, node_id: &str) -> Vec<String> {
 }
 
 /// [`replay`], retried for up to `within`.
+///
+/// Only a replay that ran to its end counts. A broker still settling can end
+/// the subscription part way through the history, and the records read up to
+/// then are not all it holds (#3112).
 async fn replay_within(cluster: &Cluster, node_id: &str, within: Duration) -> Vec<String> {
     let deadline = std::time::Instant::now() + within;
     loop {
-        if let Ok((_client, mut subscription)) = cluster.replay_on(node_id, STREAM).await {
-            let mut payloads = Vec::new();
-            while let Ok(Ok(Some(event))) =
-                tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
-            {
-                payloads.push(String::from_utf8_lossy(&event.payload).to_string());
-            }
-            if !payloads.is_empty() {
-                return payloads;
-            }
+        if let Ok(payloads) = replay_once(cluster, node_id).await
+            && !payloads.is_empty()
+        {
+            return payloads;
         }
         if std::time::Instant::now() >= deadline {
             return Vec::new();
@@ -115,7 +113,8 @@ async fn timeline(cluster: &Cluster, note: &str) -> String {
             match tokio::time::timeout(Duration::from_secs(5), replay_once(cluster, &node.node_id))
                 .await
             {
-                Ok(payloads) => format!("{payloads:?}"),
+                Ok(Ok(payloads)) => format!("{payloads:?}"),
+                Ok(Err(err)) => format!("no whole replay: {err:#}"),
                 Err(_) => "replay timed out".to_string(),
             }
         } else {
@@ -129,18 +128,12 @@ async fn timeline(cluster: &Cluster, note: &str) -> String {
     out
 }
 
-/// One replay attempt, without the retry the assertions use.
-async fn replay_once(cluster: &Cluster, node_id: &str) -> Vec<String> {
-    let Ok((_client, mut subscription)) = cluster.replay_on(node_id, STREAM).await else {
-        return Vec::new();
-    };
-    let mut payloads = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
-    {
-        payloads.push(String::from_utf8_lossy(&event.payload).to_string());
-    }
-    payloads
+/// One replay attempt, without the retry the assertions use. An error when
+/// the broker refused it or ended it before it had run to its end.
+async fn replay_once(cluster: &Cluster, node_id: &str) -> anyhow::Result<Vec<String>> {
+    let (_client, mut subscription) = cluster.replay_on(node_id, STREAM).await?;
+    let events = felix_cluster::replay::drain(&mut subscription, Duration::from_secs(2)).await?;
+    Ok(felix_cluster::replay::payloads(&events))
 }
 
 /// **A leader that was paused past its lease does not acknowledge writes the
