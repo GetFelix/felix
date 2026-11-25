@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795609083216,
+  "lastUpdate": 1795614372806,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69212,6 +69212,58 @@ window.BENCHMARK_DATA = {
             "range": "22778.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1584935.72\nmean: 1578685.66\nstdev: 22778.72\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c70dbd9592bf05677e6222f2dbe06d6d96e41c71",
+          "message": "fix(storage): a crash loop of any length keeps the id a standalone copy waits on (#3119) (#3165)\n\nrelaxed-crash-id kept the last 8 ids relaxed crashes rotated away. A\nstandalone copy is re-formed alone only when it was minted under an id in\nthat record, so a shard no start opened through more than 8 crashes stayed\nheld for good, with no operator way out.\n\nThe record now keeps the newest 8 ids, and an older one for as long as a\nRaft copy under the root was minted under it. It is bounded by the copies\non disk. If a copy file cannot be read, that start drops no id.\n\nSpec-Unaffected: no TLA spec models the relaxed-crash-id record's length; the ids it holds are still only ones relaxed crashes rotated away",
+          "timestamp": "2026-11-25T05:38:27-08:00",
+          "tree_id": "2550128709c9661c1ac4c35f44b4c92cf143351c",
+          "url": "https://github.com/GetFelix/felix/commit/c70dbd9592bf05677e6222f2dbe06d6d96e41c71"
+        },
+        "date": 1795614372020,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 478470.03,
+            "range": "39375.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478470.03\nmean: 468875.95\nstdev: 39375.86\ncv: 8.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 478470.03,
+            "range": "39375.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478470.03\nmean: 468875.95\nstdev: 39375.86\ncv: 8.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 110777.94,
+            "range": "1007.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 110777.94\nmean: 111230.50\nstdev: 1007.99\ncv: 0.91%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1107779.42,
+            "range": "10079.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1107779.42\nmean: 1112305.02\nstdev: 10079.90\ncv: 0.91%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
