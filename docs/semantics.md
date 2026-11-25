@@ -462,23 +462,31 @@ throughput rather than correctness.
   with no added latency. If a failed flush poisons a `Leader` stream's log,
   its readers stop at the last durable offset from then on: the batch whose
   flush failed was refused, and no reader sees it.
-  On Raft every level reads to the commit, and a `stream_read` sent after a
-  publish was acknowledged includes that record, on a member that has not
-  synced its own copy yet too: the commit already needed a majority to hold it.
-  A consumer-group poll matches a read here. Two acks are sent before the
+  On Raft every level reads to the commit. Two acks are sent before the
   commit: a `Leader` ack while the leader's lease holds, and a `Quorum` ack on
-  a stream that does not fsync on commit. A poll sent after either one first
-  waits until every write the leader has acknowledged is committed, and only
-  then takes the commit as its bound, so it hands the record out, with
-  `wait_ms` 0 too. It never hands out a record above the commit. If the wait
-  outlasts an election timeout the poll is refused with a retryable error
-  instead of answered without the record.
+  a stream that does not fsync on commit, which is sent once a majority has
+  written the record. A `stream_read`, a replay from an offset or a Kafka fetch
+  sent after any ack given once the record is written still includes it (an
+  ack sent on enqueue comes before the write). Before it reads, the member
+  waits until every write the leader has acknowledged is committed, and the
+  read is refused, retryably, if that takes longer than an election timeout.
+  The record is served by a member that has not synced its own copy yet too:
+  the commit already needed a majority to hold it. A subscription that starts
+  at `Latest` does not wait and gets such a record live once it commits.
+  A consumer-group poll matches a read here. A poll sent after either early
+  ack makes the same wait and only then takes the commit as its bound, so it
+  hands the record out, with `wait_ms` 0 too. It never hands out a record above
+  the commit, and it is refused with a retryable error, not answered without
+  the record, if the wait outlasts an election timeout.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
   > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
   > `a_read_shows_a_committed_record_the_member_has_not_synced`,
+  > `a_read_after_a_lease_answer_waits_for_that_entry`,
+  > `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`,
+  > `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused`,
   > `a_poll_after_a_written_ack_waits_for_the_commit_and_hands_it_out`,
   > `a_poll_after_a_lease_ack_waits_for_the_commit_and_hands_it_out`.
 - **Replayed history is never dropped.** The overflow policy governs live
