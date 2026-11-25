@@ -98,6 +98,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             while publishing.pending() <= max_inflight
                 && let Some(packet) = self.next_packet(Some(version), &limits)?
             {
+                // The close timer may not have fired yet.
+                if let Some(reason) = session.principal.ended() {
+                    return Err(End::Disconnect(ReasonCode::NotAuthorized, Some(reason)));
+                }
                 self.handle(shared, &session, &mut publishing, &mut subs, packet)
                     .await?;
             }

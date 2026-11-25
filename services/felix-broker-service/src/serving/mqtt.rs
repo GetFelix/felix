@@ -33,7 +33,7 @@ pub use self::writes::BrokerWrites;
 use crate::config::MqttListenerConfig;
 use crate::serving::auth::{BrokerAuth, CredentialRefused};
 use crate::serving::limits::PerIpLimiter;
-use crate::serving::revocation::Revoked;
+use crate::serving::revocation::{Revocable, Revoked};
 use felix_authz::AuthzError;
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
@@ -73,16 +73,13 @@ impl Authenticator for BrokerMqttAuth {
         match self.auth.authenticate_peer(tenant_id, token, peer).await {
             Ok(context) => {
                 let revocable = context.revocable;
-                Ok(Principal::new(tenant_id)
+                let principal = Principal::new(tenant_id)
                     .with_credential(
                         felix_mqtt::Credential::new(token).with_client_chain(context.client_chain),
                     )
                     .with_permissions(context.matcher)
-                    .with_expiry(context.expires_at)
-                    .with_revocation(move || {
-                        let revocable = revocable.clone();
-                        Box::pin(async move { revocable.revoked().await })
-                    }))
+                    .with_expiry(context.expires_at);
+                Ok(ending_with(principal, revocable))
             }
             Err(err) if err.is::<Revoked>() => {
                 Err(AuthError::Rejected("credential revoked".to_string()))
@@ -103,6 +100,36 @@ impl Authenticator for BrokerMqttAuth {
             }
         }
     }
+
+    fn anonymous(&self, tenant_id: &str, peer_certs: &[Vec<u8>]) -> Result<Principal, AuthError> {
+        let principal = Principal::anonymous(tenant_id);
+        if peer_certs.is_empty() {
+            return Ok(principal);
+        }
+        let certs: Vec<rustls::pki_types::CertificateDer<'_>> = peer_certs
+            .iter()
+            .map(|der| rustls::pki_types::CertificateDer::from(der.as_slice()))
+            .collect();
+        // The same end a token on this connection would get, so the dev
+        // switch never keeps a connection open past its certificate.
+        let revocable = self
+            .auth
+            .chain_only(tenant_id, &certs)
+            .map_err(|err| AuthError::Rejected(err.to_string()))?;
+        Ok(ending_with(principal, revocable))
+    }
+}
+
+/// `principal`, ending when `revocable` does: closed then, and refused a
+/// packet that arrives after it.
+fn ending_with(principal: Principal, revocable: Revocable) -> Principal {
+    let watched = revocable.clone();
+    principal
+        .with_ended_check(move || revocable.is_revoked())
+        .with_revocation(move || {
+            let watched = watched.clone();
+            Box::pin(async move { watched.revoked().await })
+        })
 }
 
 /// A bound MQTT listener, not yet accepting.
