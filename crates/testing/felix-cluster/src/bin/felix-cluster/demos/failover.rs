@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec, wait};
+use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 
 use super::replay::{self, Record};
 use super::{beat, step};
@@ -34,7 +34,7 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
     .await?;
     // The broker that serves the shard. On Raft that is the member the group
     // elected, which placement names but does not choose.
-    let leader = cluster.owner(STREAM).await?;
+    let leader = cluster.serving_leader(STREAM, SETTLES_WITHIN).await?;
     for node in &cluster.nodes {
         let role = if node.node_id == leader {
             "leader"
@@ -85,15 +85,9 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
         println!("  acknowledged: {payload}   (a majority holds it, not just the leader)");
         before.push(Record::new(offset, payload));
     }
-    wait::until(SETTLES_WITHIN, "replication to settle", || async {
-        matches!(
-            cluster
-                .metric(&leader, "felix_broker_replication_lag_records")
-                .await,
-            Ok(Some(lag)) if lag == 0.0
-        )
-    })
-    .await?;
+    cluster
+        .wait_for_every_member_level(STREAM, SETTLES_WITHIN)
+        .await?;
     println!("\n  Replication has caught up: {leader} is not the only broker holding them.");
     beat(pace).await;
 
@@ -103,16 +97,9 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
     let killed_at = std::time::Instant::now();
     cluster.kill_node(&leader)?;
     println!("  Gone. Not a graceful shutdown — the process is dead.");
-    wait::until(
-        Duration::from_secs(30),
-        "a replica to be promoted",
-        || async {
-            cluster.place_shards().await;
-            matches!(cluster.owner(STREAM).await, Ok(owner) if owner != leader)
-        },
-    )
-    .await?;
-    let promoted = cluster.owner(STREAM).await?;
+    let promoted = cluster
+        .promoted_leader(STREAM, &leader, Duration::from_secs(30))
+        .await?;
     println!(
         "  {promoted} took over after {:?}.",
         Duration::from_millis(killed_at.elapsed().as_millis() as u64)
