@@ -60,6 +60,7 @@ pub(crate) fn shard() -> ShardAssignment {
             starts: Default::default(),
         }),
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: Some(RaftOrdered {
             incarnation: 3,
             epoch: 0,

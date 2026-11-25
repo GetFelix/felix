@@ -936,6 +936,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     }
 }
