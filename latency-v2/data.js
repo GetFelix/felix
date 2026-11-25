@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795621501353,
+  "lastUpdate": 1795628588542,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88044,6 +88044,72 @@ window.BENCHMARK_DATA = {
             "range": "499.37",
             "unit": "us",
             "extra": "trials: 5\nmedian: 834.00\nmean: 909.20\nstdev: 499.37\ncv: 54.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f08dbd1cf9a52f210c835c5dfd9dc592c78ac8da",
+          "message": "test(cluster): a replay the broker ended part way is not a whole replay (#3112) (#3154)\n\n* test(cluster): a replay the broker ended part way is not a whole replay (#3112)\n\nfencing::a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses\nreported before-1..3 missing from a replay that returned only\nharness-probe. Nothing was lost and the broker did what it documents. The\nreplay ran on a follower while the leader had just resumed from SIGSTOP.\nA read during the replay was refused its read index (Settling), so the\nbroker reset the event stream, which tells the client to resume after its\nlast offset. The test's drain loop stopped at the first thing that was\nnot an event and took the prefix for everything the broker held.\n\n- felix_cluster::replay::drain reads until the stream goes quiet and\n  returns an error for a subscription that was lost or ended first.\n  Cluster::whole_replay_on and whole_replay_of_shard start the replay\n  again until one runs to its end.\n- The failure tests that asserted on one drain use them: fencing,\n  followers_word, majority_ack, promotion_fence, writes, kafka_produce,\n  mqtt_publish, and clients/reconnect.\n- A service-level test pins the broker side: a replay whose shard stops\n  being readable part way resets the event stream and never ends it\n  cleanly below acknowledged records.\n- docs/protocol.md and docs/per-shard-raft.md say the reset covers Raft\n  shards; docs/cluster-harness.md says how a test reads a replay.\n\nSpec-Unaffected: test harness, tests and docs only; no broker behaviour changes\n\n* test(cluster): a replay the broker ends cleanly part way fails, it is not retried\n\ndrain now returns a typed ReplayEnded for a clean end, and whole_replay\nfails on it instead of subscribing again: only a refusal or a lost\nsubscription asks for a fresh subscribe. Otherwise a short replay that a\nbroker answers as whole would pass every converted test.\n\nSpec-Unaffected: test harness only.\n\n* test(cluster): a replay ended because the shard moved is subscribed again\n\nThe review of #3167 found broker-2's clean end in the majority_ack test\ncarried no replay failure, so it may be a legitimate shard_moved end.\ndrain now asks the subscription: a move is retried like a lost\nsubscription, and only a reasonless clean end is ReplayEnded.\n\nSpec-Unaffected: test harness only.",
+          "timestamp": "2026-11-25T17:34:07Z",
+          "tree_id": "a82702e92606ba9b273f20d56f9c00bb70d6359b",
+          "url": "https://github.com/GetFelix/felix/commit/f08dbd1cf9a52f210c835c5dfd9dc592c78ac8da"
+        },
+        "date": 1795628572709,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 154.20\nstdev: 1.79\ncv: 1.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "9.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 211.80\nstdev: 9.34\ncv: 4.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 265,
+            "range": "237.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 265.00\nmean: 370.40\nstdev: 237.68\ncv: 64.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 199.60\nstdev: 0.89\ncv: 0.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "13.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 397.20\nstdev: 13.39\ncv: 3.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 751,
+            "range": "1208.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 751.00\nmean: 1488.60\nstdev: 1208.28\ncv: 81.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
