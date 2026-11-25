@@ -22,7 +22,7 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod alone;
-mod copy_file;
+pub(crate) mod copy_file;
 pub(crate) mod epoch_file;
 mod fresh_epoch;
 mod gate;

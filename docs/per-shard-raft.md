@@ -6017,7 +6017,10 @@ itself, before its member opens (`shards/raft/standalone.rs`,
    only when that file names the current storage id, and only on a copy
    whose kept copies were all minted under an id a relaxed crash rotated
    away. A clean stop, an `OnCommit` crash and an operator's rotation
-   leave no such evidence, and the copy stays as it is. A standalone
+   leave no such evidence, and the copy stays as it is. The file keeps an
+   id for as long as a copy on disk was minted under it, so a shard that no
+   start opened through any number of crashes in a row is still re-formed
+   when it opens. A standalone
    broker cannot tell a restored volume from a relaxed crash, so it
    re-forms a restored copy from the reservation the snapshot holds. A
    volume snapshot taken while the broker ran can therefore give out
