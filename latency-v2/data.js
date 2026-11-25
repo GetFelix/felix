@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795602957370,
+  "lastUpdate": 1795603584395,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87384,6 +87384,72 @@ window.BENCHMARK_DATA = {
             "range": "195.72",
             "unit": "us",
             "extra": "trials: 5\nmedian: 417.00\nmean: 432.40\nstdev: 195.72\ncv: 45.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cc207cee34900a8709b19b99defec7ca0e12bbb0",
+          "message": "fix(cluster): the quickstart's felix-cluster commands and docs run on Raft (#2985) (#3147)\n\n* fix(cluster): the failover and consistency demos run on Raft (#2985)\n\nfelix-cluster starts its brokers on Raft unless FELIX_TEST_SHARD_ENGINE\nsays otherwise, and two of the commands the quickstart lists still waited\non things only the hybrid engine reports. failover waited for the hybrid's\nreplication lag gauge and for placement to name a new owner. consistency\ntold the hybrid's story, where a Leader shard goes unavailable; on Raft the\nfollowers elect and the records the old leader acknowledged alone are lost.\n\nfailover now asks the harness for the serving leader. consistency has a\nRaft path that cuts a leader off under a running publisher, kills it, and\ncounts the acknowledged records the next leader does not hold.\n\ntests/quickstart_commands.rs runs each quickstart command as the built\nbinary, and checks that up, with no engine named, leads a Raft shard.\n\nSpec-Unaffected: test harness demos and their test only\n\n* docs: the quickstart and the consistency demo describe Raft (#2985)\n\nfelix-cluster up starts its brokers and control plane on Raft, and the\nquickstart and local deployment pages still said it ran the hybrid. They\nnow say what runs, and the quickstart says which compose images run a\nstandalone Raft group: the pinned 0.7.3 images predate the engine.\n\nThe Leader vs Quorum pages follow the demo's Raft path: both shards stay\navailable and a Leader stream loses what its leader acknowledged alone.\nPages that called Raft opt-in now call it the default on main.\n\nSpec-Unaffected: docs and a help string only\n\n* test(cluster): the consistency command test runs on Raft only (#2985)\n\nThe hybrid version of the demo fails at its replay in the report-only\nhybrid job. The hybrid is frozen, so the test skips there. The Raft path\nreads back until its marker shows, since a replay on a broker that has\njust taken over can stop short (#3112).\n\nSpec-Unaffected: test harness demo and its test only\n\n* fix(cluster): the demos fail loudly and name a short replay (#2985)\n\nThe consistency demo exited 0 with \"All 0 acknowledged records are here\"\nwhen its publisher never opened. It now fails when nothing is acknowledged,\nand the command test reads the acknowledged and missing counts.\n\nBoth demos read the stream back until a replay reaches the newest record\nthey saw acknowledged, and print \"replay stopped short (#3112)\" when one\ndoes not, so a short replay is neither a silent retry nor a false loss.\n\nDocs: the hybrid version of the consistency demo is no longer advertised,\nand scaling.md and the off-placement gauge say what a drain, a move and a\nlost broker do on Raft today, as the status table does.\n\nSpec-Unaffected: demo binaries, their tests and docs only\n\n* test(cluster): revert check, failover on the old waits (#2985)\n\nTemporary. Puts back the two waits main's failover demo uses, the hybrid-only\nlag gauge and a placement owner change, so CI shows\nfailover_keeps_what_it_acknowledged failing without the fix. Reverted in the\nnext commit.\n\nSpec-Unaffected: a demo binary only\n\n* test(cluster): failover back on the Raft waits (#2985)\n\nUndoes the revert check in e5b50a321.\n\nSpec-Unaffected: a demo binary only",
+          "timestamp": "2026-11-25T10:34:36Z",
+          "tree_id": "d211c6b2909c27bd6068e054efccae8d9784aece",
+          "url": "https://github.com/GetFelix/felix/commit/cc207cee34900a8709b19b99defec7ca0e12bbb0"
+        },
+        "date": 1795603568019,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.60\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "7.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 209.80\nstdev: 7.60\ncv: 3.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 255,
+            "range": "345.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 479.60\nstdev: 345.05\ncv: 71.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "11.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 205.60\nstdev: 11.99\ncv: 5.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 398,
+            "range": "218.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 398.00\nmean: 493.00\nstdev: 218.11\ncv: 44.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1080,
+            "range": "609.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1080.00\nmean: 1140.40\nstdev: 609.99\ncv: 53.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
