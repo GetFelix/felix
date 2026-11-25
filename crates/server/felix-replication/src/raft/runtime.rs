@@ -611,6 +611,8 @@ struct Inner {
     admitted: parking_lot::Mutex<BTreeMap<ShardKey, Arc<Admission>>>,
     /// See [`GroupRuntime::admit_until`].
     admitted_until: parking_lot::Mutex<Option<tokio::time::Instant>>,
+    /// See [`GroupRuntime::stand_after`].
+    stands_after: OnceLock<CancellationToken>,
     /// See [`RuntimeConfig::group_threads`].
     threads: Option<GroupThreads>,
     /// The runtime this one was started on: the broker's. Work that must
@@ -691,6 +693,7 @@ impl GroupRuntime {
                 stopped: parking_lot::Mutex::default(),
                 admitted: parking_lot::Mutex::default(),
                 admitted_until: parking_lot::Mutex::default(),
+                stands_after: OnceLock::new(),
                 placement: config.placement,
                 threads: start_group_threads(config.group_threads),
                 home: tokio::runtime::Handle::try_current().ok(),
@@ -727,6 +730,16 @@ impl GroupRuntime {
 
     pub(crate) fn set_host(&self, host: Arc<dyn EngineHost>) {
         let _ = self.inner.host.set(host);
+    }
+
+    /// Members opened from here on vote and replicate but do not stand,
+    /// take their old leadership back or take a transfer until `registered`
+    /// is cancelled. For a broker that opens its members before it has
+    /// registered: it serves no client yet, so a group it led would serve
+    /// nobody while a peer that could lead it waits. Only the first call
+    /// counts.
+    pub fn stand_after(&self, registered: CancellationToken) {
+        let _ = self.inner.stands_after.set(registered);
     }
 
     pub(crate) fn start_ticker(&self) {
@@ -970,6 +983,7 @@ impl GroupRuntime {
             placed_budget: Arc::clone(&inner.placed_budget),
             acked: Arc::clone(&inner.acked),
             cache_changes: inner.cache_changes.get().cloned(),
+            stands_after: inner.stands_after.get().cloned(),
             thread: inner.threads.as_ref().map(GroupThreads::place),
         };
         let raft = match group.shard.kind {
