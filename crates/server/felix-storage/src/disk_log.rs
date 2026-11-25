@@ -52,7 +52,6 @@ pub mod layout;
 mod append;
 mod ballot;
 pub(crate) mod crash_point;
-#[cfg(feature = "raft")]
 pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
 #[cfg(feature = "raft")]
@@ -212,10 +211,9 @@ impl DiskLog {
     /// [`FsyncMode::Periodic`], which needs a background timer; the other
     /// policies have no such requirement.
     ///
-    /// A Raft log ([`LogConfig::raft_log`]) locks `dir` until it is closed or
-    /// its last clone is dropped. Another open of the directory, from this
-    /// process or another, fails with [`std::io::ErrorKind::ResourceBusy`]
-    /// meanwhile. The lock goes with the process. To reopen in the same
+    /// The log locks `dir` until it is closed or its last clone is dropped.
+    /// Another open of the directory, from this process or another, fails
+    /// with [`std::io::ErrorKind::ResourceBusy`] meanwhile. The lock goes with the process. To reopen in the same
     /// process, close the log first: a dropped clone can live on for a moment
     /// in a background task.
     pub fn open(
@@ -231,6 +229,7 @@ impl DiskLog {
             None,
             files,
             OtherCommit::Drop,
+            None,
         )
     }
 
@@ -260,6 +259,7 @@ impl DiskLog {
             Some(base_offset),
             files,
             OtherCommit::Drop,
+            None,
         )
     }
 
@@ -286,6 +286,7 @@ impl DiskLog {
             None,
             files,
             OtherCommit::Refuse,
+            None,
         )?;
         *log.inner.keep_alive.lock() = Some(keep_alive);
         Ok(log)
@@ -1277,8 +1278,36 @@ impl DiskLog {
     /// sealed segments' files are released at once; the active segment's
     /// when the last handle is dropped.
     pub async fn close(&self) -> Result<()> {
+        self.close_keeping_lock().await.map(drop)
+    }
+
+    /// [`Self::open`] with the lock on `dir` already held, so whoever took
+    /// it can look at and change the directory before the log opens.
+    #[cfg(feature = "raft")]
+    pub(crate) fn open_holding(
+        dir: impl Into<PathBuf>,
+        label: impl Into<String>,
+        config: LogConfig,
+        lock: dir_lock::DirLock,
+    ) -> Result<Self> {
+        let files = SealedFiles::for_config(&config);
+        Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            None,
+            files,
+            OtherCommit::Drop,
+            Some(lock),
+        )
+    }
+
+    /// [`Self::close`], handing the lock on the directory back instead of
+    /// letting it go. `None` when the log was closed already. On an error
+    /// the lock is let go.
+    pub(crate) async fn close_keeping_lock(&self) -> Result<Option<dir_lock::DirLock>> {
         if self.inner.closed.load(std::sync::atomic::Ordering::Acquire) {
-            return Ok(());
+            return Ok(None);
         }
         // First, so nothing written from here on can race the flush below or
         // a log opened after this returns. Every file change checks it under
@@ -1305,18 +1334,17 @@ impl DiskLog {
         // And under the replica-state writer's lock, so a write behind that
         // found the log open lands before this returns.
         let inner = Arc::clone(&self.inner);
-        felix_common::blocking::spawn(move || {
+        let lock = felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
             inner
                 .closed
                 .store(true, std::sync::atomic::Ordering::Release);
             // Only now: nothing can write through this log any more.
-            #[cfg(feature = "raft")]
-            inner.dir_lock.lock().take();
+            inner.dir_lock.lock().take()
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
-        flushed.and(marked)
+        flushed.and(marked).map(|()| lock)
     }
 
     /// Run `write`, a change to a file in this log's directory, unless the
@@ -1385,6 +1413,7 @@ impl DiskLog {
         base_offset: Option<Offset>,
         files: Arc<SealedFiles>,
         #[cfg_attr(not(feature = "raft"), allow(unused_variables))] other_commit: OtherCommit,
+        held: Option<dir_lock::DirLock>,
     ) -> Result<Self> {
         config.validate()?;
         // Before anything is created or repaired in a directory that is not
@@ -1394,12 +1423,12 @@ impl DiskLog {
         }
         // Before recovery, which would repair a tail that another open log
         // may still be writing.
-        #[cfg(feature = "raft")]
-        let dir_lock = if config.raft_log {
-            crate::io::create_dir_all_durable(&dir)?;
-            Some(dir_lock::DirLock::take(&dir)?)
-        } else {
-            None
+        let dir_lock = match held {
+            Some(held) => held,
+            None => {
+                crate::io::create_dir_all_durable(&dir)?;
+                dir_lock::DirLock::take(&dir)?
+            }
         };
 
         if let Some(base_offset) = base_offset.filter(|base| *base > 0) {
@@ -1551,8 +1580,7 @@ impl DiskLog {
         let inner = Arc::new(LogInner {
             label,
             keep_alive: Mutex::new(None),
-            #[cfg(feature = "raft")]
-            dir_lock: Mutex::new(dir_lock),
+            dir_lock: Mutex::new(Some(dir_lock)),
             config: config.clone(),
             segments: RwLock::new(segments),
             append_lock: Mutex::new(()),
@@ -2321,9 +2349,8 @@ struct LogInner {
     /// Dropped with the log; see [`DiskLog::open_refusing_other_commit`].
     #[cfg_attr(not(feature = "raft"), allow(dead_code))]
     keep_alive: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
-    /// A Raft log's hold on its directory, until the log is closed or the
-    /// last clone is dropped.
-    #[cfg(feature = "raft")]
+    /// The log's hold on its directory, until the log is closed or the last
+    /// clone is dropped.
     dir_lock: Mutex<Option<dir_lock::DirLock>>,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans

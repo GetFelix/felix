@@ -38,6 +38,9 @@ pub struct DiskLogProvider {
     stream_hold: parking_lot::RwLock<HashMap<(String, String, String), bool>>,
     /// Markers and floors under `.streams/`.
     markers: incarnation::marker::MarkerFiles,
+    /// Held for the provider's life, so a second broker on the same root is
+    /// refused before it writes a marker, claims a directory or purges one.
+    _root_lock: super::dir_lock::DirLock,
     /// Runs inside every open, under the shard's lock, so tests can make an
     /// open slow and watch what waits on it.
     #[cfg(test)]
@@ -56,6 +59,9 @@ impl std::fmt::Debug for OpenHook {
 }
 
 impl DiskLogProvider {
+    /// Open the stream logs under `root`, which stays locked until the
+    /// provider is dropped: a second provider on it, in this process or
+    /// another, fails with [`std::io::ErrorKind::ResourceBusy`].
     pub fn new(root: impl Into<PathBuf>, mut config: LogConfig) -> Result<Self> {
         config.validate()?;
         let root = root.into();
@@ -63,9 +69,11 @@ impl DiskLogProvider {
         // never moves onto v9 when this provider's logs do.
         config.generations = crate::log::GenerationGate::under(root.clone());
         crate::io::create_dir_all_durable(&root)?;
+        let root_lock = super::dir_lock::DirLock::take(&root)?;
         // Whatever a delete left before a crash or restart.
         incarnation::purge_in_background(root.clone());
         Ok(Self {
+            _root_lock: root_lock,
             sealed_files: super::sealed::SealedFiles::for_config(&config),
             markers: incarnation::marker::MarkerFiles::new(root.clone()),
             root,
@@ -573,6 +581,7 @@ impl DiskLogProvider {
                     base_offset,
                     self.sealed_files.clone(),
                     super::OtherCommit::Drop,
+                    None,
                 )
             },
             || StorageError::Closed(layout::shard_label(shard)),

@@ -1,11 +1,15 @@
-//! The lock on a Raft log's directory: one open log at a time, across
-//! processes and within one.
+//! The lock on a log's directory: one open log at a time, across processes
+//! and within one. Every open takes it, and so does the root of a
+//! [`super::DiskLogProvider`], so two brokers on one data directory, or a
+//! broker and `felix-log-tool`, never both write, cut or rotate a log.
 //!
 //! An exclusive `flock` on the directory itself, so no file is added to it
 //! and no segment file is touched. The kernel ties the lock to the open
 //! directory, so a second open is refused whichever path or symlink it came
 //! by, including a second open in the same process, and a process that dies
-//! gives it up.
+//! gives it up. A lock is only good while its directory is still the one at
+//! the path, so a lock taken on a directory a rotation moved away meanwhile
+//! is refused too.
 //!
 //! The simulator's filesystem has no descriptors to lock, and neither has a
 //! platform without `flock`. There the claim is a path in this process, and
@@ -28,7 +32,7 @@ static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
 
 /// The lock on one log's directory, given up when dropped.
 #[derive(Debug)]
-pub(super) enum DirLock {
+pub(crate) enum DirLock {
     #[cfg(unix)]
     Dir(std::fs::File),
     Claim(PathBuf, u64),
@@ -37,7 +41,7 @@ pub(super) enum DirLock {
 impl DirLock {
     /// Lock `dir`, which exists. Never waits: a directory another open log
     /// holds is refused with [`io::ErrorKind::ResourceBusy`].
-    pub(super) fn take(dir: &Path) -> io::Result<Self> {
+    pub(crate) fn take(dir: &Path) -> io::Result<Self> {
         #[cfg(unix)]
         if !crate::fs::in_memory(dir) {
             return flock(dir).map(Self::Dir);
@@ -51,6 +55,20 @@ impl DirLock {
         let claim = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
         claimed.insert(key.clone(), claim);
         Ok(Self::Claim(key, claim))
+    }
+
+    /// Move the lock to the new directory at `dir`, after a rotation renamed
+    /// the locked one away. The old one stays locked until the new one is,
+    /// so the copy is never without a holder. A claim names the path, not
+    /// the directory, and stays as it is.
+    #[cfg(feature = "raft")]
+    pub(crate) fn follow(&mut self, dir: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        if let Self::Dir(_) = self {
+            *self = Self::Dir(flock(dir)?);
+        }
+        let _ = dir;
+        Ok(())
     }
 }
 
@@ -94,10 +112,18 @@ impl Drop for DirLock {
 fn flock(dir: &Path) -> io::Result<std::fs::File> {
     use std::os::fd::AsRawFd;
 
+    use std::os::unix::fs::MetadataExt;
+
     let file = std::fs::File::open(dir)?;
     loop {
         // SAFETY: `file` is open, and `flock` only reads the descriptor.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            // A rotation can rename the directory away between the open and
+            // the lock, and the path then names a directory its holder has.
+            let (locked, at_path) = (file.metadata()?, std::fs::metadata(dir)?);
+            if (locked.dev(), locked.ino()) != (at_path.dev(), at_path.ino()) {
+                return Err(busy(dir));
+            }
             return Ok(file);
         }
         let err = io::Error::last_os_error();
@@ -113,7 +139,9 @@ fn busy(dir: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::ResourceBusy,
         format!(
-            "the log in {} is already open, in this process or another",
+            "{} is locked by another open: a second broker on the same data \
+             directory, felix-log-tool, or an open in this process that was not \
+             closed yet",
             dir.display()
         ),
     )

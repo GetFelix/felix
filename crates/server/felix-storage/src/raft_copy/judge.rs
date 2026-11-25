@@ -10,6 +10,7 @@ use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
 use super::rotated_by::{self, RotatedBy};
 use super::{VoteMark, log_below};
+use crate::disk_log::dir_lock::DirLock;
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
 use crate::log::LogConfig;
@@ -158,6 +159,9 @@ impl CopyRoot {
         }
         let shard: Arc<str> = Arc::from(shard);
         let label = label.into();
+        // Held from the judge through any rotation into the open log, so no
+        // other open can change what was judged.
+        let mut lock = lock_dir(dir)?;
         let (found, reason) = self.judge_files(&shard, dir)?;
         let reason = match (found, reason) {
             // Every other reason rotates it anyway, which is the rejoin.
@@ -165,7 +169,7 @@ impl CopyRoot {
                 return Err(io::Error::other(stopped));
             }
             (Some(found), None) => {
-                let log = open_log(dir, &label, config.clone())?;
+                let log = open_log(dir, &label, config.clone(), lock)?;
                 match judge_log(&log, &self.marks, &shard).await {
                     Ok(None) => {
                         return Ok(OpenedCopy {
@@ -176,7 +180,10 @@ impl CopyRoot {
                         });
                     }
                     Ok(Some(reason)) => {
-                        log.close().await.map_err(io::Error::other)?;
+                        let kept = log.close_keeping_lock().await;
+                        lock = kept.map_err(io::Error::other)?.ok_or_else(|| {
+                            io::Error::other(format!("{}: closed while judged", dir.display()))
+                        })?;
                         reason
                     }
                     Err(err) => {
@@ -188,7 +195,7 @@ impl CopyRoot {
             (_, Some(reason)) => reason,
             (None, None) => unreachable!("a directory with no copy file has a reason"),
         };
-        self.rotate_and_open(shard, dir, label, config, reason)
+        self.rotate_and_open(shard, dir, label, config, reason, lock)
             .await
     }
 
@@ -214,12 +221,14 @@ impl CopyRoot {
                 ),
             ));
         }
+        let lock = lock_dir(dir)?;
         self.rotate_and_open(
             Arc::from(shard),
             dir,
             label.into(),
             config,
             RotateReason::Stopped,
+            lock,
         )
         .await
     }
@@ -231,9 +240,12 @@ impl CopyRoot {
         label: String,
         config: LogConfig,
         reason: RotateReason,
+        mut lock: DirLock,
     ) -> io::Result<OpenedCopy> {
         let replaced = copy_file::load(dir).ok().flatten().map(|found| found.copy);
-        let (copy, kept) = self.rotate(&shard, dir, replaced, reason).await?;
+        let (copy, kept) = self
+            .rotate(&shard, dir, replaced, reason, &mut lock)
+            .await?;
         tracing::info!(
             %shard,
             dir = %dir.display(),
@@ -244,7 +256,7 @@ impl CopyRoot {
         );
         Ok(OpenedCopy {
             copy,
-            log: open_log(dir, &label, config)?,
+            log: open_log(dir, &label, config, lock)?,
             marks: self.marks.for_copy(shard, copy),
             rotation: Some(Rotation {
                 reason,
@@ -290,6 +302,7 @@ impl CopyRoot {
         dir: &Path,
         replaced: Option<u64>,
         reason: RotateReason,
+        lock: &mut DirLock,
     ) -> io::Result<(u64, Option<PathBuf>)> {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
@@ -330,6 +343,10 @@ impl CopyRoot {
         };
         step()?;
         crate::fs::create_dir_all(dir)?;
+        if kept.is_some() {
+            // The old directory stays locked until the new one is.
+            lock.follow(dir)?;
+        }
         step()?;
         crate::io::sync_dir(&parent)?;
         // The poisoned log is in `.kept` or gone; the new copy starts clean.
@@ -471,9 +488,14 @@ async fn judge_log(
     Ok(None)
 }
 
-fn open_log(dir: &Path, label: &str, config: LogConfig) -> io::Result<DiskLog> {
-    crate::fs::create_dir_all(dir)?;
-    DiskLog::open(dir, label.to_string(), config).map_err(io::Error::other)
+fn open_log(dir: &Path, label: &str, config: LogConfig, lock: DirLock) -> io::Result<DiskLog> {
+    DiskLog::open_holding(dir, label.to_string(), config, lock).map_err(io::Error::other)
+}
+
+/// Lock `dir`, creating it if it is not there.
+fn lock_dir(dir: &Path) -> io::Result<DirLock> {
+    crate::io::create_dir_all_durable(dir)?;
+    DirLock::take(dir)
 }
 
 /// Missing, or holding at most a copy file and a reservation: what a crash
