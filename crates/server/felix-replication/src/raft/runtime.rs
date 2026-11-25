@@ -801,7 +801,7 @@ impl GroupRuntime {
         let log = opened.log;
         let earlier = {
             let (dir, spacing) = (dir.to_path_buf(), kept_config.index_spacing_bytes);
-            tokio::task::spawn_blocking(move || reached_before(&dir, spacing))
+            felix_common::blocking::spawn(move || reached_before(&dir, spacing))
                 .await
                 .map_err(std::io::Error::other)
                 .flatten()

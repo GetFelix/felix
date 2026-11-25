@@ -348,8 +348,34 @@ pub fn run_seed(seed: u64, config: RaftSimConfig) -> RaftOutcome {
     // The engine's maps take their hash keys from this, so they walk in the
     // same order every run.
     felix_common::jitter::sim::seed(seed);
+    // On a current-thread runtime only the blocking pool starts threads.
+    // Work there finishes in real time, so where it lands among the
+    // simulated tasks depends on how fast the machine is that day.
+    let real_threads = Arc::new(AtomicUsize::new(0));
+    builder.on_thread_start({
+        let started = real_threads.clone();
+        move || {
+            started.fetch_add(1, Ordering::Relaxed);
+        }
+    });
     let runtime = builder.build().expect("build the simulation runtime");
-    runtime.block_on(run(seed, config))
+    let mut outcome = runtime.block_on(run(seed, config));
+    if let Some(finding) = off_the_runtime(real_threads.load(Ordering::Relaxed)) {
+        outcome.findings.push(finding);
+    }
+    outcome
+}
+
+/// The finding for a run whose runtime started `threads` blocking-pool
+/// threads. Such a run is not the seed's run: it is one of the many the
+/// machine's speed picks from.
+fn off_the_runtime(threads: usize) -> Option<String> {
+    (threads > 0).then(|| {
+        format!(
+            "the run handed work to {threads} real thread(s) (tokio's blocking pool), so it \
+             does not replay: send that work through felix_common::blocking::spawn"
+        )
+    })
 }
 
 /// A member's data directory: a name on the in-memory filesystem.
@@ -717,6 +743,9 @@ struct Sim {
     terms_seen: Mutex<BTreeMap<u32, Span>>,
     /// Per shard: the terms of the entries in its final read's log.
     committed_terms: Mutex<BTreeMap<u32, BTreeSet<u64>>>,
+    /// Per shard: where that log was read, and which members hold an
+    /// entry of each term, for a finding about a term missing from it.
+    final_log_read: Mutex<BTreeMap<u32, opens::Read>>,
     /// What the run is doing, for the finding of a run that never ends.
     phase: Mutex<&'static str>,
     next_value: AtomicU64,
@@ -953,6 +982,7 @@ impl Sim {
             leases: AtomicUsize::new(0),
             terms_seen: Mutex::new(BTreeMap::new()),
             committed_terms: Mutex::new(BTreeMap::new()),
+            final_log_read: Mutex::new(BTreeMap::new()),
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
             next_process: AtomicUsize::new(0),
@@ -1360,9 +1390,11 @@ impl Sim {
         let opens = self.opens.all();
         let led = self.led.lock().clone();
         let committed = self.committed_terms.lock().clone();
+        let read = self.final_log_read.lock().clone();
         let seen = opens::Seen {
             led: &led,
             committed: &committed,
+            read: &read,
         };
         for finding in self
             .opens
@@ -2446,6 +2478,24 @@ impl Sim {
                     .filter_map(|held| held.generation.and_then(term_of_generation))
                     .collect();
                 self.committed_terms.lock().insert(shard, terms);
+                let mut holders: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+                for member in 0..self.members.len() {
+                    let held: BTreeSet<u64> = records_below(&self.at(member), shard, u64::MAX)
+                        .await
+                        .into_values()
+                        .filter_map(|held| held.generation.and_then(term_of_generation))
+                        .collect();
+                    for term in held {
+                        holders.entry(term).or_default().push(member);
+                    }
+                }
+                let term = at.runtime.status(&key(shard)).map_or(0, |s| s.term);
+                let read = opens::Read {
+                    from: leader,
+                    term,
+                    holders,
+                };
+                self.final_log_read.lock().insert(shard, read);
             }
             let mut history = self.history.lock();
             match leader.and_then(|leader| reads[leader].clone()) {
