@@ -690,3 +690,68 @@ fn epoch_one() -> super::EpochFile {
         }],
     }
 }
+
+fn is_busy(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::ResourceBusy
+}
+
+/// The copy's directory is held from the judge through a rotation into the
+/// open log: no step of the rotation leaves it for another open to take, and
+/// a second open of the copy is refused before it judges anything.
+#[tokio::test]
+async fn a_rotation_holds_the_copy_directory_at_every_step() {
+    use crate::disk_log::dir_lock::DirLock;
+
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    let opened = open_copy(&copies, &dir).await;
+    save_vote(&opened, 6).await;
+    let old = close(opened).await;
+    // Marks for another copy, so the next open moves this one aside.
+    copies
+        .mark_log()
+        .fresh(Arc::from(SHARD), 0xdead)
+        .await
+        .expect("marks");
+
+    let parent = dir.parent().expect("parent").to_path_buf();
+    let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    {
+        let (dir, seen) = (dir.clone(), Arc::clone(&seen));
+        crash_point::probe_under(&parent, move || {
+            let taken = DirLock::take(&dir).map(drop).map_err(|err| err.kind());
+            seen.lock().push(taken);
+        });
+    }
+    let opened = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await;
+    crash_point::unprobe();
+    let opened = opened.expect("rotated");
+    let rotation = opened.rotation.clone().expect("rotated");
+    assert_eq!(rotation.replaced, Some(old));
+    assert!(
+        rotation.kept.is_some(),
+        "the old directory was not moved aside"
+    );
+    let seen = seen.lock().clone();
+    assert!(!seen.is_empty(), "no step of the rotation ran");
+    assert!(
+        seen.iter()
+            .all(|taken| *taken == Err(io::ErrorKind::ResourceBusy)),
+        "a step of the rotation left the directory unlocked: {seen:?}"
+    );
+
+    let second = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await;
+    assert!(
+        second.as_ref().is_err_and(is_busy),
+        "a second open of the copy was let in"
+    );
+    let copy = close(opened).await;
+    let again = open_copy(&copies, &dir).await;
+    assert_eq!((again.copy, again.rotation.clone()), (copy, None));
+    close(again).await;
+}

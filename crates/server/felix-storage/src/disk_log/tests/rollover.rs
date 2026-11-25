@@ -135,6 +135,7 @@ async fn concurrent_appends_across_a_rollover_stay_contiguous() {
     // And it reopens cleanly, which is where a segment left empty or
     // double-rolled would surface.
     log.shutdown().await.expect("shutdown");
+    drop(log);
     let reopened = DiskLog::open(
         dir.path(),
         "t/ns/s/0",

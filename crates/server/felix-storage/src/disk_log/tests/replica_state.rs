@@ -347,6 +347,7 @@ async fn the_commit_offset_is_written_behind_every_advance_under_on_commit() {
         on_disk(&dir, 3).await;
     }
     // Reopened without a shutdown.
+    crate::disk_log::dir_lock::released(dir.path()).await;
     assert_eq!(open(&dir, FsyncMode::OnCommit).commit_offset(), 3);
 }
 
@@ -392,6 +393,7 @@ async fn an_advance_does_not_wait_on_a_replica_state_write() {
     drop(held);
     on_disk(&dir, 2).await;
     drop(log);
+    crate::disk_log::dir_lock::released(dir.path()).await;
     let reopened = open(&dir, FsyncMode::OnCommit);
     assert_eq!(reopened.commit_offset(), 2);
     assert!(matches!(
@@ -522,6 +524,7 @@ async fn close_waits_for_a_replica_state_write_in_flight() {
 #[tokio::test]
 async fn a_raised_generation_is_written_through_while_the_commit_offset_is_behind() {
     let dir = tempdir().expect("tempdir");
+    let image = tempdir().expect("image");
     {
         let log = open(&dir, FsyncMode::OnCommit);
         log.append(&records(&["a", "b"])).await.expect("append");
@@ -530,10 +533,13 @@ async fn a_raised_generation_is_written_through_while_the_commit_offset_is_behin
             log.accept_generation(7, None).await.expect("accept"),
             GenerationCheck::Raised
         );
+        // The disk as a crash right now leaves it, before a write behind
+        // can land: the log itself stays locked while one may still run.
+        copy_files(dir.path(), image.path());
     }
-    // Reopened at once: the raise was durable when it returned, and carried
-    // the commit offset raised before it.
-    let log = open(&dir, FsyncMode::OnCommit);
+    // The raise was durable when it returned, and carried the commit offset
+    // raised before it.
+    let log = open(&image, FsyncMode::OnCommit);
     assert_eq!(log.accepted_generation(), 7);
     assert_eq!(log.commit_offset(), 2);
 }
@@ -759,4 +765,17 @@ async fn a_committed_vote_for_no_leader_is_refused_and_writes_nothing() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.accepted_generation(), 5);
     assert!(log.gave_up());
+}
+
+fn copy_files(from: &std::path::Path, to: &std::path::Path) {
+    for entry in std::fs::read_dir(from).expect("read dir") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            std::fs::create_dir_all(&target).expect("mkdir");
+            copy_files(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy");
+        }
+    }
 }

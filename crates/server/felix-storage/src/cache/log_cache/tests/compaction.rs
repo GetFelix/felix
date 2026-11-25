@@ -272,6 +272,7 @@ async fn compaction_trims_the_head_and_keeps_the_live_set() {
     );
     assert_reads(&cache, &expected, "after compaction").await;
     cache.shutdown().await.expect("shutdown");
+    drop((log, shard, cache));
     let reopened = super::cache(dir.path()).await;
     assert_reads(&reopened, &expected, "after compaction and a restart").await;
 }
@@ -293,9 +294,12 @@ async fn a_crash_mid_compaction_replays_to_the_same_cache() {
         for batch in below[..below.len() / 2].chunks(crate::compaction::COPY_BATCH) {
             assert!(shard.copy_forward(&log, batch).await.expect("copy"));
         }
-        // No shutdown: the process dies here.
+        // No shutdown: the process dies here, and its background passes
+        // with it.
+        cache.compactor.kill().await;
         expected
     };
+    crate::disk_log::dir_lock::released(dir.path()).await;
 
     let reopened = cache(dir.path()).await;
     assert_reads(&reopened, &expected, "after a crash mid-compaction").await;
@@ -307,6 +311,7 @@ async fn a_crash_mid_compaction_replays_to_the_same_cache() {
         .expect("a later pass finishes the job");
     assert_reads(&reopened, &expected, "after the later pass").await;
     reopened.shutdown().await.expect("shutdown");
+    drop((shard, reopened));
     let again = cache(dir.path()).await;
     assert_reads(&again, &expected, "after the later pass and a restart").await;
 }

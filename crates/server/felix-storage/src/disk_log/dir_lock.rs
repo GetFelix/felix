@@ -57,18 +57,18 @@ impl DirLock {
         Ok(Self::Claim(key, claim))
     }
 
-    /// Move the lock to the new directory at `dir`, after a rotation renamed
-    /// the locked one away. The old one stays locked until the new one is,
-    /// so the copy is never without a holder. A claim names the path, not
-    /// the directory, and stays as it is.
+    /// Lock the new directory at `dir` too, after a rotation renamed the
+    /// locked one away, and hand back the lock on the old one, for the
+    /// caller to keep until it is done with it. A claim names the path, not
+    /// the directory, so it stays and `None` comes back.
     #[cfg(feature = "raft")]
-    pub(crate) fn follow(&mut self, dir: &Path) -> io::Result<()> {
+    pub(crate) fn follow(&mut self, dir: &Path) -> io::Result<Option<Self>> {
         #[cfg(unix)]
         if let Self::Dir(_) = self {
-            *self = Self::Dir(flock(dir)?);
+            return Ok(Some(std::mem::replace(self, Self::Dir(flock(dir)?))));
         }
         let _ = dir;
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -82,6 +82,36 @@ pub(crate) fn release_under(root: &Path) {
     };
     if let Some(claimed) = CLAIMED.lock().as_mut() {
         claimed.retain(|dir, _| !dir.starts_with(&root));
+    }
+}
+
+/// Wait until every directory directly under `root`, or `root` itself, is
+/// let go: a test that drops a log to stand in for a crash reopens it only
+/// once the old log's last background write has finished with it.
+#[cfg(test)]
+pub(crate) async fn released(root: &Path) {
+    let mut dirs = vec![root.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        dirs.extend(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir()),
+        );
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    for dir in dirs {
+        while let Err(err) = DirLock::take(&dir) {
+            if err.kind() != io::ErrorKind::ResourceBusy {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} is still held by a dropped log",
+                dir.display()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 }
 

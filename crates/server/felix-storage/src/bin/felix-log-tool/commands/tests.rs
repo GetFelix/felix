@@ -142,3 +142,61 @@ async fn verify_accepts_a_gap_its_segment_header_names() {
     .await
     .expect("a gapped log verifies");
 }
+
+/// Every mode writes: `verify` runs recovery, which cuts a torn tail. So
+/// each is refused on a directory an open log holds, and names it.
+#[tokio::test]
+async fn every_mode_refuses_a_directory_an_open_log_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..felix_storage::log::LogConfig::default()
+    };
+    let held = DiskLog::open(dir.path(), "broker", config.clone()).expect("open");
+    let named = |outcome: Result<(), Failure>| {
+        outcome.is_err_and(|err| err.contains(&dir.path().display().to_string()))
+    };
+
+    let written = write(WriteArgs {
+        dir: dir.path().to_path_buf(),
+        records: 1,
+        payload_bytes: 32,
+        batch: 1,
+        config: config.clone(),
+        report_acks: false,
+        clean_shutdown: true,
+    })
+    .await;
+    assert!(named(written), "write was let into a held directory");
+    let verified = verify(VerifyArgs {
+        dir: dir.path().to_path_buf(),
+        config: config.clone(),
+        expect_at_least: None,
+        payload_bytes: None,
+    })
+    .await;
+    assert!(named(verified), "verify was let into a held directory");
+    let benched = bench(BenchArgs {
+        dir: dir.path().to_path_buf(),
+        records: 1,
+        payload_bytes: 32,
+        batch: 1,
+        concurrency: 1,
+        warmup_records: 0,
+        config: config.clone(),
+        label: "held".to_string(),
+    })
+    .await;
+    assert!(named(benched), "bench was let into a held directory");
+
+    held.close().await.expect("close");
+    verify(VerifyArgs {
+        dir: dir.path().to_path_buf(),
+        config,
+        expect_at_least: None,
+        payload_bytes: None,
+    })
+    .await
+    .expect("verify once the holder closed");
+}

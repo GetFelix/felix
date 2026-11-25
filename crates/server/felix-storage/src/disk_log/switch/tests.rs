@@ -510,6 +510,7 @@ async fn a_record_at_the_base_from_another_claim_is_not_the_seal() {
     };
     log.append(&[other.record(7)]).await.expect("seal");
     log.shutdown().await.expect("shutdown");
+    drop(log);
     assert_eq!(
         start(&dir, &base).await,
         Err(NotAVoter::NotTheSeal {
@@ -530,6 +531,7 @@ async fn a_copy_whose_side_log_differs_from_the_seals_is_not_a_voter() {
     lead(&cursors, 1).await;
     cursors.append(&[record("cursor")]).await.expect("append");
     cursors.shutdown().await.expect("shutdown");
+    drop(cursors);
     let before = files(&dir);
     assert_eq!(
         start(&dir, &base).await,

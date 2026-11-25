@@ -328,6 +328,10 @@ impl CopyRoot {
         } else {
             let kept = kept_path(dir, &parent, replaced)?;
             crate::fs::rename(dir, &kept)?;
+            // Locked at once, and the old one held until it is finished
+            // with: a copy is never without its holder.
+            crate::fs::create_dir_all(dir)?;
+            let _old = lock.follow(dir)?;
             step()?;
             crate::io::sync_dir(&parent.join(KEPT_DIR))?;
             crate::io::sync_dir(&parent)?;
@@ -343,10 +347,6 @@ impl CopyRoot {
         };
         step()?;
         crate::fs::create_dir_all(dir)?;
-        if kept.is_some() {
-            // The old directory stays locked until the new one is.
-            lock.follow(dir)?;
-        }
         step()?;
         crate::io::sync_dir(&parent)?;
         // The poisoned log is in `.kept` or gone; the new copy starts clean.

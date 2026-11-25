@@ -1902,6 +1902,15 @@ felix-log-tool verify --dir /var/lib/felix/streams/shard --payload-bytes 128
 felix-log-tool bench  --dir /tmp/bench --records 20000 --concurrency 8 --fsync on_commit
 ```
 
+Every `felix-log-tool` mode opens the log for writing, `verify` included:
+opening runs recovery, which cuts a torn tail. So each one takes the log
+directory's lock and is refused on a directory a running broker holds, with
+an error that names it. Stop the broker first, or use `felixctl data inspect`,
+which only reads. Two brokers pointed at one data directory are refused the
+same way: the second stops at startup when it finds the stream root locked.
+The lock is a `flock` that goes away with its holder, so a crash leaves no
+stale lock behind. See "One open at a time" in `docs/storage-format.md`.
+
 The end-to-end demo (publish, crash, restart, recover) is:
 
 ```sh

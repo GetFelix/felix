@@ -127,6 +127,7 @@ async fn compaction_moves_neither_the_sum_nor_the_offsets() {
     // And the whole thing still reopens to the same answer: the checkpoint on
     // disk is the fold, restated.
     store.shutdown().await.expect("shutdown");
+    drop((shard, store));
     let reopened = CounterStore::open(dir.path(), config()).expect("reopen");
     assert_eq!(
         reopened.get(T, NS, C, 0, "hot").await.expect("get"),
@@ -191,7 +192,9 @@ async fn a_crash_mid_compaction_keeps_every_sum() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         pass.abort();
         let _ = pass.await;
+        store.compactor.kill().await;
     }
+    crate::disk_log::dir_lock::released(dir.path()).await;
 
     let expected = |key: usize| 3 + 3 * key as i64;
     let reopened = store(dir.path());
@@ -213,6 +216,7 @@ async fn a_crash_mid_compaction_keeps_every_sum() {
         .expect("a later pass finishes the job");
     assert!(shard.current_log().await.base_offset() >= tail_before);
     reopened.shutdown().await.expect("shutdown");
+    drop((shard, reopened));
 
     let again = store(dir.path());
     for key in 0..keys {

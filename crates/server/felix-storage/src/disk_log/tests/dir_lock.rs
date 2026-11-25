@@ -1,5 +1,5 @@
-//! A Raft log holds its directory: a second open, in this process or
-//! another, is refused until the first is closed or dropped.
+//! A log holds its directory, and a provider its root: a second open, in
+//! this process or another, is refused until the first is closed or dropped.
 
 use std::path::Path;
 
@@ -32,6 +32,36 @@ async fn a_second_open_in_this_process_is_refused_until_the_first_closes() {
     log.close().await.expect("close");
     open_raft(dir.path()).expect("reopen after close");
     drop(clone);
+}
+
+/// A stream log holds its directory as a Raft log does: a second broker or
+/// `felix-log-tool` on it would repair a tail the first is still writing.
+#[tokio::test]
+async fn a_second_open_of_a_stream_log_is_refused_until_the_first_closes() {
+    let dir = tempdir().expect("tempdir");
+    let open = || DiskLog::open(dir.path(), "t/ns/orders/0", config(FsyncMode::OnCommit));
+    let log = open().expect("open");
+    let refused = open();
+    assert!(
+        matches!(&refused, Err(StorageError::Io(err)) if err.to_string().contains(&dir.path().display().to_string())),
+        "a second open was let in, or its error does not name the directory: {refused:?}"
+    );
+    assert!(is_busy(refused), "the refusal is not ResourceBusy");
+    log.close().await.expect("close");
+    open().expect("reopen after close");
+}
+
+#[tokio::test]
+async fn a_second_provider_on_one_root_is_refused_until_the_first_is_dropped() {
+    let root = tempdir().expect("tempdir");
+    let open = || DiskLogProvider::new(root.path(), config(FsyncMode::OnCommit));
+    let first = open().expect("open");
+    assert!(
+        matches!(open(), Err(StorageError::Io(err)) if err.kind() == std::io::ErrorKind::ResourceBusy),
+        "a second provider on the root was let in"
+    );
+    drop(first);
+    open().expect("open once the first is dropped");
 }
 
 #[tokio::test]

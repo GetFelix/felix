@@ -45,6 +45,7 @@ async fn a_shard_left_mid_swap_by_an_older_build_opens_whole() {
             .await
             .expect("put");
         store.shutdown().await.expect("shutdown");
+        drop(store);
 
         let store = cache(root.path()).await;
         assert_reads(&store, &expected, &format!("{when}, restarted")).await;

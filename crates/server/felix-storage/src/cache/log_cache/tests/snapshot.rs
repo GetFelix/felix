@@ -112,6 +112,7 @@ async fn a_restored_index_keeps_compacting_correctly() {
     compact(&reopened).await;
     assert_reads(&reopened, &expected, "after compacting a restored index").await;
     reopened.shutdown().await.expect("shutdown");
+    drop(reopened);
     let again = cache(dir.path()).await;
     assert!(restored_through(&again).await.is_some());
     assert_reads(&again, &expected, "after the second restart").await;

@@ -762,19 +762,27 @@ in eight ways:
   through the adapter's `save_committed`: `advance_commit_offset` is
   refused on a Raft log and `note_commit_offset` does nothing. An offline
   `restore_to` saves the generation of the entry it lowers the offset to.
-- **One open at a time.** The open takes an exclusive, non-blocking `flock`
-  on the log's directory before recovery looks at it, and holds it until
-  the log is closed or its last clone is dropped. A second open fails with
-  "resource busy", whether it comes from the same process, another process,
-  or through a symlink. Only a Raft open takes the lock: stream logs and
-  `felix-log-tool` do not check it yet
-  ([#2488](https://github.com/GetFelix/felix/issues/2488)). The kernel
+- **One open at a time.** Every open of a log, stream or Raft, takes an
+  exclusive, non-blocking `flock` on the log's directory before recovery
+  looks at it, and holds it until the log is closed or its last clone is
+  dropped. A second open fails with "resource busy" and names the
+  directory, whether it comes from the same process, another process,
+  `felix-log-tool`, or through a symlink. The holder is not named: `flock`
+  does not record one. A broker's stream root is locked the same way for as
+  long as its storage is open, so a second broker on the same data
+  directory stops before it writes anything. A Raft copy's directory is
+  locked before its copy file and marks are judged, and stays locked through
+  a rotation: the new directory is locked as soon as the old one is renamed
+  into `.kept`, and the old one only lets go once it is finished with. An
+  open that locks a directory a rotation renamed away in the meantime sees
+  that the path now names another directory and is refused. The kernel
   releases the lock when the holder exits, so a crash leaves nothing to
-  clean up. The lock is on the directory itself: no file
-  is added, and no segment file is opened or resized for it. On the
-  simulator's in-memory filesystem the claim is kept in the process, and a
-  simulated crash gives it up. On Linux NFS, `flock` is emulated with
-  byte-range locks, which a directory cannot take, so the open fails there.
+  clean up. The lock is on the directory itself: no file is added, and no
+  segment file is opened or resized for it. On the simulator's in-memory
+  filesystem the claim is kept in the process, and a simulated crash gives
+  it up. On Linux NFS, `flock` is emulated with byte-range locks, which a
+  directory cannot take, so the open fails there: keep the data directory
+  on a local disk.
 
 A Raft log's directory also holds `raft-purged` and, when its state machine
 keeps a snapshot there, `raft-snapshot`. Both are described below. The log
