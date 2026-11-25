@@ -6,14 +6,22 @@ How shards move between brokers, what to do to make them move, and what to
 watch while they do. Applies to any deployment; the Kubernetes page has the
 chart-specific commands.
 
-:::caution[Not for shards on Raft]
-A durable stream shard on the Raft shard engine, the default on `main`, does
-not move. Its Raft group keeps the brokers it formed with, whatever placement
-says afterwards, so do not drain, remove or replace a broker that holds one.
-Membership changes are tracked in
-[#2235](https://github.com/GetFelix/felix/issues/2235). The gauge
-`felix_broker_raft_shards_off_placement` is above zero on a broker whose
-placement no longer matches a group it is in.
+:::note[Shards on Raft]
+On the Raft shard engine, the default on `main`, each durable shard is one
+Raft group, and the staged moves this page describes are replaced by two
+smaller steps. A balance pass names another member of the set as leader, and
+the group's leader hands its leadership over. A drain, an operator move to a
+broker outside the set, and a broker gone for `restore_after_millis` swap one
+member at a time: the leader adds the new copy as a learner, waits for it to
+catch up, and changes the voters.
+
+A drain does not move a replication factor 1 shard, which waits with
+`no live node can take this shard` until an operator moves it. A lost broker
+that held the only copy cannot be replaced, and a removed copy keeps its
+directory ([#2235](https://github.com/GetFelix/felix/issues/2235)). The gauge
+`felix_broker_raft_shards_off_placement` is above zero on a broker while a
+group it is in has not reached the set placement names, and drops back to
+zero once the swap finishes.
 :::
 
 ## What moves a shard

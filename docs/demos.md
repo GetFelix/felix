@@ -125,12 +125,14 @@ acknowledged alone for one round trip instead of two.
 
 **Notes**
 
-- Fails if the `Quorum` stream is missing an acknowledged record.
+- Fails if the `Quorum` stream is missing an acknowledged record, or if a
+  publisher is acknowledged nothing before the cut.
+- Prints `replay stopped short (#3112)` and reads again when a replay on the
+  new leader ends below the record published after the failover.
 - The missing `Leader` records are the last ones acknowledged, and their count
   differs from run to run.
-- `FELIX_TEST_SHARD_ENGINE=hybrid task cluster:consistency` runs the older
-  engine's version, where a `Leader` shard goes unavailable instead, until
-  that engine is removed in 0.8.0.
+- On the older engine the 0.7 releases run, the same fault makes a `Leader`
+  shard unavailable instead. This demo does not show that engine.
 - The counterpart is `task cluster:failover`, which shows a quorum-acknowledged
   record surviving the loss of the broker that acknowledged it.
 

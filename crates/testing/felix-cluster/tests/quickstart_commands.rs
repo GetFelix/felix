@@ -89,7 +89,60 @@ async fn consistency_runs_to_its_end() {
         return;
     }
     let printed = run(&["consistency", "--pace", "0"]).await;
-    assert!(printed.contains("The trade, stated plainly"), "{printed}");
+    if let Err(why) = consistency_showed_the_trade(&printed) {
+        panic!("{why}:\n{printed}");
+    }
+}
+
+/// The "N acknowledged, M missing afterwards" the demo's summary gives for
+/// one consistency level.
+fn summary(printed: &str, level: &str) -> Option<(usize, usize)> {
+    let line = printed
+        .lines()
+        .find(|line| line.trim_start().starts_with(level) && line.contains("missing afterwards"))?;
+    let mut numbers = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|word| word.parse::<usize>().ok());
+    Some((numbers.next()?, numbers.next()?))
+}
+
+/// Whether a `consistency` run that exited 0 showed anything. The heading
+/// alone does not: a run whose publisher was acknowledged nothing loses
+/// nothing either.
+fn consistency_showed_the_trade(printed: &str) -> Result<(), String> {
+    let (quorum, quorum_missing) =
+        summary(printed, "Quorum").ok_or("no summary line for Quorum")?;
+    let (leader, _) = summary(printed, "Leader").ok_or("no summary line for Leader")?;
+    if quorum == 0 || leader == 0 {
+        return Err(format!(
+            "nothing was acknowledged (Quorum {quorum}, Leader {leader}), so nothing was shown"
+        ));
+    }
+    if quorum_missing != 0 {
+        return Err(format!(
+            "Quorum is missing {quorum_missing} acknowledged record(s)"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_consistency_run_that_acknowledged_nothing_is_not_a_pass() {
+    let run = |quorum: &str, leader: &str| {
+        format!(
+            "==> The trade, stated plainly\n\n    Quorum   {quorum} missing afterwards.\n    Leader   {leader} missing afterwards.\n"
+        )
+    };
+    let shown = run("24 acknowledged, 0", "31 acknowledged, 7");
+    assert_eq!(consistency_showed_the_trade(&shown), Ok(()));
+    for hollow in [
+        run("0 acknowledged, 0", "31 acknowledged, 7"),
+        run("24 acknowledged, 0", "0 acknowledged, 0"),
+        run("24 acknowledged, 2", "31 acknowledged, 7"),
+        "==> The trade, stated plainly\n".to_string(),
+    ] {
+        assert!(consistency_showed_the_trade(&hollow).is_err(), "{hollow}");
+    }
 }
 
 #[cfg(unix)]

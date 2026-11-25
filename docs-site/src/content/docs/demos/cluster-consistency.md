@@ -88,11 +88,16 @@ client configured with one address keeps publishing.
   record. It does not fail when the `Leader` stream loses none: a cut that
   lands between two publishes can leave nothing answered alone, and the demo
   says so when that happens.
+- It also exits non-zero when a publisher is acknowledged nothing before the
+  cut, since such a run shows nothing.
+- A replay on a broker that has just taken a shard over can stop below
+  acknowledged records
+  ([#3112](https://github.com/GetFelix/felix/issues/3112)). The demo reads
+  until a replay reaches a record it published after the failover, and prints
+  `replay stopped short (#3112)` each time one does not.
 - The 0.7 releases replicate with an older engine, where the same fault makes
   a `Leader` shard unavailable instead: no follower is promoted until the old
-  leader returns with its disk. `FELIX_TEST_SHARD_ENGINE=hybrid task
-  cluster:consistency` runs that version of the demo until the engine is
-  removed in 0.8.0.
+  leader returns with its disk. This demo does not show that engine.
 
 ## See also
 

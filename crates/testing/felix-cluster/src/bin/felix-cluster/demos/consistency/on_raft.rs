@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec, wait};
 
+use super::super::replay::{self, Record};
 use super::super::{beat, step};
 
 const STREAM: &str = "orders";
@@ -25,9 +26,9 @@ const ANSWERED_WITHIN: Duration = Duration::from_secs(1);
 /// What one run of the fault did to one stream.
 struct Outcome {
     /// Records the publisher was told were written, in order.
-    acknowledged: Vec<String>,
+    acknowledged: Vec<Record>,
     /// The acknowledged records the new leader does not hold.
-    missing: Vec<String>,
+    missing: Vec<Record>,
 }
 
 pub(super) async fn consistency(pace: Duration) -> Result<()> {
@@ -74,9 +75,9 @@ pub(super) async fn consistency(pace: Duration) -> Result<()> {
 
     if !quorum.missing.is_empty() {
         bail!(
-            "a Quorum stream lost {} acknowledged record(s), the first {:?}",
+            "a Quorum stream lost {} acknowledged record(s), the first {}",
             quorum.missing.len(),
-            quorum.missing[0]
+            quorum.missing[0].place()
         );
     }
     Ok(())
@@ -102,9 +103,13 @@ async fn run(level: &str, stream: StreamSpec, pace: Duration) -> Result<Outcome>
     let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
     let prefix = level.to_string();
     let publishing = tokio::spawn(async move {
-        let mut acknowledged = Vec::new();
-        let Ok(publisher) = client.publisher().await else {
-            return acknowledged;
+        let mut published = Published::default();
+        let publisher = match client.publisher().await {
+            Ok(publisher) => publisher,
+            Err(err) => {
+                published.stopped_by = format!("its publisher did not open: {err:#}");
+                return published;
+            }
         };
         for index in 1..=100_000u32 {
             let payload = format!("{prefix}-{index:04}");
@@ -116,12 +121,19 @@ async fn run(level: &str, stream: StreamSpec, pace: Duration) -> Result<Outcome>
                 felix_wire::AckMode::PerMessage,
             );
             match tokio::time::timeout(ANSWERED_WITHIN, publish).await {
-                Ok(Ok(_)) => acknowledged.push(payload),
-                _ => break,
+                Ok(Ok(offset)) => published.acknowledged.push(Record::new(offset, payload)),
+                Ok(Err(err)) => {
+                    published.stopped_by = format!("{payload} was refused: {err:#}");
+                    break;
+                }
+                Err(_) => {
+                    published.stopped_by = format!("{payload} went unanswered");
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        acknowledged
+        published
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     beat(pace).await;
@@ -133,7 +145,8 @@ async fn run(level: &str, stream: StreamSpec, pace: Duration) -> Result<Outcome>
     let acknowledged = tokio::time::timeout(wait::budget(SETTLES_WITHIN), publishing)
         .await
         .context("the publisher was still being answered long after the cut")?
-        .context("the publisher task failed")?;
+        .context("the publisher task failed")?
+        .acknowledged_some(level)?;
     println!(
         "  The publisher stopped at its first unanswered publish, with {} acknowledged.",
         acknowledged.len()
@@ -147,40 +160,37 @@ async fn run(level: &str, stream: StreamSpec, pace: Duration) -> Result<Outcome>
         .promoted_leader(STREAM, &leader, SETTLES_WITHIN)
         .await?;
     println!("  Gone. The two brokers left are a majority, and elected {elected}.");
-    // Proof the new leader serves before its log is read back.
-    let marker = format!("{level}-after-failover");
-    wait::until(
+    // Proof the new leader serves before its log is read back, and the
+    // record a whole replay has to reach: it is written after every other.
+    let payload = format!("{level}-after-failover");
+    let offset = wait::until_some(
         SETTLES_WITHIN,
         "the new leader to take a publish",
         || async {
             cluster
-                .publish_via(&elected, STREAM, marker.clone().into_bytes())
+                .publish_via_at(&elected, STREAM, payload.clone().into_bytes())
                 .await
-                .is_ok()
+                .ok()
         },
     )
     .await?;
+    let marker = Record::new(offset, payload);
     beat(pace).await;
 
     step(&format!("{level}: reading the stream back from {elected}"));
     // A replay on a broker that has just taken over can stop short of its
-    // log's end (#3112), so read until the marker, the last record, shows.
-    let held = wait::until_some(SETTLES_WITHIN, "a replay through the marker", || async {
-        let held = replay(&cluster, &elected).await.ok()?;
-        held.contains(&marker).then_some(held)
-    })
-    .await?;
-    let missing: Vec<String> = acknowledged
-        .iter()
-        .filter(|payload| !held.contains(payload))
-        .cloned()
-        .collect();
+    // log's end (#3112). One that reaches the marker has read past every
+    // acknowledged record, so what it does not hold is gone.
+    let held = replay::through(&cluster, &elected, STREAM, &marker, SETTLES_WITHIN).await?;
+    let missing = replay::missing(&acknowledged, &held);
     match (missing.first(), missing.last()) {
         (Some(first), Some(last)) => {
             println!(
-                "  \x1b[1m{} of {} acknowledged records are gone\x1b[0m: {first} to {last}.",
+                "  \x1b[1m{} of {} acknowledged records are gone\x1b[0m: {} to {}.",
                 missing.len(),
-                acknowledged.len()
+                acknowledged.len(),
+                first.payload,
+                last.payload
             );
             println!("  {leader} answered them alone, and they were only ever on its disk.");
         }
@@ -197,14 +207,27 @@ async fn run(level: &str, stream: StreamSpec, pace: Duration) -> Result<Outcome>
     })
 }
 
-/// Every payload `node_id` serves from the start of the stream.
-async fn replay(cluster: &Cluster, node_id: &str) -> Result<Vec<String>> {
-    let (_client, mut subscription) = cluster.replay_on(node_id, STREAM).await?;
-    let mut held = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(3), subscription.next_event()).await
-    {
-        held.push(String::from_utf8_lossy(&event.payload).into_owned());
-    }
-    Ok(held)
+/// What the publisher was told before it stopped, and what stopped it.
+#[derive(Default)]
+struct Published {
+    acknowledged: Vec<Record>,
+    stopped_by: String,
 }
+
+impl Published {
+    /// The acknowledged records, or an error when there are none. A run that
+    /// acknowledged nothing has nothing to lose, and would otherwise read as
+    /// a stream that kept everything.
+    fn acknowledged_some(self, level: &str) -> Result<Vec<Record>> {
+        if self.acknowledged.is_empty() {
+            bail!(
+                "{level}: no publish was acknowledged before the cut, so this run shows nothing ({})",
+                self.stopped_by
+            );
+        }
+        Ok(self.acknowledged)
+    }
+}
+
+#[cfg(test)]
+mod tests;

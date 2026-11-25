@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 
+use super::replay::{self, Record};
 use super::{beat, step};
 use crate::args::{flag_usize, pace_from};
 use crate::{STREAM, init_tracing};
@@ -69,17 +70,20 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
     beat(pace).await;
 
     step("Publishing under Quorum");
+    let mut before = Vec::new();
     for index in 1..=3u32 {
-        client
+        let payload = format!("before-{index}");
+        let offset = client
             .publish_at_least_once(
                 &cluster.tenant_id,
                 &cluster.namespace,
                 STREAM,
-                format!("before-{index}").into_bytes(),
+                payload.clone().into_bytes(),
                 felix_wire::AckMode::PerMessage,
             )
             .await?;
-        println!("  acknowledged: before-{index}   (a majority holds it, not just the leader)");
+        println!("  acknowledged: {payload}   (a majority holds it, not just the leader)");
+        before.push(Record::new(offset, payload));
     }
     cluster
         .wait_for_every_member_level(STREAM, SETTLES_WITHIN)
@@ -105,40 +109,47 @@ pub(crate) async fn failover(args: &[String]) -> Result<()> {
     beat(pace).await;
 
     step("The same client, still publishing");
+    let mut last = None;
     for index in 1..=2u32 {
-        client
+        let payload = format!("after-{index}");
+        let offset = client
             .publish_at_least_once(
                 &cluster.tenant_id,
                 &cluster.namespace,
                 STREAM,
-                format!("after-{index}").into_bytes(),
+                payload.clone().into_bytes(),
                 felix_wire::AckMode::PerMessage,
             )
             .await?;
-        println!("  acknowledged: after-{index}");
+        println!("  acknowledged: {payload}");
+        last = Some(Record::new(offset, payload));
     }
+    let last = last.expect("two records were just published");
     println!("\n  It reconnected to a surviving broker on its own. Nothing was rebuilt.");
     beat(pace).await;
 
     step("Reading the whole stream back from the broker that took over");
-    let (_client, mut subscription) = cluster.replay_on(&promoted, STREAM).await?;
-    let mut seen = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(3), subscription.next_event()).await
-    {
-        let payload = String::from_utf8_lossy(&event.payload).to_string();
-        let offset = event
+    // Read through the newest acknowledged record, so a replay that stops
+    // short (#3112) is retried and named, not reported as lost records.
+    let replayed = replay::through(&cluster, &promoted, STREAM, &last, SETTLES_WITHIN).await?;
+    for record in &replayed {
+        let offset = record
             .offset
             .map(|o| o.to_string())
             .unwrap_or_else(|| "-".to_string());
-        println!("      ← offset {offset:>4}  {payload}");
-        seen.push(payload);
+        println!("      ← offset {offset:>4}  {}", record.payload);
     }
+    let seen: Vec<String> = replayed.iter().map(|r| r.payload.clone()).collect();
 
-    let survived = (1..=3).all(|i| seen.iter().any(|p| p == &format!("before-{i}")));
+    // The replay ran past every one of these, so one it does not hold is gone.
+    let lost = replay::missing(&before, &replayed);
     println!();
-    if !survived {
-        bail!("a record acknowledged under Quorum did not survive the failover");
+    if let Some(first) = lost.first() {
+        bail!(
+            "{} record(s) acknowledged under Quorum did not survive the failover, the first {}",
+            lost.len(),
+            first.place()
+        );
     }
     println!("  Every record acknowledged before the kill is still here, read from a");
     println!("  broker that was a replica a moment ago.");
