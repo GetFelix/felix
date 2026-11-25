@@ -63,6 +63,7 @@ impl Client {
             down_redirects: std::sync::Mutex::new(HashMap::new()),
             cache_routes: RwLock::new(HashMap::new()),
             nodes,
+            publish_resends: Default::default(),
         })
     }
 

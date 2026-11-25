@@ -237,7 +237,9 @@ impl Client {
         let mut at_least = Duration::ZERO;
         for attempt in 0..attempts {
             if attempt > 0 {
-                let delay = self.policy.delay_before(attempt - 1).max(at_least);
+                let Some(delay) = self.policy.delay_for(attempt - 1, at_least) else {
+                    break;
+                };
                 if let Some(budget) = self.policy.deadline
                     && started.elapsed() + delay >= budget
                 {

@@ -230,7 +230,9 @@ impl Client {
 
         for attempt in 0..self.policy.attempts.max(1) {
             if attempt > 0 {
-                let delay = self.policy.delay_before(attempt - 1).max(at_least);
+                let Some(delay) = self.policy.delay_for(attempt - 1, at_least) else {
+                    break;
+                };
                 // Checked before sleeping, not after: sleeping past a deadline
                 // and then reporting it wastes exactly the time the deadline
                 // exists to save.
@@ -363,8 +365,10 @@ impl Client {
                 return Err(err);
             };
             if !pace.wait(at_least).await {
-                return Err(err);
+                return Err(pace.gave_up(err, at_least));
             }
+            self.publish_resends
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tracing::debug!(
                 error = %format!("{err:#}"),
                 "the broker applied nothing; publishing again",

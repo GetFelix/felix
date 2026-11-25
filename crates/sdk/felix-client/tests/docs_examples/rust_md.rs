@@ -1348,7 +1348,7 @@ mod publisher_sharding_1 {
     }
 }
 
-/// rust/publishing.md line 428: "Errors you can act on", block 1.
+/// rust/publishing.md line 433: "Errors you can act on", block 1.
 mod errors_you_can_act_on_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1374,7 +1374,7 @@ mod errors_you_can_act_on_1 {
     }
 }
 
-/// rust/publishing.md line 486: "Errors you can act on", block 2.
+/// rust/publishing.md line 498: "Errors you can act on", block 2.
 mod errors_you_can_act_on_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1393,7 +1393,7 @@ mod errors_you_can_act_on_2 {
     }
 }
 
-/// rust/publishing.md line 517: "Idempotent producers", block 1.
+/// rust/publishing.md line 529: "Idempotent producers", block 1.
 mod idempotent_producers_1 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1410,7 +1410,7 @@ mod idempotent_producers_1 {
     }
 }
 
-/// rust/publishing.md line 537: "Idempotent producers", block 2.
+/// rust/publishing.md line 549: "Idempotent producers", block 2.
 mod idempotent_producers_2 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1425,7 +1425,7 @@ mod idempotent_producers_2 {
     }
 }
 
-/// rust/publishing.md line 549: "Idempotent producers", block 3.
+/// rust/publishing.md line 561: "Idempotent producers", block 3.
 mod idempotent_producers_3 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
@@ -1440,7 +1440,7 @@ mod idempotent_producers_3 {
     }
 }
 
-/// rust/publishing.md line 569: "Idempotent producers", block 4.
+/// rust/publishing.md line 581: "Idempotent producers", block 4.
 mod idempotent_producers_4 {
     #![allow(dead_code, unused_variables, unused_assignments, unreachable_code, unreachable_pub)]
     use super::prelude::*;
