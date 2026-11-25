@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795636585072,
+  "lastUpdate": 1795637147976,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88440,6 +88440,72 @@ window.BENCHMARK_DATA = {
             "range": "626.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 310.00\nmean: 601.80\nstdev: 626.55\ncv: 104.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "87e6969cfd76688d221959e910ca45b3cce31f9d",
+          "message": "fix(replication): an in-memory stream keeps no log on any broker, the replication pass included (#3071) (#3174)\n\n* fix(replication): an in-memory stream's shard opens no log in the replication pass (#3071)\n\nThe broker refuses to open the records log of a stream registered in\nmemory, for every caller. The replication pass sends such a shard the\nreport a pass over its empty log sent, without opening or shipping it.\n\nSpec-Unaffected: no modelled log, fence or mark changes; an in-memory stream has no log in the specs\n\n* docs(replication): an in-memory stream's shard has no log on any broker (#3071)\n\nSpec-Unaffected: prose and a moved line citation only\n\n* fix(replication): decide an in-memory stream without an await (#3071, #3158)\n\nThe durability check added on every log open and every replication pass\nawaited the streams registry lock. That added a yield point to every\ndurable shard's pass and moved the simulator off the trajectory two\nshape pins rely on (seeds 44 and 7). The broker now keeps the in-memory\nstreams in a set updated under the streams write lock, read without an\nawait, so a durable shard's pass yields exactly where it did on main.\n\nCarries over #3172's still-true parts: an in-memory stream's group\npositions do not survive a failover, and its drain test, now asserting\nnothing is on disk. Adds a test that a move's destination is reported\ncaught up at the move's generation, and that a delete clears the set.\n\nSpec-Unaffected: no change to modelled behaviour; the in-memory check reads the same registration without yielding",
+          "timestamp": "2026-11-25T19:55:42Z",
+          "tree_id": "44c518612b93e5e0e8c27c390cd0875cc43d8b91",
+          "url": "https://github.com/GetFelix/felix/commit/87e6969cfd76688d221959e910ca45b3cce31f9d"
+        },
+        "date": 1795637133431,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "10.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 103.80\nstdev: 10.26\ncv: 9.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 136,
+            "range": "52.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 169.80\nstdev: 52.87\ncv: 31.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "125.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 267.80\nstdev: 125.59\ncv: 46.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "5.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 138.80\nstdev: 5.85\ncv: 4.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 274,
+            "range": "55.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 274.00\nmean: 305.20\nstdev: 55.70\ncv: 18.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 472,
+            "range": "862.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 472.00\nmean: 921.80\nstdev: 862.28\ncv: 93.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
