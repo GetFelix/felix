@@ -110,6 +110,68 @@ async fn a_later_flush_is_not_made_durable_past_an_earlier_one_still_in_the_ring
     assert!(log.is_poisoned());
 }
 
+/// The ring's thread panics with one of this log's fsyncs in flight and
+/// nobody waiting on it. Unwinding drops that fsync unanswered, and the next
+/// flush finds the ring gone and falls back to a plain fsync of the same
+/// file. If the lost fsync had failed, the kernel would have used up the
+/// error on it and the fallback would succeed, so it must never run.
+#[tokio::test]
+async fn a_ring_thread_that_panics_mid_flight_poisons_the_log() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    let mut ring = fake_ring(&log);
+    log.append(&records(&["a"])).await.expect("append");
+    let a = drop_a_flush_in_the_ring(&log, &mut ring).await;
+
+    let thread = std::thread::spawn(move || {
+        let _in_flight = (a, ring);
+        panic!("the ring thread panics holding an fsync");
+    });
+    assert!(thread.join().is_err());
+
+    // Refused once poisoned; either way, nothing may become durable.
+    let _ = log.append(&records(&["b"])).await;
+    let flushed = tokio::time::timeout(Duration::from_secs(5), log.sync())
+        .await
+        .expect("the flush never finished");
+    assert!(
+        flushed.is_err(),
+        "a flush fell back past a lost fsync: {flushed:?}"
+    );
+    assert_eq!(log.durable_offset(), 0, "records were marked durable");
+    assert!(log.is_poisoned());
+}
+
+/// The same with the caller still waiting: it hears an error, never success.
+#[tokio::test]
+async fn a_ring_thread_that_panics_fails_the_waiting_flush() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    let mut ring = fake_ring(&log);
+    log.append(&records(&["a"])).await.expect("append");
+    let inner = Arc::clone(&log.inner);
+    let target = tail(&log);
+    let flush = tokio::spawn(async move { inner.ensure_durable(target).await });
+    let a = tokio::time::timeout(Duration::from_secs(5), ring.recv())
+        .await
+        .expect("the flush never reached the ring")
+        .expect("ring");
+
+    let thread = std::thread::spawn(move || {
+        let _in_flight = (a, ring);
+        panic!("the ring thread panics holding an fsync");
+    });
+    assert!(thread.join().is_err());
+
+    let flushed = tokio::time::timeout(Duration::from_secs(5), flush)
+        .await
+        .expect("the waiting flush was never answered")
+        .expect("join");
+    assert!(flushed.is_err(), "{flushed:?}");
+    assert_eq!(log.durable_offset(), 0);
+    assert!(log.is_poisoned());
+}
+
 /// The real ring, through the group-commit lock: flush A is dropped with its
 /// fsync held in the ring, flush B's succeeds, then A's fails.
 #[cfg(target_os = "linux")]
