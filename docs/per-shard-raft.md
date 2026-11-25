@@ -4710,9 +4710,10 @@ wait ran out, otherwise `leadership_lost`), as a stream write is: the entry
 may commit under the next leader, and a retry there would redrive, delete
 or claim a second time. Claims are group entries
 too: a poll that hands records out, and an extension, writes a claim and
-answers once it applied. A poll hands out only what this member had applied
-when it began. A `Leader` stream answers a publish before its commit, so
-the record can go out on a later poll than the first one after its ack.
+answers once it applied. A poll waits for the read index first and then
+hands out only what this member has applied, so a poll sent after a
+publish's ack includes the record at every ack level (#3146). An ack sent on
+enqueue comes before the write and is the one exception.
 A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,
 each held for its full visibility again from then. Group writes are log entries, so they
@@ -6070,7 +6071,10 @@ itself, before its member opens (`shards/raft/standalone.rs`,
    only when that file names the current storage id, and only on a copy
    whose kept copies were all minted under an id a relaxed crash rotated
    away. A clean stop, an `OnCommit` crash and an operator's rotation
-   leave no such evidence, and the copy stays as it is. A standalone
+   leave no such evidence, and the copy stays as it is. The file keeps an
+   id for as long as a copy on disk was minted under it, so a shard that no
+   start opened through any number of crashes in a row is still re-formed
+   when it opens. A standalone
    broker cannot tell a restored volume from a relaxed crash, so it
    re-forms a restored copy from the reservation the snapshot holds. A
    volume snapshot taken while the broker ran can therefore give out

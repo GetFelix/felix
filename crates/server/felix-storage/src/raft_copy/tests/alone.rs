@@ -177,6 +177,26 @@ async fn a_relaxed_crash_re_forms_a_group_of_one_past_every_offset_it_gave_out()
     opened.log.close().await.expect("close");
 }
 
+/// A shard no start opened through a long run of crashes is still re-formed:
+/// the record keeps the id its copy was minted under however many crashes
+/// followed (#3119).
+#[tokio::test]
+async fn a_copy_not_opened_through_many_crashes_is_still_re_formed() {
+    let (root, dir) = crashed(3).await;
+    for n in 3..=12 {
+        relaxed_crash(&root, n);
+    }
+    root.witness_current_id();
+    let copies = root.open();
+    let done = reform(&copies, &dir).await.expect("re-form");
+    assert_eq!(done, Aloned::Reformed { epoch: 1 });
+    let bases = crate::raft_copy::epoch_file::load(&dir)
+        .expect("epoch")
+        .expect("an epoch file")
+        .bases;
+    assert_eq!(bases[0].base_end(), 3, "every committed record survives");
+}
+
 #[tokio::test]
 async fn a_re_form_keeps_synced_records_past_the_saved_commit() {
     let (root, dir) = crashed_saved(5, 2).await;
