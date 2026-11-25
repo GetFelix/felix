@@ -158,6 +158,18 @@ pub(super) struct Read {
     /// Per term: the members whose log holds an entry of it at any offset,
     /// committed or not.
     pub(super) holders: BTreeMap<u64, Vec<usize>>,
+    /// Each member's log as read: its last entry's term and offset, and
+    /// whether it led the shard then. A hand-over between the opens and
+    /// this read shows here.
+    pub(super) logs: Vec<MemberLog>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MemberLog {
+    pub(super) member: usize,
+    /// Term and offset of the last entry, `None` for an empty log.
+    pub(super) last: Option<(u64, u64)>,
+    pub(super) leader: bool,
 }
 
 impl Read {
@@ -169,10 +181,22 @@ impl Read {
             let names: Vec<_> = holders.iter().map(|member| name(*member)).collect();
             format!("{} still hold an entry of it", names.join(" "))
         };
+        let logs: Vec<_> = self
+            .logs
+            .iter()
+            .map(|log| {
+                let last = log.last.map_or("empty".to_string(), |(term, index)| {
+                    format!("term {term} last index {index}")
+                });
+                let role = if log.leader { ", leader" } else { "" };
+                format!("{} {last}{role}", name(log.member))
+            })
+            .collect();
         format!(
-            "; the log was read from {} leading term {}, and {on}",
+            "; the log was read from {} leading term {}, and {on}; judged against {}",
             name(self.from),
-            self.term
+            self.term,
+            logs.join("; ")
         )
     }
 }
