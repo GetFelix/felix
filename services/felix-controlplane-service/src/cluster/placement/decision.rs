@@ -418,3 +418,6 @@ impl std::fmt::Display for Unplaceable {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
