@@ -176,9 +176,10 @@ impl StreamEngine {
 /// group's log, so neither the broker nor any hybrid store may open a log for
 /// one by itself: what it wrote would be served by nothing, and its directory
 /// would keep the group from claiming the shard. Call it before the first
-/// stream or cache is registered. The broker's stream storage still opens
-/// logs: the hybrid lifecycle opens one for an in-memory shard too, so a
-/// group op checks for the member itself (`group_ops::raft::on_raft`).
+/// stream or cache is registered. An in-memory stream still runs on the
+/// hybrid lifecycle: registration keeps its group and dead-letter state open
+/// in the hybrid stores (`Broker::settle_incarnation`), and a group op checks
+/// for the member itself (`group_ops::raft::on_raft`).
 pub(crate) fn leave_stores_to_engines(broker: &felix_broker::Broker) {
     broker.leave_durable_streams_to_engines();
     if let Some(groups) = broker.consumer_groups() {

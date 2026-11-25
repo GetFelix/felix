@@ -74,6 +74,20 @@ impl ConsumerGroups {
         self.cursors.leave_to_engines();
     }
 
+    /// Still open one stream's state at `incarnation` after
+    /// [`Self::leave_to_engines`], or stop with `None`: an in-memory stream
+    /// runs on the hybrid lifecycle and keeps its state here.
+    pub fn keep_for_hybrid(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) {
+        self.cursors
+            .keep_for_hybrid(tenant_id, namespace, stream, incarnation);
+    }
+
     /// Open group state rooted at `root`, recovering whatever is on disk.
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
         Ok(Self {

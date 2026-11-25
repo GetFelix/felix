@@ -364,3 +364,121 @@ async fn a_group_write_before_the_member_opens_is_refused() {
     ];
     assert_eq!(after, before, "a store made a directory for the shard");
 }
+
+/// **An in-memory stream keeps its group state on a Raft broker**: no engine
+/// serves it, so the hybrid stores still open its group and dead-letter logs,
+/// while a durable stream's stay refused. Stores left to engines first, as a
+/// broker starts.
+#[tokio::test]
+async fn an_in_memory_streams_group_state_opens_beside_the_engine() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = || felix_storage::log::LogConfig {
+        fsync_mode: felix_storage::log::FsyncMode::None,
+        preallocate_segments: false,
+        ..felix_storage::log::LogConfig::default()
+    };
+    let groups = Arc::new(
+        felix_broker::ConsumerGroups::open(root.path().join("groups"), config()).expect("groups"),
+    );
+    let dead = Arc::new(
+        felix_broker::DeadLetters::open(root.path().join("dead-letters"), config())
+            .expect("dead letters"),
+    );
+    let storage =
+        felix_broker::DurableStorage::open(root.path().join("streams"), config()).expect("storage");
+    let broker = Arc::new(
+        Broker::new(felix_storage::EphemeralCache::new().into())
+            .with_consumer_groups(
+                Arc::clone(&groups),
+                Arc::clone(&dead),
+                Duration::from_secs(30),
+                5,
+            )
+            .with_durable_storage(storage),
+    );
+    broker.require_registered_streams();
+    crate::shards::routing::leave_stores_to_engines(&broker);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker.register_namespace("t1", "ns").await.expect("ns");
+    let incarnation = super::super::super::tests::INCARNATION;
+    for (stream, durable) in [("presence", false), ("orders", true)] {
+        broker
+            .register_stream(
+                "t1",
+                "ns",
+                stream,
+                felix_broker::StreamMetadata {
+                    durable,
+                    incarnation,
+                    replication_factor: Some(1),
+                    ..felix_broker::StreamMetadata::default()
+                },
+            )
+            .await
+            .expect(stream);
+    }
+
+    // What the hybrid lifecycle opens before it serves the shard.
+    for kind in crate::shards::lifecycle::GROUP_LOGS {
+        let log = broker
+            .try_shard_log_off_runtime(kind, "t1", "ns", "presence", 0, None, Some(incarnation))
+            .await
+            .unwrap_or_else(|err| panic!("{kind:?}: {err}"));
+        assert!(
+            log.is_some(),
+            "{kind:?} log of the in-memory stream refused"
+        );
+    }
+    let key = |stream: &str| felix_broker::GroupKey {
+        tenant_id: "t1".into(),
+        namespace: "ns".into(),
+        stream: stream.into(),
+        shard: 0,
+        group: "workers".into(),
+    };
+    assert_eq!(
+        groups
+            .commit("t1", "ns", "presence", 0, "workers", 3)
+            .await
+            .expect("commit"),
+        3
+    );
+    assert_eq!(
+        groups
+            .committed("t1", "ns", "presence", 0, "workers")
+            .await
+            .expect("committed"),
+        Some(3)
+    );
+    dead.record(&key("presence"), 1).await.expect("dead letter");
+    assert_eq!(dead.list(&key("presence")).await.expect("list"), vec![1]);
+
+    let before = [
+        entries(&root.path().join("groups")),
+        entries(&root.path().join("dead-letters")),
+    ];
+    groups
+        .commit("t1", "ns", "orders", 0, "workers", 3)
+        .await
+        .expect_err("the hybrid store took a durable stream's commit");
+    dead.record(&key("orders"), 1)
+        .await
+        .expect_err("the hybrid store took a durable stream's dead letter");
+    for kind in crate::shards::lifecycle::GROUP_LOGS {
+        let opened = broker
+            .try_shard_log_off_runtime(kind, "t1", "ns", "orders", 0, None, Some(incarnation))
+            .await;
+        assert!(
+            !matches!(opened, Ok(Some(_))),
+            "{kind:?} log of the durable stream opened"
+        );
+    }
+    let after = [
+        entries(&root.path().join("groups")),
+        entries(&root.path().join("dead-letters")),
+    ];
+    assert_eq!(
+        after, before,
+        "a store made a directory for the durable shard"
+    );
+}

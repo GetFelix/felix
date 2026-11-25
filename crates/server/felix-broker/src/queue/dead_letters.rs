@@ -114,6 +114,20 @@ impl DeadLetters {
         self.entries.leave_to_engines();
     }
 
+    /// Still open one stream's state at `incarnation` after
+    /// [`Self::leave_to_engines`], or stop with `None`: an in-memory stream
+    /// runs on the hybrid lifecycle and keeps its state here.
+    pub fn keep_for_hybrid(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        incarnation: Option<u64>,
+    ) {
+        self.entries
+            .keep_for_hybrid(tenant_id, namespace, stream, incarnation);
+    }
+
     pub fn open(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
         let root = root.into();
         Ok(Self {
