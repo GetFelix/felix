@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795629007818,
+  "lastUpdate": 1795635347527,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88176,6 +88176,72 @@ window.BENCHMARK_DATA = {
             "range": "863.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2195.00\nmean: 1826.20\nstdev: 863.55\ncv: 47.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6626bc66f4cdbdfa0e563af207e5b79bf133f505",
+          "message": "docs(retirement): in-memory shards keep the lease, and a lost owner is placed again on both engines (#3064) (#3068)\n\n* test(cluster): pin in-memory streams on a Raft cluster before the hybrid goes (#3064)\n\nAn in-memory shard never becomes a Raft group and today runs on the\nhybrid lifecycle, driver, promote fence and control-plane lease. Add\ncluster tests for what must survive the deletion: served through any\nbroker with no Raft group, owner loss gives a new generation and an\nempty owner, a cut-off owner refuses after its lease.\n\ndocs/hybrid-retirement.md gets an \"In-memory shards\" section with the\ninventory and the design, keeps cluster/lease.rs, and makes PR 6 wait\non #3066. The code split is filed as #3065, #3066 and #3067.\n\nSpec-Unaffected: tests and docs only, no modelled code changes\n\n* test(cluster): in-memory readers end on an owner change; inventory gaps (#3064)\n\nThe owner-loss test now requires the dead owner's subscriber to end\nrather than be carried over, and drops the restarted-owner block. The\ncut-off test requires the reader to be ended with the no-owner reason\nat the generation it served. The Raft gauge check requires the metric.\n\nThe doc adds the lease-free row (#3069), the Quorum branch of\npublish_in_memory, and what the lease gate, watch_leadership and\nclose_stream_shard keep; size rows recounted.\n\nSpec-Unaffected: tests and docs only, no modelled code changes\n\n* test(cluster): step placement while waiting for an in-memory shard to move\n\nThe harness control plane runs no reconciler on a timer, so the owner-dies\ntest waited 180 s for a placement nobody ran. It now steps placement in its\nwait, as the durable failover tests do. Placement itself places the shard in\nthe pass after its owner goes down, on both engines; a unit test pins that.\n\nSpec-Unaffected: test-only change; placement logic is unchanged\n\n* docs: in-memory shards open no disk log\n\nSpec-Unaffected: docs only\n\n* test(placement): an in-memory shard whose owner left the catalog is placed again\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-25T11:23:32-08:00",
+          "tree_id": "6035ab3fdc6c1cde9e192f99f100872f4b254b2b",
+          "url": "https://github.com/GetFelix/felix/commit/6626bc66f4cdbdfa0e563af207e5b79bf133f505"
+        },
+        "date": 1795635331460,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.40\nstdev: 1.52\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "5.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 208.20\nstdev: 5.81\ncv: 2.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 267,
+            "range": "541.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 567.00\nstdev: 541.20\ncv: 95.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "10.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 204.60\nstdev: 10.85\ncv: 5.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 398,
+            "range": "245.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 398.00\nmean: 506.00\nstdev: 245.98\ncv: 48.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 552,
+            "range": "1304.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 552.00\nmean: 1466.00\nstdev: 1304.36\ncv: 88.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
