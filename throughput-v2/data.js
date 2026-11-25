@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795594308537,
+  "lastUpdate": 1795596012945,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68536,6 +68536,58 @@ window.BENCHMARK_DATA = {
             "range": "53047.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803970.23\nmean: 782977.22\nstdev: 53047.26\ncv: 6.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db6c605ab0f3dc552fe7e9943d416bb1fdb7e3c9",
+          "message": "fix(raft): a group poll takes its commit bound after the read index (#3146) (#3149)\n\nA poll on a Raft shard sampled the commit bound before the group reader's\nread index. A publish acknowledged before its commit (a Leader ack on the\nlease, a Quorum ack on a written majority) was above that bound, so a poll\nsent right after the ack came back without the record.\n\nThe reader now asks for the bound once the read index is applied. That wait\nalready covers every write the leader answered, so the poll hands the record\nout as a stream read does, and still nothing above the commit.\n\nSpec-Unaffected: only the order of two reads inside one poll changes; no spec models where a poll samples its bound",
+          "timestamp": "2026-11-25T08:31:07Z",
+          "tree_id": "229777cc07a53be7fdff8e726aae823f0c5e9b9a",
+          "url": "https://github.com/GetFelix/felix/commit/db6c605ab0f3dc552fe7e9943d416bb1fdb7e3c9"
+        },
+        "date": 1795596011509,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367525.67,
+            "range": "17926.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367525.67\nmean: 358798.95\nstdev: 17926.08\ncv: 5.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367525.67,
+            "range": "17926.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367525.67\nmean: 358798.95\nstdev: 17926.08\ncv: 5.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81067.44,
+            "range": "523.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81067.44\nmean: 80753.43\nstdev: 523.48\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810674.4,
+            "range": "5234.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810674.40\nmean: 807534.34\nstdev: 5234.79\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
