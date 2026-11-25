@@ -113,7 +113,7 @@ stores it at the leader's offsets (`replica.rs:663` `apply`, through
 ### 2. Commit mark
 
 The driver computes a majority offset over the cursors (`felix-replication/src/quorum.rs:1777`
-`quorum_offset`, `driver/shard.rs:479`), counted only from the leader's own
+`quorum_offset`, `driver/shard.rs:501`), counted only from the leader's own
 generation start (`felix-replication/src/quorum.rs:2007` `counted_offset`), and publishes it to
 `QuorumMarks` (`felix-replication/src/quorum.rs:37`, `:618`). Writers wait in `await_quorum`
 (`felix-replication/src/quorum.rs:1018`), called from the service:
@@ -155,7 +155,7 @@ The control plane picks the new set. A promotion across a set change runs a
 joint fence that needs answers from both the old and the new set
 (`promotion/joint.rs:216` `JointSets`, `replica.rs:2552` `joint_fence`). A new
 replica joins as a learner that ships but does not count toward the mark
-(`ship.rs:665`, `driver/shard.rs:746`), and a follower too far behind is
+(`ship.rs:665`, `driver/shard.rs:768`), and a follower too far behind is
 rebuilt (`felix-replication/src/rebuild.rs:40`). The driver learns of a change when the router
 notifies `routes_changed` (`felix-replication/src/driver.rs:176`).
 

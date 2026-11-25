@@ -221,6 +221,7 @@ impl Broker {
                 // until the broker restarted.
                 state.set_consistency(metadata.consistency);
                 self.mounts.set(&key, metadata.mount.as_deref());
+                self.set_in_memory(&key, !metadata.durable);
                 streams.insert(key, metadata);
                 self.catalog_changed();
                 return Ok(());
@@ -235,6 +236,7 @@ impl Broker {
                     return Err(Self::durability_change_error(&key, existing, &metadata));
                 }
                 self.mounts.set(&key, metadata.mount.as_deref());
+                self.set_in_memory(&key, !metadata.durable);
                 streams.insert(key, metadata);
                 self.catalog_changed();
                 return Ok(());
@@ -276,6 +278,7 @@ impl Broker {
             }
             topics.insert(topic, state);
             self.mounts.set(&key, metadata.mount.as_deref());
+            self.set_in_memory(&key, !metadata.durable);
             streams.insert(key.clone(), metadata);
             self.catalog_changed();
             return Ok(());
@@ -337,6 +340,7 @@ impl Broker {
             let mut streams = self.streams.write().await;
             let metadata = streams.remove(key)?;
             self.mounts.set(key, None);
+            self.set_in_memory(key, false);
             self.catalog_changed();
             metadata
         };
@@ -557,6 +561,30 @@ impl Broker {
             .await
             .get(&StreamKeyRef::new(tenant_id, namespace, stream))
             .cloned()
+    }
+
+    /// Whether a stream is registered here as in memory (`durable: false`).
+    /// `false` for a durable stream and for one not registered here. Reads no
+    /// async lock, so a log open can ask it on every call.
+    pub fn stream_in_memory(&self, tenant_id: &str, namespace: &str, stream: &str) -> bool {
+        self.in_memory_streams
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&StreamKeyRef::new(tenant_id, namespace, stream))
+    }
+
+    /// Keep `in_memory_streams` in step with `streams`. The caller holds the
+    /// streams write lock.
+    fn set_in_memory(&self, key: &StreamKey, in_memory: bool) {
+        let mut set = self
+            .in_memory_streams
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if in_memory {
+            set.insert(key.clone());
+        } else {
+            set.remove(key);
+        }
     }
 
     /// The consistency a registered cache asked for, or `None` if the cache is

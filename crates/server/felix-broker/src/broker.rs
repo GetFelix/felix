@@ -106,6 +106,9 @@ pub struct Broker {
     streams: RwLock<HashMap<StreamKey, StreamMetadata, RandomState>>,
     // Each stream's MQTT mount, kept in step with `streams` under its lock.
     mounts: mounts::Mounts,
+    // The streams in `streams` registered as in memory, kept in step with it
+    // under its lock so the log opens can check durability without an await.
+    in_memory_streams: std::sync::RwLock<hashbrown::HashSet<StreamKey, RandomState>>,
     // Map of cache key -> metadata for existence checks.
     caches: RwLock<HashMap<CacheKey, CacheMetadata, RandomState>>,
     // Map of tenant id -> active marker.
@@ -246,6 +249,9 @@ impl Broker {
             topics: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             streams: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             mounts: Default::default(),
+            in_memory_streams: std::sync::RwLock::new(hashbrown::HashSet::with_hasher(
+                felix_common::random::hash_state(),
+            )),
             caches: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             tenants: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             namespaces: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),

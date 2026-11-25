@@ -14,6 +14,7 @@ mod groups;
 mod halts;
 mod head_trim;
 mod identity;
+mod in_memory;
 mod inherited;
 mod joint_acks;
 mod learner;
