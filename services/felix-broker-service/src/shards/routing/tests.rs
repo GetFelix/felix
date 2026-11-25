@@ -1708,3 +1708,104 @@ fn a_subscribe_to_a_member_placed_elsewhere_is_redirected() {
         "{answer:?}"
     );
 }
+
+/// A member of `key(0)` on this broker that follows `leader`, its group's
+/// elected leader, and forwards to it when it may, as the Raft engine does.
+struct FollowsElected {
+    leader: &'static str,
+}
+
+impl EngineShards for FollowsElected {
+    fn take<'a>(
+        &'a self,
+        _assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
+        Box::pin(async { Taken::new() })
+    }
+
+    fn dispatch(
+        &self,
+        _key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch> {
+        Some(match nodes(self.leader) {
+            Some(advertise_addr) => Dispatch::Forward {
+                node_id: self.leader.to_string(),
+                advertise_addr,
+                generation: 3,
+                incarnation: 0,
+            },
+            None => Dispatch::Unavailable(Reason::OwnerUnavailable(self.leader.to_string())),
+        })
+    }
+
+    fn holds(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn elected_leader(&self, _key: &ShardKey) -> Option<String> {
+        Some(self.leader.to_string())
+    }
+}
+
+/// Who Kafka `Metadata` names as `key(0)`'s leader on `ingress`.
+fn kafka_placement(ingress: IngressRouter) -> felix_kafka::Placement {
+    use felix_kafka::Cluster;
+    let cluster = crate::serving::kafka::BrokerCluster::new(
+        Arc::new(crate::serving::auth::BrokerAuth::new(
+            "http://127.0.0.1:1".to_string(),
+        )),
+        Arc::new(StreamEngine::new(None, Some(Arc::new(ingress)))),
+        None,
+        "broker-a",
+        "127.0.0.1:9092",
+    )
+    .expect("kafka cluster");
+    cluster.placement(&felix_kafka::ShardRef {
+        tenant_id: "t1",
+        namespace: "ns",
+        stream: "orders",
+        shard: 0,
+    })
+}
+
+/// **Kafka `Metadata` names the leader a member here follows, even where a
+/// forward could not go (#3105).** Only the elected leader takes a Kafka
+/// produce or fetch, and a Kafka client connects to it itself. A leader in a
+/// region this broker does not forward to, or one this broker has no peer
+/// address for, used to be answered `LEADER_NOT_AVAILABLE` for good. With no
+/// member here, placement's leader is still named.
+#[test]
+fn kafka_metadata_names_the_elected_leader_a_forward_cannot_reach() {
+    let remote = |leader: &str| felix_kafka::Placement::Remote {
+        leader: leader.to_string(),
+        replicas: Vec::new(),
+    };
+    let unbridged = engine_ingress(FollowsElected { leader: "broker-b" }, "eu-west-1", true);
+    assert!(matches!(
+        unbridged.dispatch(&key(0)),
+        Dispatch::Unavailable(Reason::RegionNotRoutable { .. })
+    ));
+    assert_eq!(kafka_placement(unbridged), remote("broker-b"));
+
+    // The catalog has no peer address for broker-c.
+    let unaddressed = engine_ingress(FollowsElected { leader: "broker-c" }, "us-west-2", true);
+    assert!(matches!(
+        unaddressed.dispatch(&key(0)),
+        Dispatch::Unavailable(Reason::OwnerUnavailable(_))
+    ));
+    assert_eq!(kafka_placement(unaddressed), remote("broker-c"));
+
+    let reachable = engine_ingress(FollowsElected { leader: "broker-b" }, "us-west-2", true);
+    assert_eq!(kafka_placement(reachable), remote("broker-b"));
+
+    let no_member = engine_ingress(
+        PlacedOn {
+            leader: "broker-b",
+            member: false,
+        },
+        "us-west-2",
+        true,
+    );
+    assert_eq!(kafka_placement(no_member), remote("broker-b"));
+}

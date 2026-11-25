@@ -2568,6 +2568,16 @@ async fn a_request_off_the_leader_is_routed_to_it() {
             members[leader].name.to_string()
         )))
     );
+    // A client that connects to the leader itself (Kafka) is told it, even
+    // where this broker has no address to forward to (#3105).
+    assert_eq!(
+        EngineShards::elected_leader(&*follower.shards, &orders).as_deref(),
+        Some(members[leader].name)
+    );
+    assert_eq!(
+        EngineShards::elected_leader(&*members[leader].shards, &orders),
+        None
+    );
 
     let outside = Member::start(&net, "broker-d").await;
     assert_eq!(route(&outside.shards, &orders), None);
@@ -2578,6 +2588,10 @@ async fn a_request_off_the_leader_is_routed_to_it() {
         "a Raft shard held elsewhere went to the hybrid"
     );
     assert!(outside.shards.engine_for(&orders).is_none());
+    assert_eq!(
+        EngineShards::elected_leader(&*outside.shards, &orders),
+        None
+    );
     assert_eq!(
         EngineShards::dispatch(&*outside.shards, &orders, &addr_of),
         Some(Dispatch::Forward {
