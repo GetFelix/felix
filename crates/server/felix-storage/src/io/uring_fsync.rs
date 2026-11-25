@@ -64,6 +64,9 @@ struct Ring {
     /// An errno the service thread reports in place of its next submit.
     #[cfg(test)]
     submit_fault: Arc<std::sync::atomic::AtomicI32>,
+    /// Makes the service thread panic the next time it reaps.
+    #[cfg(test)]
+    panic_fault: Arc<AtomicBool>,
 }
 
 /// Interrupts the service thread's wait when a request is queued.
@@ -128,11 +131,15 @@ impl Wake {
 /// Owns the file until the completion arrives. A caller that stops waiting
 /// would otherwise close the descriptor under an in-flight sync, and the
 /// kernel could hand the number to an unrelated file.
+///
+/// Dropped unanswered (the service thread unwinding, the channel closing),
+/// its hook runs as a failure. It is declared before `reply` so it drops
+/// first, and the log is stopped before the waiter hears.
 struct Submission {
     file: Arc<File>,
     op: Op,
-    reply: oneshot::Sender<io::Result<()>>,
     on_failure: Option<OnFailure>,
+    reply: oneshot::Sender<io::Result<()>>,
     /// An errno reported in place of the kernel's result.
     #[cfg(test)]
     fail_with: i32,
@@ -168,6 +175,17 @@ impl InFlight {
     }
 }
 
+/// An operation dropped before its completion was handled, as when the
+/// service thread panics, fails like one the kernel failed: it may have
+/// failed and used up the file's writeback error.
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.complete(Err(io::Error::other(
+            "the io_uring flusher dropped an fsync without answering it",
+        )));
+    }
+}
+
 /// Report an outcome, running the failure hook first so the log is stopped
 /// before any waiter hears about it, and whether or not one still listens.
 /// The hook is dropped here either way, before the reply.
@@ -176,8 +194,8 @@ fn complete(
     on_failure: Option<OnFailure>,
     outcome: io::Result<()>,
 ) {
-    if let (Err(err), Some(on_failure)) = (&outcome, on_failure) {
-        on_failure(err);
+    if let Some(on_failure) = on_failure {
+        on_failure.answer(&outcome);
     }
     let _ = reply.send(outcome);
 }
@@ -274,10 +292,12 @@ pub(crate) fn skip_without_ring() {
 /// dropped no earlier than the ring's answer.
 pub(crate) async fn fsync(file: Arc<File>, on_failure: OnFailure) -> Option<io::Result<()>> {
     // Checked first so a missing ring falls back before the fault hooks run:
-    // the fallback runs them itself.
-    ring()?;
-    // A file in memory has no descriptor to give the ring.
-    super::os_file(&file)?;
+    // the fallback runs them itself. A file in memory has no descriptor to
+    // give the ring.
+    let Some(ring) = ring().filter(|_| super::os_file(&file).is_some()) else {
+        on_failure.withdraw();
+        return None;
+    };
     #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     {
         crate::fault::refresh();
@@ -285,15 +305,16 @@ pub(crate) async fn fsync(file: Arc<File>, on_failure: OnFailure) -> Option<io::
             tokio::time::sleep(delay).await;
         }
         if let Some(err) = crate::fault::injected_failure() {
-            on_failure(&err);
-            return Some(Err(err));
+            let outcome = Err(err);
+            on_failure.answer(&outcome);
+            return Some(outcome);
         }
     }
     #[cfg(any(test, debug_assertions, feature = "fault-injection"))]
     if let Some(os) = super::os_file(&file) {
         super::power_loss::observe_file(os, super::SyncKind::Uring);
     }
-    submit_to(ring()?, file, Op::Fsync, Some(on_failure)).await
+    submit_to(ring, file, Op::Fsync, Some(on_failure)).await
 }
 
 /// Wait through the ring for `file` to become readable.
@@ -306,9 +327,12 @@ async fn submit_to(
     ring: &Ring,
     file: Arc<File>,
     op: Op,
-    on_failure: Option<OnFailure>,
+    mut on_failure: Option<OnFailure>,
 ) -> Option<io::Result<()>> {
     let (reply, wait) = oneshot::channel();
+    if let Some(on_failure) = on_failure.as_mut() {
+        on_failure.submitted();
+    }
     #[allow(unused_mut)]
     let mut submission = Submission {
         file,
@@ -332,8 +356,13 @@ async fn submit_to(
         }
     }
     // A send failure means the service thread is gone, which is the same
-    // situation as no ring at all.
-    if ring.tx.send(submission).is_err() {
+    // situation as no ring at all. Whatever this log had in the ring went
+    // with the thread and poisoned it before freeing its gate, so a fallback
+    // reached here has no unanswered fsync of this log behind it.
+    if let Err(unsent) = ring.tx.send(submission) {
+        if let Some(on_failure) = unsent.0.on_failure {
+            on_failure.withdraw();
+        }
         return None;
     }
     ring.wake.signal();
@@ -378,6 +407,8 @@ impl Ring {
         let (tx, rx) = std::sync::mpsc::channel::<Submission>();
         #[cfg(test)]
         let submit_fault = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        #[cfg(test)]
+        let panic_fault = Arc::new(AtomicBool::new(false));
         let service = Service {
             uring,
             wake: Arc::clone(&wake),
@@ -386,6 +417,8 @@ impl Ring {
             backlog: VecDeque::new(),
             #[cfg(test)]
             submit_fault: Arc::clone(&submit_fault),
+            #[cfg(test)]
+            panic_fault: Arc::clone(&panic_fault),
         };
         std::thread::Builder::new()
             .name("felix-uring-fsync".into())
@@ -396,6 +429,8 @@ impl Ring {
             wake,
             #[cfg(test)]
             submit_fault,
+            #[cfg(test)]
+            panic_fault,
         })
     }
 }
@@ -410,6 +445,8 @@ struct Service {
     backlog: VecDeque<Submission>,
     #[cfg(test)]
     submit_fault: Arc<std::sync::atomic::AtomicI32>,
+    #[cfg(test)]
+    panic_fault: Arc<AtomicBool>,
 }
 
 impl Service {
@@ -489,6 +526,11 @@ impl Service {
             .completion()
             .map(|cqe| (cqe.user_data(), cqe.result()))
             .collect();
+        #[cfg(test)]
+        assert!(
+            !self.panic_fault.swap(false, Ordering::SeqCst),
+            "injected io_uring service thread panic"
+        );
         for &(id, result) in &completions {
             if id == WAKE_ID {
                 self.wake.consume();

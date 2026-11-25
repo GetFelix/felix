@@ -38,7 +38,8 @@ async fn a_new_flush_is_not_held_behind_an_outstanding_one() {
 
     let dir = tempdir().expect("dir");
     let file = temp_file(dir.path(), "log");
-    let flushed = tokio::time::timeout(Duration::from_secs(2), fsync(file, Box::new(|_| {}))).await;
+    let flushed =
+        tokio::time::timeout(Duration::from_secs(2), fsync(file, OnFailure::new(|_| {}))).await;
 
     writer.write_all(b"x").expect("release gate");
     let released = held.await.expect("join");
@@ -206,7 +207,7 @@ async fn concurrent_flush_latency() {
                 for _ in 0..500 {
                     (&*file).write_all(&[0u8; 4096]).expect("write");
                     let start = Instant::now();
-                    let outcome = fsync(Arc::clone(&file), Box::new(|_| {})).await;
+                    let outcome = fsync(Arc::clone(&file), OnFailure::new(|_| {})).await;
                     assert!(matches!(outcome, Some(Ok(()))), "{outcome:?}");
                     samples.push(start.elapsed());
                 }
@@ -247,7 +248,7 @@ async fn a_failure_reaped_after_the_caller_left_still_runs_the_hook() {
     let (failed_tx, failed) = std::sync::mpsc::channel();
     let flush = tokio::spawn(fsync(
         file,
-        Box::new(move |err: &io::Error| {
+        OnFailure::new(move |err: &io::Error| {
             let _ = failed_tx.send(err.raw_os_error());
         }),
     ));
@@ -262,4 +263,113 @@ async fn a_failure_reaped_after_the_caller_left_still_runs_the_hook() {
         .recv_timeout(Duration::from_secs(5))
         .expect("the failure was lost with the caller");
     assert_eq!(reported, Some(libc::EIO));
+}
+
+/// The service thread panics with a flush in flight. Unwinding must fail that
+/// flush, running its hook before its waiter hears, and a request after the
+/// thread is gone falls back without the hook running: it never reached a
+/// ring, so there is nothing to answer for.
+#[tokio::test]
+async fn a_panicking_service_thread_fails_its_in_flight_flushes() {
+    let Some(ring) = private_ring() else {
+        skip_without_ring();
+        return;
+    };
+    let (reader, _writer) = std::io::pipe().expect("pipe");
+    let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
+        reader,
+    ))));
+    let failed = Arc::new(AtomicBool::new(false));
+    let hook = {
+        let failed = Arc::clone(&failed);
+        OnFailure::new(move |_| failed.store(true, Ordering::SeqCst))
+    };
+    let held = tokio::spawn(submit_to(
+        ring,
+        Arc::clone(&gate),
+        Op::PollReadable,
+        Some(hook),
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!held.is_finished(), "the held operation finished early");
+
+    ring.panic_fault.store(true, Ordering::SeqCst);
+    ring.wake.signal();
+    let answered = tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("the in-flight waiter was never answered")
+        .expect("join");
+    assert!(matches!(answered, Some(Err(_))), "{answered:?}");
+    assert!(
+        failed.load(Ordering::SeqCst),
+        "the waiter heard before the hook ran"
+    );
+
+    let late = Arc::new(AtomicBool::new(false));
+    let hook = {
+        let late = Arc::clone(&late);
+        OnFailure::new(move |_| late.store(true, Ordering::SeqCst))
+    };
+    let dir = tempdir().expect("dir");
+    let file = temp_file(dir.path(), "log");
+    let fallback = submit_to(ring, file, Op::Fsync, Some(hook)).await;
+    assert!(fallback.is_none(), "{fallback:?}");
+    assert!(
+        !late.load(Ordering::SeqCst),
+        "an unsent request ran its hook"
+    );
+}
+
+/// Every way an operation leaves the service thread unanswered runs its hook
+/// once, before its reply.
+#[test]
+fn an_operation_dropped_unanswered_fails_once_before_its_reply() {
+    let dir = tempdir().expect("dir");
+    let file = temp_file(dir.path(), "log");
+    let ran = Arc::new(AtomicU64::new(0));
+    let hook = |ran: &Arc<AtomicU64>| {
+        let ran = Arc::clone(ran);
+        let mut hook = OnFailure::new(move |_| {
+            ran.fetch_add(1, Ordering::SeqCst);
+        });
+        hook.submitted();
+        hook
+    };
+
+    // Registered in the ring.
+    let (reply, mut wait) = oneshot::channel();
+    let in_flight = InFlight {
+        _file: Arc::clone(&file),
+        reply: Some(reply),
+        on_failure: Some(hook(&ran)),
+        fail_with: 0,
+    };
+    drop(in_flight);
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+    assert!(matches!(wait.try_recv(), Ok(Err(_))));
+
+    // Queued but not yet pushed.
+    let (reply, mut wait) = oneshot::channel();
+    let submission = Submission {
+        file: Arc::clone(&file),
+        op: Op::Fsync,
+        on_failure: Some(hook(&ran)),
+        reply,
+        fail_with: 0,
+    };
+    drop(submission);
+    assert_eq!(ran.load(Ordering::SeqCst), 2);
+    assert!(wait.try_recv().is_err());
+
+    // Answered, then dropped: the hook does not run a second time.
+    let (reply, _wait) = oneshot::channel();
+    let mut in_flight = InFlight {
+        _file: file,
+        reply: Some(reply),
+        on_failure: Some(hook(&ran)),
+        fail_with: 0,
+    };
+    in_flight.complete(Err(io::Error::from_raw_os_error(libc::EIO)));
+    drop(in_flight);
+    assert_eq!(ran.load(Ordering::SeqCst), 3);
 }
