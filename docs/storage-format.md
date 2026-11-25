@@ -2704,8 +2704,13 @@ Written by the start that rotated the storage id after a relaxed crash
 cannot tell a restored volume from a relaxed crash: restoring a volume
 snapshot taken while it ran writes it too, and the re-form that follows can
 give out offsets handed out after the snapshot. Text: the line `relaxed_crash`, then the new id in hex, then the ids relaxed
-crashes rotated away, newest first, at most 8, one per line in hex. Synced
-with the directory.
+crashes rotated away, newest first, one per line in hex. Synced with the
+directory. It keeps the newest 8 of those ids, and an older one for as long as
+a Raft copy under the root (in a shard directory, kept or set aside) was
+minted under it, so the file is bounded by the copies on disk and a crash
+loop of any length cannot drop an id a copy still waits on
+([#3119](https://github.com/GetFelix/felix/issues/3119)). If a copy file
+cannot be read, that start drops no id.
 
 It counts only while its first id is the current storage id
 (`run_state::relaxed_crash_sources`), so any later rotation voids it. A

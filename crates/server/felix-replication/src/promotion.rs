@@ -188,6 +188,16 @@ pub async fn fence_shard<R: PeerRequester>(
     .await
 }
 
+/// Whether `key` is a shard of a stream `broker` has registered as in
+/// memory. A stream not registered here counts as durable.
+pub(crate) async fn in_memory_stream(broker: &Broker, key: &ShardKey) -> bool {
+    key.kind == ShardKind::Stream
+        && broker
+            .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
+            .await
+            .is_some_and(|metadata| !metadata.durable)
+}
+
 /// [`fence_shard`], for a broker standing for election when `candidacy` is
 /// given: the fence says so, and carries the set the candidate keeps, with
 /// its own generation, rather than the route's. Standing changes no set, so
@@ -210,6 +220,15 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
     candidacy: Option<&crate::election::Candidacy>,
     unified: Option<&crate::quorum::QuorumMarks>,
 ) -> Outcome {
+    // An in-memory stream replicates no records, so there is no log to fence
+    // and none a pass could acknowledge on, as with a cache kept in memory.
+    // Opening one to fence it would leave the stream with a log on disk, here
+    // and on every replica asked (#3136).
+    if in_memory_stream(broker, key).await {
+        return Outcome::Lease {
+            lacking: "a log, on an in-memory stream".to_string(),
+        };
+    }
     let joint_fence = joint.is_some();
     // A continuing leader holds every record acknowledged before this
     // generation, so its fence needs only promises (#2047).

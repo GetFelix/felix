@@ -57,6 +57,10 @@ pub struct RuntimeConfig {
     /// out at the first timer check after this has passed, so with the
     /// default tick a busy leader sends one every 250 ms.
     pub heartbeat: Duration,
+    /// The longest a call to a peer waits for its answer. See
+    /// [`Self::peer_deadline`], which also keeps it under the election
+    /// timeout.
+    pub max_peer_deadline: Duration,
     /// How often it sends one once the group is idle: no entry sent for
     /// [`Self::idle_after`]. A follower of an idle leader waits three of
     /// these before it may stand, so a dead leader of an idle group is
@@ -142,6 +146,7 @@ impl Default for RuntimeConfig {
         Self {
             tick: Duration::from_millis(50),
             heartbeat: Duration::from_millis(200),
+            max_peer_deadline: Duration::from_millis(800),
             idle_heartbeat: Duration::from_secs(2),
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
@@ -225,6 +230,21 @@ fn wall_clock_micros() -> u64 {
 }
 
 impl RuntimeConfig {
+    /// How long a leader waits for a follower's answer to an append or a
+    /// heartbeat, and a follower for its leader's to a written report,
+    /// before it gives the call up and tries again. A shard cannot commit
+    /// over a link whose round trip is longer.
+    ///
+    /// It is [`Self::max_peer_deadline`], 800 ms by default, cut to the
+    /// shortest election timeout less one heartbeat where that is shorter,
+    /// and never under the heartbeat. The lease is not stretched by it: it
+    /// counts from when a message was handed off, never from its answer.
+    pub fn peer_deadline(&self) -> Duration {
+        self.max_peer_deadline
+            .min(self.election_min.saturating_sub(self.heartbeat))
+            .max(self.heartbeat)
+    }
+
     pub(crate) fn raft(&self, kind: ShardKind) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
@@ -253,7 +273,10 @@ impl RuntimeConfig {
         let millis = |duration: Duration| duration.as_millis() as u64;
         Config {
             cluster_name: "felix-shard".into(),
-            heartbeat_interval: millis(self.heartbeat),
+            // openraft paces nothing by this with its tick off: the node
+            // ticker sends each heartbeat (`Group::tick`). What is left is
+            // the deadline openraft gives every append and heartbeat.
+            heartbeat_interval: millis(self.peer_deadline()),
             election_timeout_min: millis(self.election_min),
             election_timeout_max: millis(self.election_max),
             max_payload_entries: self.append_entries,
@@ -660,6 +683,7 @@ impl GroupRuntime {
                     started,
                     tick: config.tick.as_millis() as u64,
                     heartbeat: config.heartbeat.as_millis() as u64,
+                    peer_deadline: config.peer_deadline(),
                     idle_heartbeat: config.idle_heartbeat.as_millis() as u64,
                     idle_after: config.idle_after.as_millis() as u64,
                     election_min: config.election_min.as_millis() as u64,

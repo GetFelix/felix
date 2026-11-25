@@ -1158,6 +1158,13 @@ page, each one from the last answer's `next_offset`.
   for more. A page that reaches that point comes back
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
+- On a Raft shard a read sent after a publish's ack includes that record, at
+  every level. An ack sent on enqueue is the exception: it comes before the
+  write. A `Leader` ack under the leader's lease and a `Quorum` ack on a
+  stream that does not fsync on commit are sent before the commit, so the read
+  first waits for the writes already acknowledged to commit. If that takes
+  longer than an election timeout the read is refused with a retryable error
+  instead of answered without them.
 - A `Quorum` leader that has not committed anything at its generation yet,
   just after a promotion, answers `shard_unavailable` with reason `not_ready`
   instead of a page. Retry it: an empty page is only ever an answer at the

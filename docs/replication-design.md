@@ -2378,8 +2378,10 @@ An in-memory stream writes none either. Its publishes never reach the shard's
 log: they take no offsets, nothing ships, the fence has nothing to take, and a
 `Quorum` publish has no offset to wait on a mark for (`await_quorum`). With no
 inherited record there is nothing for a start record to cover, and the broker
-has no log to append one to, so a promoted in-memory shard opens as soon as
-its fence settles.
+has no log to append one to. A promoted in-memory shard is not fenced either:
+a fence would open a log here and on each replica it asks, so the shard opens
+on the lease. Its group logs stay on its leader and are not shipped, since
+they carry no generation for the next promotion to rank a copy by.
 
 **Across versions: the `generation_start` fleet feature.** The record and the
 counting rule switch on together, when an operator finalizes

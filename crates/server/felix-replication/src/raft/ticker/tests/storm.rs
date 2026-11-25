@@ -97,6 +97,7 @@ fn timers(most: usize) -> Timers {
         started: Instant::now(),
         tick: TICK / MS,
         heartbeat: 200,
+        peer_deadline: Duration::from_millis(800),
         idle_heartbeat: 2000,
         idle_after: 5000,
         election_min: ELECTION_MIN / MS,

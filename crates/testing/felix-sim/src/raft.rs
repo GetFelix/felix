@@ -872,6 +872,7 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
     RuntimeConfig {
         tick: at(shipped.tick),
         heartbeat: at(shipped.heartbeat),
+        max_peer_deadline: at(shipped.max_peer_deadline),
         idle_heartbeat: at(shipped.idle_heartbeat),
         idle_after: at(shipped.idle_after),
         election_min: at(shipped.election_min),

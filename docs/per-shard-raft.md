@@ -2023,9 +2023,13 @@ Every group is built with `enable_tick: false`, so openraft's heartbeat
 deadline stays unset and wakes nothing (measured on the previous pin, whose
 internal ticker it replaces: idle CPU 0 at 5,000 groups, against 86% of a
 core per 1,000 members with the default tick). One task per broker,
-the node ticker, calls `Raft::trigger().tick()` on every due group each
-interval. openraft 0.10.1 adds that call (openraft#2305). A leader whose
-heartbeat is due sends one.
+the node ticker, runs a timer check on every due group each interval. On a
+leader the check is `Raft::trigger().heartbeat()`: the ticker has already
+found the heartbeat due by the group's own gap, so one goes out. On any
+other member it is `Raft::trigger().tick()`, which openraft 0.10.1 adds
+(openraft#2305). openraft's own heartbeat timer is not asked, because its
+`heartbeat_interval` is set to something else: the deadline of a call
+("A call's deadline" below).
 
 openraft 0.10.1 also times elections on a deadline of its own, whatever
 `enable_tick` says (openraft#2343). That deadline is the fixed election
@@ -2055,8 +2059,8 @@ Rules for the ticker:
   rest. The ticker polls all of an interval's ticks together in its own task.
   It spawns nothing per tick.
 - **Drop, never queue.** A tick still waiting when the next interval starts
-  is dropped. openraft reads the clock when it handles a tick, so a late tick
-  sends one heartbeat and a dropped tick loses nothing. Each group counts its
+  is dropped. A leader's due time moves only when its check has run, so a
+  late tick sends one heartbeat and a dropped tick loses nothing. Each group counts its
   dropped ticks (`GroupStatus::dropped_ticks`), and the broker counts them all
   in one metric, `felix_broker_raft_dropped_ticks_total`. A label per group
   would be a label per shard.
@@ -2080,8 +2084,8 @@ Rules for the ticker:
   so the tick interval is added to heartbeat latency, and to election
   latency only where the follower's wait ends past openraft's deadline. The lease
   margin (engine page, Decisions, 5) counts it. For the heartbeat that is
-  the whole interval: openraft sends one only once 200 ms have passed since
-  it handled the last, and the tick 200 ms later arrives a moment too
+  the whole interval: the next one is due just over 200 ms after the check
+  that sent the last, and the tick 200 ms later arrives a moment too
   early. So a busy leader heartbeats every 250 ms, not every 200.
 - **A ticker that panics is started again.** With no ticker, no leader on
   the broker heartbeats and no follower starts a new election, and nothing else would
@@ -2109,6 +2113,50 @@ seconds, so Raft does not need 50 ms heartbeats to match its failover time.
 A member told its group's first members may stand at the first tick, once
 it has a place. If several members are told at the same moment their votes
 can split, and the next election waits for a timeout like any other.
+
+### A call's deadline
+
+A leader gives an append or a heartbeat up when no answer has come within
+`RuntimeConfig::peer_deadline()`, and sends it again. A follower's written
+report to its leader has the same deadline. So a shard commits over a link
+whose round trip is under that, and over a slower one it does not commit at
+all: every append is given up before its answer arrives. The deadline is
+`RuntimeConfig::max_peer_deadline`, 800 ms by default, cut to the shortest
+election timeout less one heartbeat where that is shorter, and never under
+the heartbeat. So no setting can put it past a follower's shortest wait.
+
+The deadline is not the heartbeat interval. openraft uses its
+`heartbeat_interval` for both (`replication/mod.rs` and
+`core/heartbeat/worker.rs` in 0.10.1), so with the two equal a shard stopped
+committing once a link's round trip passed 200 ms (#3101). Felix sets
+openraft's `heartbeat_interval` to the deadline and paces the heartbeats
+from the ticker, which openraft's tick being off leaves free.
+
+What a longer deadline changes:
+
+- **Not the lease.** The lease counts from when openraft handed off the
+  message a majority answered, never from when the answer came
+  ("Acknowledging a write"). An answer 700 ms late gives a lease already
+  700 ms old. `a_link_slower_than_the_heartbeat_commits_and_ages_the_lease`
+  answers every append 400 ms late and checks the write commits, the lease
+  is never younger than the trip, and no election follows.
+- **Not a follower's wait.** A follower counts from when it takes a
+  message. openraft sends a follower one heartbeat at a time, so over a
+  slow link its heartbeats arrive a round trip apart, which the bound
+  below `election_min` keeps inside the follower's shortest wait.
+- **A commit over a healthy majority is no slower.** Each follower has its
+  own stream, so a call waiting on a slow or dead follower holds up nothing
+  sent to the others.
+- **A dead broker is found later.** A call to a broker that answers nothing
+  fails at its deadline, and the broker counts as down once calls have kept
+  failing for a heartbeat ("Group runtime"). That is about 1.6 s after it
+  went silent, where it was about 400 ms. A broker whose connection is
+  refused still fails at once. Elections do not wait on this: they run on
+  the followers' own timers.
+- **A lease close to its end over a slow link.** With round trips near the
+  deadline the newest answered heartbeat is up to two trips and a heartbeat
+  old, which can pass the 1.5 s lease. A `Leader` write then waits for its
+  commit instead of the lease. Nothing is acknowledged that should not be.
 
 ### Idle groups
 
@@ -3489,7 +3537,7 @@ was answered:
 | Answered | Observed by a read that starts after the answer |
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease on a stream fsynced on commit | Always |
-| On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
+| On the lease, after the leader's own write (`Leader`) | Always, by the wait in the next row: the leader keeps the furthest entry it answered on the lease too. A failover between the answer and the commit can lose the write, and a read waiting for it is then refused |
 | When a majority has written it (`Quorum`, or `Leader` with no lease, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. A stream read that could start below a head trim's floor takes it on the leader ("Head trims"); a tail subscribe and live delivery are bounded by the commit (`read_bound`) alone. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
@@ -4662,7 +4710,11 @@ wait ran out, otherwise `leadership_lost`), as a stream write is: the entry
 may commit under the next leader, and a retry there would redrive, delete
 or claim a second time. Claims are group entries
 too: a poll that hands records out, and an extension, writes a claim and
-answers once it applied. A leader that stops leading drops the shard's
+answers once it applied. A poll waits for the read index first and then
+hands out only what this member has applied, so a poll sent after a
+publish's ack includes the record at every ack level (#3146). An ack sent on
+enqueue comes before the write and is the one exception.
+A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,
 each held for its full visibility again from then. Group writes are log entries, so they
 take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
@@ -6019,7 +6071,10 @@ itself, before its member opens (`shards/raft/standalone.rs`,
    only when that file names the current storage id, and only on a copy
    whose kept copies were all minted under an id a relaxed crash rotated
    away. A clean stop, an `OnCommit` crash and an operator's rotation
-   leave no such evidence, and the copy stays as it is. A standalone
+   leave no such evidence, and the copy stays as it is. The file keeps an
+   id for as long as a copy on disk was minted under it, so a shard that no
+   start opened through any number of crashes in a row is still re-formed
+   when it opens. A standalone
    broker cannot tell a restored volume from a relaxed crash, so it
    re-forms a restored copy from the reservation the snapshot holds. A
    volume snapshot taken while the broker ran can therefore give out
@@ -7742,7 +7797,8 @@ ones settled by the decisions of issue #2167 say so.
 
 4. **Which timer values?** Decided, and the runtime's defaults: tick 50 ms,
    heartbeat 200 ms, idle heartbeat 2 s after 5 s without an entry,
-   election timeout 1 to 2 s. A busy leader's heartbeat goes out at the
+   election timeout 1 to 2 s, and 800 ms for a follower's answer to an
+   append or heartbeat ("A call's deadline"). A busy leader's heartbeat goes out at the
    next tick, every 250 ms ("One timer for every group"). That is a fifth
    of the default heartbeat traffic for a busy group and a fortieth for an
    idle one. A follower
