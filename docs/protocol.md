@@ -1158,6 +1158,13 @@ page, each one from the last answer's `next_offset`.
   for more. A page that reaches that point comes back
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
+- On a Raft shard a read sent after a publish's ack includes that record, at
+  every level. An ack sent on enqueue is the exception: it comes before the
+  write. A `Leader` ack under the leader's lease and a `Quorum` ack on a
+  stream that does not fsync on commit are sent before the commit, so the read
+  first waits for the writes already acknowledged to commit. If that takes
+  longer than an election timeout the read is refused with a retryable error
+  instead of answered without them.
 - A `Quorum` leader that has not committed anything at its generation yet,
   just after a promotion, answers `shard_unavailable` with reason `not_ready`
   instead of a page. Retry it: an empty page is only ever an answer at the
@@ -2506,11 +2513,25 @@ has ended its readers. It then ends them right away, as for a move to the
 leader its log accepted, with `resume_from` below the records it never offered.
 The same goes for a rebuild the new leader asks of it.
 
-A subscription still reading its history from disk on a `Quorum` stream waits
-at the committed mark. If the broker stops serving the shard before the mark
-reaches the end of that history, the event stream is reset rather than ended
-with `shard_moved`. The client then resumes after the last record it received,
-or where it asked to start if it received none.
+A subscription still reading its history from disk on a `Quorum` stream, or
+on any Raft shard, waits at the committed mark. If the broker stops serving the
+shard before the mark reaches the end of that history, the event stream is
+reset rather than ended with `shard_moved`. On a Raft shard the same happens
+when a page of the history is refused its read index (the member lost its
+leader, or the leader has not opened its term). The records sent before the
+reset are a prefix of the history, never all of it: a clean end would read as
+the whole history and the reader would skip the rest. The client then resumes
+after the last record it received, or where it asked to start if it received
+none.
+
+> `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
+> `a_replay_that_loses_its_shard_part_way_is_reset_not_finished`.
+
+The same holds for any other failure while that history is being written: the
+shard closing on the broker, or a read of its log failing. The event stream is
+reset, never finished, so a clean end before live delivery only ever follows a
+last frame that says why (`subscription_ended`, or the error of a revoked
+credential).
 
 The Rust `Client` does this on its own: a subscription from
 `Client::subscribe` and a cache watch from `Client::watch_cache`
