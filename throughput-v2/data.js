@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795602549391,
+  "lastUpdate": 1795602961129,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68796,6 +68796,58 @@ window.BENCHMARK_DATA = {
             "range": "6978.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 994593.16\nmean: 994110.58\nstdev: 6978.40\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07ac0c0258073818efd0ec9d22760da78ec1bb97",
+          "message": "fix(raft): a member started from the control-plane view votes under the pin rule (#3102) (#3156)\n\n* fix(raft): a member started from the control-plane view votes under the pin rule (#3102)\n\nWith FELIX_START_WITHOUT_CONTROLPLANE on and FELIX_UNIFIED_FENCE=0, a\nbroker restarted while the control plane is down opens its Raft members\non the run witness instead of waiting for the deferred restore check, so\ntwo live copies of three can elect. The members vote but do not stand,\nrestore leadership, take a transfer or form a group until the broker has\nregistered. A storage id rotation that finds the mark log open now stops\nit, so the deferred check's rotation leaves no marks under the new id.\n\nThe unified-fence default is unchanged: no Raft member opens before the\ncontrol plane has checked the directory.\n\nSpec-Unaffected: the restore gate, the run witness and the view start are not modelled under tla/; vote granting (FelixRaftLease MayGrant) is unchanged, only standing is held\n\n* docs(raft): an unregistered broker's member forms no group (#3102)\n\nSpec-Unaffected: documentation only",
+          "timestamp": "2026-11-25T02:26:53-08:00",
+          "tree_id": "3dedd12d1b35df3c8c49a5ee0ca3c2d55ccd16ff",
+          "url": "https://github.com/GetFelix/felix/commit/07ac0c0258073818efd0ec9d22760da78ec1bb97"
+        },
+        "date": 1795602960371,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 533333.66,
+            "range": "35729.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533333.66\nmean: 533238.09\nstdev: 35729.99\ncv: 6.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 533333.66,
+            "range": "35729.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533333.66\nmean: 533238.09\nstdev: 35729.99\ncv: 6.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122797.25,
+            "range": "874.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122797.25\nmean: 122733.53\nstdev: 874.84\ncv: 0.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1227972.48,
+            "range": "8748.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1227972.48\nmean: 1227335.35\nstdev: 8748.42\ncv: 0.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
