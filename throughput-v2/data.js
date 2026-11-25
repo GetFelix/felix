@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795596409041,
+  "lastUpdate": 1795596874357,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68640,6 +68640,58 @@ window.BENCHMARK_DATA = {
             "range": "8255.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807083.44\nmean: 808269.55\nstdev: 8255.58\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6c5f6ad790aa0395a6ae73bb388d090033ea1cd1",
+          "message": "fix(raft): a leader asks for written reports once a Quorum write waits (#3117) (#3145)\n\n`Reports::wanted` was set inside `Reports::majority`, which runs in the\nsecond arm of the biased select in `Group::await_quorum`, behind the\ncommit and behind the `vouched-unsynced` sync. A write that had committed\nby the first poll of its wait took the commit arm and the flag stayed\nclear, so the leader went on sending `Ask::Nothing`. The next write's\nappends then went out unasked: no follower reported, and that write was\nacknowledged at its commit and apply instead of the written majority.\nNothing was acknowledged early; the window only cost the early\nacknowledgement.\n\n`a_relaxed_leader_acknowledges_on_relaxed_followers_reports` read the flag\nright after such a wait and saw `Nothing` whenever the primed write\ncommitted first. The flag is now set when the wait is made, which is what\n`await_quorum_ack` documents.\n\nCloses #3117\n\nSpec-Unaffected: the ask flag only decides whether followers send written reports; FelixRaftWritten models the reports and the count, not when a leader starts asking.",
+          "timestamp": "2026-11-25T08:44:04Z",
+          "tree_id": "f8bbeea96980ff25233e3fdbd6ad0e1fa86c8b4a",
+          "url": "https://github.com/GetFelix/felix/commit/6c5f6ad790aa0395a6ae73bb388d090033ea1cd1"
+        },
+        "date": 1795596873388,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 670989.42,
+            "range": "75384.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 670989.42\nmean: 665112.28\nstdev: 75384.52\ncv: 11.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 670989.42,
+            "range": "75384.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 670989.42\nmean: 665112.28\nstdev: 75384.52\ncv: 11.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162877.29,
+            "range": "3805.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162877.29\nmean: 164546.58\nstdev: 3805.51\ncv: 2.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1628772.89,
+            "range": "38055.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1628772.89\nmean: 1645465.80\nstdev: 38055.12\ncv: 2.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
