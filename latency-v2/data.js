@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795596870733,
+  "lastUpdate": 1795601233518,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87186,6 +87186,72 @@ window.BENCHMARK_DATA = {
             "range": "173.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 255.00\nmean: 326.40\nstdev: 173.67\ncv: 53.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3734bc5c0bea438199d582906f0bd28c85c6a6a5",
+          "message": "test(fixture): report ready only once every Raft shard is led by its placed leader (#3130) (#3148)\n\nThe broker that forms a Raft group wins its first term, then hands the\nleadership to the broker placement names, two groups at a time. Each\nhand-over closes its shard for an election, and a publish that lands in\none is refused as not ready. Cluster start only proves shard 0 takes a\nwrite and returns as soon as placement stops writing, so the fixture\ncould report ready with hand-overs still to come. A client suite's plain\nkeyed publish does not retry, so one landing on such a shard failed:\n`pubsub.c:5548 keyed publish 5 failed`, on key-5, the only key of the\neight that routes to shard 1, under 4 s after the fixture started.\n\n`Cluster::await_raft_leaders_placed` asks each shard's placed leader for\nits own member's view and waits until it leads, on two looks in a row.\nThe fixture calls it before it writes the fixture file. Nothing is\nwritten to any shard.\n\nThe C helper now prints the status and message of a refused keyed\npublish. The broker's answer comes through the callback, so the check's\n\"last error: none\" said nothing about it.\n\ndocs/per-shard-raft.md said the client retries a publish refused during\na hand-over. Only an at-least-once or idempotent publish is sent again.\n\nSpec-Unaffected: test harness readiness, a test diagnostic and a doc\nsentence; no broker or protocol behaviour changes.",
+          "timestamp": "2026-11-25T09:58:30Z",
+          "tree_id": "3b13885bc576759095cbf3f2777ecf8ac90584e4",
+          "url": "https://github.com/GetFelix/felix/commit/3734bc5c0bea438199d582906f0bd28c85c6a6a5"
+        },
+        "date": 1795601218870,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.00\nstdev: 1.22\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "8.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 205.60\nstdev: 8.44\ncv: 4.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 248,
+            "range": "869.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 645.40\nstdev: 869.74\ncv: 134.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "2.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 200.20\nstdev: 2.95\ncv: 1.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 405,
+            "range": "52.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 405.00\nmean: 427.00\nstdev: 52.13\ncv: 12.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 922,
+            "range": "819.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 922.00\nmean: 1236.40\nstdev: 819.23\ncv: 66.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
