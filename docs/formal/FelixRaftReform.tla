@@ -547,7 +547,7 @@ Replicate(l, f) ==
     /\ LET new == Adopt(log[f], log[l])
        IN /\ new # log[f] \/ term[f] # term[l] \/ role[f] # "follower"
              \/ match[l][f] # Len(log[l]) \/ commit[f] < commit[l]
-             \/ LeaseAnswers /\ <<StoredAllow(l, f), EchoOf(l, f)>> # <<allow[f], echoed[l][f]>>
+             \/ (LeaseAnswers /\ <<StoredAllow(l, f), EchoOf(l, f)>> # <<allow[f], echoed[l][f]>>)
           /\ KeepsCommit(f, new)
           /\ log' = [log EXCEPT ![f] = new]
           \* The new log agrees with the leader's up to the leader's commit.
