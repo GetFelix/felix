@@ -413,7 +413,9 @@ async fn pipelined_across(fault: Fault) {
         "never more than one message in flight through the leader"
     );
 
-    let next = super::raft::leader_among(&cluster, &live).await;
+    // A woken leader that placement still names takes its seat back, so
+    // the leader now may be the one that was paused.
+    let next = super::raft::leader_among(&cluster, &nodes).await;
     let stored = read_back(&cluster, &next).await;
     for (label, published) in [('L', &through_leader), ('F', &through_follower)] {
         assert!(
