@@ -900,6 +900,10 @@ pub struct BackupMember {
 }
 
 /// Shards an engine other than the hybrid runs on this broker.
+///
+/// No method has a default: a wrapper such as `EngineMatch` that left one
+/// out would answer for the engine it wraps with nothing, and the caller
+/// could not tell that from an engine with nothing to say.
 pub trait EngineShards: Send + Sync {
     /// Take this engine's shards out of `assignments` and bring its members
     /// here in line with them. What is left is the hybrid's. Returns every
@@ -933,61 +937,47 @@ pub trait EngineShards: Send + Sync {
     /// filtered by whether this broker may forward there or knows its
     /// address, and never a hop through a broker that only knows the leader.
     /// `None` when no member here follows another broker.
-    fn elected_leader(&self, _key: &ShardKey) -> Option<String> {
-        None
-    }
+    fn elected_leader(&self, key: &ShardKey) -> Option<String>;
 
     /// Whether `key`'s subscribers and readers are served on this broker
     /// although it does not lead the shard: from the engine's log, up to
     /// what the engine committed here.
-    fn serves_reads(&self, _key: &ShardKey) -> bool {
-        false
-    }
+    fn serves_reads(&self, key: &ShardKey) -> bool;
 
     /// Whether this broker holds a member of `key`'s group. A broker with
     /// none routes by placement alone.
-    fn holds(&self, _key: &ShardKey) -> bool {
-        false
-    }
+    fn holds(&self, key: &ShardKey) -> bool;
 
     /// Whether this broker leads `key` but no majority answered it lately.
     /// Its commit index has stopped, so it serves no reader.
-    fn leads_unheard(&self, _key: &ShardKey) -> bool {
-        false
-    }
+    fn leads_unheard(&self, key: &ShardKey) -> bool;
 
     /// Whether this broker holds a member of `key` that hears no leader while
     /// placement names only other brokers. Requests for it are routed by
     /// placement, as on a broker that holds no member.
-    fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
-        false
-    }
+    fn placed_elsewhere(&self, key: &ShardKey) -> bool;
 
     /// Every member this engine runs here, for a backup point: its term, and
     /// its committed end while it leads and serves that term.
-    fn backup_members(&self) -> Vec<BackupMember> {
-        Vec::new()
-    }
+    fn backup_members(&self) -> Vec<BackupMember>;
 
     /// Hands over the feed's wake, for an engine that learns something
     /// between passes that the next pass must act on.
-    fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+    fn wake_with(&self, wake: Arc<tokio::sync::Notify>);
 
     /// Hands over the broker's lease, whose heartbeats bring the
     /// assignment feed's head.
-    fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+    fn follow_lease(&self, lease: Arc<crate::cluster::lease::LeaseState>);
 
     /// Called after each [`Self::take`] with the view it was given: the
     /// instant the request that fetched it started, and the feed sequence
     /// it reached.
-    fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+    fn answered(&self, as_of: Option<tokio::time::Instant>, checkpoint: Option<u64>);
 
     /// Stop every member and close its log. The broker calls it once, when
     /// it stops, before storage is flushed. False when a log failed to
     /// close, here or earlier, so the stop may have left it unsynced.
-    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
-        Box::pin(async { true })
-    }
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>>;
 }
 
 /// The cluster state one task keeps in step. Grouped because they are only ever
