@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795648831457,
+  "lastUpdate": 1795649349572,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69992,6 +69992,58 @@ window.BENCHMARK_DATA = {
             "range": "5327.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814999.89\nmean: 815570.55\nstdev: 5327.35\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44ee1baf71747c79ac5ef638ecebc6983f614f06",
+          "message": "test(sim): a read error in a member's final log is a finding, not a short log (#3126) (#3183)\n\nrecords_below ended silently on any read error, so a log it could not read\nlooked like a missing term. It now returns the error, naming the member,\nshard and offset, and the judges skip a shard whose log was not read. The\nopened-term finding lists each member's last term and index and who led.\n\nSpec-Unaffected: simulator harness only",
+          "timestamp": "2026-11-25T15:23:34-08:00",
+          "tree_id": "dca258f96f42089def244a84b80157fdd0c405bb",
+          "url": "https://github.com/GetFelix/felix/commit/44ee1baf71747c79ac5ef638ecebc6983f614f06"
+        },
+        "date": 1795649348781,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 496168.49,
+            "range": "52512.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 496168.49\nmean: 518076.18\nstdev: 52512.84\ncv: 10.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 496168.49,
+            "range": "52512.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 496168.49\nmean: 518076.18\nstdev: 52512.84\ncv: 10.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119830.53,
+            "range": "1335.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119830.53\nmean: 119616.50\nstdev: 1335.46\ncv: 1.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1198305.31,
+            "range": "13354.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1198305.31\nmean: 1196165.01\nstdev: 13354.56\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
