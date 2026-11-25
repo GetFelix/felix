@@ -433,3 +433,107 @@ async fn audit_refuses_a_tenant_admin_and_features_list() {
     );
     h.control_plane.shutdown().await;
 }
+
+/// **A registered node is listed, drained and deregistered by name**, each
+/// change visible in its record, and each needs `--yes` off a terminal. Its
+/// data directory is declared dead only once it has left.
+#[tokio::test]
+async fn a_node_is_drained_and_deregistered() {
+    let h = Harness::start().await;
+    let node = serde_json::from_value(serde_json::json!({
+        "node_id": "broker-x",
+        "spec": {
+            "advertise_addr": "127.0.0.1:9",
+            "client_addr": "127.0.0.1:10",
+            "region": "local",
+        },
+        "status": {
+            "lifecycle": "live",
+            "last_heartbeat_at_millis": 1,
+            "registered_at_millis": 1,
+            "storage_id": "0123456789abcdef0123456789abcdef",
+        },
+    }))
+    .expect("a node");
+    h.control_plane
+        .store
+        .register_node(node)
+        .await
+        .expect("register");
+    let lifecycle = || async {
+        let node = h.get("/v1/nodes/broker-x").await.expect("node");
+        node["status"]["lifecycle"]
+            .as_str()
+            .or_else(|| node["node"]["status"]["lifecycle"].as_str())
+            .map(str::to_string)
+    };
+    let operator = h.operator.clone();
+    h.run_as(&operator, &["node", "ls"]).await.expect("ls");
+    h.run_as(&operator, &["node", "info", "broker-x"])
+        .await
+        .expect("info");
+    h.run_as(&operator, &["node", "info", "broker-x", "--json"])
+        .await
+        .expect("info json");
+
+    assert_eq!(
+        h.run_as(&operator, &["node", "drain", "broker-x"]).await,
+        Err(2)
+    );
+    assert_eq!(lifecycle().await.as_deref(), Some("live"));
+    h.run_as(&operator, &["node", "drain", "broker-x", "--yes"])
+        .await
+        .expect("drain");
+    assert_eq!(lifecycle().await.as_deref(), Some("draining"));
+
+    assert_eq!(
+        h.run_as(&operator, &["node", "declare-dead", "broker-x"])
+            .await,
+        Err(2)
+    );
+    assert_eq!(
+        h.run_as(&operator, &["node", "declare-dead", "broker-x", "--yes"])
+            .await,
+        Err(4),
+        "refused while the node is still a member"
+    );
+
+    h.run_as(
+        &operator,
+        &["node", "deregister", "broker-x", "--yes", "--json"],
+    )
+    .await
+    .expect("deregister");
+    assert_eq!(lifecycle().await.as_deref(), Some("left"));
+    h.run_as(&operator, &["node", "declare-dead", "broker-x", "--yes"])
+        .await
+        .expect("declared dead once it has left");
+    h.control_plane.shutdown().await;
+}
+
+/// **A re-form plan with no Raft groups finishes its survey with nothing to
+/// re-form**, and applying a plan that does not exist is refused.
+#[tokio::test]
+async fn a_reform_plan_with_nothing_to_reform() {
+    let h = Harness::start().await;
+    let operator = h.operator.clone();
+    let planned = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        h.run_as(&operator, &["raft", "reform", "plan"]),
+    )
+    .await
+    .expect("the survey finishes");
+    assert_eq!(planned, Ok(()));
+    let planned = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        h.run_as(&operator, &["raft", "reform", "plan", "--json"]),
+    )
+    .await
+    .expect("the survey finishes");
+    assert_eq!(planned, Ok(()));
+    let applied = h
+        .run_as(&operator, &["raft", "reform", "apply", "no-such-plan"])
+        .await;
+    assert_eq!(applied, Err(4), "no such plan");
+    h.control_plane.shutdown().await;
+}
