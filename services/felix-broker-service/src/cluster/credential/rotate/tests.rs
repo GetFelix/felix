@@ -123,3 +123,42 @@ async fn a_momentarily_missing_file_keeps_the_current_credential() {
         "the watcher gave up after the file vanished"
     );
 }
+
+/// **A replacement in a format the broker cannot read is adopted anyway**,
+/// with whitespace trimmed: the control plane, not the broker, decides what
+/// a valid credential is. A blank rewrite is ignored.
+#[tokio::test]
+async fn an_opaque_replacement_is_adopted_and_a_blank_one_ignored() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("node.token");
+    let original = jwt(now_secs() + 3_600);
+    std::fs::write(&path, &original).expect("seed");
+
+    let credential = NodeCredential::new(original.clone());
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(
+        path.clone(),
+        credential.clone(),
+        Duration::from_millis(10),
+        shutdown.clone(),
+    ));
+
+    std::fs::write(&path, "  \n").expect("blank");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        credential.bearer().as_str(),
+        original,
+        "a blank file is not a credential"
+    );
+
+    std::fs::write(&path, "  opaque-vault-token\n").expect("rotate");
+    let adopted = tokio::time::timeout(Duration::from_secs(5), async {
+        while credential.bearer().as_str() != "opaque-vault-token" {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    shutdown.cancel();
+    task.await.expect("task");
+    assert!(adopted.is_ok(), "the opaque credential was never adopted");
+}
