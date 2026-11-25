@@ -163,10 +163,13 @@ async fn run(level: &str, stream: StreamSpec, pace: Duration) -> Result<Outcome>
     beat(pace).await;
 
     step(&format!("{level}: reading the stream back from {elected}"));
-    let held = replay(&cluster, &elected).await?;
-    if !held.contains(&marker) {
-        bail!("{elected} acknowledged {marker:?} and does not serve it");
-    }
+    // A replay on a broker that has just taken over can stop short of its
+    // log's end (#3112), so read until the marker, the last record, shows.
+    let held = wait::until_some(SETTLES_WITHIN, "a replay through the marker", || async {
+        let held = replay(&cluster, &elected).await.ok()?;
+        held.contains(&marker).then_some(held)
+    })
+    .await?;
     let missing: Vec<String> = acknowledged
         .iter()
         .filter(|payload| !held.contains(payload))
