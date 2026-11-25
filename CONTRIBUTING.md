@@ -162,10 +162,17 @@ filler that restates what was just said.
   a broker of its own) and fails when a cell is more than
   3% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
   since hosted runners expose no hardware counters, so only user-space
-  instructions are counted, less the idle broker's per-second cost. If the extra cost is deliberate, run
-  `python3 scripts/perf/ipm_gate.py update <ipm-result.json>` (the result is
-  an artifact of the run, one per architecture) and commit the baseline with a
-  sentence on what the instructions buy. A toolchain bump updates it the same way.
+  instructions are counted. Some of the broker's work runs per second, not per
+  message (timers, and more of them under load than idle), so each cell
+  alternates unpaced reps with reps paced at half speed and fits
+  `instructions = a * messages + c * seconds`; `a` is the figure. A cell also
+  fails when its unpaced reps slow down by more than `max_slowdown_pct` from
+  first to last, or when the fit misses a rep by more than the tolerance. If
+  the extra cost is deliberate, dispatch the workflow three or more times on
+  one commit and run `python3 scripts/perf/ipm_gate.py update <ipm-result.json>...`
+  with every run's result for that architecture (artifacts of the runs); it
+  records the median. Commit the baseline with a sentence on what the
+  instructions buy. A toolchain bump updates it the same way.
 
 ### How pull request CI picks its jobs
 

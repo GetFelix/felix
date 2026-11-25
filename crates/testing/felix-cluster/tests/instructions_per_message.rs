@@ -19,7 +19,8 @@
 //! Only the broker process is counted, so a load generator
 //! change cannot hide or fake a broker regression. The stream is durable on the
 //! suite's default engine (Raft), with periodic fsync so the disk's wait stays
-//! out of the number.
+//! out of the number. Time-driven work is fitted out, not subtracted at the idle
+//! rate; see `fit_time_cost`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,25 +35,51 @@ const SHARDS: u32 = 48;
 const PAYLOAD_BYTES: usize = 256;
 const IN_FLIGHT: usize = 64;
 
-/// Warm-up is this many times a repetition's messages. The count keeps falling
-/// for the first few tens of thousands of messages (queues and buffers growing
-/// to their working size), and a short warm-up leaks that into the first reps.
-const WARMUP_FACTOR: usize = 4;
-
 /// How long the idle broker is counted to find its per-second background cost.
 const IDLE_WINDOW: Duration = Duration::from_secs(10);
 
-/// (cell name, publish batch size, measured messages). Each cell gets a broker
-/// of its own: under callgrind on aarch64 a broker runs slower the longer it
-/// has run, on either engine, while its instructions per unit of work stay
-/// put. A cell measured on an aged broker then picks up more of the cost that
-/// scales with time, and its acks can queue past the client's timeout.
-static CELLS: [(&str, usize, usize); 2] = [("b1", 1, 20_000), ("b64", 64, 80_000)];
+/// A paced repetition publishes at this fraction of the previous unpaced one's
+/// rate, so it runs about twice as long for the same messages. See
+/// [`fit_time_cost`] for why the reps need durations that differ by design.
+const PACED_FRACTION: f64 = 0.5;
+
+/// A cell: name, publish batch size, measured messages per repetition, and
+/// warm-up messages. The count keeps falling for the first few tens of
+/// thousands of messages (queues and buffers growing to their working size),
+/// so the warm-up is long. Each cell gets a broker of its own: under callgrind
+/// on aarch64 a broker runs slower the longer it has run, and a cell measured
+/// on an aged broker can queue acks past the client's timeout.
+struct CellSpec {
+    name: &'static str,
+    batch: usize,
+    messages: usize,
+    warmup: usize,
+}
+
+static CELLS: [CellSpec; 2] = [
+    CellSpec {
+        name: "b1",
+        batch: 1,
+        messages: 10_000,
+        warmup: 80_000,
+    },
+    CellSpec {
+        name: "b64",
+        batch: 64,
+        messages: 80_000,
+        warmup: 320_000,
+    },
+];
 
 /// The same load as `b64` on a broker whose MQTT listener is on and idle. The
 /// gate holds it to `b64` from the same run: a listener nobody uses must cost
 /// the QUIC path nothing.
-static MQTT_IDLE_CELLS: [(&str, usize, usize); 1] = [("b64_mqtt_idle", 64, 80_000)];
+static MQTT_IDLE_CELLS: [CellSpec; 1] = [CellSpec {
+    name: "b64_mqtt_idle",
+    batch: 64,
+    messages: 80_000,
+    warmup: 320_000,
+}];
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -65,12 +92,25 @@ fn loadgen_binary() -> Result<PathBuf> {
     felix_cluster::built_binary("felix-loadgen").map_err(|err| anyhow!("{err}; build it first"))
 }
 
-/// Run the ingest scenario and return the records the broker acknowledged.
-/// A measured run must be clean: retries and failed sends add work the
+/// What one loadgen run reported.
+struct Ingest {
+    acked: u64,
+    msg_s: f64,
+}
+
+/// Run the ingest scenario, at `rate` messages a second or as fast as acks
+/// allow. A measured run must be clean: retries and failed sends add work the
 /// baseline did not have. A warm-up only has to finish.
-fn run_ingest(cluster: &Cluster, batch: usize, total: usize, must_be_clean: bool) -> Result<u64> {
+fn run_ingest(
+    cluster: &Cluster,
+    batch: usize,
+    total: usize,
+    rate: Option<u64>,
+    must_be_clean: bool,
+) -> Result<Ingest> {
     let node = &cluster.nodes[0];
-    let output = Command::new(loadgen_binary()?)
+    let mut command = Command::new(loadgen_binary()?);
+    command
         .args(["--brokers", &node.client_addr.to_string()])
         .args(["--tenant", &cluster.tenant_id])
         .args(["--namespace", &cluster.namespace])
@@ -87,9 +127,11 @@ fn run_ingest(cluster: &Cluster, batch: usize, total: usize, must_be_clean: bool
         .args(["--concurrency", "1"])
         .args(["--batch", &batch.to_string()])
         .args(["--payload-bytes", &PAYLOAD_BYTES.to_string()])
-        .args(["--total", &total.to_string()])
-        .output()
-        .context("run felix-loadgen")?;
+        .args(["--total", &total.to_string()]);
+    if let Some(rate) = rate {
+        command.args(["--rate", &rate.to_string()]);
+    }
+    let output = command.output().context("run felix-loadgen")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !output.status.success() {
         bail!(
@@ -111,7 +153,10 @@ fn run_ingest(cluster: &Cluster, batch: usize, total: usize, must_be_clean: bool
             lease_counters(cluster)
         );
     }
-    Ok(acked)
+    Ok(Ingest {
+        acked,
+        msg_s: row["acked_throughput_msg_s"].as_f64().unwrap_or(0.0),
+    })
 }
 
 /// The broker's lease lapses and lease refusals so far: a retry the broker
@@ -189,15 +234,130 @@ fn dumps(dir: &Path, pid: u32) -> Vec<PathBuf> {
 }
 
 /// Broker instructions spent while `work` runs, and what `work` returned.
-fn count_instructions(
+fn count_instructions<T>(
     dir: &Path,
     pid: u32,
-    work: impl FnOnce() -> Result<u64>,
-) -> Result<(u64, u64)> {
+    work: impl FnOnce() -> Result<T>,
+) -> Result<(u64, T)> {
     // Starts a fresh part, so the second dump covers `work` alone.
     dump_instructions(dir, pid)?;
-    let acked = work()?;
-    Ok((dump_instructions(dir, pid)?, acked))
+    let out = work()?;
+    Ok((dump_instructions(dir, pid)?, out))
+}
+
+/// Least-squares fit of `instructions = a * messages + c * seconds` over reps
+/// that all carry the same messages, returned as `(a, c, worst residual)`.
+///
+/// Under callgrind part of the broker's work runs per second, not per
+/// message: timers, and more of them under load than when idle (an active
+/// Raft group heartbeats every 250 ms, an idle one every 2 s). Taking off the
+/// idle rate leaves the difference in every message, scaled by how long the
+/// rep took, so a slow runner reads as a regression. Fitting both terms
+/// removes the time-driven work at the rate it runs under load. The reps
+/// alternate between unpaced and paced at half speed so their durations
+/// differ by design; without that the two terms cannot be told apart.
+fn fit_time_cost(reps: &[(f64, f64)], messages: f64) -> Option<(f64, f64, f64)> {
+    let n = reps.len() as f64;
+    let (xs, ys): (Vec<f64>, Vec<f64>) = reps
+        .iter()
+        .map(|&(secs, ir)| (secs / messages, ir / messages))
+        .unzip();
+    let mx = xs.iter().sum::<f64>() / n;
+    let my = ys.iter().sum::<f64>() / n;
+    let sxx: f64 = xs.iter().map(|x| (x - mx).powi(2)).sum();
+    if sxx.is_nan() || sxx <= 0.0 {
+        return None;
+    }
+    let c = xs
+        .iter()
+        .zip(&ys)
+        .map(|(x, y)| (x - mx) * (y - my))
+        .sum::<f64>()
+        / sxx;
+    let a = my - c * mx;
+    let worst = xs
+        .iter()
+        .zip(&ys)
+        .map(|(x, y)| ((y - (a + c * x)) / a).abs() * 100.0)
+        .fold(0.0, f64::max);
+    Some((a, c, worst))
+}
+
+/// What the broker process and the runner did, read from /proc. Kept with
+/// each rep so a slowdown can be put down to CPU, waiting, memory or disk.
+#[derive(Default, Clone, Copy)]
+struct ProcSample {
+    cpu_s: f64,
+    rss_kib: u64,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+    io_stall_us: u64,
+}
+
+impl ProcSample {
+    fn read(pid: u32) -> Self {
+        let mut sample = Self::default();
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // Fields after the parenthesised command name; utime and stime are
+            // the 14th and 15th fields overall.
+            let rest = stat.rsplit_once(')').map_or("", |(_, rest)| rest);
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            let ticks = |i: usize| {
+                fields
+                    .get(i)
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            // SAFETY: sysconf has no preconditions.
+            let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f64;
+            sample.cpu_s = (ticks(11) + ticks(12)) / hz;
+        }
+        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            for line in status.lines() {
+                let value = |line: &str| {
+                    line.split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0)
+                };
+                if line.starts_with("VmRSS:") {
+                    sample.rss_kib = value(line);
+                } else if line.starts_with("voluntary_ctxt_switches:") {
+                    sample.voluntary_switches = value(line);
+                } else if line.starts_with("nonvoluntary_ctxt_switches:") {
+                    sample.involuntary_switches = value(line);
+                }
+            }
+        }
+        if let Ok(pressure) = std::fs::read_to_string("/proc/pressure/io") {
+            sample.io_stall_us = pressure
+                .lines()
+                .find(|line| line.starts_with("some"))
+                .and_then(|line| line.split("total=").nth(1))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+        }
+        sample
+    }
+}
+
+/// Bytes and files under `dir`.
+fn tree_size(dir: &Path) -> (u64, u64) {
+    let mut total = (0, 0);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {
+                let (bytes, files) = tree_size(&entry.path());
+                total = (total.0 + bytes, total.1 + files);
+            }
+            Ok(_) => {
+                let bytes = entry.metadata().map_or(0, |meta| meta.len());
+                total = (total.0 + bytes, total.1 + 1);
+            }
+            Err(_) => {}
+        }
+    }
+    total
 }
 
 fn median(values: &mut [f64]) -> f64 {
@@ -205,22 +365,124 @@ fn median(values: &mut [f64]) -> f64 {
     values[values.len() / 2]
 }
 
+/// One measured rep, with what the process and runner did meanwhile.
+struct Rep {
+    paced: bool,
+    secs: f64,
+    ir: u64,
+    msg_s: f64,
+    before: ProcSample,
+    after: ProcSample,
+    data: (u64, u64),
+}
+
+impl Rep {
+    fn json(&self, messages: usize) -> serde_json::Value {
+        serde_json::json!({
+            "paced": self.paced,
+            "secs": self.secs,
+            "ir": self.ir,
+            "ir_per_message": self.ir as f64 / messages as f64,
+            "msg_s": self.msg_s,
+            "cpu_s": self.after.cpu_s - self.before.cpu_s,
+            "rss_kib": self.after.rss_kib,
+            "voluntary_switches": self.after.voluntary_switches.saturating_sub(self.before.voluntary_switches),
+            "involuntary_switches": self.after.involuntary_switches.saturating_sub(self.before.involuntary_switches),
+            "io_stall_s": self.after.io_stall_us.saturating_sub(self.before.io_stall_us) as f64 / 1e6,
+            "data_bytes": self.data.0,
+            "data_files": self.data.1,
+        })
+    }
+
+    fn log(&self, name: &str, rep: usize, messages: usize) {
+        let cpu = self.after.cpu_s - self.before.cpu_s;
+        eprintln!(
+            "ipm {name} rep {rep} ({}): {:.1} instructions per message before the time fit, {:.1}s, {:.1} msg/s, broker cpu {cpu:.1}s ({:.0}% of wall), {:.2} M instructions per cpu second, rss {} MiB, switches {}/{}, io stall {:.1}s, data {} MiB in {} files",
+            if self.paced { "paced" } else { "unpaced" },
+            self.ir as f64 / messages as f64,
+            self.secs,
+            self.msg_s,
+            cpu / self.secs * 100.0,
+            self.ir as f64 / cpu.max(1e-9) / 1e6,
+            self.after.rss_kib / 1024,
+            self.after
+                .voluntary_switches
+                .saturating_sub(self.before.voluntary_switches),
+            self.after
+                .involuntary_switches
+                .saturating_sub(self.before.involuntary_switches),
+            self.after
+                .io_stall_us
+                .saturating_sub(self.before.io_stall_us) as f64
+                / 1e6,
+            self.data.0 >> 20,
+            self.data.1,
+        );
+    }
+}
+
+/// Run one counted rep of `spec` on the broker `pid`.
+fn measure_rep(
+    cluster: &Cluster,
+    dir: &Path,
+    pid: u32,
+    spec: &CellSpec,
+    rate: Option<u64>,
+    must_be_clean: bool,
+) -> Result<Rep> {
+    let before = ProcSample::read(pid);
+    let started = Instant::now();
+    let (ir, ingest) = count_instructions(dir, pid, || {
+        run_ingest(cluster, spec.batch, spec.messages, rate, must_be_clean)
+    })?;
+    let secs = started.elapsed().as_secs_f64();
+    let after = ProcSample::read(pid);
+    if ingest.acked != spec.messages as u64 {
+        bail!(
+            "cell {}: acked {} of {}",
+            spec.name,
+            ingest.acked,
+            spec.messages
+        );
+    }
+    Ok(Rep {
+        paced: rate.is_some(),
+        secs,
+        ir,
+        msg_s: ingest.msg_s,
+        before,
+        after,
+        data: tree_size(&cluster.nodes[0].data_dir),
+    })
+}
+
 /// Start a one-node cluster with `env` added to the broker's, measure `cells`
 /// on it, and stop it.
 async fn measure_cells(
     dir: &Path,
     reps: usize,
+    restart_probe: bool,
     env: Vec<(String, String)>,
-    cells: &'static [(&'static str, usize, usize)],
+    cells: &'static [CellSpec],
 ) -> serde_json::Map<String, serde_json::Value> {
     // The broker keeps its logs under the node's data directory, as Raft
     // requires. Periodic fsync writes every append but leaves the flush to a
     // timer, so the count is the broker's CPU and not time spent waiting on
-    // the disk; the timer's idle cost comes off like any other background work.
-    let mut broker_env = vec![(
-        "FELIX_DURABLE_FSYNC_MODE".to_string(),
-        "periodic".to_string(),
-    )];
+    // the disk; the timer's cost is taken out with the other time-driven work.
+    let mut broker_env = vec![
+        (
+            "FELIX_DURABLE_FSYNC_MODE".to_string(),
+            "periodic".to_string(),
+        ),
+        // Callgrind on aarch64 runs b1 at 20 to 60 msg/s with 64 acks
+        // outstanding, so an ack can take seconds. The default 5 s commit
+        // wait then answers a few publishes as timed out and the rep is not
+        // clean. A timeout is not per-message work, so wait longer.
+        (
+            "FELIX_PUBLISH_QUORUM_TIMEOUT_MS".to_string(),
+            "60000".to_string(),
+        ),
+    ];
     broker_env.extend(env);
     let cluster = Cluster::start(ClusterConfig {
         nodes: 1,
@@ -239,68 +501,81 @@ async fn measure_cells(
     })
     .await
     .expect("start cluster");
-    let pid = cluster.nodes[0].pid().expect("broker pid");
     let dir = dir.to_path_buf();
 
     // The loadgen and callgrind calls block, and the in-process control plane has
     // to keep serving heartbeats meanwhile.
     tokio::task::spawn_blocking(move || -> Result<serde_json::Map<String, serde_json::Value>> {
+        let mut cluster = cluster;
         let dir = dir.as_path();
         let mut result = serde_json::Map::new();
-        for &(name, batch, total) in cells {
-            let warm_total = total * WARMUP_FACTOR;
-            let warm = run_ingest(&cluster, batch, warm_total, false)?;
-            if (warm as usize) < warm_total * 99 / 100 {
-                bail!("cell {name}: warm-up acked {warm} of {warm_total}");
+        for spec in cells {
+            let name = spec.name;
+            let pid = cluster.nodes[0].pid().context("broker pid")?;
+            let warm = run_ingest(&cluster, spec.batch, spec.warmup, None, false)?;
+            if (warm.acked as usize) < spec.warmup * 99 / 100 {
+                bail!("cell {name}: warm-up acked {} of {}", warm.acked, spec.warmup);
             }
-            // What the idle broker spends per second (timers, polling), so it can
-            // be taken off each repetition in proportion to the time it ran.
+            // Kept for comparison: what the idle broker spends per second.
             let idle_start = Instant::now();
-            let (idle_ir, _) = count_instructions(dir, pid, || {
+            let (idle_ir, ()) = count_instructions(dir, pid, || {
                 std::thread::sleep(IDLE_WINDOW);
-                Ok(0)
+                Ok(())
             })?;
-            let idle_rate = idle_ir as f64 / idle_start.elapsed().as_secs_f64().max(IDLE_WINDOW.as_secs_f64());
-            let (mut user, mut raw) = (Vec::new(), Vec::new());
+            let idle_rate = idle_ir as f64
+                / idle_start.elapsed().as_secs_f64().max(IDLE_WINDOW.as_secs_f64());
+            let mut measured: Vec<Rep> = Vec::new();
+            let mut last_rate = warm.msg_s;
             for rep in 0..reps {
-                let started = Instant::now();
-                let (u, acked) =
-                    count_instructions(dir, pid, || run_ingest(&cluster, batch, total, true))?;
-                if acked != total as u64 {
-                    bail!("cell {name} rep {rep}: acked {acked} of {total}");
+                // Even reps run unpaced, odd ones at half the rate of the
+                // unpaced rep before them.
+                let rate = (rep % 2 == 1)
+                    .then(|| ((last_rate * PACED_FRACTION).round() as u64).max(1));
+                let measured_rep = measure_rep(&cluster, dir, pid, spec, rate, true)
+                    .with_context(|| format!("cell {name} rep {rep}"))?;
+                measured_rep.log(name, rep, spec.messages);
+                if rate.is_none() {
+                    last_rate = measured_rep.msg_s;
                 }
-                let secs = started.elapsed().as_secs_f64();
-                let net = u as f64 - idle_rate * secs;
-                if net.is_nan() || net <= 0.0 {
-                    bail!("cell {name} rep {rep}: {u} instructions less idle {:.0} is not positive", idle_rate * secs);
-                }
-                raw.push(u as f64 / acked as f64);
-                user.push(net / acked as f64);
-                eprintln!(
-                    "ipm {name} rep {rep}: {:.1} instructions per message ({:.1} before taking off {:.0}/s idle over {secs:.1}s)",
-                    user[rep], raw[rep], idle_rate
-                );
+                measured.push(measured_rep);
             }
-            let spread = |v: &[f64]| {
-                let (lo, hi) = v
-                    .iter()
-                    .fold((f64::MAX, 0f64), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
-                (hi - lo) / lo * 100.0
-            };
+            let messages = spec.messages as f64;
+            let points: Vec<(f64, f64)> = measured.iter().map(|r| (r.secs, r.ir as f64)).collect();
+            let (per_message, time_rate, worst_residual) = fit_time_cost(&points, messages)
+                .with_context(|| format!("cell {name}: every rep took the same time, so the time cost cannot be fitted"))?;
+            let unpaced: Vec<&Rep> = measured.iter().filter(|r| !r.paced).collect();
+            // How much slower the last unpaced rep ran than the first: the
+            // same work on the same broker should take the same time.
+            let slowdown_pct = (unpaced.last().unwrap().secs / unpaced[0].secs - 1.0) * 100.0;
+            let idle_subtracted: Vec<f64> = unpaced
+                .iter()
+                .map(|r| (r.ir as f64 - idle_rate * r.secs) / messages)
+                .collect();
+            eprintln!(
+                "ipm {name}: {per_message:.1} instructions per message after the time fit ({:.2} M instructions/s under load, {:.2} M/s idle; worst residual {worst_residual:.2}%); unpaced reps slowed {slowdown_pct:+.1}% first to last",
+                time_rate / 1e6,
+                idle_rate / 1e6
+            );
+            let mut probe = serde_json::Value::Null;
+            if restart_probe {
+                probe = restart_probe_rep(&mut cluster, dir, spec, &measured)
+                    .unwrap_or_else(|err| serde_json::json!({ "error": format!("{err:#}") }));
+            }
             result.insert(
                 name.to_string(),
                 serde_json::json!({
-                    "batch": batch,
-                    "messages": total,
-                    // The lowest repetition: noise only ever adds instructions, so the
-                    // minimum is the steadiest figure from run to run.
-                    "user_per_message": user.iter().cloned().fold(f64::MAX, f64::min),
-                    "user_median_per_message": median(&mut user.clone()),
-                    "user_spread_pct": spread(&user),
-                    "raw_spread_pct": spread(&raw),
-                    "raw_min_per_message": raw.iter().cloned().fold(f64::MAX, f64::min),
+                    "batch": spec.batch,
+                    "messages": spec.messages,
+                    "method": "time-fit",
+                    "user_per_message": per_message,
+                    "time_ir_per_second": time_rate,
                     "idle_ir_per_second": idle_rate,
-                    "user_reps": user,
+                    "fit_worst_residual_pct": worst_residual,
+                    "slowdown_pct": slowdown_pct,
+                    "idle_subtracted_min_per_message": idle_subtracted.iter().cloned().fold(f64::MAX, f64::min),
+                    "idle_subtracted_median_per_message": median(&mut idle_subtracted.clone()),
+                    "reps": measured.iter().map(|r| r.json(spec.messages)).collect::<Vec<_>>(),
+                    "restart_probe": probe,
                 }),
             );
         }
@@ -309,6 +584,36 @@ async fn measure_cells(
     .await
     .expect("join")
     .expect("measurement")
+}
+
+/// Diagnostic only: restart the broker on the data it has, then run one
+/// unpaced rep. Fast again on the same data means the slowdown lives in the
+/// process (its memory or callgrind's), not in the logs on disk or the runner.
+fn restart_probe_rep(
+    cluster: &mut Cluster,
+    dir: &Path,
+    spec: &CellSpec,
+    measured: &[Rep],
+) -> Result<serde_json::Value> {
+    let handle = tokio::runtime::Handle::current();
+    let node = cluster.nodes[0].node_id.clone();
+    handle.block_on(cluster.stop_node(&node))?;
+    handle.block_on(cluster.restart_node(&node))?;
+    handle.block_on(cluster.await_raft_leaders_placed(Duration::from_secs(600)))?;
+    let pid = cluster.nodes[0].pid().context("restarted broker pid")?;
+    let rep = measure_rep(cluster, dir, pid, spec, None, false)?;
+    rep.log(&format!("{}_restarted", spec.name), 0, spec.messages);
+    let first = measured.iter().find(|r| !r.paced).map_or(0.0, |r| r.secs);
+    let last = measured
+        .iter()
+        .rev()
+        .find(|r| !r.paced)
+        .map_or(0.0, |r| r.secs);
+    eprintln!(
+        "ipm {} restart probe: {:.1}s on the restarted broker against {first:.1}s first and {last:.1}s last before it",
+        spec.name, rep.secs
+    );
+    Ok(rep.json(spec.messages))
 }
 
 /// A TCP port nothing is listening on right now.
@@ -325,8 +630,14 @@ fn free_port() -> u16 {
 #[ignore = "needs valgrind; run by the Instructions per message workflow"]
 async fn broker_instructions_per_message() {
     let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT to the result file");
-    let reps = env_usize("FELIX_IPM_REPS", 5);
-    assert!(reps > 0, "FELIX_IPM_REPS must be at least 1");
+    let reps = env_usize("FELIX_IPM_REPS", 6);
+    assert!(
+        reps >= 4 && reps.is_multiple_of(2),
+        "FELIX_IPM_REPS must be even and at least 4: reps alternate unpaced and paced"
+    );
+    // Diagnostic: after each cell, restart the broker on its data and time
+    // one more rep.
+    let restart_probe = std::env::var("FELIX_IPM_RESTART_PROBE").is_ok_and(|v| v == "1");
     let commit =
         std::env::var("FELIX_IPM_COMMIT").expect("set FELIX_IPM_COMMIT to the measured commit");
     let toolchain =
@@ -337,7 +648,7 @@ async fn broker_instructions_per_message() {
     );
     let mut cells = serde_json::Map::new();
     for cell in CELLS.chunks(1) {
-        cells.extend(measure_cells(&dir, reps, Vec::new(), cell).await);
+        cells.extend(measure_cells(&dir, reps, restart_probe, Vec::new(), cell).await);
     }
     let mqtt_env = vec![
         (
@@ -346,7 +657,7 @@ async fn broker_instructions_per_message() {
         ),
         ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
     ];
-    cells.extend(measure_cells(&dir, reps, mqtt_env, &MQTT_IDLE_CELLS).await);
+    cells.extend(measure_cells(&dir, reps, false, mqtt_env, &MQTT_IDLE_CELLS).await);
     let result = serde_json::json!({
         "arch": std::env::consts::ARCH,
         "commit": commit,
@@ -354,4 +665,50 @@ async fn broker_instructions_per_message() {
         "cells": cells,
     });
     std::fs::write(&out, serde_json::to_string_pretty(&result).unwrap()).expect("write result");
+}
+
+/// Reps on a runner that slows down: the same per-message and per-second
+/// cost, rep durations growing as on the aarch64 runner.
+fn synthetic_reps(
+    per_message: f64,
+    per_second: f64,
+    messages: f64,
+    secs: &[f64],
+) -> Vec<(f64, f64)> {
+    secs.iter()
+        .map(|&s| (s, per_message * messages + per_second * s))
+        .collect()
+}
+
+#[test]
+fn the_time_fit_does_not_depend_on_how_long_the_reps_took() {
+    let messages = 10_000.0;
+    let fast = synthetic_reps(
+        190_000.0,
+        8.4e6,
+        messages,
+        &[24.0, 48.0, 24.5, 49.0, 25.0, 50.0],
+    );
+    let slow = synthetic_reps(
+        190_000.0,
+        8.4e6,
+        messages,
+        &[175.0, 350.0, 215.0, 430.0, 270.0, 540.0],
+    );
+    let (fast_a, fast_c, fast_residual) = fit_time_cost(&fast, messages).unwrap();
+    let (slow_a, slow_c, slow_residual) = fit_time_cost(&slow, messages).unwrap();
+    for (a, c, residual) in [
+        (fast_a, fast_c, fast_residual),
+        (slow_a, slow_c, slow_residual),
+    ] {
+        assert!((a - 190_000.0).abs() < 1.0, "per message {a}");
+        assert!((c - 8.4e6).abs() < 1.0, "per second {c}");
+        assert!(residual < 1e-6, "residual {residual}");
+    }
+}
+
+#[test]
+fn reps_of_one_duration_cannot_be_fitted() {
+    let reps = synthetic_reps(190_000.0, 8.4e6, 10_000.0, &[50.0, 50.0, 50.0, 50.0]);
+    assert!(fit_time_cost(&reps, 10_000.0).is_none());
 }

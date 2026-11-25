@@ -25,6 +25,11 @@ on:
       - "rust-toolchain.toml"
       - ".github/workflows/ipm-gate.yml"
   workflow_dispatch:
+    inputs:
+      restart_probe:
+        description: "Diagnostic: after each cell, restart the broker on its data and time one more rep"
+        type: boolean
+        default: false
 
 concurrency:
   group: ipm-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
@@ -86,6 +91,7 @@ jobs:
           # Callgrind runs the broker tens of times slower than native, and the
           # harness's start-up waits are sized for native speed.
           export FELIX_TEST_TIMEOUT_SCALE=10
+          export FELIX_IPM_RESTART_PROBE="${{ inputs.restart_probe && '1' || '0' }}"
           FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
             FELIX_IPM_DIR="$RUNNER_TEMP/cg" \
             FELIX_IPM_COMMIT="${{ github.event.pull_request.head.sha || github.sha }}" \
