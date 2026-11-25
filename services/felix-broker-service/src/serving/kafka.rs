@@ -193,11 +193,25 @@ impl Cluster for BrokerCluster {
                     .collect()
             })
             .unwrap_or_default();
-        match dispatch(
+        let dispatched = dispatch(
             self.replication.serving().map(|ingress| &**ingress),
             &self.replication,
             &key,
-        ) {
+        );
+        // Only the elected leader of a Raft shard takes its produce and
+        // fetch. `dispatch` names where a forward goes, which can be no
+        // broker at all when the leader is in a region this broker does not
+        // forward to or has no address for here. A Kafka client connects to
+        // the leader itself, so it is told the leader the member here follows.
+        if !matches!(dispatched, Dispatch::Local { .. })
+            && let Some(leader) = self
+                .replication
+                .serving()
+                .and_then(|ingress| ingress.engine_elected_leader(&key))
+        {
+            return Placement::Remote { leader, replicas };
+        }
+        match dispatched {
             Dispatch::Local { .. } => Placement::Local { replicas },
             Dispatch::Forward { node_id, .. } => Placement::Remote {
                 leader: node_id,

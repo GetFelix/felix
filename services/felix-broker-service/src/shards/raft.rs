@@ -997,6 +997,53 @@ impl RaftShards {
     /// The route for a Raft shard with no member open here, or with one
     /// that knows no leader and is not a reported voter (a learner joining).
     /// `None` for a shard the feed has not placed on Raft.
+    /// What the member of `key` here knows of its group's leader. Both
+    /// [`EngineShards::dispatch`] and [`EngineShards::elected_leader`] read
+    /// it, so a forwarded request and a Kafka client are sent to the same
+    /// broker.
+    fn followed(&self, key: &ShardKey) -> Followed {
+        if !self.runtime.holds(key) {
+            return Followed::ByPlacement;
+        }
+        // Led is not enough: the term is served once `Leading` opened it.
+        if let Some(term) = self.leading(key) {
+            return Followed::Leads(term);
+        }
+        if self.placed_elsewhere(key) {
+            return Followed::ByPlacement;
+        }
+        // Only a forward needs the status, so a local publish never builds it.
+        let Some(status) = self.runtime.status(key) else {
+            return Followed::ByPlacement;
+        };
+        // The hint, not the heard leader: a restarted follower forwards at
+        // once, and a forward to a leader that is gone fails and is retried.
+        let heard = status.leader_hint.is_some();
+        let leader = status
+            .leader_hint
+            .filter(|leader| *leader.broker != *self.local)
+            .map(|leader| leader.broker.to_string());
+        match leader {
+            // A copy the group has not made a voter yet learns the leader
+            // only from its first append: a reported voter knows it. A member
+            // that heard itself elected is not that copy: forwarding would
+            // bounce back until its term opens.
+            None if !heard
+                && self.placed.lock().get(key).is_some_and(|placed| {
+                    !placed.voters.is_empty() && !placed.voters.contains(&*self.local)
+                }) =>
+            {
+                Followed::ByPlacement
+            }
+            // Electing, or elected here and still moving to the tail.
+            None => Followed::Electing,
+            Some(broker) => Followed::Leader {
+                broker,
+                term: status.term,
+            },
+        }
+    }
+
     fn dispatch_without_member(
         &self,
         key: &ShardKey,
@@ -1187,6 +1234,18 @@ fn admitted(assignment: &ShardAssignment) -> (BTreeSet<String>, BTreeSet<String>
         blank.extend(voters.members.keys().cloned());
     }
     (blank, current)
+}
+
+/// What a member here knows of its group's leader; see `RaftShards::followed`.
+enum Followed {
+    /// This broker leads and serves the term.
+    Leads(u64),
+    /// Another broker leads, as far as the member here was told.
+    Leader { broker: String, term: u64 },
+    /// No leader yet, or elected here and not serving its term yet.
+    Electing,
+    /// No member here can say: route by placement.
+    ByPlacement,
 }
 
 /// Where requests for a Raft shard go while no member here knows its
@@ -1655,51 +1714,27 @@ impl EngineShards for RaftShards {
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch> {
-        if !self.runtime.holds(key) {
-            return self.dispatch_without_member(key, nodes);
-        }
-        // Led is not enough: the term is served once `Leading` opened it.
-        if let Some(term) = self.leading(key) {
-            return Some(Dispatch::Local { generation: term });
-        }
-        if self.placed_elsewhere(key) {
-            return self.dispatch_without_member(key, nodes);
-        }
-        // Only a forward needs the status, so a local publish never builds it.
-        let Some(status) = self.runtime.status(key) else {
-            return self.dispatch_without_member(key, nodes);
-        };
-        // The hint, not the heard leader: a restarted follower forwards at
-        // once, and a forward to a leader that is gone fails and is retried.
-        let heard = status.leader_hint.is_some();
-        let leader = status
-            .leader_hint
-            .filter(|leader| *leader.broker != *self.local)
-            .map(|leader| leader.broker);
-        Some(match leader {
-            // A copy the group has not made a voter yet learns the leader
-            // only from its first append: a reported voter knows it. A member
-            // that heard itself elected is not that copy: forwarding would
-            // bounce back until its term opens.
-            None if !heard
-                && self.placed.lock().get(key).is_some_and(|placed| {
-                    !placed.voters.is_empty() && !placed.voters.contains(&*self.local)
-                }) =>
-            {
-                return self.dispatch_without_member(key, nodes);
-            }
-            // Electing, or elected here and still moving to the tail.
-            None => Dispatch::Unavailable(Reason::NotReady),
-            Some(leader) => match nodes(&leader) {
+        Some(match self.followed(key) {
+            Followed::ByPlacement => return self.dispatch_without_member(key, nodes),
+            Followed::Leads(term) => Dispatch::Local { generation: term },
+            Followed::Electing => Dispatch::Unavailable(Reason::NotReady),
+            Followed::Leader { broker, term } => match nodes(&broker) {
                 Some(advertise_addr) => Dispatch::Forward {
-                    node_id: leader.to_string(),
+                    node_id: broker,
                     advertise_addr,
-                    generation: status.term,
+                    generation: term,
                     incarnation: 0,
                 },
-                None => Dispatch::Unavailable(Reason::OwnerUnavailable(leader.to_string())),
+                None => Dispatch::Unavailable(Reason::OwnerUnavailable(broker)),
             },
         })
+    }
+
+    fn elected_leader(&self, key: &ShardKey) -> Option<String> {
+        match self.followed(key) {
+            Followed::Leader { broker, .. } => Some(broker),
+            _ => None,
+        }
     }
 
     /// A member that follows a leader serves readers from its log. One that

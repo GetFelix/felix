@@ -1,0 +1,1 @@
+- On a Raft shard, Kafka `Metadata` names the leader the broker's member of the group follows even when that leader is in a region the broker does not forward to, or the broker has no peer address for it. It used to answer `LEADER_NOT_AVAILABLE` until the route changed. (#3105)
