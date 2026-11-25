@@ -2383,6 +2383,16 @@ a fence would open a log here and on each replica it asks, so the shard opens
 on the lease. Its group logs stay on its leader and are not shipped, since
 they carry no generation for the next promotion to rank a copy by.
 
+The shard has no log on disk at all, on its leader or its followers. The
+broker refuses to open the records log of a stream registered in memory,
+whoever asks (`Broker::shard_log` and its variants), and the replication pass
+opens none: it reports the shard as a pass over an empty log would, at tail 0
+with every follower level, so a move still finishes on its reports and a
+drained report still goes out once the fence is quiet
+(`an_in_memory_shard_reports_without_a_log`,
+`a_draining_in_memory_shard_reports_drained`). A stream this broker has not
+registered counts as durable.
+
 **Across versions: the `generation_start` fleet feature.** The record and the
 counting rule switch on together, when an operator finalizes
 `generation_start` (see the upgrades page in the docs site). Until then a

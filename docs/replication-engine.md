@@ -113,7 +113,7 @@ stores it at the leader's offsets (`replica.rs:663` `apply`, through
 ### 2. Commit mark
 
 The driver computes a majority offset over the cursors (`felix-replication/src/quorum.rs:1777`
-`quorum_offset`, `driver/shard.rs:479`), counted only from the leader's own
+`quorum_offset`, `driver/shard.rs:498`), counted only from the leader's own
 generation start (`felix-replication/src/quorum.rs:2007` `counted_offset`), and publishes it to
 `QuorumMarks` (`felix-replication/src/quorum.rs:37`, `:618`). Writers wait in `await_quorum`
 (`felix-replication/src/quorum.rs:1018`), called from the service:
