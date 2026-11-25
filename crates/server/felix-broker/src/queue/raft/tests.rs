@@ -847,7 +847,7 @@ async fn a_record_above_the_commit_bound_waits_for_a_later_poll() {
                 .poll_below(
                     &key(G),
                     &fx.log,
-                    committed,
+                    move || Ok(committed),
                     10,
                     Instant::now(),
                     None,
