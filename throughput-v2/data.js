@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795636200833,
+  "lastUpdate": 1795636588817,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69576,6 +69576,58 @@ window.BENCHMARK_DATA = {
             "range": "147379.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1583253.00\nmean: 1539782.69\nstdev: 147379.05\ncv: 9.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3a9266062e10640f839009ce80583d15e2441bcc",
+          "message": "test(history): the every-family campaign retries a refused fault until each family heals (#3120) (#3169)\n\n* test(history): the every-family campaign retries a refused fault until each family heals\n\nThe every-family campaign went round the fault kinds once in 75 seconds.\nA fault the cluster refused (the campaign logs \"could not ...\" and goes\non) was never tried again, so one 409 from the operator API on a shard\nmove left the Assignment family uncovered and failed the test (#3120).\n\nEveryFamily now picks a refused kind again, up to three times, and the\ncampaign keeps going past its duration, up to twice it, while the\nnemesis is not satisfied. The failure message lists the refused faults\nand why.\n\nSpec-Unaffected: test harness only; no product behaviour changes\n\n* chore: mark the main merge as spec-neutral\n\nSpec-Unaffected: merge of main into a history-tooling branch; no modelled behaviour changes.",
+          "timestamp": "2026-11-25T19:50:39Z",
+          "tree_id": "0c4a5912f7b4165bd9eb218150b3926245e2ec15",
+          "url": "https://github.com/GetFelix/felix/commit/3a9266062e10640f839009ce80583d15e2441bcc"
+        },
+        "date": 1795636588330,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 539436.51,
+            "range": "20420.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 539436.51\nmean: 548569.22\nstdev: 20420.51\ncv: 3.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 539436.51,
+            "range": "20420.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 539436.51\nmean: 548569.22\nstdev: 20420.51\ncv: 3.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127444.86,
+            "range": "896.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127444.86\nmean: 127361.79\nstdev: 896.41\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1274448.65,
+            "range": "8964.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1274448.65\nmean: 1273617.94\nstdev: 8964.12\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
