@@ -373,7 +373,7 @@ async fn a_restore_gives_out_no_offset_given_out_after_the_backup() {
         let root = tempfile::tempdir().expect("tempdir");
         let backup = tempfile::tempdir().expect("backup");
         begin(root.path(), relaxed, 1);
-        let broker = broker_in(root.path(), fsync.clone()).await;
+        let broker = broker_in(root.path(), fsync).await;
         let (shards, engine, stop) = standalone(&broker);
         led(&shards).await;
         let dir = orders_dir(&broker);
@@ -382,7 +382,7 @@ async fn a_restore_gives_out_no_offset_given_out_after_the_backup() {
         copy_tree(root.path(), backup.path());
 
         assert!(!begin(root.path(), relaxed, 1), "a clean stop keeps the id");
-        let (broker, shards, engine, stop) = reopen(root.path(), fsync.clone(), first + 2).await;
+        let (broker, shards, engine, stop) = reopen(root.path(), fsync, first + 2).await;
         let after = publish(&broker, &engine, &[b"three", b"four"]).await;
         let handed_out = after + 2;
         stop_cleanly(root.path(), broker, shards, stop).await;
@@ -391,7 +391,7 @@ async fn a_restore_gives_out_no_offset_given_out_after_the_backup() {
         crate::node::storage::rotate_storage_id(root.path()).expect("rotate-storage-id");
         let line = time_line_now();
         begin(root.path(), relaxed, 2);
-        let (broker, shards, engine, stop) = reopen(root.path(), fsync.clone(), first + 2).await;
+        let (broker, shards, engine, stop) = reopen(root.path(), fsync, first + 2).await;
         assert_eq!(
             group_epoch(&dir).expect("epoch"),
             Some(1),
