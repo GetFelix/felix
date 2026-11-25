@@ -994,9 +994,6 @@ impl RaftShards {
         }
     }
 
-    /// The route for a Raft shard with no member open here, or with one
-    /// that knows no leader and is not a reported voter (a learner joining).
-    /// `None` for a shard the feed has not placed on Raft.
     /// What the member of `key` here knows of its group's leader. Both
     /// [`EngineShards::dispatch`] and [`EngineShards::elected_leader`] read
     /// it, so a forwarded request and a Kafka client are sent to the same
@@ -1044,6 +1041,9 @@ impl RaftShards {
         }
     }
 
+    /// The route for a Raft shard with no member open here, or with one
+    /// that knows no leader and is not a reported voter (a learner joining).
+    /// `None` for a shard the feed has not placed on Raft.
     fn dispatch_without_member(
         &self,
         key: &ShardKey,
