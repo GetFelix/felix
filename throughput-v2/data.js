@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795647380241,
+  "lastUpdate": 1795648441564,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69888,6 +69888,58 @@ window.BENCHMARK_DATA = {
             "range": "12408.10",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1229968.04\nmean: 1225296.24\nstdev: 12408.10\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14a2e78ad67c01bd1115eb99ec0d72e92843291d",
+          "message": "fix(backup): backup-point reads every Raft shard on its elected leader (#2995) (#3173)\n\n* fix(backup): backup-point reads every Raft shard on its elected leader (#2995)\n\nA Raft broker listed only the members its copy id report holds in\n/backup/offsets. That set leaves out open members off placement, at an\nunproven epoch, or outside the current feed. A shard no broker listed was\nread as a hybrid one on placement's leader, which answered \"not led\nthere\". The broker now lists every member open in its Raft runtime, and\nfelixctl decides which shards are Raft ones again on every round instead\nof once per attempt.\n\nUn-skips the two backup cluster tests on Raft.\n\nSpec-Unaffected: tooling and a read-only broker report; no replication, commit or offset rule changes\n\n* fix(backup): the engine check passes Raft backup members through (#2995)\n\nEngineMatch wraps the Raft engine in every cluster and left\nbackup_members to the trait's empty default, so /backup/offsets listed\nno Raft member on any broker. EngineShards now has no default methods,\nso a wrapper cannot leave one out again. Adds a node-wiring test that\nbuilds the endpoint through match_engines.\n\nSpec-Unaffected: read-only backup report wiring; no replicated state or commit rule changes\n\n* test(backup): open a Raft copy as restore-point does (#2995)\n\nThe restore test opened every copied shard as a hybrid log, which a Raft\nmember's directory refuses. restore-point checks the engine marker and\nopens a Raft copy as a Raft log, whose offsets are entry indexes like\nthe point's; the test now does the same, and counts only data records\nas restored publishes, since a Raft log also holds blank and membership\nentries.\n\nSpec-Unaffected: test-only change\n\n* fix(routing): elected_leader has no default either (#2995)\n\nEvery EngineShards impl now answers it explicitly; the test stand-ins\nanswer None, and the node-wiring test checks it reaches the engine\nthrough EngineMatch.\n\nSpec-Unaffected: trait shape and tests only; no TLA-modelled behaviour changed",
+          "timestamp": "2026-11-25T23:07:17Z",
+          "tree_id": "29b005a75220353b4f61d77302aa49aa0662746a",
+          "url": "https://github.com/GetFelix/felix/commit/14a2e78ad67c01bd1115eb99ec0d72e92843291d"
+        },
+        "date": 1795648440664,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348717.23,
+            "range": "6721.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348717.23\nmean: 348694.43\nstdev: 6721.31\ncv: 1.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348717.23,
+            "range": "6721.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348717.23\nmean: 348694.43\nstdev: 6721.31\ncv: 1.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81649.43,
+            "range": "705.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81649.43\nmean: 81445.09\nstdev: 705.88\ncv: 0.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816494.31,
+            "range": "7058.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816494.31\nmean: 814450.94\nstdev: 7058.82\ncv: 0.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
