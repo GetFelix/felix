@@ -257,13 +257,16 @@ async fn records_published_across_a_failover_are_all_readable() {
     }
 
     let promoted = cluster.owner(STREAM).await.expect("owner");
-    let (_c, mut sub) = cluster.replay_on(&promoted, STREAM).await.expect("replay");
-    let mut seen = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(3), sub.next_event()).await
-    {
-        seen.push(String::from_utf8_lossy(&event.payload).to_string());
-    }
+    let seen = cluster
+        .whole_replay_on(
+            &promoted,
+            STREAM,
+            Duration::from_secs(3),
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("replay");
+    let seen = felix_cluster::replay::payloads(&seen);
 
     for i in 0..6 {
         assert!(

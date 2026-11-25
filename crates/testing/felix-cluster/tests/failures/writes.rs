@@ -132,24 +132,17 @@ async fn leader_after_healing(cluster: &Cluster, before: &str) -> String {
 async fn replay(cluster: &Cluster, node: &str) -> Vec<String> {
     // Retried: a restarted broker serves the shard only once it is placed
     // back on it.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    let (_client, mut replay) = loop {
-        match cluster.replay_on(node, STREAM).await {
-            Ok(opened) => break opened,
-            Err(err) if tokio::time::Instant::now() > deadline => {
-                panic!("replay on {node}: {err:#}")
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    };
-    let mut held = Vec::new();
-    while let Ok(Ok(Some(event))) =
-        tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
-    {
-        if event.payload.as_ref() != b"harness-probe" {
-            held.push(String::from_utf8_lossy(&event.payload).to_string());
-        }
-    }
+    let held = cluster
+        .whole_replay_on(
+            node,
+            STREAM,
+            Duration::from_secs(2),
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("replay on {node}: {err:#}"));
+    let mut held = felix_cluster::replay::payloads(&held);
+    held.retain(|payload| payload != "harness-probe");
     held
 }
 
