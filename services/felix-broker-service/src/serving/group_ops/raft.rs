@@ -228,8 +228,8 @@ impl OnRaft {
         group: &str,
     ) -> Result<(), ClientError> {
         let deadline = self.deadline();
-        self.inherit(deadline).await?;
-        super::refuse_non_record(Some(&self.log), offset).await?;
+        let claimed = self.inherit(offset, deadline).await?;
+        super::refuse_non_record(Some(&self.log), offset, claimed).await?;
         let settled = match action {
             Settle::Ack => self.groups.ack(&self.key, offset, deadline).await,
             Settle::Nack { delay, attempts } => {
@@ -258,8 +258,8 @@ impl OnRaft {
         attempts: u32,
         by: Duration,
     ) -> Result<(), ClientError> {
-        self.inherit(self.deadline()).await?;
-        super::refuse_non_record(Some(&self.log), offset).await?;
+        let claimed = self.inherit(offset, self.deadline()).await?;
+        super::refuse_non_record(Some(&self.log), offset, claimed).await?;
         let extended = self
             .groups
             .extend(
@@ -275,11 +275,12 @@ impl OnRaft {
     }
 
     /// A claim handed out before this term is still the consumer's to
-    /// settle, as on the hybrid.
-    async fn inherit(&self, deadline: Instant) -> Result<(), ClientError> {
+    /// settle, as on the hybrid. Returns whether `offset` is a claim the
+    /// group holds.
+    async fn inherit(&self, offset: u64, deadline: Instant) -> Result<bool, ClientError> {
         let tail = self.log.tail_offset().await.map_err(storage)?;
         self.groups
-            .inherit_below(&self.key, tail, deadline)
+            .inherit_below(&self.key, tail, offset, deadline)
             .await
             .map_err(broker)
     }

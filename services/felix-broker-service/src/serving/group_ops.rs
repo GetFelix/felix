@@ -569,11 +569,11 @@ pub(crate) async fn settle(
     // A claim handed out before the shard moved here is still the consumer's
     // to settle.
     let tail = tail_of(log.as_ref()).await?;
-    reader
-        .inherit_below(&key, tail)
+    let claimed = reader
+        .inherit_below(&key, tail, offset)
         .await
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    refuse_non_record(log.as_ref(), offset).await?;
+    refuse_non_record(log.as_ref(), offset, claimed).await?;
     let settled = match action {
         Settle::Ack => reader.ack(&key, offset).await,
         Settle::Nack { delay, attempts } => {
@@ -648,11 +648,11 @@ pub(crate) async fn extend(
     // without the consumer hearing of it.
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
     let tail = tail_of(log.as_ref()).await?;
-    reader
-        .inherit_below(&key, tail)
+    let claimed = reader
+        .inherit_below(&key, tail, offset)
         .await
         .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
-    refuse_non_record(log.as_ref(), offset).await?;
+    refuse_non_record(log.as_ref(), offset, claimed).await?;
     match reader
         .extend(&key, offset, attempts, by, Instant::now())
         .await
@@ -854,11 +854,16 @@ async fn reader_and_log<'a>(
 /// answered as an offset never handed out. Left to the tracker, it would pass
 /// its high-water check, which also covers the entries a poll skipped, or the
 /// predecessor tail a new leader inherits, and be answered done.
+///
+/// An offset the group holds a claim on (`claimed`) is a record, since only a
+/// poll claims and it claims only records, so the log is read only for an
+/// offset that is not one. That keeps the read off a settle's usual path.
 async fn refuse_non_record(
     log: Option<&felix_broker::StreamLog>,
     offset: u64,
+    claimed: bool,
 ) -> Result<(), ClientError> {
-    let Some(log) = log else {
+    let Some(log) = log.filter(|_| !claimed) else {
         return Ok(());
     };
     match log.holds_no_client_record(offset).await {
