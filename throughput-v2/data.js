@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795603589218,
+  "lastUpdate": 1795606304469,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68900,6 +68900,58 @@ window.BENCHMARK_DATA = {
             "range": "73844.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805873.98\nmean: 775652.18\nstdev: 73844.39\ncv: 9.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e65c2feec1b0430282f960092704e695e348a352",
+          "message": "fix(client): a plain publish refused before proposal is sent again (#3152) (#3155)\n\n* fix(client): a plain publish refused before proposal is sent again (#3152)\n\nA shard between leaders refuses a publish before it proposes anything, and\nsays so with its retry class. A plain publish made one attempt at the entry\nbroker, so the first publish to a fresh Raft stream could fail while the\nforming broker handed its first term to the placed leader.\n\nEvery plain publish kind now retries such a refusal under the reconnect\npolicy. An outcome-unknown answer, or one with no code, is still returned\nafter one attempt.\n\nSpec-Unaffected: client-side retry of refusals the broker made before proposing; no replicated state changes\n\n* test(cluster): a plain publish into a first-term hand-over lands once (#3152)\n\nPublishes to every shard of a fresh Raft stream without waiting for the\nhand-overs, and checks the acknowledged offsets are contiguous. Also\nregenerates the docs examples for the moved lines.\n\nSpec-Unaffected: tests and generated docs examples only\n\n* test(cluster): count each record on read-back, not gaps between offsets (#3152)\n\nA Raft stream offset is a log index, and a new leader's first entry takes\none, so acknowledged offsets are not contiguous across a hand-over. The\ntest now replays each shard and checks every payload is held once.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-25T11:25:12Z",
+          "tree_id": "d70718ad7b6f992490dfea144dd78431318ddeaf",
+          "url": "https://github.com/GetFelix/felix/commit/e65c2feec1b0430282f960092704e695e348a352"
+        },
+        "date": 1795606303725,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 642777.12,
+            "range": "44755.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 642777.12\nmean: 637710.10\nstdev: 44755.35\ncv: 7.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 642777.12,
+            "range": "44755.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 642777.12\nmean: 637710.10\nstdev: 44755.35\ncv: 7.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 152456.04,
+            "range": "2593.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 152456.04\nmean: 152115.34\nstdev: 2593.34\ncv: 1.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1524560.38,
+            "range": "25933.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1524560.38\nmean: 1521153.36\nstdev: 25933.38\ncv: 1.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
