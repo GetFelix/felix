@@ -442,18 +442,18 @@ fn an_unreplicated_durable_shard_waits_for_its_owner() {
     }
 }
 
-/// **An in-memory shard whose owner is gone is placed again in the same
-/// pass**, on either engine: it has no log for another broker to lack, so
+/// **An in-memory shard whose owner is gone (Down, Left, or no longer in the
+/// catalog) is placed again in the same pass**, on either engine: it has no log for another broker to lack, so
 /// the wait above does not apply to it.
 #[test]
 fn an_in_memory_shard_whose_owner_is_gone_is_placed_again_at_once() {
     let streams = vec![ephemeral_stream("orders", 1)];
     let existing = vec![assigned("orders", "broker-a", &[])];
-    for lifecycle in [NodeLifecycle::Down, NodeLifecycle::Left] {
-        let nodes = vec![
-            node("broker-a", lifecycle, None),
-            node("broker-b", NodeLifecycle::Live, None),
-        ];
+    for lifecycle in [Some(NodeLifecycle::Down), Some(NodeLifecycle::Left), None] {
+        let mut nodes = vec![node("broker-b", NodeLifecycle::Live, None)];
+        if let Some(lifecycle) = lifecycle {
+            nodes.insert(0, node("broker-a", lifecycle, None));
+        }
         for raft_streams in [false, true] {
             let policy = MovePolicy {
                 raft_streams,
