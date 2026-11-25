@@ -691,3 +691,86 @@ async fn names_no_follower_missing_inherited_counters(marks: &QuorumMarks) {
         report.caught_up,
     );
 }
+
+/// **An in-memory shard with replicas keeps an empty log on its leader, and
+/// its move needs it.** Its records never reach the log, so nothing ships.
+/// But the pass that reads the empty log's tail is what reports the
+/// followers caught up and the shard drained, and placement moves a live
+/// in-memory leader only on those reports. `docs/replication-design.md`
+/// says so (#3158).
+#[tokio::test]
+async fn an_in_memory_shard_with_replicas_drains_on_an_empty_log() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: false,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    broker
+        .publish(TENANT, NAMESPACE, STREAM, Bytes::from("in memory"))
+        .await
+        .expect("publish");
+    let router = draining_router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = AcceptingFollower::default();
+
+    let pass = drain_pass(
+        &follower,
+        &broker,
+        &router,
+        &Unfenced,
+        &mut HashMap::default(),
+    )
+    .await;
+
+    let report = pass
+        .reports
+        .into_iter()
+        .find(|report| report.drained)
+        .expect("an in-memory shard should drain");
+    assert_eq!(report.tail, 0, "an in-memory publish reached the log");
+    let mut caught_up = report.caught_up.clone();
+    caught_up.sort();
+    assert_eq!(
+        caught_up,
+        vec!["broker-b".to_string(), "broker-c".to_string()]
+    );
+    let batches = follower.batches();
+    assert!(
+        batches.iter().all(|(_, _, records)| *records == 0),
+        "an in-memory shard shipped records: {batches:?}",
+    );
+    // The empty log the report was read from is on disk, as the docs say.
+    let on_disk = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .filter_map(|entry| entry.ok())
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("t1_ns_orders_0")
+        });
+    assert!(on_disk, "the leader kept no log for its report");
+}

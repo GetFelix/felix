@@ -2375,13 +2375,27 @@ between the two starts are this generation's own, and only the flip needs
 them on the new set.
 
 An in-memory stream writes none either. Its publishes never reach the shard's
-log: they take no offsets, nothing ships, the fence has nothing to take, and a
-`Quorum` publish has no offset to wait on a mark for (`await_quorum`). With no
-inherited record there is nothing for a start record to cover, and the broker
-has no log to append one to. A promoted in-memory shard is not fenced either:
-a fence would open a log here and on each replica it asks, so the shard opens
-on the lease. Its group logs stay on its leader and are not shipped, since
-they carry no generation for the next promotion to rank a copy by.
+log: they take no offsets, no record ships, the fence has nothing to take, and
+a `Quorum` publish has no offset to wait on a mark for (`await_quorum`). With
+no inherited record there is nothing for a start record to cover. A promoted
+in-memory shard is not fenced either: a fence would open a log here and on
+each replica it asks, so the shard opens on the lease. Its group logs stay on
+its leader and are not shipped, since they carry no generation for the next
+promotion to rank a copy by. So a consumer group's committed positions on an
+in-memory stream do not survive a failover: a group resumes on the new leader
+with no committed position, just as the stream starts there empty.
+
+An in-memory stream with replicas (`replication_factor > 1`) still has an
+empty log on its leader: a segment, its index and `durable.mark`. The
+replication pass opens it to read the shard's tail, which stays 0, and its
+report is what counts the followers caught up and says the shard drained.
+Placement adds a copy only once the leader has reported at the shard's
+generation, and moves a live leader only on those reports
+(`ready_to_fence`, `is_drained`), so without the log an in-memory shard's
+move would wait out its timeout. No record is ever written to it and nothing
+is read back from it, so it cannot make the stream durable. An in-memory shard
+placed alone keeps nothing on disk until a move stages a copy for it
+(`an_in_memory_shard_with_replicas_drains_on_an_empty_log`).
 
 **Across versions: the `generation_start` fleet feature.** The record and the
 counting rule switch on together, when an operator finalizes
