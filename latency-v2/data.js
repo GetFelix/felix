@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795565024589,
+  "lastUpdate": 1795574075841,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -86658,6 +86658,72 @@ window.BENCHMARK_DATA = {
             "range": "543.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 333.00\nmean: 617.00\nstdev: 543.33\ncv: 88.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a64e61e92f9de67d1b926e80f9c50325d5ed3e55",
+          "message": "chore: build with Rust 1.100.0 (#3127)\n\n* chore: build with Rust 1.100.0\n\nMoves every toolchain pin (rust-toolchain.toml, workflows, Dockerfiles,\nrunner setup, docs) from 1.99.1 to 1.100.0. The MSRV stays 1.97.\n\nClippy 1.100's needless_bool fired on should_reset_throttle; the test\nhook moves into a cfg-split helper so the non-test build still compiles.\n\nSpec-Unaffected: toolchain pin and a lint fix only; no behaviour change.\n\n* chore: name the changelog fragment after #3127\n\n* fix(replication): the non-raft seal arm panics directly\n\nRust 1.100 makes Infallible an alias for `!`, so unreachable_seal() now\ndiverges and the seal_refusal call around it is unreachable code. Call\nunreachable! in the arm instead and drop the two helpers that only\nexisted to produce the Infallible. Same panic, same message.\n\nSpec-Unaffected: non-raft build only; behaviour unchanged.\n\n* test: find built binaries under cargo 1.100's build-dir layout\n\nCargo 1.100 moved test executables to build/<pkg>/<hash>/out/, so the\n\"exe dir, or its parent if deps\" lookup no longer reached the profile\ndirectory and every cluster test failed with felix-broker not found.\nfelix_cluster::built_binary walks up from the test executable and stops\nat the target root (CACHEDIR.TAG); the broker, felixctl, loadgen and\nlibfelix lookups use it. Also re-points three replica.rs line citations\nthat the seal-arm change shifted.\n\nSpec-Unaffected: test harness binary lookup and doc citations only.\n\n* test(capi): find libfelix in a sibling unit under cargo 1.100\n\nThe per-unit build-dir layout puts the cdylib in its own\nbuild/felix-capi/<hash>/out, beside the test binary's unit rather than\nabove it, so the coverage run (no plain cargo build to uplift it) could\nnot find it. Look in the package's sibling units first, newest wins.\n\nSpec-Unaffected: test lookup only.\n\n* ci(coverage): skip the line gate when the PR changes the toolchain\n\nA different rustc instruments code differently (1.100 counts about 30%\nfewer regions and 6,800 fewer lines than 1.99), so a PR that changes\nrust-toolchain.toml cannot be compared with main's baseline. Report the\npercentage as a notice instead; main's next run sets the new baseline.\n\nSpec-Unaffected: CI gate only.\n\n* ci(coverage): compare only the channel's value; never fail on a missing line\n\nSpec-Unaffected: CI gate only.",
+          "timestamp": "2026-11-25T02:27:54Z",
+          "tree_id": "547e4b1bd74310bbc2ad0449fd61b354e9379929",
+          "url": "https://github.com/GetFelix/felix/commit/a64e61e92f9de67d1b926e80f9c50325d5ed3e55"
+        },
+        "date": 1795574057198,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 66.20\nstdev: 0.84\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 91.80\nstdev: 2.28\ncv: 2.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 122,
+            "range": "34.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 136.00\nstdev: 34.67\ncv: 25.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 84.80\nstdev: 1.64\ncv: 1.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 187,
+            "range": "11.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 185.00\nstdev: 11.34\ncv: 6.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 280,
+            "range": "142.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 280.00\nmean: 332.00\nstdev: 142.13\ncv: 42.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
