@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795608325475,
+  "lastUpdate": 1795608771083,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69108,6 +69108,58 @@ window.BENCHMARK_DATA = {
             "range": "6110.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1255032.81\nmean: 1255133.13\nstdev: 6110.03\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d245602803a3b22d5b1a3cc933711c7254de91e",
+          "message": "test(groups): check claim reissue by offset, not by an empty second poll (#3122) (#3144)\n\na_claimed_record_is_not_reissued_by_the_cluster asserted that the poll after\nthe first non-empty one is empty. On a Raft shard that is not the property.\nThe harness stream is `Leader`, so its publish is answered once the batch is\non the leader's log (AnswerAt::Lease), before it commits. A group poll hands\nout only what the member had applied when it began. The first poll can\ntherefore return the harness's start-up probe alone and the second the\nrecord the test published: two polls with work, nothing handed out twice.\n\nThe test now records every offset handed out and fails only if one comes\nback while its claim stands. A unit test pins the reader behaviour the old\nassertion tripped over, and the Raft doc says it.\n\nSpec-Unaffected: test and doc only; no modelled code changes",
+          "timestamp": "2026-11-25T12:02:13Z",
+          "tree_id": "5e2fc9668ff7ae7ecb9005030f9ef1a9c967b17a",
+          "url": "https://github.com/GetFelix/felix/commit/9d245602803a3b22d5b1a3cc933711c7254de91e"
+        },
+        "date": 1795608770201,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 394893.27,
+            "range": "12735.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 394893.27\nmean: 397684.61\nstdev: 12735.21\ncv: 3.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 394893.27,
+            "range": "12735.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 394893.27\nmean: 397684.61\nstdev: 12735.21\ncv: 3.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92920.53,
+            "range": "1982.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92920.53\nmean: 92131.71\nstdev: 1982.68\ncv: 2.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 929205.28,
+            "range": "19826.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 929205.28\nmean: 921317.12\nstdev: 19826.79\ncv: 2.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
