@@ -168,6 +168,31 @@
 (* that did not finish comes back is not decided (issue 2403); here it     *)
 (* rotates. An unreachable broker is one that takes no step, and the scope *)
 (* of the command is one group.                                            *)
+(*                                                                         *)
+(* The lease allowance (issue 3103, LeaseAnswers; FelixRaftLease.tla has   *)
+(* its timing). A leader names an allowance (epoch, term, seq, end) and    *)
+(* stores it (NameAllowance); an append stores it on the follower, which   *)
+(* echoes what it now holds. The leader answers an entry on its lease only *)
+(* below an end a quorum of its membership holds, its own named one and    *)
+(* the echoes counted (LeaseAnswer). A voter holding an allowance grants,  *)
+(* and stands, only for a candidate whose last log id is at or past the    *)
+(* allowance's, or for the member that named it. A rotated leader's broker *)
+(* tells a voter where its kept copy ends, and the voter lowers the        *)
+(* allowance to it (LowerAllowance). A power cut keeps the copy's stored   *)
+(* allowance or loses it, as it is not synced on a relaxed run; a restore  *)
+(* keeps none. The re-form vouches, for a copy holding the allowance's log *)
+(* id, up to the lowest end among the allowances of the newest term the    *)
+(* copies read hold (issue 3109): a copy stores what its leader named, not *)
+(* what a quorum echoed. Bounds: the leader only raises its end within a   *)
+(* term (lowering is FelixRaftLease.tla's), late appends carry none, and   *)
+(* at most MaxNames allowances are named.                                  *)
+(*                                                                         *)
+(*   LeaseAckedLed       -- a record answered on the lease that a live     *)
+(*                          disk holds is in the log of every later leader *)
+(*                          of its epoch.                                  *)
+(*   LeaseAckedReformed  -- and in the base of every later epoch.          *)
+(*   VouchIgnoresAllowance -- knob: the re-form does not vouch by the      *)
+(*                          allowance.                                     *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -210,7 +235,9 @@ CONSTANTS
     Reserve,            \* "every", "leader" or "none": who reserves before its write counts
     MaxCuts,
     MaxReturns,
-    LeaseAnswers        \* a leader answers records on its lease (issue 3103)
+    LeaseAnswers,       \* a leader answers records on its lease (issue 3103)
+    MaxNames,           \* allowances named, in all
+    VouchIgnoresAllowance
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -240,14 +267,18 @@ VARIABLES
     synced,     \* how far the current copy's log is on disk (Kept)
     reserve,    \* the index the current copy reserved, synced (Kept)
     cuts, returns,
-    leaseAcked  \* history: records answered on the lease (LeaseAnswers)
+    leaseAcked, \* history: records answered on the lease (LeaseAnswers)
+    allow,      \* the allowance the current copy stores, on disk
+    echoed,     \* a leader's record of the allowance each copy echoed, and its copy id
+    names       \* allowances named so far; also the seq source
 
 diskVars == <<keptLogs, synced, reserve, cuts, returns>>
 
 reformVars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs,
           cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, acked, lost,
           elected, writes, steps, places, rotations, rejoins, restarts, diskVars>>
-vars == <<reformVars, leaseAcked>>
+allowVars == <<allow, echoed, names>>
+vars == <<reformVars, leaseAcked, allowVars>>
 
 Mid(b) == <<b, cid[b]>>
 Simple(V) == [o |-> V, n |-> V]
@@ -337,13 +368,52 @@ Alive(b) == DeadRuns \/ b \notin dead
 OnLiveDisk(x) ==
     \E q \in Brokers \ dead : Has(log[q], x) \/ \E k \in keptLogs[q] : Has(k.log, x)
 
-\* The lease allowance of FelixRaftLease.tla, abstracted: voters hold the
-\* allowance, lowered to the kept log's end once the rotated leader reports
-\* it, so no election passes a lease-answered record still on a disk. Past
-\* that only the operator's re-form moves the group on.
-LeaseTailHeld(b) ==
+NoAllow == [e |-> 0, t |-> 0, seq |-> 0, end |-> 0, id |-> <<0, 0>>, from |-> <<None, 0>>]
+NoEcho == [al |-> NoAllow, cid |-> 0]
+
+\* The key of the log id an allowance's end names: the leader's own entry
+\* there, or, past its log, the leader's epoch and term.
+EndKey(l, n) ==
+    IF n = 0 THEN <<0, 0>>
+    ELSE IF n <= Len(log[l]) THEN <<log[l][n].e, log[l][n].t>>
+    ELSE <<ep[l], term[l]>>
+
+\* The allowance l named in its epoch and term, which its appends carry.
+OwnAllow(l) ==
+    IF allow[l].from = Mid(l) /\ allow[l].e = ep[l] /\ allow[l].t = term[l]
+    THEN allow[l] ELSE NoAllow
+
+\* A copy keeps the allowance of the newest term, and in it the newest seq.
+NewerAllow(a, s) ==
+    /\ a # NoAllow
+    /\ \/ a.e > s.e
+       \/ a.e = s.e /\ (a.t > s.t \/ (a.t = s.t /\ a.seq > s.seq))
+
+\* What f stores, and echoes, after an append from l.
+StoredAllow(l, f) == IF NewerAllow(OwnAllow(l), allow[f]) THEN OwnAllow(l) ELSE allow[f]
+EchoOf(l, f) == [al |-> StoredAllow(l, f), cid |-> cid[f]]
+
+\* The vote rule: q grants b, or stands when q = b.
+AllowOk(q, b) ==
+    LET a == allow[q] IN
     \/ ~LeaseAnswers
-    \/ \A x \in leaseAcked : (x.e = ep[b] /\ OnLiveDisk(x)) => Has(log[b], x)
+    \/ a = NoAllow
+    \/ a.e # ep[b]
+    \/ a.from = Mid(b)
+    \/ KeyLess(a.id, LastKey(log[b]))
+    \/ LastKey(log[b]) = a.id /\ Len(log[b]) >= a.end
+
+\* Member m of l's membership holds l's allowance of this term up to n: l by
+\* the one it named, another by the echo l recorded from that copy.
+EchoHolds(l, m, n) ==
+    LET a == IF m[1] = l
+             THEN IF m = Mid(l) THEN allow[l] ELSE NoAllow
+             ELSE IF echoed[l][m[1]].cid = m[2] THEN echoed[l][m[1]].al ELSE NoAllow
+    IN a.from = Mid(l) /\ a.e = ep[l] /\ a.t = term[l] /\ a.end >= n
+
+Granted(l, n) ==
+    \A S \in Sets(Config(l)) :
+        2 * Cardinality({m \in S : EchoHolds(l, m, n)}) > Cardinality(S)
 
 Init ==
     /\ ep = [b \in Brokers |-> 0]
@@ -375,6 +445,9 @@ Init ==
     /\ reserve = [b \in Brokers |-> 0]
     /\ cuts = 0 /\ returns = 0
     /\ leaseAcked = {}
+    /\ allow = [b \in Brokers |-> NoAllow]
+    /\ echoed = [l \in Brokers |-> [f \in Brokers |-> NoEcho]]
+    /\ names = 0
 
 cpVars == <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, lost>>
 counters == <<writes, steps, places, rotations, rejoins, restarts>>
@@ -384,7 +457,7 @@ counters == <<writes, steps, places, rotations, rejoins, restarts>>
 
 Elect(b, Q) ==
     /\ b \in Q
-    /\ LeaseTailHeld(b)
+    /\ \A q \in Q : AllowOk(q, b)
     /\ term[b] < MaxTerm
     /\ Mid(b) \in Voters(Config(b))
     /\ Quorum(Config(b), Q)
@@ -474,6 +547,7 @@ Replicate(l, f) ==
     /\ LET new == Adopt(log[f], log[l])
        IN /\ new # log[f] \/ term[f] # term[l] \/ role[f] # "follower"
              \/ match[l][f] # Len(log[l]) \/ commit[f] < commit[l]
+             \/ LeaseAnswers /\ <<StoredAllow(l, f), EchoOf(l, f)>> # <<allow[f], echoed[l][f]>>
           /\ KeepsCommit(f, new)
           /\ log' = [log EXCEPT ![f] = new]
           \* The new log agrees with the leader's up to the leader's commit.
@@ -483,6 +557,8 @@ Replicate(l, f) ==
           /\ Written(f, new)
     /\ term' = [term EXCEPT ![f] = term[l]]
     /\ role' = [role EXCEPT ![f] = "follower"]
+    /\ allow' = IF LeaseAnswers THEN [allow EXCEPT ![f] = StoredAllow(l, f)] ELSE allow
+    /\ echoed' = IF LeaseAnswers THEN [echoed EXCEPT ![l][f] = EchoOf(l, f)] ELSE echoed
     /\ UNCHANGED <<ep, cid, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
 
@@ -563,6 +639,7 @@ NewCopy(b, kept) ==
     /\ role' = [role EXCEPT ![b] = "follower"]
     /\ commit' = [commit EXCEPT ![b] = Min(@, Len(kept))]
     /\ retired' = [retired EXCEPT ![b] = FALSE]
+    /\ allow' = [allow EXCEPT ![b] = NoAllow]
     /\ UNCHANGED <<ep, match, boot, msgs, acked, elected>>
 
 \* What a copy that replaced its disk reserves. The reservation is carried.
@@ -578,14 +655,17 @@ LostReserve(b) == [reserve EXCEPT ![b] = 0]
 \* older vote; only a power cut keeps the newest vote.
 KeptCopy(b, l, t, by) ==
     [e |-> ep[b], cid |-> cid[b], log |-> l, commit |-> Min(commit[b], Len(l)),
-     vote |-> <<ep[b], t>>, by |-> by, res |-> reserve[b]]
+     vote |-> <<ep[b], t>>, by |-> by, res |-> reserve[b], al |-> NoAllow]
 
-\* A kept copy whose saved commit is `s`.
-KeepCopyAt(b, l, t, by, s) ==
-    /\ keptLogs' = [keptLogs EXCEPT ![b] = @ \cup {[KeptCopy(b, l, t, by) EXCEPT !.commit = s]}]
+\* A kept copy whose saved commit is `s` and stored allowance `al`.
+KeepCopyAl(b, l, t, by, s, al) ==
+    /\ keptLogs' = [keptLogs EXCEPT ![b] =
+                      @ \cup {[KeptCopy(b, l, t, by) EXCEPT !.commit = s, !.al = al]}]
     /\ NewCopy(b, <<>>)
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = [reserve EXCEPT ![b] = 0]
+
+KeepCopyAt(b, l, t, by, s) == KeepCopyAl(b, l, t, by, s, NoAllow)
 
 KeepCopy(b, l, t, by) == KeepCopyAt(b, l, t, by, Min(commit[b], Len(l)))
 
@@ -632,7 +712,9 @@ PowerCutRotate(b, n) ==
     /\ cuts' = cuts + 1
     /\ n \in synced[b]..Len(log[b])
     /\ IF Alone = "off"
-       THEN KeepCopy(b, SubSeq(log[b], 1, n), term[b], "power-cut")
+       THEN \E al \in {allow[b], NoAllow} :
+                KeepCopyAl(b, SubSeq(log[b], 1, n), term[b], "power-cut",
+                           Min(commit[b], n), al)
        \* A standalone broker's relaxed crash mints a new storage id, so the
        \* copy rotates as a restore, with a saved commit that can lag.
        ELSE \E s \in 0..Min(commit[b], n) :
@@ -872,7 +954,8 @@ Reform(p, pick) ==
 \* and kept, and takes the longest prefix one of them vouches for.
 Copies(b) ==
     {[e |-> ep[b], cid |-> cid[b], log |-> log[b], commit |-> commit[b],
-      vote |-> <<ep[b], term[b]>>, by |-> "current", res |-> reserve[b]]} \cup keptLogs[b]
+      vote |-> <<ep[b], term[b]>>, by |-> "current", res |-> reserve[b],
+      al |-> allow[b]]} \cup keptLogs[b]
 
 MaxKey(K) == CHOOSE k \in K : \A j \in K : ~KeyLess(k, j)
 MinOf(X) == CHOOSE x \in X : \A y \in X : x <= y
@@ -917,15 +1000,33 @@ Marked(E, R) ==
 \* floor's entry, and for its whole log if the group is unmarked and its last
 \* entry has key T; never past its epoch's cap.
 VouchSafe(c) == Max(c.commit, IF cpFloor.i > 0 /\ HoldsFloor(c.log) THEN cpFloor.i ELSE 0)
-VouchUncapped(c, T, mk) == Max(VouchSafe(c), IF ~mk /\ LastKey(c.log) = T THEN Len(c.log) ELSE 0)
-VouchK(c, E, T, mk) == Min(Cap(c.e, E), VouchUncapped(c, T, mk))
+
+\* The allowance the re-form of epoch E vouches by (issue 3109): of the
+\* newest term among the allowances the copies read hold, the lowest end.
+LowAllow(R, E) ==
+    LET A == {c.al : c \in {d \in R : d.al # NoAllow /\ d.al.e = E}}
+    IN IF VouchIgnoresAllowance \/ A = {} THEN NoAllow
+       ELSE LET top == MaxOf({a.t : a \in A})
+                low == {a \in A : a.t = top}
+            IN CHOOSE a \in low : \A o \in low : a.end <= o.end
+
+\* A copy holding the allowance's log id vouches up to its end.
+AllowVouch(c, a) ==
+    IF /\ a.end > 0 /\ c.e = a.e /\ a.end <= Len(c.log)
+       /\ <<c.log[a.end].e, c.log[a.end].t>> = a.id
+    THEN a.end ELSE 0
+
+VouchUncapped(c, T, mk, a) ==
+    Max(Max(VouchSafe(c), AllowVouch(c, a)),
+        IF ~mk /\ LastKey(c.log) = T THEN Len(c.log) ELSE 0)
+VouchK(c, E, T, mk, a) == Min(Cap(c.e, E), VouchUncapped(c, T, mk, a))
 
 \* What the vouch rule decided at a re-form: "cap" when an epoch's cap
 \* lowered a copy, "T" when T kept one copy whole and left another, longer
 \* than its safe part, cut to it.
-Decided(R, E, T, mk) ==
+Decided(R, E, T, mk, a) ==
     {w \in {"cap", "T"} :
-        IF w = "cap" THEN \E c \in R : VouchUncapped(c, T, mk) > Cap(c.e, E)
+        IF w = "cap" THEN \E c \in R : VouchUncapped(c, T, mk, a) > Cap(c.e, E)
         ELSE /\ ~mk
              /\ \E c \in R : LastKey(c.log) = T /\ Len(c.log) > VouchSafe(c)
              /\ \E c \in R : LastKey(c.log) # T /\ Len(c.log) > VouchSafe(c)}
@@ -936,11 +1037,12 @@ ReformKept(p, src) ==
         R == UNION {Copies(b) : b \in S}
         T == Top(R)
         mk == Marked(e, R)
+        al == LowAllow(R, e)
         \* One broker, placed alone, in every voter set of the epoch.
         one == /\ Alone # "off"
                /\ Cardinality(Placed) = 1 /\ S = Placed /\ dead = {}
                /\ \A Vs \in VoterSets(e, R) : \A m \in Vs : m[1] \in S
-        V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk)
+        V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk, al)
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
         top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
@@ -959,7 +1061,7 @@ ReformKept(p, src) ==
        /\ ReportNotPromise \/ \A b \in S : ep[b] = e => retired[b]
        /\ \A c \in R : V(c) <= V(src)
        /\ voters # {}
-       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk, Decided(R, e, T, mk), held)
+       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk, Decided(R, e, T, mk, al), held)
        /\ lost' = lost \cup
             {x \in acked : x.e <= e /\ \A c \in R : ~Has(c.log, x) \/ x.i > V(c)}
        \* The next epoch's record leaves out the dead.
@@ -1006,6 +1108,7 @@ StartEpoch(b, f) ==
     \* The start syncs the copy and reserves up to the epoch's first index.
     /\ synced' = IF Kept THEN [synced EXCEPT ![b] = Len(log'[b])] ELSE synced
     /\ reserve' = IF Kept THEN [reserve EXCEPT ![b] = Max(@, Len(f.base))] ELSE reserve
+    /\ allow' = [allow EXCEPT ![b] = NoAllow]
     /\ UNCHANGED <<cid, match, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
 
@@ -1015,28 +1118,64 @@ LeaseAnswer(l) ==
     /\ LeaseAnswers /\ Leads(l)
     /\ \E i \in (commit[l] + 1)..Len(log[l]) :
           /\ log[l][i].e = ep[l] /\ log[l][i].t = term[l] /\ log[l][i].k = "rec"
+          /\ Granted(l, i)
           /\ leaseAcked' = leaseAcked \cup
                 {[e |-> ep[l], t |-> term[l], i |-> i, ent |-> log[l][i]]}
-    /\ UNCHANGED reformVars
+    /\ UNCHANGED <<reformVars, allowVars>>
+
+\* The leader names an allowance: any end from its log end up to the writes
+\* the run has left. It only raises its end within a term.
+NameAllowance(l) ==
+    /\ LeaseAnswers /\ Leads(l) /\ names < MaxNames
+    /\ \E n \in Len(log[l])..(Len(log[l]) + MaxWrites - writes) :
+          /\ OwnAllow(l) = NoAllow \/ n > OwnAllow(l).end
+          /\ allow' = [allow EXCEPT ![l] =
+                          [e |-> ep[l], t |-> term[l], seq |-> names + 1, end |-> n,
+                           id |-> EndKey(l, n), from |-> Mid(l)]]
+    /\ names' = names + 1
+    /\ UNCHANGED <<reformVars, leaseAcked, echoed>>
+
+\* The broker of a rotated copy tells voter v, under its node credential,
+\* where that copy's kept log ends (nothing, if no kept copy is left), and
+\* v lowers an allowance that copy named to it.
+LowerAllowance(v) ==
+    LET a == allow[v]
+        x == a.from[1]
+        kept == {k \in keptLogs[x] : k.cid = a.from[2] /\ k.e = a.e}
+        lg == IF kept = {} THEN <<>> ELSE (CHOOSE k \in kept : TRUE).log
+    IN /\ LeaseAnswers /\ Alive(v)
+       /\ a # NoAllow
+       /\ Alive(x) /\ cid[x] > a.from[2]
+       /\ Len(lg) < a.end
+       /\ allow' = [allow EXCEPT ![v] =
+                       [a EXCEPT !.end = Len(lg),
+                                 !.id = IF lg = <<>> THEN <<0, 0>> ELSE LastKey(lg)]]
+       /\ UNCHANGED <<reformVars, leaseAcked, echoed, names>>
+
+\* The steps that start a new copy (and so a new allowance) or store one.
+CopySteps ==
+    \/ \E b \in Brokers : RetiredRejoins(b) \/ Return(b)
+    \/ \E b \in Brokers : \E n \in 0..Len(log[b]) : Rotate(b, n) \/ PowerCutRotate(b, n)
+    \/ \E b \in Brokers : \E f \in forms : StartEpoch(b, f)
 
 ReformSteps ==
     \/ \E b \in Brokers : \E Q \in SUBSET Brokers : Elect(b, Q)
     \/ \E b \in Brokers : ClientWrite(b) \/ ProposeChange(b) \/ Send(b)
-    \/ \E l, f \in Brokers : Replicate(l, f)
     \/ \E f \in Brokers : \E m \in msgs : Receive(f, m)
     \/ \E l \in Brokers : \E i \in 1..Len(log[l]) : Commit(l, i)
-    \/ \E b \in Brokers : StepDown(b) \/ Restart(b) \/ RetiredRejoins(b)
-    \/ \E b \in Brokers : \E n \in 0..Len(log[b]) : Rotate(b, n) \/ PowerCutRotate(b, n)
-    \/ \E b \in Brokers : Sync(b) \/ Return(b)
+    \/ \E b \in Brokers : StepDown(b) \/ Restart(b)
+    \/ \E b \in Brokers : Sync(b)
     \/ \E b \in Brokers : Place(b) \/ Unplace(b) \/ CpObserve(b) \/ ReportFloor(b)
     \/ \E b \in Brokers : DeclareDead(b) \/ Stop(b) \/ SelfStart(b)
     \/ \E e \in 0..cpEpoch : \E S \in SUBSET Brokers : Plan(e, S)
     \/ \E p \in plans : \E pick \in Brokers : Reform(p, pick)
     \/ \E p \in plans : \E b \in DOMAIN p.facts : \E c \in Copies(b) : ReformKept(p, c)
-    \/ \E b \in Brokers : \E f \in forms : StartEpoch(b, f)
 
-Next == \/ ReformSteps /\ UNCHANGED leaseAcked
-        \/ \E l \in Brokers : LeaseAnswer(l)
+Next == \/ ReformSteps /\ UNCHANGED <<leaseAcked, allowVars>>
+        \/ CopySteps /\ UNCHANGED <<leaseAcked, echoed, names>>
+        \/ \E l, f \in Brokers : Replicate(l, f) /\ UNCHANGED <<leaseAcked, names>>
+        \/ \E l \in Brokers : LeaseAnswer(l) \/ NameAllowance(l)
+        \/ \E v \in Brokers : LowerAllowance(v)
 
 Spec == Init /\ [][Next]_vars
 
@@ -1058,6 +1197,7 @@ TypeOK ==
     /\ \A p \in plans : p.e \in 0..MaxEpoch /\ DOMAIN p.facts \subseteq Brokers
     /\ \A b \in Brokers : commit[b] <= Len(log[b])
     /\ lost \subseteq acked
+    /\ names \in 0..MaxNames
 
 OneLeaderPerTerm ==
     \A x, y \in elected : x.e = y.e /\ x.t = y.t => x.b = y.b
@@ -1084,6 +1224,13 @@ OffsetNeverReused ==
     \A x, y \in acked : (x.i = y.i /\ IsRecord(x) /\ IsRecord(y)) => x.ent = y.ent
 
 NothingLost == lost = {}
+
+\* A record answered on the lease that a live disk still holds is in the log
+\* of every later leader of its epoch.
+LeaseAckedLed ==
+    \A x \in leaseAcked, b \in Brokers :
+        (role[b] = "leader" /\ ep[b] = x.e /\ term[b] > x.t /\ OnLiveDisk(x))
+            => Has(log[b], x)
 
 \* A record answered on the lease that a live disk still holds, current or
 \* kept, is in the base of every later epoch. One the power cut took is the

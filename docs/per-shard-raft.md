@@ -3541,7 +3541,12 @@ copies and starts from the furthest, marked as losing records because the
 rotated copy's votes are unknown. Doing it without the operator, as the hybrid
 did, contradicts the decision on #2167 (no automatic re-form) and needs that
 decision revisited for this one case: every voter answered, each holds the
-allowance naming the rotated copy, and each is behind the kept log.
+allowance naming the rotated copy, and each is behind the kept log. The
+re-form vouches for a copy that holds an allowance's log id up to that
+allowance's end, taking the lowest end among the newest term's allowances the
+copies read hold: a copy stores what its leader named, not what a majority
+echoed, so a higher end can cover an entry nobody was allowed to answer
+(issue #3109).
 
 **What it costs.** A `Leader` stream that is writing when its leader dies
 waits for that leader or an operator instead of failing over, which is the

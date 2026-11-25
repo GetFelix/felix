@@ -267,6 +267,14 @@
 (*   AckIgnoresAllowance    -- a local ack needs only the lease.           *)
 (*   AllowanceNotDurable    -- the stored allowance is lost at a restart.  *)
 (*   EchoBeforeLowering     -- echoes from before a lowering still count.  *)
+(*                                                                         *)
+(* `Untimed = TRUE` is not a knob but a wider model for Part 3: no clock   *)
+(* runs, a leader answers on its lease whenever the allowance grants it,   *)
+(* and votes and campaigns skip every timing rule (window, hold, leader's  *)
+(* refusal). Every behaviour the timed model has, up to the ages, is one   *)
+(* of these, so LeaseAckedSurvive passing here says the allowance and the  *)
+(* vote rule keep a lease-answered write on their own, whatever the clocks *)
+(* do. The Part 1 checks need the clocks and are not run with it.          *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
@@ -288,7 +296,7 @@ CONSTANTS
     HoldExemptsNamed, HoldExemptsAny,
     MaxWakes, HoldEndClearsWindow, SleepAnswerRenews,
     Allowances, Budget, MaxNames, VoteIgnoresAllowance, AckIgnoresAllowance,
-    AllowanceNotDurable, EchoBeforeLowering
+    AllowanceNotDurable, EchoBeforeLowering, Untimed
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -298,6 +306,7 @@ ASSUME LeaseTooLong \/ Lease * DriftHi <= Promise * DriftLo
 ASSUME DriftBeyondBound \/ (DriftLo <= RateLo /\ RateHi <= DriftHi)
 ASSUME 1 <= RateLo /\ RateLo <= RateHi
 ASSUME ElectionTimeoutMin \in 0..ElectionTimeout
+ASSUME Untimed => Allowances /\ ~StoreLeases
 
 VARIABLES
     term, votedFor, role, log, commit,
@@ -526,7 +535,7 @@ Granted(l, p) ==
 
 \* A write appended now is answered on the lease.
 LocalAck(l) ==
-    /\ LeaseValid(l)
+    /\ Untimed \/ LeaseValid(l)
     /\ ~Allowances \/ AckIgnoresAllowance \/ Granted(l, Len(log[l]) + 1)
 
 \* What an append carries: the allowance l named in this term, if any.
@@ -586,7 +595,8 @@ Init ==
 \* read on: a message's stamp is read on the leader's clock. A suspended
 \* broker's monotonic clock gains nothing.
 Tick ==
-    \E d \in [Servers -> 0..RateHi] :
+    /\ ~Untimed
+    /\ \E d \in [Servers -> 0..RateHi] :
         /\ \A b \in Servers : IF suspended[b] THEN d[b] = 0 ELSE d[b] >= RateLo
         /\ downAge' = [b \in Servers |-> Grow(downAge[b], d[b])]
         /\ seenAge' = [b \in Servers |-> Grow(seenAge[b], d[b])]
@@ -618,11 +628,12 @@ Elect(c, Q, nt) ==
     /\ \A v \in Q : term[v] < nt
     \* A restarted member is held from campaigning ("Restarted members").
     \* A transfer's target campaigns at once.
-    /\ IF StoreLeases THEN ~SupportStands(c)
-       ELSE IF auth[c] # NoAuth THEN TRUE
-       ELSE /\ ~InWindow(c) /\ downAge[c] >= ElectionTimeoutMin
-            /\ ~JustStarted(c) \/ HoldSkipped(c)
-    /\ \A v \in Q \ {c} : LogOk(c, v) /\ MayGrant(v, c)
+    /\ \/ Untimed
+       \/ IF StoreLeases THEN ~SupportStands(c)
+          ELSE IF auth[c] # NoAuth THEN TRUE
+          ELSE /\ ~InWindow(c) /\ downAge[c] >= ElectionTimeoutMin
+               /\ ~JustStarted(c) \/ HoldSkipped(c)
+    /\ \A v \in Q \ {c} : LogOk(c, v) /\ (Untimed \/ MayGrant(v, c))
     /\ \A v \in Q : AllowOk(v, c)
     /\ term' = [b \in Servers |-> IF b \in Q THEN nt ELSE term[b]]
     /\ votedFor' = [b \in Servers |-> IF b \in Q THEN c ELSE votedFor[b]]
@@ -1291,5 +1302,57 @@ RestartView ==
                          ELSE <<seenTerm[b], seenAge[b]>>],
       xfer, voidTerm, auth, {m \in xmsgs : term[m.to] <= m.term},
       transfers, suspended, sinceWake, suspends, woke, sleepVars, allowVars>>
+
+(***************************************************************************)
+(* Views for the Part 3 configs. Like RestartView, each hides only what no *)
+(* step and no check reads, so a state stands for every state it hides.    *)
+(* AllowanceView hides:                                                    *)
+(*                                                                         *)
+(*   - `votedFor`, as RestartView does.                                    *)
+(*   - An answer that changes nothing when taken (InertAck), now also      *)
+(*     carrying no echo newer than the one its leader has from that        *)
+(*     follower. Echoes only grow while the leader leads its term, and a   *)
+(*     step that resets them also discards the answer.                     *)
+(*   - The allowance on an append when its target already stores one at    *)
+(*     least as new: taking it stores nothing, and the stored seq only     *)
+(*     grows (not with AllowanceNotDurable).                               *)
+(*   - A non-leader's echoes and lowering seq. They are read only by the   *)
+(*     leader of the term they were taken in, which it no longer is, and a *)
+(*     later term's allowances have higher seqs than any of them.          *)
+(*                                                                         *)
+(* Not for configs with LeaseFromAck, RestoreAnyVote, StoreLeases or       *)
+(* AllowanceNotDurable. UntimedView (Untimed only) also hides every age,   *)
+(* the window and hold records (`followed`, `led`) and the history only a  *)
+(* timed check reads (`staleAck`, `heldGrant`): with Untimed no step reads *)
+(* them.                                                                   *)
+(***************************************************************************)
+EchoInert(m) ==
+    m.al.term # term[m.to] \/ m.al.seq <= echo[m.to][m.from].seq
+
+InertAllowAck(m) ==
+    /\ m.kind = "ack"
+    /\ Untimed \/ m.age >= ackAge[m.to][m.from]
+    /\ m.n <= match[m.to][m.from]
+    /\ EchoInert(m)
+
+ViewMsg(m) ==
+    IF m.kind = "app" /\ m.al.seq <= allow[m.to].seq
+    THEN [m EXCEPT !.al = NoAllow] ELSE m
+
+ViewMsgs == {ViewMsg(m) : m \in {k \in msgs : ~InertAllowAck(k)}}
+
+ViewAllow ==
+    <<allow,
+      [l \in Servers |-> IF role[l] = "leader" THEN echo[l] ELSE [f \in Servers |-> NoAllow]],
+      [l \in Servers |-> IF role[l] = "leader" THEN lowSeq[l] ELSE 0],
+      names, wroteIn>>
+
+AllowanceView ==
+    <<term, followed, led, role, log, commit, heardAge, startAge, ackAge, match,
+      ViewMsgs, restarts, histVars, storeVars, xVars, sleepVars, ViewAllow>>
+
+UntimedView ==
+    <<term, role, log, commit, match, ViewMsgs, restarts,
+      delivered, acked, elected, nextId, ViewAllow>>
 
 =============================================================================
