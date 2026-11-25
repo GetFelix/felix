@@ -355,6 +355,15 @@ pub struct ShardAssignment {
     /// metadata level 47.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_bases: Option<RaftBases>,
+    /// The broker the shard's Raft group last reported electing: see
+    /// [`RaftLeader`]. Store-owned like `raft_voters`: only a floor report
+    /// sets it, a write at the same incarnation keeps it, and whatever a
+    /// caller passes is replaced. Left out of the view brokers read
+    /// (`api::shard_assignments::routed`); a seal response carries the
+    /// whole record, as it does the floor. Under Raft it needs metadata
+    /// level 52.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_leader: Option<RaftLeader>,
 }
 
 /// A stream or cache at one incarnation. An import marks every one it
@@ -1417,6 +1426,8 @@ pub(crate) fn check_elected_generation(current: u64, elected: u64) -> Result<(),
 
 mod raft_floor;
 pub use raft_floor::{RaftFloor, RaftFloorError, RaftFloorReport};
+mod raft_leader;
+pub use raft_leader::RaftLeader;
 mod raft_ordered;
 pub use raft_ordered::RaftOrdered;
 mod raft_reform;

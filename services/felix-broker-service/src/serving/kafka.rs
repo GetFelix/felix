@@ -152,6 +152,30 @@ impl Cluster for BrokerCluster {
         }
     }
 
+    fn anonymous(&self, tenant_id: &str, peer_certs: &[Vec<u8>]) -> Result<Principal, String> {
+        let principal = Principal::anonymous(tenant_id);
+        if peer_certs.is_empty() {
+            return Ok(principal);
+        }
+        let certs: Vec<rustls::pki_types::CertificateDer<'_>> = peer_certs
+            .iter()
+            .map(|der| rustls::pki_types::CertificateDer::from(der.as_slice()))
+            .collect();
+        // The same end a token on this connection would get, so the dev
+        // switch never keeps a connection open past its certificate.
+        let revocable = self
+            .auth
+            .chain_only(tenant_id, &certs)
+            .map_err(|err| err.to_string())?;
+        let watched = revocable.clone();
+        Ok(principal
+            .with_revocation(move || revocable.is_revoked())
+            .with_end(move || {
+                let watched = watched.clone();
+                Box::pin(async move { watched.revoked().await })
+            }))
+    }
+
     fn brokers(&self) -> Vec<Endpoint> {
         let mut brokers = vec![self.local.clone()];
         let Some(endpoints) = &self.endpoints else {

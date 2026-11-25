@@ -75,6 +75,18 @@ fn a_missing_term_names_where_the_log_was_read_and_who_holds_the_term() {
             from: 1,
             term: 5,
             holders: BTreeMap::from([(6, holders.to_vec())]),
+            logs: vec![
+                MemberLog {
+                    member: 0,
+                    last: Some((5, 40)),
+                    leader: false,
+                },
+                MemberLog {
+                    member: 1,
+                    last: Some((5, 41)),
+                    leader: true,
+                },
+            ],
         };
         let seen = Seen {
             led: &BTreeMap::new(),
@@ -85,14 +97,15 @@ fn a_missing_term_names_where_the_log_was_read_and_who_holds_the_term() {
     };
     let held = judged(&[0, 3]);
     assert!(
-        held.ends_with(
-            "the log was read from b2 leading term 5, and b1 b4 still hold an entry of it"
+        held.contains(
+            "the log was read from b2 leading term 5, and b1 b4 still hold an entry of it; \
+             judged against b1 term 5 last index 40; b2 term 5 last index 41, leader"
         ),
         "{held}"
     );
     let gone = judged(&[]);
     assert!(
-        gone.ends_with("and no member's log holds an entry of it"),
+        gone.contains("and no member's log holds an entry of it; judged against"),
         "{gone}"
     );
 }

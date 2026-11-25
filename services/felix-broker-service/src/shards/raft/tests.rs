@@ -1501,6 +1501,40 @@ async fn a_backup_point_reads_the_leaders_acknowledged_end() {
     stop(&members).await;
 }
 
+/// **A backup point lists every member open here, not only the ones the
+/// copy id report holds.** One off placement, or at an epoch it cannot
+/// prove, is left out of that report but still votes and may lead. Left
+/// out of the point too, its shard was read as a hybrid one on
+/// placement's leader, which answered "not led there" (#2995).
+#[tokio::test]
+async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
+    use crate::shards::routing::EngineShards;
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    let term = shards.runtime.status(&orders).expect("open").term;
+
+    let mut moved = assigned(orders.clone(), INCARNATION);
+    moved.leader = "broker-b".to_string();
+    moved.replicas = vec!["broker-b".to_string()];
+    shards.take(&mut assignments([moved])).await;
+    assert!(shards.held_copies().is_empty(), "off placement");
+    let [read] = shards.backup_members().try_into().expect("listed");
+    assert_eq!(read.key, orders);
+    assert_eq!(read.incarnation, INCARNATION);
+    assert_eq!(read.term, term);
+
+    let mut reformed = assigned(orders.clone(), INCARNATION);
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    shards.take(&mut assignments([reformed])).await;
+    assert!(shards.held_copies().is_empty(), "an unproven epoch");
+    let [read] = shards.backup_members().try_into().expect("listed");
+    assert_eq!(read.key, orders);
+    shards.shutdown().await;
+}
+
 /// The end the leader of `orders` gives a backup point.
 fn backup_end(member: &Member) -> u64 {
     use crate::shards::routing::EngineShards;

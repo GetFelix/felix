@@ -205,6 +205,10 @@ const REFORM_RECORD_LEVEL: u16 = 47;
 /// while no target is stored (#2909).
 const VOUCHED_VOTERS_LEVEL: u16 = 48;
 
+/// The metadata level whose members record the broker each Raft group
+/// elected from its leader's floor report (`ShardAssignment::raft_leader`).
+const RAFT_LEADER_LEVEL: u16 = 52;
+
 /// A Raft shard's set change keeps the dropped target's counter
 /// (`ShardAssignment::raft_target_counter`).
 const TARGET_COUNTER_LEVEL: u16 = 50;
@@ -367,6 +371,7 @@ impl RaftStore {
         assignment.raft_formed = None;
         assignment.raft_voters = None;
         assignment.raft_ordered = None;
+        assignment.raft_leader = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -1407,6 +1412,7 @@ impl ControlPlaneStore for RaftStore {
                 floors,
                 mark_formed: level >= FIRST_FORM_LEVEL,
                 vouched_voters: level >= VOUCHED_VOTERS_LEVEL,
+                note_leader: level >= RAFT_LEADER_LEVEL,
             })
             .await?
         {

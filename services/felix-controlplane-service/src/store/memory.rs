@@ -44,6 +44,7 @@ mod shards;
 pub(crate) use shards::SetHold;
 mod streams;
 mod switch;
+pub(crate) use switch::FloorRules;
 mod tenants;
 
 pub(crate) use nodes::FleetRule;
@@ -927,7 +928,15 @@ impl ControlPlaneStore for InMemoryStore {
         floors: Vec<crate::model::RaftFloorReport>,
     ) -> StoreResult<u32> {
         Ok(self
-            .apply_record_raft_floors(node_id, &floors, true, true)
+            .apply_record_raft_floors(
+                node_id,
+                &floors,
+                FloorRules {
+                    mark_formed: true,
+                    vouched_voters: true,
+                    note_leader: true,
+                },
+            )
             .await)
     }
 

@@ -256,6 +256,12 @@ fn assignment() -> ShardAssignment {
                 first_index: 1,
             }],
         }),
+        raft_leader: Some(crate::model::RaftLeader {
+            incarnation: 1,
+            epoch: 1,
+            term: 1,
+            node: s("leader"),
+        }),
     }
 }
 
@@ -739,6 +745,7 @@ fn commands() -> Vec<MetaCommand> {
             }],
             mark_formed: true,
             vouched_voters: true,
+            note_leader: true,
         },
         MetaCommand::SealShard {
             key: shard_key(),

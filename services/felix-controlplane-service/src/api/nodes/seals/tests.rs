@@ -44,6 +44,7 @@ async fn active(store: &InMemoryStore) -> ShardAssignment {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     store
