@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795647376781,
+  "lastUpdate": 1795648436290,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88770,6 +88770,72 @@ window.BENCHMARK_DATA = {
             "range": "1050.79",
             "unit": "us",
             "extra": "trials: 5\nmedian: 523.00\nmean: 957.80\nstdev: 1050.79\ncv: 109.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14a2e78ad67c01bd1115eb99ec0d72e92843291d",
+          "message": "fix(backup): backup-point reads every Raft shard on its elected leader (#2995) (#3173)\n\n* fix(backup): backup-point reads every Raft shard on its elected leader (#2995)\n\nA Raft broker listed only the members its copy id report holds in\n/backup/offsets. That set leaves out open members off placement, at an\nunproven epoch, or outside the current feed. A shard no broker listed was\nread as a hybrid one on placement's leader, which answered \"not led\nthere\". The broker now lists every member open in its Raft runtime, and\nfelixctl decides which shards are Raft ones again on every round instead\nof once per attempt.\n\nUn-skips the two backup cluster tests on Raft.\n\nSpec-Unaffected: tooling and a read-only broker report; no replication, commit or offset rule changes\n\n* fix(backup): the engine check passes Raft backup members through (#2995)\n\nEngineMatch wraps the Raft engine in every cluster and left\nbackup_members to the trait's empty default, so /backup/offsets listed\nno Raft member on any broker. EngineShards now has no default methods,\nso a wrapper cannot leave one out again. Adds a node-wiring test that\nbuilds the endpoint through match_engines.\n\nSpec-Unaffected: read-only backup report wiring; no replicated state or commit rule changes\n\n* test(backup): open a Raft copy as restore-point does (#2995)\n\nThe restore test opened every copied shard as a hybrid log, which a Raft\nmember's directory refuses. restore-point checks the engine marker and\nopens a Raft copy as a Raft log, whose offsets are entry indexes like\nthe point's; the test now does the same, and counts only data records\nas restored publishes, since a Raft log also holds blank and membership\nentries.\n\nSpec-Unaffected: test-only change\n\n* fix(routing): elected_leader has no default either (#2995)\n\nEvery EngineShards impl now answers it explicitly; the test stand-ins\nanswer None, and the node-wiring test checks it reaches the engine\nthrough EngineMatch.\n\nSpec-Unaffected: trait shape and tests only; no TLA-modelled behaviour changed",
+          "timestamp": "2026-11-25T23:07:17Z",
+          "tree_id": "29b005a75220353b4f61d77302aa49aa0662746a",
+          "url": "https://github.com/GetFelix/felix/commit/14a2e78ad67c01bd1115eb99ec0d72e92843291d"
+        },
+        "date": 1795648419776,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "6.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 154.80\nstdev: 6.38\ncv: 4.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "393.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 388.20\nstdev: 393.49\ncv: 101.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 302,
+            "range": "485.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 302.00\nmean: 519.60\nstdev: 485.91\ncv: 93.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 197.80\nstdev: 0.84\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 407,
+            "range": "7.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 407.00\nmean: 405.80\nstdev: 7.79\ncv: 1.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 671,
+            "range": "978.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 671.00\nmean: 1082.60\nstdev: 978.57\ncv: 90.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
