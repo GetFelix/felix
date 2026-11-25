@@ -216,6 +216,11 @@ impl IngressRouter {
         Some(dispatch)
     }
 
+    /// [`EngineShards::elected_leader`] of the engine that runs `key` here.
+    pub(crate) fn engine_elected_leader(&self, key: &ShardKey) -> Option<String> {
+        self.engine_shards.get()?.elected_leader(key)
+    }
+
     /// Whether another engine holds a member of `key` on this broker.
     pub(crate) fn engine_holds(&self, key: &ShardKey) -> bool {
         self.engine_shards
@@ -921,6 +926,16 @@ pub trait EngineShards: Send + Sync {
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch>;
+
+    /// The other broker the member of `key` here follows as its group's
+    /// elected leader, for a client that connects to the leader itself
+    /// (Kafka) rather than being forwarded. Unlike [`Self::dispatch`], not
+    /// filtered by whether this broker may forward there or knows its
+    /// address, and never a hop through a broker that only knows the leader.
+    /// `None` when no member here follows another broker.
+    fn elected_leader(&self, _key: &ShardKey) -> Option<String> {
+        None
+    }
 
     /// Whether `key`'s subscribers and readers are served on this broker
     /// although it does not lead the shard: from the engine's log, up to

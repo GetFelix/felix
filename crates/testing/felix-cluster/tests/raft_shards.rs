@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
-use felix_wire::AckMode;
+use felix_wire::{AckMode, RetryClass};
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -310,10 +310,15 @@ async fn a_shard_started_on_raft_forms_its_group_on_the_target_from_its_copies()
 /// **A plain publish made while a fresh group hands over its first term
 /// lands, once.** The broker that forms each group leads term 1 and then
 /// hands it to the placed leader, closing the shard for the election.
-/// `Cluster::start` returns with those hand-overs still to come, and nothing
-/// here waits for them: a publish refused `not_ready` in that window was
-/// never proposed, so the client sends it again, and the shard holds each
-/// record once.
+/// The cluster starts with those hand-overs still to come
+/// (`pending_raft_hand_overs`; a default start waits them out, and then no
+/// publish here could meet one), and the publishing runs until every one is
+/// done. A publish refused `not_ready` in that window was never proposed, so
+/// the client sends it again, and the shard holds each record once. The
+/// client's re-send count shows a refusal was met and retried: without it
+/// this test passes on a client that never retries. A publish already
+/// proposed when the hand-over began can come back outcome unknown instead;
+/// that one is returned, never re-sent, and held at most once.
 #[tokio::test]
 #[serial]
 async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
@@ -322,9 +327,12 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
     }
     const SHARDS: u32 = 12;
     const ROUNDS: usize = 4;
-    let cluster = Cluster::start(raft_cluster_with(StreamSpec::quorum(STREAM, SHARDS, 3)))
-        .await
-        .expect("start cluster");
+    let cluster = Cluster::start(ClusterConfig {
+        pending_raft_hand_overs: true,
+        ..raft_cluster_with(StreamSpec::quorum(STREAM, SHARDS, 3))
+    })
+    .await
+    .expect("start cluster");
     let addrs = cluster.broker_addrs();
     // A hand-over that fails once is asked again about 30 s later, so the
     // budget is time, not a handful of attempts.
@@ -345,10 +353,24 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
 
     // The offset each payload was acknowledged at, per shard.
     let mut acked: Vec<Vec<(u64, Vec<u8>)>> = vec![Vec::new(); SHARDS as usize];
-    for round in 0..ROUNDS {
+    // Payloads answered outcome unknown, per shard.
+    let mut in_doubt: Vec<Vec<Vec<u8>>> = vec![Vec::new(); SHARDS as usize];
+    // At least `ROUNDS`, and on until no hand-over is left, so the publishing
+    // spans every shard's hand-over window.
+    let mut round = 0;
+    loop {
+        if round >= ROUNDS && cluster.raft_hand_over_pending().await.is_none() {
+            break;
+        }
+        assert!(
+            round < 10_000,
+            "the hand-overs did not finish: {:?}",
+            cluster.raft_hand_over_pending().await
+        );
+        round += 1;
         for shard in 0..SHARDS {
             let payload = format!("{shard}/{round}").into_bytes();
-            let offset = client
+            let sent = client
                 .publish_on_shard(
                     &cluster.tenant_id,
                     &cluster.namespace,
@@ -357,12 +379,33 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
                     payload.clone(),
                     AckMode::PerMessage,
                 )
-                .await
-                .unwrap_or_else(|err| panic!("publish {round} to shard {shard}: {err:#}"))
-                .expect("a durable stream acknowledges with an offset");
-            acked[shard as usize].push((offset, payload));
+                .await;
+            match sent {
+                Ok(offset) => {
+                    let offset = offset.expect("a durable stream acknowledges with an offset");
+                    acked[shard as usize].push((offset, payload));
+                }
+                // A publish proposed just before the hand-over closed the
+                // shard may commit under the next leader, which the old one
+                // cannot confirm: `leadership_lost`, outcome unknown. A plain
+                // publish must not send that again, so it is returned. It is
+                // checked below to be held at most once.
+                Err(err)
+                    if err
+                        .downcast_ref::<felix_client::BrokerError>()
+                        .is_some_and(|broker| broker.retry == RetryClass::OutcomeUnknown) =>
+                {
+                    in_doubt[shard as usize].push(payload);
+                }
+                Err(err) => panic!("publish {round} to shard {shard}: {err:#}"),
+            }
         }
     }
+    assert!(
+        client.publish_resends() > 0,
+        "no publish met a hand-over's refusal in {round} rounds, so nothing here proves the \
+         client re-sends one",
+    );
 
     // An offset here is a log index, and a new leader's first entry takes
     // one, so gaps between acknowledged offsets say nothing. A re-send that
@@ -404,6 +447,15 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
                 "shard {shard} holds {:?} {copies} times; acknowledged at {offset}, held: {:?}",
                 String::from_utf8_lossy(payload),
                 held.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+            );
+        }
+        for payload in &in_doubt[shard] {
+            let copies = held.iter().filter(|(_, have)| have == payload).count();
+            assert!(
+                copies <= 1,
+                "shard {shard} holds {:?}, answered outcome unknown and never re-sent, \
+                 {copies} times",
+                String::from_utf8_lossy(payload),
             );
         }
     }

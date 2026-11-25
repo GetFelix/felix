@@ -29,6 +29,13 @@ pub struct ReconnectPolicy {
     pub backoff: Duration,
     /// The longest any one wait can be. A `backoff` above it is allowed and
     /// every wait is clamped to this.
+    ///
+    /// It caps the broker's waits too. A refusal that asks for longer (a
+    /// tenant over its publish quota says how long until it has room) is
+    /// returned to the caller at once instead of slept on, so a retrying call
+    /// never sleeps more than `max_backoff` times its attempts, whatever a
+    /// broker asks. Sleeping less than the broker asked would only be refused
+    /// again.
     pub max_backoff: Duration,
     /// A ceiling on the whole operation, across every attempt and every sleep.
     ///
@@ -89,6 +96,13 @@ impl ReconnectPolicy {
             .min(self.max_backoff);
         ceiling.mul_f64(jitter_fraction())
     }
+
+    /// The wait before attempt `attempt` (0-based) when the broker asked for
+    /// at least `at_least`, or `None` when it asked for more than
+    /// `max_backoff` and the caller should return the refusal instead.
+    pub(crate) fn delay_for(&self, attempt: usize, at_least: Duration) -> Option<Duration> {
+        (at_least <= self.max_backoff).then(|| self.delay_before(attempt).max(at_least))
+    }
 }
 
 /// The clock of one retried operation: how many attempts it has spent and how
@@ -133,7 +147,9 @@ impl<'a> Pace<'a> {
         if self.attempts >= self.policy.attempts.max(1) {
             return false;
         }
-        let delay = self.policy.delay_before(self.attempts - 1).max(at_least);
+        let Some(delay) = self.policy.delay_for(self.attempts - 1, at_least) else {
+            return false;
+        };
         if self
             .deadline()
             .is_some_and(|deadline| Instant::now() + delay >= deadline)
@@ -143,6 +159,26 @@ impl<'a> Pace<'a> {
         self.attempts += 1;
         tokio::time::sleep(delay).await;
         true
+    }
+
+    /// `error`, the last refusal, with what was spent on it, for a loop that
+    /// [`Self::wait`] just stopped. The refusal alone reads like one attempt
+    /// failed, when the call may have spent seconds on several.
+    pub(crate) fn gave_up(&self, error: anyhow::Error, at_least: Duration) -> anyhow::Error {
+        let attempts = self.attempts;
+        let spent = self.started.elapsed();
+        let why = if at_least > self.policy.max_backoff {
+            format!(
+                "; the broker asked to wait {at_least:?}, longer than the policy's \
+                 max_backoff of {:?}",
+                self.policy.max_backoff
+            )
+        } else {
+            String::new()
+        };
+        error.context(format!(
+            "gave up after {attempts} attempt(s) over {spent:?}{why}"
+        ))
     }
 }
 
@@ -189,7 +225,7 @@ impl super::Client {
                 Next::Backoff { at_least } => at_least,
             };
             if !pace.wait(at_least).await {
-                return Err(error);
+                return Err(pace.gave_up(error, at_least));
             }
         }
     }

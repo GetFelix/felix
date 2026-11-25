@@ -26,6 +26,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 mod compound;
+mod rounds;
+
+pub use rounds::{EveryFamily, TRIES_PER_KIND};
 
 use super::rng::Rng;
 use crate::Fault as HarnessFault;
@@ -92,6 +95,17 @@ pub trait Nemesis {
     /// control plane's own Raft group, so the cluster must run it as one.
     fn needs_metadata_group(&self) -> bool {
         false
+    }
+
+    /// Told how the fault it last picked went: `healed` once it was injected
+    /// and healed, `false` when it could not be injected.
+    fn outcome(&mut self, _fault: &Fault, _healed: bool) {}
+
+    /// Whether the campaign may stop at its deadline. A nemesis that must
+    /// see something happen first keeps it going, for at most one more
+    /// duration.
+    fn satisfied(&self) -> bool {
+        true
     }
 }
 

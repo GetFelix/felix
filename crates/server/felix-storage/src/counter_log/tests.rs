@@ -521,3 +521,86 @@ async fn a_store_left_to_engines_opens_no_counter_log() {
         "made a directory"
     );
 }
+
+/// **Both counter ops round trip through their on-disk bytes**, at the
+/// extremes of the value range and with an empty or multi-byte key.
+#[test]
+fn counter_records_round_trip() {
+    for op in [
+        CounterOp::Delta {
+            key: "k".to_string(),
+            delta: -1,
+        },
+        CounterOp::Delta {
+            key: String::new(),
+            delta: i64::MIN,
+        },
+        CounterOp::Checkpoint {
+            key: "zähler".to_string(),
+            sum: i64::MAX,
+        },
+    ] {
+        let bytes = op.encode();
+        assert_eq!(bytes[0], record::VERSION);
+        assert_eq!(CounterOp::decode(&bytes).expect("decode"), op);
+    }
+}
+
+/// The corruption a counter record's bytes decode to.
+fn refused(bytes: Vec<u8>) -> (&'static str, u64, String) {
+    let err = CounterOp::decode(&bytes::Bytes::from(bytes)).expect_err("refused");
+    let message = err.to_string();
+    match err.kind {
+        crate::CorruptionKind::CounterRecord { detail, found } => (detail, found, message),
+        other => panic!("not a counter record corruption: {other:?}"),
+    }
+}
+
+/// **Every way a counter record can be unreadable is refused, never guessed
+/// at**: a short header, another version, a key length that disagrees with
+/// the record, a key that is not UTF-8, and an unknown op. A counter folded
+/// over a misread record would be wrong forever after.
+#[test]
+fn unreadable_counter_records_are_refused() {
+    let good = CounterOp::Delta {
+        key: "key".to_string(),
+        delta: 7,
+    }
+    .encode()
+    .to_vec();
+
+    let (detail, found, message) = refused(good[..record::HEADER_LEN - 1].to_vec());
+    assert_eq!(detail, "is shorter than its fixed header");
+    assert_eq!(found, record::HEADER_LEN as u64 - 1);
+    assert_eq!(
+        message,
+        format!(
+            "counter record is shorter than its fixed header ({})",
+            record::HEADER_LEN - 1
+        )
+    );
+
+    let mut other_version = good.clone();
+    other_version[0] = record::VERSION + 1;
+    let (detail, found, _) = refused(other_version);
+    assert_eq!(detail, "version is not readable by this build");
+    assert_eq!(found, u64::from(record::VERSION + 1));
+
+    let mut long_key = good.clone();
+    long_key.push(b'!');
+    let (detail, found, _) = refused(long_key);
+    assert_eq!(detail, "key length does not match the record");
+    assert_eq!(found, 3, "the length the record claims");
+
+    let mut not_utf8 = good.clone();
+    let at = not_utf8.len() - 1;
+    not_utf8[at] = 0xff;
+    let (detail, _, _) = refused(not_utf8);
+    assert_eq!(detail, "key is not valid UTF-8");
+
+    let mut unknown_op = good;
+    unknown_op[1] = 9;
+    let (detail, found, _) = refused(unknown_op);
+    assert_eq!(detail, "op is not one this build knows");
+    assert_eq!(found, 9);
+}

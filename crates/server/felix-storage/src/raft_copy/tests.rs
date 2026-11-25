@@ -14,6 +14,7 @@ mod restore;
 mod start;
 mod stop;
 mod vouch;
+mod wire;
 
 use std::io;
 use std::path::{Path, PathBuf};

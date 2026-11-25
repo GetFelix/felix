@@ -134,6 +134,10 @@ pub(crate) struct Group {
     /// Stream batches handed to [`Self::propose`], for tests.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) proposed: AtomicU64,
+    /// Each placement transfer this member asked: the term it gave up and
+    /// the broker it asked to take over, for tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) placed_transfers: parking_lot::Mutex<Vec<(u64, String)>>,
     /// Reads below a floor this leader served on its lease, with no round.
     #[cfg(test)]
     pub(crate) lease_reads: AtomicU64,
@@ -928,6 +932,8 @@ impl Group {
             apply_hold,
             #[cfg(any(test, feature = "testing"))]
             proposed: AtomicU64::new(0),
+            #[cfg(any(test, feature = "testing"))]
+            placed_transfers: parking_lot::Mutex::default(),
             #[cfg(test)]
             lease_reads: AtomicU64::new(0),
             target: tokio::sync::watch::Sender::default(),

@@ -163,7 +163,9 @@ impl Broker {
         name: &str,
         shard: u32,
     ) -> std::result::Result<StreamLog, Unopened> {
-        if !self.may_open(kind, tenant_id, namespace, name) {
+        if !self.may_open(kind, tenant_id, namespace, name)
+            || self.in_memory_stream(kind, tenant_id, namespace, name)
+        {
             return Err(Unopened::Absent);
         }
         match kind {
@@ -233,7 +235,9 @@ impl Broker {
         shard: u32,
         base_offset: u64,
     ) -> std::result::Result<StreamLog, Unopened> {
-        if !self.may_open(kind, tenant_id, namespace, name) {
+        if !self.may_open(kind, tenant_id, namespace, name)
+            || self.in_memory_stream(kind, tenant_id, namespace, name)
+        {
             return Err(Unopened::Absent);
         }
         match kind {
@@ -336,7 +340,9 @@ impl Broker {
         let Some(incarnation) = incarnation else {
             return any().await;
         };
-        if !self.may_open(kind, tenant_id, namespace, name) {
+        if !self.may_open(kind, tenant_id, namespace, name)
+            || self.in_memory_stream(kind, tenant_id, namespace, name)
+        {
             return Err(Unopened::Absent);
         }
         match kind {
@@ -572,6 +578,22 @@ impl Broker {
                         .is_some()
             }
         }
+    }
+
+    /// Whether `kind` is the records log of a stream registered here as in
+    /// memory. Such a stream has no log: its records never reach one, and
+    /// opening it would leave an empty log on disk for replication to ship
+    /// (#3071). A stream not registered here counts as durable. Its group logs
+    /// are not covered: they open through the group stores whatever the
+    /// durability. Synchronous so a durable stream's open awaits nothing new.
+    fn in_memory_stream(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+    ) -> bool {
+        kind == LogKind::Stream && self.stream_in_memory(tenant_id, namespace, name)
     }
 
     /// Tell a stream that records reached its log without passing through it.

@@ -369,7 +369,9 @@ typedef struct FelixConnectOptions {
   // a random fraction of its ceiling. Zero is the default, 200.
   uint64_t reconnect_backoff_ms;
   // The longest any one wait can be, in milliseconds. Zero is the default,
-  // 2000. Every wait is capped at it, even when the backoff is larger.
+  // 2000. Every wait is capped at it, even when the backoff is larger. A
+  // wait the broker asks for that is longer than this is returned to the
+  // caller instead of slept on.
   // Both backoff fields count anything past a year as a year.
   uint64_t reconnect_max_backoff_ms;
   // A PEM file holding the client certificate, leaf first and then any

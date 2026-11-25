@@ -1740,6 +1740,27 @@ pub(crate) async fn write_batch(
     written.expect("written")[0]
 }
 
+/// Write `payloads` to `shard`'s group as pieces `position..` of a
+/// conditional batch of `len` records, with no check against the log.
+/// Returns each piece's offset.
+pub(crate) async fn write_cond(
+    shards: &RaftShards,
+    shard: &ShardKey,
+    position: u32,
+    len: u32,
+    payloads: &[&'static [u8]],
+) -> Vec<u64> {
+    let pieces = payloads
+        .iter()
+        .map(|p| bytes::Bytes::from_static(p))
+        .collect();
+    let written = shards
+        .runtime
+        .write_cond_unchecked(shard, position, len, pieces)
+        .await;
+    written.expect("written")
+}
+
 /// Leave `producer_id`'s batch `sequence` cut and then forgotten: its
 /// first record, then the first records of one more cut batch than a log
 /// keeps, each another producer's, so the oldest cut is kept by name only.
@@ -2568,6 +2589,16 @@ async fn a_request_off_the_leader_is_routed_to_it() {
             members[leader].name.to_string()
         )))
     );
+    // A client that connects to the leader itself (Kafka) is told it, even
+    // where this broker has no address to forward to (#3105).
+    assert_eq!(
+        EngineShards::elected_leader(&*follower.shards, &orders).as_deref(),
+        Some(members[leader].name)
+    );
+    assert_eq!(
+        EngineShards::elected_leader(&*members[leader].shards, &orders),
+        None
+    );
 
     let outside = Member::start(&net, "broker-d").await;
     assert_eq!(route(&outside.shards, &orders), None);
@@ -2578,6 +2609,10 @@ async fn a_request_off_the_leader_is_routed_to_it() {
         "a Raft shard held elsewhere went to the hybrid"
     );
     assert!(outside.shards.engine_for(&orders).is_none());
+    assert_eq!(
+        EngineShards::elected_leader(&*outside.shards, &orders),
+        None
+    );
     assert_eq!(
         EngineShards::dispatch(&*outside.shards, &orders, &addr_of),
         Some(Dispatch::Forward {

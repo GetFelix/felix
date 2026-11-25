@@ -983,3 +983,33 @@ fn restored_claims_leave_the_in_flight_cap_free() {
         "the cap holds for new claims"
     );
 }
+
+/// **Only an offset handed out and unsettled is a claim the group holds**,
+/// a delayed nack included. A settle skips the log read for one, so a
+/// skipped offset, a settled one or one never handed out must not count.
+#[test]
+fn a_claim_is_held_only_while_handed_out_and_unsettled() {
+    let now = Instant::now();
+    let mut group = GroupTracker::new(0, MANY);
+    assert_eq!(group.claim(3, 10, now, VIS).offsets, vec![0, 1, 2]);
+    group.skip(3);
+    assert!((0..3).all(|offset| group.holds_claim(offset)));
+    assert!(!group.holds_claim(3), "a skipped offset was claimed");
+    assert!(
+        !group.holds_claim(4),
+        "an offset never handed out was claimed"
+    );
+
+    group.ack(0);
+    group.nack(1);
+    group.nack_after(2, at(now, 5));
+    assert!(
+        !group.holds_claim(0),
+        "an acknowledged offset is still claimed"
+    );
+    assert!(!group.holds_claim(1), "a nacked offset is still claimed");
+    assert!(
+        group.holds_claim(2),
+        "a delayed nack is owed later, still held"
+    );
+}
