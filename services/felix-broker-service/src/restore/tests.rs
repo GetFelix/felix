@@ -329,3 +329,55 @@ async fn a_restore_cuts_and_records_the_points_cache_incarnation() {
         .expect("log");
     assert_eq!(log.tail_offset().await.expect("tail"), 1);
 }
+
+async fn run_args(args: &[&str]) -> Result<()> {
+    run(args.iter().map(|arg| arg.to_string()).collect()).await
+}
+
+/// **`restore-point` refuses bad arguments and an unreadable point before it
+/// opens any storage**, and says what it wanted.
+#[tokio::test]
+async fn restore_point_checks_its_arguments_and_the_point_first() {
+    run_args(&["--help"]).await.expect("help");
+    let err = run_args(&["--bogus"]).await.expect_err("unknown flag");
+    assert!(
+        format!("{err:#}").contains("unknown argument --bogus"),
+        "{err:#}"
+    );
+    assert!(format!("{err:#}").contains("usage:"), "{err:#}");
+    let err = run_args(&["--point"]).await.expect_err("no file");
+    assert!(
+        format!("{err:#}").contains("--point needs a file"),
+        "{err:#}"
+    );
+    let err = run_args(&["--point", "p.json", "--node"])
+        .await
+        .expect_err("no node");
+    assert!(
+        format!("{err:#}").contains("--node needs a node id"),
+        "{err:#}"
+    );
+    let err = run_args(&[]).await.expect_err("no point");
+    assert!(format!("{err:#}").contains("usage:"), "{err:#}");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing.json");
+    let err = run_args(&["--point", missing.to_str().expect("utf-8")])
+        .await
+        .expect_err("no such point");
+    assert!(
+        format!("{err:#}").contains("read the backup point"),
+        "{err:#}"
+    );
+
+    let wrong = dir.path().join("wrong.json");
+    let point = serde_json::json!({
+        "format_version": 999, "name": "nightly", "taken_at_millis": 1,
+        "metadata_version": 7, "shards": [],
+    });
+    std::fs::write(&wrong, point.to_string()).expect("write");
+    let err = run_args(&["--point", wrong.to_str().expect("utf-8")])
+        .await
+        .expect_err("another format");
+    assert!(format!("{err:#}").contains("format version 999"), "{err:#}");
+}

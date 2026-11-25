@@ -163,3 +163,33 @@ async fn a_cache_reduced_after_creation_holds_no_more_than_the_new_bound() {
     assert_eq!(read_from(&log, 0).await.len(), 60);
     assert!(log.open_sealed_segments() <= 3);
 }
+
+/// **A sealed segment's index is derived, never trusted**: one deleted after
+/// the log opened is rebuilt from the segment on its first read, the read
+/// answers the right records, and the rebuilt index is back on disk.
+#[tokio::test]
+async fn a_sealed_segment_with_its_index_gone_is_read_and_reindexed() {
+    let dir = tempdir().expect("dir");
+    fill(&dir, 60).await;
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config(4)).expect("reopen");
+    let active = log.segments().last().expect("segments").id;
+    let mut removed = Vec::new();
+    for entry in std::fs::read_dir(dir.path()).expect("list") {
+        let path = entry.expect("entry").path();
+        let sealed_index = path.extension().is_some_and(|ext| ext == "index")
+            && path.file_stem().and_then(|s| s.to_str()) != Some(&format!("{active:020}"));
+        if sealed_index {
+            std::fs::remove_file(&path).expect("remove index");
+            removed.push(path);
+        }
+    }
+    assert!(!removed.is_empty(), "expected sealed segments with indexes");
+
+    let records = read_from(&log, 5).await;
+    assert_eq!(records[0], "value-005");
+    assert_eq!(records.len(), 55);
+    assert!(
+        removed.iter().any(|path| path.exists()),
+        "a read segment's index is rewritten"
+    );
+}

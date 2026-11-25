@@ -382,3 +382,30 @@ async fn past_the_gate_a_stream_moves_onto_v9_and_reads_back() {
         .collect();
     assert_eq!(read, written);
 }
+
+/// **A shard opened at a base begins there, and an existing shard keeps the
+/// base of its own first segment**: a replica receiving a shard trimmed
+/// everywhere starts where the surviving records do, and asking again with
+/// another base never rewrites a log that is already there.
+#[tokio::test]
+async fn a_shard_opened_at_a_base_begins_there_and_keeps_it() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream_at("t1", "default", "orders", 0, 100)
+        .expect("stream at 100");
+    assert_eq!(log.tail_offset().await.expect("tail"), 100);
+    let appended = log.append(&payloads(&["a"])).await.expect("append");
+    assert_eq!(appended.first_offset, 100);
+    storage.shutdown().await.expect("shutdown");
+
+    let storage = DurableStorage::open(dir.path(), config()).expect("reopen");
+    let again = storage
+        .open_stream_at("t1", "default", "orders", 0, 5)
+        .expect("existing stream");
+    assert_eq!(
+        again.tail_offset().await.expect("tail"),
+        101,
+        "the base on disk wins"
+    );
+}

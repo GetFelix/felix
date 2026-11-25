@@ -748,3 +748,72 @@ mod quorum_waits {
 
 #[cfg(feature = "raft")]
 mod raft;
+
+/// A broker whose `orders` cache shard 0 is led by `broker-b`, and a key
+/// that lands on it.
+async fn led_elsewhere() -> (IngressRouter, felix_broker::Broker, String) {
+    let ingress = ingress(&[assignment(cache_key(0), "broker-b", 2)]);
+    let broker = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into());
+    let key = "k".to_string();
+    match resolve_cache_route(Some(&ingress), None, TENANT, NAMESPACE, CACHE, &key).await {
+        CacheRoute::Forward { target, .. } => assert_eq!(target.node_id, "broker-b"),
+        other => panic!("expected a forward, got {other:?}"),
+    }
+    (ingress, broker, key)
+}
+
+fn client_error(err: &anyhow::Error) -> &ClientError {
+    err.downcast_ref::<ClientError>()
+        .unwrap_or_else(|| panic!("not a client error: {err:#}"))
+}
+
+/// **A key owned elsewhere is refused, retryably, when there is no peer
+/// transport to forward it with**, rather than served from this broker's own
+/// copy, which is the divergence routing exists to prevent. Cache ops and
+/// counter ops both hold to it.
+#[tokio::test]
+async fn a_forward_without_peers_is_a_retryable_refusal_naming_the_owner() {
+    let (ingress, broker, key) = led_elsewhere().await;
+    let engine = StreamEngine::default();
+    let quorum = (&engine, std::time::Duration::from_secs(1));
+    let credential = ForwardCredential::from("token");
+
+    let check = |err: anyhow::Error| {
+        let error = client_error(&err);
+        assert!(error.message().contains("no peer transport"), "{err:#}");
+        assert!(error.message().contains("broker-b"), "{err:#}");
+        assert_eq!(error.retry(), felix_wire::RetryClass::Retry);
+    };
+    check(
+        apply_cache_op(
+            &broker,
+            quorum,
+            Some(&ingress),
+            None,
+            &credential,
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            &key,
+            CacheRequest::Get,
+        )
+        .await
+        .expect_err("no peers"),
+    );
+    check(
+        apply_counter_op(
+            &broker,
+            quorum,
+            Some(&ingress),
+            None,
+            &credential,
+            TENANT,
+            NAMESPACE,
+            CACHE,
+            &key,
+            CacheRequest::CounterAdd { delta: 1 },
+        )
+        .await
+        .expect_err("no peers"),
+    );
+}

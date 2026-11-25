@@ -385,3 +385,40 @@ fn a_directory_checked_against_a_control_plane_without_a_group_starts() {
     .expect("mark");
     ask(dir.path(), ME, &reported()).expect("qualifies");
 }
+
+/// **Each reason a broker will not start from its cached view reads
+/// differently in the log**, and the ones about a storage id or a feature
+/// name it, so the operator knows which directory or feature to look at.
+#[test]
+fn every_refusal_reads_differently_and_names_its_subject() {
+    let all = [
+        Refusal::NoView,
+        Refusal::NoGroup,
+        Refusal::OtherDirectory {
+            on_disk: Some("aaaa".to_string()),
+            registered: "bbbb".to_string(),
+        },
+        Refusal::OtherDirectory {
+            on_disk: None,
+            registered: "bbbb".to_string(),
+        },
+        Refusal::Replaced,
+        Refusal::Unwitnessed,
+        Refusal::NoElection,
+        Refusal::Unreported(vec!["jump_hash_routing".to_string(), "leases".to_string()]),
+    ];
+    let texts: std::collections::HashSet<String> = all.iter().map(ToString::to_string).collect();
+    assert_eq!(texts.len(), all.len(), "{texts:?}");
+
+    let other = all[2].to_string();
+    assert!(
+        other.contains("(aaaa)") && other.contains("(bbbb)"),
+        "{other}"
+    );
+    assert!(all[3].to_string().contains("(none)"), "{}", all[3]);
+    let unreported = all[7].to_string();
+    assert!(
+        unreported.contains("jump_hash_routing, leases"),
+        "{unreported}"
+    );
+}
