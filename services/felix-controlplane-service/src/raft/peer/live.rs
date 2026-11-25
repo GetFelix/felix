@@ -13,9 +13,12 @@
 //!
 //! The CA, the server verifier built from it and the certificate this member
 //! presents sit in one [`PeerTrust`], checked against each other in full
-//! before it is swapped in. A handshake reads one `PeerTrust` or the next,
-//! never a CA from one with a certificate from another, and a refused
-//! rotation stores nothing.
+//! before it is swapped in. A refused rotation stores nothing, so no
+//! handshake ever sees material that was refused or not yet fully checked.
+//! rustls asks for the certificate and the verifier separately, so a
+//! handshake in flight while a rotation is committed may present the
+//! previous certificate and verify with the new CA. Both were checked and
+//! committed; the worst case is one failed handshake.
 //!
 //! A reload changes only the next handshake; connections already up close
 //! when the certificate they were opened under ends (see
@@ -68,7 +71,7 @@ struct CaTrust {
 
 impl PeerTrust {
     /// The roots peer chains are checked against.
-    pub(super) fn roots(&self) -> &Arc<rustls::RootCertStore> {
+    fn roots(&self) -> &Arc<rustls::RootCertStore> {
         self.ca.client.roots()
     }
 
