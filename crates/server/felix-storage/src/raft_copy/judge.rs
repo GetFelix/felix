@@ -137,6 +137,10 @@ impl CopyRoot {
     /// with fresh marks synced before this returns. The old directory, if it
     /// held more than a copy file, is moved into `.kept` beside `dir` (see
     /// [`kept_copies`]). A crash part way leaves the old directory, or one this rotates again.
+    ///
+    /// `dir` is locked before anything in it is judged, and the lock passes
+    /// through any rotation to the open log. Another open of the copy, in
+    /// this process or another, fails with [`io::ErrorKind::ResourceBusy`].
     pub async fn open_copy(
         &self,
         shard: &str,
