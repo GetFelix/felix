@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795585079146,
+  "lastUpdate": 1795593881444,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -68432,6 +68432,58 @@ window.BENCHMARK_DATA = {
             "range": "5549.79",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 825755.85\nmean: 825239.58\nstdev: 5549.79\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3b862e700af0b21df227629cf41362af22477aea",
+          "message": "fix(raft): a Latest subscription's live offset stops at the commit (#3129) (#3138)\n\n* fix(raft): a Latest subscription's live offset stops at the commit (#3129)\n\nOn an engine's log resolve_position took a Latest start from the\ncommitted tail but its live offset from the raw tail. A leader holding\nproposed, uncommitted entries then answered live_offset > start_offset,\nand the records in between later arrived live, breaking the promise that\neverything from live_offset on was written after the join. live now\nstops at the committed tail (never below the start) for every start\nposition and for history_to. Streams not on an engine's log are\nunchanged.\n\nSpec-Unaffected: the TLA models cover commit and apply, not the offsets\na subscription reports at join.\n\n* fix(broker): a settling engine shard refuses every join, not only Latest\n\nEarliest and Offset fell back to the raw tail while the bound was\nSettling, which is the mismatch #3129 removes for a committed bound.\n\nSpec-Unaffected: subscribe offsets on a settling engine log only.",
+          "timestamp": "2026-11-25T07:55:36Z",
+          "tree_id": "5fbf7735a5fcb9e1cec89ed4523998064d4c85a7",
+          "url": "https://github.com/GetFelix/felix/commit/3b862e700af0b21df227629cf41362af22477aea"
+        },
+        "date": 1795593880723,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347770.18,
+            "range": "18300.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347770.18\nmean: 348178.59\nstdev: 18300.67\ncv: 5.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347770.18,
+            "range": "18300.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347770.18\nmean: 348178.59\nstdev: 18300.67\ncv: 5.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80203.58,
+            "range": "762.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80203.58\nmean: 80199.02\nstdev: 762.79\ncv: 0.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802035.79,
+            "range": "7627.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802035.79\nmean: 801990.21\nstdev: 7627.92\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
