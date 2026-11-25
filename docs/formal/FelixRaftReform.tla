@@ -180,18 +180,28 @@
 (* tells a voter where its kept copy ends, and the voter lowers the        *)
 (* allowance to it (LowerAllowance). A power cut keeps the copy's stored   *)
 (* allowance or loses it, as it is not synced on a relaxed run; a restore  *)
-(* keeps none. The re-form vouches, for a copy holding the allowance's log *)
-(* id, up to the lowest end among the allowances of the newest term the    *)
-(* copies read hold (issue 3109): a copy stores what its leader named, not *)
-(* what a quorum echoed. Bounds: the leader only raises its end within a   *)
-(* term (lowering is FelixRaftLease.tla's), late appends carry none, and   *)
-(* at most MaxNames allowances are named.                                  *)
+(* keeps none. The re-form vouches by the majority-held end (issue 3109):  *)
+(* the highest end E that a majority of every voter set of the epoch store *)
+(* at or above, any term. It is known only from the voters whose current   *)
+(* copy the re-form reads: a rotated copy may have lost its store (a power *)
+(* cut on a relaxed run does not sync it) and a broker not read says       *)
+(* nothing. So the re-form takes E only when the stores it read fix it,    *)
+(* that is, E is the same whether each unknown store holds nothing or      *)
+(* everything; otherwise it waits. With fewer than a majority read it      *)
+(* always waits. A copy vouches up to E for the entries it holds of the    *)
+(* log of a leader that named an allowance read. Bounds: the leader only   *)
+(* raises its end within a term (lowering is FelixRaftLease.tla's), late   *)
+(* appends carry none, and at most MaxNames allowances are named.          *)
 (*                                                                         *)
 (*   LeaseAckedLed       -- a record answered on the lease that a live     *)
 (*                          disk holds is in the log of every later leader *)
 (*                          of its epoch.                                  *)
 (*   LeaseAckedReformed  -- and in the base of every later epoch.          *)
-(*   VouchIgnoresAllowance -- knob: the re-form does not vouch by the      *)
+(*   VouchBy             -- "majority" is the rule above. The others each  *)
+(*                          drop part of it: "majorityRead" takes E from   *)
+(*                          the stores read and never waits; "lowest"      *)
+(*                          takes the lowest end among the newest term's   *)
+(*                          allowances read; "none" does not vouch by the  *)
 (*                          allowance.                                     *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
@@ -237,7 +247,7 @@ CONSTANTS
     MaxReturns,
     LeaseAnswers,       \* a leader answers records on its lease (issue 3103)
     MaxNames,           \* allowances named, in all
-    VouchIgnoresAllowance
+    VouchBy             \* "majority", "majorityRead", "lowest" or "none" (see the header)
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -1001,11 +1011,13 @@ Marked(E, R) ==
 \* entry has key T; never past its epoch's cap.
 VouchSafe(c) == Max(c.commit, IF cpFloor.i > 0 /\ HoldsFloor(c.log) THEN cpFloor.i ELSE 0)
 
-\* The allowance the re-form of epoch E vouches by (issue 3109): of the
-\* newest term among the allowances the copies read hold, the lowest end.
+\* VouchBy = "lowest", kept to show why it is not the rule: of the newest
+\* term among the allowances the copies read hold, the lowest end. A copy
+\* stores what its leader named, so one that took only an older, lower end
+\* drags it below what a majority held (FelixRaftReformLeaseTailLowestEnd).
 LowAllow(R, E) ==
     LET A == {c.al : c \in {d \in R : d.al # NoAllow /\ d.al.e = E}}
-    IN IF VouchIgnoresAllowance \/ A = {} THEN NoAllow
+    IN IF A = {} THEN NoAllow
        ELSE LET top == MaxOf({a.t : a \in A})
                 low == {a \in A : a.t = top}
             IN CHOOSE a \in low : \A o \in low : a.end <= o.end
@@ -1016,17 +1028,61 @@ AllowVouch(c, a) ==
        /\ <<c.log[a.end].e, c.log[a.end].t>> = a.id
     THEN a.end ELSE 0
 
-VouchUncapped(c, T, mk, a) ==
-    Max(Max(VouchSafe(c), AllowVouch(c, a)),
+\* The majority-held end (issue 3109). Member m's store is known when the
+\* re-form reads its current copy (S is the brokers read). A copy that
+\* rotated may have lost what it stored, and a broker not read says nothing.
+StoreKnown(m, S) == m[1] \in S /\ cid[m[1]] = m[2]
+StoredEnd(m, E) == IF allow[m[1]] # NoAllow /\ allow[m[1]].e = E THEN allow[m[1]].end ELSE 0
+EndRange == 0..(2 * MaxWrites + MaxEpoch * 8)
+
+\* A majority of every voter set of E stores n or more, each unknown store
+\* counted as holding n when `unknownHolds`, as holding nothing otherwise.
+HeldBy(E, S, R, n, unknownHolds) ==
+    \A Vs \in VoterSets(E, R) :
+        2 * Cardinality({m \in Vs : IF StoreKnown(m, S) THEN StoredEnd(m, E) >= n
+                                    ELSE unknownHolds}) > Cardinality(Vs)
+
+\* The majority-held end at its lowest and highest over what the unknown
+\* stores might hold. The re-form knows it only when the two agree.
+HeldLow(E, S, R) == MaxOf({0} \cup {n \in EndRange : HeldBy(E, S, R, n, FALSE)})
+HeldHigh(E, S, R) == MaxOf({0} \cup {n \in EndRange : HeldBy(E, S, R, n, TRUE)})
+
+\* Copy c vouches up to n for the entries it holds of a log some leader
+\* named an allowance of: its entry at k, at or below that allowance's end,
+\* is that leader's own entry of the allowance's term, or the entry the
+\* allowance's log id names. By log matching, c's log up to k is then that
+\* leader's log.
+VouchTo(c, E, n, R) ==
+    LET A == {d.al : d \in {x \in R : x.al # NoAllow /\ x.al.e = E}}
+        ok(j) == \E s \in A : \E k \in j..Min(s.end, Len(c.log)) :
+                    \/ <<c.log[k].e, c.log[k].t>> = <<s.e, s.t>>
+                    \/ k = s.end /\ <<c.log[k].e, c.log[k].t>> = s.id
+    IN IF c.e # E THEN 0
+       ELSE MaxOf({0} \cup {j \in 1..Min(n, Len(c.log)) : ok(j)})
+
+\* How far the allowance vouches for copy c at a re-form of epoch E that
+\* read the brokers S, whose copies are R.
+AllowVouchBy(c, E, S, R) ==
+    IF ~LeaseAnswers \/ VouchBy = "none" THEN 0
+    ELSE IF VouchBy = "lowest" THEN AllowVouch(c, LowAllow(R, E))
+    ELSE VouchTo(c, E, HeldLow(E, S, R), R)
+
+\* The re-form waits while the stores it read leave the majority-held end
+\* open. "majorityRead" does not wait.
+AllowKnown(E, S, R) ==
+    ~LeaseAnswers \/ VouchBy # "majority" \/ HeldLow(E, S, R) = HeldHigh(E, S, R)
+
+VouchUncapped(c, T, mk, av) ==
+    Max(Max(VouchSafe(c), av),
         IF ~mk /\ LastKey(c.log) = T THEN Len(c.log) ELSE 0)
-VouchK(c, E, T, mk, a) == Min(Cap(c.e, E), VouchUncapped(c, T, mk, a))
+VouchK(c, E, T, mk, av) == Min(Cap(c.e, E), VouchUncapped(c, T, mk, av))
 
 \* What the vouch rule decided at a re-form: "cap" when an epoch's cap
 \* lowered a copy, "T" when T kept one copy whole and left another, longer
 \* than its safe part, cut to it.
-Decided(R, E, T, mk, a) ==
+Decided(R, E, T, mk, S) ==
     {w \in {"cap", "T"} :
-        IF w = "cap" THEN \E c \in R : VouchUncapped(c, T, mk, a) > Cap(c.e, E)
+        IF w = "cap" THEN \E c \in R : VouchUncapped(c, T, mk, AllowVouchBy(c, E, S, R)) > Cap(c.e, E)
         ELSE /\ ~mk
              /\ \E c \in R : LastKey(c.log) = T /\ Len(c.log) > VouchSafe(c)
              /\ \E c \in R : LastKey(c.log) # T /\ Len(c.log) > VouchSafe(c)}
@@ -1037,12 +1093,11 @@ ReformKept(p, src) ==
         R == UNION {Copies(b) : b \in S}
         T == Top(R)
         mk == Marked(e, R)
-        al == LowAllow(R, e)
         \* One broker, placed alone, in every voter set of the epoch.
         one == /\ Alone # "off"
                /\ Cardinality(Placed) = 1 /\ S = Placed /\ dead = {}
                /\ \A Vs \in VoterSets(e, R) : \A m \in Vs : m[1] \in S
-        V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk, al)
+        V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk, AllowVouchBy(c, e, S, R))
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
         top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
@@ -1059,9 +1114,10 @@ ReformKept(p, src) ==
        /\ ReformBeforeAll \/ Asked \subseteq S
        /\ \A b \in S : ep[b] <= e /\ Fact(b) = p.facts[b]
        /\ ReportNotPromise \/ \A b \in S : ep[b] = e => retired[b]
+       /\ AllowKnown(e, S, R)
        /\ \A c \in R : V(c) <= V(src)
        /\ voters # {}
-       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk, Decided(R, e, T, mk, al), held)
+       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk, Decided(R, e, T, mk, S), held)
        /\ lost' = lost \cup
             {x \in acked : x.e <= e /\ \A c \in R : ~Has(c.log, x) \/ x.i > V(c)}
        \* The next epoch's record leaves out the dead.

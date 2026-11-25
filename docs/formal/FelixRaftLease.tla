@@ -269,12 +269,16 @@
 (*   EchoBeforeLowering     -- echoes from before a lowering still count.  *)
 (*                                                                         *)
 (* `Untimed = TRUE` is not a knob but a wider model for Part 3: no clock   *)
-(* runs, a leader answers on its lease whenever the allowance grants it,   *)
-(* and votes and campaigns skip every timing rule (window, hold, leader's  *)
-(* refusal). Every behaviour the timed model has, up to the ages, is one   *)
-(* of these, so LeaseAckedSurvive passing here says the allowance and the  *)
-(* vote rule keep a lease-answered write on their own, whatever the clocks *)
-(* do. The Part 1 checks need the clocks and are not run with it.          *)
+(* runs, a write the allowance grants may be answered on the lease or left *)
+(* to its commit, and votes and campaigns skip every timing rule (window,  *)
+(* hold, leader's refusal). Forget the clock (every age, `followed`,       *)
+(* `led`, `staleAck`, `heldGrant`) and each timed step is an Untimed step: *)
+(* Tick and EndHold change only what is forgotten; Elect and ClientWrite   *)
+(* only lose guards that read it; no other step reads it in a guard, and   *)
+(* none writes anything else from it. So LeaseAckedSurvive, AckedSurvive,  *)
+(* OneLeaderPerTerm and StateMachineSafety passing here hold for the timed *)
+(* model at the same bounds, whatever the clocks do. The Part 1 checks     *)
+(* need the clocks and are not run with it.                                *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
@@ -533,10 +537,18 @@ Granted(l, p) ==
              /\ EchoBeforeLowering \/ echo[l][b].seq >= lowSeq[l]
              /\ echo[l][b].end >= p})
 
+\* The allowance lets l answer a write appended now on its lease.
+AllowsAck(l) == ~Allowances \/ AckIgnoresAllowance \/ Granted(l, Len(log[l]) + 1)
+
 \* A write appended now is answered on the lease.
-LocalAck(l) ==
-    /\ Untimed \/ LeaseValid(l)
-    /\ ~Allowances \/ AckIgnoresAllowance \/ Granted(l, Len(log[l]) + 1)
+LocalAck(l) == LeaseValid(l) /\ AllowsAck(l)
+
+\* Whether a write appended now is answered on the lease. Untimed has no
+\* clock to say whether the lease holds, so where the allowance permits it
+\* either may happen, as each does in the timed model.
+AnswersLocally(l) ==
+    IF Untimed THEN {FALSE} \cup (IF AllowsAck(l) THEN {TRUE} ELSE {})
+    ELSE {LocalAck(l)}
 
 \* What an append carries: the allowance l named in this term, if any.
 Named(l) == IF allow[l].term = term[l] /\ allow[l].from = l THEN allow[l] ELSE NoAllow
@@ -757,11 +769,11 @@ ClientWrite(l) ==
     /\ role[l] = "leader" /\ nextId <= MaxWrites /\ Up(l)
     /\ stalledAge[l] = None
     /\ log' = [log EXCEPT ![l] = Append(@, <<term[l], nextId>>)]
-    /\ acked' = [acked EXCEPT ![nextId] =
-                    IF LocalAck(l) THEN "local" ELSE "none"]
-    /\ staleAck' = (staleAck \/
-                     (LocalAck(l) /\ \E t \in 1..MaxTerm :
-                          t > term[l] /\ elected[t] # {}))
+    /\ \E local \in AnswersLocally(l) :
+          /\ acked' = [acked EXCEPT ![nextId] = IF local THEN "local" ELSE "none"]
+          /\ staleAck' = (staleAck \/
+                           (local /\ \E t \in 1..MaxTerm :
+                                t > term[l] /\ elected[t] # {}))
     /\ nextId' = nextId + 1
     /\ wroteIn' = IF Allowances THEN [wroteIn EXCEPT ![nextId] = term[l]] ELSE wroteIn
     /\ UNCHANGED <<allow, echo, lowSeq, names>>

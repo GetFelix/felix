@@ -3536,17 +3536,28 @@ are today; the rule only refuses more votes.
   for its commit fails over as today.
 
 **Re-forming from the kept leader.** Reclaiming a rotated leader's kept log is
-a re-form from that copy. `felixctl raft reform plan` already reads kept
-copies and starts from the furthest, marked as losing records because the
-rotated copy's votes are unknown. Doing it without the operator, as the hybrid
-did, contradicts the decision on #2167 (no automatic re-form) and needs that
-decision revisited for this one case: every voter answered, each holds the
-allowance naming the rotated copy, and each is behind the kept log. The
-re-form vouches for a copy that holds an allowance's log id up to that
-allowance's end, taking the lowest end among the newest term's allowances the
-copies read hold: a copy stores what its leader named, not what a majority
-echoed, so a higher end can cover an entry nobody was allowed to answer
-(issue #3109).
+a re-form from that copy, and only the operator starts it, through `felixctl
+raft reform` (the #2167 rule: no automatic re-form). `felixctl raft reform
+plan` already reads kept copies and starts from the furthest, marked as
+losing records because the rotated copy's votes are unknown.
+
+The re-form keeps entries up to the majority-held end (issue #3109): the
+highest end that a majority of the group's voters store at or above. A copy
+keeps the entries it holds up to that end that belong to the log of a leader
+whose allowance was read. Taking the lowest end read instead is wrong: a
+follower that only took an older, lower end would drag the end below a
+record a majority had granted, and the re-form would drop it from the
+leader's intact disk.
+
+The re-form can only count what it reads. A voter's store is known when the
+re-form reads that voter's current copy. A copy that rotated may have lost
+its store, because a power cut on a relaxed run does not sync it, and a
+broker the re-form cannot reach says nothing. So the re-form takes the end
+only when the known stores settle it: the end comes out the same whether
+each unknown store holds nothing or everything. Otherwise it waits, and the
+way out is the abandon of #3096. With fewer than a majority of the voters
+read it always waits. With one voter of three unknown, it goes ahead only
+when the two it read store the same end.
 
 **What it costs.** A `Leader` stream that is writing when its leader dies
 waits for that leader or an operator instead of failing over, which is the

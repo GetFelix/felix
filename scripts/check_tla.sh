@@ -552,6 +552,8 @@ expectations=(
   "FelixRaftReform pass"
   "FelixRaftReformLeaseTail pass"
   "FelixRaftReformLeaseTailNoVouch violates LeaseAckedReformed"
+  "FelixRaftReformLeaseTailLowestEnd violates LeaseAckedReformed"
+  "FelixRaftReformLeaseTailMajorityRead violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailHappens violates NeverReformsKeptTail"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"
