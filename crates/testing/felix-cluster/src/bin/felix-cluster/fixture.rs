@@ -140,6 +140,13 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         )
         .await?;
 
+    // A suite's first keyed publish can come within a second of the fixture
+    // file appearing, and its client does not retry a refusal. A minute
+    // covers a hand-over that failed once and waited out its backoff.
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(60))
+        .await?;
+
     // Each broker wrote its own certificate; a client needs to trust all of
     // them, and a PEM bundle holding several is exactly how that is spelled.
     // The broker that advertises no commits adds its own.
