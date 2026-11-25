@@ -62,6 +62,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
+  relaxed-crash-id                           ← the id a relaxed crash gave the directory, and the ids it rotated away
   last-rotation                              ← the id the last rotation gave the directory, the one before, and the registration then
   minted-id                                  ← an id a start wrote new, and the registration that bound it
   registered-at                              ← the node record's registration time, beside the incarnation
@@ -87,6 +88,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     raft-epoch                               ← a Raft copy's group epoch, once a re-form started one
     rotated-by                               ← only in a kept directory: why the rotation moved it aside
     raft-stopped                             ← the group epoch a re-form stopped the copy in
+    raft-reform-alone                        ← a standalone group's own re-form plan
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     poisoned                                 ← only after a failed fsync: the mark as of the failure
@@ -2694,6 +2696,32 @@ every change of leader"). A missing file, or one that does not decode, names
 no id, so such a set reads as naming a lost copy, which only costs a
 readmission. So does a crash after the id rotated but before the old id was
 recorded. An older release neither reads nor writes the file.
+
+## `relaxed-crash-id`: what a relaxed crash rotated
+
+Written by the start that rotated the storage id after a relaxed crash
+(`run_state::begin`), and not by an operator's rotation. A standalone broker
+cannot tell a restored volume from a relaxed crash: restoring a volume
+snapshot taken while it ran writes it too, and the re-form that follows can
+give out offsets handed out after the snapshot. Text: the line `relaxed_crash`, then the new id in hex, then the ids relaxed
+crashes rotated away, newest first, at most 8, one per line in hex. Synced
+with the directory.
+
+It counts only while its first id is the current storage id
+(`run_state::relaxed_crash_sources`), so any later rotation voids it. A
+standalone broker re-forms a Raft group only on this evidence (see
+`docs/per-shard-raft.md`, "A standalone broker re-forms itself"). A missing
+or unreadable file means no evidence.
+
+## `raft-reform-alone`: a standalone group's re-form plan
+
+In a Raft shard directory of a standalone broker, written before the copy
+is stopped for a self re-form and synced. JSON: the copy id the plan made
+the voter (`copy`), the storage id that copy was minted under (`minted`),
+every re-form's base with the new epoch's last (`bases`), the start
+(`start`), and the copy's last index when planned (`last`). A start that
+finds it under the current storage id finishes it; one minted under another
+id is dropped and the group is planned again.
 
 ## `copy-trust`: which copies hold what they acknowledged
 

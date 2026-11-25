@@ -43,7 +43,7 @@ pub(super) async fn run(
 }
 
 /// One pass over the cache shards open here.
-pub(super) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>) {
+pub(crate) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>) {
     let cache = broker.cache();
     for (tenant_id, namespace, name, shard) in cache.open_shards() {
         let key = ShardKey {
@@ -55,7 +55,11 @@ pub(super) async fn expire_once(broker: &Broker, ingress: Option<&IngressRouter>
         };
         // A follower's copy is written by its leader, and a write here would
         // be one the leader never made.
-        let Dispatch::Local { generation } = crate::shards::routing::dispatch(ingress, &key) else {
+        let Dispatch::Local { generation } = ingress
+            .map_or(Dispatch::Local { generation: 0 }, |ingress| {
+                ingress.dispatch(&key)
+            })
+        else {
             continue;
         };
         let fenced = match ingress {

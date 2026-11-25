@@ -51,6 +51,22 @@ pub(super) async fn on_raft(
         kind: ShardKind::Stream,
     };
     let Some(groups) = publish_ctx.engine.raft_groups(&key) else {
+        // A durable stream on a Raft broker lives only on its group. Before
+        // the member opens, the hybrid path would open a stream log and group
+        // state of its own that nothing serves.
+        if publish_ctx.engine.runs_raft()
+            && broker
+                .stream_metadata(tenant_id, namespace, stream)
+                .await
+                .is_some_and(|metadata| metadata.durable)
+        {
+            return Err(ClientError::unavailable(
+                &crate::shards::routing::Reason::NotReady,
+                format!(
+                    "the Raft group of {tenant_id}/{namespace}/{stream} shard {shard} is not open on this broker yet; retry"
+                ),
+            ));
+        }
         return Ok(None);
     };
     if publish_ctx.ingress.is_some()
@@ -68,9 +84,11 @@ pub(super) async fn on_raft(
     // A write is routed as a publish is, at the term it would be proposed
     // at; the reader then proposes only at a term a read index confirmed.
     let dispatched = if writes {
-        dispatch_write(publish_ctx.ingress.as_deref(), &key).await.0
+        dispatch_write(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key)
+            .await
+            .0
     } else {
-        dispatch(publish_ctx.ingress.as_deref(), &key)
+        dispatch(publish_ctx.ingress.as_deref(), &publish_ctx.engine, &key)
     };
     match dispatched {
         Dispatch::Local { .. } => {}

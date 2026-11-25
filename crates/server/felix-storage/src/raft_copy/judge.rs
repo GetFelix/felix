@@ -533,6 +533,31 @@ pub fn holds_log_without_copy(dir: &Path) -> io::Result<bool> {
     engine_marker::holds_segments(dir).map_err(io::Error::other)
 }
 
+/// A directory directly under `root` that holds a log and no copy file: the
+/// hybrid engine's data, which no Raft member may open. `None` for a root
+/// with none, or that does not exist yet. Directories starting with `.`
+/// (kept copies) are not shard directories.
+pub fn hybrid_log_under(root: &Path) -> io::Result<Option<PathBuf>> {
+    let entries = match crate::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let mut found: Option<PathBuf> = None;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let dir = entry.path();
+        // The smallest path, so the error names the same directory each run.
+        if holds_log_without_copy(&dir)? && found.as_ref().is_none_or(|first| dir < *first) {
+            found = Some(dir);
+        }
+    }
+    Ok(found)
+}
+
 pub(super) fn parent_of(dir: &Path) -> io::Result<PathBuf> {
     dir.parent()
         .filter(|parent| !parent.as_os_str().is_empty())

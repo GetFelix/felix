@@ -46,7 +46,8 @@ pub async fn resolve_cache(
     cache: &str,
     key: &str,
 ) -> Result<CacheResolution, Refusal> {
-    match resolve_cache_route(ingress, tenant_id, namespace, cache, key).await {
+    // Its callers are cluster members, which route through `ingress`.
+    match resolve_cache_route(ingress, None, tenant_id, namespace, cache, key).await {
         CacheRoute::Local {
             shard,
             generation,

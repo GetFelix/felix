@@ -105,7 +105,7 @@ fn ingress(assignments: &[ShardAssignment]) -> IngressRouter {
 #[tokio::test]
 async fn a_single_node_broker_serves_every_key_locally() {
     for key in ["a", "b", "anything at all"] {
-        match resolve_cache_route(None, TENANT, NAMESPACE, CACHE, key).await {
+        match resolve_cache_route(None, None, TENANT, NAMESPACE, CACHE, key).await {
             CacheRoute::Local { shard: 0, .. } => {}
             other => panic!("expected shard 0 locally, got {other:?}"),
         }
@@ -132,7 +132,7 @@ async fn every_key_resolves_to_exactly_one_owner() {
     let mut forwarded = 0;
     for n in 0..200 {
         let key = format!("session:{n}");
-        match resolve_cache_route(Some(&ours), TENANT, NAMESPACE, CACHE, &key).await {
+        match resolve_cache_route(Some(&ours), None, TENANT, NAMESPACE, CACHE, &key).await {
             CacheRoute::Local { shard, .. } => {
                 assert!(shard < 4);
                 // A key served here must belong to a shard this broker leads.
@@ -170,13 +170,13 @@ async fn a_cache_and_a_stream_of_the_same_name_resolve_to_their_own_owners() {
         assignment(cache_key(0), "broker-b", 1),
     ]);
 
-    match resolve_cache_route(Some(&ours), TENANT, NAMESPACE, CACHE, "any-key").await {
+    match resolve_cache_route(Some(&ours), None, TENANT, NAMESPACE, CACHE, "any-key").await {
         CacheRoute::Forward { target, .. } => assert_eq!(target.node_id, "broker-b"),
         other => panic!("the cache should forward to broker-b, got {other:?}"),
     }
 
     assert_eq!(
-        crate::shards::routing::dispatch(Some(&ours), &stream_key(0)),
+        ours.dispatch(&stream_key(0)),
         crate::shards::routing::Dispatch::Local { generation: 1 },
         "the stream is led here, and the cache must not have taken its row",
     );
@@ -194,7 +194,7 @@ async fn a_cache_uses_its_own_shard_count() {
     for n in 0..200 {
         let key = format!("k{n}");
         if let CacheRoute::Local { shard, .. } =
-            resolve_cache_route(Some(&ours), TENANT, NAMESPACE, CACHE, &key).await
+            resolve_cache_route(Some(&ours), None, TENANT, NAMESPACE, CACHE, &key).await
         {
             shards.insert(shard);
         }
@@ -212,7 +212,7 @@ async fn a_cache_uses_its_own_shard_count() {
 async fn an_unassigned_cache_shard_is_refused() {
     let ours = ingress(&[assignment(stream_key(0), "broker-a", 1)]);
 
-    match resolve_cache_route(Some(&ours), TENANT, NAMESPACE, CACHE, "any-key").await {
+    match resolve_cache_route(Some(&ours), None, TENANT, NAMESPACE, CACHE, "any-key").await {
         CacheRoute::Refused(_) => {}
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -240,10 +240,11 @@ async fn resolution_is_deterministic() {
     for n in 0..50 {
         let key = format!("session:{n}");
         let first =
-            where_to(resolve_cache_route(Some(&ours), TENANT, NAMESPACE, CACHE, &key).await);
+            where_to(resolve_cache_route(Some(&ours), None, TENANT, NAMESPACE, CACHE, &key).await);
         for _ in 0..5 {
-            let again =
-                where_to(resolve_cache_route(Some(&ours), TENANT, NAMESPACE, CACHE, &key).await);
+            let again = where_to(
+                resolve_cache_route(Some(&ours), None, TENANT, NAMESPACE, CACHE, &key).await,
+            );
             assert_eq!(first, again);
         }
     }
@@ -446,6 +447,7 @@ mod fence {
         let route = tokio::spawn(async move {
             match resolve_cache_route(
                 Some(&ingress),
+                None,
                 leader::TENANT,
                 leader::NAMESPACE,
                 leader::CACHE,

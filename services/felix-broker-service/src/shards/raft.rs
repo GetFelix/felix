@@ -44,6 +44,7 @@ pub(crate) mod floor;
 mod groups;
 pub(crate) mod reform_survey;
 mod restart;
+pub(crate) mod standalone;
 pub(crate) use groups::Groups as RaftGroups;
 
 /// How long a leader that could not move its stream to the committed tail
@@ -168,6 +169,9 @@ pub(crate) struct RaftShards {
     /// The copy id of each member open at the last pass's view, for the
     /// copy id report.
     held_copies: parking_lot::Mutex<Vec<copy_id::Held>>,
+    /// Set by [`standalone::run`]: every group here has this broker as its
+    /// only voter, so a relaxed crash is re-formed locally.
+    alone: std::sync::atomic::AtomicBool,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -312,6 +316,7 @@ impl RaftShards {
             formed_marks: parking_lot::Mutex::default(),
             fed_voters: parking_lot::Mutex::default(),
             held_copies: parking_lot::Mutex::default(),
+            alone: std::sync::atomic::AtomicBool::new(false),
         });
         shards
             .broker
@@ -578,6 +583,11 @@ impl RaftShards {
         self.claims.fetch_add(1, Ordering::AcqRel);
         let (dir, config) = claim.context("claim task")??;
         let retention_interval = config.retention_check_interval;
+        if self.alone.load(Ordering::Acquire) {
+            self.reform_alone(key, incarnation, root, &dir, &config)
+                .await
+                .context("re-form the group of one after a relaxed crash")?;
+        }
         self.start_reformed(key, assignment, root, &dir, &config)
             .await
             .context("start the re-formed copy")?;

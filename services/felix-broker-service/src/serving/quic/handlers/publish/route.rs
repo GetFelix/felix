@@ -13,7 +13,7 @@ use crate::serving::quic::STREAM_CACHE_TTL;
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::telemetry::count_publish;
 use crate::shards::lifecycle::fence::FenceGuard;
-use crate::shards::routing::{Dispatch, IngressRouter};
+use crate::shards::routing::{Dispatch, IngressRouter, StreamEngine};
 use crate::shards::{ShardKey, ShardKind};
 
 /// The shard a publish that carries no routing key belongs to.
@@ -49,7 +49,11 @@ pub(crate) async fn resolve_route(
 ) -> PublishRoute {
     // Single-node brokers short-circuit on a null check; a cluster member pays
     // two loads. Either way there is no lock and no await.
-    let Authority { ingress, lease } = authority;
+    let Authority {
+        ingress,
+        lease,
+        engine,
+    } = authority;
 
     // Carried to the claim with the write's place in the fence, entered here
     // so a fence that closes after this point still counts the write.
@@ -58,17 +62,18 @@ pub(crate) async fn resolve_route(
     // A shard another engine runs is held by that engine's term, not by
     // this broker's lease.
     let mut other_engine = false;
+    let key = || ShardKey {
+        tenant_id: tenant_id.to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+        // The shard the caller resolved. Dispatch and the log this publish
+        // lands in must agree on it, or a record is written to one shard's
+        // log and replicated from another's.
+        shard,
+        kind: ShardKind::Stream,
+    };
     if let Some(ingress) = ingress {
-        let key = ShardKey {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            // The shard the caller resolved. Dispatch and the log this publish
-            // lands in must agree on it, or a record is written to one shard's
-            // log and replicated from another's.
-            shard,
-            kind: ShardKind::Stream,
-        };
+        let key = key();
         // Held here, before anything is queued or acknowledged, while the
         // shard is between its fence and its cut-over.
         let (dispatched, guard) = ingress.dispatch_write(&key).await;
@@ -103,6 +108,22 @@ pub(crate) async fn resolve_route(
                     reason.to_string(),
                 ));
             }
+        }
+    } else if let Some(engine) = engine
+        && engine.runs_raft()
+    {
+        // A standalone broker's durable shard is a Raft group of one, written
+        // at the term it leads. Nothing else answers for it.
+        match engine.standalone_dispatch(&key()) {
+            Some(Dispatch::Local { generation: term }) => generation = term,
+            Some(Dispatch::Unavailable(reason)) => {
+                count_publish("unroutable");
+                return PublishRoute::Refused(ClientError::unavailable(
+                    &reason,
+                    reason.to_string(),
+                ));
+            }
+            Some(Dispatch::Forward { .. }) | None => {}
         }
     }
 
@@ -202,6 +223,9 @@ impl PublishRoute {
 pub(crate) struct Authority<'a> {
     pub(crate) ingress: Option<&'a IngressRouter>,
     pub(crate) lease: Option<&'a crate::cluster::lease::LeaseState>,
+    /// Answers for the shards a standalone broker runs on Raft, which have
+    /// no ingress router to route them.
+    pub(crate) engine: Option<&'a StreamEngine>,
 }
 
 /// Which shard a record with this routing key belongs to.
@@ -563,6 +587,7 @@ pub(crate) fn local_shard_key(
 ) -> Option<ShardKey> {
     shard_key_at(
         publish_ctx.ingress.as_deref(),
+        Some(&publish_ctx.engine),
         tenant_id,
         namespace,
         stream,
@@ -571,18 +596,23 @@ pub(crate) fn local_shard_key(
 }
 
 /// [`local_shard_key`] against a router, for callers with no publish context.
+///
+/// A standalone broker has a key only for a shard a Raft group runs, which
+/// is written through the group.
 pub(crate) fn shard_key_at(
     ingress: Option<&IngressRouter>,
+    engine: Option<&StreamEngine>,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
     shard: u32,
 ) -> Option<ShardKey> {
-    ingress.map(|_| ShardKey {
+    let key = ShardKey {
         tenant_id: tenant_id.to_string(),
         namespace: namespace.to_string(),
         stream: stream.to_string(),
         shard,
         kind: ShardKind::Stream,
-    })
+    };
+    (ingress.is_some() || engine.is_some_and(|engine| engine.on_raft(&key))).then_some(key)
 }

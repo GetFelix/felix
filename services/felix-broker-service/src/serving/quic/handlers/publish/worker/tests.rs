@@ -327,6 +327,7 @@ mod fence {
             Authority {
                 ingress: Some(&leader.ingress),
                 lease: None,
+                engine: None,
             },
             &mut HashMap::default(),
             &mut String::new(),
@@ -431,6 +432,7 @@ mod fence {
             Authority {
                 ingress: Some(&leader.ingress),
                 lease: None,
+                engine: None,
             },
             &mut HashMap::default(),
             &mut String::new(),

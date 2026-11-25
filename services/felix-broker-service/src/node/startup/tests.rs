@@ -99,3 +99,64 @@ async fn wiring_registers_no_stream_a_directory_holds() {
         "wiring opened the stream's log"
     );
 }
+
+/// Writes a hybrid-style shard directory: a segment file, no copy file.
+#[cfg(feature = "raft")]
+fn hybrid_shard_dir(root: &std::path::Path) {
+    let dir = root.join("t-n-s-0123456789abcdef");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("00000000000000000000.log"), b"x").expect("segment");
+}
+
+/// **A standalone broker on Raft refuses a root the hybrid wrote**, naming the
+/// way to keep serving it, rather than starting with every shard refused.
+#[cfg(feature = "raft")]
+#[test]
+fn a_hybrid_data_root_is_refused_on_raft() {
+    let root = tempfile::tempdir().expect("tempdir");
+    hybrid_shard_dir(root.path());
+    let err = refuse_hybrid_data(root.path()).expect_err("refused");
+    let text = err.to_string();
+    assert!(text.contains("FELIX_SHARD_ENGINE=hybrid"), "{text}");
+    assert!(text.contains("does not migrate"), "{text}");
+}
+
+/// **Hybrid data in any of the other stores' roots is refused too**: a
+/// counter, consumer-group or dead-letter log 0.7 wrote is as unservable on
+/// Raft as a stream's.
+#[cfg(feature = "raft")]
+#[test]
+fn hybrid_data_in_any_store_is_refused_on_raft() {
+    for store in ["caches", "counters", "groups", "dead-letters"] {
+        let root = tempfile::tempdir().expect("tempdir");
+        hybrid_shard_dir(&root.path().join(store));
+        let err = refuse_hybrid_data(root.path()).expect_err(store);
+        assert!(err.to_string().contains(store), "{store}: {err}");
+    }
+}
+
+/// **An empty or missing root starts on Raft.**
+#[cfg(feature = "raft")]
+#[test]
+fn an_empty_data_root_starts_on_raft() {
+    let root = tempfile::tempdir().expect("tempdir");
+    refuse_hybrid_data(root.path()).expect("empty root");
+    refuse_hybrid_data(&root.path().join("missing")).expect("missing root");
+}
+
+/// **With the hybrid selected the same root is served**: the engine resolves
+/// to hybrid, so the check does not apply.
+#[cfg(feature = "raft")]
+#[test]
+fn the_hybrid_engine_keeps_a_hybrid_root() {
+    let prerequisites = crate::config::RaftPrerequisites {
+        compiled: true,
+        membership: false,
+        peer_transport: false,
+        durable_storage: true,
+    };
+    let engine = prerequisites
+        .resolve(Some(crate::config::ShardEngine::Hybrid))
+        .expect("resolve");
+    assert_eq!(engine, crate::config::ShardEngine::Hybrid);
+}

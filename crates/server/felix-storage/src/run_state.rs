@@ -40,6 +40,11 @@
 //! `<durable root>/rotated-ids` names the ids this directory had before a
 //! crash rotated them while it kept every ballot. See [`record_rotated_id`].
 //!
+//! `<durable root>/relaxed-crash-id` names the id a relaxed crash gave the
+//! directory, so a standalone broker can tell that a rotated copy was
+//! rotated by the crash that let it lose its unsynced tail, and not by a
+//! restore or an operator. See [`relaxed_crash_id`].
+//!
 //! `<durable root>/copy-trust` names the copies a leader has vouched for
 //! since the last rotation, and the copies this broker led before a crash.
 //! See [`copy_trust`].
@@ -260,9 +265,21 @@ pub fn begin(
         };
     let rotate = restored || crashed;
     let id = if rotate {
+        let next = fresh();
+        // Before the new id: a crash after the rotation but before the
+        // evidence would keep every standalone shard held, with no operator
+        // way out. Evidence naming an id never installed is void, and the
+        // retry's record keeps its chain.
+        if matches!(last_run, LastRun::Crashed { relaxed: true, .. }) {
+            record_relaxed_crash(root, loaded, StorageId::from_bytes(next))?;
+        }
+        #[cfg(test)]
+        tests::crash_point(1)?;
         // Before the new id: a crash in between must not leave a rotated
         // directory whose copies a later clean start still trusts.
-        let id = copy_trust::rotate_storage_id(root, fresh())?;
+        let id = copy_trust::rotate_storage_id(root, next)?;
+        #[cfg(test)]
+        tests::crash_point(2)?;
         if restored {
             tracing::warn!(
                 previous = %loaded,
@@ -550,6 +567,68 @@ const ROTATED_IDS_HEADER: &str = "rotated_ids\n";
 /// How many ids [`record_rotated_id`] keeps, newest first. A set naming an
 /// older one reads as naming a lost copy, which costs a readmission, no more.
 const ROTATED_IDS_KEPT: usize = 16;
+
+/// The name, under the durable root, of the record of the ids relaxed
+/// crashes rotated away. Not a directory, so shard discovery passes over it.
+pub const RELAXED_CRASH_FILE_NAME: &str = "relaxed-crash-id";
+const RELAXED_CRASH_HEADER: &str = "relaxed_crash\n";
+/// Crashes in a row the record remembers.
+const RELAXED_CRASHES_KEPT: usize = 8;
+
+/// Write the record: the id `to` this crash gave the directory, then the ids
+/// it and the crashes before it rotated away, newest first. A chain that
+/// does not end at `from` was broken by another kind of rotation, so it
+/// starts over.
+fn record_relaxed_crash(root: &Path, from: StorageId, to: StorageId) -> Result<()> {
+    let mut sources = match read_relaxed_crash(root)? {
+        Some((head, sources)) if head == from => sources,
+        // A record for a rotation from `from` that a crash cut short.
+        Some((_, mut sources)) if sources.first() == Some(&from) => {
+            sources.remove(0);
+            sources
+        }
+        _ => Vec::new(),
+    };
+    sources.insert(0, from);
+    sources.truncate(RELAXED_CRASHES_KEPT);
+    let mut body = format!("{RELAXED_CRASH_HEADER}{}\n", to.to_hex());
+    for id in &sources {
+        body.push_str(&id.to_hex());
+        body.push('\n');
+    }
+    write_atomically(root, RELAXED_CRASH_FILE_NAME, body.as_bytes(), true)
+}
+
+fn read_relaxed_crash(root: &Path) -> Result<Option<(StorageId, Vec<StorageId>)>> {
+    let bytes = match crate::fs::read(root.join(RELAXED_CRASH_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    let decoded = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| text.strip_prefix(RELAXED_CRASH_HEADER))
+        .and_then(|text| {
+            let mut ids = text.lines().map(StorageId::from_hex);
+            let head = ids.next()??;
+            Some((head, ids.collect::<Option<Vec<_>>>()?))
+        });
+    Ok(decoded)
+}
+
+/// The storage ids relaxed crashes rotated away, newest first, when the
+/// directory's id is still the one the last of them gave it; empty
+/// otherwise. A copy minted under one of them was rotated by a relaxed crash
+/// and lost, at most, what a relaxed fsync mode lets a crash lose. A
+/// restore or an operator rotation after the crash changes the id, which
+/// voids the record, and a file that does not decode is no evidence.
+pub fn relaxed_crash_sources(root: &Path) -> Result<Vec<StorageId>> {
+    let current = storage_identity::load(root)?;
+    Ok(match read_relaxed_crash(root)? {
+        Some((head, sources)) if Some(head) == current => sources,
+        _ => Vec::new(),
+    })
+}
 
 /// Record, durably, that this directory ran under `id` until a crash rotated
 /// it away and kept every ballot, so a set naming `id` names this directory's

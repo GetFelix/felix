@@ -43,7 +43,11 @@ impl Broker {
         if let Some(storage) = &self.durable_storage {
             storage.set_stream_incarnation(tenant_id, namespace, stream, incarnation);
         }
-        self.set_group_incarnation(&StreamKey::new(tenant_id, namespace, stream), incarnation);
+        let key = StreamKey::new(tenant_id, namespace, stream);
+        if incarnation.is_none() {
+            self.keep_groups_for_hybrid(&key, None);
+        }
+        self.set_group_incarnation(&key, incarnation);
     }
 
     /// The incarnation a stream's logs open at on this broker: the registered
@@ -500,6 +504,9 @@ impl Broker {
         if needed && marker.as_ref() != Some(&wanted) {
             self.write_marker(&wanted).await?;
         }
+        // Before the incarnation opens anything. A durable stream's group
+        // state belongs to its shard engine, if this broker has one.
+        self.keep_groups_for_hybrid(key, (!metadata.durable).then_some(incoming));
         self.set_stream_incarnation(&key.tenant_id, &key.namespace, &key.stream, Some(incoming));
         Ok(Some(incoming))
     }
@@ -689,6 +696,20 @@ impl Broker {
             .dead_letters()
             .retire_legacy(&key.tenant_id, &key.namespace, &key.stream, &found?)
             .await
+    }
+
+    /// Which incarnation of `key` the group stores still open once left to
+    /// engines: only an in-memory stream's, which no engine serves.
+    fn keep_groups_for_hybrid(&self, key: &StreamKey, incarnation: Option<u64>) {
+        let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+        if let Some(groups) = &self.consumer_groups {
+            groups.keep_for_hybrid(tenant_id, namespace, stream, incarnation);
+        }
+        if let Some(reader) = &self.group_reader {
+            reader
+                .dead_letters()
+                .keep_for_hybrid(tenant_id, namespace, stream, incarnation);
+        }
     }
 
     fn set_group_incarnation(&self, key: &StreamKey, incarnation: Option<u64>) {
