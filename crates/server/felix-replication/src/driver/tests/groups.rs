@@ -412,6 +412,41 @@ async fn the_dead_letter_reaches_a_follower_before_the_cursor_that_passed_it() {
     assert_eq!(follower.landed_on("broker-b"), vec![("dead letters", 1)]);
 }
 
+/// **An in-memory stream's group logs are not shipped.** Its leader keeps
+/// nothing on disk at a placement, so these logs carry no generation and a
+/// follower's copy could not be ranked at a promotion (#3136). The state
+/// stays on the leader, as the stream's records do.
+#[tokio::test]
+async fn an_in_memory_streams_group_logs_stay_on_the_leader() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, groups, dead_letters) = leader_with_groups(dir.path()).await;
+    broker.register_tenant(TENANT).await.expect("tenant");
+    broker
+        .register_namespace(TENANT, NAMESPACE)
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_broker::StreamMetadata {
+                durable: false,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    gave_up_on_one(&groups, &dead_letters).await;
+    let router = router(LOCAL, &["broker-b"], GENERATION);
+    let follower = GroupFollower::default();
+
+    group_pass(&follower, &broker, &router, &mut Default::default()).await;
+
+    assert_eq!(follower.landed_on("broker-b"), vec![]);
+}
+
 /// **Nor a cursor written after its dead letters were shipped.** A group gives
 /// up on offset 2 and moves past it while the follower is storing the first
 /// dead letter, and that dead letter does not reach the follower in this

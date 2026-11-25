@@ -2083,6 +2083,13 @@ async fn aux_cursors(
     entry: &mut ShardCursors,
     shard: &ShardRef,
 ) -> Option<felix_broker::StreamLog> {
+    // An in-memory stream's group state stays on its leader, as its records
+    // do. Its leader labels these logs with no generation (it keeps nothing
+    // on disk at a placement, #3136), so a shipped copy could not be ranked
+    // at the next promotion.
+    if crate::promotion::in_memory_stream(broker, key).await {
+        return None;
+    }
     let log = broker
         .shard_log_for(
             log_kind,
