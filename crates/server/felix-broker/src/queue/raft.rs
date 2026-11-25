@@ -384,14 +384,19 @@ impl<C: GroupConsensus> RaftGroups<C> {
     }
 
     /// See [`GroupReader::inherit_below`](super::GroupReader::inherit_below).
-    pub async fn inherit_below(&self, key: &GroupKey, tail: u64, deadline: Instant) -> Result<()> {
+    /// The claims are the ones this term's tracker holds, rebuilt from the
+    /// applied table.
+    pub async fn inherit_below(
+        &self,
+        key: &GroupKey,
+        tail: u64,
+        offset: u64,
+        deadline: Instant,
+    ) -> Result<bool> {
         let (_fresh, mut guard) = self.current(key, deadline).await?;
-        guard
-            .as_mut()
-            .expect("current hydrates")
-            .tracker
-            .inherit_below(tail);
-        Ok(())
+        let tracker = &mut guard.as_mut().expect("current hydrates").tracker;
+        tracker.inherit_below(tail);
+        Ok(tracker.holds_claim(offset))
     }
 
     /// Give one record back, owed again at once. Leader memory only.

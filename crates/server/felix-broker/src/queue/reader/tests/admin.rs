@@ -113,7 +113,10 @@ async fn an_ack_for_a_claim_from_before_a_seek_is_refused() {
     // As the broker does before every settle, so a claim from before a
     // failover is taken.
     let tail = fx.log.tail_offset().await.expect("tail");
-    fx.reader.inherit_below(&key, tail).await.expect("inherit");
+    fx.reader
+        .inherit_below(&key, tail, 0)
+        .await
+        .expect("inherit");
     let err = fx.reader.ack(&key, 1).await.expect_err("stale ack taken");
     assert!(matches!(err, BrokerError::GroupOffsetNotHandedOut { .. }));
     assert_eq!(offsets(&poll_at(&fx, &key, base, 1).await), [0, 1, 2]);

@@ -365,3 +365,33 @@ async fn a_clean_end_of_log_is_not_an_error() {
     .await;
     assert!(trimmed.unwrap().is_empty());
 }
+
+/// After the heal nothing is injected, so a leadership that moved did so
+/// by a placement hand-over to the broker placement names (#2990).
+#[test]
+fn only_a_hand_over_to_placement_moves_leadership_after_the_heal() {
+    let handed = [(5, "b2".to_string())];
+    assert!(moved_by_placement(5, 5, "b5", "b2", &[]), "nothing moved");
+    assert!(moved_by_placement(5, 6, "b2", "b2", &handed));
+    // A hand-over can fail and the target still win the next election.
+    assert!(moved_by_placement(5, 7, "b2", "b2", &handed));
+    assert!(
+        !moved_by_placement(5, 6, "b2", "b2", &[]),
+        "a new term with no hand-over is an election"
+    );
+    assert!(
+        !moved_by_placement(5, 6, "b3", "b2", &handed),
+        "a member placement does not name took over"
+    );
+    assert!(
+        !moved_by_placement(5, 6, "b2", "b2", &[(4, "b2".to_string())]),
+        "a hand-over before the heal does not explain a term after it"
+    );
+    assert!(!moved_by_placement(
+        5,
+        6,
+        "b2",
+        "b2",
+        &[(5, "b3".to_string())]
+    ));
+}

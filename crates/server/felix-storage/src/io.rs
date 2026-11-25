@@ -62,7 +62,61 @@ use crate::fs::File;
 /// stop its log: the kernel may have dropped the pages, and the next fsync
 /// would report success having written nothing. A log also hands its flush
 /// gate in with it, so the hook is dropped only once the ring has answered.
-pub(crate) type OnFailure = Box<dyn FnOnce(&io::Error) + Send>;
+///
+/// Once [`submitted`](Self::submitted), a hook dropped without an answer (the
+/// ring's thread panicked, a channel closed) runs as a failure: nobody can
+/// say whether that fsync failed and used up the kernel's error, so its log
+/// must stop before the gate goes.
+pub(crate) struct OnFailure {
+    hook: Option<Hook>,
+    submitted: bool,
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    allow(dead_code, reason = "only the Linux ring answers a hook")
+)]
+impl OnFailure {
+    pub(crate) fn new(hook: impl FnOnce(&io::Error) + Send + 'static) -> Self {
+        Self {
+            hook: Some(Box::new(hook)),
+            submitted: false,
+        }
+    }
+
+    /// The fsync is being handed to the ring: from here, dropping the hook
+    /// unanswered counts as a failure.
+    pub(crate) fn submitted(&mut self) {
+        self.submitted = true;
+    }
+
+    /// The ring never took the fsync, so there is nothing to answer for.
+    pub(crate) fn withdraw(mut self) {
+        self.submitted = false;
+    }
+
+    /// The ring's answer: runs the hook on a failure, drops it on success.
+    pub(crate) fn answer(mut self, outcome: &io::Result<()>) {
+        let hook = self.hook.take();
+        if let (Err(err), Some(hook)) = (outcome, hook) {
+            hook(err);
+        }
+    }
+}
+
+type Hook = Box<dyn FnOnce(&io::Error) + Send>;
+
+impl Drop for OnFailure {
+    fn drop(&mut self) {
+        if let Some(hook) = self.hook.take()
+            && self.submitted
+        {
+            hook(&io::Error::other(
+                "the io_uring flusher dropped an fsync without answering it",
+            ));
+        }
+    }
+}
 
 /// Read into `buf` starting at `offset` without touching the file cursor.
 ///

@@ -698,7 +698,11 @@ leader. On a Raft shard `in_flight` starts from the claims the new leader rebuil
 ```
 
 An offset at or past the shard's log tail was never handed out and is refused
-with `invalid_request`. The group's in-flight state is kept in memory, so
+with `invalid_request`. So is an offset that holds a log entry rather than a
+record: a generation start, a trim record, a piece of a cut batch, or on a
+Raft shard one of the group's own entries. A poll passes over these without
+handing them out, so a `group_ack`, `group_nack`, `group_extend` or dead
+letter naming one is refused, never answered `ok` (#2784). The group's in-flight state is kept in memory, so
 after it is evicted (idle for 10 minutes) or the shard moves or fails over, a
 fresh one is built. It takes a settle for any offset below the log tail it
 first saw, since a claim made before it could be any of those. An offset

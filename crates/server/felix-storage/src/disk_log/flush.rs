@@ -228,7 +228,7 @@ impl LogInner {
         // An fsync answered while this one waited may have failed.
         self.check_healthy()?;
         let record = self.flush_failure_recorder(had_pending_seal);
-        let on_failure: OnFailure = Box::new(move |err| {
+        let on_failure = OnFailure::new(move |err| {
             record(err);
             drop(gate);
         });
@@ -313,14 +313,23 @@ pub(super) struct FakeRing(pub(super) tokio::sync::mpsc::UnboundedSender<RingFsy
 
 #[cfg(test)]
 impl FakeRing {
-    async fn fsync(&self, on_failure: OnFailure) -> Option<std::io::Result<()>> {
+    async fn fsync(&self, mut on_failure: OnFailure) -> Option<std::io::Result<()>> {
         let (reply, wait) = tokio::sync::oneshot::channel();
-        self.0.send(RingFsync { on_failure, reply }).ok()?;
-        wait.await.ok()
+        on_failure.submitted();
+        if let Err(unsent) = self.0.send(RingFsync { on_failure, reply }) {
+            unsent.0.on_failure.withdraw();
+            return None;
+        }
+        // The real ring's answer to a dropped request.
+        Some(
+            wait.await
+                .unwrap_or_else(|_| Err(std::io::Error::other("io_uring service thread stopped"))),
+        )
     }
 }
 
-/// One fsync in the fake ring.
+/// One fsync in the fake ring. Dropped unanswered, as a panicking ring thread
+/// would drop it, the hook runs before the reply goes (fields drop in order).
 #[cfg(test)]
 pub(super) struct RingFsync {
     on_failure: OnFailure,
@@ -332,11 +341,7 @@ impl RingFsync {
     /// Answer it the way the real ring does: the hook runs on a failure and
     /// is dropped either way before the reply.
     pub(super) fn answer(self, outcome: std::io::Result<()>) {
-        if let Err(err) = &outcome {
-            (self.on_failure)(err);
-        } else {
-            drop(self.on_failure);
-        }
+        self.on_failure.answer(&outcome);
         let _ = self.reply.send(outcome);
     }
 }

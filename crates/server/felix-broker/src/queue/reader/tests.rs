@@ -797,7 +797,7 @@ async fn a_claim_from_before_a_new_term_is_still_settled() {
     assert_eq!(payloads(&first), ["a", "b", "c"]);
     fx.reader.reset_shard(T, NS, S, 0).await;
     // What the serving layer does before a settle.
-    fx.reader.inherit_below(&key, 4).await.expect("inherit");
+    fx.reader.inherit_below(&key, 4, 0).await.expect("inherit");
 
     // Out of order: 2 is held until 1 closes the run.
     fx.reader

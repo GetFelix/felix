@@ -879,6 +879,32 @@ impl StreamLog {
         self.log.is_poisoned().then(|| self.durable_offset())
     }
 
+    /// Whether `offset` is known to hold nothing a consumer group ever hands
+    /// out: a group entry, a generation start, a trim record or a piece of a
+    /// cut batch. False for a data record, and whenever the log cannot say:
+    /// at or past the tail, past a poisoned flush, below the base, or an
+    /// undecided batch. Classified with the same raw read a group poll uses
+    /// to skip such offsets, so a settle for one can be refused.
+    pub async fn holds_no_client_record(&self, offset: Offset) -> Result<bool> {
+        let end = self
+            .tail_offset()
+            .await?
+            .min(self.poisoned_read_end().unwrap_or(Offset::MAX));
+        if offset >= end || offset < self.readable_base() {
+            return Ok(false);
+        }
+        let page = match self.read_log_from(offset, 1).await {
+            Ok(page) => page,
+            Err(BrokerError::CursorTooOld { .. }) => return Ok(false),
+            Err(err) => return Err(err),
+        };
+        Ok(match page.records.first() {
+            Some(record) if record.offset == offset => !record.mark.is_data(),
+            // The read passed over `offset` without returning it.
+            _ => page.next > offset,
+        })
+    }
+
     /// How far below `tail` a reader may go and see only records that will
     /// stay. Under `FsyncMode::OnCommit` a publish completes only once its
     /// record is synced, so a record written but not synced is not one yet.
