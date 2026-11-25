@@ -205,15 +205,10 @@ async fn a_late_seal_does_not_move_the_mark_back() {
 async fn a_flush_writes_the_mark_off_the_callers_thread() {
     let dir = tempdir().expect("dir");
     let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
+    crate::disk_log::tests::pin_to_flush_thread(&log);
     log.append(&batch("synced", 10)).await.expect("append");
     log.sync().await.expect("sync");
     assert!(load(dir.path()).expect("mark").synced_bytes > SEGMENT_HEADER_LEN);
-    // A power-loss test may force the ring for the whole process, and the
-    // ring's flush has no flush thread to write the mark on.
-    #[cfg(target_os = "linux")]
-    if crate::io::uring_fsync::enabled() {
-        return;
-    }
     assert_eq!(log.inner.mark.writer().as_deref(), Some("felix-flush"));
 }
 
@@ -224,14 +219,9 @@ async fn a_flush_writes_the_mark_off_the_callers_thread() {
 /// interior corruption after a crash.
 #[tokio::test]
 async fn an_abandoned_flush_does_not_mark_past_a_truncation() {
-    // A forced ring's flush skips the parked flush thread, and drops its mark
-    // write with the abandoned future, so there is nothing to test.
-    #[cfg(target_os = "linux")]
-    if crate::io::uring_fsync::enabled() {
-        return;
-    }
     let dir = tempdir().expect("dir");
     let log = DiskLog::open(dir.path(), "t/ns/s/0", config()).expect("open");
+    crate::disk_log::tests::pin_to_flush_thread(&log);
     log.append(&batch("kept", 10)).await.expect("append");
     log.sync().await.expect("sync");
     log.append(&batch("cut", 10)).await.expect("append");

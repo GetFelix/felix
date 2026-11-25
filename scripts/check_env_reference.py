@@ -59,6 +59,9 @@ NOT_OPERATIONAL = {
     # Debug builds only: a file that holds a candidate's pre-vote while it
     # exists, so a test can start two candidates' rounds together.
     "FELIX_TEST_PRE_VOTE_GATE",
+    # Overrides the Raft election timeout's upper bound (which is also how
+    # long a leader's write lease lasts) for the client conformance fixture.
+    "FELIX_TEST_RAFT_ELECTION_MAX_MS",
     # Overrides the Raft group thread count, which is derived from the
     # machine, for tests and A/B runs. Documented in `docs/per-shard-raft.md`.
     "FELIX_TEST_RAFT_GROUP_THREADS",
@@ -66,6 +69,9 @@ NOT_OPERATIONAL = {
     # `docs/cluster-harness.md`.
     "FELIX_TEST_SHARD_ENGINE",
     "FELIX_TEST_TIMEOUT_SCALE",
+    # Makes the io_uring storage tests fail instead of skip when no ring is
+    # available. Documented in docs-site architecture/testing.md.
+    "FELIX_TEST_REQUIRE_IO_URING",
 }
 
 # Not variables at all. The detector matches any quoted FELIX_* literal in Rust,

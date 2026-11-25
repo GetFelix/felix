@@ -1841,6 +1841,7 @@ copy has to move:
 | --- | --- | --- |
 | Balance, drain or operator move to a member | Stage, fence, cut over | One write that changes only `leader`, to another member |
 | Operator move outside the set | Copied in first | One write that gives the destination the leader's seat and names it leader |
+| Balance with no member to take a leader | As any balance move | One write that swaps a follower for a live broker outside the set, two or more leaders under the leader, and names it leader (#3113) |
 | Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
 | Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
 | Follower on an internal node | Replaced | Replaced, the same way |
@@ -1870,17 +1871,42 @@ a later pass.
 An operator move outside the set is refused with `set_unsettled` while the
 target is not stored for the current set or the group has not formed,
 `member_down` while a member is not serving, and `not_a_member` while the
-destination is still a learner from an earlier change. A one-member group is
-refused with `single_member`: moving it to another broker is not supported
-yet, and no issue tracks it. A removed copy keeps
+destination is still a learner from an earlier change.
+
+An RF 1 shard has no voter both sets keep, so its move takes two writes
+(#3012). The operator move grows the set to the leader and the destination,
+and the group adds the destination as a learner and then a voter. Once the
+leader reports the destination's copy voting, placement writes the
+destination alone as the set and its leader, and the group hands it
+leadership and drops the old copy. A set of the destination alone any
+earlier would make its empty copy the whole group, so the store holds it
+until then. A second move is refused with `set_unsettled` while the set is
+over the factor. A move back to the old broker, or a destination that stops
+being live before it votes, undoes the move (`raft_move_undone`). A
+destination that votes and then goes down strands the shard, which
+placement reports, until it is back or the group is re-formed without it;
+`docs/per-shard-raft.md` has the steps. A removed copy keeps
 its directory: nothing deletes it yet.
+
+When the leader leads two or more shards over a live broker outside the
+set and no member qualifies, balance swaps a follower for that broker and
+names it leader in one write, under the same checks as a follower
+replacement and from the same per-pass budget. It gives up a follower in
+that broker's zone first, then the busiest, and never one whose swap would
+leave a zone-spread set short of a zone. The group's leader keeps its seat
+and hands leadership over once the new copy votes. This is how a broker a
+drain swapped out of every set, and then restarted, gets shards back
+(#3113). An RF 1 shard has no follower to give, so it is not covered yet
+([#3118](https://github.com/GetFelix/felix/issues/3118)).
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
 leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
 waits while a broker is down, as for the hybrid. A down leader is renamed even
 while paused, as the hybrid still replaces a failed leader: a broker with no
-member forwards requests to the leader placement names. The set changes only
+member forwards requests to the leader placement names, or, while that
+broker holds no voter yet (a move outside the set), to a voter the group's
+leader reported. The set changes only
 through the group's membership target
 ([#2235](https://github.com/GetFelix/felix/issues/2235)). A shard switched
 from the hybrid is not placed here at all. See
@@ -1894,8 +1920,15 @@ shard".
 > `an_operator_moves_a_raft_leader_to_a_member_in_one_write`,
 > `an_operator_moves_a_raft_leader_outside_its_set_by_swapping_the_seat`,
 > `a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set`,
-> `a_raft_follower_lost_past_the_delay_is_replaced` and
-> `a_drain_on_a_raft_cluster_finishes_through_the_store`.
+> `a_raft_follower_lost_past_the_delay_is_replaced`,
+> `a_drain_on_a_raft_cluster_finishes_through_the_store`,
+> `a_raft_leader_balances_onto_a_broker_that_holds_no_seat`,
+> `a_raft_leader_balances_outside_its_set_only_once_the_set_settles`,
+> `balancing_outside_raft_sets_takes_the_replacement_budget`,
+> `a_raft_leader_balances_outside_its_set_only_where_the_set_keeps_its_zones`
+> and `a_raft_leader_balances_outside_its_set_by_swapping_within_a_zone`;
+> `crates/testing/felix-cluster/tests/routing/shutdown_handoff.rs`,
+> `a_broker_drained_out_of_every_set_leads_again_after_a_restart`.
 
 #### Adopting an elected leader
 
@@ -2477,8 +2510,8 @@ outside the set it gives the destination the leader's seat
 (`raft_replace`). The second is refused while a member is not serving (409
 `member_down`), while the group's target is not stored for its current set
 (409 `set_unsettled`), while the destination is still a learner (409
-`not_a_member`), and for a one-member group (409 `single_member`; not
-supported yet). Any other move is held to
+`not_a_member`). A one-member group grows to the destination first and
+shrinks once its copy votes. Any other move is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 

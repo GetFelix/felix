@@ -16,7 +16,7 @@ use felix_common::random::HashMap;
 use super::leadership::{Leadership, Owner};
 use super::moves::Moves;
 use super::rendezvous::score;
-use super::zones::domain;
+use super::zones::{domain, unspread};
 use super::{Blocked, Decision, Leaving, MoveStep};
 use crate::model::{Node, ShardAssignment, ShardKind, ShardState};
 
@@ -58,7 +58,8 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   the shard waits, shown to the operator.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
-///   recovering.
+///   recovering. With no such member, a live broker outside the set takes a
+///   follower's seat and the lead ([`balanced_outside`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn raft_step<'a>(
     existing: &'a ShardAssignment,
@@ -74,6 +75,11 @@ pub(super) fn raft_step<'a>(
 ) -> Decision {
     if let Some(dropped) = drop_hybrid_move(existing, replication_factor) {
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
+    }
+    if let Some(decision) =
+        finish_single_move(existing, replication_factor, is_live, is_serving, moves)
+    {
+        return decision;
     }
     let leader = existing.leader.as_str();
     // A leader that must leave is renamed first, below; it is swapped out
@@ -118,7 +124,12 @@ pub(super) fn raft_step<'a>(
                 .filter(|to| leaders.of(key, to) < leaders.of(key, leader))
         });
         match to {
-            None => return Decision::Kept,
+            None => {
+                return balanced_outside(
+                    existing, is_serving, counted, leaders, moves, eligible, load,
+                )
+                .unwrap_or(Decision::Kept);
+            }
             Some(_) if moves.recovering => return Decision::Waiting(Blocked::Recovering),
             Some(to) => to,
         }
@@ -148,6 +159,220 @@ pub(super) fn raft_step<'a>(
         },
         led_by(existing, to),
     )
+}
+
+/// Balance onto a live broker outside the set, when it leads two fewer than
+/// the leader and no member does: one write gives it a follower's seat and
+/// names it leader. A broker a drain swapped out of every set holds no
+/// member anywhere, so renaming within sets alone would never give it a
+/// shard again (#3113). The group's leader keeps its seat: it adds the new
+/// copy, swaps the follower out, and hands over once the copy votes.
+/// The swap takes a slot from the same per-pass budget as a replacement.
+/// `None` when no such broker exists, or no follower can give its seat
+/// without the set losing a zone.
+fn balanced_outside<'a>(
+    existing: &'a ShardAssignment,
+    is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    moves: &mut Moves,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+) -> Option<Decision> {
+    let key = &existing.key;
+    let leader = existing.leader.as_str();
+    let roles = |id: &str| load.get(id).copied().unwrap_or(0);
+    let outside: Vec<&'a str> = eligible
+        .iter()
+        .filter(|node| {
+            node.spec
+                .capacity
+                .max_shards
+                .is_none_or(|max| roles(&node.node_id) < max)
+        })
+        .map(|node| node.node_id.as_str())
+        .filter(|id| !existing.nodes().any(|member| member == id))
+        .collect();
+    let current: Vec<&'a str> = existing.nodes().map(String::as_str).collect();
+    let was_spread = !unspread(eligible, &current);
+    // The follower that gives `to` its seat: one in `to`'s zone first, so
+    // the set keeps its zones, then the busiest. None that would leave a
+    // spread set short of a zone.
+    let seat_for = |to: &'a str| {
+        existing
+            .replicas
+            .iter()
+            .filter(|node| !existing.learners.contains(*node))
+            .filter(|from| {
+                let next: Vec<&'a str> = current
+                    .iter()
+                    .map(|node| if node == from { to } else { node })
+                    .collect();
+                !(was_spread && unspread(eligible, &next))
+            })
+            .min_by_key(|from| {
+                (
+                    domain(eligible, from) != domain(eligible, to),
+                    u32::MAX - roles(from),
+                    score(key, from),
+                    from.as_str(),
+                )
+            })
+    };
+    let under = |count: &dyn Fn(&str) -> u32, keep: &dyn Fn(&str) -> bool| {
+        let mut candidates: Vec<&'a str> = outside
+            .iter()
+            .copied()
+            .filter(|to| count(to).saturating_add(2) <= count(leader) && keep(to))
+            .collect();
+        candidates.sort_by_key(|node| (count(node), u64::MAX - score(key, node), *node));
+        candidates
+            .into_iter()
+            .find_map(|to| seat_for(to).map(|from| (to, from)))
+    };
+    let for_stream = under(&|node| leaders.of(key, node), &|_| true);
+    moves.stream_wanted |= for_stream.is_some();
+    // As for a member: the totals only where the stream's spread holds.
+    let (to, from) = for_stream.or_else(|| {
+        moves
+            .cluster_moves
+            .then(|| {
+                under(&|node| leaders.total(node), &|to| {
+                    leaders.of(key, to) < leaders.of(key, leader)
+                })
+            })
+            .flatten()
+    })?;
+    if moves.recovering || existing.nodes().any(|node| !is_serving(node)) {
+        return Some(Decision::Waiting(Blocked::Recovering));
+    }
+    if let Err(blocked) = seat_open(existing) {
+        return Some(Decision::Waiting(blocked));
+    }
+    let next = ShardAssignment {
+        leader: to.to_string(),
+        replicas: existing
+            .replicas
+            .iter()
+            .map(|node| if node == from { leader } else { node })
+            .map(str::to_string)
+            .collect(),
+        ..existing.renamed()
+    };
+    // The store refuses the write on the same check (#2905).
+    if existing.holds_formed_set(&next.nodes().cloned().collect()) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    let step = MoveStep::RaftReplace {
+        from: from.clone(),
+        to: to.to_string(),
+    };
+    let decision = spend_replacement(moves, step, next);
+    if matches!(decision, Decision::Move(..)) {
+        *load.entry(to).or_default() += 1;
+        if counted(leader) {
+            leaders.remove(Owner::of(key), leader);
+        }
+        leaders.add(Owner::of(key), to);
+    }
+    Some(decision)
+}
+
+/// Ends the move of an RF 1 shard, which placement grew to its leader and
+/// the destination ([`grown`]): once the group's leader reports the
+/// destination's copy voting, the set shrinks to it and it leads. Until
+/// then the shard waits, and nothing else changes its set or leader, so the
+/// one broker the move is for stays the replica.
+///
+/// A destination that stops being live (down, draining, gone) is dropped
+/// again ([`single_move_undone`]) while it has not voted or still serves,
+/// so it can vote for its own removal; that is also how a drain of the old
+/// broker gets past a move that cannot finish. One that votes and is down
+/// cannot be: either set of one needs its vote, so the shard reports
+/// [`Blocked::MoveStranded`] and waits for it or for a re-form.
+fn finish_single_move(
+    existing: &ShardAssignment,
+    replication_factor: u32,
+    is_live: &dyn Fn(&str) -> bool,
+    is_serving: &dyn Fn(&str) -> bool,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let to = single_move_destination(existing, replication_factor)?;
+    if !is_live(to) {
+        if existing.reports_voting(to) && !is_serving(to) {
+            return Some(Decision::Waiting(Blocked::MoveStranded {
+                node: to.to_string(),
+            }));
+        }
+        let (node, undone) = single_move_undone(existing, replication_factor)?;
+        let step = MoveStep::RaftMoveUndone {
+            node: node.to_string(),
+        };
+        return Some(spend_replacement(moves, step, undone));
+    }
+    if let Err(blocked) = seat_open(existing) {
+        return Some(Decision::Waiting(blocked));
+    }
+    // The store refuses the shrink on the same check: a set of the
+    // destination alone, before its copy votes, would let that empty copy
+    // form a second group (#2905).
+    let next = BTreeSet::from([to.to_string()]);
+    if existing.holds_formed_set(&next) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    Some(spend_replacement(
+        moves,
+        MoveStep::RaftReplace {
+            from: existing.leader.clone(),
+            to: to.to_string(),
+        },
+        ShardAssignment {
+            leader: to.to_string(),
+            replicas: Vec::new(),
+            ..existing.renamed()
+        },
+    ))
+}
+
+/// The destination of an RF 1 move in progress: the one replica of a
+/// shard whose factor is 1.
+fn single_move_destination(existing: &ShardAssignment, replication_factor: u32) -> Option<&str> {
+    match existing.replicas.as_slice() {
+        [to] if replication_factor.max(1) == 1 => Some(to),
+        _ => None,
+    }
+}
+
+/// The write that drops an RF 1 move's destination, back to the leader
+/// alone. The store takes it: the leader is a reported voter, so the set of
+/// it alone keeps a majority. Once the destination votes, the group needs
+/// its vote to remove it, so callers undo a voting one only while it
+/// serves. Returns the destination and the write; `None` when the shard is
+/// not mid-move.
+pub(super) fn single_move_undone(
+    existing: &ShardAssignment,
+    replication_factor: u32,
+) -> Option<(&str, ShardAssignment)> {
+    let to = single_move_destination(existing, replication_factor)?;
+    Some((
+        to,
+        ShardAssignment {
+            replicas: Vec::new(),
+            ..existing.renamed()
+        },
+    ))
+}
+
+/// Takes a set change's slot for this pass, or says why it waits.
+fn spend_replacement(moves: &mut Moves, step: MoveStep, next: ShardAssignment) -> Decision {
+    if moves.paused() {
+        return Decision::Waiting(Blocked::Paused);
+    }
+    if moves.raft_replacements >= RAFT_REPLACEMENTS_PER_PASS {
+        return Decision::Waiting(Blocked::MoveLimit);
+    }
+    moves.raft_replacements += 1;
+    Decision::Move(step, next)
 }
 
 /// Swaps a follower that must leave for a live node outside the set.
@@ -293,6 +518,19 @@ pub(super) fn seat_open(existing: &ShardAssignment) -> Result<(), Blocked> {
 pub(super) fn seat_moved(existing: &ShardAssignment, to: &str) -> ShardAssignment {
     ShardAssignment {
         leader: to.to_string(),
+        ..existing.renamed()
+    }
+}
+
+/// An RF 1 shard's set `existing` grown by `to`: the first half of moving
+/// it. Its leader stays, so the group adds `to` as a learner and then a
+/// voter while the old copy still holds every record, and
+/// [`finish_single_move`] drops the old copy once `to` votes. A direct
+/// write of `{to}` would be held by the store: `to`'s empty copy would be
+/// the whole group (#2905).
+pub(super) fn grown(existing: &ShardAssignment, to: &str) -> ShardAssignment {
+    ShardAssignment {
+        replicas: vec![to.to_string()],
         ..existing.renamed()
     }
 }

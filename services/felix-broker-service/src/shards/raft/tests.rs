@@ -1942,6 +1942,81 @@ async fn a_publish_on_a_raft_shard_commits_through_its_group() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **A member whose core stopped on a storage error opens again once the
+/// disk heals**, from disk as after a crash, and serves what it held. A
+/// pass while the disk still refuses writes closes it and opens nothing.
+#[tokio::test]
+async fn a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals() {
+    use crate::serving::direct_publish::publish_direct;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let engine = engine(&shards);
+    let orders = key("orders", 0);
+    let mut all = assignments([assigned(orders.clone(), INCARNATION)]);
+    shards.take(&mut all).await;
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let timeout = Duration::from_secs(10);
+    let publish = |payload: &'static [u8]| {
+        let (broker, engine, orders, shards) = (&broker, &engine, &orders, &shards);
+        async move {
+            let term = shards.leading(orders)?;
+            let handle = broker
+                .resolve_stream_handle("t1", "ns", "orders", 0)
+                .await
+                .ok()?;
+            publish_direct(
+                broker,
+                None,
+                engine,
+                target(handle, orders, term),
+                &[bytes::Bytes::from_static(payload)],
+                None,
+                timeout,
+            )
+            .await
+            .ok()
+            .flatten()
+        }
+    };
+    let first = publish(b"before").await.expect("published");
+
+    let marks = shards.root.get().expect("root").mark_log().clone();
+    marks.fail_writes(true);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while shards.runtime.storage_failure(&orders).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the member never stopped"
+        );
+        let _ = publish(b"refused").await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    take_again(&shards, &orders).await;
+    assert!(
+        !shards.runtime.holds(&orders),
+        "a member opened on a disk that refuses writes"
+    );
+
+    marks.fail_writes(false);
+    take_again(&shards, &orders).await;
+    until("the reopened member serves", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+    let after = publish(b"after").await.expect("published after healing");
+    assert!(after > first);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// Run a pass with `key` assigned.
+async fn take_again(shards: &Arc<RaftShards>, key: &ShardKey) {
+    let mut all = assignments([assigned(key.clone(), INCARNATION)]);
+    shards.take(&mut all).await;
+}
+
 /// **Stopping the broker stops every member and closes its log**, so the
 /// storage flush that follows is not racing a group still writing.
 #[tokio::test]
@@ -2598,10 +2673,13 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .placed
-        .lock()
-        .insert(orders.clone(), "broker-a".to_string());
+    shards.placed.lock().insert(
+        orders.clone(),
+        Placed {
+            leader: "broker-a".to_string(),
+            voters: Default::default(),
+        },
+    );
 
     assert_eq!(
         route(&shards, &orders),
@@ -2621,10 +2699,13 @@ async fn an_mqtt_reader_of_a_leaderless_raft_member_waits() {
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
-    shards
-        .placed
-        .lock()
-        .insert(orders.clone(), "broker-a".to_string());
+    shards.placed.lock().insert(
+        orders.clone(),
+        Placed {
+            leader: "broker-a".to_string(),
+            voters: Default::default(),
+        },
+    );
     let reads = crate::serving::mqtt::BrokerReads::new(Arc::clone(&broker), Some(ingress(&shards)));
 
     assert_eq!(
@@ -2827,6 +2908,12 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
         ended.expect("ended in time").is_none(),
         "a record reached a deposed leader's subscriber"
     );
+    // Told the shard moved, so a client follows it; no resume offset, since
+    // the next leader may cut this log past what the reader was offered.
+    let moved = receiver
+        .moved()
+        .expect("the subscriber was told the shard moved");
+    assert_eq!(moved.resume_from, None);
     // The member still follows a leader, so a reader registering now is
     // served from the log.
     assert!(
@@ -3069,6 +3156,51 @@ async fn a_periodic_quorum_stream_is_answered_on_a_written_majority() {
     stop(&members).await;
 }
 
+/// **A member that applied a committed record serves it to a read even
+/// before its own copy is synced (#3115), leader or follower, at every
+/// level.** A majority already holds a committed record, so a page cut at
+/// this member's sync would answer an acknowledged publish with an empty
+/// page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_shows_a_committed_record_the_member_has_not_synced() {
+    let cases = [ConsistencyLevel::Quorum, ConsistencyLevel::Leader]
+        .into_iter()
+        .flat_map(|level| [(level, false), (level, true)]);
+    for (level, lagging_leader) in cases {
+        let (_net, members, leader) = trio_at(level).await;
+        let term = members[leader].shards.leading(&key("orders", 0));
+        let term = term.expect("term");
+        members[leader].publish(term, b"s0").await;
+
+        let lagging = if lagging_leader {
+            leader
+        } else {
+            (leader + 1) % members.len()
+        };
+        let log = members[lagging].shards.log_of(&key("orders", 0)).await;
+        let log = log.expect("open");
+        let held = log.hold_flushes().await;
+        let offset = members[leader].publish(term, b"s1").await;
+        until("the unsynced member applies the publish", || {
+            members[lagging].bound() > offset
+        })
+        .await;
+        let page = members[lagging]
+            .broker
+            .read_range("t1", "ns", "orders", 0, offset, None, 10, 1 << 20)
+            .await
+            .expect("read");
+        let first = page.records.first().map(|record| record.offset);
+        assert_eq!(
+            first,
+            Some(offset),
+            "an acknowledged record was not read ({level:?}, leader unsynced: {lagging_leader})"
+        );
+        drop(held);
+        stop(&members).await;
+    }
+}
+
 /// **A relaxed broker's shard commits before any follower fsyncs once the
 /// fleet finalized `raft_written_commit`.** Its Raft logs open with the
 /// broker's own mode, so a written majority is a commit.
@@ -3255,6 +3387,7 @@ mod reform;
 mod restore;
 mod retarget;
 mod retention;
+mod seat_move;
 mod short_placement;
 mod trim;
 
@@ -3307,4 +3440,56 @@ fn a_blank_copy_admits_only_the_brokers_in_the_group_now() {
     moved.successor = Some("broker-e".to_string());
     assert!(admitted(&moved).0.contains("broker-e"));
     assert!(admitted(&moved).1.contains("broker-e"));
+}
+
+/// **A leaderless member that placement moved off routes by placement.** A
+/// member removed from its group is not told, so it stays open here hearing
+/// no leader. Its requests go to the leader placement names, not to the
+/// stale hint, and not "not ready", which would keep a client that enters
+/// here retrying here. Placed here again, it routes as a member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leaderless_member_placement_moved_off_routes_by_placement() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let follower = (0..members.len())
+        .find(|&at| at != leader)
+        .expect("a follower");
+    let other = (0..members.len())
+        .find(|&at| at != leader && at != follower)
+        .expect("another follower");
+    let removed = &members[follower];
+
+    // Moved off while it still hears the leader: it serves readers from its
+    // log until the group lets it go.
+    let mut moved = replicated();
+    moved.leader = members[other].name.to_string();
+    moved.replicas = vec![
+        members[leader].name.to_string(),
+        members[other].name.to_string(),
+        "broker-d".to_string(),
+    ];
+    removed.shards.take(&mut assignments([moved.clone()])).await;
+    assert!(!EngineShards::placed_elsewhere(&*removed.shards, &orders));
+
+    isolate(&net, removed.name);
+    until("the removed member hears no leader", || {
+        removed.shards.runtime.hears_leader(&orders) == Some(false)
+    })
+    .await;
+    removed.shards.take(&mut assignments([moved.clone()])).await;
+    assert!(
+        removed.shards.runtime.status(&orders).is_some(),
+        "still open"
+    );
+    assert!(EngineShards::placed_elsewhere(&*removed.shards, &orders));
+    match EngineShards::dispatch(&*removed.shards, &orders, &addr_of) {
+        Some(Dispatch::Forward { node_id, .. }) => assert_eq!(node_id, members[other].name),
+        dispatched => panic!("not routed by placement: {dispatched:?}"),
+    }
+
+    removed.shards.take(&mut assignments([replicated()])).await;
+    assert!(!EngineShards::placed_elsewhere(&*removed.shards, &orders));
+    for member in &members {
+        member.shards.shutdown().await;
+    }
 }

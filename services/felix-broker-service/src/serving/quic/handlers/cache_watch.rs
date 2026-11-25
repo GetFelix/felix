@@ -264,27 +264,55 @@ pub(crate) async fn handle_cache_watch_message(
     }
 
     // A shard a Raft group runs here joins at the group's applied edge. Only
-    // committed entries are applied, so no gate applies, and there is no
-    // shard log to replay from: its base is the edge itself, so a resume
-    // from below it is answered with a resnapshot.
-    let wants_entries = request.retained || request.from_offset.is_some();
-    let raft = match raft_join(&publish_ctx.engine, &shard_key, &filter, wants_entries).await {
+    // committed entries are applied, so no gate applies. A resume below the
+    // edge is replayed from the member's recent changes, and answered with a
+    // resnapshot when they no longer reach back to it.
+    let refuse_unready = |why: &str| {
+        ClientError::unavailable(
+            &crate::shards::routing::Reason::NotReady,
+            format!("this member could not confirm its state is current: {why}; retry"),
+        )
+        .into_message()
+    };
+    let mut raft = match raft_join(&publish_ctx.engine, &shard_key, &filter, request.retained).await
+    {
         Ok(raft) => raft,
         Err(why) => {
             drop(watch);
             subscriptions.release();
-            responder
-                .send(
-                    ClientError::unavailable(
-                        &crate::shards::routing::Reason::NotReady,
-                        format!("this member could not confirm its state is current: {why}; retry"),
-                    )
-                    .into_message(),
-                )
-                .await?;
+            responder.send(refuse_unready(why)).await?;
             return Ok(true);
         }
     };
+    let mut replayed = None;
+    if let (Some(join), false, Some(from)) = (raft.as_mut(), request.retained, request.from_offset)
+        && from <= join.tail
+    {
+        let replay = raft_replay(&publish_ctx.engine, &shard_key, &filter, from);
+        if let Some(replay) = replay
+            && let Some(changes) = replay.changes
+        {
+            join.tail = replay.tail;
+            replayed = Some(changes);
+        } else {
+            // Handed current values instead, which have to include every
+            // put acknowledged before the watch began.
+            match raft_join(&publish_ctx.engine, &shard_key, &filter, true).await {
+                Ok(Some(again)) => *join = again,
+                refused => {
+                    drop(watch);
+                    subscriptions.release();
+                    let why = refused.err().unwrap_or("it no longer runs the shard");
+                    responder.send(refuse_unready(why)).await?;
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    // Told when the watch ends, so the member keeps recording for its resume.
+    let raft_ended = raft
+        .is_some()
+        .then(|| (Arc::clone(&publish_ctx.engine), shard_key.clone()));
     let (log, tail, base, gate) = match &raft {
         Some(join) => {
             let mut tail = join.tail;
@@ -320,7 +348,10 @@ pub(crate) async fn handle_cache_watch_message(
                 }
                 tail = from;
             }
-            (None, tail, tail, None)
+            // Replayed changes reach back to the resume offset; without
+            // them, anything below the edge is resnapshotted.
+            let base = if replayed.is_some() { 0 } else { tail };
+            (None, tail, base, None)
         }
         None => {
             let Some(log) = broker
@@ -521,14 +552,18 @@ pub(crate) async fn handle_cache_watch_message(
     let catch_up_result = match (catch_up, snapshot) {
         (CatchUp::Replay { from }, _) => match &log {
             Some(log) => write_replayed_changes(&mut event_send, log, &filter, from, tail).await,
-            // A Raft shard replays nothing: its base is its tail.
-            None => Ok(()),
+            // A Raft shard replays its recent changes, or nothing when the
+            // resume is at or past its edge.
+            None => write_raft_changes(&mut event_send, replayed.unwrap_or_default()).await,
         },
         (CatchUp::Snapshot, Some(entries)) => write_snapshot(&mut event_send, entries).await,
         _ => Ok(()),
     };
     if let Err(err) = catch_up_result {
         subscriptions.release();
+        if let Some((engine, key)) = &raft_ended {
+            raft_watch_ended(engine, key);
+        }
         tracing::info!(error = %err, "cache watch catch-up failed");
         return Ok(true);
     }
@@ -549,15 +584,21 @@ pub(crate) async fn handle_cache_watch_message(
             };
         (auth.revocable.clone(), message)
     });
-    tokio::spawn(run_watch_delivery(
-        watch,
-        event_send,
-        tail,
-        subscriptions,
-        shard_moved,
-        gate,
-        revoked,
-    ));
+    tokio::spawn(async move {
+        run_watch_delivery(
+            watch,
+            event_send,
+            tail,
+            subscriptions,
+            shard_moved,
+            gate,
+            revoked,
+        )
+        .await;
+        if let Some((engine, key)) = raft_ended {
+            raft_watch_ended(&engine, &key);
+        }
+    });
     Ok(true)
 }
 
@@ -602,6 +643,76 @@ async fn raft_join(
         let _ = (engine, key, filter, entries);
         Ok(None)
     }
+}
+
+/// The changes a watch resuming from `from` missed on `key`'s Raft member
+/// here, read after the watch registered. `None` when no group runs it.
+fn raft_replay(
+    engine: &crate::shards::routing::StreamEngine,
+    key: &crate::shards::ShardKey,
+    filter: &CacheWatchFilter,
+    from: u64,
+) -> Option<RaftReplay> {
+    #[cfg(feature = "raft")]
+    {
+        let replay = engine
+            .raft(key)?
+            .cache_replay(key, from, &|name| filter.matches(name))?;
+        Some(RaftReplay {
+            tail: replay.tail,
+            changes: replay.changes,
+        })
+    }
+    #[cfg(not(feature = "raft"))]
+    {
+        let _ = (engine, key, filter, from);
+        None
+    }
+}
+
+/// Tell `key`'s Raft member here that a watch of it ended.
+fn raft_watch_ended(engine: &crate::shards::routing::StreamEngine, key: &crate::shards::ShardKey) {
+    #[cfg(feature = "raft")]
+    if let Some(raft) = engine.raft(key) {
+        raft.cache_watch_ended(key);
+    }
+    #[cfg(not(feature = "raft"))]
+    let _ = (engine, key);
+}
+
+#[cfg(feature = "raft")]
+type RaftChange = felix_replication::raft::CacheReplayed;
+#[cfg(not(feature = "raft"))]
+type RaftChange = std::convert::Infallible;
+
+/// See [`raft_replay`].
+struct RaftReplay {
+    tail: u64,
+    changes: Option<Vec<RaftChange>>,
+}
+
+/// Deliver a Raft member's replayed changes on the event stream, deletes as
+/// changes with no value, as a log replay delivers them.
+async fn write_raft_changes(
+    event_send: &mut quinn::SendStream,
+    changes: Vec<RaftChange>,
+) -> Result<()> {
+    #[cfg(feature = "raft")]
+    for change in changes {
+        write_message(
+            event_send,
+            Message::CacheEvent {
+                key: change.key,
+                value: change.value,
+                offset: change.offset,
+                expires_at_millis: change.expires_at_millis,
+            },
+        )
+        .await?;
+    }
+    #[cfg(not(feature = "raft"))]
+    let _ = (event_send, changes);
+    Ok(())
 }
 
 /// Wait, up to `timeout`, until `key`'s Raft member here has applied every
@@ -665,7 +776,10 @@ impl CommitGate {
             match self.wait(end).await {
                 Ok(()) => return true,
                 Err(felix_replication::quorum::QuorumError::TimedOut { .. }) => continue,
-                Err(felix_replication::quorum::QuorumError::LeadershipLost { .. }) => {
+                Err(
+                    felix_replication::quorum::QuorumError::LeadershipLost { .. }
+                    | felix_replication::quorum::QuorumError::NotAppended { .. },
+                ) => {
                     return false;
                 }
                 // Only a conditional stream publish or a proposal is

@@ -39,10 +39,16 @@ pub(super) fn should_reset_throttle(depth_update: Option<(usize, usize)>) -> boo
     {
         return true;
     }
-    #[cfg(test)]
-    if test_hooks::force_throttle_reset() {
-        return true;
-    }
+    forced_throttle_reset()
+}
+
+#[cfg(test)]
+fn forced_throttle_reset() -> bool {
+    test_hooks::force_throttle_reset()
+}
+
+#[cfg(not(test))]
+fn forced_throttle_reset() -> bool {
     false
 }
 

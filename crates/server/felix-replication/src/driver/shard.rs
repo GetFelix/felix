@@ -540,7 +540,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     // promoted to, a successor is only as good as the report it was chosen
     // from.
     let serving = marks.serving();
-    let by_followers = quorum_shard
+    // Only a shard with a log: an in-memory one keeps the lease.
+    let off_lease = quorum_shard && crate::quorum::serves_on_followers_word(broker, key).await;
+    let by_followers = off_lease
         && match key.kind {
             felix_router::ShardKind::Stream => serving.streams_by_followers,
             felix_router::ShardKind::Cache => serving.caches_by_followers,
@@ -548,7 +550,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
     if by_followers {
         fence.serve_without_lease(mark_key, route.generation);
     }
-    let reads_by_round = quorum_shard && serving.reads_by_round;
+    let reads_by_round = off_lease && serving.reads_by_round;
     if reads_by_round {
         fence.sessions_without_lease(mark_key, route.generation);
     }

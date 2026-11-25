@@ -481,8 +481,10 @@ rotates and a restored root fails the gate. A member that opens marks what
 it recovered at once (`RaftLog::mark_recovered`), so an idle copy after a
 restart does not keep an old mark. A batch write that fails stops the
 root's mark log: from then on every shard on the root fails its appends and
-votes until the broker restarts, rather than let the log run ahead of a
-mark that no longer moves. A write that hangs is not a failure. Once the
+votes until the disk takes writes again, rather than let the log run ahead
+of a mark that no longer moves. Then the mark log is rewritten from its
+synced marks and the stopped members open again ("A member that stops on a
+storage error"). A write that hangs is not a failure. Once the
 marks are five intervals old, appends on the root's batched shards wait
 until a batch is written, then go on; nothing fails and nothing restarts.
 The age is checked once an interval, so no acknowledged entry is more than
@@ -2182,6 +2184,17 @@ leader. A forward to a leader that is gone fails, and the client retries.
 > `a_leader_that_loses_its_appends_does_not_stall_the_next_election` and
 > `a_pre_vote_refusal_names_its_vote_uncommitted`.
 
+A member whose placement no longer names its broker routes by placement
+instead, once it hears no leader: its group may have removed it without
+telling it. A refusal there would keep a client that enters on that broker
+retrying on it, so the member redirects readers and forwards writes to the
+leader placement names, as a broker with no member does.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_leaderless_member_placement_moved_off_routes_by_placement`;
+> `services/felix-broker-service/src/shards/routing/tests.rs`,
+> `a_subscribe_to_a_member_placed_elsewhere_is_redirected`.
+
 ### Many groups electing at once
 
 A vote is a small file per shard, the ballot, written whole and renamed
@@ -2681,6 +2694,12 @@ for tests and A/B runs, on a broker or for the `raft::` unit tests. It is
 not supported in production. `0` runs
 the groups without group threads, which keeps that path tested.
 
+`FELIX_TEST_RAFT_ELECTION_MAX_MS=<ms>` sets the longest election timeout, which
+is also how long a leader with no answer from a majority keeps accepting
+writes. The client conformance fixture sets it so a leader it cuts off from its
+followers still takes the one write the scenario sends and cannot say whether
+it survived. It is not supported in production.
+
 ## Heartbeats sent together
 
 Without coalescing, each leader sends each follower one empty
@@ -2836,7 +2855,10 @@ then no transfer is asked for.
 
 Nothing else calls `deposed`. A write openraft refuses because its lease
 lapsed, a refused `admit_local_ack` and a read-index round no majority
-answers all leave the shard open.
+answers all leave the shard open. A round no majority answers within the
+lease (1.5 s by default) is refused as retryable then, not held to the
+election timeout, so a group call to a leader cut off from its peers
+fails fast and the client's retry deadline decides when to stop.
 
 A publisher's wait and a commit wait end when the watcher says the term is
 lost. The watcher hears of an election a moment after openraft does, so
@@ -2857,6 +2879,44 @@ asynchronous, so the fence can close a moment late. That is safe. A write
 proposed in the gap is refused by openraft, or appended as an uncommitted
 entry of the old term whose waiter gets leadership lost. Nothing reaches
 the log except through openraft ("Writing through openraft").
+
+### A member that stops on a storage error
+
+openraft stops a member's core on any log-store error and never starts it
+again. Without help such a member would answer nothing until the broker
+restarted. Instead, the broker's feed pass sees the core stopped
+(`GroupRuntime::storage_failure`), closes the member and its log, and opens
+it again once the disk takes writes:
+
+1. A probe file at the data root is written, fsynced and removed
+   (`CopyRoot::heal`). While that fails, nothing opens.
+2. A failed mark log is rewritten from the marks as last synced
+   (`MarkLog::reopen`). Marks only ever lower-bound a copy, so going back to
+   the synced ones can rotate a copy but never lets one vote below what it
+   promised.
+3. The member opens through `open_copy`, as at a start. The copy is judged
+   against its marks and its log recovered from disk. A log poisoned by a
+   failed fsync rotates to a new copy id that never voted, so nothing the
+   failed fsync touched is trusted. Any other log keeps its copy id, with its
+   torn tail repaired, and catches up from the leader. A rotated copy has no
+   group of its own: with other copies alive it catches up from them. With
+   one copy, or when every copy rotated, the shard is held and serves
+   nothing until an operator re-forms it ("Re-forming a group").
+
+The reopened member is a restarted one: it votes and acknowledges only from
+what is on disk, as after a crash. The first stop reopens on the next pass. A
+member that stops again within a minute of its reopen waits longer each time,
+from a second up to 30, since every open scans its log.
+
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`,
+> `a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing`;
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`;
+> `crates/server/felix-storage/src/raft_copy/tests/marks.rs`,
+> `a_reopen_after_the_disk_heals_starts_from_the_synced_marks`,
+> `a_failed_fsync_is_not_retried_by_the_reopen` and
+> `a_reopen_restarts_the_batched_marks`.
 
 ### Acknowledging a write
 
@@ -3671,6 +3731,18 @@ shard's placement names as leader. That broker holds a member, and answers
 with the group's leader when it is not the leader itself. A member placed
 here that is not open yet is answered `not_ready`.
 
+During a move outside the set, placement names the destination leader
+before the group has added it. Until its learner hears from the leader, the
+destination knows no leader to forward to. So while placement's leader is
+not among the voters the group's leader last reported for the shard, a
+broker with no member, or with a member that knows no leader and is not a
+reported voter, forwards to a reported voter instead (#3011). That voter
+knows the leader. Before any report, placement's leader is used as before.
+
+> `services/felix-broker-service/src/shards/raft/tests/seat_move.rs`,
+> `a_destination_with_no_member_forwards_to_a_reported_voter`,
+> `routes_skip_a_placed_leader_that_is_not_a_voter`.
+
 When the broker stops, every member is stopped and its log closed before
 storage is flushed.
 
@@ -3708,8 +3780,11 @@ broker's lease and the hybrid's fence are not asked.
   until it hears its leader, up to one idle heartbeat.
 - A leader that is deposed ends the subscribers of its term, because
   records it had not seen committed may be replaced, and a gap would read
-  as a drop. They can subscribe again to the same broker, which now serves
-  them from its log. A subscribe that registers after the deposal is kept.
+  as a drop. Each is told `shard_moved` with no `resume_from` and no
+  owner named, so a cluster client subscribes again after the last record
+  it saw, through any broker; the same one now serves it from its log. A
+  member that knows no leader ends its subscribers the same way. A
+  subscribe that registers after the deposal is kept.
 - A resume offset past the end of a follower's log is answered with a
   redirect to the leader, with the leader's client address, since the
   leader may hold records the follower has not received yet. An offset
@@ -4751,10 +4826,9 @@ later by no report a Raft shard sends:
 
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
-alone and only names the member it wants leading. It never adds or removes a
-member of a shard it has placed, except that it swaps out a follower on an
-internal node and drops the copy a move from
-an older control plane added:
+alone and names the member it wants leading. It changes a placed shard's
+set only by the one-member swaps below, and drops the copy a move from an
+older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
@@ -4771,6 +4845,20 @@ an older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
+- A balance pass gives a seat to a live broker outside the set when it
+  leads two fewer than the shard's leader and no member does (#3113). A
+  broker a drain swapped out of every set, then restarted, is that broker:
+  renaming within sets would never give it a shard again. One write swaps
+  a follower for it and names it leader, under the same checks as a
+  follower replacement, sharing its budget of 16 set changes a pass. The
+  follower given up is one in the new broker's zone first, then the
+  busiest, and never one whose swap would leave a set spread across zones
+  short of a zone. An RF 1 shard has no follower to give, so this does not
+  reach it yet ([#3118](https://github.com/GetFelix/felix/issues/3118)).
+  The group's leader keeps its seat, adds the new copy as a learner, swaps
+  the voters, and hands leadership over once the copy votes and has caught
+  up. A copy the broker kept from before its drain rejoins under its old
+  copy id with its log intact.
 - A leader that goes down is renamed to a live member, in the same kind of
   write, because a broker with no member forwards to the leader placement
   names. The group elects a new one without the control plane, so placement
@@ -4784,8 +4872,25 @@ an older control plane added:
   then hands leadership to the new broker once it has caught up. It is
   refused while a member is not serving (`member_down`), while the target is
   not stored for the current set (`set_unsettled`), and while the
-  destination is still a learner (`not_a_member`), and for a one-member group
-  (`single_member`; moving one is not supported yet).
+  destination is still a learner (`not_a_member`).
+- An RF 1 shard keeps its leader and grows to the destination first, since
+  one voter has no voter to share with the next set. Placement shrinks the
+  set to the destination once the leader reports its copy voting, and the
+  store's formed-set hold refuses that write any earlier (#3012).
+- An RF 1 move is undone, back to the old broker alone, when the destination
+  stops being live before it votes (down, draining or gone), or when an
+  operator moves the shard back to the old broker (step `raft_move_undone`).
+  The store takes that write because the old broker is a reported voter.
+  This is also how a drain of the old broker gets past a move that cannot
+  finish. A draining destination that already votes is undone the same way,
+  since it still serves and can vote for its own removal.
+- Once the destination votes, the group has two voters and either set of one
+  needs both. If the destination is then down, placement waits and says why
+  ("votes in this group of two and is not serving"), and an operator move
+  back is refused with `member_down`.
+  The shard serves again when the broker comes back, or after a re-form
+  without it ([Re-forming a group](#re-forming-a-group)): `felixctl raft
+  reform plan --scope node <destination>`, then `felixctl raft reform apply`.
 - A move an older control plane started on the shard is dropped at the next
   pass, with any copy it added.
 
@@ -5902,6 +6007,8 @@ on the hybrid.
   have been routed at the term the broker serves now, or it is refused as
   not ready and the client retries; a forwarded one is proposed at the term
   led now, as a forwarded publish is.
+  An operation for a shard whose member is not open here yet is refused as not
+  ready too; the hybrid stores open no cache or counter log on a Raft broker.
 - **Answers match the hybrid's.** A refused conditional write names the
   key's version; an applied conditional delete names none. A plain delete
   answers the value it removed: the group's delete answers only a version, so
@@ -5933,9 +6040,26 @@ on the hybrid.
   watch is handed. That edge is the member's own, so a follower that is
   behind can hand a retained watch a value older than one the client just
   read from the leader. The newer value is committed and arrives as a
-  change once the follower applies it; nothing is lost. The group keeps no
-  change history to replay, so a resume from below the edge is answered
-  with `resnapshot` and each key's current value. A resume from past the
+  change once the follower applies it; nothing is lost. A member keeps
+  its latest applied changes in memory while it serves a watch of the
+  shard and for five minutes after (in the log's time), long enough for a
+  client to reconnect after a dropped connection or a broker failover. It
+  starts at the first change a watch of the shard took, or at the live
+  edge when one ends, and keeps up to 4096 changes or 1 MiB per shard,
+  counting each change's key, value and slot (`raft/cache/recent.rs`). A
+  member that has not served a watch of the shard in that window keeps
+  nothing and pays nothing extra per write; its tick frees what an idle
+  shard kept. A client that resumes on a member that kept nothing for the
+  shard, such as one it never watched on, is resnapshotted. A resume
+  whose offset is still kept is replayed `[from_offset, edge)` from them,
+  deletes included, exactly as the hybrid replays its log, then joins live
+  delivery. One from below the oldest kept change is answered with
+  `resnapshot` and each key's current value, read after the member has
+  applied every put acknowledged before the watch began. A snapshot
+  install starts the kept changes empty, past the snapshot's entry, and a
+  restart keeps none, so a resume from before either resnapshots. A value
+  bigger than the byte bound still reaches live watches, and moves the
+  oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
   apply that far, up to the publish quorum timeout, and is then refused as
   retryable. A snapshot install, and a member left with no leader, end the

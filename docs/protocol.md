@@ -1143,8 +1143,9 @@ page, each one from the last answer's `next_offset`.
   payload at 4 MiB. A single record larger than the byte budget still comes
   back, alone.
 - The page holds only records that will stay: on a `Quorum` stream nothing at
-  or past the committed mark, and under `FsyncMode::OnCommit` nothing not yet
-  synced. It never waits for more. A page that reaches that point comes back
+  or past the committed mark, on a Raft shard nothing past its commit, and
+  otherwise under `FsyncMode::OnCommit` nothing not yet synced. It never waits
+  for more. A page that reaches that point comes back
   short or empty, and asking again later from `next_offset` picks up what has
   been committed since.
 - A `Quorum` leader that has not committed anything at its generation yet,
@@ -1376,7 +1377,7 @@ each of them.
                     "state": "<state>", "halted": "<reason>" } ],
     "raft": { "role": "leader|candidate|follower|learner|stopped",
               "term": <u64>, "leader": "<node>", "last_index": <u64>,
-              "committed": <u64> } } }
+              "committed": <u64>, "voters": ["<node>"] } } }
 ```
 
 Every field after `serving` is left out when it does not apply. The words are
@@ -1409,8 +1410,12 @@ older reader failing to decode the answer.
 - `raft` is this broker's member of the shard's Raft group, present only when
   it holds one. `leader` is the broker the member follows while it hears
   one, itself included; `last_index` is the last entry in its log and
-  `committed` the commit index it knows of. The cluster test harness reads it
-  to wait for a leader whose log a majority holds.
+  `committed` the commit index it knows of. `voters` are the brokers that vote
+  in the group by the latest membership the member's log holds. A member
+  removed from the group never hears of it, so it goes on naming itself a
+  follower with the old voters; the leader's list is the one to trust. The
+  cluster test harness reads it to wait for a leader whose log a majority of
+  those voters holds.
 
 The answer is bounded by the shard's replica set. A broker not in a cluster
 answers `role` `leader` and `phase` `active` for a stream or cache it holds,
@@ -2464,7 +2469,11 @@ instead of being left with a feed nothing will write to or end.
   On a `Quorum` stream a batch this broker holds for the committed mark was not
   offered, so `resume_from` is at or below it: the batch is on disk and the next
   leader can still commit it.
-  Absent for an in-memory stream, whose sequence means nothing on another broker.
+  Absent for an in-memory stream, whose sequence means nothing on another broker,
+  and when a Raft leader that was deposed, or a member that knows no leader, ends
+  its readers: its log past what they were offered may be cut by the next
+  leader, so the reader resumes after the last offset it saw, or where it
+  started if it saw none.
   For a cache watch it is the shard log's tail, and absent if writes were still
   in flight when the watch ended; resume after the last offset seen then.
 - `node_id` and `addr` name the broker taking the shard, when this one knows:

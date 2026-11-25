@@ -44,7 +44,15 @@ async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
     .await
     .expect("start cluster");
     cluster
-        .finalize_fleet_features(&["record_headers"], Duration::from_secs(30))
+        .finalize_fleet_features(
+            // A Raft group gates headers on its own feature as well.
+            if felix_cluster::suite_runs_on_raft() {
+                &["record_headers", "raft_record_headers"][..]
+            } else {
+                &["record_headers"][..]
+            },
+            Duration::from_secs(30),
+        )
         .await
         .expect("finalize record_headers");
     let port_of: HashMap<String, u16> = cluster
@@ -59,7 +67,15 @@ async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
         })
         .collect();
 
-    let (owner, ingress) = cluster.owner_and_non_owner(STREAM).await.expect("owner");
+    let owner = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
+    let ingress = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| *node != owner)
+        .expect("a broker that does not own the shard");
     let mut retried = Vec::new();
     for i in 0..5 {
         if publish_until_acked(&cluster, port_of[&ingress], i).await > 1 {
@@ -622,17 +638,10 @@ async fn try_publish(tenant: &str, token: &str, port: u16, i: u32) -> bool {
 
 /// Step placement until a broker other than `gone` owns the shard.
 async fn new_owner(cluster: &Cluster, gone: &str) -> String {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    loop {
-        cluster.place_shards().await;
-        if let Ok(owner) = cluster.owner(STREAM).await
-            && owner != gone
-        {
-            return owner;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "no new leader");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    cluster
+        .promoted_leader(STREAM, gone, Duration::from_secs(60))
+        .await
+        .expect("a new leader")
 }
 
 /// The payloads of the test's messages, replayed over QUIC from `owner`.

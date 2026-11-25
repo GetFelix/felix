@@ -115,6 +115,20 @@ impl CopyRoot {
         &self.marks
     }
 
+    /// Whether the root's disk takes writes again, for a member that
+    /// stopped on a storage error and is about to open again: a probe file
+    /// written, fsynced and removed at the root, then the mark log reopened
+    /// if it had failed ([`MarkLog::reopen`]). An error means the disk is
+    /// still failing and nothing should open yet.
+    pub async fn heal(&self) -> io::Result<()> {
+        let root = self.marks.root().to_path_buf();
+        felix_common::blocking::spawn(move || probe(&root))
+            .await
+            .map_err(io::Error::other)??;
+        self.marks.reopen().await?;
+        Ok(())
+    }
+
     /// Open `dir` as `shard`'s copy, as a log labelled `label` under
     /// `config`, rotating the copy when the directory cannot keep its id.
     ///
@@ -554,4 +568,18 @@ fn kept_path(dir: &Path, parent: &Path, replaced: Option<u64>) -> io::Result<Pat
         }
         n += 1;
     }
+}
+
+/// The file [`CopyRoot::heal`] probes the disk with.
+const PROBE: &str = ".disk-probe";
+
+fn probe(root: &Path) -> io::Result<()> {
+    let path = root.join(PROBE);
+    {
+        let file = crate::fs::File::create(&path)?;
+        crate::io::write_all(&file, b"probe")?;
+        crate::io::sync_all(&file)?;
+    }
+    crate::fs::remove_file(&path)?;
+    crate::io::sync_dir(root)
 }

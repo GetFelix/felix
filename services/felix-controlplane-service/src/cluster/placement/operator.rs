@@ -121,9 +121,6 @@ pub enum Refused {
     /// A Raft shard's set cannot change while this member is not serving:
     /// the joint change needs a majority of both sets.
     MemberDown(String),
-    /// A Raft shard with one member cannot give its seat away: the store
-    /// holds a one-voter set in place, so the change would never apply.
-    SingleMember,
 }
 
 impl Refused {
@@ -149,7 +146,6 @@ impl Refused {
             Self::NotAMember(_) => "not_a_member",
             Self::SetUnsettled => "set_unsettled",
             Self::MemberDown(_) => "member_down",
-            Self::SingleMember => "single_member",
         }
     }
 }
@@ -215,10 +211,6 @@ impl std::fmt::Display for Refused {
                 f,
                 "member {node} of this Raft shard is not serving; its set changes once it is"
             ),
-            Self::SingleMember => write!(
-                f,
-                "this Raft shard has one member, and moving a one-member group to another broker is not supported yet"
-            ),
         }
     }
 }
@@ -261,6 +253,9 @@ pub fn start_move(
         });
     }
     if existing.leader == destination {
+        if super::raft_leaders::on_raft(existing, catalog.policy.raft_streams, durable) {
+            return raft_move_back(catalog, existing, destination, replication_factor);
+        }
         return Err(Refused::AlreadyLeads(destination.to_string()));
     }
     if let Some(halt) = catalog.caught_up.halted(key, destination) {
@@ -346,6 +341,10 @@ fn raft_leader_move(
     if existing.learners.contains(destination) {
         return Err(Refused::NotAMember(destination.to_string()));
     }
+    // A set over the factor is an RF 1 move placement has not finished.
+    if existing.nodes().count() > replication_factor.max(1) as usize {
+        return Err(Refused::SetUnsettled);
+    }
     if !existing.replicas.iter().any(|node| node == destination) {
         return raft_seat_move(catalog, existing, destination, replication_factor, home);
     }
@@ -368,6 +367,34 @@ fn raft_leader_move(
     })
 }
 
+/// Move an RF 1 shard mid-move back to its leader, `destination`: the
+/// destination leaves the set again. Once it votes the group needs its vote
+/// to remove it, so a voting destination that is not serving is refused.
+fn raft_move_back(
+    catalog: &Catalog<'_>,
+    existing: &ShardAssignment,
+    destination: &str,
+    replication_factor: u32,
+) -> Result<OperatorStep, Refused> {
+    let Some((node, assignment)) =
+        super::raft_leaders::single_move_undone(existing, replication_factor)
+    else {
+        return Err(Refused::AlreadyLeads(destination.to_string()));
+    };
+    if existing.reports_voting(node) && !lifecycle_of(catalog, node).is_some_and(|l| l.is_serving())
+    {
+        return Err(Refused::MemberDown(node.to_string()));
+    }
+    Ok(OperatorStep {
+        step: MoveStep::RaftMoveUndone {
+            node: node.to_string(),
+        },
+        assignment,
+        expected_generation: existing.generation,
+        zones: None,
+    })
+}
+
 /// Give a Raft shard's leader seat to `destination`, outside its set. Every
 /// member must be serving, since the group's leader runs the change, and
 /// the set must be settled: one set change at a time.
@@ -378,9 +405,6 @@ fn raft_seat_move(
     replication_factor: u32,
     home: Option<&String>,
 ) -> Result<OperatorStep, Refused> {
-    if existing.replicas.is_empty() {
-        return Err(Refused::SingleMember);
-    }
     let serving = |node: &str| lifecycle_of(catalog, node).is_some_and(|l| l.is_serving());
     if let Some(down) = existing.nodes().find(|node| !serving(node)) {
         return Err(Refused::MemberDown(down.clone()));
@@ -401,7 +425,13 @@ fn raft_seat_move(
             from: existing.leader.clone(),
             to: destination.to_string(),
         },
-        assignment: super::raft_leaders::seat_moved(existing, destination),
+        // One member has no voter both sets keep, so an RF 1 shard grows
+        // first and placement shrinks it once the destination votes.
+        assignment: if existing.replicas.is_empty() {
+            super::raft_leaders::grown(existing, destination)
+        } else {
+            super::raft_leaders::seat_moved(existing, destination)
+        },
         expected_generation: existing.generation,
         zones: zone_impact(catalog, existing, destination, replication_factor, home),
     })

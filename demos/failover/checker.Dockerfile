@@ -3,7 +3,7 @@
 # The compose file does this for you.
 ARG BASE_REGISTRY=docker.io/library
 
-FROM ${BASE_REGISTRY}/rust:1.99-bookworm AS build
+FROM ${BASE_REGISTRY}/rust:1.100-bookworm AS build
 WORKDIR /felix
 COPY . .
 RUN --mount=type=cache,id=felix-failover-registry,target=/usr/local/cargo/registry \

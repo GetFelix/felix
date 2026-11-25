@@ -40,7 +40,7 @@ use super::propose::{
 };
 use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
-use super::runtime::{Admission, GroupStatus, OpenError, Role};
+use super::runtime::{Admission, FollowerProgress, GroupStatus, OpenError, Role};
 use super::ticker::{VoteClock, VoteSaves};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -85,8 +85,8 @@ pub(crate) struct Group {
     /// which a confirmed read must wait to have applied.
     answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
     /// The furthest entry acknowledged on the leader lease before its
-    /// commit. Only a backup point reads it: a lease write may not be on
-    /// a majority, so reads never wait for it.
+    /// commit. `answered_end` counts it with `answered`, so a confirmed read
+    /// also waits for a lease-acked write to be applied.
     acked_on_lease: parking_lot::Mutex<Option<LogPoint>>,
     /// The data root's mark log, when the member has one. Its
     /// vouched-unsynced marker is synced before a strict log's unsynced write
@@ -1041,6 +1041,7 @@ impl Group {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
+        self.stop_lapsed_recording();
         // A member that takes no vote does not ask for one, unless it
         // promised nobody. One handed the leadership meanwhile is ticked
         // too: its first tick as leader comes once `Pace::wrote` or
@@ -1834,6 +1835,15 @@ impl Group {
         &self.copy
     }
 
+    /// Why the member's core stopped, if it stopped on a storage error.
+    pub(crate) fn storage_failure(&self) -> Option<String> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        match &self.raft.metrics().borrow_watched().running_state {
+            Err(openraft::error::Fatal::StorageError(err)) => Some(err.to_string()),
+            _ => None,
+        }
+    }
+
     /// Cancelled when the member is shut down.
     pub(crate) fn stopped(&self) -> CancellationToken {
         self.stop.clone()
@@ -2056,10 +2066,7 @@ impl Group {
             let metrics = metrics.borrow_watched();
             metrics.local_committed.map_or(0, |id| id.index + 1)
         };
-        let answered = *self.answered.lock();
-        let answered = answered
-            .filter(|at| at.term == term)
-            .map_or(0, |at| at.index + 1);
+        let answered = self.answered_end(term);
         #[cfg(test)]
         self.lease_reads.fetch_add(1, Ordering::Relaxed);
         Some(committed.max(answered))
@@ -2085,16 +2092,24 @@ impl Group {
     }
 
     /// One past the index a reader of `term` must have applied: the read
-    /// index, or past it a write answered on a written majority. That write
-    /// is of this term and on a majority, so it commits unless this member
-    /// stops leading. Shared by this leader's reads and its followers'.
+    /// index, or past it a write of `term` already answered
+    /// ([`Group::answered_end`]). Shared by this leader's reads and its
+    /// followers'.
     async fn confirmed_index(&self, term: u64) -> Result<u64, CommitError> {
         let bound = self.read_index(term).await?;
-        let answered = *self.answered.lock();
-        let answered = answered
-            .filter(|at| at.term == term)
-            .map_or(0, |at| at.index + 1);
-        Ok(bound.max(answered))
+        Ok(bound.max(self.answered_end(term)))
+    }
+
+    /// One past the last write of `term` a publisher was told was taken,
+    /// on a written majority or on this leader's lease, before its commit.
+    /// A read that starts after that answer waits for the entry: it commits
+    /// unless this member stops leading `term`, and then the read fails.
+    fn answered_end(&self, term: u64) -> u64 {
+        let ours = |mark: Option<LogPoint>| {
+            mark.filter(|at| at.term == term)
+                .map_or(0, |at| at.index + 1)
+        };
+        ours(*self.answered.lock()).max(ours(*self.acked_on_lease.lock()))
     }
 
     /// One past the index a reader must have applied before it reads: the
@@ -2114,19 +2129,27 @@ impl Group {
         }
         let timers = self.pace.timers;
         let patience = Duration::from_millis(timers.election_max);
-        let unanswered = CommitError::TimedOut {
+        let started = tokio::time::Instant::now();
+        // The error names how long the read waited, which is less than
+        // `patience` when no majority answered within a round.
+        let unanswered = || CommitError::TimedOut {
             what: "read",
-            timeout: patience,
+            timeout: started.elapsed().min(patience),
         };
-        let deadline = tokio::time::Instant::now() + patience;
+        let deadline = started + patience;
+        // A majority answers a round within a lease or is not there. Held to
+        // the election timeout instead, a leader cut off from every peer
+        // keeps each group call waiting that long before it can refuse.
+        let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
         loop {
             let raft = self.raft.clone();
             let stop = self.stop.clone();
-            let entered =
-                self.reads
-                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
-                        read_round(raft.clone(), stop.clone())
-                    });
+            let entered = self.reads.enter(
+                &self.runtime,
+                round_limit,
+                Round::QuorumNotEnough,
+                move || read_round(raft.clone(), stop.clone()),
+            );
             // A read that arrives during a round waits for the next one too,
             // so the bound is on the wait, not on one round.
             let round = tokio::select! {
@@ -2140,7 +2163,7 @@ impl Group {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                         continue;
                     }
-                    Err(_) => return Err(unanswered),
+                    Err(_) => return Err(unanswered()),
                 },
             };
             match round {
@@ -2152,13 +2175,13 @@ impl Group {
                 }
                 Round::LeaseExpired => {}
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
-                Round::QuorumNotEnough => return Err(unanswered),
+                Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
             // a majority to answer it, and ask again.
             if tokio::time::Instant::now() >= deadline {
-                return Err(unanswered);
+                return Err(unanswered());
             }
             let _ = self.raft.trigger().heartbeat().await;
             let answered = lead::quorum_answered(&self.raft);
@@ -2421,6 +2444,44 @@ impl Group {
         Some((state.applied() + 1, state.watched_entries(keep)))
     }
 
+    /// A resuming cache watch's live edge on this member and every kept
+    /// change in `[from, edge)` that `keep` takes, read under one hold of
+    /// the state's lock. The changes are `None` when some from `from` on are
+    /// no longer kept. `None` in a stream shard's group.
+    pub(crate) fn cache_replay(
+        &self,
+        from: u64,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<(u64, Option<Vec<super::cache::Change>>)> {
+        let cache = self.cache.as_ref()?;
+        let state = cache.read();
+        Some((state.applied() + 1, state.recent_since(from, keep)))
+    }
+
+    /// A cache watch of this group's shard ended here: keep recording for a
+    /// window, so the client's resume can be replayed.
+    pub(crate) fn cache_watch_ended(&self) {
+        if let Some(cache) = &self.cache {
+            cache.write().watch_ended((self.clock)());
+        }
+    }
+
+    /// Free the changes a cache group kept for watches once its window has
+    /// passed with no watch. Never waits on apply.
+    fn stop_lapsed_recording(&self) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        let now = (self.clock)();
+        if cache
+            .try_read()
+            .is_some_and(|state| state.recording_lapsed(now))
+            && let Some(mut state) = cache.try_write()
+        {
+            state.stop_lapsed_recording(now);
+        }
+    }
+
     /// End `observer`'s watches of this cache group as lagged at the live
     /// edge. Under the state's lock, so no change lands between the edge
     /// and the ending.
@@ -2579,6 +2640,9 @@ impl Group {
     /// already on disk; nothing is written here.
     pub(crate) async fn shutdown(&self) {
         self.stop.cancel();
+        // An append waiting out a full disk would hold the stop for up to
+        // its retry limit.
+        self.log.stop_retrying();
         if let Err(err) = self.raft.shutdown().await {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group did not stop cleanly");
         }
@@ -2717,6 +2781,33 @@ impl Group {
         .flatten()
         .fold(committed, |a, b| if b.index > a.index { b } else { a });
         Some((term, furthest))
+    }
+
+    /// Replication to every other member, while this member leads. Read
+    /// from openraft's metrics, so a member it is not replicating to yet
+    /// is absent.
+    pub(crate) fn followers(&self) -> Option<Vec<FollowerProgress>> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics().borrow_watched().clone();
+        if metrics.state != ServerState::Leader {
+            return None;
+        }
+        let voters: BTreeSet<MemberId> =
+            metrics.membership_config.membership().voter_ids().collect();
+        let live = self.pace.live(metrics.current_term);
+        let followers = metrics
+            .replication
+            .as_ref()?
+            .iter()
+            .filter(|(member, _)| **member != self.member)
+            .map(|(member, matched)| FollowerProgress {
+                member: member.clone(),
+                voter: voters.contains(member),
+                matched: matched.as_ref().map(|id| id.index),
+                live: live.contains(member),
+            })
+            .collect();
+        Some(followers)
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {

@@ -592,7 +592,8 @@ Four properties:
    names the shard and the first failure. Nothing is retried.
 
    The log stays poisoned until it is reopened, which in a broker means a
-   restart. After a reboot or a power loss that is safe: recovery reads only
+   restart. A Raft member is the exception: it is reopened once the disk takes
+   writes again, and its poisoned copy comes back under a new copy id (below). After a reboot or a power loss that is safe: recovery reads only
    what reached the disk, as it does after any crash. After a restart on the
    same boot the bytes of the failed flush can still be in the page cache,
    where recovery would read them as valid and its own fsync of them would
@@ -682,10 +683,19 @@ Four properties:
 
    The flush thread poisons the log itself, before it replies. A caller
    that stopped waiting on the flush (a dropped future, a runtime shutting
-   down) cannot leave a failed sync unrecorded. The io_uring flusher is the
-   exception for now: there the caller still records the failure, so a
-   dropped flush can lose it
-   ([#2492](https://github.com/GetFelix/felix/issues/2492)).
+   down) cannot leave a failed sync unrecorded. The thread is serial per
+   log, so a later flush of that log never runs alongside a failed one.
+
+   The io_uring flusher needs two more steps for the same result. Its
+   thread poisons the log when it reaps a failed completion, before it
+   replies. And the ring runs fsyncs concurrently, while Linux reports a
+   writeback error to only one fsync of a file: with two of one log's
+   fsyncs in the ring, the later one could succeed, be reaped first, and
+   acknowledge records whose pages the kernel dropped. So a log submits its
+   next fsync only after the ring has answered the last one, whether or not
+   the flush that issued it is still waiting, and checks for a poison first.
+   A roll started by `roll_now` runs in its own task, so a caller that gives
+   up cannot leave the roll slot taken or a failed roll unrecorded.
 
    Failing to open a directory to sync it is not a failed sync. No sync was
    issued, so nothing can have been dropped, and the operation just fails.
@@ -731,6 +741,13 @@ Four properties:
 
    > `a_failed_flush_poisons_the_log_after_its_caller_gives_up` (in
    > `disk_log/tests/durability.rs`) drops a flush during a failing sync.
+   > `a_dropped_ring_flush_that_fails_still_poisons_the_log` and
+   > `a_later_flush_is_not_made_durable_past_an_earlier_one_still_in_the_ring`
+   > (in `disk_log/tests/cancelled_flush.rs`) drop a flush whose fsync is
+   > still in a stand-in ring, fail it afterwards, and in the second run a
+   > later flush whose fsync succeeds first.
+   > `a_dropped_uring_flush_that_fails_still_poisons_the_log` does the
+   > second through the real ring on Linux.
    > `a_failed_node_record_sync_is_not_retried` (in
    > `disk_log/tests/flush_failures.rs`) fails the file sync and then the
    > directory sync of each node record, and
@@ -756,6 +773,29 @@ Four properties:
    carries on as soon as the disk does. If the truncation itself fails, the
    writer no longer knows the file's length and refuses every later append
    and flush until a restart, when recovery repairs the tail as a torn one.
+
+   On Raft the entry cannot be refused, because openraft already holds it and
+   stops the member on any append error. So the Raft log holds the append and
+   writes it again, backing off up to a second, for up to a minute. Meanwhile
+   the entry is not reported written and the member answers nobody, so it
+   counts toward no majority. The publisher gets an outcome-unknown error
+   once its wait runs out, and the entry may still land once the disk takes
+   it. A failure that poisons the log (a failed rewind among them), or one
+   that lasts past the minute, goes to openraft and stops the member. A member
+   being shut down or moved gives up the held append at once, so its stop
+   does not wait out a full disk.
+
+   A stopped member does not wait for a restart. The broker closes it and,
+   once a probe write and fsync at the data root succeed, opens it again from
+   its directory the way a start does: the segments are scanned and a torn
+   tail repaired. A log a failed write left is the same copy again and catches
+   up from its leader. A poisoned log is never reopened as itself: it comes
+   back as a new copy id (the old directory is kept as `.kept`), so nothing
+   a failed fsync touched is read again. With other copies alive it catches
+   up from the group. With one copy, or when every copy rotated, the shard is
+   held until an operator re-forms it (`felixctl raft reform`) and serves
+   nothing meanwhile. See
+   `docs/per-shard-raft.md`, "A member that stops on a storage error".
 
 2. **Committed data is never silently discarded.** Corruption anywhere else is a
    startup error naming the shard, segment and byte position. Refusing to start
@@ -1773,7 +1813,12 @@ marks what it recovered at once. The cost is a window: a shard directory, or
 the whole root in the same run, put back to a state no older than the last
 mark write (about a second, up to about six while a mark write hangs) with
 no vote since is not caught. A failed write of `raft-marks` stops appends
-and votes for every shard on the root until the broker restarts. A write
+and votes for every shard on the root until the disk takes writes again. Then
+the file is rewritten whole from the marks as last synced, through a synced
+temporary, and the stopped members open again. Nothing is read back from the
+failed file and the failed write is not tried again: every mark queued behind
+the failure fails, so no caller told of the failure is later told its mark is
+synced. A write
 that hangs fails nothing: once the marks are five seconds old the batched
 shards' appends wait for the next batch, and votes wait on the same writer,
 so both resume when the disk does. Restoring a single shard
@@ -1856,7 +1901,7 @@ fail rather than print the wrong numbers.
 | `felix-broker-service --test open_file_limit` | a shard opened with no descriptors left fails with the open-file limit error, leaks none, does not serve while the held shard keeps serving, and opens once descriptors free up ; each step of the open, run out of descriptors in turn, leaves the shard opening (never failed) and the retry opens it |
 | `felix-broker/tests/durable_streams.rs` | ordering, restart, rejection without storage, durable vs non-durable isolation |
 | `felix-cluster --test backup` | a backup point taken under load is committed and misses nothing acknowledged before it (`a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it`), and a live copy restored to it keeps every earlier acknowledgement and nothing past it (`a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after`) |
-| `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds exactly what was acknowledged |
+| `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds every acknowledged record in order (on Raft a refused one may also land, once) |
 | `felix-cluster --test failures fsync::` | a real broker whose fsyncs are slow, fail with `EIO`, or fail once and then succeed, injected through `FELIX_STORAGE_FAULT_FILE`: a failed flush is never acknowledged, nor is anything after it on that log (see `docs/cluster-harness.md`) |
 
 ## Limits today

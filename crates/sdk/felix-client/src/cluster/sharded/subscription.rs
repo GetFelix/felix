@@ -319,6 +319,7 @@ async fn forward_shard(
                             shard,
                             &moved,
                             last_offset,
+                            feed.1.start_offset().or(feed.1.live_offset()),
                         )
                         .await
                     {
@@ -375,16 +376,23 @@ async fn forward_shard(
             // history the caller never asked for.
             let at = Some(match lag_resume_from {
                 Some(from) => StartPosition::Offset(from),
-                None => resume_after_loss(
+                None => resume_position(
                     last_offset,
                     moved_resume_from,
                     feed.1.start_offset().or(feed.1.live_offset()),
                 ),
             });
-            match cluster
-                .subscribe_shard_following_redirects(&tenant_id, &namespace, &stream, shard, at)
-                .await
-            {
+            // Every feed may have been opened on the entry connection, so
+            // when that is the one lost, the client moves to a broker that
+            // answers before asking again. Asking the dead one never succeeds.
+            let reopened = cluster
+                .reopen_after_loss(&feed.0, || {
+                    cluster.subscribe_shard_following_redirects(
+                        &tenant_id, &namespace, &stream, shard, at,
+                    )
+                })
+                .await;
+            match reopened {
                 Ok(next) => {
                     feed = next;
                     moved_resume_from = None;
@@ -422,22 +430,6 @@ fn trimmed_past(err: &anyhow::Error) -> Option<u64> {
     (cursor.reason == felix_wire::CursorErrorReason::TooOld).then_some(cursor.available)
 }
 
-/// Where a shard resumes after losing its feed.
-///
-/// Before anything was delivered, `started` is where the lost subscription
-/// began: resuming there keeps a record written during the gap, which `Latest`
-/// would skip because the tail moved while the shard was being re-established.
-fn resume_after_loss(
-    last_offset: Option<u64>,
-    resume_from: Option<u64>,
-    started: Option<u64>,
-) -> StartPosition {
-    match resume_position(last_offset, resume_from) {
-        StartPosition::Latest => started.map_or(StartPosition::Latest, StartPosition::Offset),
-        position => position,
-    }
-}
-
 /// Where a shard resumes after it fell behind: after the last event it
 /// delivered, or where it started if it delivered none.
 ///
@@ -456,6 +448,3 @@ fn resume_after_lag(
         .or(started)
         .unwrap_or(lagged.resume_from)
 }
-
-#[cfg(test)]
-mod tests;

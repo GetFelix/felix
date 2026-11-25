@@ -3,8 +3,9 @@
 use felix_storage::log::LogRecord;
 
 use super::Broker;
-use super::subscribe::committed_tail;
-use crate::error::{BrokerError, Result};
+use super::subscribe::{committed_tail, not_readable};
+use crate::error::{BrokerError, NotReadable, Result};
+use crate::stream::ReadBound;
 
 /// One page of [`Broker::read_range`].
 #[derive(Debug, Clone)]
@@ -22,11 +23,14 @@ impl Broker {
     /// `from` and stopping before `end`, about `max_bytes` of payload at most
     /// (a single larger record is still returned, alone).
     ///
-    /// Registers no subscriber and never waits: a page that reaches what is
+    /// Registers no subscriber and never waits for new records. On an
+    /// engine's log it first passes the engine's read barrier, so a publish
+    /// acknowledged before the read is readable. A page that reaches what is
     /// committed comes back short, or empty, with `next_offset` where to ask
     /// again. Only records that will stay are returned: on a `Quorum` shard
-    /// nothing at or past the committed mark, and under `FsyncMode::OnCommit`
-    /// nothing not yet synced.
+    /// nothing at or past the committed mark, on an engine's log nothing past
+    /// its commit, and otherwise under `FsyncMode::OnCommit` nothing not yet
+    /// synced.
     ///
     /// [`BrokerError::CursorTooOld`] when `from` is below what retention kept,
     /// [`BrokerError::CursorInFuture`] when it is past the log's tail,
@@ -71,12 +75,21 @@ impl Broker {
                 tail,
             });
         }
-        let readable = log.readable_end(committed_tail(
-            handle.state.read_bound(),
-            tail,
-            stream,
-            shard,
-        )?);
+        // On an engine's log only the engine says what is committed. While a
+        // shard closes or opens again its bound can fall back to `Unbounded`,
+        // and the raw tail of a follower holds entries that may yet be cut.
+        if handle.state.engine_log && handle.state.held.bound() == ReadBound::Unbounded {
+            return Err(not_readable(stream, shard, NotReadable::Refused));
+        }
+        let committed = committed_tail(handle.state.read_bound(), tail, stream, shard)?;
+        // An engine's bound is its commit, which a majority already holds.
+        // This member's own copy may still be unsynced, and cutting the page
+        // there hides a record whose publish was already answered (#3115).
+        let readable = if handle.state.engine_log {
+            committed
+        } else {
+            log.readable_end(committed)
+        };
         let stop = end.map_or(readable, |end| end.min(readable));
         if from >= stop || max_records == 0 {
             return Ok(ReadPage {
@@ -102,3 +115,6 @@ impl Broker {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

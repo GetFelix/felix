@@ -82,6 +82,11 @@ pub struct InspectedRaft {
     /// The commit index this member knows of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub committed: Option<u64>,
+    /// The brokers that vote in the group, by the latest membership this
+    /// member's log holds. A member that was removed does not hear of its
+    /// removal, so only a current member's list is the group's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voters: Vec<String>,
 }
 
 /// A shard's assignment: who leads it, who holds copies, and where a move is

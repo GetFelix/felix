@@ -211,10 +211,19 @@ impl ClusterSubscription {
             };
             let cluster = Arc::clone(&self.cluster);
             let last_offset = self.last_offset;
+            let started = self.started();
             let (tenant_id, namespace, stream, shard) = self.shard_key();
             self.pending = Some(Pending::spawn(Resubscribe::AfterMove, async move {
                 cluster
-                    .follow_moved_shard(&tenant_id, &namespace, &stream, shard, &moved, last_offset)
+                    .follow_moved_shard(
+                        &tenant_id,
+                        &namespace,
+                        &stream,
+                        shard,
+                        &moved,
+                        last_offset,
+                        started,
+                    )
                     .await
             }));
         }
@@ -236,9 +245,15 @@ impl ClusterSubscription {
     fn resume_point(&self) -> Option<StartPosition> {
         self.last_offset
             .map(|last| last.saturating_add(1))
-            .or(self.subscription.start_offset())
-            .or(self.subscription.live_offset())
+            .or(self.started())
             .map(StartPosition::Offset)
+    }
+
+    /// Where this subscription began, as the broker answered it.
+    fn started(&self) -> Option<u64> {
+        self.subscription
+            .start_offset()
+            .or(self.subscription.live_offset())
     }
 
     fn shard_key(&self) -> (String, String, String, u32) {
@@ -350,7 +365,9 @@ impl Client {
     }
 
     /// Subscribe to a shard on its new owner after `moved` ended the old
-    /// subscription, resuming where that one left off.
+    /// subscription, resuming where that one left off. `started` is where the
+    /// old subscription began; see [`resume_position`].
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn follow_moved_shard(
         &self,
         tenant_id: &str,
@@ -359,8 +376,9 @@ impl Client {
         shard: u32,
         moved: &ShardMoved,
         last_offset: Option<u64>,
+        started: Option<u64>,
     ) -> Result<(Arc<Connection>, Subscription)> {
-        let start = resume_position(last_offset, moved.resume_from);
+        let start = resume_position(last_offset, moved.resume_from, started);
         self.on_new_owner(moved, |first| {
             self.subscribe_shard_via(first, tenant_id, namespace, stream, shard, Some(start))
         })
@@ -425,22 +443,28 @@ impl Client {
     }
 }
 
-/// Where to resume a subscription whose shard moved, given the last offset it
-/// delivered and the broker's `resume_from`.
+/// Where to resume a subscription that moved or was lost, given the last
+/// offset it delivered, the broker's `resume_from`, and where it `started`.
 ///
 /// `resume_from` is the stream position: every record below it was offered to
 /// the subscriber. Taking the max with `last + 1` matters because a record
 /// fanned out just before the move can still reach the subscriber, putting
 /// `last + 1` past it. Records the subscriber's queue dropped stay dropped, as
-/// they would without a move. With neither, there is nothing to resume from,
-/// so the tail.
-pub(crate) fn resume_position(last_offset: Option<u64>, resume_from: Option<u64>) -> StartPosition {
+/// they would without a move. With neither (a deposed Raft leader's move, or a
+/// lost connection, before any event), it resumes where it started: `Latest`
+/// would skip whatever the new owner committed in between, with no offset jump
+/// to show it. The tail only when even that is unknown.
+pub(crate) fn resume_position(
+    last_offset: Option<u64>,
+    resume_from: Option<u64>,
+    started: Option<u64>,
+) -> StartPosition {
     let after_last = last_offset.map(|last| last.saturating_add(1));
     match (after_last, resume_from) {
         (Some(next), Some(from)) => StartPosition::Offset(next.max(from)),
         (None, Some(from)) => StartPosition::Offset(from),
         (Some(next), None) => StartPosition::Offset(next),
-        (None, None) => StartPosition::Latest,
+        (None, None) => started.map_or(StartPosition::Latest, StartPosition::Offset),
     }
 }
 

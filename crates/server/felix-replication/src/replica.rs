@@ -1618,7 +1618,9 @@ impl ReplicaHandler {
                 promise_sender(&log, correlation_id, &key, generation, sender, sealer).await
             }
             #[cfg(not(feature = "raft"))]
-            Some(_) => Some(seal::seal_refusal(correlation_id, &unreachable_seal())),
+            Some(_) => {
+                unreachable!("only the seal's fence passes a sealer, and this build has none")
+            }
         };
         if let Some(refusal) = accepted {
             return refusal;
@@ -2817,11 +2819,6 @@ async fn accept_sender(
             ))
         }
     }
-}
-
-#[cfg(not(feature = "raft"))]
-fn unreachable_seal() -> std::convert::Infallible {
-    unreachable!("only the seal's fence passes a sealer, and this build has none")
 }
 
 /// [`accept_sender`] for the seal's fence: the ballot and then the promise

@@ -89,7 +89,10 @@ async fn a_one_way_partition_from_the_leader_stops_quorum_acks_until_healed() {
     let cluster = Cluster::start(proxied_quorum_cluster())
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     cluster
         .publish_via(&leader, STREAM, b"before".to_vec())
         .await
@@ -133,16 +136,25 @@ async fn a_one_way_partition_from_the_leader_stops_quorum_acks_until_healed() {
 
 /// **A slow link slows the acknowledgement by at least its delay.** Each
 /// `Quorum` publish waits on a follower's round trip, so holding the
-/// leader's packets to both followers for 400ms makes every one of them take
+/// leader's packets to both followers for 400ms (120ms on Raft) makes every one of them take
 /// that long, and healing takes it away again.
 #[serial]
 #[tokio::test]
 async fn a_delayed_link_slows_quorum_acks_by_the_delay() {
-    const DELAY: Duration = Duration::from_millis(400);
+    // A Raft shard times every append out at its 200 ms heartbeat interval,
+    // so a slower link stops its commits altogether (#3101).
+    let delay = if felix_cluster::suite_runs_on_raft() {
+        Duration::from_millis(120)
+    } else {
+        Duration::from_millis(400)
+    };
     let cluster = Cluster::start(proxied_quorum_cluster())
         .await
         .expect("start");
-    let leader = cluster.owner(STREAM).await.expect("owner");
+    let leader = cluster
+        .serving_leader(STREAM, Duration::from_secs(30))
+        .await
+        .expect("serving leader");
     let baseline = publish_latency(&cluster, &leader).await;
 
     for follower in cluster.node_ids().into_iter().filter(|id| *id != leader) {
@@ -150,7 +162,7 @@ async fn a_delayed_link_slows_quorum_acks_by_the_delay() {
             .inject(&Fault::Delay {
                 from: Endpoint::node(&leader),
                 to: Endpoint::node(follower),
-                by: DELAY,
+                by: delay,
             })
             .await
             .expect("inject");
@@ -160,15 +172,15 @@ async fn a_delayed_link_slows_quorum_acks_by_the_delay() {
     publish_eventually(&cluster, &leader, "warm").await;
     let slow = publish_latency(&cluster, &leader).await;
     assert!(
-        slow >= DELAY,
-        "a Quorum publish over a link delayed {DELAY:?} took {slow:?}, against {baseline:?} before",
+        slow >= delay,
+        "a Quorum publish over a link delayed {delay:?} took {slow:?}, against {baseline:?} before",
     );
 
     cluster.heal_all().await.expect("heal");
     publish_eventually(&cluster, &leader, "after-healing").await;
     let fast = publish_latency(&cluster, &leader).await;
     assert!(
-        fast < DELAY / 2,
+        fast < delay / 2,
         "healing the delay left publishes slow: {fast:?}, against {baseline:?} before",
     );
     cluster.shutdown().await;

@@ -923,6 +923,42 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
     led.cluster.stop().await;
 }
 
+/// A leader no majority answers refuses a read once a heartbeat it asked
+/// for goes unanswered, not after the election timeout: a group call on a
+/// cut-off leader would otherwise hold its client that long per attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unanswered_read_on_a_lapsed_lease_is_refused_promptly() {
+    let election_max = Duration::from_secs(10);
+    let mut led = led_with(RuntimeConfig {
+        election_min: Duration::from_secs(8),
+        election_max,
+        ..timers()
+    })
+    .await;
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    // Past openraft's lease, so a read round answers that it lapsed.
+    tokio::time::sleep(election_max + Duration::from_millis(100)).await;
+    let started = tokio::time::Instant::now();
+    let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
+    let took = started.elapsed();
+    assert!(
+        matches!(unconfirmed, Err(CommitError::TimedOut { what: "read", .. })),
+        "{unconfirmed:?}"
+    );
+    let lease = timers().lease;
+    assert!(
+        took < lease + Duration::from_secs(1),
+        "the read waited {took:?} for a majority that was not there"
+    );
+    assert!(
+        matches!(unconfirmed, Err(CommitError::TimedOut { timeout, .. }) if timeout < election_max),
+        "the error names the election timeout, not the wait: {unconfirmed:?}"
+    );
+
+    led.heal();
+    led.cluster.stop().await;
+}
+
 /// A leader inside its lease passes the read barrier with no read-index
 /// round: no successor can have been elected, so no trim it lacks was
 /// answered. Cut off past its lease, it runs the round and is refused.
@@ -951,6 +987,39 @@ async fn a_leader_inside_its_lease_passes_the_read_barrier_with_no_round() {
     assert_eq!(group.lease_reads.load(Relaxed), served);
 
     led.heal();
+    led.cluster.stop().await;
+}
+
+/// A write answered on the leader's lease is not committed yet. A read that
+/// starts after that answer waits for it: here the answered entry is never
+/// written, so the barrier runs out instead of letting the read through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_after_a_lease_answer_waits_for_that_entry() {
+    let mut led = led().await;
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let group = runtime.group(&shard(0)).expect("group");
+    let mut leased = false;
+    for _ in 0..50 {
+        if led.engine.admit_local_ack(&shard(0), led.term).is_ok() {
+            leased = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(leased, "the leader never held its lease");
+    assert_eq!(runtime.read_barrier(&shard(0)).await, Ok(()));
+    let past = group.read_bound() + 5;
+    group
+        .admit_local_ack_of(Written {
+            end: past,
+            generation: led.term,
+        })
+        .expect("answered on the lease");
+    assert!(runtime.read_barrier(&shard(0)).await.is_err());
+    assert!(
+        led.engine.confirm_read(&shard(0), led.term).await.is_err(),
+        "a confirmed read must wait for the answered entry too"
+    );
     led.cluster.stop().await;
 }
 

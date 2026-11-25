@@ -45,7 +45,12 @@ read back or delivered on replay. Only a refusal before anything is written
 (an authorization, validation or idempotent-sequence error) means the record
 does not exist. A failed fsync also stops that shard's log: every later write
 to it fails until the broker restarts and recovery reads back what actually
-reached the disk.
+reached the disk. A per-shard Raft member does not wait for the restart: once
+the disk takes writes it reopens as a new copy (the old directory is kept
+as `.kept`). With other copies alive it catches up from its group. With one
+copy, or when every copy rotated, the shard is held until an operator
+re-forms it (`docs/per-shard-raft.md`, "Re-forming a group"); it never
+serves an empty log.
 
 > Held by `crates/server/felix-storage/src/disk_log/` recovery tests, including
 > `a_crash_before_the_header_is_written_leaves_the_log_openable`,
@@ -456,11 +461,15 @@ throughput rather than correctness.
   with no added latency. If a failed flush poisons a `Leader` stream's log,
   its readers stop at the last durable offset from then on: the batch whose
   flush failed was refused, and no reader sees it.
+  On Raft every level reads to the commit, and a `stream_read` sent after a
+  publish was acknowledged includes that record, on a member that has not
+  synced its own copy yet too: the commit already needed a majority to hold it.
 
   > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
-  > `a_promoted_leader_with_no_majority_yet_refuses_reads`.
+  > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
+  > `a_read_shows_a_committed_record_the_member_has_not_synced`.
 - **Replayed history is never dropped.** The overflow policy governs live
   records only. History below the join's `live_offset` is read off disk for
   that subscriber alone, so there is no publisher to protect: it waits for room

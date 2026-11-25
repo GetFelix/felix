@@ -53,9 +53,9 @@ pub mod wait;
 pub use cluster::{Assignment, Cluster};
 pub use config::{
     CacheSpec, ClusterConfig, StreamSpec, skip_on_raft_retire_with_hybrid, skip_on_raft_until,
-    skip_on_raft_until_moves_land,
+    skip_on_raft_until_moves_land, suite_runs_on_raft,
 };
 pub use controlplane::ControlPlane;
 pub use credentials::Credentials;
 pub use fault::{ClockFault, Endpoint, Fault, FsyncFault, WriteFault};
-pub use node::{BrokerNode, broker_binary, joint_fence_broker_env};
+pub use node::{BrokerNode, broker_binary, built_binary, joint_fence_broker_env};

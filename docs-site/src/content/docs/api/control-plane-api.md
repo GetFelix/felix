@@ -466,9 +466,12 @@ leader in one write, answered with step `raft_leader`, and gives a
 destination outside the set the leader's seat, answered with step
 `raft_replace`; the shard's group then changes its membership. That second
 kind is 409 `member_down` while a member is not serving, `set_unsettled`
-while the group's target for its current set is not stored, and
-`not_a_member` while the destination is still being added, and `single_member`
-for a one-member group, which cannot be moved yet. Under `replica_election`, a start is
+while the group's target for its current set is not stored,
+and `not_a_member` while the destination is still being added. A one-member
+group first grows to its leader and the destination; placement drops the old
+broker once the destination votes. Moving it back to the old broker before
+then is answered with step `raft_move_undone`, and is 409 `member_down` once
+the destination votes and is not serving. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for
 the leader to report it on both sets; a cancel drops that change and keeps
 the old set (`pending_set_cancelled`).

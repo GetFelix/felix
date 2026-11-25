@@ -246,9 +246,9 @@ impl felix_storage::CacheObserver for CacheWatchHub {
     /// Called with the shard's write lock held, so it must not block: every
     /// enqueue is a `try_send`, and a full queue (by entries or by bytes)
     /// ends that watcher rather than stalling the writer.
-    fn cache_changed(&self, change: felix_storage::CacheChange) {
+    fn cache_changed(&self, change: felix_storage::CacheChange) -> bool {
         if self.watching.load(Ordering::Acquire) == 0 {
-            return;
+            return false;
         }
         let key = (
             change.tenant_id,
@@ -258,7 +258,7 @@ impl felix_storage::CacheObserver for CacheWatchHub {
         );
         let mut shards = self.stripe(&key).lock();
         let Some(watchers) = shards.get_mut(&key) else {
-            return;
+            return false;
         };
         let event = CacheChangeEvent {
             key: change.key,
@@ -271,6 +271,7 @@ impl felix_storage::CacheObserver for CacheWatchHub {
         if watchers.is_empty() {
             shards.remove(&key);
         }
+        true
     }
 }
 

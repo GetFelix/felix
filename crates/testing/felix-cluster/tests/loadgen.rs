@@ -20,19 +20,8 @@ use serial_test::serial;
 use tokio::process::Command;
 
 fn loadgen_binary() -> Result<PathBuf> {
-    let mut dir = std::env::current_exe().context("locate the running executable")?;
-    dir.pop();
-    if dir.ends_with("deps") {
-        dir.pop();
-    }
-    let candidate = dir.join("felix-loadgen");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-    Err(anyhow!(
-        "felix-loadgen not found at {}; build it first with `cargo build -p felix-loadgen`",
-        candidate.display()
-    ))
+    felix_cluster::built_binary("felix-loadgen")
+        .map_err(|err| anyhow!("{err}; build it first with `cargo build -p felix-loadgen`"))
 }
 
 /// Async so the test's runtime keeps serving the in-process control plane
