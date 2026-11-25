@@ -375,3 +375,137 @@ async fn a_raft_root_under_an_unregistered_storage_id_stops_the_broker() {
     stop.cancel();
     members.shutdown().await;
 }
+
+/// Another engine that holds, leads and serves one shard, and names it as a
+/// backup member.
+struct HoldsOne(crate::shards::ShardKey);
+
+impl shard_routing::EngineShards for HoldsOne {
+    fn take<'a>(
+        &'a self,
+        _assignments: &'a mut felix_common::random::HashMap<
+            crate::shards::ShardKey,
+            shard_watch::ShardAssignment,
+        >,
+    ) -> std::pin::Pin<Box<dyn Future<Output = shard_routing::Taken> + Send + 'a>> {
+        Box::pin(async { shard_routing::Taken::new() })
+    }
+
+    fn dispatch(
+        &self,
+        _key: &crate::shards::ShardKey,
+        _nodes: &dyn Fn(&str) -> Option<std::net::SocketAddr>,
+    ) -> Option<shard_routing::Dispatch> {
+        Some(shard_routing::Dispatch::Local { generation: 7 })
+    }
+
+    fn serves_reads(&self, key: &crate::shards::ShardKey) -> bool {
+        *key == self.0
+    }
+
+    fn holds(&self, key: &crate::shards::ShardKey) -> bool {
+        *key == self.0
+    }
+
+    fn leads_unheard(&self, key: &crate::shards::ShardKey) -> bool {
+        *key == self.0
+    }
+
+    fn placed_elsewhere(&self, key: &crate::shards::ShardKey) -> bool {
+        *key == self.0
+    }
+
+    fn backup_members(&self) -> Vec<shard_routing::BackupMember> {
+        vec![shard_routing::BackupMember {
+            key: self.0.clone(),
+            incarnation: 1,
+            term: 7,
+            committed_end: None,
+            end_term: None,
+        }]
+    }
+
+    fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+
+    fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+    fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async { true })
+    }
+}
+
+/// **`GET /backup/offsets` on a clustered broker lists the members its
+/// other engine holds, through the engine check the node puts in front of
+/// it.** Built the way `node::run` builds it: `match_engines` wraps the
+/// engine in `EngineMatch` and hands the wrapper to the ingress router the
+/// endpoint reads. The wrapper once left `backup_members` to the trait's
+/// empty default, so every broker in a Raft cluster listed no member and
+/// `felixctl backup-point` fell back to asking placement's leader, which
+/// answered "not led there". The unit tests on the engine alone passed.
+#[tokio::test]
+async fn the_backup_endpoint_sees_the_members_behind_the_engine_check() {
+    let config = BrokerConfig {
+        membership: Some(MembershipConfig {
+            node_id: "broker-a".to_string(),
+            advertise_addr: "127.0.0.1:7001".to_string(),
+            client_advertise_addr: None,
+            kafka_advertise_addr: None,
+            region: "local".to_string(),
+            zone: None,
+            internal: false,
+            region_bridges: Vec::new(),
+            features: Default::default(),
+        }),
+        peer_transport: Some(peer::PeerTransportConfig::default()),
+        ..BrokerConfig::default()
+    };
+    let shutdown = CancellationToken::new();
+    let peers = connect_peers(&config, &shutdown).expect("peers").pool;
+    assert!(peers.is_some(), "the engine check needs a peer pool");
+    let cluster = shard_state(&config);
+    let ingress = cluster
+        .as_ref()
+        .map(|(_, ingress, _, _)| Arc::clone(ingress));
+    let marks = Arc::new(QuorumMarks::new());
+    let engine = Arc::new(shard_routing::StreamEngine::new(
+        Some(Arc::clone(&marks)),
+        ingress.clone(),
+    ));
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let key = crate::shards::ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: crate::shards::ShardKind::Stream,
+    };
+    let shards = RaftShards {
+        engine_shards: Some(Arc::new(HoldsOne(key.clone()))),
+        ..RaftShards::default()
+    };
+    let shards = match_engines(&config, &cluster, &peers, &broker, &engine, true, shards);
+    assert!(shards.engine_shards.is_some());
+
+    // Every question the routes ask reaches the engine through the check.
+    let router = ingress.as_ref().expect("ingress");
+    assert!(router.engine_holds(&key), "holds");
+    assert!(router.engine_serves_reads(&key), "serves_reads");
+    assert!(router.engine_leads_unheard(&key), "leads_unheard");
+    assert!(router.engine_placed_elsewhere(&key), "placed_elsewhere");
+    assert_eq!(router.engine_backup_members().len(), 1, "backup_members");
+
+    let offsets = crate::observability::backup::BackupOffsets {
+        node_id: Some("broker-a".to_string()),
+        broker,
+        ingress,
+        marks,
+    };
+    let answer = serde_json::to_value(offsets.collect().await).expect("json");
+    let members = answer["raft_members"].as_array().expect("raft_members");
+    assert_eq!(members.len(), 1, "{answer}");
+    assert_eq!(members[0]["name"], "orders");
+    assert_eq!(members[0]["term"], 7);
+    shutdown.cancel();
+}

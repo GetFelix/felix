@@ -267,6 +267,13 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
             .is_some_and(|inner| inner.placed_elsewhere(key))
     }
 
+    fn backup_members(&self) -> Vec<super::routing::BackupMember> {
+        self.inner
+            .as_ref()
+            .map(|inner| inner.backup_members())
+            .unwrap_or_default()
+    }
+
     fn serves_reads(&self, key: &ShardKey) -> bool {
         !(self.any_refused.load(Ordering::Acquire) && self.refused.lock().contains_key(key))
             && self

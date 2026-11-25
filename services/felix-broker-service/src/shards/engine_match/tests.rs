@@ -157,6 +157,34 @@ async fn the_feed_s_wake_is_handed_to_the_engine_behind() {
         fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
             let _ = self.0.set(wake);
         }
+
+        fn serves_reads(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn holds(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn leads_unheard(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn backup_members(&self) -> Vec<crate::shards::routing::BackupMember> {
+            Vec::new()
+        }
+
+        fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+        fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
+        fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            Box::pin(async { true })
+        }
     }
     let inner = Arc::new(Woken::default());
     let check = check_over(true, &[], Some(Arc::clone(&inner) as Arc<dyn EngineShards>)).await;

@@ -498,6 +498,36 @@ mod feed {
         ) -> Option<Dispatch> {
             None
         }
+
+        fn serves_reads(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn holds(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn leads_unheard(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
+            false
+        }
+
+        fn backup_members(&self) -> Vec<BackupMember> {
+            Vec::new()
+        }
+
+        fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+
+        fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+        fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
+        fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            Box::pin(async { true })
+        }
     }
 
     /// **A shard another engine took is never opened or routed by the
@@ -1546,6 +1576,32 @@ impl EngineShards for PlacedOn {
     fn holds(&self, _key: &ShardKey) -> bool {
         self.member
     }
+
+    fn serves_reads(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    fn leads_unheard(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    fn backup_members(&self) -> Vec<BackupMember> {
+        Vec::new()
+    }
+
+    fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+
+    fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+    fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async { true })
+    }
 }
 
 /// An ingress router on `broker-a` (us-west-2) whose shard 0 another engine
@@ -1693,6 +1749,28 @@ impl EngineShards for RemovedMember {
 
     fn placed_elsewhere(&self, _key: &ShardKey) -> bool {
         true
+    }
+
+    fn serves_reads(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    fn leads_unheard(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    fn backup_members(&self) -> Vec<BackupMember> {
+        Vec::new()
+    }
+
+    fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+
+    fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+    fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async { true })
     }
 }
 

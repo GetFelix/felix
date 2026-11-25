@@ -982,7 +982,11 @@ mechanism:
   placement names. Each broker lists every member it has open, not just
   the ones its copy id report holds (a member off placement or at an
   unproven epoch can still lead), and the collector decides which shards
-  are Raft ones again on every round (#2995). The point is read only from a member serving its term
+  are Raft ones again on every round (#2995). The list reaches
+  `/backup/offsets` through the engine check that wraps the Raft engine in
+  every cluster (`shards/engine_match.rs`), so `EngineShards` has no default
+  methods: a wrapper that forgot one would answer with nothing, as this one
+  once did for `backup_members`. The point is read only from a member serving its term
   at the newest term any member reports: a leader at an older term may be
   deposed without knowing it, and a new one knows the commit index only
   once it has committed in its own term. The point is one past the furthest

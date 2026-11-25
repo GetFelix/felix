@@ -1,1 +1,1 @@
-`felixctl backup-point` on a Raft cluster no longer fails with "not led there": brokers list every open Raft member in `/backup/offsets`, and the collector decides which shards are Raft ones again on every round.
+`felixctl backup-point` on a Raft cluster no longer fails with "not led there". The engine check in front of the Raft engine dropped its member list, so `/backup/offsets` listed no Raft member on any broker; it now passes the list through, brokers list every open Raft member, and the collector decides which shards are Raft ones again on every round.
