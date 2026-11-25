@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795602545816,
+  "lastUpdate": 1795602957370,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87318,6 +87318,72 @@ window.BENCHMARK_DATA = {
             "range": "111.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 368.00\nmean: 429.00\nstdev: 111.49\ncv: 25.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "07ac0c0258073818efd0ec9d22760da78ec1bb97",
+          "message": "fix(raft): a member started from the control-plane view votes under the pin rule (#3102) (#3156)\n\n* fix(raft): a member started from the control-plane view votes under the pin rule (#3102)\n\nWith FELIX_START_WITHOUT_CONTROLPLANE on and FELIX_UNIFIED_FENCE=0, a\nbroker restarted while the control plane is down opens its Raft members\non the run witness instead of waiting for the deferred restore check, so\ntwo live copies of three can elect. The members vote but do not stand,\nrestore leadership, take a transfer or form a group until the broker has\nregistered. A storage id rotation that finds the mark log open now stops\nit, so the deferred check's rotation leaves no marks under the new id.\n\nThe unified-fence default is unchanged: no Raft member opens before the\ncontrol plane has checked the directory.\n\nSpec-Unaffected: the restore gate, the run witness and the view start are not modelled under tla/; vote granting (FelixRaftLease MayGrant) is unchanged, only standing is held\n\n* docs(raft): an unregistered broker's member forms no group (#3102)\n\nSpec-Unaffected: documentation only",
+          "timestamp": "2026-11-25T02:26:53-08:00",
+          "tree_id": "3dedd12d1b35df3c8c49a5ee0ca3c2d55ccd16ff",
+          "url": "https://github.com/GetFelix/felix/commit/07ac0c0258073818efd0ec9d22760da78ec1bb97"
+        },
+        "date": 1795602944485,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.80\nstdev: 0.45\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 119,
+            "range": "12.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 124.60\nstdev: 12.01\ncv: 9.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 144,
+            "range": "763.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 144.00\nmean: 484.00\nstdev: 763.62\ncv: 157.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 88.00\nstdev: 1.41\ncv: 1.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "8.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 184.00\nstdev: 8.51\ncv: 4.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 417,
+            "range": "195.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 417.00\nmean: 432.40\nstdev: 195.72\ncv: 45.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
