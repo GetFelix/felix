@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795603584395,
+  "lastUpdate": 1795606300647,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87450,6 +87450,72 @@ window.BENCHMARK_DATA = {
             "range": "609.99",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1080.00\nmean: 1140.40\nstdev: 609.99\ncv: 53.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e65c2feec1b0430282f960092704e695e348a352",
+          "message": "fix(client): a plain publish refused before proposal is sent again (#3152) (#3155)\n\n* fix(client): a plain publish refused before proposal is sent again (#3152)\n\nA shard between leaders refuses a publish before it proposes anything, and\nsays so with its retry class. A plain publish made one attempt at the entry\nbroker, so the first publish to a fresh Raft stream could fail while the\nforming broker handed its first term to the placed leader.\n\nEvery plain publish kind now retries such a refusal under the reconnect\npolicy. An outcome-unknown answer, or one with no code, is still returned\nafter one attempt.\n\nSpec-Unaffected: client-side retry of refusals the broker made before proposing; no replicated state changes\n\n* test(cluster): a plain publish into a first-term hand-over lands once (#3152)\n\nPublishes to every shard of a fresh Raft stream without waiting for the\nhand-overs, and checks the acknowledged offsets are contiguous. Also\nregenerates the docs examples for the moved lines.\n\nSpec-Unaffected: tests and generated docs examples only\n\n* test(cluster): count each record on read-back, not gaps between offsets (#3152)\n\nA Raft stream offset is a log index, and a new leader's first entry takes\none, so acknowledged offsets are not contiguous across a hand-over. The\ntest now replays each shard and checks every payload is held once.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-25T11:25:12Z",
+          "tree_id": "d70718ad7b6f992490dfea144dd78431318ddeaf",
+          "url": "https://github.com/GetFelix/felix/commit/e65c2feec1b0430282f960092704e695e348a352"
+        },
+        "date": 1795606289790,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 65.00\nstdev: 0.71\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 89.40\nstdev: 0.89\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 114,
+            "range": "3.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 113.40\nstdev: 3.05\ncv: 2.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "8.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 87.80\nstdev: 8.14\ncv: 9.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 200,
+            "range": "279.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 332.40\nstdev: 279.74\ncv: 84.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 730,
+            "range": "751.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 730.00\nmean: 896.20\nstdev: 751.56\ncv: 83.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
