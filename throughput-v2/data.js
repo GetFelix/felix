@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795638238402,
+  "lastUpdate": 1795643362567,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69732,6 +69732,58 @@ window.BENCHMARK_DATA = {
             "range": "6735.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 786902.57\nmean: 785340.70\nstdev: 6735.35\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e35cd0499b0cd22af275ef5d00da3951bbb28b6e",
+          "message": "test(cluster): the deposed-leader MQTT test looks for the leader on every broker (#3181)\n\nThe paused leader is woken while placement still names it, so the\nmembership driver hands its seat back once it is live again. The final\nwait looked only among the two brokers that stayed up and timed out\nwhenever the publishers took longer than that hand-over to finish.\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-25T13:42:49-08:00",
+          "tree_id": "5bd28f3e77beb2856441ada9c0b234dcbd517b08",
+          "url": "https://github.com/GetFelix/felix/commit/e35cd0499b0cd22af275ef5d00da3951bbb28b6e"
+        },
+        "date": 1795643361600,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352448.54,
+            "range": "8882.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352448.54\nmean: 356336.93\nstdev: 8882.29\ncv: 2.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352448.54,
+            "range": "8882.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352448.54\nmean: 356336.93\nstdev: 8882.29\ncv: 2.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81183.84,
+            "range": "547.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81183.84\nmean: 81384.69\nstdev: 547.73\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811838.39,
+            "range": "5477.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811838.39\nmean: 813846.94\nstdev: 5477.31\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
