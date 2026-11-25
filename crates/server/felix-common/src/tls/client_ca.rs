@@ -23,13 +23,38 @@ pub struct ReloadingClientCa {
     current: ArcSwap<ClientTrust>,
 }
 
-/// A bundle [`ReloadingClientCa::saved`] set aside.
-pub struct SavedClientCa(Arc<ClientTrust>);
-
-struct ClientTrust {
+/// A CA bundle as read once: its certificates, the roots they make, and the
+/// client-certificate verifier built from those roots.
+pub struct ClientTrust {
     bundle: Vec<CertificateDer<'static>>,
     roots: Arc<RootCertStore>,
     verifier: Arc<dyn ClientCertVerifier>,
+}
+
+impl ClientTrust {
+    /// Read the bundle `var` names. Fails on an unreadable or empty one.
+    pub fn load(
+        var: &'static str,
+        path: &str,
+        provider: &Arc<CryptoProvider>,
+    ) -> Result<Self, TlsFileError> {
+        client_trust(var, path, provider)
+    }
+
+    /// The certificates in the bundle, as read.
+    pub fn bundle(&self) -> &[CertificateDer<'static>] {
+        &self.bundle
+    }
+
+    /// The roots the bundle holds.
+    pub fn roots(&self) -> &Arc<RootCertStore> {
+        &self.roots
+    }
+
+    /// A verifier that accepts client chains to these roots.
+    pub fn verifier(&self) -> &Arc<dyn ClientCertVerifier> {
+        &self.verifier
+    }
 }
 
 impl ReloadingClientCa {
@@ -55,38 +80,12 @@ impl ReloadingClientCa {
 
     /// Re-read the bundle. `Ok(true)` when it changed.
     pub fn reload(&self) -> Result<bool, TlsFileError> {
-        self.reload_checked(|_| Ok(()))
-    }
-
-    /// [`reload`](Self::reload), installing a changed bundle only if `accept`
-    /// passes its roots; otherwise the current one stays and this returns
-    /// [`TlsFileError::Refused`].
-    pub fn reload_checked(
-        &self,
-        accept: impl FnOnce(&RootCertStore) -> Result<(), String>,
-    ) -> Result<bool, TlsFileError> {
         let fresh = client_trust(self.var, &self.path, &self.provider)?;
         if fresh.bundle == self.current.load().bundle {
             return Ok(false);
         }
-        accept(&fresh.roots).map_err(|why| TlsFileError::Refused {
-            var: self.var,
-            path: self.path.clone(),
-            why,
-        })?;
         self.current.store(Arc::new(fresh));
         Ok(true)
-    }
-
-    /// The trust in force now, to put back with [`restore`](Self::restore).
-    pub fn saved(&self) -> SavedClientCa {
-        SavedClientCa(self.current.load_full())
-    }
-
-    /// Go back to `saved`. The next reload sees the bundle on disk as a
-    /// change again and re-checks it.
-    pub fn restore(&self, saved: SavedClientCa) {
-        self.current.store(saved.0);
     }
 
     /// Check the bundle every [`RELOAD_INTERVAL`], for ever. Callers race it
