@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795637147976,
+  "lastUpdate": 1795638233426,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88506,6 +88506,72 @@ window.BENCHMARK_DATA = {
             "range": "862.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 472.00\nmean: 921.80\nstdev: 862.28\ncv: 93.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64474812d595500d4326e7944531a585d6a5432c",
+          "message": "fix(groups): refuse a settle aimed at a log entry that is not a record (#2784) (#3175)\n\n* fix(groups): refuse a settle aimed at a log entry that is not a record (#2784)\n\nA poll passes over group entries (on Raft), generation starts, trim\nrecords and cut pieces without handing them out, which moves the\ntracker's high water past them. The settle paths checked only the high\nwater, so an ack for such an offset was answered ok. Every settle and\nextension now classifies the offset against the log first and refuses\none that holds no client record as never handed out.\n\nSpec-Unaffected: FelixRaftGroups models settles of handed-out records only; refusing a settle for an offset no poll hands out changes no modelled state\n\n* test(groups): write the generation start last in the settle test (#2784)\n\nA publish after an append outside the publish path waits on offsets the\nsequencer never handed out, so the mark goes after both records.\n\nSpec-Unaffected: test only\n\n* changelog: settles for log entries that are not records are refused (#2784)\n\nSpec-Unaffected: changelog only\n\n* test(cluster): ack the offsets a group poll handed out (#2784)\n\na_group_position_survives_a_leader_failover acked 0..n, assuming the\nrecords sit at offsets 0..n. On a Raft shard offset 0 is a log entry,\nwhose ack was answered ok by the bug this branch fixes.\n\nSpec-Unaffected: test only\n\n* fix(groups): read the log on a settle only when the group holds no claim (#2784)\n\nA claim is only ever made by a poll on a record, so a settle or extension\nfor an offset the group holds a claim on skips the classification read.\nThe tracker answers this under the same lock that records the inherited\ntail, so no extra read index on Raft.\n\nTests: every record of a producer batch (both engines) and of a whole\nconditional batch (Raft) is extended, acked and acked again; the cut\nbatch's pieces are refused.\n\nSpec-Unaffected: answers to a settle for a log entry, no modelled state changes",
+          "timestamp": "2026-11-25T20:16:51Z",
+          "tree_id": "2521ea9d74e7144f85656867c0de085dc55937fa",
+          "url": "https://github.com/GetFelix/felix/commit/64474812d595500d4326e7944531a585d6a5432c"
+        },
+        "date": 1795638201736,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.20\nstdev: 1.64\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 221,
+            "range": "7.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 221.00\nmean: 221.80\nstdev: 7.92\ncv: 3.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 299,
+            "range": "84.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 299.00\nmean: 332.80\nstdev: 84.06\ncv: 25.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 204,
+            "range": "3.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 204.80\nstdev: 3.19\ncv: 1.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 443,
+            "range": "168.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 443.00\nmean: 491.20\nstdev: 168.46\ncv: 34.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1503,
+            "range": "1086.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1503.00\nmean: 1646.00\nstdev: 1086.34\ncv: 66.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
