@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795643358450,
+  "lastUpdate": 1795643933669,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -88638,6 +88638,72 @@ window.BENCHMARK_DATA = {
             "range": "1092.69",
             "unit": "us",
             "extra": "trials: 5\nmedian: 609.00\nmean: 1070.60\nstdev: 1092.69\ncv: 102.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3cfb35ce0c89828fbffb679b75f051a7455b4717",
+          "message": "fix(storage): an io_uring fsync dropped unanswered poisons its log (#3047) (#3180)\n\nIf the io_uring service thread panicked, unwinding dropped each in-flight\nfsync's failure hook without running it. The hook owns the log's ring gate,\nso the gate came free with no poison and no answer, and the next flush found\nthe ring gone and fell back to sync_data on the same file. If the lost fsync\nhad failed, the fallback could succeed and mark records durable.\n\nOnFailure is now a guard. Once handed to the ring, dropping it unanswered\nruns the hook with an error, so the log is poisoned before the gate goes.\nA request the ring never took (no ring, no descriptor, send failed) is\nwithdrawn and releases the gate silently. InFlight fails itself on drop, and\nSubmission drops its hook before its reply, so the log stops before any\nwaiter hears.\n\nSpec-Unaffected: io_uring flusher failure handling is not modelled in TLA+",
+          "timestamp": "2026-11-25T13:42:59-08:00",
+          "tree_id": "f124ce0735d048422d1f5c76e14db33f88383a69",
+          "url": "https://github.com/GetFelix/felix/commit/3cfb35ce0c89828fbffb679b75f051a7455b4717"
+        },
+        "date": 1795643904927,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "5.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 107.00\nstdev: 5.10\ncv: 4.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 151,
+            "range": "12.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 156.80\nstdev: 12.62\ncv: 8.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 193,
+            "range": "12.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 193.00\nmean: 191.80\nstdev: 12.87\ncv: 6.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 126,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 125.80\nstdev: 1.10\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 267,
+            "range": "20.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 276.80\nstdev: 20.47\ncv: 7.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 628,
+            "range": "375.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 628.00\nmean: 716.20\nstdev: 375.05\ncv: 52.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
