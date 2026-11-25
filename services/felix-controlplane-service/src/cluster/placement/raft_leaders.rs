@@ -98,7 +98,7 @@ pub(super) fn raft_step<'a>(
         .map(String::as_str)
         .filter(|node| is_live(node) && !existing.learners.contains(*node))
         .collect();
-    let elected = elected(existing, &members, is_serving);
+    let elected = elected(existing, &members, is_serving, leaving);
     let degraded = existing.nodes().any(|node| !is_serving(node));
     // Before a swap: the swap waits on the down member anyway, and the
     // leader the group runs is the one that will make it.
@@ -169,12 +169,21 @@ pub(super) fn raft_step<'a>(
 
 /// The member a Raft shard's group reported electing
 /// ([`ShardAssignment::reported_leader`]), when placement may name it: a
-/// live voter in the set, serving, and not already named. A report naming
-/// anyone else is ignored, and placement chooses as if there were none.
+/// live voter in the set, serving, not leaving, and not already named. A
+/// report naming anyone else is ignored, and placement chooses as if there
+/// were none.
+///
+/// A broker the leave rules rename a leader away from (draining, internal,
+/// outside the stream's region) is never followed, even though the group
+/// cannot hand over from it while the set is degraded: following it would
+/// undo the leave rename on the next pass, and the drain must still name
+/// where the shard goes. `is_live` already rules those brokers out; the
+/// `leaving` check keeps it so if that changes.
 fn elected<'a>(
     existing: &ShardAssignment,
     members: &[&'a str],
     is_serving: &dyn Fn(&str) -> bool,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
 ) -> Option<&'a str> {
     let reported = existing.reported_leader()?;
     if reported == existing.leader {
@@ -184,12 +193,15 @@ fn elected<'a>(
         .iter()
         .copied()
         .find(|node| *node == reported)
-        .filter(|node| is_serving(node) && existing.may_be_voting(node))
+        .filter(|node| is_serving(node) && leaving(node).is_none() && existing.may_be_voting(node))
 }
 
-/// The write that names `to` leader, within this pass's budget. `failover`:
-/// the write follows the group rather than moving it, so a pause does not
-/// hold it.
+/// The write that names `to` leader, within this pass's budget.
+///
+/// `failover`: a pause does not hold the write. That is right for a down
+/// leader, which brokers forward to, and for naming the member the group
+/// elected: that write moves nothing and asks for no transfer, it records
+/// what the group already did. A pause holds moves, not the record of one.
 fn rename<'a>(
     existing: &'a ShardAssignment,
     to: &'a str,

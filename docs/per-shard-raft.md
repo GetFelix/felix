@@ -5576,7 +5576,11 @@ server (discovery, `felixctl`, dashboards) would point at a follower
   leading fewest, as before.
 - While any member of the set is down, a live placement leader that is not
   the reported one is renamed to it. That covers a rename made before the
-  report arrived.
+  report arrived. Both writes go ahead while placement is paused: they move
+  nothing and ask for no transfer, they record what the group did.
+- A reported broker the leave rules rename a leader away from (draining,
+  internal, or outside the stream's region) is not followed. Placement keeps
+  its own choice there, so the leave rename is not undone on the next pass.
 
 Nothing acts on this name in a way Raft does not judge. A member that leads
 hands over only through rule 2 to 6, a broker with no member forwards to

@@ -1918,7 +1918,8 @@ leadership transfer, which closes the shard for an election. Pausing placement h
 waits while a broker is down, as for the hybrid. While a member is down the
 group's leader does not hand over, so placement names the member the group
 reported electing ([per-shard-raft.md](per-shard-raft.md), "Leaders follow
-placement"). A down leader is renamed even
+placement"), even while paused: the write moves nothing and asks for no
+transfer, it only records what the group did. A down leader is renamed even
 while paused, as the hybrid still replaces a failed leader: a broker with no
 member forwards requests to the leader placement names, or, while that
 broker holds no voter yet (a move outside the set), to a voter the group's

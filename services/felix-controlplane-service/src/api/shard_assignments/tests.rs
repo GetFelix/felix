@@ -503,3 +503,22 @@ async fn a_withheld_view_says_so_and_an_open_one_does_not() {
     let old: RoutedShardAssignment = serde_json::from_value(json(&open)).expect("old");
     assert!(!old.targets_withheld);
 }
+
+/// The broker the group reported electing is for placement: brokers never
+/// read it, so the view they read leaves it out (#3041).
+#[tokio::test]
+async fn the_view_leaves_out_the_reported_leader() {
+    let fixture = fixture().await;
+    fixture.assign("broker-x").await;
+    let mut item = fixture.store.list_shard_assignments().await.expect("list")[0].clone();
+    item.raft_leader = Some(crate::model::RaftLeader {
+        incarnation: item.incarnation,
+        epoch: 0,
+        term: 3,
+        node: "broker-x".to_string(),
+    });
+    let view = super::routed(&Default::default(), item, Some(4));
+    let json = serde_json::to_value(&view).expect("json");
+    assert!(json.get("raft_leader").is_none(), "{json}");
+    assert!(json.get("leader").is_some(), "flattened: {json}");
+}

@@ -90,20 +90,51 @@ fn other_than(choice: &str) -> &'static str {
     }
 }
 
-/// Runs passes until one writes nothing, applying each write; returns the
-/// leader each write named.
-fn settle(mut existing: ShardAssignment, nodes: &[Node]) -> (ShardAssignment, Vec<String>) {
+/// `count` passes, each one's write fed back as the next one's record.
+/// Returns the record after the last pass, every leader a write changed to,
+/// and the last pass's decision.
+fn passes(
+    mut existing: ShardAssignment,
+    nodes: &[Node],
+    streams: &[Stream],
+    policy: &MovePolicy,
+    count: usize,
+) -> (ShardAssignment, Vec<String>, Decision) {
     let mut names = Vec::new();
-    for _ in 0..5 {
-        match named(&existing, nodes) {
-            Some(leader) => {
-                existing = crate::cluster::placement::raft_leaders::led_by(&existing, &leader);
-                names.push(leader);
+    let mut last = Decision::Kept;
+    for _ in 0..count {
+        let plan = plan_with(
+            streams,
+            &[],
+            nodes,
+            std::slice::from_ref(&existing),
+            &NothingCaughtUp,
+            policy.clone(),
+        );
+        last = plan.shards[0].decision.clone();
+        if let Decision::Move(_, written) = &last {
+            if written.leader != existing.leader {
+                names.push(written.leader.clone());
             }
-            None => return (existing, names),
+            existing = ShardAssignment {
+                raft_leader: existing.raft_leader.clone(),
+                ..written.clone()
+            };
         }
     }
-    panic!("placement never settled: {names:?}");
+    (existing, names, last)
+}
+
+/// [`passes`] over `orders` at RF 3 under [`raft`], until a pass writes
+/// nothing; panics if five do not get there.
+fn settle(existing: ShardAssignment, nodes: &[Node]) -> (ShardAssignment, Vec<String>) {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let (after, names, last) = passes(existing, nodes, &streams, &raft(), 5);
+    assert!(
+        !matches!(last, Decision::Move(..)),
+        "placement never settled: {names:?}"
+    );
+    (after, names)
 }
 
 #[test]
@@ -204,12 +235,22 @@ fn a_report_naming_a_non_voter_or_a_down_broker_is_ignored() {
 #[test]
 fn repeated_passes_do_not_flap() {
     let nodes = down(live(&ABC), &["broker-a"]);
+    let streams = vec![replicated_stream("orders", 1, 3)];
     let elected = other_than(&fewest_choice(&nodes));
-    let (mut existing, _) = settle(reported(formed("broker-a", &ABC), elected, 5), &nodes);
-    for _ in 0..10 {
-        assert_eq!(named(&existing, &nodes), None, "{existing:?}");
-        // Repeated reports at the same term from either member change nothing.
-        for node in ["broker-b", "broker-c"] {
+    let mut existing = reported(formed("broker-a", &ABC), elected, 5);
+    let mut changes = Vec::new();
+    for round in 0..10 {
+        let (after, names, _) = passes(existing, &nodes, &streams, &raft(), 1);
+        changes.extend(names);
+        existing = after;
+        // Reports at the same term from either member, in either order,
+        // change nothing.
+        let order = if round % 2 == 0 {
+            ["broker-b", "broker-c"]
+        } else {
+            ["broker-c", "broker-b"]
+        };
+        for node in order {
             existing.note_raft_leader(
                 node,
                 &crate::model::RaftFloorReport {
@@ -223,5 +264,88 @@ fn repeated_passes_do_not_flap() {
             );
         }
     }
+    assert_eq!(changes, vec![elected.to_string()]);
     assert_eq!(existing.leader, elected);
+}
+
+fn internal(mut node: Node) -> Node {
+    use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+    node.spec
+        .labels
+        .insert(NODE_ROLE_LABEL.to_string(), NODE_ROLE_INTERNAL.to_string());
+    node
+}
+
+/// The group elected a broker the leave rules rename a leader away from,
+/// while another member is down, so the group cannot hand over. Placement
+/// keeps its own choice instead of following the group: its leader changes
+/// at most once over many passes, and never back to the leaving broker.
+#[test]
+fn a_leaving_elected_broker_is_not_followed() {
+    let mut region = live(&ABC);
+    for node in &mut region {
+        node.spec.region = if node.node_id == "broker-a" {
+            "us"
+        } else {
+            "eu"
+        }
+        .to_string();
+    }
+    let homed = vec![Stream {
+        region: Some("eu".to_string()),
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let plain = vec![replicated_stream("orders", 1, 3)];
+    let no_bridges = MovePolicy {
+        regions: std::sync::Arc::new(felix_router::RegionRouter::with_bridges(
+            String::new(),
+            std::iter::empty(),
+        )),
+        ..raft()
+    };
+    let mut draining = live(&ABC);
+    draining[0].status.lifecycle = NodeLifecycle::Draining;
+    let mut internal_a = live(&ABC);
+    internal_a[0] = internal(internal_a[0].clone());
+    let cases = [
+        ("draining", draining, &plain, raft()),
+        ("internal", internal_a, &plain, raft()),
+        ("out of region", region, &homed, no_bridges),
+    ];
+    for (why, nodes, streams, policy) in cases {
+        let nodes = down(nodes, &["broker-c"]);
+        // Placement names a, as the group elected; and placement names b
+        // while the report says a.
+        for leader in ["broker-a", "broker-b"] {
+            let existing = reported(formed(leader, &ABC), "broker-a", 5);
+            let (after, names, last) = passes(existing, &nodes, streams, &policy, 6);
+            assert!(names.len() <= 1, "{why}, from {leader}: {names:?}");
+            assert_ne!(after.leader, "broker-a", "{why}, from {leader}");
+            assert!(!matches!(last, Decision::Move(..)), "{why}: {last:?}");
+        }
+    }
+}
+
+/// A follower on a draining broker is still swapped out when every member
+/// serves; while another member is down the swap waits, and a report
+/// naming the elected member is followed first.
+#[test]
+fn a_leaving_follower_is_swapped_unless_the_set_is_degraded() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let abcd = ["broker-a", "broker-b", "broker-c", "broker-d"];
+    let mut nodes = live(&abcd);
+    nodes[2].status.lifecycle = NodeLifecycle::Draining;
+    let existing = reported(formed("broker-a", &ABC), "broker-a", 5);
+    let (_, _, last) = passes(existing, &nodes, &streams, &raft(), 1);
+    assert!(
+        matches!(&last, Decision::Move(MoveStep::RaftReplace { from, .. }, _) if from == "broker-c"),
+        "{last:?}"
+    );
+
+    let nodes = down(nodes, &["broker-b"]);
+    let existing = reported(formed("broker-d", &abcd), "broker-a", 5);
+    let (after, names, last) = passes(existing, &nodes, &streams, &raft(), 6);
+    assert_eq!(names, vec!["broker-a".to_string()]);
+    assert_eq!(after.nodes().count(), 4, "the set stays");
+    assert!(matches!(last, Decision::Waiting(_)), "{last:?}");
 }
