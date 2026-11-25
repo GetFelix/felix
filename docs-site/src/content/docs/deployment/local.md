@@ -48,10 +48,13 @@ directory, with the tenant, namespace, client token and broker addresses.
 cluster. The [Quickstart](/getting-started/quickstart/) walks through
 them.
 
-Its brokers run the older hybrid shard engine for now
-([#2985](https://github.com/GetFelix/felix/issues/2985)). Run
-`FELIX_SHARD_ENGINE=raft cargo run --release -p felix-cluster -- up --nodes 3`
-to start them, and the control plane, on Raft.
+The brokers and the control plane run the Raft shard engine, the default on
+`main`: each shard is one Raft group. `up` creates the stream `orders` with one
+shard and one copy. To watch a shard replicate and fail over, give it three:
+
+```bash
+cargo run --release -p felix-cluster -- up --nodes 3 --replication-factor 3
+```
 
 The tool runs the broker binary from `target/`, which is why the broker is
 built first. Set `FELIX_CLUSTER_VERBOSE=1` to see the brokers' own logs.

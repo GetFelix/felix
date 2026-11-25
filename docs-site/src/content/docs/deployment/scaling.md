@@ -7,7 +7,7 @@ watch while they do. Applies to any deployment; the Kubernetes page has the
 chart-specific commands.
 
 :::caution[Not for shards on Raft]
-A durable stream shard on a broker started with `FELIX_SHARD_ENGINE=raft` does
+A durable stream shard on the Raft shard engine, the default on `main`, does
 not move. Its Raft group keeps the brokers it formed with, whatever placement
 says afterwards, so do not drain, remove or replace a broker that holds one.
 Membership changes are tracked in

@@ -107,28 +107,30 @@ task cluster:consistency
 
 **What it shows**
 
-Two streams identical but for `consistency`, both replicated three ways. The
-fault is a leader cut off from its replicas: followers frozen with `SIGSTOP`,
-so the leader is healthy and alone. Each stream's own followers are frozen in
-turn, so the run does not depend on the two streams sharing a leader.
+The same script runs twice, once per level, each on its own three-broker
+cluster with one stream replicated three ways. The brokers run the Raft shard
+engine. A publisher sends to the shard's leader every 20 ms and stops at its
+first unanswered publish. The leader is cut off from its followers while the
+publisher runs, then killed, and the two brokers left elect a new leader. The
+demo counts the acknowledged records the new leader does not hold.
 
-- **Quorum** refuses the write; the shard stays available. The refused record
-  may still be present, because it landed on the leader before the answer came
-  back. A refusal means "cannot be vouched for", not "did not happen".
-- **Leader** takes the write. The leader is then killed while the replicas are
-  still frozen, and **no replica is promoted**: opening the shard would drop a
-  record that was acknowledged. The shard is unavailable until the old leader
-  returns with its disk.
+- **Quorum** stops answering as soon as the leader is alone, so every
+  acknowledged record is on the new leader.
+- **Leader** keeps answering from the leader's own log until its lease runs
+  out (1.5 seconds by default). Those records were only on the old leader's
+  disk, and they are missing afterwards.
 
-Neither is data loss. `Leader` trades availability for latency and moves when
-you find out: publish time under Quorum, failover time under Leader.
+Both shards stay available. `Leader` trades the records its leader
+acknowledged alone for one round trip instead of two.
 
 **Notes**
 
-- Asserts both outcomes, and fails if a shard is ever served *without* a record
-  its leader acknowledged. That would be silent loss rather than unavailability.
-- Recovery is described, not demonstrated: the harness cannot restart a killed
-  broker yet.
+- Fails if the `Quorum` stream is missing an acknowledged record.
+- The missing `Leader` records are the last ones acknowledged, and their count
+  differs from run to run.
+- `FELIX_TEST_SHARD_ENGINE=hybrid task cluster:consistency` runs the older
+  engine's version, where a `Leader` shard goes unavailable instead, until
+  that engine is removed in 0.8.0.
 - The counterpart is `task cluster:failover`, which shows a quorum-acknowledged
   record surviving the loss of the broker that acknowledged it.
 

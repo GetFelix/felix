@@ -14,89 +14,85 @@ task cluster:consistency
 # slower, to read as it runs: task cluster:consistency -- --pace 3
 ```
 
-It starts a real three-node cluster with two streams that are identical except
-for `consistency`, both replicated three ways.
+It runs the same script twice, once per level. Each run starts a real
+three-node cluster with one stream, `orders`, replicated three ways. The
+brokers run the Raft shard engine, so the stream's shard is one Raft group of
+three members.
 
 ## The fault
 
-A leader **cut off from its replicas**. The followers are frozen with `SIGSTOP`,
-not killed, so the leader still believes they are there and keeps trying to
-ship to them. It is healthy, and alone.
+A publisher sends a record to the shard's leader every 20 ms and stops at the
+first publish that is not answered within a second. While it runs, the leader
+is **cut off from its two followers**. It keeps running and clients can still
+reach it, but no broker can. Then the leader is killed, the partition is
+healed, and the two brokers that are left elect one of themselves.
 
-Each stream's own followers are frozen in turn, so the run does not depend on
-the two streams happening to share a leader and cannot flake on where placement
-put them.
+The demo reads the whole stream back from the new leader and counts the
+records the publisher was told were written that are no longer there.
 
 ## What happens
 
-**Quorum refuses the write.** No majority is reachable, so the publish is not
-acknowledged, and the broker says exactly what it does and does not know:
+**Quorum stops answering.** A `Quorum` publish is acknowledged once a majority
+of the group holds it. A leader with no followers has no majority, so the
+first publish after the cut is never answered and the publisher stops. Every
+record it was told about is on the new leader:
 
 ```
-publish failed: the batch is durable here but did not reach a majority within 5s
+── Quorum: reading the stream back from <new leader>
+  All <n> acknowledged records are here.
 ```
 
-The publisher is told while it still holds the record. The shard stays
-available throughout.
-
-Note the shape of that message. It is not "the write failed": the batch *is*
-durable on the leader. The demo is careful about the same thing: the refused
-record may still be **present** afterwards, because it landed on the leader's
-log before the answer came back. That is not a bug. A refusal means *"this
-cannot be vouched for"*, not *"this did not happen"*, and a publisher that
-retries needs to expect a duplicate.
-
-**Leader takes the write, and then the shard goes unavailable.** The leader
-acknowledges from its own log alone. It is then killed while its replicas are
-still frozen, so they never receive the record.
-
-No replica is promoted. Both are alive and reachable, and the control plane
-still refuses:
+**Leader keeps answering, and those records are lost.** A `Leader` publish is
+acknowledged from the leader's own log while its lease holds (1.5 seconds by
+default, `FELIX_SHARD_RAFT_LEASE_MS`). For that long after the cut the leader
+goes on answering, and nothing it answers reaches another broker. When it is
+killed, those records go with it:
 
 ```
-the leader is gone and no replica holding this shard's log can take over
+── Leader: reading the stream back from <new leader>
+  <m> of <n> acknowledged records are gone: Leader-<first> to Leader-<last>.
+  <old leader> answered them alone, and they were only ever on its disk.
 ```
 
-Promoting either one would open the shard **without** a record that was
-acknowledged, and a reader could not tell the difference between "never
-published" and "lost". So the shard stays unavailable until the old leader
-returns with its disk.
+The demo fills in the broker names and the counts, which differ from run to
+run. What does not change is their shape: the
+missing records are the last ones acknowledged, with no gap before them. Once
+the lease runs out the leader answers a `Leader` publish as it would a
+`Quorum` one, so the loss is bounded by the lease.
 
 ## The point
 
-Neither outcome is data loss, and that is the part worth taking away.
+Both shards stay available. The two followers are a majority, so they elect a
+leader whichever level the stream has.
 
-`Leader` does not trade safety for latency. It trades **availability** for
-latency, and it moves the moment you find out:
-
-| | You learn about it | While you |
+| | Acknowledged when | A lost leader costs |
 |---|---|---|
-| **Quorum** | at publish time | still hold the record, and can retry |
-| **Leader** | at failover time | wait for a dead broker's disk |
+| **Quorum** | a majority holds the record | nothing that was acknowledged |
+| **Leader** | the leader has written it, while its lease holds | what it acknowledged alone |
 
 `Leader` is the default because one round trip beats two and most streams would
 rather have the latency than the guarantee. Set `consistency: Quorum` on the
-ones that would rather be refused.
+ones that must keep every acknowledged record across a failover.
 
 ## Its counterpart
 
 [`task cluster:failover`](/architecture/testing/#the-cluster-harness) is the other half:
 a quorum-acknowledged record **surviving** the loss of the broker that
-acknowledged it, read back from the replica promoted in its place. That one
-shows the guarantee working; this one shows what it costs and what happens
-without it.
+acknowledged it, read back from the broker elected in its place, while a
+client configured with one address keeps publishing.
 
 ## Honest limits
 
 - Three brokers on one machine. The fault is one a single machine can produce.
-- The demo asserts both outcomes and exits non-zero if either changes, in
-  particular if a shard is ever served **without** a record its leader
-  acknowledged, which would be silent loss rather than the unavailability shown
-  here.
-- Recovery is described but not demonstrated. The harness can restart a
-  killed broker over its data directory (`Cluster::restart_node`), but this demo
-  does not, so the shard coming back with the old leader's disk is not
-  something you watch happen here.
+- The demo exits non-zero if the `Quorum` stream is missing any acknowledged
+  record. It does not fail when the `Leader` stream loses none: a cut that
+  lands between two publishes can leave nothing answered alone, and the demo
+  says so when that happens.
+- The 0.7 releases replicate with an older engine, where the same fault makes
+  a `Leader` shard unavailable instead: no follower is promoted until the old
+  leader returns with its disk. `FELIX_TEST_SHARD_ENGINE=hybrid task
+  cluster:consistency` runs that version of the demo until the engine is
+  removed in 0.8.0.
 
 ## See also
 
