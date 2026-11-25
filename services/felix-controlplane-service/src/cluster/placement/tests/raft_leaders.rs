@@ -2,6 +2,7 @@
 //! with one write that changes only `leader`, and leaves failover to the
 //! group. The set changes one member at a time, through the group's
 //! membership target.
+use super::super::raft_leaders::RAFT_REPLACEMENTS_PER_PASS;
 use super::*;
 use crate::model::RaftTarget;
 use crate::store::ControlPlaneStore;
@@ -622,6 +623,361 @@ fn a_drain_replaces_a_raft_follower_with_a_broker_outside_the_set() {
             .map(|n| n.to_string())
             .collect()
     );
+}
+
+/// Shard `shard` of `stream` on `leader` and `followers`, with its target
+/// stored for that set and the group formed on it.
+fn seated(stream: &str, shard: u32, leader: &str, followers: &[&str]) -> ShardAssignment {
+    let mut assignment = member_of(shard, leader);
+    assignment.key.stream = stream.to_string();
+    assignment.replicas = followers.iter().map(|node| node.to_string()).collect();
+    settle(&mut assignment);
+    assignment
+}
+
+/// `assignment` as the group leaves it once its set change is done: the
+/// target stored for the set it names and every copy a reported voter.
+fn settle(assignment: &mut ShardAssignment) {
+    let members: BTreeMap<String, u64> = assignment.nodes().map(|n| (n.clone(), 7)).collect();
+    assignment.raft_target.as_mut().unwrap().members = members.clone();
+    assignment.raft_voters.as_mut().unwrap().members = members.clone();
+    assignment.raft_copy_ids = members;
+}
+
+fn pair_of(shard: u32, leader: &str, follower: &str) -> ShardAssignment {
+    seated("orders", shard, leader, &[follower])
+}
+
+/// Two shards of `orders` led by `broker-b` and one by `broker-c`, each on
+/// those two alone: `broker-a` holds no seat and leads two fewer.
+fn drained_a() -> Vec<ShardAssignment> {
+    vec![
+        pair_of(0, "broker-c", "broker-b"),
+        pair_of(1, "broker-b", "broker-c"),
+        pair_of(2, "broker-b", "broker-c"),
+    ]
+}
+
+/// **A broker back from a drain leads again (#3113).** The drain swapped it
+/// out of every set, so no member can take a leader off a broker that leads
+/// two more than it. Balance gives it a follower's seat and names it leader
+/// in one write; the group's leader stays a voter and hands over once the
+/// new copy votes.
+#[test]
+fn a_raft_leader_balances_onto_a_broker_that_holds_no_seat() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let existing = drained_a();
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    let moves: Vec<_> = plan.moves().collect();
+    assert_eq!(moves.len(), 1, "{plan:?}");
+    let (key, step, written) = moves[0];
+    let before = existing.iter().find(|a| &a.key == key).unwrap();
+    assert_eq!(before.leader, "broker-b");
+    assert_eq!(
+        step,
+        &MoveStep::RaftReplace {
+            from: "broker-c".to_string(),
+            to: "broker-a".to_string()
+        }
+    );
+    assert_eq!(written.leader, "broker-a");
+    assert_eq!(written.replicas, vec!["broker-b".to_string()]);
+    assert_eq!(written.raft_target, before.raft_target);
+
+    // Balanced once the write lands: the next pass moves nothing.
+    // Settled, so only balance can hold it back, not a stale target.
+    let after: Vec<ShardAssignment> = existing
+        .iter()
+        .map(|a| {
+            let mut a = if &a.key == key {
+                written.clone()
+            } else {
+                a.clone()
+            };
+            settle(&mut a);
+            a
+        })
+        .collect();
+    let again = plan_with(&streams, &[], &live(&ABC), &after, &NothingCaughtUp, raft());
+    assert_eq!(again.moves().count(), 0, "{again:?}");
+}
+
+/// The seat moves only on a settled set: one change at a time.
+#[test]
+fn a_raft_leader_balances_outside_its_set_only_once_the_set_settles() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let mut existing = drained_a();
+    for assignment in &mut existing {
+        assignment.raft_target = None;
+    }
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    let waiting: Vec<_> = plan.waiting().collect();
+    assert!(
+        !waiting.is_empty()
+            && waiting
+                .iter()
+                .all(|(_, why)| matches!(why, Blocked::TargetUnsettled)),
+        "{plan:?}"
+    );
+}
+
+/// The reasons every shard of `plan` waits, with no move made.
+fn only_waits(plan: &Plan) -> Vec<Blocked> {
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    plan.waiting().map(|(_, why)| why.clone()).collect()
+}
+
+/// Balance outside the set waits while a broker went down a moment ago,
+/// as every balance move does.
+#[test]
+fn a_raft_leader_balances_outside_its_set_only_while_nothing_recovers() {
+    const NOW: u64 = 10_000_000_000;
+    struct Clocked;
+    impl CaughtUp for Clocked {
+        fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+            false
+        }
+        fn as_of_millis(&self) -> Option<u64> {
+            Some(NOW)
+        }
+    }
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let mut nodes = live(&ABC);
+    let mut e = node("broker-e", NodeLifecycle::Down, None);
+    e.status.last_heartbeat_at_millis = NOW - 10_000;
+    nodes.push(e);
+
+    let plan = plan_with(&streams, &[], &nodes, &drained_a(), &Clocked, raft());
+
+    assert!(only_waits(&plan).contains(&Blocked::Recovering), "{plan:?}");
+}
+
+/// A swap is a joint change, which needs every member serving.
+#[test]
+fn a_raft_leader_balances_outside_its_set_only_with_every_member_serving() {
+    let streams = vec![replicated_stream("orders", 2, 2)];
+    let existing = vec![
+        pair_of(0, "broker-b", "broker-c"),
+        pair_of(1, "broker-b", "broker-c"),
+    ];
+    let mut nodes = live(&ABC);
+    nodes[2].status.lifecycle = NodeLifecycle::Down;
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    let waits = only_waits(&plan);
+    assert!(
+        !waits.is_empty() && waits.iter().all(|why| why == &Blocked::Recovering),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn a_paused_placement_balances_no_raft_leader_outside_its_set() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let policy = MovePolicy {
+        paused: true,
+        ..raft()
+    };
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &drained_a(),
+        &NothingCaughtUp,
+        policy,
+    );
+
+    assert!(only_waits(&plan).contains(&Blocked::Paused), "{plan:?}");
+}
+
+/// The swaps share the pass's budget of set changes: seventeen streams that
+/// each want one start sixteen.
+#[test]
+fn balancing_outside_raft_sets_takes_the_replacement_budget() {
+    let names: Vec<String> = (0..17).map(|n| format!("s{n:02}")).collect();
+    let streams: Vec<Stream> = names
+        .iter()
+        .map(|name| replicated_stream(name, 3, 2))
+        .collect();
+    let existing: Vec<ShardAssignment> = names
+        .iter()
+        .flat_map(|name| {
+            [
+                seated(name, 0, "broker-c", &["broker-b"]),
+                seated(name, 1, "broker-b", &["broker-c"]),
+                seated(name, 2, "broker-b", &["broker-c"]),
+            ]
+        })
+        .collect();
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    let swaps = plan
+        .moves()
+        .filter(|(_, step, _)| matches!(step, MoveStep::RaftReplace { .. }))
+        .count();
+    assert_eq!(swaps, RAFT_REPLACEMENTS_PER_PASS, "{plan:?}");
+    assert!(
+        plan.waiting().any(|(_, why)| why == &Blocked::MoveLimit),
+        "{plan:?}"
+    );
+}
+
+/// The store would refuse a set the reported voters hold no majority of,
+/// so placement waits instead of proposing it every pass.
+#[test]
+fn a_raft_leader_balances_outside_its_set_only_onto_a_set_the_voters_hold() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let mut existing = drained_a();
+    for assignment in &mut existing {
+        // `broker-b`'s copy is not the one the voters reported.
+        assignment.raft_copy_ids.insert("broker-b".to_string(), 8);
+    }
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ABC),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    assert!(only_waits(&plan).contains(&Blocked::Unapplied), "{plan:?}");
+}
+
+/// A broker at its shard limit takes no seat.
+#[test]
+fn a_raft_leader_balances_only_onto_a_broker_with_room() {
+    let streams = vec![replicated_stream("orders", 3, 2)];
+    let mut nodes = live(&ABC);
+    nodes[0].spec.capacity.max_shards = Some(0);
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &drained_a(),
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+}
+
+/// Four shards of `orders` on `broker-a`, `-b` and `-c`, `broker-a`
+/// leading two, and one shard of `extra` on `broker-c` alone, so `broker-c`
+/// holds the most copies. `broker-d` leads none and holds no seat.
+fn three_of_four() -> (Vec<Stream>, Vec<ShardAssignment>) {
+    let streams = vec![
+        replicated_stream("orders", 4, 3),
+        replicated_stream("extra", 1, 1),
+    ];
+    let existing = vec![
+        seated("orders", 0, "broker-a", &["broker-b", "broker-c"]),
+        seated("orders", 1, "broker-a", &["broker-b", "broker-c"]),
+        seated("orders", 2, "broker-b", &["broker-a", "broker-c"]),
+        seated("orders", 3, "broker-c", &["broker-a", "broker-b"]),
+        seated("extra", 0, "broker-c", &[]),
+    ];
+    (streams, existing)
+}
+
+fn zoned(id: &str, zone: &str) -> Node {
+    let mut n = node(id, NodeLifecycle::Live, None);
+    n.spec.zone = Some(zone.to_string());
+    n
+}
+
+/// The one swap the plan makes, as (from, to, new leader).
+fn the_swap(plan: &Plan) -> (String, String, String) {
+    let moves: Vec<_> = plan.moves().collect();
+    assert_eq!(moves.len(), 1, "{plan:?}");
+    match moves[0] {
+        (_, MoveStep::RaftReplace { from, to }, written) => {
+            (from.clone(), to.clone(), written.leader.clone())
+        }
+        other => panic!("expected a swap, got {other:?}"),
+    }
+}
+
+/// At RF 3 the busiest follower gives its seat up, never the leader.
+#[test]
+fn a_raft_leader_balances_outside_its_set_by_swapping_the_busiest_follower() {
+    let (streams, existing) = three_of_four();
+    let nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    let (from, to, leader) = the_swap(&plan);
+    assert_eq!((from.as_str(), to.as_str()), ("broker-c", "broker-d"));
+    assert_eq!(leader, "broker-d");
+}
+
+/// A swap that would put two of a set's three copies in one zone is not
+/// made, even for balance: nothing would spread the set again.
+#[test]
+fn a_raft_leader_balances_outside_its_set_only_where_the_set_keeps_its_zones() {
+    // `orders` alone: no broker leads two more in total than `broker-d`.
+    let (mut streams, mut existing) = three_of_four();
+    streams.retain(|stream| stream.stream == "orders");
+    existing.retain(|assignment| assignment.key.stream == "orders");
+    let nodes = vec![
+        zoned("broker-a", "z1"),
+        zoned("broker-b", "z2"),
+        zoned("broker-c", "z3"),
+        zoned("broker-d", "z1"),
+    ];
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+}
+
+/// The follower in the new broker's zone gives its seat up, though another
+/// holds more copies.
+#[test]
+fn a_raft_leader_balances_outside_its_set_by_swapping_within_a_zone() {
+    let (streams, existing) = three_of_four();
+    let nodes = vec![
+        zoned("broker-a", "z1"),
+        zoned("broker-b", "z2"),
+        zoned("broker-c", "z3"),
+        zoned("broker-d", "z2"),
+    ];
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+
+    let (from, to, _) = the_swap(&plan);
+    assert_eq!((from.as_str(), to.as_str()), ("broker-b", "broker-d"));
 }
 
 /// With no broker outside the set, a drained follower stays, and the shard

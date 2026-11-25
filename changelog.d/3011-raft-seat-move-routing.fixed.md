@@ -1,0 +1,1 @@
+- During an operator move of a Raft shard to a broker outside its set, requests no longer get `not_ready` while the destination joins. A broker that has no member, or whose member is not a voter yet and knows no leader, forwards to a voter the group's leader reported instead of to the destination placement names (#3011).
