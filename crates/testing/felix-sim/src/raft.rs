@@ -348,8 +348,34 @@ pub fn run_seed(seed: u64, config: RaftSimConfig) -> RaftOutcome {
     // The engine's maps take their hash keys from this, so they walk in the
     // same order every run.
     felix_common::jitter::sim::seed(seed);
+    // On a current-thread runtime only the blocking pool starts threads.
+    // Work there finishes in real time, so where it lands among the
+    // simulated tasks depends on how fast the machine is that day.
+    let real_threads = Arc::new(AtomicUsize::new(0));
+    builder.on_thread_start({
+        let started = real_threads.clone();
+        move || {
+            started.fetch_add(1, Ordering::Relaxed);
+        }
+    });
     let runtime = builder.build().expect("build the simulation runtime");
-    runtime.block_on(run(seed, config))
+    let mut outcome = runtime.block_on(run(seed, config));
+    if let Some(finding) = off_the_runtime(real_threads.load(Ordering::Relaxed)) {
+        outcome.findings.push(finding);
+    }
+    outcome
+}
+
+/// The finding for a run whose runtime started `threads` blocking-pool
+/// threads. Such a run is not the seed's run: it is one of the many the
+/// machine's speed picks from.
+fn off_the_runtime(threads: usize) -> Option<String> {
+    (threads > 0).then(|| {
+        format!(
+            "the run handed work to {threads} real thread(s) (tokio's blocking pool), so it \
+             does not replay: send that work through felix_common::blocking::spawn"
+        )
+    })
 }
 
 /// A member's data directory: a name on the in-memory filesystem.

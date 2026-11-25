@@ -276,7 +276,7 @@ impl MarkLog {
             return Ok(());
         }
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _vouching = vouching;
             #[cfg(test)]
             inner.vouch_writes.fetch_add(1, Ordering::Relaxed);
