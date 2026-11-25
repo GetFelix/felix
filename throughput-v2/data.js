@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795643937650,
+  "lastUpdate": 1795647380241,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69836,6 +69836,58 @@ window.BENCHMARK_DATA = {
             "range": "72168.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 979916.43\nmean: 948891.11\nstdev: 72168.62\ncv: 7.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9978120162430924c647acb3c972b71f836431a5",
+          "message": "test(quic): head_trim tests wait for the publish to reach the log (#3184)\n\nserve_durable_orders acks durable publishes on enqueue\n(FELIX_ACK_ON_COMMIT=false), so a trim sent right after the publish ack\ncould read the shard's tail before the batch was appended and be refused\nwith offset_mismatch tail 0. The head_trim session now offers commit acks\nwith offsets and checks the publish ack names offset 0, which the broker\nsends only after the write.\n\nSpec-Unaffected: test-only change, no broker behaviour changes",
+          "timestamp": "2026-11-25T22:48:44Z",
+          "tree_id": "78f413c4d36d55407a1fba5243df1fd22ee2aec7",
+          "url": "https://github.com/GetFelix/felix/commit/9978120162430924c647acb3c972b71f836431a5"
+        },
+        "date": 1795647379450,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 511759.9,
+            "range": "22996.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511759.90\nmean: 504648.34\nstdev: 22996.75\ncv: 4.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 511759.9,
+            "range": "22996.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511759.90\nmean: 504648.34\nstdev: 22996.75\ncv: 4.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122996.8,
+            "range": "1240.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122996.80\nmean: 122529.62\nstdev: 1240.81\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1229968.04,
+            "range": "12408.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1229968.04\nmean: 1225296.24\nstdev: 12408.10\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
