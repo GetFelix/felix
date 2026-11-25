@@ -392,6 +392,33 @@ mod engine_log {
         assert_eq!((first, delivered), (3, payloads(&["3", "4"])));
     }
 
+    /// **A shard still settling refuses every join, not only `Latest`.**
+    /// It knows nothing committed yet, so a live offset at the raw tail
+    /// would count uncommitted records as already written (#3129).
+    #[tokio::test]
+    async fn a_settling_shard_refuses_every_join() {
+        use crate::error::{BrokerError, NotReadable};
+
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 5).await;
+        let (broker, _) = broker(ReadBound::Settling).await;
+        let _handle = open(&broker, &log).await;
+        for start in [
+            StartPosition::Latest,
+            StartPosition::Earliest,
+            StartPosition::Offset(2),
+        ] {
+            match broker.subscribe_from("t1", "ns", "orders", 0, start).await {
+                Err(BrokerError::NotReadable {
+                    reason: NotReadable::Settling,
+                    ..
+                }) => {}
+                Err(err) => panic!("{start:?}: {err}"),
+                Ok(_) => panic!("{start:?} joined a settling shard"),
+            }
+        }
+    }
+
     /// **What it holds survives this broker being deposed.** A batch joins
     /// the hold only after its engine committed it, so the hybrid's "drop
     /// what is held" would lose a committed record from live delivery.

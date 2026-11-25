@@ -652,9 +652,12 @@ async fn resolve_position(
     // caught up would wait at it for an event that never comes. On an
     // engine's log that is the committed tail: records past it reach the
     // subscriber live once they commit, so they count as written after.
-    let edge = match bound {
-        ReadBound::Committed(mark) if stream_state.engine_log => mark.min(tail).max(requested),
-        _ => tail,
+    // A shard still settling knows nothing committed yet, so it is refused
+    // here as `Latest` is, rather than reported at the raw tail.
+    let edge = if stream_state.engine_log {
+        committed_tail(bound, tail, stream, shard)?.max(requested)
+    } else {
+        tail
     };
     let live = match &durable {
         Some(log) => log.event_end(joined, edge).await?,
