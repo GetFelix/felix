@@ -6194,6 +6194,14 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   in a queue or on the network can commit after the retire, and without the
   floor it would be applied a second time. The snapshot holds each
   producer's floor and kept answers.
+- **A watched entry changes nothing a read or a write sees.** It moves the
+  log's time to its stamp, as every stamped entry does, and changes no
+  key, answer or floor. What a member records because of it is that
+  member's own memory, kept out of the snapshot and out of every answer,
+  so two members that applied the same entries hold the same state
+  whether or not they record. A build that predates the entry stops at
+  it, as at any cache entry it cannot read; skipping it is never safe in
+  general, so no entry kind is skipped.
 
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").
@@ -6270,24 +6278,35 @@ on the hybrid.
   watch is handed. That edge is the member's own, so a follower that is
   behind can hand a retained watch a value older than one the client just
   read from the leader. The newer value is committed and arrives as a
-  change once the follower applies it; nothing is lost. A member keeps
-  its latest applied changes in memory while it serves a watch of the
-  shard and for five minutes after (in the log's time), long enough for a
-  client to reconnect after a dropped connection or a broker failover. It
-  starts at the first change a watch of the shard took, or at the live
-  edge when one ends, and keeps up to 4096 changes or 1 MiB per shard,
-  counting each change's key, value and slot (`raft/cache/recent.rs`). A
-  member that has not served a watch of the shard in that window keeps
-  nothing and pays nothing extra per write; its tick frees what an idle
-  shard kept. A client that resumes on a member that kept nothing for the
-  shard, such as one it never watched on, is resnapshotted. A resume
+  change once the follower applies it; nothing is lost. Every member
+  keeps its latest applied changes in memory while the shard is watched
+  anywhere in the group, so a client that reconnects to another member
+  after a dropped connection or a broker failover, the new leader
+  included, is replayed. A member that serves a watch has the group's
+  leader append a watched entry when the watch joins, takes a change or
+  ends: the leader appends it itself, and a follower asks its leader with
+  the `Watched` peer message, again every 10 s until one is applied.
+  Every member that applies the entry records from that entry on, until
+  ten minutes past its stamp (in the log's time). The leader appends
+  another only once the last has less than five minutes left, so a
+  watched shard costs one entry about every five minutes and an unwatched
+  one costs none. A member that serves a watch also records from the
+  first change the watch took, and for five minutes after it ends. A
+  member keeps up to 4096 changes or 1 MiB per shard, counting each
+  change's key, value and slot (`raft/cache/recent.rs`). A member that is
+  not recording keeps nothing and pays nothing extra per write; its tick
+  frees what an idle shard kept. Where a member's recording starts is its
+  floor: every change from there on is kept, so a resume from below it,
+  for example from before the first watched entry, or on a member that
+  is not recording, is resnapshotted. A resume
   whose offset is still kept is replayed `[from_offset, edge)` from them,
   deletes included, exactly as the hybrid replays its log, then joins live
   delivery. One from below the oldest kept change is answered with
   `resnapshot` and each key's current value, read after the member has
   applied every put acknowledged before the watch began. A snapshot
   install starts the kept changes empty, past the snapshot's entry, and a
-  restart keeps none, so a resume from before either resnapshots. A value
+  restart keeps none until it applies a watched entry again, so a resume
+  from before either resnapshots. A value
   bigger than the byte bound still reaches live watches, and moves the
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to

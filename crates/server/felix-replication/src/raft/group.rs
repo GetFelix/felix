@@ -2513,6 +2513,7 @@ impl Group {
     ) -> Option<(u64, Vec<(String, super::cache::Watched)>)> {
         let cache = self.cache.as_ref()?;
         self.watch_signal.saw();
+        self.signal_watched();
         let state = cache.read();
         Some((state.applied() + 1, state.watched_entries(keep)))
     }
@@ -2528,6 +2529,7 @@ impl Group {
     ) -> Option<(u64, Option<Vec<super::cache::Change>>)> {
         let cache = self.cache.as_ref()?;
         self.watch_signal.saw();
+        self.signal_watched();
         let state = cache.read();
         Some((state.applied() + 1, state.recent_since(from, keep)))
     }
@@ -2538,12 +2540,14 @@ impl Group {
         if let Some(cache) = &self.cache {
             self.watch_signal.saw();
             cache.write().watch_ended((self.clock)());
+            self.signal_watched();
         }
     }
 
     /// If a watch here was active since the applied state last held a
     /// fresh mark, have one appended: this member's own when it leads, or
-    /// its leader's when asked. Asked again every [`MARK_RETRY_MICROS`]
+    /// its leader's when asked. Called when a watch joins or ends, on each
+    /// applied run and on the tick. Asked again every [`MARK_RETRY_MICROS`]
     /// until a mark is applied here, so a lost ask or a failover costs a
     /// retry, never a member that silently stops recording. An unwatched
     /// shard never gets past the first load.
@@ -2743,7 +2747,12 @@ impl Group {
         self.runtime.spawn(async move {
             loop {
                 let wait = match group.upgrade() {
-                    Some(group) => group.expire().await,
+                    Some(group) => {
+                        // Here as well as on the tick: an idle follower
+                        // hearing its leader is not ticked.
+                        group.signal_watched();
+                        group.expire().await
+                    }
                     None => return,
                 };
                 let due = async {

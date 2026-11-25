@@ -565,3 +565,228 @@ async fn a_resume_replays_from_its_offset_and_joins_live_with_no_gap_or_duplicat
     assert_eq!(delivered, wanted, "a gap or a duplicate at the join");
     cluster.stop().await;
 }
+
+/// **A Watched entry starts recording at its own index on a member no watch
+/// is served on**, keeps it going for its whole life whatever the member's
+/// watches do, and a resume from below it resnapshots. The leader is asked
+/// for another only once the last has less than a window left.
+#[test]
+fn a_mark_records_from_its_entry_for_its_life() {
+    use super::super::super::cache::WINDOW_MICROS;
+    let mark = 2 * WINDOW_MICROS;
+    let mut state = CacheState::default();
+    assert!(state.wants_mark(0));
+    state.apply(1, 100, &put("k", b"one", 1));
+    state.apply(2, 100, &CacheCommand::Watched);
+    assert!(!state.wants_mark(100));
+    assert!(state.wants_mark(101 + WINDOW_MICROS));
+    state.apply(3, 100, &put("k", b"two", 2));
+    state.apply(4, 99 + mark, &delete("k", None, 3));
+    assert!(state.recent_since(1, &|_| true).is_none(), "below the mark");
+    let kept = state.recent_since(2, &|_| true).expect("from the mark");
+    assert_eq!(offsets_of(&kept), vec![3, 4]);
+    assert!(state.recent_since(3, &|_| true).is_some());
+    state.apply(5, 101 + mark, &put("k", b"three", 4));
+    assert!(
+        state.recent_since(2, &|_| true).is_none(),
+        "past the mark's life"
+    );
+}
+
+/// **A member that installs a snapshot, or restarts and applies its log
+/// again, mid-window claims no change it does not hold**: an install
+/// forgets what was kept, and a restart records again only from a mark it
+/// applies, from that mark's entry on.
+#[tokio::test]
+async fn an_install_or_a_restart_mid_mark_keeps_a_true_floor() {
+    use openraft::storage::RaftStateMachine;
+    let dir = tempdir().expect("dir");
+    let recorder = Recorder::new();
+    recorder.watching.store(false, Ordering::Release);
+    let marked = |index: u64| match index {
+        2 | 7 => CacheCommand::Watched,
+        _ => keyed(index, 2),
+    };
+    {
+        let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+        machine.apply(entries(1, 4, marked)).await.expect("apply");
+        let kept = cache.read().recent_since(2, &|_| true).expect("marked");
+        assert_eq!(offsets_of(&kept), vec![3, 4]);
+        let mut sent = CacheState::default();
+        sent.apply(5, 50, &put("k", b"sent", 5));
+        install(&mut machine, 5, &sent).await;
+        for from in [2, 5, 6] {
+            assert!(cache.read().recent_since(from, &|_| true).is_none());
+        }
+    }
+    // openraft applies the log above the snapshot again on a restart.
+    let (mut machine, cache) = watched_machine(dir.path(), &recorder).await;
+    machine.apply(entries(6, 6, marked)).await.expect("apply");
+    assert!(cache.read().recent_since(6, &|_| true).is_none());
+    machine.apply(entries(7, 8, marked)).await.expect("apply");
+    assert!(cache.read().recent_since(6, &|_| true).is_none());
+    let kept = cache.read().recent_since(7, &|_| true).expect("marked");
+    assert_eq!(offsets_of(&kept), vec![8]);
+}
+
+fn wall_clock() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_micros() as u64
+}
+
+/// A cluster whose members report to recorders that serve no watch.
+async fn unwatched_cluster() -> (Cluster, HashMap<&'static str, Arc<Recorder>>) {
+    let mut cluster = Cluster::new(true);
+    let recorders: HashMap<&str, Arc<Recorder>> = BROKERS
+        .iter()
+        .map(|broker| {
+            let recorder = Recorder::new();
+            recorder.watching.store(false, Ordering::Release);
+            (*broker, recorder)
+        })
+        .collect();
+    for broker in BROKERS {
+        cluster
+            .runtime(broker)
+            .report_cache_changes(Arc::clone(&recorders[broker]) as Arc<dyn CacheObserver>);
+    }
+    cluster.form(N).await;
+    (cluster, recorders)
+}
+
+/// Wait until every member applied a mark: each records from its edge.
+async fn every_member_records(cluster: &Cluster) {
+    eventually(|| {
+        BROKERS
+            .iter()
+            .all(|broker| {
+                let group = cluster.runtime(broker).group(&shard(N)).expect("group");
+                let state = group.cache().read();
+                state.recent_since(state.applied() + 1, &|_| true).is_some()
+            })
+            .then_some(())
+    })
+    .await;
+}
+
+/// Five puts after the mark, the first of which is where a client resumes.
+async fn writes_after_the_mark(cluster: &Cluster, now: u64) -> Vec<u64> {
+    let mut written = Vec::new();
+    for n in 0..5 {
+        written.push(write(cluster, now + 10 + n, put("k", b"more", 10 + n)).await);
+    }
+    cluster
+        .committed_everywhere(N, *written.last().expect("writes"))
+        .await;
+    written
+}
+
+fn replayed_offsets(replay: &crate::raft::CacheReplay) -> Option<Vec<u64>> {
+    let changes = replay.changes.as_ref()?;
+    Some(changes.iter().map(|change| change.offset).collect())
+}
+
+/// **A watch of the leader that resumes on the new leader after a failover
+/// is replayed**, exactly the changes from its offset on, because the
+/// leader appended a mark when its watch took a change and the follower
+/// that took over recorded from it. A resume from before the mark
+/// resnapshots.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_on_a_new_leader_after_a_failover_is_replayed() {
+    let (mut cluster, recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let before = write(&cluster, now, put("k", b"zero", 1)).await;
+    cluster.committed_everywhere(N, before).await;
+    let old = cluster.elected(N).await;
+    recorders[&*old.broker]
+        .watching
+        .store(true, Ordering::Release);
+    write(&cluster, now + 1, put("k", b"one", 2)).await;
+    every_member_records(&cluster).await;
+    let written = writes_after_the_mark(&cluster, now).await;
+
+    cut_off(&cluster, &old.broker);
+    let (engine, second) = leading(&cluster).await;
+    assert_ne!(second.member, old);
+    let resumed = engine
+        .cache_replay(&shard(N), written[0], &|_| true)
+        .expect("a cache group");
+    assert_eq!(
+        replayed_offsets(&resumed),
+        Some(written),
+        "the new leader kept no changes for the resume"
+    );
+    let early = engine
+        .cache_replay(&shard(N), before, &|_| true)
+        .expect("a cache group");
+    assert!(
+        early.changes.is_none(),
+        "below the floor, not resnapshotted"
+    );
+    cluster.stop().await;
+}
+
+/// **A watch served by a follower has the leader mark the shard**, so a
+/// resume on the other follower, which served no watch, is replayed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_watch_on_a_follower_makes_every_member_record() {
+    let (mut cluster, recorders) = unwatched_cluster().await;
+    let leader = cluster.elected(N).await;
+    let mut followers = BROKERS.iter().filter(|broker| **broker != &*leader.broker);
+    let (watched, other) = (
+        followers.next().expect("one"),
+        followers.next().expect("two"),
+    );
+    recorders[watched].watching.store(true, Ordering::Release);
+    let now = wall_clock();
+    write(&cluster, now, put("k", b"one", 1)).await;
+    every_member_records(&cluster).await;
+    let written = writes_after_the_mark(&cluster, now).await;
+
+    let engine = RaftEngine::new(cluster.runtime(other));
+    let resumed = engine
+        .cache_replay(&shard(N), written[0], &|_| true)
+        .expect("a cache group");
+    assert_eq!(replayed_offsets(&resumed), Some(written));
+    cluster.stop().await;
+}
+
+/// **An unwatched shard gets no mark**: no member records and the log
+/// holds only the writes, however often the groups are ticked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unwatched_shard_appends_no_mark() {
+    let (mut cluster, _recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let mut last = 0;
+    for n in 0..5 {
+        last = write(&cluster, now + n, put("k", b"v", 1 + n)).await;
+    }
+    cluster.committed_everywhere(N, last).await;
+    for _ in 0..5 {
+        for broker in BROKERS {
+            cluster
+                .runtime(broker)
+                .group(&shard(N))
+                .expect("group")
+                .tick()
+                .await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for broker in BROKERS {
+        let group = cluster.runtime(broker).group(&shard(N)).expect("group");
+        let state = group.cache().read();
+        assert_eq!(
+            state.applied(),
+            last,
+            "{broker} applied an entry past the writes"
+        );
+        assert!(
+            state.recent_since(last + 1, &|_| true).is_none(),
+            "{broker} records an unwatched shard"
+        );
+    }
+    cluster.stop().await;
+}
