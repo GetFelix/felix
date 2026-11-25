@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795637153167,
+  "lastUpdate": 1795638238402,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -69680,6 +69680,58 @@ window.BENCHMARK_DATA = {
             "range": "15714.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 783123.65\nmean: 788746.07\nstdev: 15714.15\ncv: 1.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64474812d595500d4326e7944531a585d6a5432c",
+          "message": "fix(groups): refuse a settle aimed at a log entry that is not a record (#2784) (#3175)\n\n* fix(groups): refuse a settle aimed at a log entry that is not a record (#2784)\n\nA poll passes over group entries (on Raft), generation starts, trim\nrecords and cut pieces without handing them out, which moves the\ntracker's high water past them. The settle paths checked only the high\nwater, so an ack for such an offset was answered ok. Every settle and\nextension now classifies the offset against the log first and refuses\none that holds no client record as never handed out.\n\nSpec-Unaffected: FelixRaftGroups models settles of handed-out records only; refusing a settle for an offset no poll hands out changes no modelled state\n\n* test(groups): write the generation start last in the settle test (#2784)\n\nA publish after an append outside the publish path waits on offsets the\nsequencer never handed out, so the mark goes after both records.\n\nSpec-Unaffected: test only\n\n* changelog: settles for log entries that are not records are refused (#2784)\n\nSpec-Unaffected: changelog only\n\n* test(cluster): ack the offsets a group poll handed out (#2784)\n\na_group_position_survives_a_leader_failover acked 0..n, assuming the\nrecords sit at offsets 0..n. On a Raft shard offset 0 is a log entry,\nwhose ack was answered ok by the bug this branch fixes.\n\nSpec-Unaffected: test only\n\n* fix(groups): read the log on a settle only when the group holds no claim (#2784)\n\nA claim is only ever made by a poll on a record, so a settle or extension\nfor an offset the group holds a claim on skips the classification read.\nThe tracker answers this under the same lock that records the inherited\ntail, so no extra read index on Raft.\n\nTests: every record of a producer batch (both engines) and of a whole\nconditional batch (Raft) is extended, acked and acked again; the cut\nbatch's pieces are refused.\n\nSpec-Unaffected: answers to a settle for a log entry, no modelled state changes",
+          "timestamp": "2026-11-25T20:16:51Z",
+          "tree_id": "2521ea9d74e7144f85656867c0de085dc55937fa",
+          "url": "https://github.com/GetFelix/felix/commit/64474812d595500d4326e7944531a585d6a5432c"
+        },
+        "date": 1795638237510,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343735.42,
+            "range": "11127.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343735.42\nmean: 345094.16\nstdev: 11127.55\ncv: 3.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343735.42,
+            "range": "11127.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343735.42\nmean: 345094.16\nstdev: 11127.55\ncv: 3.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 78690.26,
+            "range": "673.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 78690.26\nmean: 78534.07\nstdev: 673.53\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 786902.57,
+            "range": "6735.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 786902.57\nmean: 785340.70\nstdev: 6735.35\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
