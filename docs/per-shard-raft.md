@@ -268,8 +268,9 @@ still held until the control plane has one.
 
 Members that open this way vote and replicate but do not lead until the
 broker has registered (`GroupRuntime::stand_after`): they do not stand, do
-not take their old leadership back at the start, and refuse a leadership
-transfer. The broker serves no client before it registers, so a group it
+not take their old leadership back at the start, refuse a leadership
+transfer, and form no group, since forming one elects the member that
+forms it. The broker serves no client before it registers, so a group it
 led would serve nobody while a peer that could lead it waited.
 
 When the control plane answers, the deferred restore check runs as before.
@@ -301,6 +302,7 @@ the control plane is down and a broker restarts.
 
 > Tests: `node::cluster::tests::a_view_start_under_the_pin_rule_opens_its_raft_root_before_the_restore_check`,
 > `raft::tests::a_member_of_an_unregistered_broker_votes_but_does_not_lead`,
+> `raft::tests::a_member_of_an_unregistered_broker_forms_no_group`,
 > `raft_copy::tests::gate::a_rotation_under_an_open_mark_log_stops_it_and_leaves_no_marks`,
 > and on a cluster
 > `failures::replica_election::a_broker_restarted_while_the_control_plane_is_down_votes`.
