@@ -3537,7 +3537,7 @@ was answered:
 | Answered | Observed by a read that starts after the answer |
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease on a stream fsynced on commit | Always |
-| On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
+| On the lease, after the leader's own write (`Leader`) | Always, by the wait in the next row: the leader keeps the furthest entry it answered on the lease too. A failover between the answer and the commit can lose the write, and a read waiting for it is then refused |
 | When a majority has written it (`Quorum`, or `Leader` with no lease, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. A stream read that could start below a head trim's floor takes it on the leader ("Head trims"); a tail subscribe and live delivery are bounded by the commit (`read_bound`) alone. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
@@ -4710,9 +4710,10 @@ wait ran out, otherwise `leadership_lost`), as a stream write is: the entry
 may commit under the next leader, and a retry there would redrive, delete
 or claim a second time. Claims are group entries
 too: a poll that hands records out, and an extension, writes a claim and
-answers once it applied. A poll hands out only what this member had applied
-when it began. A `Leader` stream answers a publish before its commit, so
-the record can go out on a later poll than the first one after its ack.
+answers once it applied. A poll waits for the read index first and then
+hands out only what this member has applied, so a poll sent after a
+publish's ack includes the record at every ack level (#3146). An ack sent on
+enqueue comes before the write and is the one exception.
 A leader that stops leading drops the shard's
 trackers, and the next one rebuilds them from the table, claims included,
 each held for its full visibility again from then. Group writes are log entries, so they

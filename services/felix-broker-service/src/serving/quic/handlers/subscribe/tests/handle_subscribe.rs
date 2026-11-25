@@ -1117,8 +1117,29 @@ async fn a_latest_join_counts_generation_starts_as_drops_only_without_the_skip_b
 /// Subscribes from offset 0 with `end` over a history much larger than the
 /// client's stream window, so the replay stalls part way, then revokes the
 /// credential. Returns how many events arrived and the last frame.
-async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
-    const RECORDS: u64 = 256;
+/// How a replay cut short part way reached the client.
+struct CutReplay {
+    /// Events read before the stream stopped.
+    events: usize,
+    /// The last frame that was not an event batch.
+    last: Option<Message>,
+    /// The read error the stream stopped with; `None` for a clean end.
+    error: Option<anyhow::Error>,
+}
+
+/// What cuts the replay, once the client has read its first batch.
+enum Cut {
+    /// The subscriber's credential is revoked.
+    Revoke,
+    /// The shard is closed here and left to an engine that has not opened
+    /// it, as on a Raft member that lost the shard: the next page of history
+    /// fails with `ShardNotOpen`.
+    CloseShard,
+}
+
+/// Subscribe from offset 0 to `records` stored records of 1 KiB, through a
+/// receive window of a few events, and cut the replay after the first batch.
+async fn cut_mid_replay(end: Option<u64>, records: u64, cut: Cut) -> Result<CutReplay> {
     let dir = tempfile::tempdir()?;
     let storage = felix_broker::DurableStorage::open(
         dir.path(),
@@ -1142,7 +1163,7 @@ async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
             },
         )
         .await?;
-    for _ in 0..RECORDS {
+    for _ in 0..records {
         broker
             .publish("t1", "default", "orders", Bytes::from(vec![7u8; 1024]))
             .await?;
@@ -1264,10 +1285,27 @@ async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
         .expect("the first replayed batch");
     let mut events = decode_delivery_payloads(&first)?.len();
 
-    revocations.revoke("t1", "alice", 100);
+    match cut {
+        Cut::Revoke => revocations.revoke("t1", "alice", 100),
+        Cut::CloseShard => {
+            broker.leave_durable_streams_to_engines();
+            broker
+                .close_stream_shard("t1", "default", "orders", 0, None)
+                .await?;
+        }
+    }
 
     let mut last = None;
-    while let Some(frame) = read(&mut event_recv, &mut scratch).await? {
+    let mut error = None;
+    loop {
+        let frame = match read(&mut event_recv, &mut scratch).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(err) => {
+                error = Some(err);
+                break;
+            }
+        };
         if frame.header.flags
             & (felix_wire::FLAG_BINARY_EVENT_BATCH | felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED)
             != 0
@@ -1278,10 +1316,56 @@ async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
         }
     }
     let _held = server_task.await.context("server join")??;
-    Ok((
+    Ok(CutReplay {
         events,
-        last.context("the event stream ended without a frame")?,
+        last,
+        error,
+    })
+}
+
+async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
+    let cut = cut_mid_replay(end, 256, Cut::Revoke).await?;
+    if let Some(err) = cut.error {
+        return Err(err.context("the event stream of a revoked replay broke"));
+    }
+    Ok((
+        cut.events,
+        cut.last.context("the event stream ended without a frame")?,
     ))
+}
+
+/// A replay whose shard is closed under it, after the first page of history
+/// and before the last. The ring keeps the newest 1024 records, so `RECORDS`
+/// KiB leaves several 1 MiB pages to read from disk either way.
+async fn assert_a_closed_shard_resets_the_replay(end: Option<u64>) -> Result<()> {
+    const RECORDS: u64 = 4096;
+    let cut = cut_mid_replay(end, RECORDS, Cut::CloseShard).await?;
+    assert!(
+        (cut.events as u64) < RECORDS,
+        "the whole history was replayed after the shard closed"
+    );
+    assert!(
+        cut.last.is_none(),
+        "a cut replay ended with a frame: {:?}",
+        cut.last
+    );
+    let err = cut.error.unwrap_or_else(|| {
+        panic!(
+            "the event stream ended cleanly after {} of {RECORDS} events",
+            cut.events
+        )
+    });
+    let reset = err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<quinn::ReadError>(),
+            Some(quinn::ReadError::Reset(_))
+        ) || matches!(
+            cause.downcast_ref::<quinn::ReadExactError>(),
+            Some(quinn::ReadExactError::ReadError(quinn::ReadError::Reset(_)))
+        )
+    });
+    assert!(reset, "the event stream broke, but not by a reset: {err:#}");
+    Ok(())
 }
 
 fn assert_revoked(events: usize, last: Message) {
@@ -1311,6 +1395,23 @@ async fn a_revoke_ends_the_replay_before_live_delivery() -> Result<()> {
     let (events, last) = revoked_mid_replay(None).await?;
     assert_revoked(events, last);
     Ok(())
+}
+
+/// **A replay that fails part way resets the event stream** (#3160). The
+/// shard closes on this broker between two pages of history, which is not a
+/// `NotReadable`. A clean end there reads as the whole history, and the Rust
+/// client's `follow()` hands it to the application as `Ok(None)`; a reset
+/// reads as a lost subscription, which it resumes from its last offset.
+#[tokio::test]
+async fn a_replay_whose_shard_closes_resets_the_event_stream() -> Result<()> {
+    assert_a_closed_shard_resets_the_replay(None).await
+}
+
+/// The same for a bounded read wholly below the tail, which never registers
+/// for live delivery: short of `end`, it is not over.
+#[tokio::test]
+async fn a_history_only_replay_whose_shard_closes_resets_the_event_stream() -> Result<()> {
+    assert_a_closed_shard_resets_the_replay(Some(4096)).await
 }
 
 #[cfg(feature = "raft")]
