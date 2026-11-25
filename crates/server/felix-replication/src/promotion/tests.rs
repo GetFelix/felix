@@ -20,6 +20,7 @@ mod groups;
 mod head_trim;
 mod headers;
 mod identity;
+mod in_memory;
 mod joint;
 mod joint_learner;
 mod times;
