@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795615047908,
+  "lastUpdate": 1795621501353,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -87978,6 +87978,72 @@ window.BENCHMARK_DATA = {
             "range": "736.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 288.00\nmean: 654.80\nstdev: 736.53\ncv: 112.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5de512c7a0549219d62154a66340209e774551ac",
+          "message": "fix(broker): reset the event stream on every replay failure (#3160) (#3167)\n\nA replay that failed part way reset the event stream only for\n`BrokerError::NotReadable`. Any other failure (the shard closing on the\nbroker between two pages of history, a read of its log failing) dropped\nthe stream, which quinn finishes, so the client read a clean end after a\nprefix. The Rust client's `follow()` hands that to the application as\n`Ok(None)`, as if the subscription were over.\n\nEvery replay failure now resets the stream. A reset is a lost\nsubscription to every client, so nothing is negotiated. The revoked\nreplay keeps its typed last frame.\n\nSpec-Unaffected: delivery-side stream termination; no TLA spec models how a replay's event stream ends.",
+          "timestamp": "2026-11-25T15:37:53Z",
+          "tree_id": "190a88237f18f60a8e8bab3ac89bff5c100a8dc5",
+          "url": "https://github.com/GetFelix/felix/commit/5de512c7a0549219d62154a66340209e774551ac"
+        },
+        "date": 1795621489312,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 71.20\nstdev: 0.84\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 124,
+            "range": "4.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 122.40\nstdev: 4.39\ncv: 3.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 156,
+            "range": "275.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 156.00\nmean: 275.80\nstdev: 275.32\ncv: 99.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.40\nstdev: 0.55\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 194,
+            "range": "8.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 194.00\nmean: 193.80\nstdev: 8.64\ncv: 4.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 834,
+            "range": "499.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 834.00\nmean: 909.20\nstdev: 499.37\ncv: 54.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
