@@ -6156,8 +6156,10 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **The snapshot** is the applied state as of one log id: the cache records
   that are unexpired at the log's time, with their values, versions and
   expiries, the counter sums, the
-  log's time (the stamp of the last stamped entry applied) and, per
-  producer, its floor and the answers it still keeps.
+  log's time (the stamp of the last stamped entry applied), when the last
+  watched entry's life ends and, per producer, its floor and the answers
+  it still keeps. The format is versioned; this build writes version 2 and
+  still reads version 1, which has no watched entry's end.
 - **Apply never reads a clock.** The leader stamps each entry, no earlier
   than the last stamped entry in its log (the uncommitted tail it inherited
   included, blank and membership entries skipped), or the snapshot's time
@@ -6196,10 +6198,11 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   producer's floor and kept answers.
 - **A watched entry changes nothing a read or a write sees.** It moves the
   log's time to its stamp, as every stamped entry does, and changes no
-  key, answer or floor. What a member records because of it is that
-  member's own memory, kept out of the snapshot and out of every answer,
-  so two members that applied the same entries hold the same state
-  whether or not they record. A build that predates the entry stops at
+  key, answer or floor. When its life ends is a function of the applied
+  entries, so it is in the snapshot and in state equality. What a member
+  records because of it is that member's own memory, kept out of the
+  snapshot and out of every answer, so two members that applied the same
+  entries hold the same state whether or not they record. A build that predates the entry stops at
   it, as at any cache entry it cannot read; skipping it is never safe in
   general, so no entry kind is skipped.
 
@@ -6304,9 +6307,11 @@ on the hybrid.
   delivery. One from below the oldest kept change is answered with
   `resnapshot` and each key's current value, read after the member has
   applied every put acknowledged before the watch began. A snapshot
-  install starts the kept changes empty, past the snapshot's entry, and a
-  restart keeps none until it applies a watched entry again, so a resume
-  from before either resnapshots. A value
+  install or a restart starts the kept changes empty, past the snapshot's
+  entry: recording again at once if the snapshot is inside a watched
+  entry's life, which the snapshot carries, and otherwise from the next
+  watched entry applied. A resume from at or before the snapshot's entry
+  resnapshots. A value
   bigger than the byte bound still reaches live watches, and moves the
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
