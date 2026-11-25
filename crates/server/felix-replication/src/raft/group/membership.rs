@@ -179,6 +179,10 @@ impl Group {
         within: std::time::Duration,
     ) -> Option<u64> {
         let term = self.transfer_starting_in(Some(term)).await?;
+        #[cfg(any(test, feature = "testing"))]
+        self.placed_transfers
+            .lock()
+            .push((term, to.broker.to_string()));
         let deadline = tokio::time::Instant::now() + within;
         loop {
             let log = self.replication();
