@@ -5490,7 +5490,10 @@ log, then asks openraft. Publishes in that window are told the shard is not
 ready. The refusal is retryable and nothing was written, so the client sends
 every publish kind again under its reconnect policy (a plain one too, since
 nothing of it was applied); a hand-over that outlasts the policy returns the
-refusal. The target campaigns while the other
+refusal. A write already proposed when the hand-over began is different: it
+may commit under the new leader, which the old one cannot confirm, so it is
+answered `leadership_lost` (outcome unknown), and a plain publish returns
+that rather than risk a duplicate. The target campaigns while the other
 followers still hear the old leader, so their pre-vote check lets a
 transfer target through.
 
