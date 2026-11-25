@@ -1348,6 +1348,33 @@ async fn led_where_placed(cluster: &Cluster, nodes: &[String], shards: u32) -> b
     led.iter().sum::<f64>() == f64::from(shards) && off.iter().all(|off| *off == 0.0)
 }
 
+/// **A started cluster has no first hand-over ahead of it (#3157).** The
+/// broker that forms a group leads its first term, then hands over to the
+/// broker placement names. `Cluster::start` used to return before that, so
+/// the owner a test read next could move under it. One look, no wait: each
+/// shard's placed leader leads already, and it is the owner the test reads.
+#[tokio::test]
+#[serial]
+async fn a_started_cluster_is_led_where_placed() {
+    if !opted_in() {
+        return;
+    }
+    const SHARDS: u32 = 6;
+    let cluster = Cluster::start(raft_cluster_with(StreamSpec::quorum(STREAM, SHARDS, 3)))
+        .await
+        .expect("start cluster");
+    assert_eq!(cluster.raft_hand_over_pending().await, None);
+
+    // Placement's owner of shard 0 leads it by its own report, and stays so.
+    let owner = cluster.owner(STREAM).await.expect("owner");
+    cluster
+        .publish_via(&owner, STREAM, b"placed".to_vec())
+        .await
+        .expect("the placed leader serves the moment start returns");
+    assert_eq!(cluster.owner(STREAM).await.expect("owner"), owner);
+    assert_eq!(cluster.raft_hand_over_pending().await, None);
+}
+
 /// **Raft shard leaders follow placement.** Each shard's leader is the
 /// broker placement names, so leaders spread as placement spreads them.
 /// When a broker dies the survivors lead its shards, and once it is back

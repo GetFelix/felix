@@ -316,9 +316,10 @@ impl Cluster {
     /// The broker that forms a group wins its first term and then hands the
     /// leadership to placement's broker, a few groups at a time. Each
     /// hand-over closes its shard for an election, and a publish that lands
-    /// in one is refused as not ready. `Cluster::start` only proves shard 0
-    /// takes a write, so a caller that cannot retry, such as a client suite
-    /// in another language, waits here first (#3130).
+    /// in one is refused as not ready, and the shard's leader is not yet the
+    /// owner placement names. `Cluster::start` waits here last (#3130,
+    /// #3157) unless `ClusterConfig::pending_raft_hand_overs` is set; a test
+    /// that set it, or that created a stream later, calls this itself.
     ///
     /// Nothing is written. Two looks in a row must agree, so a leader seen
     /// between two elections does not count. Returns at once on the hybrid.
@@ -349,6 +350,16 @@ impl Cluster {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// One look, no waiting: the first Raft shard its placed leader does not
+    /// lead, and why, or `None` when every one is led as placed. Always
+    /// `None` on the hybrid.
+    pub async fn raft_hand_over_pending(&self) -> Option<String> {
+        if !self.raft() {
+            return None;
+        }
+        self.raft_leader_terms().await.err()
     }
 
     /// The term each Raft shard's placed leader leads it in, by shard key, or
