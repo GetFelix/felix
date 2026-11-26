@@ -329,7 +329,8 @@ on `FelixRaft` before the hybrid goes, not when the old spec is deleted.
 Every check that guards a hybrid property, and where it goes. "Retired"
 means the mechanism it checks no longer exists, and says what stands where
 it stood. The status column says where the Raft check is: "Landed" names
-it, "Missing" is still to be written before the hybrid goes (#2258).
+it, "Missing" is still to be written before the hybrid goes (#2258), and
+"Blocked" waits on the issue named.
 Paths are under `crates/testing/` unless they start elsewhere.
 
 ### Simulator checkers
@@ -348,17 +349,17 @@ live in the Raft groups simulation, `felix-sim/src/raft.rs`, run by
 | `record-generations-agree` | Kept above the base: copies agree on the term of every entry. Below the base the generation is not compared, by design | Landed: `Sim::check_terms_agree` after the final reads, below each member's read bound |
 | `generation-burn` (warning) | Kept as a term-burn warning. It catches election storms, which sleep makes more likely | Landed: `RaftOutcome::warnings`, from the lowest and highest term the watch saw per shard |
 | `torn-tail-repaired` | Unchanged | Landed: `Sim::check_power_cut` in the power modes (#2989). `raft_seed_1233_with_power_loss` tears and repairs tails |
-| New with #2239 | `SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep` | Missing, with #2239. `AsleepIsLevel` is modelled (`FelixRaftSleep.cfg`) |
+| New with #2239 | `SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep` | Blocked on #2239, which adds sleep. `AsleepIsLevel` is modelled (`FelixRaftSleep.cfg`) |
 
 ### History checker
 
 | Check today | Under Raft | Status |
 | --- | --- | --- |
-| List-append, delivery, dependency-graph, register, cache linearizability, atomic commit, liveness | Unchanged. They judge what clients saw | Missing on clusters: the history harness pins the hybrid (`felix-cluster/src/node/spawn.rs`). The Raft simulation runs the list-append and delivery checks on every seed |
-| Rule 21, one leader per generation (`history/leaders.rs`) | One leader per term | Missing. It is keyed by generation, from fence logs |
+| List-append, delivery, dependency-graph, register, cache linearizability, atomic commit, liveness | Unchanged. They judge what clients saw | Landed: the harness runs Raft unless `FELIX_TEST_SHARD_ENGINE=hybrid` (`felix-cluster/src/config.rs`), so the `history` cluster suite in CI and `history.yml` run these on Raft. The Raft simulation also runs the list-append and delivery checks on every seed |
+| Rule 21, one leader per generation (`history/leaders.rs`) | One leader per term | Landed: a Raft member logs its open with the term as the generation (`felix-replication/src/raft/lead.rs`), and `two_raft_members_logging_an_open_in_one_term_is_a_violation` checks the rule reads it |
 | Modes `lease` and `lease-free` | Retired. They choose between two hybrid read and acknowledgement rules. Raft has one | Retired. Removed with the hybrid wiring (#2259) |
-| Nemesis `election` | Kept, as control plane down. It is criterion 5 of the gate | Missing. It runs only with the hybrid's election (`history/nemesis.rs`) |
-| Duplicate-offset nemesis | New with the gate (engine page) | Missing |
+| Nemesis `election` | Kept, as control plane down. It is criterion 5 of the gate | Landed: `replicas_elect_a_leader_while_the_control_plane_is_down` waits on Raft for a new leader at a later term (`raft_await_election` in `history/liveness.rs`) and fails if rule 21 read no open |
+| Duplicate-offset nemesis | New with the gate (engine page) | Missing on clusters: no nemesis partitions a `Leader` stream's leader while a QUIC subscriber, a Kafka consumer and a cache watcher record offsets. The simulator checks its QUIC subscriber half (`raft/deliveries.rs`) |
 
 ### Cluster tests
 
@@ -367,14 +368,14 @@ The Raft cluster tests are in `felix-cluster/tests/raft_shards.rs`.
 | Tests today | Under Raft | Status |
 | --- | --- | --- |
 | `failures/replica_election.rs`, `failures/replica_set.rs` | Retired. Elections are checked by the simulator and by the control-plane-down failover test of #2233 | Retired. Landed in their place: `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged` |
-| `scale/failover_heal.rs` | Ported. No flag | Missing |
+| `scale/failover_heal.rs` | Ported. No flag | Landed: `without_election_every_shard_of_a_killed_leader_serves_again` runs on Raft with no flag and kills the broker the groups elected. It is run by `scale-nightly.yml`'s `failover` variant |
 | `failures/majority_ack.rs`, `failures/failover.rs` | Ported: an acknowledged record survives its leader. The cases about reports and finalizing are retired | Landed: `a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies`, `a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged`, `a_raft_cache_keeps_what_it_acknowledged_when_its_leader_dies` |
 | `failures/promotion_fence.rs`, `failures/joint_fence.rs`, `failures/fencing.rs`, `failures/fenced_caches.rs` | Retired as mechanism tests. One ported test each for streams and caches: a deposed leader acknowledges nothing | Landed: `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease` for streams, `a_cut_off_cache_leader_acknowledges_nothing_the_group_loses` for caches |
-| `failures/wiped.rs` | Ported: a wiped copy comes back as a learner and an acknowledged record survives (#2250) | Missing on clusters. The simulator wipes copies (`raft_seed_2_with_wipes`) |
-| `routing/generation_start.rs` | Ported: the blank entry of a term takes no offset a consumer sees | Missing |
-| `failures/lease_free_reads.rs`, `failures/lease_free_sessions.rs` | Ported: a `Quorum` read or a group commit on a deposed leader is refused | Missing |
+| `failures/wiped.rs` | Ported: a wiped copy comes back as a learner and an acknowledged record survives (#2250) | Landed: on Raft `a_wiped_follower_is_not_promoted` checks a wiped copy does not count and every record survives, and `learners.rs`'s `a_wiped_follower_counts_only_once_it_holds_the_start` that it counts once swapped in. The simulator wipes copies (`raft_seed_2_with_wipes`) |
+| `routing/generation_start.rs` | Ported: the blank entry of a term takes no offset a consumer sees | Landed: the simulator's subscribers read from offset 0 through every term, and a delivery at a blank's offset is a finding (`raft/deliveries.rs`). In process, `a_term_blank_on_an_idle_shard_ends_no_records`. The file's own tests are about moves and skip on Raft until #2235 |
+| `failures/lease_free_reads.rs`, `failures/lease_free_sessions.rs` | Ported: a `Quorum` read or a group commit on a deposed leader is refused | Landed: both files run on Raft. `a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writes` and `a_deposed_coordinator_refuses_a_group_ack` partition the old leader from its peers, not from the client, and assert the refusal |
 | `scale/lease_starvation.rs` | Retired. No lease is renewed through the control plane. Starved timers are covered by the groups-per-broker gate | Retired |
-| `failures/followers_word.rs`, `failures/learners.rs` | Ported to learners and membership (#2235) | Missing, with #2235 |
+| `failures/followers_word.rs`, `failures/learners.rs` | Ported to learners and membership (#2235) | Blocked on #2235. The wiped-copy case of `learners.rs` runs on Raft (above); `followers_word.rs` skips on Raft |
 
 ### TLA+ invariants
 
@@ -396,7 +397,7 @@ twin that must fail where there is one.
 | `Counters*` | Retired. A cache shard has one log and one commit index | Retired |
 | `NoStaleRead`, `NoStaleGroupCommit`, `NoLostDelivery` | The same properties in `FelixRaftReads.cfg`, `FelixRaftReadsWritten.cfg`, `FelixRaftSessionsSubscriber.cfg` and `FelixRaftSessionsGroup.cfg`, each with a twin that drops the rule and fails (#2266) | Landed |
 | `NoDuplicate` (idempotent failover and handoff) | `NoDuplicate` in `FelixRaftIdempotent.cfg`, with the in-memory twin `FelixRaftIdempotentMemory.cfg` (#2267). A handoff is a change of leader under Raft | Landed |
-| `EventuallyAtFactor`, the move give-up configs | Gap 3 | Missing, with #2268 |
+| `EventuallyAtFactor`, the move give-up configs | Gap 3 | Blocked on #2268 |
 
 ### Gaps
 
