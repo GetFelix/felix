@@ -285,6 +285,7 @@ async fn abandon_on_raft(
     };
     drop(read);
     let to = start.leader.clone();
+    let expected_generation = start.expected_generation;
     let assignment = state
         .store
         .abandon_raft_epoch(key, start)
@@ -299,7 +300,7 @@ async fn abandon_on_raft(
     Ok(Some(Json(response(OperatorStep {
         step: MoveStep::Discard { from, to },
         assignment,
-        expected_generation: 0,
+        expected_generation,
         zones: None,
     }))))
 }
