@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795711338447,
+  "lastUpdate": 1795714474554,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -91212,6 +91212,72 @@ window.BENCHMARK_DATA = {
             "range": "547.30",
             "unit": "us",
             "extra": "trials: 5\nmedian: 389.00\nmean: 735.00\nstdev: 547.30\ncv: 74.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9cd3d3b4d75995de497854d04c2192cb59794be0",
+          "message": "fix(broker): the data directory is locked for the whole run and let go only after storage is shut down (#3250) (#3275)\n\n* fix(storage): a broker holds its data directory for the life of its run (#3250)\n\nWIP: lock taken first, held to the end of the run; tests and docs follow.\n\nSpec-Unaffected: a process-level lock on the data directory; no modelled replication or storage behaviour changes\n\n* test(broker): a second broker on a held data directory is refused before it writes\n\nSpec-Unaffected: tests only\n\n* docs(storage): the data directory is locked for the life of a broker's run (#3250)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(broker): a failed start lets the data directory go only after storage closed (#3250)\n\nEvery way out of a run after storage opened now goes through a guard that\nowns the root lock: it cancels the run's tokens, joins the tasks that can\nwrite under the root (Raft shards, the restore gate and reports, cache\nexpiry, and on a late failure the listeners, membership and catalog sync),\nstops the Raft members, shuts storage down, records the stop, and only then\nlets the lock go. A guard dropped without closing closes on its own task,\nand keeps the lock until the process exits if that cannot finish.\n\nSpec-Unaffected: startup and shutdown ordering of the broker process; no modelled protocol step changes\n\n* docs(storage): the data directory lock goes only after storage closed; what it does not cover (#3250)\n\nSpec-Unaffected: documentation only\n\n* fix(broker): a run's teardown stops within the drain timeout and never upgrades the drain's verdict (#3250)\n\nThe teardown's joins, engine stop and flush now run under one deadline,\nthe drain timeout. Out of time it records no clean stop and keeps the lock\nuntil the process exits, so a stuck writer or a client still connected\nafter a late failed start no longer keeps the broker from exiting. The\ndrain says what it decided as soon as it has flushed, so a teardown after\na drain dropped at a later step neither waits again nor records a clean\nstop over an unclean one. Client connections are waited for too.\n\nSpec-Unaffected: startup and shutdown ordering of the broker process; no modelled protocol step changes",
+          "timestamp": "2026-11-26T09:20:12-08:00",
+          "tree_id": "f13260d03dc97525a7e261c4e5599e2e270784be",
+          "url": "https://github.com/GetFelix/felix/commit/9cd3d3b4d75995de497854d04c2192cb59794be0"
+        },
+        "date": 1795714458846,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 109,
+            "range": "4.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 106.60\nstdev: 4.34\ncv: 4.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 163,
+            "range": "6.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 162.20\nstdev: 6.38\ncv: 3.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 202,
+            "range": "12.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 205.20\nstdev: 12.91\ncv: 6.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 114,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 113.60\nstdev: 0.55\ncv: 0.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 243,
+            "range": "8.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 242.20\nstdev: 8.29\ncv: 3.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 418,
+            "range": "103.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 418.00\nmean: 430.20\nstdev: 103.67\ncv: 24.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
