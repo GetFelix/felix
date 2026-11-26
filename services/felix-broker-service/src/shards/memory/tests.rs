@@ -473,3 +473,43 @@ async fn the_feed_serves_it_without_the_lifecycle() {
     shutdown.cancel();
     let _ = feed.await;
 }
+
+/// **Closing many shards with a write in flight on each holds the pass up for
+/// one bound, not one per shard**, and a shard opened in the same pass
+/// serves by the time it returns. Every closing shard refuses writes at once.
+#[tokio::test(start_paused = true)]
+async fn closes_share_one_bound() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let (fence, _lease) = leased();
+    let memory = memory(&broker, &fence);
+    let at = |shard, leader: &str, generation| ShardAssignment {
+        key: key(shard),
+        ..assigned(leader, generation)
+    };
+    let closing: Vec<u32> = (0..10).collect();
+    let mut fed = assignments(&closing.iter().map(|s| at(*s, LOCAL, 5)).collect::<Vec<_>>());
+    memory.apply(&memory.take(&mut fed)).await;
+    let held: Vec<_> = closing
+        .iter()
+        .map(|s| fence.admit(&key(*s), 5).expect("a write in flight"))
+        .collect();
+
+    let mut next: Vec<ShardAssignment> = closing.iter().map(|s| at(*s, "broker-b", 6)).collect();
+    next.push(at(10, LOCAL, 6));
+    let mut fed = assignments(&next);
+    let started = tokio::time::Instant::now();
+    memory.apply(&memory.take(&mut fed)).await;
+    let took = started.elapsed();
+    assert!(
+        took <= QUIESCE_BOUND + Duration::from_millis(100),
+        "the pass took {took:?} closing {} shards",
+        closing.len(),
+    );
+    assert_eq!(memory.servable().get(&key(10)), Some(&6));
+    for shard in &closing {
+        assert_eq!(fence.admit(&key(*shard), 5).err(), Some(Fenced::NotServing));
+        assert!(memory.servable().get(&key(*shard)).is_none());
+    }
+    drop(held);
+}

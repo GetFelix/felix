@@ -156,10 +156,29 @@ impl MemoryShards {
         for (key, served) in gone {
             closes.push((key, served, no_owner(served.generation)));
         }
-        for (key, served, to) in closes {
-            self.close(&key, served, to).await;
+        // Every closing shard stops taking writes before anything waits, and
+        // the waits share one bound, so a pass that closes many shards holds
+        // up the feed (and the Raft shards it carries) for that bound at most.
+        for (key, served, _) in &closes {
+            self.shut(key, *served);
         }
-        for (key, wanted) in opens {
+        let closing: felix_common::random::HashSet<&ShardKey> =
+            closes.iter().map(|(key, _, _)| key).collect();
+        let (after, now): (Vec<_>, Vec<_>) = opens
+            .into_iter()
+            .partition(|(key, _)| closing.contains(key));
+        for (key, wanted) in now {
+            self.open(&key, wanted).await;
+        }
+        let deadline = tokio::time::Instant::now() + QUIESCE_BOUND;
+        futures::future::join_all(
+            closes
+                .iter()
+                .map(|(key, served, to)| self.finish_close(key, *served, to.clone(), deadline)),
+        )
+        .await;
+        // A key reopened at a new generation only once its close is done.
+        for (key, wanted) in after {
             self.open(&key, wanted).await;
         }
         self.report(assignments);
@@ -193,16 +212,26 @@ impl MemoryShards {
         );
     }
 
-    /// Stop serving `key` and drop what it holds. Readers are ended with
-    /// `to`, which names the generation the shard moved at.
-    async fn close(&self, key: &ShardKey, served: Served, to: felix_broker::ShardHandoff) {
-        // Closed before anything else, so no write gets in while the
-        // readers end.
+    /// Stop serving `key`: no write enters from here on, and it is no
+    /// longer servable.
+    fn shut(&self, key: &ShardKey, served: Served) {
         self.fence.close(key);
         self.fence
             .record_phase(key, Phase::Closed, served.generation);
         self.served.lock().remove(key);
-        if tokio::time::timeout(QUIESCE_BOUND, self.fence.quiesce(key))
+    }
+
+    /// Drop what a [`Self::shut`] shard holds once the writes already in it
+    /// are done, or at `deadline`. Readers are ended with `to`, which names
+    /// the generation the shard moved at.
+    async fn finish_close(
+        &self,
+        key: &ShardKey,
+        served: Served,
+        to: felix_broker::ShardHandoff,
+        deadline: tokio::time::Instant,
+    ) {
+        if tokio::time::timeout_at(deadline, self.fence.quiesce(key))
             .await
             .is_err()
         {
