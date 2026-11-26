@@ -635,6 +635,9 @@ impl Hold {
 /// the next interval, across every group: a label per group would be a label
 /// per shard.
 pub(super) const DROPPED_TICKS_TOTAL: &str = "felix_broker_raft_dropped_ticks_total";
+/// Gap snapshots a learner refused although it held its re-formed base, by
+/// why the base does not match.
+pub(super) const HELD_BASE_REFUSALS_TOTAL: &str = "felix_broker_raft_held_base_refusals_total";
 
 /// Counts a timer check that was dropped before the group took it.
 pub(super) struct Dropped<'a>(pub(super) Option<&'a AtomicU64>);
@@ -1746,10 +1749,12 @@ impl Group {
                         if installable.is_err() {
                             let held = self.held_base().await;
                             installable = stream_installable(&meta, &bytes, held);
-                            // A copy that already holds its base is refused
-                            // for another reason; a pull would not help.
-                            if installable.is_err() && held.is_none() {
-                                self.pull_base(&meta, &bytes);
+                            match (held, &installable) {
+                                (None, Err(_)) => self.pull_base(&meta, &bytes),
+                                (Some(held), Err(why)) => {
+                                    self.held_base_refused(held, &meta, &bytes, why).await;
+                                }
+                                _ => {}
                             }
                         }
                         if let Err(why) = installable {
@@ -1915,8 +1920,52 @@ impl Group {
         })
     }
 
-    /// True once this copy's re-form base is staged whole: the member must
-    /// close and open again so the open adopts it.
+    /// The gap snapshot was refused although this copy holds a base, which
+    /// no later snapshot of this epoch will match either. Logged and
+    /// counted, rate-limited; once refused long enough the base is dropped
+    /// at the next open so a pull runs again, a bounded number of times per
+    /// epoch with a growing wait. See `docs/per-shard-raft.md`, "A new
+    /// member of a re-formed group".
+    async fn held_base_refused(
+        &self,
+        held: HeldBase,
+        meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+        bytes: &[u8],
+        why: &str,
+    ) {
+        let reason = held_refusal(held, meta, bytes);
+        metrics::counter!(HELD_BASE_REFUSALS_TOTAL, "reason" => reason).increment(1);
+        let (refused_for, warn, check) = self.base_pull.held_refused();
+        if warn {
+            tracing::warn!(group = %self.id, member = %self.member, reason, refused_secs = refused_for.as_secs(), "a learner holding its re-formed base cannot install the gap snapshot: {why}");
+        }
+        if !check {
+            return;
+        }
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let first_index = held.first_index;
+        let asked = felix_common::blocking::spawn(move || {
+            felix_storage::raft_copy::request_discard(&dir, first_index, refused_for)
+        })
+        .await;
+        match asked {
+            Ok(Ok(felix_storage::raft_copy::BaseDiscard::Requested(n))) => {
+                tracing::warn!(group = %self.id, member = %self.member, reason, discards = n, "dropping the held re-formed base so the learner pulls it again");
+                self.base_pull.discard();
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(group = %self.id, member = %self.member, error = %err, "could not ask to drop the held re-formed base");
+            }
+            Err(err) => {
+                tracing::warn!(group = %self.id, member = %self.member, error = %err, "could not ask to drop the held re-formed base");
+            }
+        }
+    }
+
+    /// True once this copy must close and open again: its re-form base is
+    /// staged whole for the open to adopt, or the base it holds is to be
+    /// dropped.
     pub(crate) fn base_staged(&self) -> bool {
         self.base_pull.staged()
     }
@@ -3424,6 +3473,31 @@ pub(super) struct HeldBase {
     pub(super) last: u64,
     /// The epoch's first index: the gap runs from `last + 1` to below it.
     pub(super) first_index: u64,
+}
+
+/// Why the gap snapshot `bytes` does not install over the base a member
+/// holds, `held`, as a metric label: it ends somewhere other than the gap's
+/// end (a newer epoch file, or a leader whose snapshot moved on), the held
+/// log starts above the snapshot's floor, or the floor is past the base.
+pub(super) fn held_refusal(
+    held: HeldBase,
+    meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+    bytes: &[u8],
+) -> &'static str {
+    let Ok(snapshot) = super::stream_snapshot::StreamSnapshot::decode(bytes) else {
+        return "unreadable";
+    };
+    let floor = snapshot.purge.as_ref().map_or(0, |purge| purge.floor);
+    match meta.last_log_id.as_ref() {
+        Some(last) if held.first_index.checked_sub(1) == Some(last.index) => {
+            if held.first > floor {
+                "held_above_floor"
+            } else {
+                "floor_past_base"
+            }
+        }
+        _ => "not_gap_end",
+    }
 }
 
 /// Whether a member may install the stream snapshot `bytes`: only when every

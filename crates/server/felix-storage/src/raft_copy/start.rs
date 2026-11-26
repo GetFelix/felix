@@ -656,7 +656,7 @@ fn prefix_matches(
 /// Remove every segment, index, purged id and snapshot in `dir`, and the
 /// forgotten batches and carried floor. The copy file, votes, reservation
 /// and markers stay.
-fn empty_log(dir: &Path) -> io::Result<()> {
+pub(super) fn empty_log(dir: &Path) -> io::Result<()> {
     // No record holds these, so they would outlive the log they describe:
     // the next log would refuse re-sends of batches its voters never forgot.
     // A snapshot install merges into them rather than replacing them.
@@ -822,13 +822,17 @@ fn holds_nothing(dir: &Path) -> io::Result<bool> {
 
 /// Run before `dir`'s log opens, so no open sees a half-adopted copy: an
 /// adoption under way rolls forward, a finished staging log of the copy's
-/// latest base is adopted, and any other staging log is discarded. True
-/// when the copy now holds a base it adopted.
+/// latest base is adopted, and any other staging log is discarded. A base
+/// [`super::request_discard`] asked to drop is dropped first. True when
+/// the copy now holds a base it adopted.
 ///
 /// An adopted copy's saved commit is 0, so it applies nothing, head trims
 /// included, until the gap snapshot installs; that install raises its
 /// floor to the one the snapshot carries in one step.
 pub(crate) fn adopt_pending(dir: &Path) -> io::Result<bool> {
+    // A base asked to be dropped goes before anything staged is looked at,
+    // so the copy is blank for the next pull.
+    super::base_discard::discard_pending(dir)?;
     let adopting = crate::fs::try_exists(dir.join(ADOPTING))?;
     if !adopting && !crate::fs::try_exists(super::staging::staging_dir(dir))? {
         return Ok(false);

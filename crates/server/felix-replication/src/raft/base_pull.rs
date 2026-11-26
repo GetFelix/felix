@@ -319,12 +319,56 @@ pub(crate) struct PullState {
     /// Set once the member took a snapshot or entries: it is no longer
     /// blank, so a staged base must never replace its log.
     abandoned: AtomicBool,
+    /// Set once the base the member holds was asked to be dropped: the
+    /// member reopens, and the open drops it.
+    discarded: AtomicBool,
+    /// When the gap snapshot was first refused over a held base, when that
+    /// was last logged, and when a discard was last considered.
+    held_refused: parking_lot::Mutex<HeldRefused>,
     cancel: CancellationToken,
 }
 
+#[derive(Debug, Default)]
+struct HeldRefused {
+    since: Option<std::time::Instant>,
+    warned: Option<std::time::Instant>,
+    checked: Option<std::time::Instant>,
+}
+
+/// How often a refusal over a held base is logged, and how often a
+/// discard is considered, so neither runs at the snapshot's pace.
+const HELD_WARN_EVERY: Duration = Duration::from_secs(30);
+const HELD_CHECK_EVERY: Duration = Duration::from_secs(1);
+
 impl PullState {
+    /// True when the member must reopen: a pulled base waits to be
+    /// adopted, or a held one to be dropped.
     pub(crate) fn staged(&self) -> bool {
-        self.staged.load(Ordering::Acquire) && !self.abandoned.load(Ordering::Acquire)
+        (self.staged.load(Ordering::Acquire) || self.discarded.load(Ordering::Acquire))
+            && !self.abandoned.load(Ordering::Acquire)
+    }
+
+    /// The held base is to be dropped at the member's next open.
+    pub(crate) fn discard(&self) {
+        self.discarded.store(true, Ordering::Release);
+    }
+
+    /// Note a refusal over a held base. Answers how long the base has been
+    /// refused, whether to log it, and whether to consider a discard.
+    pub(crate) fn held_refused(&self) -> (Duration, bool, bool) {
+        let now = std::time::Instant::now();
+        let mut held = self.held_refused.lock();
+        let since = *held.since.get_or_insert(now);
+        let due = |at: &mut Option<std::time::Instant>, every| {
+            let due = at.is_none_or(|at| now.duration_since(at) >= every);
+            if due {
+                *at = Some(now);
+            }
+            due
+        };
+        let warn = due(&mut held.warned, HELD_WARN_EVERY);
+        let check = due(&mut held.checked, HELD_CHECK_EVERY);
+        (now.duration_since(since), warn, check)
     }
 
     /// The member caught up another way: stop any pull and never start or

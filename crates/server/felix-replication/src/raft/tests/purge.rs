@@ -8,7 +8,7 @@ use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf};
 
 use super::{log_config, open_log};
 use crate::ShardKind;
-use crate::raft::group::{HeldBase, PurgeStep, purge_step, stream_installable};
+use crate::raft::group::{HeldBase, PurgeStep, held_refusal, purge_step, stream_installable};
 use crate::raft::machine::{Machine, SnapshotData};
 use crate::raft::stream_snapshot::StreamSnapshot;
 use crate::raft::types::ShardTypes;
@@ -64,6 +64,30 @@ fn a_gap_snapshot_installs_only_over_the_held_base() {
     // Not the gap's end: it would skip entries of the epoch.
     assert!(stream_installable(&meta(20), &snapshot(4), held(4)).is_err());
     assert!(stream_installable(&meta(18), &snapshot(4), held(4)).is_err());
+}
+
+/// A refusal over a held base names why, so an operator can tell a base
+/// that starts above the floor from a snapshot that is not the gap's end.
+#[test]
+fn a_refusal_over_a_held_base_says_why() {
+    let held = |first| HeldBase {
+        first,
+        last: 7,
+        first_index: 20,
+    };
+    assert_eq!(
+        held_refusal(held(5), &meta(19), &snapshot(4)),
+        "held_above_floor"
+    );
+    assert_eq!(
+        held_refusal(held(4), &meta(19), &snapshot(9)),
+        "floor_past_base"
+    );
+    assert_eq!(
+        held_refusal(held(4), &meta(25), &snapshot(4)),
+        "not_gap_end"
+    );
+    assert_eq!(held_refusal(held(4), &meta(19), b"junk"), "unreadable");
 }
 
 /// A snapshot no purge wrote carries no floor, and is refused as every
