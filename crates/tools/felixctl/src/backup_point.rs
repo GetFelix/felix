@@ -202,7 +202,8 @@ pub(crate) async fn run(
         .out
         .clone()
         .unwrap_or_else(|| PathBuf::from(format!("{}.backup-point.json", args.name)));
-    std::fs::write(&file, serde_json::to_string_pretty(&manifest)?)
+    tokio::fs::write(&file, serde_json::to_string_pretty(&manifest)?)
+        .await
         .mark(Exit::Failure, format!("write {}", file.display()))?;
     if out.json {
         return out.json_value(&serde_json::json!({
