@@ -175,12 +175,13 @@ async fn a_crash_before_the_write_behind_reads_back_an_earlier_id() {
     }
 }
 
-/// **A close writes the newest id saved, whatever write is in flight.** Every
-/// replica-state write reads memory and renames under one lock, so close's
-/// write runs after the one in flight and carries every save made meanwhile;
-/// none can land after it.
+/// **A close writes the newest id saved, whatever write is in flight.** A
+/// write behind has read id 2 and is held before its rename while ids 3 to 7
+/// are saved. Close waits for it, then writes 7 itself: every replica-state
+/// write reads memory under the writer's lock, and close sets `closed` under
+/// it, so nothing older can land after.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_close_during_a_slow_write_writes_the_newest_id() {
+async fn a_close_during_a_write_behind_writes_the_newest_id() {
     for (relaxed, mode) in relaxed_modes() {
         let root = tempdir().expect("dir");
         crate::run_state::begin(root.path(), relaxed, None, None, || false, || [7; 16])
@@ -189,9 +190,8 @@ async fn a_close_during_a_slow_write_writes_the_newest_id() {
         let entries: Vec<_> = (0..=9).map(|index| normal(1, index, "a")).collect();
         append(&mut raft, entries).await;
         let log = raft.disk_log().clone();
-        log.slow_replica_writes(Duration::from_millis(500));
+        log.hold_replica_writes(true);
         raft.save_committed(Some(log_id(1, 2))).await.expect("save");
-        // The write behind has read index 2 and is stalled before its rename.
         while log.replica_writes() == 0 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -200,10 +200,20 @@ async fn a_close_during_a_slow_write_writes_the_newest_id() {
                 .await
                 .expect("save");
         }
-        log.close().await.expect("close");
+        let closing = tokio::spawn({
+            let log = log.clone();
+            async move { log.close().await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !closing.is_finished(),
+            "{mode:?}: close returned with a write in flight"
+        );
+        log.hold_replica_writes(false);
+        closing.await.expect("join").expect("close");
         assert_eq!(on_disk(&raft), 8, "{mode:?}: close wrote the newest id");
-        // Nothing still running writes an older one over it.
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        // Past the write behind's next interval: nothing writes over it.
+        tokio::time::sleep(COMMIT_PERSIST_INTERVAL + Duration::from_millis(200)).await;
         assert_eq!(on_disk(&raft), 8, "{mode:?}: an older write landed last");
         drop((raft, log));
         let mut raft = open_in(root.path(), mode);

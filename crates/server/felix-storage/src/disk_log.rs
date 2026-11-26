@@ -1602,6 +1602,8 @@ impl DiskLog {
             commit_path_writes: AtomicU64::new(0),
             #[cfg(test)]
             replica_write_delay_millis: AtomicU64::new(0),
+            #[cfg(test)]
+            replica_writes_held: std::sync::atomic::AtomicBool::new(false),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
@@ -1909,6 +1911,14 @@ impl DiskLog {
         self.inner
             .replica_write_delay_millis
             .store(millis, Ordering::Release);
+    }
+
+    /// Hold every replica-state write from here on in flight until called
+    /// again with `false`.
+    pub(crate) fn hold_replica_writes(&self, held: bool) {
+        self.inner
+            .replica_writes_held
+            .store(held, Ordering::Release);
     }
 
     /// Move the commit offset and leave the generation saved with it, which
@@ -2462,6 +2472,11 @@ struct LogInner {
     /// tests.
     #[cfg(test)]
     replica_write_delay_millis: AtomicU64,
+    /// While set, a replica-state write waits, holding the writer's lock,
+    /// after it has read memory and before it writes: a test's way to keep
+    /// one in flight.
+    #[cfg(test)]
+    replica_writes_held: std::sync::atomic::AtomicBool,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     /// Tokio's clock, so a simulation decides when to persist on virtual time.
     ///
@@ -3004,6 +3019,10 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(
             inner.replica_write_delay_millis.load(Ordering::Acquire),
         ));
+        #[cfg(test)]
+        while inner.replica_writes_held.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         inner.poison_on_sync_failure(
             "the replica state",
             replica_state::store(&inner.dir, &state),
