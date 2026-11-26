@@ -119,8 +119,16 @@ pub struct Campaign {
     /// fourth broker is one a replica set can change to.
     pub nodes: usize,
     pub clients: usize,
-    /// One single-shard `Quorum` stream per list.
+    /// One single-shard stream per list, `Quorum` unless it is in
+    /// [`Self::leader_lists`].
     pub lists: Vec<String>,
+    /// The lists that are `Leader` streams.
+    pub leader_lists: BTreeSet<String>,
+    /// How many live subscribers follow each list, each on its own.
+    pub subscribers_per_list: usize,
+    /// Read every list from every broker after each fault's recovery and
+    /// once more before the final reads, recorded as reads.
+    pub read_every_broker: bool,
     /// A single-shard `Quorum` cache, and the keys the clients use as
     /// registers.
     pub cache: String,
@@ -165,6 +173,9 @@ impl Campaign {
             nodes: 3,
             clients: 6,
             lists: (0..3).map(|i| format!("history-{i}")).collect(),
+            leader_lists: BTreeSet::new(),
+            subscribers_per_list: 1,
+            read_every_broker: false,
             cache: "history-cache".to_string(),
             keys: (0..3).map(|i| format!("k{i}")).collect(),
             op_timeout: Duration::from_secs(10),
@@ -179,6 +190,18 @@ impl Campaign {
     /// meant to run against.
     pub fn with_spare_broker(mut self) -> Self {
         self.nodes = 4;
+        self
+    }
+
+    /// Add a `Leader` list `name`, followed by two subscribers per list, and
+    /// read every list from every broker after each recovery: what the
+    /// offset-reuse campaign needs, since rule 22 is the one rule that judges
+    /// a `Leader` list's readers.
+    pub fn with_leader_list(mut self, name: &str) -> Self {
+        self.lists.push(name.to_string());
+        self.leader_lists.insert(name.to_string());
+        self.subscribers_per_list = 2;
+        self.read_every_broker = true;
         self
     }
 
@@ -230,7 +253,13 @@ impl Campaign {
             streams: self
                 .lists
                 .iter()
-                .map(|list| StreamSpec::quorum(list, 1, 3))
+                .map(|list| {
+                    let mut spec = StreamSpec::quorum(list, 1, 3);
+                    if self.leader_lists.contains(list) {
+                        spec.consistency = "Leader".to_string();
+                    }
+                    spec
+                })
                 .collect(),
             caches: vec![CacheSpec::quorum(&self.cache, 1, 3)],
             proxy_links: nemesis.needs_proxy_links(),
@@ -349,7 +378,11 @@ impl Campaign {
             lists.insert(
                 list.clone(),
                 ListSpec {
-                    consistency: Consistency::Quorum,
+                    consistency: if self.leader_lists.contains(list) {
+                        Consistency::Leader
+                    } else {
+                        Consistency::Quorum
+                    },
                     base,
                 },
             );
@@ -358,7 +391,9 @@ impl Campaign {
         let subscribers = Subscribers::start(
             cluster,
             workload,
-            lists.iter().map(|(list, spec)| (list.clone(), spec.base)),
+            lists.iter().flat_map(|(list, spec)| {
+                std::iter::repeat_n((list.clone(), spec.base), self.subscribers_per_list)
+            }),
         );
 
         let clients: Vec<_> = (0..self.clients)
@@ -381,6 +416,9 @@ impl Campaign {
             client.await.context("a client task panicked")?;
         }
         result?;
+        if self.read_every_broker {
+            workload.read_on_every_broker(self.clients + 1).await;
+        }
 
         let mut final_reads = std::collections::BTreeMap::new();
         for list in &self.lists {
@@ -493,6 +531,9 @@ impl Campaign {
                 .await
                 .with_context(|| format!("after {fault}"))?;
             workload.fault(format!("every shard serving {} later", millis_of(took)));
+            if self.read_every_broker {
+                workload.read_on_every_broker(self.clients + 1).await;
+            }
             if nemesis.needs_election() {
                 super::leaders::read(cluster, opens);
             }
