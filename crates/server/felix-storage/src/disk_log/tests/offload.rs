@@ -625,7 +625,13 @@ async fn a_power_loss_at_any_offload_step_loses_nothing() {
             }
         }
     }
-    log.shutdown().await.expect("shutdown");
+    // The last stop was after the unlink began, which stops the log as a
+    // failed unlink does, so its shutdown reports it.
+    let shut = log.shutdown().await;
+    assert!(
+        matches!(&shut, Err(StorageError::Poisoned { reason, .. }) if reason.contains("segment removal")),
+        "{shut:?}"
+    );
 }
 
 /// A failed sync of an upload stops offloading to that archive: a retry
