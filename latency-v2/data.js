@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795700635657,
+  "lastUpdate": 1795702758099,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90948,6 +90948,72 @@ window.BENCHMARK_DATA = {
             "range": "379.16",
             "unit": "us",
             "extra": "trials: 5\nmedian: 534.00\nmean: 645.60\nstdev: 379.16\ncv: 58.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cc88d1ff013f8fb231c62b8eea3ee93bb31059f7",
+          "message": "fix(storage): every log directory is locked while it is open, so a second writer is refused (#2488) (#3259)\n\n* WIP: lock every log directory open\n\nSpec-Unaffected: WIP\n\n* WIP: tests, docs, judge under the lock\n\nSpec-Unaffected: WIP\n\n* fix(storage): every log directory open takes the directory lock (#2488)\n\nStream, cache and counter logs, a DiskLogProvider's root and every\nfelix-log-tool mode now take the exclusive flock that only Raft opens\ntook. A Raft copy's directory is locked before the copy judge reads it\nand stays locked through a rotation into the open log; a lock taken on a\ndirectory a rotation renamed away is refused. Tests that reopened a log\nwhile the old handle or its background work was still alive now drop it\nor wait for it.\n\nSpec-Unaffected: the lock adds no state the identity model tracks; it only refuses a second opener\n\n* WIP: crash images instead of waiting on dropped logs, reopen-under-load tests\n\nSpec-Unaffected: storage directory locking, not modelled in TLA\n\n* fix(storage): a log closed on the switch and failed store paths, and a test that a dead holder blocks nothing (#2488)\n\nSpec-Unaffected: storage directory locking, not modelled in TLA\n\n* test(storage): the rotation test names the step after the rename, and the copy reopen loop writes each time (#2488)\n\nSpec-Unaffected: storage directory locking, not modelled in TLA\n\n* test(storage): the copy reopen loop keeps a clone past the close (#2488)\n\nSpec-Unaffected: storage directory locking, not modelled in TLA\n\n* test(replication): the fence restart test starts each broker on what the last one left (#2488)\n\nThe old broker's connection tasks can hold its storage, and with it the\nstream root's lock, for a moment after the cancel.\n\nSpec-Unaffected: test only\n\n* test(broker): three tests stop opening one data directory twice (#2488)\n\nTwo brokers on one directory, a reopen while the first storage was still\nalive, and a second dead-letter store over the reader's own: each is two\nwriters on one log, which the directory lock now refuses.\n\nSpec-Unaffected: test only\n\n* fix(storage): no lock on the stream root; each log's lock keeps writers apart (#2488)\n\nThe root lock refused every in-process restart while an old Broker was\nstill referenced by a lingering task, and storage has no close that\nreleases it by construction. Each log directory is still locked, so a\nsecond broker fails at its first log open. A process-level data-directory\nlock is #3250.\n\nSpec-Unaffected: storage directory locking, not modelled in TLA\n\n* fix(sim): a simulated kill or crash gives up the dead broker's directory locks (#2488)\n\nStream and cache logs take the lock now, and a handle a drained task still\nheld kept the restarted broker out of its own directories.\n\nSpec-Unaffected: simulator only\n\n* fix(storage): a Raft copy's start, stop, restore and re-form hold the directory lock throughout (#2488)\n\nA start wrote its marker, emptied or copied in a log and wrote its\nsnapshot, purged id and commit with no lock, locking only inside its\nshort opens. Now it takes the lock first and opens the log under it,\nthe fold included. Stop, write_fresh_epoch, restore_copy, rejoin and a\ngroup of one's re-form take it before their first check. The legacy\nswap settles under the lock its log then opens holding. A directory\nthat cannot be locked names itself and says to use a local disk, and\nthe broker probes its data root at startup.\n\nSpec-Unaffected: local directory locking; no replicated state or protocol changes\n\n* test(storage): a start, stop, fresh epoch and legacy swap are refused under another open (#2488)\n\nSpec-Unaffected: tests only\n\n* docs(storage): what holds a log directory's lock, and when two brokers are caught (#2488)\n\nSpec-Unaffected: docs and a test only\n\n* fix(storage): a switch to Raft and a Raft claim hold the directory lock across their steps (#2488)\n\nstart_voter read the marker and wrote the member state with the\ndirectory unlocked, locking only inside its check-and-cut open; it now\ntakes the lock first and opens under it. claim_for_raft writes the engine\nmarker under the lock, and a rotation's claim uses the lock it holds.\nThe switch tests close their logs instead of shutting them down, so the\nlock is free when the switch takes it.\n\nSpec-Unaffected: local directory locking only\n\n* docs(storage): the data directory's own files are not covered by the log locks (#2488)\n\nA claim on a directory a hybrid log holds is refused as busy and writes no marker.\n\nSpec-Unaffected: docs and test only\n\n* fix(storage): shutdown lets go of the log's directory, and a reservation extension cannot hold it (#2488)\n\nWIP: shutdown is close; the detached reservation extension holds the log\nweakly and a close waits for it. The cache durability harness stops the\nbroker's storage, since its connection tasks outlive the aborted accept\nloop.\n\nSpec-Unaffected: the directory lock and its release are not modelled\n\n* test(storage): a shutdown, an aborted holder and a live second broker each meet the directory lock (#2488)\n\nSpec-Unaffected: the directory lock and its release are not modelled\n\n* fix(storage): an append already on disk is answered Ok when a close lands before its answer (#2488)\n\nA durable append under fsync-on-commit, and commit, wait_durable, sync,\ncommit_now and the Raft synced paths, re-checked health after the\ndurability wait, and a close that finished in between turned a record\nalready on disk into Closed. They now fail only on a poisoned log, or,\nfor synced, when the wait ended short of the target. A synced wait the\nclose's sync did not cover now stops on the close instead of waiting\nfor ever.\n\nAlso tests a close waiting out a reservation extension mid-fallocate.\n\nSpec-Unaffected: storage answer to a caller racing a close; no modelled state changes\n\n* docs(storage): a close waits out an extension mid-reservation, and answers in-flight writes by what is on disk (#2488)\n\nSpec-Unaffected: docs only\n\n* fix(storage): an exact log mark is never set once its copy is closed, and tests for the failing side of a close (#2488)\n\nThe flush queue now queues the exact mark under the copy's open check,\nso a close waits for it and a reopen's cut queues behind it. Once the\nlog is closed the mark is refused and Raft is not told, as before.\n\nTests: an append whose flush fails around a close is answered with an\nerror and not counted durable; a close ends a synced wait it did not\ncover; an exact mark is refused on a closed copy.\n\nSpec-Unaffected: storage answers and mark ordering around a local close; no modelled state changes",
+          "timestamp": "2026-11-26T06:13:41-08:00",
+          "tree_id": "66a90a937e4fa29448d5503f59e8b0473481eef0",
+          "url": "https://github.com/GetFelix/felix/commit/cc88d1ff013f8fb231c62b8eea3ee93bb31059f7"
+        },
+        "date": 1795702744737,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 72,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 72.00\nmean: 72.40\nstdev: 1.67\ncv: 2.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 126,
+            "range": "5.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 127.00\nstdev: 5.15\ncv: 4.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 157,
+            "range": "512.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 511.40\nstdev: 512.54\ncv: 100.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.20\nstdev: 0.84\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 185.20\nstdev: 4.76\ncv: 2.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 288,
+            "range": "27.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 288.00\nmean: 278.60\nstdev: 27.86\ncv: 10.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
