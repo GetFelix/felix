@@ -309,16 +309,19 @@ async fn a_shard_started_on_raft_forms_its_group_on_the_target_from_its_copies()
 
 /// **A plain publish made while a fresh group hands over its first term
 /// lands, once.** The broker that forms each group leads term 1 and then
-/// hands it to the placed leader, closing the shard for the election.
-/// The cluster starts with those hand-overs still to come
-/// (`pending_raft_hand_overs`; a default start waits them out, and then no
-/// publish here could meet one), and the publishing runs until every one is
-/// done. A publish refused `not_ready` in that window was never proposed, so
-/// the client sends it again, and the shard holds each record once. The
-/// client's re-send count shows a refusal was met and retried: without it
-/// this test passes on a client that never retries. A publish already
-/// proposed when the hand-over began can come back outcome unknown instead;
-/// that one is returned, never re-sent, and held at most once.
+/// hands it to the placed leader, closing the shard for the election. A
+/// publish refused `not_ready` in that window was never proposed, so the
+/// client sends it again, and the shard holds each record once. The client's
+/// re-send count shows a refusal was met and retried: without it this test
+/// passes on a client that never retries. A publish already proposed when
+/// the hand-over began can come back outcome unknown instead; that one is
+/// returned, never re-sent, and held at most once.
+///
+/// The window is made, not waited for. The stream is created after the
+/// cluster is up, so its hand-overs are all still ahead, and every shard is
+/// published to without a pause from the moment its leader serves until the
+/// last hand-over is done. A stream whose hand-overs pass without a refusal
+/// is replaced by a fresh one, until the time budget runs out.
 #[tokio::test]
 #[serial]
 async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
@@ -326,10 +329,11 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
         return;
     }
     const SHARDS: u32 = 12;
-    const ROUNDS: usize = 4;
     let cluster = Cluster::start(ClusterConfig {
-        pending_raft_hand_overs: true,
-        ..raft_cluster_with(StreamSpec::quorum(STREAM, SHARDS, 3))
+        nodes: 3,
+        streams: Vec::new(),
+        broker_env: vec![engine("raft")],
+        ..Default::default()
     })
     .await
     .expect("start cluster");
@@ -342,70 +346,36 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
         max_backoff: Duration::from_millis(500),
         deadline: Some(ELECTED_WITHIN),
     };
-    let client = felix_cluster::client::connect_cluster_with_policy(
-        &addrs,
-        &cluster.tenant_id,
-        &cluster.client_token(),
-        policy,
-    )
-    .await
-    .expect("connect a cluster client");
-
-    // The offset each payload was acknowledged at, per shard.
-    let mut acked: Vec<Vec<(u64, Vec<u8>)>> = vec![Vec::new(); SHARDS as usize];
-    // Payloads answered outcome unknown, per shard.
-    let mut in_doubt: Vec<Vec<Vec<u8>>> = vec![Vec::new(); SHARDS as usize];
-    // At least `ROUNDS`, and on until no hand-over is left, so the publishing
-    // spans every shard's hand-over window.
-    let mut round = 0;
-    loop {
-        if round >= ROUNDS && cluster.raft_hand_over_pending().await.is_none() {
-            break;
-        }
-        assert!(
-            round < 10_000,
-            "the hand-overs did not finish: {:?}",
-            cluster.raft_hand_over_pending().await
-        );
-        round += 1;
-        for shard in 0..SHARDS {
-            let payload = format!("{shard}/{round}").into_bytes();
-            let sent = client
-                .publish_on_shard(
-                    &cluster.tenant_id,
-                    &cluster.namespace,
-                    STREAM,
-                    shard,
-                    payload.clone(),
-                    AckMode::PerMessage,
-                )
-                .await;
-            match sent {
-                Ok(offset) => {
-                    let offset = offset.expect("a durable stream acknowledges with an offset");
-                    acked[shard as usize].push((offset, payload));
-                }
-                // A publish proposed just before the hand-over closed the
-                // shard may commit under the next leader, which the old one
-                // cannot confirm: `leadership_lost`, outcome unknown. A plain
-                // publish must not send that again, so it is returned. It is
-                // checked below to be held at most once.
-                Err(err)
-                    if err
-                        .downcast_ref::<felix_client::BrokerError>()
-                        .is_some_and(|broker| broker.retry == RetryClass::OutcomeUnknown) =>
-                {
-                    in_doubt[shard as usize].push(payload);
-                }
-                Err(err) => panic!("publish {round} to shard {shard}: {err:#}"),
-            }
-        }
-    }
-    assert!(
-        client.publish_resends() > 0,
-        "no publish met a hand-over's refusal in {round} rounds, so nothing here proves the \
-         client re-sends one",
+    let client = std::sync::Arc::new(
+        felix_cluster::client::connect_cluster_with_policy(
+            &addrs,
+            &cluster.tenant_id,
+            &cluster.client_token(),
+            policy,
+        )
+        .await
+        .expect("connect a cluster client"),
     );
+
+    let budget = tokio::time::Instant::now() + HAND_OVER_BUDGET;
+    let mut attempt = 0;
+    // The stream whose hand-overs a publish met, and what was published.
+    let (name, acked, in_doubt) = loop {
+        attempt += 1;
+        assert!(
+            tokio::time::Instant::now() < budget,
+            "no publish met a hand-over's refusal in {attempt} streams over {HAND_OVER_BUDGET:?}, \
+             so nothing here proves the client re-sends one",
+        );
+        let spec = StreamSpec::quorum(format!("{STREAM}-{attempt}"), SHARDS, 3);
+        cluster
+            .create_stream(&spec)
+            .await
+            .expect("create the stream");
+        if let Some((acked, in_doubt)) = publish_across_hand_overs(&cluster, &client, &spec).await {
+            break (spec.name, acked, in_doubt);
+        }
+    };
 
     // An offset here is a log index, and a new leader's first entry takes
     // one, so gaps between acknowledged offsets say nothing. A re-send that
@@ -421,11 +391,11 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
                 // The placed leader once the hand-overs are done, which
                 // holds everything acknowledged.
                 let from = cluster
-                    .shard_owner_of("stream", STREAM, shard as u32)
+                    .shard_owner_of("stream", &name, shard as u32)
                     .await
                     .unwrap_or_else(|_| reader.clone());
                 let (_client, mut replay) = cluster
-                    .replay_shard(&from, STREAM, shard as u32)
+                    .replay_shard(&from, &name, shard as u32)
                     .await
                     .ok()?;
                 let mut held: Vec<(u64, Vec<u8>)> = Vec::new();
@@ -459,6 +429,135 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
             );
         }
     }
+}
+
+/// How long the hand-over test looks for a stream whose hand-overs a publish
+/// meets. One stream's hand-overs take seconds, so this is many attempts.
+const HAND_OVER_BUDGET: Duration = Duration::from_secs(240);
+
+/// Publishes to every shard of a just-created stream, without a pause, from
+/// when each shard's first leader serves until every shard is led by the
+/// broker placement names. Returns what was acknowledged and what came back
+/// outcome unknown, per shard, when a publish was refused and sent again in
+/// that time; `None` when none was.
+async fn publish_across_hand_overs(
+    cluster: &Cluster,
+    client: &std::sync::Arc<felix_client::Client>,
+    spec: &StreamSpec,
+) -> Option<(Vec<Vec<(u64, Vec<u8>)>>, Vec<Vec<Vec<u8>>>)> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let shards = spec.shards as usize;
+    let mut acked: Vec<Vec<(u64, Vec<u8>)>> = vec![Vec::new(); shards];
+    // Every shard serves before the count starts, so a refusal counted below
+    // is a hand-over's and not a shard still opening. The group's first
+    // leader is the broker that formed it, and hands over no sooner than the
+    // placement settle window, so none has begun yet.
+    for shard in 0..spec.shards {
+        let payload = format!("{shard}/0").into_bytes();
+        let offset = felix_cluster::wait::until_some(ELECTED_WITHIN, "a shard to serve", || {
+            let payload = payload.clone();
+            async move {
+                cluster.place_shards().await;
+                client
+                    .publish_on_shard(
+                        &cluster.tenant_id,
+                        &cluster.namespace,
+                        &spec.name,
+                        shard,
+                        payload,
+                        AckMode::PerMessage,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+            }
+        })
+        .await
+        .unwrap_or_else(|err| panic!("shard {shard} never served: {err:#}"));
+        acked[shard as usize].push((offset, payload));
+    }
+
+    let resends_before = client.publish_resends();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let publishers: Vec<_> = (0..spec.shards)
+        .map(|shard| {
+            let client = client.clone();
+            let stop = stop.clone();
+            let (tenant, namespace, stream) = (
+                cluster.tenant_id.clone(),
+                cluster.namespace.clone(),
+                spec.name.clone(),
+            );
+            tokio::spawn(async move {
+                let mut acked = Vec::new();
+                let mut in_doubt = Vec::new();
+                let mut seq = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    seq += 1;
+                    let payload = format!("{shard}/{seq}").into_bytes();
+                    let sent = client
+                        .publish_on_shard(
+                            &tenant,
+                            &namespace,
+                            &stream,
+                            shard,
+                            payload.clone(),
+                            AckMode::PerMessage,
+                        )
+                        .await;
+                    match sent {
+                        Ok(offset) => {
+                            let offset =
+                                offset.expect("a durable stream acknowledges with an offset");
+                            acked.push((offset, payload));
+                        }
+                        // A publish proposed just before the hand-over closed
+                        // the shard may commit under the next leader, which
+                        // the old one cannot confirm: `leadership_lost`,
+                        // outcome unknown. A plain publish must not send that
+                        // again, so it is returned, and checked to be held at
+                        // most once.
+                        Err(err)
+                            if err.downcast_ref::<felix_client::BrokerError>().is_some_and(
+                                |broker| broker.retry == RetryClass::OutcomeUnknown,
+                            ) =>
+                        {
+                            in_doubt.push(payload);
+                        }
+                        Err(err) => panic!("publish {seq} to shard {shard}: {err:#}"),
+                    }
+                    // Paced so the replay below stays small; a hand-over
+                    // lasts far longer than this.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                (acked, in_doubt)
+            })
+        })
+        .collect();
+
+    // Placement is stepped here, as the harness never runs it on a timer.
+    let until = tokio::time::Instant::now() + ELECTED_WITHIN * 2;
+    let pending = loop {
+        cluster.place_shards().await;
+        let pending = cluster.raft_hand_over_pending_for(spec).await;
+        if pending.is_none() || tokio::time::Instant::now() >= until {
+            break pending;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    stop.store(true, Ordering::Relaxed);
+    let mut in_doubt = vec![Vec::new(); shards];
+    for (shard, publisher) in publishers.into_iter().enumerate() {
+        let (sent, unknown) = publisher.await.expect("a publisher task");
+        acked[shard].extend(sent);
+        in_doubt[shard] = unknown;
+    }
+    assert!(
+        pending.is_none(),
+        "the hand-overs did not finish: {pending:?}"
+    );
+    (client.publish_resends() > resends_before).then_some((acked, in_doubt))
 }
 
 fn headers(trace: &str) -> felix_client::RecordHeaders {

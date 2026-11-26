@@ -44,6 +44,7 @@ pub(crate) mod floor;
 mod groups;
 pub(crate) mod reform_survey;
 mod restart;
+pub(crate) use restart::StoppedCopy;
 pub(crate) mod standalone;
 pub(crate) use groups::Groups as RaftGroups;
 
@@ -71,6 +72,11 @@ pub(crate) const LED: &str = "felix_broker_raft_shards_led";
 
 /// Raft shards this broker leads whose placement names another leader.
 pub(crate) const LED_OFF_PLACEMENT: &str = "felix_broker_raft_shards_led_off_placement";
+
+/// Raft shards whose copy here a storage error stopped and that have not
+/// rejoined a working group since.
+pub(crate) const STOPPED_ON_STORAGE_ERROR: &str =
+    "felix_broker_raft_shards_stopped_on_storage_error";
 
 /// This broker's Raft members of stream shards.
 pub(crate) struct RaftShards {
@@ -120,6 +126,9 @@ pub(crate) struct RaftShards {
     held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
     /// Members closed after their core stopped on a storage error.
     restarts: parking_lot::Mutex<restart::Restarts>,
+    /// Why each copy a storage error stopped here stopped, for the gauge and
+    /// `shard_inspect`. A client is told only that it stopped.
+    stopped_copies: parking_lot::Mutex<HashMap<ShardKey, StoppedCopy>>,
     /// This broker's part of each applied re-form plan, from the latest
     /// `start` survey, keyed by shard with the incarnation and the epoch it
     /// starts. The feed pass starts a stopped copy from it.
@@ -302,6 +311,7 @@ impl RaftShards {
             short_warned: parking_lot::Mutex::default(),
             held_warn: parking_lot::Mutex::default(),
             restarts: parking_lot::Mutex::default(),
+            stopped_copies: parking_lot::Mutex::default(),
             reform_starts: Arc::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
@@ -400,6 +410,18 @@ impl RaftShards {
     /// The consumer groups of this broker's Raft stream shards.
     pub(crate) fn groups(&self) -> &Arc<groups::Groups> {
         &self.leading.groups
+    }
+
+    /// Why this broker's copy of `shard` stopped, if a storage error stopped
+    /// it and it has not rejoined a working group since. A core that stopped
+    /// after the last feed pass is reported before the pass closes it.
+    pub(crate) fn stopped_copy(&self, shard: &ShardKey) -> Option<StoppedCopy> {
+        if let Some(stopped) = self.stopped_copies.lock().get(shard) {
+            return Some(stopped.clone());
+        }
+        let error = self.runtime.storage_failure(shard)?;
+        let term = self.runtime.status(shard).map_or(0, |status| status.term);
+        Some(StoppedCopy { term, error })
     }
 
     /// The term this broker leads `shard` in with its stream brought up to
@@ -1444,6 +1466,11 @@ impl EngineShards for RaftShards {
                 };
                 tracing::warn!(shard = ?key, error = %why, "a Raft member stopped on a storage error; it opens again from disk once the disk takes writes");
                 self.restarts.lock().stopped(&key);
+                // Read before the close, which forgets the member's status.
+                let term = self.runtime.status(&key).map_or(0, |status| status.term);
+                self.stopped_copies
+                    .lock()
+                    .insert(key.clone(), StoppedCopy { term, error: why });
                 self.close_with_stream(&key, member).await;
             }
             self.restarts.lock().retain(|key| fed.contains_key(key));
@@ -1595,6 +1622,18 @@ impl EngineShards for RaftShards {
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
             self.report_short(&short);
+            // A reopened copy counts as stopped until it hears a leader: a
+            // rotated copy with no other copy to catch up from serves
+            // nothing until an operator re-forms the group.
+            let stopped = {
+                let mut stopped = self.stopped_copies.lock();
+                stopped.retain(|key, _| {
+                    fed.contains_key(key)
+                        && !(open.contains_key(key) && self.runtime.hears_leader(key) == Some(true))
+                });
+                stopped.len()
+            };
+            metrics::gauge!(STOPPED_ON_STORAGE_ERROR).set(stopped as f64);
             // Kept only for the incarnation the member runs: a version counts
             // within one stream incarnation.
             let targets = fed
@@ -1714,8 +1753,8 @@ impl EngineShards for RaftShards {
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch> {
-        Some(match self.followed(key) {
-            Followed::ByPlacement => return self.dispatch_without_member(key, nodes),
+        let dispatch = match self.followed(key) {
+            Followed::ByPlacement => self.dispatch_without_member(key, nodes)?,
             Followed::Leads(term) => Dispatch::Local { generation: term },
             Followed::Electing => Dispatch::Unavailable(Reason::NotReady),
             Followed::Leader { broker, term } => match nodes(&broker) {
@@ -1727,6 +1766,13 @@ impl EngineShards for RaftShards {
                 },
                 None => Dispatch::Unavailable(Reason::OwnerUnavailable(broker)),
             },
+        };
+        // "Still opening" would hide a copy that a failed fsync stopped.
+        Some(match dispatch {
+            Dispatch::Unavailable(Reason::NotReady) if self.stopped_copy(key).is_some() => {
+                Dispatch::Unavailable(Reason::CopyStopped)
+            }
+            dispatch => dispatch,
         })
     }
 

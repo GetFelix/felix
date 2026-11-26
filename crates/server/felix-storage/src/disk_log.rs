@@ -145,6 +145,9 @@ pub struct PoisonedLog {
     /// The first failure, which is not always a flush: a truncation that
     /// failed partway poisons too.
     pub reason: String,
+    /// A Raft log ([`LogConfig::raft_log`]): its group stops this copy alone,
+    /// and the others serve the shard.
+    pub raft: bool,
 }
 
 /// One entry per shard, with its first failure. Like [`ANY_POISONED`], never
@@ -157,12 +160,13 @@ pub fn poisoned_logs() -> Vec<PoisonedLog> {
     POISONED.lock().clone()
 }
 
-fn note_poisoned(shard: &str, reason: &str) {
+fn note_poisoned(shard: &str, reason: &str, raft: bool) {
     let mut poisoned = POISONED.lock();
     if !poisoned.iter().any(|log| log.shard == shard) {
         poisoned.push(PoisonedLog {
             shard: shard.to_string(),
             reason: reason.to_string(),
+            raft,
         });
     }
 }
