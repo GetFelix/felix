@@ -1457,6 +1457,12 @@ for entry in "${selected[@]}"; do
     if [ "$status" -eq 0 ]; then status=1; fi
   fi
   output="$(cat "$log")"
+  # A counterexample is kept whole under target/tla/trace/, which CI uploads:
+  # the log below shows only its tail.
+  if grep -qE "is violated|^Error:" <<<"$output"; then
+    mkdir -p target/tla/trace
+    cp "$log" "target/tla/trace/$cfg.out"
+  fi
   summary="$(echo "$output" | grep -E "Running Random Simulation|states generated|depth of the complete|Error:|is violated|Finished in" | tail -5 || true)"
   echo "$summary"
   # How often each action fired, from the report TLC prints at the end.

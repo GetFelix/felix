@@ -1342,6 +1342,16 @@ jobs:
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS
 
+      # Every counterexample whole, one file per configuration.
+      - name: Upload TLC traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tla-trace-${{ matrix.shard }}
+          path: target/tla/trace/
+          retention-days: 14
+          if-no-files-found: ignore
+
       # TLC's whole output, coverage report included, for a manual coverage run.
       - name: Upload TLC output
         if: always() && inputs.tla_coverage != ''
