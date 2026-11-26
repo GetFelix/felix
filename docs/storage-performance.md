@@ -257,8 +257,11 @@ flusher, so one flush serves every commit since the last
 (`docs/per-shard-raft.md`, "Proposal: commit on a written majority on relaxed
 brokers"). Votes and terms are still synced before a vote is answered. It is
 on once the fleet finalizes `raft_written_commit`, which a new cluster does.
-On a `none` broker such a log still flushes once a second, since nothing
-else would move its flushed position. `periodic_quorum_commits_share_the_periodic_fsync`
+The log's flushed position, which a `Flushed` acknowledgement and the
+root's log mark wait on, is raised by the sync that covers the entry, on the
+thread that ran it, so an append wakes no flush task (a trim, or an exact
+log mark, still goes through one). On a `none` broker such a log still
+flushes once a second, since nothing else would move its flushed position. `periodic_quorum_commits_share_the_periodic_fsync`
 counts it: 32 commits on three copies take 96 commit-path flushes when the
 log fsyncs on commit, and none on `periodic`, where no flush of any kind
 moves the durable offset before the timer.
