@@ -5284,11 +5284,11 @@ move from an older control plane added:
   a joint change that needs its vote as well. Two voters are never less
   durable than one, so the top-up still adds one copy at a time.
 - The replication count counts copies the group reports voting. A stream
-  learner a re-form started cannot catch up across the re-form's gap yet
-  (#3005), so a re-formed stream group stays below its factor, shows as
-  under-replicated, and waits each pass for its group to report voters
-  that keep a majority of the next set. Only that shard's leader balance
-  stops; the rest of the pass goes on.
+  learner a re-form started counts once it has pulled the base and been
+  promoted ("A new member of a re-formed group"). Until then the shard
+  shows as under-replicated and waits each pass for its group to report
+  voters that keep a majority of the next set. Only that shard's leader
+  balance stops; the rest of the pass goes on.
 - A balance pass gives a seat to a live broker outside the set when it
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
