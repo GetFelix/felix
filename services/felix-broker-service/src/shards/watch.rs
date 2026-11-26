@@ -442,9 +442,14 @@ impl ShardOwnership {
                     && (next.incarnation, next.generation)
                         <= (current.incarnation, current.generation)
                 {
-                    if let Some((target, withheld)) = target_view(current, &next) {
+                    let target = target_view(current, &next);
+                    let retargeted = target.is_some();
+                    if let Some((target, withheld)) = target {
                         current.target = target;
                         current.targets_withheld = withheld;
+                    }
+                    let reformed = take_reformed_epoch(current, &next);
+                    if retargeted || reformed {
                         self.changed();
                         return true;
                     }
@@ -681,6 +686,24 @@ fn same_set(current: &ShardAssignment, next: &ShardAssignment) -> bool {
         &current.leader,
         &current.replicas,
     )
+}
+
+/// Take the Raft record of `next`, a change at or below `current`'s
+/// incarnation and generation, when it is at a later group epoch. A
+/// re-form's epoch write lands in place, at the generation the shard
+/// already has; dropped, the broker never learns the epoch and its stopped
+/// copies never start. The epoch only grows within an incarnation, so a
+/// later one is never a late copy. The set is not taken from it.
+fn take_reformed_epoch(current: &mut ShardAssignment, next: &ShardAssignment) -> bool {
+    if next.incarnation != current.incarnation || next.group_epoch() <= current.group_epoch() {
+        return false;
+    }
+    current.placed = next.placed;
+    current.raft_bases.clone_from(&next.raft_bases);
+    current.raft_seed.clone_from(&next.raft_seed);
+    current.raft_formed = next.raft_formed;
+    current.raft_voters.clone_from(&next.raft_voters);
+    true
 }
 
 /// The target fields to hold after `next`, a change at `current`'s

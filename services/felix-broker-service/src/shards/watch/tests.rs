@@ -165,6 +165,52 @@ fn a_raft_target_stored_in_place_is_applied() {
     assert_eq!(target_of(&owned), (Some((1, 2)), false));
 }
 
+/// `assignment(0, "broker-a", 3)` as a re-form at group epoch `epoch`
+/// records it.
+fn reformed(epoch: u64) -> ShardAssignment {
+    ShardAssignment {
+        placed: Some(PlacedEpoch { epoch }),
+        raft_bases: Some(RaftBases {
+            incarnation: 0,
+            bases: (1..=epoch)
+                .map(|e| RaftEpochBase {
+                    base_last: None,
+                    first_index: e << 20,
+                })
+                .collect(),
+        }),
+        raft_seed: Some(RaftVoters {
+            incarnation: 0,
+            epoch,
+            members: [("broker-a".to_string(), epoch)].into_iter().collect(),
+            starts: Default::default(),
+        }),
+        ..assignment(0, "broker-a", 3)
+    }
+}
+
+/// A re-form's epoch write is stored in place, at the generation the shard
+/// already has. Dropped, the broker never sees the epoch and its stopped
+/// copies wait for good; a late copy of an earlier epoch must not land.
+#[test]
+fn a_reformed_epoch_stored_in_place_is_applied() {
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert!(owned.apply(&key(0), Some(reformed(1))), "the epoch write");
+    let held = owned.get(&key(0)).expect("present");
+    assert_eq!(held.group_epoch(), 1);
+    assert_eq!(held.epoch_bases().map(|bases| bases.len()), Some(1));
+    assert_eq!(held.raft_seed.as_ref().map(|seed| seed.epoch), Some(1));
+    assert!(!owned.apply(&key(0), Some(reformed(1))), "a duplicate");
+    assert!(owned.apply(&key(0), Some(reformed(2))));
+    assert!(!owned.apply(&key(0), Some(reformed(1))), "a late copy");
+    assert!(
+        !owned.apply(&key(0), Some(assignment(0, "broker-a", 3))),
+        "a late copy from before the re-form"
+    );
+    assert_eq!(owned.get(&key(0)).expect("present").group_epoch(), 2);
+}
+
 /// Versions order by placement incarnation before counter: a restore
 /// raises the incarnation and may bring back a lower counter.
 #[test]
