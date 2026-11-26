@@ -362,6 +362,11 @@ fn plan_once(
         .iter()
         .map(|node| (node.node_id.as_str(), &node.spec.region))
         .collect();
+    let diskless: Vec<&str> = nodes
+        .iter()
+        .filter(|node| !node.spec.has_durable_storage())
+        .map(|node| node.node_id.as_str())
+        .collect();
     let unpaced_max = policy.fence_max_lag_records;
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
     let joint_fence = policy.joint_fence;
@@ -429,11 +434,17 @@ fn plan_once(
         // it the way a drain moves it. Only a stream with a home region is
         // constrained; for any other every node is allowed.
         let home = placeable.and_then(|p| p.region);
-        let allowed = |id: &str| match home {
-            None => true,
-            Some(home) => region_of
-                .get(id)
-                .is_some_and(|region| regions.can_route(home, region)),
+        // A node without durable storage may hold only an in-memory stream's
+        // shard. Kept out the way a region is, so anything durable already on
+        // one is moved off it as a drain moves it.
+        let allowed = |id: &str| {
+            let region = match home {
+                None => true,
+                Some(home) => region_of
+                    .get(id)
+                    .is_some_and(|region| regions.can_route(home, region)),
+            };
+            region && (!durable || !diskless.contains(&id))
         };
         let eligible: Vec<&Node> = eligible
             .iter()
