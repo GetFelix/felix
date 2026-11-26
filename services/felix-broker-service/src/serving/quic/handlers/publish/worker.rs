@@ -654,6 +654,11 @@ impl LaneWork {
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
+                let proposed = if self.bound_in_acks(&members) {
+                    proposed.without_deadline()
+                } else {
+                    proposed
+                };
                 // The delivery is finished on this task once the publishers
                 // are answered: one task per proposal, not two. The permits
                 // are held until then, as each job's own would be.
@@ -669,6 +674,31 @@ impl LaneWork {
             Err(err) => settle_group(members, Some(&shard), Err(err)),
         }
         None
+    }
+
+    /// Have each member's control stream time its ack out, at the quorum
+    /// wait and with the engine's error, if every member's reply can be
+    /// timed out there. True then, and the proposal needs no engine timer.
+    ///
+    /// Otherwise nothing is armed and the proposal keeps its engine
+    /// deadline, which answers every member. Either way each member has
+    /// exactly one bound. Decided for all members before any is armed: a
+    /// member armed here while the deadline stays would have two bounds.
+    fn bound_in_acks(&self, members: &[GroupMember]) -> bool {
+        let all = members.iter().all(|member| {
+            member
+                .response
+                .as_ref()
+                .is_some_and(super::PublishReply::can_answer_within)
+        });
+        if all {
+            let timed_out =
+                |timeout| crate::shards::routing::RaftPublish::timed_out(timeout).into();
+            for reply in members.iter().filter_map(|member| member.response.as_ref()) {
+                reply.answer_within(self.quorum_timeout, timed_out);
+            }
+        }
+        all
     }
 
     /// Move the plain publishes queued on `lane` behind the one being

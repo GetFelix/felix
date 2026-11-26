@@ -250,6 +250,22 @@ impl RaftRefusal {
 pub struct RaftPublish(Option<felix_broker::ProposedPublish<CommitError>>);
 
 impl RaftPublish {
+    /// Arm no deadline for the answer: the caller answers a publish still
+    /// unsettled after `timeout` with [`Self::timed_out`] itself, as
+    /// [`Self::complete`] otherwise would. Saves a timer per publish.
+    pub fn without_deadline(self) -> Self {
+        Self(self.0.map(felix_broker::ProposedPublish::without_deadline))
+    }
+
+    /// What [`Self::complete`] answers a publish not committed within the
+    /// `timeout` it was proposed with.
+    pub fn timed_out(timeout: Duration) -> CommitError {
+        CommitError::TimedOut {
+            what: "batch",
+            timeout,
+        }
+    }
+
     /// Wait for the acknowledgement. Returns the first record's offset.
     pub async fn complete(self) -> Result<Option<u64>, CommitError> {
         Ok(self.complete_offsets().await?.map(|(first, _)| first))
@@ -794,6 +810,11 @@ impl Engine for StreamEngine {
         generation: u64,
         timeout: Duration,
     ) -> anyhow::Result<()> {
+        // An in-memory publish takes no offset, so there is nothing to
+        // commit: it was acknowledged when it was enqueued.
+        if outcome.offsets.is_none() {
+            return Ok(());
+        }
         self.hybrid
             .await_commit(handle, shard, outcome, generation, timeout)
             .await

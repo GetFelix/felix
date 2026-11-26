@@ -365,6 +365,116 @@ async fn quorum_cache_writes_survive_a_promotion_in_a_campaign() {
     );
 }
 
+/// Long enough for [`ReuseOffsets`] to go once round its four faults, each
+/// with its recovery and the reads from every broker after it.
+const OFFSET_REUSE_DURATION: Duration = Duration::from_secs(120);
+
+/// The `Leader` list the offset-reuse campaign adds.
+const LEADER_LIST: &str = "history-leader";
+
+/// **No offset of a stream is ever held as two records**, on Raft. A
+/// `Leader` list joins the three `Quorum` ones, two subscribers follow each
+/// list, and every list is read from every broker after each recovery. The
+/// faults land on whichever broker leads the `Leader` list while the clients
+/// write to it: a kill and restart, a partition that deposes it, a machine
+/// crash that leaves its unsynced tail untrusted, and its storage wiped.
+/// Rule 22 then holds every acknowledgement, read and delivery of an offset
+/// against every other.
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_offset_is_held_as_two_records_across_leader_faults() {
+    if std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() == Ok("hybrid") {
+        println!("skipped: a hybrid `Leader` stream may rewrite a delivered tail");
+        return;
+    }
+    let mut campaign = Campaign::from_env(SEED, OFFSET_REUSE_DURATION, Mode::LeaseFree)
+        .expect("campaign settings")
+        .with_leader_list(LEADER_LIST);
+    campaign.duration = OFFSET_REUSE_DURATION;
+    let seed = campaign.seed;
+    println!("offset-reuse campaign: seed {seed}; rerun with FELIX_HISTORY_SEED={seed}");
+    let mut nemesis = ReuseOffsets::default();
+    let history = run_checked(&campaign, &mut nemesis).await;
+
+    for kind in ReuseOffsets::ORDER {
+        assert!(
+            nemesis.healed.contains(&format!("{kind:?}")),
+            "seed {seed}: no {kind:?} on the `Leader` list's leader was injected and healed;              healed {:?}",
+            nemesis.healed
+        );
+    }
+    // A rule with nothing to compare proves nothing.
+    let delivered: Vec<usize> = history
+        .subscriptions
+        .iter()
+        .filter(|s| s.list == LEADER_LIST)
+        .map(|s| s.delivered.len())
+        .collect();
+    assert!(
+        delivered.len() == 2 && delivered.iter().all(|n| *n >= 20),
+        "seed {seed}: the `Leader` list's subscribers were delivered {delivered:?}"
+    );
+    let reads = history
+        .ops
+        .iter()
+        .filter(|op| {
+            op.process == campaign.clients + 1
+                && matches!(&op.action, Action::Read { list, observed }
+                    if list == LEADER_LIST && !observed.is_empty())
+        })
+        .count();
+    assert!(
+        reads >= campaign.nodes * ReuseOffsets::ORDER.len(),
+        "seed {seed}: only {reads} reads of the `Leader` list from every broker saw anything"
+    );
+}
+
+/// Faults whoever leads [`LEADER_LIST`], going round [`Self::ORDER`], and
+/// remembers which kinds were healed.
+#[derive(Default)]
+struct ReuseOffsets {
+    next: usize,
+    healed: BTreeSet<String>,
+}
+
+impl ReuseOffsets {
+    const ORDER: [FaultKind; 4] = [
+        FaultKind::Kill,
+        FaultKind::Partition,
+        FaultKind::MachineCrash,
+        FaultKind::Wipe,
+    ];
+}
+
+impl Nemesis for ReuseOffsets {
+    fn next_fault(&mut self, _rng: &mut Rng, view: &ClusterView) -> Option<Fault> {
+        let node = view
+            .shards
+            .iter()
+            .find(|shard| shard.kind == "stream" && shard.name == LEADER_LIST)?
+            .leader
+            .clone();
+        let fault = match Self::ORDER[self.next % Self::ORDER.len()] {
+            FaultKind::Kill => Fault::Kill { node },
+            FaultKind::Partition => Fault::Partition { node },
+            FaultKind::MachineCrash => Fault::MachineCrash { node },
+            _ => Fault::Wipe { node },
+        };
+        self.next += 1;
+        Some(fault)
+    }
+
+    fn outcome(&mut self, fault: &Fault, healed: bool) {
+        if healed {
+            self.healed.insert(format!("{:?}", fault.kind()));
+        }
+    }
+
+    fn satisfied(&self) -> bool {
+        self.healed.len() == Self::ORDER.len()
+    }
+}
+
 /// Start a cluster for `nemesis`, run `campaign`, and check the history,
 /// failing on any violation and on a campaign too quiet to prove anything.
 async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History {

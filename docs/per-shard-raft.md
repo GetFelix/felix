@@ -3713,7 +3713,15 @@ been had it waited for the write.
 
 - A batch that times out keeps its place. The publisher is answered with
   the timeout, but delivery keeps waiting for the commit, so the batches
-  behind it still go out after it.
+  behind it still go out after it. That wait has no deadline and arms no
+  timer: only the commit, a lost leadership, or the group stopping or
+  closing ends it.
+- The publisher's timeout is `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` on every
+  path, answered with `quorum_timeout`. A plain publish a QUIC client waits
+  on an ack for gets it from its control stream's ack sweep, the one that
+  also runs the longer ack timeout, so it arms no timer of its own.
+  Idempotent, forwarded, direct, Kafka and MQTT publishes, and those
+  acknowledged on enqueue, keep a timer per publish for it.
 - A batch whose `await_commit` fails because this broker stopped leading,
   or the group stopped, is never delivered: a deposed leader's record may
   have been replaced. It may also have committed, so in its place in the
@@ -3747,6 +3755,15 @@ been had it waited for the write.
   leader acknowledged. The pass waits while the broker still holds a batch
   it was handed as leader, so a record is never delivered once from the
   batch and again from the log.
+- With no subscriber registered, and no state view a state read built,
+  the pass reads nothing: the stream moves to the bound with an empty
+  replay ring, so a follower does no read of its log per commit. A
+  subscriber registers under the same ring lock the move takes, so it
+  either joins above the move and reads what lies below from the log, or
+  is registered first and the pass reads for it. The move does not count
+  the generation-start records just below the bound, so the first pass
+  that reads after it, or the term that opens there, counts them from the
+  log and reports them as skipped.
 - Records are grouped into frames by append time, so a follower's frame
   boundaries can differ from the leader's. Order and offsets are the same.
 - A batch that reaches the stream at offsets the log already delivered is
@@ -3777,6 +3794,11 @@ been had it waited for the write.
   joins by offset instead, at the committed end. No pass runs first: the
   records the pass still delivers below that offset are skipped for it.
 
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `a_follower_with_no_subscriber_reads_nothing_back`,
+> `a_subscriber_joining_mid_stream_gets_every_offset_once`,
+> `a_jump_past_a_generation_start_still_reports_it_skipped` and
+> `leading_after_a_jump_reports_the_generation_start_run`;
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
 > `a_record_is_delivered_only_once_a_majority_holds_it`,
@@ -7336,7 +7358,8 @@ for the written acknowledgement. The proposal extends it to the commit.
 `flushed` keeps meaning a real fsync, because three things read it as
 one: the root's log mark (an unsynced id would read as a restore after a
 power cut), a `Leader` write on a stream that fsyncs, and the snapshot
-rule below.
+rule below. It rises when the log's durable bound covers the entry, raised
+by the sync itself, so the append does not hand the wait to a task.
 
 Each follower answers an append by its own mode. Every leader asks for
 the written report (`await_quorum_ack`, `Request::Written`) once a

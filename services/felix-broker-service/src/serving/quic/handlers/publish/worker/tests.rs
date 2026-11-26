@@ -1462,6 +1462,57 @@ mod on_raft {
         Ok(())
     }
 
+    /// **A Raft publish whose client ack its control stream times out arms
+    /// no timer of its own.** The stream's sweep answers it at the quorum
+    /// wait with the engine's error, and the commit wait behind its delivery
+    /// has no deadline. Each was one timer per publish.
+    #[tokio::test]
+    async fn a_raft_publish_acked_to_a_client_arms_no_timer() -> Result<()> {
+        use crate::serving::quic::handlers::publish::ack::{AckEncoding, Outgoing};
+        use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed};
+
+        let at = Leading::new().await?;
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let acks = super::super::super::CommitAcks::for_test(
+            &out_tx,
+            Arc::new(tokio::sync::Semaphore::new(8)),
+        );
+        let request = AckRequest {
+            request_id: 1,
+            encoding: AckEncoding::Binary,
+            payload_bytes: 3,
+            forwarded_to: None,
+            start: crate::serving::quic::telemetry::t_instant_now(),
+            single: true,
+        };
+        let (reply, pending) = acks.reserve(request).expect("room");
+        let (mut one, _) = job(&at.handle, &at.orders, at.term, b"one", None);
+        one.response = Some(super::super::super::PublishReply::Ack(reply));
+
+        let armed = felix_broker::timer_probe::armed();
+        at.publish_ctx.scheduler.send(one).await;
+        assert_eq!(pending.arm(), Armed::Waiting);
+        let answer = tokio::time::timeout(Duration::from_secs(30), out_rx.recv()).await?;
+        assert!(
+            matches!(
+                answer,
+                Some(Outgoing::PublishAck {
+                    request_id: 1,
+                    error: None,
+                    ..
+                })
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(
+            felix_broker::timer_probe::armed() - armed,
+            0,
+            "timers armed for one publish"
+        );
+        at.stop().await;
+        Ok(())
+    }
+
     /// A broker leading `orders` on its own, with a publish context on it.
     struct Leading {
         _root: tempfile::TempDir,
@@ -2008,6 +2059,267 @@ mod on_raft {
                 1 => assert_eq!(read, ["after"]),
                 _ => panic!("the merged batch was cut: {read:?}"),
             }
+            fixture::stop(&members).await;
+            Ok(())
+        }
+
+        /// Give `job` a client's ack reserved on `acks`, to be armed once
+        /// the job is queued.
+        fn acked_by(
+            acks: &crate::serving::quic::handlers::publish::CommitAcks,
+            job: &mut PublishJob,
+            request_id: u64,
+        ) -> crate::serving::quic::handlers::publish::commit_ack::PendingAck {
+            use crate::serving::quic::handlers::publish::ack::AckEncoding;
+            use crate::serving::quic::handlers::publish::commit_ack::AckRequest;
+            let request = AckRequest {
+                request_id,
+                encoding: AckEncoding::Binary,
+                payload_bytes: 2,
+                forwarded_to: None,
+                start: crate::serving::quic::telemetry::t_instant_now(),
+                single: false,
+            };
+            let (reply, pending) = acks.reserve(request).expect("room");
+            job.response = Some(crate::serving::quic::handlers::publish::PublishReply::Ack(
+                reply,
+            ));
+            pending
+        }
+
+        /// The next ack on `out`: its request and offset, or its error's
+        /// retry class.
+        async fn next_ack(
+            out: &mut tokio::sync::mpsc::Receiver<
+                crate::serving::quic::handlers::publish::ack::Outgoing,
+            >,
+        ) -> (u64, Result<Option<u64>, felix_wire::RetryClass>) {
+            use crate::serving::quic::handlers::publish::ack::Outgoing;
+            match tokio::time::timeout(Duration::from_secs(10), out.recv())
+                .await
+                .expect("answered in time")
+            {
+                Some(Outgoing::PublishAck {
+                    request_id,
+                    error: None,
+                    offset,
+                    ..
+                }) => (request_id, Ok(offset)),
+                Some(Outgoing::PublishAck {
+                    request_id,
+                    code: Some((_, retry)),
+                    ..
+                }) => (request_id, Err(retry)),
+                other => panic!("expected a binary ack, got {other:?}"),
+            }
+        }
+
+        /// **A merged proposal with a member its control stream cannot time
+        /// out keeps its engine deadline, and no member gets a second
+        /// bound**: one timer for the proposal and nothing in the ack
+        /// sweep, each member still answered with its own offset.
+        #[tokio::test]
+        async fn a_mixed_merged_proposal_keeps_one_bound_per_member() -> Result<()> {
+            let at = Leading::new().await?;
+            let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+            let acks = crate::serving::quic::handlers::publish::CommitAcks::for_test(
+                &out_tx,
+                Arc::new(tokio::sync::Semaphore::new(8)),
+            );
+            let before = at.counts();
+            let armed = felix_broker::timer_probe::armed();
+            let (mut first, _) = at.job_of(1);
+            let first_pending = acked_by(&acks, &mut first, 1);
+            let (middle, middle_answer) = at.job_of(1);
+            let (mut last, _) = at.job_of(1);
+            let last_pending = acked_by(&acks, &mut last, 3);
+            for job in [first, middle, last] {
+                at.publish_ctx.scheduler.send(job).await;
+            }
+            first_pending.arm();
+            last_pending.arm();
+
+            let middle = offset(middle_answer.await);
+            let mut acked = vec![next_ack(&mut out_rx).await, next_ack(&mut out_rx).await];
+            acked.sort_by_key(|(request, _)| *request);
+            assert_eq!(
+                acked,
+                [(1, Ok(Some(middle - 1))), (3, Ok(Some(middle + 1)))]
+            );
+            assert_eq!(at.counts().0 - before.0, 1, "not one proposal");
+            assert_eq!(
+                felix_broker::timer_probe::armed() - armed,
+                1,
+                "the proposal's engine deadline"
+            );
+            assert_eq!(acks.commit_deadlines(), 0, "members bounded twice");
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **A merged proposal whose every member its control stream can
+        /// time out arms no engine timer**: each member's deadline is in
+        /// the ack sweep, once, and each is answered with its own offset.
+        #[tokio::test]
+        async fn an_all_bounded_merged_proposal_drops_the_engine_deadline() -> Result<()> {
+            let at = Leading::new().await?;
+            let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+            let acks = crate::serving::quic::handlers::publish::CommitAcks::for_test(
+                &out_tx,
+                Arc::new(tokio::sync::Semaphore::new(8)),
+            );
+            let before = at.counts();
+            let armed = felix_broker::timer_probe::armed();
+            let mut pending = Vec::new();
+            for request in 1..=3 {
+                let (mut job, _) = at.job_of(1);
+                pending.push(acked_by(&acks, &mut job, request));
+                at.publish_ctx.scheduler.send(job).await;
+            }
+            for pending in pending {
+                pending.arm();
+            }
+
+            let mut acked = Vec::new();
+            for _ in 0..3 {
+                acked.push(next_ack(&mut out_rx).await);
+            }
+            acked.sort_by_key(|(request, _)| *request);
+            let first = acked[0]
+                .1
+                .clone()
+                .expect("acknowledged")
+                .expect("an offset");
+            assert_eq!(
+                acked,
+                [
+                    (1, Ok(Some(first))),
+                    (2, Ok(Some(first + 1))),
+                    (3, Ok(Some(first + 2)))
+                ]
+            );
+            assert_eq!(at.counts().0 - before.0, 1, "not one proposal");
+            assert_eq!(
+                felix_broker::timer_probe::armed() - armed,
+                0,
+                "timers armed"
+            );
+            assert_eq!(acks.commit_deadlines(), 3, "deadlines in the ack sweep");
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **When a merged proposal's members time out in their control
+        /// streams' sweeps, each is answered once, outcome unknown, and
+        /// none is left waiting**, across two connections. The late commit
+        /// answers none of them again. Starved as in
+        /// `a_merged_batch_that_cannot_commit_leaves_every_member_unknown`.
+        #[tokio::test]
+        async fn merged_members_timed_out_by_their_sweeps_are_each_answered_once() -> Result<()> {
+            use crate::serving::quic::handlers::publish::CommitAcks;
+
+            let (net, members, leader) = fixture::trio().await;
+            let leading = &members[leader];
+            let orders = fixture::key("orders", 0);
+            let term = leading.shards.leading(&orders).expect("term");
+            let config = BrokerConfig {
+                pub_workers_per_conn: 1,
+                pub_queue_depth: 64,
+                publish_quorum_timeout_ms: 500,
+                ..BrokerConfig::default()
+            };
+            let cluster = ClusterContext {
+                engine: Arc::clone(&leading.engine),
+                ..ClusterContext::default()
+            };
+            let publish_ctx = build_publish_context(Arc::clone(&leading.broker), &config, cluster);
+            let handle = leading
+                .broker
+                .resolve_stream_handle("t1", "ns", "orders", 0)
+                .await?;
+            let (before, answer) = job(&handle, &orders, term, b"before", None);
+            publish_ctx.scheduler.send(before).await;
+            let before = offset(answer.await);
+
+            let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+            let mut outs = Vec::new();
+            let mut conns = Vec::new();
+            for _ in 0..2 {
+                let (out_tx, out_rx) = tokio::sync::mpsc::channel(8);
+                let acks = CommitAcks::for_test(&out_tx, Arc::new(tokio::sync::Semaphore::new(8)));
+                tokio::spawn(acks.clone().run_deadlines(cancel_rx.clone()));
+                outs.push((out_tx, out_rx));
+                conns.push(acks);
+            }
+            let raft = leading.shards.engine_for(&orders).expect("a member");
+            let proposed = raft.proposals(&orders);
+            for (at, member) in members.iter().enumerate() {
+                if at != leader {
+                    net.starved.lock().insert(member.name.to_string());
+                }
+            }
+            let armed = felix_broker::timer_probe::armed();
+            let payloads: [&'static [u8]; 3] = [b"m0", b"m1", b"m2"];
+            let mut pending = Vec::new();
+            for (request, payload) in (1..).zip(payloads) {
+                let (mut job, _) = job(&handle, &orders, term, payload, None);
+                // Members 1 and 3 share a connection; 2 has its own.
+                let conn = usize::from(request == 2);
+                pending.push(acked_by(&conns[conn], &mut job, request));
+                publish_ctx.scheduler.send(job).await;
+            }
+            for pending in pending {
+                pending.arm();
+            }
+            let mut answered = Vec::new();
+            for _ in 0..2 {
+                answered.push(next_ack(&mut outs[0].1).await);
+            }
+            answered.push(next_ack(&mut outs[1].1).await);
+            answered.sort_by_key(|(request, _)| *request);
+            let unknown = Err(felix_wire::RetryClass::OutcomeUnknown);
+            assert_eq!(
+                answered,
+                [(1, unknown.clone()), (2, unknown.clone()), (3, unknown)]
+            );
+            assert_eq!(raft.proposals(&orders) - proposed, 1, "not one proposal");
+            // The one is the proposal's wait for a majority to have written
+            // it; an engine deadline would be a second.
+            assert_eq!(
+                felix_broker::timer_probe::armed() - armed,
+                1,
+                "timers armed"
+            );
+
+            net.starved.lock().clear();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                let (after, answer) = job(&handle, &orders, term, b"after", None);
+                publish_ctx.scheduler.send(after).await;
+                match answer.await? {
+                    Ok(_) => break,
+                    Err(err) => {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "never published again: {err}"
+                        );
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+            }
+            let read = leading
+                .broker
+                .read_durable("t1", "ns", "orders", 0, before + 1, 1 << 20)
+                .await?;
+            let read: Vec<_> = read.into_iter().map(|record| record.payload).collect();
+            assert!(
+                read == ["m0", "m1", "m2", "after"] || read == ["after"],
+                "the merged batch was cut: {read:?}"
+            );
+            for (_, out_rx) in &mut outs {
+                assert!(out_rx.try_recv().is_err(), "a member answered twice");
+            }
+            cancel_tx.send(true).ok();
             fixture::stop(&members).await;
             Ok(())
         }
