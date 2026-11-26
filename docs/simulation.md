@@ -181,8 +181,11 @@ cargo test -p felix-cluster --lib history::
    shards and a cache, all replicated three ways with quorum acknowledgement.
    Each broker opens a real durable log in its own in-memory data directory, waits
    for the stream catalog (the `seeded` gate a real broker has), registers, and
-   starts its shard tasks. Once every broker has registered, the run finalizes
-   replica election, so brokers elect a new leader themselves when one is lost.
+   starts its shard tasks. The control plane starts as an upgraded fleet's,
+   so it finalizes nothing itself: these brokers run the hybrid, whose seeds
+   predate the new-cluster rule (`SimConfig::upgraded_fleet`). Once every
+   broker has registered, the run finalizes replica election, so brokers elect
+   a new leader themselves when one is lost.
 2. **Faults.** For the first 90 seconds a schedule drawn from the seed crashes
    and kills brokers or cuts their power and restarts them, partitions them,
    freezes them, drops one direction of a link, and makes the control plane
