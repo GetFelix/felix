@@ -127,10 +127,14 @@ pub struct RuntimeConfig {
     /// docs/per-shard-raft.md, "Group threads".
     pub group_threads: usize,
     /// How long a leader holds an append that carries only a new commit
-    /// index, for the next append to carry it instead. With no write after
-    /// a commit, followers learn it this much later. Shorter than
-    /// `heartbeat`. See docs/per-shard-raft.md, "A commit goes on the next
-    /// append".
+    /// index, for the next append to carry it instead. A hold ends on a grid
+    /// of this step shared by every group on the broker, at least one step
+    /// and less than two after it began, so the held appends of many groups
+    /// to one broker go together in one heartbeat batch. A heartbeat to the
+    /// follower, or a read on it that waits for the commit, ends it early.
+    /// With no write after a commit, followers learn it up to two steps
+    /// plus `beat_window` later. Shorter than `heartbeat`; zero sends it at
+    /// once. See docs/per-shard-raft.md, "A commit goes on the next append".
     pub commit_hold: Duration,
     /// How long a heartbeat waits for others to the same broker, so the
     /// heartbeats of every group handed off within it go as one message.
@@ -165,7 +169,8 @@ impl Default for RuntimeConfig {
             placement: Placement::default(),
             max_elections_at_once: 64,
             group_threads: default_group_threads(),
-            commit_hold: Duration::from_millis(1),
+            // Two steps plus the heartbeat window stay under 50 ms.
+            commit_hold: Duration::from_millis(20),
             beat_window: Duration::from_millis(1),
         }
     }

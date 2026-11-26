@@ -75,6 +75,9 @@ pub(crate) struct Group {
     purge_at: machine::PurgeAt,
     pace: Arc<Pace>,
     lease: Arc<Lease>,
+    /// The leader's links to its followers, so a read on a follower can
+    /// end the hold of the commit it waits for (`network/client.rs`).
+    links: Arc<super::network::Links>,
     /// Empty for a member that started with no vote on disk.
     hold: Hold,
     /// See [`Host::stands_after`].
@@ -836,6 +839,7 @@ impl Group {
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new());
         let refusals = Arc::new(Refusals::new(id.clone()));
+        let links = Arc::new(super::network::Links::default());
         let network = Network {
             router: Router::new(
                 Arc::clone(&transport),
@@ -847,7 +851,11 @@ impl Group {
                 Arc::clone(&config),
             ),
             group: id.clone(),
-            commit_hold: timers.commit_hold,
+            commit_hold: super::network::Hold {
+                every: timers.commit_hold,
+                base: timers.started,
+            },
+            links: Arc::clone(&links),
         };
         let lag_threshold = config.replication_lag_threshold;
         let started = Raft::new(member.clone(), config, network, log.clone(), machine);
@@ -904,6 +912,7 @@ impl Group {
             purge_at,
             pace,
             lease,
+            links,
             hold,
             stands_after,
             transport,
@@ -1775,6 +1784,11 @@ impl Group {
                     Some(term) => self.confirmed_index(term).await.ok(),
                     None => None,
                 };
+                // The asker waits to apply the index, so a held commit that
+                // carries it goes now rather than at the end of its hold.
+                if let Some(index) = index {
+                    self.links.want(index);
+                }
                 Ok(Reply::ReadIndex { index })
             }
         }

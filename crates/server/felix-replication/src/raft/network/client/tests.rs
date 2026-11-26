@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use futures::channel::mpsc;
 use openraft::entry::RaftEntry;
@@ -9,6 +9,14 @@ use super::*;
 use crate::raft::types::MemberId;
 
 const HOLD: Duration = Duration::from_millis(1);
+
+/// A hold of `HOLD` on a grid that starts now.
+fn hold() -> Hold {
+    Hold {
+        every: HOLD,
+        base: tokio::time::Instant::now(),
+    }
+}
 
 /// A follower that takes every append whole, and records when each came.
 #[derive(Clone, Default)]
@@ -90,7 +98,9 @@ async fn run(follower: &mut Follower, appends: Vec<Append>, then: Duration) -> V
     for rpc in appends {
         tx.unbounded_send(rpc).unwrap();
     }
-    let answers = stream_append(follower, rx, option(), HOLD).await.unwrap();
+    let answers = stream_append(follower, rx, option(), Some(hold()), Arc::default())
+        .await
+        .unwrap();
     let ending = async move {
         tokio::time::sleep(then).await;
         drop(tx);

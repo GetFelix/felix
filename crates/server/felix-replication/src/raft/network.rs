@@ -4,6 +4,8 @@
 
 mod client;
 
+pub(crate) use client::{Hold, Links};
+
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
@@ -32,7 +34,7 @@ use super::reach::{Reach, Refusals, Waits};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
-use client::Client;
+pub(crate) use client::Client;
 
 /// One Raft message for one member of one group. What is in it is this
 /// module's business; a transport carries it to [`Self::to`]'s broker.
@@ -624,18 +626,33 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
 pub(crate) struct Network {
     pub(crate) router: Router,
     pub(crate) group: GroupId,
-    /// [`super::RuntimeConfig::commit_hold`].
-    pub(crate) commit_hold: Duration,
+    /// [`super::RuntimeConfig::commit_hold`], on the runtime's grid.
+    pub(crate) commit_hold: Hold,
+    /// Shared with the group, which ends holds for readers on followers.
+    pub(crate) links: Arc<Links>,
+}
+
+impl Network {
+    fn client(&self, target: &MemberId, hold: Option<Hold>) -> Client {
+        let router = self.router.toward(target, &self.group);
+        Client {
+            adapter: GroupNetworkAdapter::new(router, target.clone(), self.group.clone()),
+            hold,
+            link: self.links.to(target),
+        }
+    }
 }
 
 impl RaftNetworkFactory<ShardTypes> for Network {
     type Network = Client;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
-        let router = self.router.toward(&target, &self.group);
-        Client {
-            adapter: GroupNetworkAdapter::new(router, target, self.group.clone()),
-            hold: self.commit_hold,
-        }
+        self.client(&target, Some(self.commit_hold))
+    }
+
+    /// openraft's heartbeats are never held, and each ends the hold of a
+    /// commit-only append to the same follower, which then rides along.
+    async fn new_heartbeat_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
+        self.client(&target, None)
     }
 }

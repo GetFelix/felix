@@ -55,9 +55,120 @@ impl Beats {
     }
 }
 
+impl Beats {
+    /// The opener of a window waits it out on its own task. A batch of one
+    /// it sends itself; one that others joined goes on a task of its own.
+    async fn open(&self, broker: Arc<str>, id: u64, answer: oneshot::Receiver<Answer>) -> Answer {
+        let mut window = Window {
+            queued: Arc::clone(&self.queued),
+            inner: Arc::clone(&self.inner),
+            wait: self.window,
+            broker,
+            id,
+            until: tokio::time::Instant::now() + self.window,
+            open: true,
+        };
+        #[cfg(test)]
+        counts::timer();
+        let mut answer = answer;
+        tokio::select! {
+            biased;
+            // It filled up and was sent before the window ended.
+            answered = &mut answer => {
+                window.open = false;
+                return answered.unwrap_or_else(|_| Err(dropped()));
+            }
+            () = tokio::time::sleep_until(window.until) => {}
+        }
+        let batch = take(&mut self.queued.lock(), &window.broker, id);
+        window.open = false;
+        match batch {
+            // Nothing is ever taken out of a batch, so a batch of one is the
+            // opener's own.
+            Some(batch) if batch.beats.len() == 1 => {
+                #[cfg(test)]
+                counts::sent();
+                let mut answers = self.inner.send_beats(batch.beats, self.window).await;
+                return answers.pop().unwrap_or_else(|| {
+                    Err(Refused::Unreachable(
+                        "the transport answered no heartbeat".into(),
+                    ))
+                });
+            }
+            Some(batch) => flush(&self.inner, self.window, batch),
+            // It filled up and was sent.
+            None => {}
+        }
+        answer.await.unwrap_or_else(|_| Err(dropped()))
+    }
+}
+
+/// The window its opener waits out. Dropped while open, the opener stopped
+/// waiting, and a task waits out the rest for the others.
+struct Window {
+    queued: Arc<parking_lot::Mutex<Queued>>,
+    inner: Arc<dyn RaftTransport>,
+    wait: Duration,
+    broker: Arc<str>,
+    id: u64,
+    until: tokio::time::Instant,
+    open: bool,
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        if !self.open {
+            return;
+        }
+        let others = {
+            let mut queued = self.queued.lock();
+            match queued.batches.get(&self.broker) {
+                Some(batch) if batch.id == self.id && batch.beats.len() > 1 => true,
+                // Only the opener's own, which no one waits for now.
+                Some(batch) if batch.id == self.id => {
+                    queued.batches.remove(&self.broker);
+                    false
+                }
+                _ => false,
+            }
+        };
+        if !others {
+            return;
+        }
+        let (queued, inner, wait) = (Arc::clone(&self.queued), Arc::clone(&self.inner), self.wait);
+        let (broker, id, until) = (Arc::clone(&self.broker), self.id, self.until);
+        #[cfg(test)]
+        counts::spawn();
+        tokio::spawn(async move {
+            tokio::time::sleep_until(until).await;
+            let batch = take(&mut queued.lock(), &broker, id);
+            if let Some(batch) = batch {
+                flush(&inner, wait, batch);
+            }
+        });
+    }
+}
+
+/// Removes `broker`'s batch if it is still batch `id`: one that filled up
+/// was sent already, and a newer batch has its own opener.
+fn take(queued: &mut Queued, broker: &Arc<str>, id: u64) -> Option<Batch> {
+    match queued.batches.get(broker) {
+        Some(batch) if batch.id == id => queued.batches.remove(broker),
+        _ => None,
+    }
+}
+
+fn dropped() -> Refused {
+    Refused::Unreachable("the heartbeat was dropped before it was sent".into())
+}
+
 /// Send `batch` and hand each heartbeat its answer.
 fn flush(inner: &Arc<dyn RaftTransport>, wait: Duration, batch: Batch) {
     let inner = Arc::clone(inner);
+    #[cfg(test)]
+    counts::spawn();
+    #[cfg(test)]
+    counts::sent();
     // On its own task, so a caller that stops waiting does not take the
     // other groups' heartbeats with it.
     tokio::spawn(async move {
@@ -86,7 +197,7 @@ impl RaftTransport for Beats {
         }
         let broker = Arc::clone(&request.to().broker);
         let (waiter, answer) = oneshot::channel();
-        let (full, timer) = {
+        let (full, opened) = {
             let mut queued = self.queued.lock();
             let Queued { batches, next } = &mut *queued;
             let batch = batches.entry(Arc::clone(&broker)).or_insert_with(|| {
@@ -107,34 +218,44 @@ impl RaftTransport for Beats {
         };
         if let Some(full) = full {
             flush(&self.inner, self.window, full);
-        } else if let Some(id) = timer {
-            let queued = Arc::clone(&self.queued);
-            let inner = Arc::clone(&self.inner);
-            let window = self.window;
-            tokio::spawn(async move {
-                tokio::time::sleep(window).await;
-                let batch = {
-                    let mut queued = queued.lock();
-                    match queued.batches.get(&broker) {
-                        Some(batch) if batch.id == id => queued.batches.remove(&broker),
-                        // Sent when it filled up; a newer batch has its own timer.
-                        _ => None,
-                    }
-                };
-                if let Some(batch) = batch {
-                    flush(&inner, window, batch);
-                }
-            });
+        } else if let Some(id) = opened {
+            return self.open(broker, id, answer).await;
         }
-        answer.await.unwrap_or_else(|_| {
-            Err(Refused::Unreachable(
-                "the heartbeat was dropped before it was sent".into(),
-            ))
-        })
+        answer.await.unwrap_or_else(|_| Err(dropped()))
     }
 
     async fn send_beats(&self, beats: Vec<RaftRequest>, wait: Duration) -> Vec<Answer> {
         self.inner.send_beats(beats, wait).await
+    }
+}
+
+/// Timers, tasks and messages the holds and windows cost, counted on the
+/// test's thread.
+#[cfg(test)]
+pub(crate) mod counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        static TIMERS: Cell<u64> = const { Cell::new(0) };
+        static SPAWNS: Cell<u64> = const { Cell::new(0) };
+        static SENT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn timer() {
+        TIMERS.set(TIMERS.get() + 1);
+    }
+
+    pub(crate) fn spawn() {
+        SPAWNS.set(SPAWNS.get() + 1);
+    }
+
+    pub(crate) fn sent() {
+        SENT.set(SENT.get() + 1);
+    }
+
+    /// `(timers, spawns, batches sent)` so far on this thread.
+    pub(crate) fn read() -> (u64, u64, u64) {
+        (TIMERS.get(), SPAWNS.get(), SENT.get())
     }
 }
 
