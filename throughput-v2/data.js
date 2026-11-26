@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795656745412,
+  "lastUpdate": 1795657685376,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70148,6 +70148,58 @@ window.BENCHMARK_DATA = {
             "range": "40351.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1216957.36\nmean: 1193859.79\nstdev: 40351.07\ncv: 3.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5eb61ab362c56b1d3c37d51ff683a9d918a2a7dc",
+          "message": "test(cluster): kcat reads every shard from its leader on Raft too (#2991) (#3206)\n\nSplit the kcat leader test: the read-every-partition half has no engine\nguard and runs on Raft and hybrid, asking Metadata again until the elected\nleader agrees with placement's owner. The follow-a-moved-shard half keeps\nits guard.\n\nSpec-Unaffected: test-only change, no protocol or state-machine behaviour",
+          "timestamp": "2026-11-25T17:28:18-08:00",
+          "tree_id": "5fda444de7ea3777530e0647ff421e8ca7674f68",
+          "url": "https://github.com/GetFelix/felix/commit/5eb61ab362c56b1d3c37d51ff683a9d918a2a7dc"
+        },
+        "date": 1795657684565,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 523860.2,
+            "range": "44016.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 523860.20\nmean: 528223.00\nstdev: 44016.93\ncv: 8.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 523860.2,
+            "range": "44016.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 523860.20\nmean: 528223.00\nstdev: 44016.93\ncv: 8.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119982.86,
+            "range": "1485.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119982.86\nmean: 120424.42\nstdev: 1485.92\ncv: 1.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1199828.6,
+            "range": "14859.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1199828.60\nmean: 1204244.23\nstdev: 14859.23\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
