@@ -3571,35 +3571,3 @@ async fn a_leaderless_member_placement_moved_off_routes_by_placement() {
         member.shards.shutdown().await;
     }
 }
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn probe_3238_syncs_per_commit() {
-    for written_commit in [false, true] {
-        let periodic = FsyncMode::Periodic {
-            interval: Duration::from_secs(3600),
-        };
-        let (_net, members, leader) =
-            trio_with(ConsistencyLevel::Quorum, periodic, written_commit).await;
-        let term = members[leader]
-            .shards
-            .leading(&key("orders", 0))
-            .expect("term");
-        members[leader].publish(term, b"p0").await;
-        let orders = key("orders", 0);
-        let mut logs = Vec::new();
-        for member in &members {
-            logs.push(member.shards.log_of(&orders).await.expect("open"));
-        }
-        let modes: Vec<_> = logs.iter().map(|log| log.config().fsync_mode).collect();
-        let before: u64 = logs.iter().map(|log| log.flushes()).sum();
-        for _ in 0..32 {
-            let offset = members[leader].publish(term, b"p").await;
-            until("commit", || members[leader].bound() > offset).await;
-        }
-        let taken: u64 = logs.iter().map(|log| log.flushes()).sum::<u64>() - before;
-        eprintln!(
-            "PROBE written_commit={written_commit} modes={modes:?} flushes_for_32_on_3={taken}"
-        );
-        stop(&members).await;
-    }
-}

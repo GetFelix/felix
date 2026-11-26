@@ -72,7 +72,18 @@ impl Cluster {
         // Metadata first: a broker syncs streams at startup, and one that starts
         // before its streams exist has to wait for the next sync to become
         // useful. Creating them up front means readiness means what it says.
-        seed_metadata(&http, &control_plane, &config, &credentials.admin_token()).await?;
+        //
+        // Except on a Raft suite, whose streams and caches come after the
+        // fleet features: a member reads `raft_written_commit` when it opens,
+        // and one opened before the finalize fsyncs on every commit until it
+        // opens again (#3238). A new cluster finalizes at the first
+        // registration only while it has no streams, so this is also the
+        // order a real one comes up in.
+        let shards_after_fleet = config.raft_by_suite_default();
+        seed_namespace(&http, &control_plane, &config, &credentials.admin_token()).await?;
+        if !shards_after_fleet {
+            seed_shards(&http, &control_plane, &config, &credentials.admin_token()).await?;
+        }
 
         let root = tempfile::tempdir().context("create cluster data root")?;
         let binary = broker_binary()?;
@@ -119,19 +130,10 @@ impl Cluster {
         let ready = async {
             cluster.await_brokers_ready().await?;
             cluster.await_registered().await?;
-            cluster.await_cluster_ready(&config).await?;
-            if config.joint_fence {
-                cluster
-                    .finalize_fleet_features(
-                        &["majority_ack", "joint_fence"],
-                        Duration::from_secs(20),
-                    )
-                    .await
-                    .context("enable joint_fence")?;
-            }
             // A new Raft cluster has every Raft feature finalized, so a suite
-            // moved to Raft forms its cluster the same way (#3003).
-            if config.raft_by_suite_default() {
+            // moved to Raft forms its cluster the same way (#3003), and every
+            // broker has taken them before a member opens.
+            if shards_after_fleet {
                 let features: Vec<&str> = felix_common::fleet::IMPLEMENTED
                     .iter()
                     .map(|feature| feature.name())
@@ -141,6 +143,23 @@ impl Cluster {
                     .finalize_fleet_features(&features, Duration::from_secs(30))
                     .await
                     .context("enable the Raft fleet features")?;
+                seed_shards(
+                    &cluster.http,
+                    cluster.control_plane(),
+                    &config,
+                    &cluster.credentials.admin_token(),
+                )
+                .await?;
+            }
+            cluster.await_cluster_ready(&config).await?;
+            if config.joint_fence {
+                cluster
+                    .finalize_fleet_features(
+                        &["majority_ack", "joint_fence"],
+                        Duration::from_secs(20),
+                    )
+                    .await
+                    .context("enable joint_fence")?;
             }
             // Last, so nothing above can start an election after it. The
             // broker that formed a Raft group still leads most of them here,
@@ -503,8 +522,8 @@ async fn create_stream(
     .with_context(|| format!("create stream {stream}"))
 }
 
-/// Create the tenant, namespace, and streams the cluster serves.
-async fn seed_metadata(
+/// Create the tenant and namespace the cluster serves.
+async fn seed_namespace(
     http: &reqwest::Client,
     control_plane: &ControlPlane,
     config: &ClusterConfig,
@@ -526,8 +545,17 @@ async fn seed_metadata(
         }),
     )
     .await
-    .context("create namespace")?;
+    .context("create namespace")
+}
 
+/// Create the streams and caches the cluster serves.
+async fn seed_shards(
+    http: &reqwest::Client,
+    control_plane: &ControlPlane,
+    config: &ClusterConfig,
+    token: &str,
+) -> Result<()> {
+    let base = &control_plane.base_url;
     for spec in &config.streams {
         create_stream(http, base, config, token, spec).await?;
     }
